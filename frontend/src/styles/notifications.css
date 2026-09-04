@@ -1144,6 +1144,44 @@
   word-break: break-word;
 }
 
+/* ...EXCEPT where the sentence is a TITLE (the waiting-task row, whose second
+   line is the task's own name — RepoUpdatesDock `AttentionRowView`). Three lines
+   is right for an error message, where every line says something new; a title
+   that spills onto three lines is one row taking a card's worth of height to
+   repeat what its first line already identified. One line, ellipsis, and the
+   full title in the element's own tooltip. */
+.dl-status.dl-status-one {
+  -webkit-line-clamp: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+}
+
+/* THE ROW THAT IS ITSELF THE ACTION (2026-09-03). A waiting task's row has
+   exactly one thing to do — open the conversation and answer — so the whole row
+   is the control rather than a small button parked in its corner. A real
+   `<button>`, so it is focusable and announced as an action; this rule takes the
+   UA chrome back off it so it sits in `.dl-rows` exactly like the `<div>` rows
+   around it, the same reset `button.sidebar-prefs-trigger` does for the sidebar.
+
+   The hover wash is the list's own (`--row-bg-hover`), not the status bar's
+   (`--status-item-hover`, which is for the chip): this is a row in a list, and
+   it should feel like the file rows and menu items that use that token. */
+button.dl-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+button.dl-row:hover {
+  background: var(--row-bg-hover);
+}
+
 .dl-bar {
   height: 4px;
   border-radius: 2px;

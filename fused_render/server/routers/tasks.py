@@ -84,7 +84,9 @@ next door, which carries no guard either: it moves a badge, it does not run
 code.
 """
 import json
+import logging
 import os
+import threading
 import time
 
 from fastapi import APIRouter, HTTPException, Query
@@ -96,17 +98,39 @@ from fused_render.server.routers import claude_sessions as sessions
 
 router = APIRouter()
 
-# A task's status, decided HERE and read by every view. `upcoming` and `failed`
+logger = logging.getLogger(__name__)
+
+# A task's status, decided HERE and read by every view. `upcoming` and `blocked`
 # are the two triage does not have a word for — a session cannot be "not yet",
-# and the Inbox's three columns have no place to put a broken run — which is why
-# the union below is not symmetric.
+# and the Inbox's three columns have no place to put a run that stopped — which
+# is why the union below is not symmetric.
 #
-# `failed` is a STATUS and not only the `failed` boolean beside it, because a
+# `blocked` is a STATUS and not only the `failed` boolean beside it, because a
 # run that broke is not a kind of done. It used to be exactly that: `done` with
 # a flag, so every view had to remember to read the flag and paint it, and any
 # view that did not simply lost the news. One decision, made once, on the
 # server.
-STATUSES = ("upcoming", "in_progress", "done", "failed", "archived")
+#
+# THE LANE IS CALLED `blocked` AND NOT `failed` (Akshil, 2026-09-03: "failed
+# status could be renamed as blocked … for fail retry, for block a reason"). The
+# word names what the reader has to do about it rather than what happened: a run
+# that broke and a run parked on a card nobody answered are the same fact from
+# the outside — this task is not moving until a person does something — and one
+# lane holding both is what stops a parked run being read as work in flight. The
+# `failed` boolean is untouched and still says which of the two it was; it is
+# what paints the ring red and what `blocked_reason` reports as "failed".
+#
+# `needs_attention` is the one status above In Progress: the run IS in flight,
+# and it is in flight in the one way that will never end on its own. It is a
+# status rather than a flag for the same reason `blocked` is — a view that has
+# to remember to read a flag is a view that will one day not, and this is the
+# fact the whole feature exists to carry.
+STATUSES = ("upcoming", "in_progress", "needs_attention", "blocked", "done",
+            "archived")
+
+# What `blocked_reason` may say. "" is the answer for every task that is neither
+# blocked nor waiting on anybody — most of them.
+BLOCKED_REASONS = ("permission", "question", "failed", "")
 
 # The ONE triage word this router still reads. `archived` is a FILING state —
 # the user put the task away — and filing is the only decision about a task that
@@ -608,7 +632,7 @@ def _message_verdict(message: dict) -> str | None:
     `missed` stays `done`, unchanged: it is only reachable at all on an install
     that set FUSED_RENDER_SCHEDULE_MAX_LATE (a missed OCCURRENCE reads as
     `skipped`), the row already paints it red off the `failed` flag, and
-    promoting it to the Failed lane is a separate decision nobody has made.
+    promoting it to the Blocked lane is a separate decision nobody has made.
 
     A scheduled `sent` with NO turn yet is the other promise: the session
     started and the watcher has not pronounced it over, so it has nothing to
@@ -626,10 +650,10 @@ def _message_verdict(message: dict) -> str | None:
     """
     state = message["state"]
     if state == "error":
-        return "failed"
+        return "blocked"
     if state == "sent":
         if message["turn"] == "unknown":
-            return "failed"
+            return "blocked"
         if message["kind"] == "scheduled" and not message["turn"]:
             return None
         return "done"
@@ -849,13 +873,216 @@ def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
     return True
 
 
+# --------------------------------------------------- what a run is waiting on
+# A run parked on a card nobody has answered is invisible from every fact this
+# module already reads. The transcript stops growing, the process stays alive,
+# `busy_sessions` still holds the send — which is precisely the shape of a slow
+# turn, and precisely why an unattended session gets stuck for hours (Akshil,
+# 2026-09-03: "when a task is waiting for approval it should give a notification
+# and indicator in task needs attention").
+#
+# The one place the fact is written down is the RUN DIR: `perm/<id>.req.json`
+# with no `.res.json` beside it (agent.py `_permissions`). So the listing looks
+# there — once per listing, over the runs tree, rather than once per row: the
+# scan is `os.listdir` plus a couple of small reads per live run, and doing it
+# per row would re-read every run dir once for every task on the machine.
+#
+# READ ONLY, and through the sanctioned seam. agent.py is a TEMPLATE, outside the
+# package's import graph by design (SPEC PY-15), and `claude_spawn.load_agent()`
+# is how in-process readers reach it — canvases.py's `_agent_module` is the same
+# door for the same reason. Nothing here writes a decision: answering a card is
+# the chat's job, and a listing that could deny one would be a poll with a
+# verdict in it.
+
+# How many run dirs (newest first) one scan reads. Nothing prunes RUNS, so on a
+# machine that has been chatting for weeks the tail is months of dead runs; the
+# thing being looked for is by definition ALIVE, and a live run buried under 200
+# newer ones does not exist. Deliberately the same order of magnitude as
+# agent.py's own `_LIVE_SCAN_LIMIT`.
+_PARKED_SCAN_LIMIT = 120
+
+_AGENT_MOD = None
+_AGENT_MOD_TRIED = False
+_AGENT_MOD_LOCK = threading.Lock()
+
+
+def _agent_module():
+    """The claude template's agent.py, loaded once, or None if it will not load.
+
+    Cached — and the FAILURE is cached too — because `load_agent` execs the whole
+    module on every call and this is on the listing's path: a module that cannot
+    load now will not load on the next poll either, and retrying it three times a
+    minute would turn one broken import into a busy loop. The listing degrades to
+    "nothing is parked", which is the same answer it gave before this existed.
+    """
+    global _AGENT_MOD, _AGENT_MOD_TRIED
+    with _AGENT_MOD_LOCK:
+        if not _AGENT_MOD_TRIED:
+            _AGENT_MOD_TRIED = True
+            try:
+                from fused_render import claude_spawn
+
+                _AGENT_MOD = claude_spawn.load_agent()
+            except Exception:  # noqa: BLE001 — no agent module is an answer
+                logger.warning("could not load the claude agent module; the "
+                               "task listing cannot tell whether a run is "
+                               "parked on a card", exc_info=True)
+                _AGENT_MOD = None
+        return _AGENT_MOD
+
+
+def _run_sessions(agent, run_dir: str, meta: dict) -> set:
+    """Every session id this run answers to.
+
+    BOTH SPELLINGS, for the reason `agent._live_run` spells out: a run knows the
+    session it RESUMED (`resumed_from` in meta.json) and the one the CLI minted
+    for it (the `session` file, or the head of out.jsonl before the first poll
+    has written one), and either can be the id a task row carries. Matching on
+    one of them is how a parked run goes unnoticed for exactly the sessions that
+    were forked or freshly started — which is most scheduled runs.
+    """
+    out = {str(meta.get("resumed_from") or "")}
+    own = ""
+    try:
+        with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+            own = fh.read().strip()
+    except OSError:
+        pass
+    if not own:
+        try:
+            own = agent._session_from_out(run_dir)
+        except Exception:  # noqa: BLE001 — a head we cannot read is not an id
+            own = ""
+    out.add(own)
+    out.discard("")
+    return out
+
+
+def _attention_of(agent, perm: dict) -> dict:
+    """One unanswered request, as the row's `attention` — tool, and one line.
+
+    The line is the same one the chat's own status line prints for a tool call
+    (`agent._tool_detail`), so the List row and the transcript describe the same
+    call in the same words. A QUESTION card has no tool call to describe — the
+    model is asking the user something — so the question itself is the line;
+    without it the row would say "AskUserQuestion" and nothing else, which names
+    the machinery rather than the ask.
+    """
+    tool = str(perm.get("tool") or "")
+    inp = perm.get("input") if isinstance(perm.get("input"), dict) else {}
+    summary = ""
+    if tool == getattr(agent, "ANSWERABLE_TOOL", "AskUserQuestion"):
+        questions = inp.get("questions")
+        if isinstance(questions, list) and questions:
+            first = questions[0]
+            if isinstance(first, dict):
+                summary = " ".join(str(first.get("question") or "").split())
+        if len(summary) > 80:
+            summary = summary[:77] + "…"
+    else:
+        try:
+            summary = agent._tool_detail(tool, inp)
+        except Exception:  # noqa: BLE001 — a summary we cannot make is ""
+            summary = ""
+    return {"tool": tool, "summary": summary}
+
+
+def _parked_runs() -> dict:
+    """`session id -> {reason, tool, summary}` for every LIVE run parked on a
+    card nobody has answered. Empty when nothing is waiting, which is the
+    ordinary case and the cheap one.
+
+    Three conditions, and all three are load-bearing:
+
+    * **Unanswered.** `_permissions` returns the whole list — answered cards
+      included, so a re-attaching frame can rebuild them — and a run whose cards
+      were all answered minutes ago is a run that is simply working. Only a
+      request with no `decision` is somebody being waited on.
+    * **Alive.** A dead process cannot be unblocked, and its last card sits in
+      the run dir for ever. A needs-attention row for it would be a lane that
+      only ever fills up, with an Open button onto a conversation nobody can
+      answer.
+    * **Oldest first.** `_permissions` sorts by file name, which is the order the
+      requests were raised, so the FIRST unanswered one is the one the run is
+      actually blocked on. A later card can exist (a sub-agent's), and reporting
+      it would describe a question the user is not being asked yet.
+
+    Best-effort throughout: a run dir that will not read costs that run's news,
+    never the listing.
+    """
+    agent = _agent_module()
+    if agent is None:
+        return {}
+    try:
+        names = sorted(os.listdir(agent.RUNS), reverse=True)[:_PARKED_SCAN_LIMIT]
+    except OSError:
+        return {}  # no runs tree yet: nothing has ever chatted on this machine
+    out: dict = {}
+    for name in names:
+        run_dir = os.path.join(agent.RUNS, name)
+        try:
+            perms = agent._permissions(run_dir)
+        except Exception:  # noqa: BLE001 — one unreadable run, not a dead listing
+            continue
+        waiting = [p for p in perms if not p.get("decision")]
+        if not waiting:
+            continue
+        # Liveness LAST: it is the only check that touches a pid, and the one
+        # above has already thrown out every run that is not waiting on anybody.
+        try:
+            if not agent._alive(run_dir):
+                continue
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        perm = waiting[0]
+        news = _attention_of(agent, perm)
+        reason = ("question"
+                  if perm.get("tool") == getattr(agent, "ANSWERABLE_TOOL",
+                                                 "AskUserQuestion")
+                  else "permission")
+        for session_id in _run_sessions(agent, run_dir, meta):
+            # NEWEST RUN WINS: `names` is reverse-sorted and run ids lead with a
+            # timestamp, so the first answer for a session is its most recent
+            # run. A resumed conversation can have several runs in the tree and
+            # only the newest is the one on screen.
+            out.setdefault(session_id, dict(news, reason=reason))
+    return out
+
+
 def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
-            busy: set[str]) -> str:
+            busy: set[str], parked: bool = False) -> str:
     """The status a task sits in — ONE decision, made here, for every view.
 
     Derived from the MESSAGES, in this order, and the order is the whole model:
 
-    1. **Anything running ⇒ In Progress.** Activity beats recency: a task whose
+    0. **Running AND parked ⇒ Needs attention.** Above rule 1 rather than beside
+       it, because it is the same fact told at a finer grain: the run IS in
+       flight, and it is in flight in the one way that never ends on its own —
+       a permission card or a question card nobody has answered (`parked`, from
+       `_parked_runs`). "In Progress" is a true sentence about it and a useless
+       one: it is the sentence a reader waits out, and this run will still be
+       there tomorrow. The moment the card is answered the run is ordinary
+       again and rule 1 has it back, with nothing to undo — this reads the
+       decision files on every poll rather than remembering a verdict.
+
+       PARKED WITHOUT RUNNING IS NOT THIS. `parked` is only ever true for a
+       process that is alive (see `_parked_runs`), and the `and` below is
+       belt-and-braces for a task whose messages say nothing is going on: a
+       needs-attention row nobody can answer any more would be a lane that only
+       fills up.
+
+       PARKED IS CHECKED ON ITS OWN, not only as a multiplier on rule 1: a
+       hand-typed chat parked on a card fails both of rule 1's tests (the live
+       registry reports `waiting`, not running, and the transcript has gone
+       quiet), so gating on `_running_now`/`_message_running` first would file
+       it `done` before parked ever got a look. `_parked_runs` already proves
+       the process is alive — that is enough on its own.
+
+    1. **Anything else running ⇒ In Progress.** Activity beats recency: a task whose
        newest message is next Tuesday's occurrence, with a run still going in
        it, is a task that is working. Three things say a run is happening and a
        task needs only one — a message of its own that is in flight
@@ -873,7 +1100,7 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        so twice). Step 1 is above this on purpose: a run in flight when the task
        was filed keeps running and the card reads In Progress until it stops.
     3. **Otherwise the newest message that has something to say speaks** —
-       `failed` for a run that broke, `done` for one that ended. See `_speaker`.
+       `blocked` for a run that broke, `done` for one that ended. See `_speaker`.
     4. **Nothing said yet, but something COMING ⇒ Upcoming**, and that second
        half is the whole of it: the lane is what has not happened *yet*, so it
        needs a message still waiting to happen. A task with nothing coming and
@@ -897,6 +1124,8 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
     a new message has overtaken is dropped from disk rather than argued with on
     every poll. This function reads no triage of its own.
     """
+    if parked:
+        return "needs_attention"
     if messages and (_running_now(session_id, live, busy)
                      or any(_message_running(m) for m in messages)):
         return "in_progress"
@@ -916,8 +1145,13 @@ def _failed(speaker: dict | None) -> bool:
     Kept as its own field on the row as well as feeding `status` above, because
     the two can disagree in exactly one direction and the difference is worth
     keeping: a task that is archived, or live again, reads `status` as something
-    other than `failed` while this stays true. Anything that only wants "which
-    column" should read `status`."""
+    other than `blocked` while this stays true. Anything that only wants "which
+    column" should read `status`.
+
+    It is also the other half of what the Blocked lane holds. The lane took the
+    wider word on 2026-09-03 and now carries two different things — a run that
+    broke and a run parked on a card — so the row has to say which; this flag
+    and `blocked_reason` are how (see `_row`)."""
     return speaker is not None and (
         speaker["state"] == "error" or speaker["turn"] == "unknown")
 
@@ -1201,6 +1435,38 @@ def _place(task: dict) -> None:
         first_ts = (tasks_store.epoch(entries[0].get("created"))
                     or _entry_at(entries[0]))
     task["order"] = first_ts
+    # WHEN THE TASK BEGAN — the row's `started`, and deliberately NOT `order`
+    # above, which this must not disturb: `order` decides the sequence new task
+    # NUMBERS are handed out in (`_numbers` → tasks_store.ensure_ids), a
+    # once-per-key decision that has already been made for every task that has a
+    # number, so changing what it means would renumber nothing and confuse
+    # everything.
+    #
+    # WHY THE TWO CANNOT BE THE SAME VALUE (bugbot, PR #984). `order` SWITCHES
+    # SOURCE the moment a transcript exists: before that it is the entry's
+    # `created`, and after it is the transcript's first record. For allocation
+    # that is harmless — a number is allocated once and then kept — but the Cards
+    # wall orders itself by `started` precisely so a card cannot move after it
+    # appears (shell/tasks-lib.cardsForTasks), and a value that changes under a
+    # listed row is exactly the thing that would move one. Two tasks created
+    # seconds apart could swap places when the second's transcript landed; a run
+    # scheduled days before it fires would jump the moment it spoke.
+    #
+    # So: THE EARLIEST CLOCK WE HAVE. `created` is written when the message is
+    # scheduled and always precedes the first thing the run says, so once a task
+    # has one the minimum is fixed for good and the transcript's arrival cannot
+    # move it. A hand-typed session — no entry, no `created` — takes its
+    # transcript's first record, which is equally fixed: a transcript's FIRST
+    # line is the one line in it that never changes.
+    #
+    # `first_ts` is read after the fallback above, so an entry with no `created`
+    # stamp at all contributes its due time here rather than nothing. That is the
+    # one shape whose `started` can still move (due time, then the transcript's
+    # first record if it is earlier) — and the scheduler writes `created` on
+    # every entry it makes, so it is a shape this server does not produce.
+    created = (tasks_store.epoch(entries[0].get("created")) or 0.0) if entries else 0.0
+    began = [stamp for stamp in (created, first_ts) if stamp]
+    task["started"] = min(began) if began else 0.0
 
 
 def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
@@ -1326,8 +1592,13 @@ def _next_run(entries: list[dict]) -> tuple[float, str]:
 
 
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
-         busy: set[str], revived: list[str]) -> dict:
+         busy: set[str], revived: list[str], parked: dict | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
+
+    `parked` is `_parked_runs()` — every session whose live run is waiting on a
+    card — computed once by the caller for the same reason `busy` is: it is one
+    scan of the runs tree, and asking it per row would re-read every run dir once
+    per task on the machine.
 
     `busy` is `schedule.busy_sessions` over the WHOLE store, computed once by
     the caller — one of the three things that say a run is happening (see
@@ -1422,6 +1693,16 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     if not surfaced and task["entries"]:
         surfaced = _entry_at(task["entries"][-1])
     title, source = _title(task, rec, task["first_prompt"])
+    # WHAT THIS RUN IS WAITING ON, asked once here so the row's `status`, its
+    # `blocked_reason` and its `attention` line cannot describe three different
+    # states of the same run. Keyed by the session id: a task with none (a
+    # `pending:<entry>` row, whose message has not started a conversation yet)
+    # has no run to be parked, which is what the empty key would otherwise
+    # accidentally match.
+    waiting = (parked or {}).get(task["session_id"]) if task["session_id"] else None
+    status = _status(merged, filed, task["session_id"], live, busy,
+                     parked=waiting is not None)
+    failed = _failed(speaker)
     return {
         "key": task["key"],
         "task_id": number,
@@ -1440,10 +1721,34 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # running in this task?" and "is every message filed away?" are both
         # questions about all of it, and a run pushed out of the window by two
         # later occurrences is exactly the run that must not be lost.
-        "status": _status(merged, filed, task["session_id"], live, busy),
-        "failed": _failed(speaker),
+        "status": status,
+        "failed": failed,
+        # WHY it is not moving, in one word, for the two statuses that need one.
+        # The Blocked lane holds a run that broke and a run parked on a card, and
+        # "Blocked" alone cannot tell the reader which button to reach for —
+        # Retry for the first, Open for the second (Akshil, 2026-09-03: "for fail
+        # retry, for block a reason"). "" for every task that is neither, which
+        # is most of them.
+        "blocked_reason": (waiting["reason"] if waiting is not None
+                           else ("failed" if failed or status == "blocked" else "")),
+        # The one line under the title on a needs-attention row: which tool, and
+        # what it wants to do ("Bash · rm -rf build"). None whenever nothing is
+        # waiting — the row draws the sub-line off this, so an empty object would
+        # be a caption with nothing in it.
+        "attention": ({"tool": waiting["tool"], "summary": waiting["summary"]}
+                      if waiting is not None else None),
         "live": live,
         "unread": _unread_count(task, total, unfired, read),
+        # WHEN THIS TASK BEGAN — the EARLIEST clock it has (`_place`, which
+        # explains the choice at length): the scheduled entry's `created`, else
+        # the transcript's first record. It is the one time on this row that
+        # never moves — `last_active` climbs on every write, and `order` beside
+        # it switches source when a transcript appears — which is why the Cards
+        # wall orders by it: a view that re-sorts itself while its runs are
+        # merely talking is one nobody can watch (shell/tasks-lib.cardsForTasks).
+        # 0.0 for a row that has neither a transcript nor an entry to date, the
+        # way every other absent time on this row reads.
+        "started": task.get("started") or 0.0,
         "last_active": surfaced,
         "message_count": total,
         # The next run, and the entry it belongs to — `min(at)` over every
@@ -1511,6 +1816,31 @@ def _unread_count(task: dict, total: int, unfired: list[dict],
                - waiting)
 
 
+# Which rows the listing puts at the top, ahead of recency. Two ranks and then
+# everybody, because there are exactly two kinds of row a person has to DO
+# something about (Akshil, 2026-09-03: "in list view they should be at top").
+#
+# Recency is the right order for a page you READ, and the wrong one for a page
+# you WORK: a run parked on a permission card at 6am is the single most urgent
+# row on the machine and, sorted by activity, sinks below every chat typed
+# since. So the two ranks that want hands come first — the parked one above the
+# broken one, because the parked run is still burning a session — and inside
+# every rank the page's one honest question is still recency.
+#
+# The client sorts the LIST for itself (tasks-lib.LIST_ORDER, which ranks all six
+# statuses); this is the order the rows arrive in, which is what a reader of the
+# raw endpoint and the sidebar's projection see, and what every tie inside a
+# client rank falls back to.
+_SORT_RANKS = ("needs_attention", "blocked")
+
+
+def _row_order(row: dict) -> tuple:
+    """The listing's order: attention first, then blocked, then newest."""
+    status = str(row.get("status") or "")
+    rank = _SORT_RANKS.index(status) if status in _SORT_RANKS else len(_SORT_RANKS)
+    return (rank, -float(row.get("last_active") or 0.0))
+
+
 def _task_rows(only: frozenset | set | None = None) -> list[dict]:
     """Build the authoritative task rows shared by the two listing shapes.
 
@@ -1534,6 +1864,9 @@ def _task_rows(only: frozenset | set | None = None) -> list[dict]:
     # One pass over the store for every row: which conversations the scheduler
     # is still waiting on. See `_status`.
     busy = schedule.busy_sessions(schedule.list_entries())
+    # One scan of the runs tree for every row: which conversations are parked on
+    # a card nobody has answered. See `_parked_runs`.
+    parked = _parked_runs()
     for task in tasks.values():
         _place(task)
     numbers = _numbers(tasks)
@@ -1545,7 +1878,7 @@ def _task_rows(only: frozenset | set | None = None) -> list[dict]:
     for task in tasks.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
-                       busy, revived)
+                       busy, revived, parked)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -1565,7 +1898,7 @@ def _task_rows(only: frozenset | set | None = None) -> list[dict]:
     # one extra pass on exactly one request in the store's lifetime.
     if only is None and not tasks_store.initialized(read):
         tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
-    rows.sort(key=lambda r: r["last_active"], reverse=True)
+    rows.sort(key=_row_order)
     # The Current apps desk (current_apps.py) learns about NEW tasks here —
     # the one place every task on the machine passes, whatever started it.
     # Best-effort: the desk is a side table, and a store that cannot be
@@ -1634,7 +1967,20 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
 # dot on a row still reads the pulse — which task is under which app is a
 # listing fact, and a second GET /api/tasks poll from the sidebar is the
 # double-poll the pulse store exists to prevent.
-_PULSE_FIELDS = ("key", "status", "unread", "last_active", "project")
+#
+# `task_id`, `title`, `target` and `session_id` ride along for the SAME reason,
+# one surface later (2026-09-03): the Notifications section draws a row per task
+# that is waiting on an answer, and such a row has to print which task
+# ("TASK-097") and what it is about (the title), then open the conversation —
+# which is `tasks-lib.taskHref`'s pair of `session_id` and `target`. Four short
+# strings on a row that is already being built is cheaper by every measure than
+# the second /api/tasks poll the alternative would need, and this endpoint is
+# still the compact one: it carries no entries, no messages and no description,
+# which is where a task listing's weight actually is.
+_PULSE_FIELDS = (
+    "key", "status", "unread", "last_active", "project",
+    "task_id", "title", "target", "session_id",
+)
 
 
 @router.get("/api/tasks/pulse")
@@ -2062,7 +2408,14 @@ def api_task_delete(patch: DeletePatch):
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
                schedule.busy_sessions(schedule.list_entries()), [])
-    if row["status"] == "in_progress":
+    # BOTH RUNNING WORDS. This row is built without the parked index (one
+    # request about one task does not pay for a scan of the runs tree), so a run
+    # waiting on a permission card reads `in_progress` here and the first word
+    # catches it. The second is the guard against that stopping being true: the
+    # question this asks is "is a run in flight", and `needs_attention` is a run
+    # in flight — a delete that slipped through would tombstone the row out from
+    # under a live process.
+    if row["status"] in ("in_progress", "needs_attention"):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")

@@ -23,7 +23,8 @@
 //
 //  * a cold index. The home page has no live-walk fallback (that is the
 //    listing's job, one folder at a time), so an uncovered root is reported as
-//    "still building", never as "no matches" — blaming the user's files for
+//    the state of the INDEX (`indexGap`, below — building, not built, off, or
+//    never coverable), never as "no matches" — blaming the user's files for
 //    the app's state is exactly the failure the server's search refuses to
 //    make.
 //  * the WAIT. Ranking used to be local, so results repainted within a frame
@@ -110,10 +111,10 @@ export interface HomeAnswer {
   covered: boolean;
   /**
    * WHY, when `covered` is false — carried through verbatim from the
-   * server's `reason` (platform/lib/api.ts's `RankReason`). FilesHome reads
-   * this only to say "indexing is off" instead of the generic "still
-   * building" when `reason === "disabled"`; every other value renders the
-   * same not-covered message it always has.
+   * server's `reason` (platform/lib/api.ts's `RankReason`). FilesHome pairs
+   * it with the live scan poll to pick which of the four not-covered states
+   * the root is in, and only one of them tells the user to wait: see
+   * `indexGap`.
    */
   reason: RankReason;
   /**
@@ -509,4 +510,131 @@ export function submitRow(
   settled: boolean,
 ): number | null {
   return activeRow(highlight, m, settled);
+}
+
+// -- why there is no index answer --------------------------------------------
+
+/**
+ * The four states a not-covered answer can be in. They differ in what the
+ * user can do about it, which is the only reason to tell them apart.
+ *
+ *  * `scanning` — a scan is running, so waiting really is the advice.
+ *  * `buildable` — the root is not in the index and NOTHING is running.
+ *    Waiting fixes nothing; only a scan does.
+ *  * `disabled` — the indexing pref is off, so no scan can start until it is
+ *    back on.
+ *  * `unavailable` — mount-backed, inside a package, or pruned by the ignore
+ *    rules: no scan will ever cover it (see `RankReason`).
+ */
+export type IndexGap = "scanning" | "buildable" | "disabled" | "unavailable";
+
+/**
+ * Which of those an uncovered root is in.
+ *
+ * The page used to render one message — "the file index is still building" —
+ * for every `reason`, and that message is a promise that something is coming.
+ * For `uncovered` nothing is: this page never asks for a scan (that is the
+ * in-folder box's `requestFolderScan`) and the startup scheduler runs once per
+ * boot, so a first scan that was refused, debounce-skipped, or died with its
+ * worker leaves the page promising a build that no longer exists — for as long
+ * as the user is willing to stare at it. `buildable` is that case as its own
+ * state, so the page can offer the scan instead of describing one.
+ *
+ * `scanning` is read from the LIVE status poll as well as from `reason`, and
+ * the poll wins in BOTH directions — which is why it is tri-state (`null` is
+ * "the poll has not answered yet", not "idle"):
+ *
+ *  * `reason` was fixed when the answer was ranked, so a scan started since
+ *    the last keystroke (by the user's own button, or by anything else) shows
+ *    up in the poll a second later and in `reason` only on the next query.
+ *  * a definite `false` DEMOTES `reason === "scanning"` to `buildable`. A rank
+ *    that landed while the startup scan was alive says "scanning" forever
+ *    after: if that worker is then killed, `/api/index/status` reports idle
+ *    (runner._with_liveness, after ABANDONED_RUN_S) but `last_completed_at`
+ *    never moves, so no lifecycle event fires and nothing re-ranks. Trusting
+ *    the frozen `reason` there is the twenty-minute wedge again, wearing the
+ *    other reason's clothes — and with a frozen file count to make it
+ *    convincing.
+ *
+ * `disabled` outranks the poll because nothing can be in flight while the pref
+ * is off — every trigger is gated on it, and a scan running at the moment of
+ * toggle-off is cancelled outright (routers/index.cancel_all_scans).
+ */
+export function indexGap(reason: RankReason, scanning: boolean | null): IndexGap {
+  if (reason === "disabled") return "disabled";
+  if (scanning === true) return "scanning";
+  if (reason === "scanning" && scanning === null) return "scanning";
+  if (reason === "mount" || reason === "package" || reason === "ignored") {
+    return "unavailable";
+  }
+  return "buildable";
+}
+
+/**
+ * Whether AI search is worth offering.
+ *
+ * AI search is not a second engine. The spec the model produces is executed
+ * against the SAME file index — `routers/search._search_index`, whose
+ * docstring says "the only engine" — so with nothing built it raises
+ * `IndexUnavailable` and reports "the file index has not been built yet". That
+ * is the message the note is standing next to, which makes "AI search can
+ * answer in the meantime" false in exactly the state that printed it, and the
+ * "Search with AI" row a click into the same wall.
+ *
+ * A root the index deliberately does not cover (mount / package / ignored) is
+ * a different case: the index is built, so AI search does answer — just not
+ * about that root's files. `has_index` is the right question either way.
+ *
+ * `null` — no poll answer yet — offers it. `has_index` is false on a cold
+ * poll, and hiding the row for the first second of every page load would be
+ * its own wrong answer.
+ */
+export function aiSearchUsable(status: { has_index: boolean } | null): boolean {
+  return status === null || status.has_index;
+}
+
+/**
+ * A scan this page asked for that the status poll has not accounted for yet.
+ *
+ * `at` is `Date.now()` when the request went out, `completedAt` the
+ * `last_completed_at` it went out under.
+ */
+export interface PendingScan {
+  at: number;
+  completedAt: number | null;
+}
+
+/**
+ * How long a requested scan may stay unaccounted for before the note stops
+ * claiming it is starting. Two idle poll intervals
+ * (`INDEX_IDLE_POLL_MS`) — long enough that the poll has certainly had a turn,
+ * short enough that a scan which died between two polls without moving
+ * `last_completed_at` cannot leave "Starting…" on screen indefinitely. That
+ * failure mode is the one this whole file is about; it does not get to come
+ * back as the spinner for its own fix.
+ */
+export const SCAN_START_GRACE_MS = 20_000;
+
+/**
+ * Whether to say a requested scan is starting rather than re-offer the button.
+ *
+ * The POST returning is not the scan appearing. While idle the shared poll is
+ * on a ten-second beat, so between "started" and "scanning" the answer's
+ * `reason` is still `uncovered` and the note would go back to offering "Index
+ * them now" — a click that reads as a no-op on the one screen whose whole
+ * point is that waiting is futile, and whose obvious response is to click
+ * again. The claim is held until the poll either shows the scan running or
+ * shows it already over (`last_completed_at` moved).
+ */
+export function scanStarting(
+  pending: PendingScan | null,
+  scanning: boolean | null,
+  completedAt: number | null,
+  now: number,
+): boolean {
+  if (pending === null) return false;
+  if (now - pending.at >= SCAN_START_GRACE_MS) return false;
+  if (scanning === null) return true;
+  if (scanning) return false;
+  return completedAt === pending.completedAt;
 }

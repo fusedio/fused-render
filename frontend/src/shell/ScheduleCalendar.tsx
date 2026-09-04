@@ -55,7 +55,8 @@
 // their original past slot so history stays readable.
 //
 // ONE STATUS VOCABULARY. The popover's pill and every thread row say the app's
-// five words — Upcoming / In Progress / Done / Failed / Archive — and nothing
+// words — Upcoming / In Progress / Needs attention / Blocked / Done / Archive —
+// and nothing
 // else. Failure is a WORD, not just a red ring (Akshil, 2026-08-17); the red
 // stays as reinforcement. The two settled edge cases: a skipped occurrence reads
 // Archive (filed away, never attempted), and a projected run reads Upcoming with
@@ -174,7 +175,7 @@ import {
 import type { TaskRunIntent } from "./tasks-lib";
 // The Board's own status ring, reused rather than re-drawn: one vocabulary means
 // one glyph too, so a Done row in the popover is the same mark as a Done card on
-// the board — red on Failed, and dashed (below) when it is only projected.
+// the board — red on Blocked, and dashed (below) when it is only projected.
 import { StatusIcon } from "./ScheduleTaskViews";
 
 // One hour of grid, in px. 44 puts a full day at ~1050px — tall enough that two
@@ -552,7 +553,7 @@ function ChipPopover({
   // Archive lane — done/failed work is a result somebody may still want filed,
   // not walked straight past to the shredder.
   const col = taskColumn(task);
-  const canArchive = !liveNow && (task.failed || col === "done" || col === "failed");
+  const canArchive = !liveNow && (task.failed || col === "done" || col === "blocked");
   const canDelete =
     !liveNow && !canArchive && (col === "upcoming" || col === "archived");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -627,7 +628,7 @@ function ChipPopover({
   // clicked DAY — In Progress while THIS DAY works (`liveToday`, the chip's own
   // reading; `liveNow` would say In Progress on every day of a rule whose run
   // is live somewhere else), Upcoming for a day still ahead or a today that
-  // still owes runs, and the day's ROLLED-UP outcome (any failure -> Failed,
+  // still owes runs, and the day's ROLLED-UP outcome (any failure -> Blocked,
   // else Done) once the day is finished (Akshil, 2026-08-19: a rule's
   // task-level column is nearly always "upcoming", which made the pill useless
   // on the one view that is about days).
