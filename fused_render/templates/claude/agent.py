@@ -2061,66 +2061,28 @@ _DETACH = (
 )
 
 
-def _start(file: str, message: str, session_id: str, model: str,
-           effort: str, permission_mode: str = "",
-           message_via_stdin: bool = False,
-           has_pane: bool | None = None,
-           extra_read_dirs: list | None = None) -> dict:
-    file = os.path.abspath(file)
-    # A directory is a valid target too: this template's app-folder role opens
-    # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
-    if not os.path.exists(file):
-        return {"error": f"target not found: {file}"}
+def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
+                 session_id: str, model: str, effort: str,
+                 extra_read_dirs: list | None, file: str) -> list:
+    """The CLAUDE CLI's own argv — everything from the binary down to the
+    last `--effort` flag. Pulled out of `_start` so the session host, which
+    spawns this SAME process (just kept open on a stdin pipe instead of a
+    one-shot file), builds an identical command rather than a hand-rolled
+    second copy that silently drifts from what `_start` used to build inline.
 
-    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
-    run_dir = os.path.join(RUNS, run_id)
-    _private_dir(run_dir)
-    _private_dir(_perm_dir(run_dir))
-    # Whether this target has a page beside the chat at all: ONE value, read by
-    # all three things that depend on it — the app-state channel's directory, the
-    # tool's pre-allowance, and the prompt (`_split_system_prompt` takes it rather
-    # than asking again; a second resolution is a second answer).
-    #
-    # THE PAGE'S ANSWER WINS. It decides at boot and cannot change (`paneURL` runs
-    # once, `enterNoPane` is permanent), so it is the only thing that knows what is
-    # actually on screen — and a roster that disagrees with the screen hands the
-    # model a tool nothing can answer. Re-resolving from disk per turn is what made
-    # a mid-session kind flip do that; see `_has_pane`. `None` means the caller has
-    # no page (the apps API), and only then does disk decide.
-    pane = _has_pane(file) if has_pane is None else has_pane
-    # No pane, no channel, and no empty directory pretending there could be one:
-    # the directory's absence is what removes the tool from the roster
-    # (_write_mcp_config).
-    if pane:
-        _private_dir(_state_dir(run_dir))
-
-    # An unknown mode falls back to the strictest of the three rather than
-    # erroring: a mangled param must not quietly buy more auto-approval than
-    # the user picked.
-    mode = permission_mode if permission_mode in PERMISSION_MODES \
-        else DEFAULT_PERMISSION_MODE
-    cli_mode = PERMISSION_MODES[mode]
-
-    # `message_via_stdin` keeps the user's text out of argv entirely: the
-    # message is written to a file in the run dir as one stream-json user
-    # line, and the detached process reads it as its stdin (EOF after the one
-    # message, so -p still exits after the turn). The apps API uses this — it
-    # runs inside the server process, where argv is visible to every local
-    # user via `ps`, unlike the template path where the message came from the
-    # page's own runPython call.
-    if message_via_stdin:
-        with _private_open(os.path.join(run_dir, "stdin.jsonl")) as f:
-            json.dump({"type": "user", "message": {
-                "role": "user",
-                "content": [{"type": "text", "text": message}]}}, f)
-            f.write("\n")
-        message_argv = ["-p", "--input-format", "stream-json"]
-    else:
-        message_argv = ["-p", message]
-
-    cmd = [_claude_bin(), *message_argv,
+    Always `-p --input-format stream-json` on stdin, unconditionally: a
+    session host is the only thing that ever calls this now, and it always
+    holds the pipe open for the life of the process — there is no longer an
+    argv-embedded-message form to choose between (the retired
+    `message_via_stdin=False` branch)."""
+    cmd = [_claude_bin(), "-p", "--input-format", "stream-json",
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
+           # Every accepted line on stdin is echoed back on stdout as its own
+           # row — the host's inbox drain has no other way to confirm a
+           # follow-up sent mid-turn actually reached the CLI's own queue
+           # rather than landing on a pipe nobody was reading from anymore.
+           "--replay-user-messages",
            "--mcp-config", _write_mcp_config(run_dir, pane),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
@@ -2164,7 +2126,10 @@ def _start(file: str, message: str, session_id: str, model: str,
            #     shape as SHOTS and for the same reason: the scheduler names
            #     its task-shots dir here, whose images the user attached
            #     deliberately in the New task form, and a headless run has
-           #     nobody at the screen to answer a card.
+           #     nobody at the screen to answer a card. Now granted for the
+           #     life of the SESSION, not the turn — --allowed-tools is fixed
+           #     at spawn, so a later attachment from a NEW directory forces a
+           #     respawn rather than silently arriving ungranted (_send).
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
                      else []) + [_read_rule(SHOTS)]
                     + [_read_rule(d) for d in (extra_read_dirs or [])]
@@ -2198,6 +2163,220 @@ def _start(file: str, message: str, session_id: str, model: str,
         cmd += ["--model", model]
     if effort:
         cmd += ["--effort", effort]
+    return cmd
+
+
+def _spawn_env() -> dict:
+    """`os.environ`, adjusted the same way for every `claude` spawn — the
+    session host's own CLI Popen and (nothing else now, but kept as its own
+    function so the two never drift again the way _start's inline copy could
+    have).
+
+    The session must not inherit an ambient FUSED_ENV from the server's own
+    process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
+    FUSED_ENV when unset, so a value already present here — say the server
+    itself was launched from a shell that exports FUSED_ENV for unrelated
+    reasons — would look exactly like a deliberate `FUSED_ENV=x fused ...`
+    from the model and skip the workbench default, silently diverging from
+    canvases.py's own runs (`_cli_env` always forces FUSED_ENV=WORKBENCH_ENV,
+    ambient or not). Popping it here is what makes "unset" in the wrapper
+    mean what the model actually typed on that command line.
+
+    File-history checkpoints are OFF by default in a non-interactive session,
+    and every run here is non-interactive (`-p`). Without this the snapshots
+    panel (SPEC §34) can only ever show versions written by a TERMINAL claude
+    in that folder, and reports "no recorded versions" for every file this
+    chat itself edited — the panel's own reason to exist. D394.
+
+    An ENV VAR, not a setting: the CLI's `fileHistoryEnabled` takes a separate
+    branch when `isInteractive()` is false, and that branch reads only these
+    two variables — the `fileCheckpointingEnabled` config that governs the
+    interactive case is not consulted, so `--settings` cannot reach it. Named
+    for the SDK and absent from the public settings docs, so it may move; what
+    to re-check if snapshots go quiet again is that branch.
+
+    setdefault, because a user who exported it themselves means it: the CLI
+    coerces the value properly (`1/true/yes/on`, everything else false), so a
+    deliberate `=0` is an opt-out rather than a truthy string. Their
+    CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING still wins inside the CLI either
+    way — it is ANDed into the same branch — so this cannot override it."""
+    env = os.environ.copy()
+    env.pop("FUSED_ENV", None)
+    env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
+    return env
+
+
+def _inbox_dir(run_dir: str) -> str:
+    return os.path.join(run_dir, "inbox")
+
+
+def _write_inbox_row(run_dir: str, row: dict) -> None:
+    """Queue one raw stream-json row into `run_dir/inbox/` for the session
+    host to drain into the CLI's stdin verbatim (`session_host._drain_inbox`
+    copies bytes, never parses them, so any row shape the CLI's
+    `--input-format stream-json` accepts can go through here). Filenames
+    sort in write order (a zero-padded nanosecond timestamp plus a few
+    random hex digits — entropy against two entries landing in the same
+    nanosecond, not a real id), which is the only order that matters: the
+    host drains oldest-first, and this is the one place every inbox writer
+    (`_write_inbox_entry`'s user turns, `_write_control_request`'s control
+    requests) writes from."""
+    inbox = _inbox_dir(run_dir)
+    if not os.path.isdir(inbox):
+        # `_private_dir`'s leaf create is exclusive (a run-id collision must
+        # not silently adopt someone else's directory), which is right for
+        # the FIRST write (inside `_start`) and wrong for every later one
+        # (`_send`, `_cancel`) — the inbox is written to repeatedly for the
+        # life of the session, not created once and never touched again.
+        _private_dir(inbox)
+    name = "%020d-%s.json" % (time.time_ns(), os.urandom(3).hex())
+    final_path = os.path.join(inbox, name)
+    # `session_host._drain_inbox` runs every `_DRAIN_INTERVAL_SECONDS` against
+    # THIS SAME directory, listing whatever `*.json` names are present and
+    # shipping their bytes straight to the CLI's stdin. `_private_open` at
+    # `final_path` directly would let a drain tick land between the create
+    # (truncated, 0 bytes) and the `json.dump` finishing — the entry the
+    # drain sees is then empty or half-written, and it is gone (moved to
+    # `done/`) before this function ever gets to finish writing it: the
+    # user's message is lost, permanently, with nothing left to retry. A
+    # `.tmp` name the drain's `endswith(".json")` filter never matches is
+    # invisible to it until the whole write is done, so the final
+    # `os.replace` (atomic on both platforms) is the only moment the entry
+    # can be observed at all — always whole.
+    tmp_path = os.path.join(inbox, name + ".tmp")
+    with _private_open(tmp_path) as f:
+        json.dump(row, f)
+        f.write("\n")
+    os.replace(tmp_path, final_path)
+
+
+def _write_inbox_entry(run_dir: str, message: str) -> None:
+    """Queue one user-turn line for the session host to drain into the CLI's
+    stdin — the one place both `_start` (the turn's first message) and
+    `_send` (every follow-up) write from."""
+    _write_inbox_row(run_dir, {"type": "user", "message": {
+        "role": "user",
+        "content": [{"type": "text", "text": message}]}})
+
+
+def _write_control_request(run_dir: str, subtype: str, **fields) -> str:
+    """Queue a CLI control request — `interrupt`, `set_model`,
+    `set_permission_mode` — verified live against 2.1.251 to ride the same
+    stdin pipe a user turn does, just a different row shape: `{"type":
+    "control_request", "request_id": ..., "request": {"subtype": ...}}`.
+    Answered on stdout as a `control_response` row carrying the same
+    `request_id` back (see `_await_control_response`), so this returns the id
+    a caller that needs the answer has to watch for. Fire-and-forget callers
+    (a model or permission-mode change — see `_send`) can ignore it; nothing
+    here waits, because only `_cancel`'s `interrupt` has a caller that needs
+    the reply before it can answer ITS OWN caller (the `still_queued` list)."""
+    request_id = "%020d-%s" % (time.time_ns(), os.urandom(4).hex())
+    request = dict(fields)
+    request["subtype"] = subtype
+    _write_inbox_row(run_dir, {"type": "control_request",
+                               "request_id": request_id, "request": request})
+    return request_id
+
+
+def _await_control_response(run_dir: str, request_id: str,
+                            timeout: float = 5.0,
+                            start_offset: int = 0) -> dict | None:
+    """Poll `out.jsonl` for the `control_response` row answering
+    `request_id`, or None if it never arrives (the host never got to drain
+    the request, the CLI died first, ...) or answered with anything other
+    than `subtype: "success"`.
+
+    A poll, not a blocking read, for the same reason `_poll` itself is one:
+    `out.jsonl` is being written by a SEPARATE process (the CLI, through the
+    session host), so there is no pipe here to block on directly — only a
+    file to keep re-checking. The response is ordinarily seconds away (a
+    drain tick plus however long the CLI takes to notice its own stdin), so
+    a short sleep between checks costs nothing a caller would feel.
+
+    Seeks to `start_offset` on every pass rather than reading from byte 0:
+    this sits in the Stop button's synchronous path (`_cancel`'s
+    `interrupt_first` branch), and a control response lands within the
+    first second or two essentially always — up to 100 passes (5s / 50ms) of
+    re-reading and re-`json.loads`ing the WHOLE transcript from scratch used
+    to be gigabytes of I/O on the multi-hour, tens-of-MB sessions this
+    feature exists to enable, all of it while the user waits on Stop. The
+    caller captures `start_offset` (the file's size) BEFORE queuing the
+    request — every row that can possibly answer it is written after that
+    point, since the CLI cannot respond to a request it has not received
+    yet — so nothing before it is ever worth reading, on any pass."""
+    out_path = os.path.join(run_dir, "out.jsonl")
+    deadline = time.time() + timeout
+    while True:
+        try:
+            with open(out_path, "rb") as fh:
+                fh.seek(start_offset)
+                for raw_line in fh:
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if row.get("type") != "control_response":
+                        continue
+                    resp = row.get("response") or {}
+                    if resp.get("request_id") != request_id:
+                        continue
+                    if resp.get("subtype") != "success":
+                        return None
+                    inner = resp.get("response")
+                    return inner if isinstance(inner, dict) else {}
+        except OSError:
+            pass
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.05)
+
+
+_SESSION_HOST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "session_host.py")
+
+
+def _start(file: str, message: str, session_id: str, model: str,
+           effort: str, permission_mode: str = "",
+           message_via_stdin: bool = False,
+           has_pane: bool | None = None,
+           extra_read_dirs: list | None = None) -> dict:
+    file = os.path.abspath(file)
+    # A directory is a valid target too: this template's app-folder role opens
+    # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
+    if not os.path.exists(file):
+        return {"error": f"target not found: {file}"}
+
+    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
+    run_dir = os.path.join(RUNS, run_id)
+    _private_dir(run_dir)
+    _private_dir(_perm_dir(run_dir))
+    # Whether this target has a page beside the chat at all: ONE value, read by
+    # all three things that depend on it — the app-state channel's directory, the
+    # tool's pre-allowance, and the prompt (`_split_system_prompt` takes it rather
+    # than asking again; a second resolution is a second answer).
+    #
+    # THE PAGE'S ANSWER WINS. It decides at boot and cannot change (`paneURL` runs
+    # once, `enterNoPane` is permanent), so it is the only thing that knows what is
+    # actually on screen — and a roster that disagrees with the screen hands the
+    # model a tool nothing can answer. Re-resolving from disk per turn is what made
+    # a mid-session kind flip do that; see `_has_pane`. `None` means the caller has
+    # no page (the apps API), and only then does disk decide.
+    pane = _has_pane(file) if has_pane is None else has_pane
+    # No pane, no channel, and no empty directory pretending there could be one:
+    # the directory's absence is what removes the tool from the roster
+    # (_write_mcp_config).
+    if pane:
+        _private_dir(_state_dir(run_dir))
+
+    # An unknown mode falls back to the strictest of the three rather than
+    # erroring: a mangled param must not quietly buy more auto-approval than
+    # the user picked.
+    mode = permission_mode if permission_mode in PERMISSION_MODES \
+        else DEFAULT_PERMISSION_MODE
+    cli_mode = PERMISSION_MODES[mode]
 
     # poll() records the session id with the run once claude reports it;
     # it needs the file + first message, so keep them with the run.
@@ -2215,55 +2394,61 @@ def _start(file: str, message: str, session_id: str, model: str,
         json.dump({"file": file, "message": _strip_app_state(message),
                    "resumed_from": session_id, "mode": mode}, f)
 
-    stdin_path = os.path.join(run_dir, "stdin.jsonl")
-    stdin_fh = open(stdin_path, "rb") if message_via_stdin else None
-    # The session must not inherit an ambient FUSED_ENV from the server's own
-    # process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
-    # FUSED_ENV when unset, so a value already present here — say the server
-    # itself was launched from a shell that exports FUSED_ENV for unrelated
-    # reasons — would look exactly like a deliberate `FUSED_ENV=x fused ...`
-    # from the model and skip the workbench default, silently diverging from
-    # canvases.py's own runs (`_cli_env` always forces FUSED_ENV=WORKBENCH_ENV,
-    # ambient or not). Popping it here is what makes "unset" in the wrapper
-    # mean what the model actually typed on that command line.
-    spawn_env = os.environ.copy()
-    spawn_env.pop("FUSED_ENV", None)
-    # File-history checkpoints are OFF by default in a non-interactive session,
-    # and this run is always non-interactive (`-p`). Without this the snapshots
-    # panel (SPEC §34) can only ever show versions written by a TERMINAL claude
-    # in that folder, and reports "no recorded versions" for every file this
-    # chat itself edited — the panel's own reason to exist. D394.
-    #
-    # An ENV VAR, not a setting: the CLI's `fileHistoryEnabled` takes a separate
-    # branch when `isInteractive()` is false, and that branch reads only these
-    # two variables — the `fileCheckpointingEnabled` config that governs the
-    # interactive case is not consulted, so `--settings` cannot reach it. Named
-    # for the SDK and absent from the public settings docs, so it may move; what
-    # to re-check if snapshots go quiet again is that branch.
-    #
-    # setdefault, because a user who exported it themselves means it: the CLI
-    # coerces the value properly (`1/true/yes/on`, everything else false), so a
-    # deliberate `=0` is an opt-out rather than a truthy string. Their
-    # CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING still wins inside the CLI either
-    # way — it is ANDed into the same branch — so this cannot override it.
-    spawn_env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
+    # `err.log` exists from the very first instant, empty — `_poll`'s
+    # abnormal-exit fallback reads its tail, and a host that dies before it
+    # ever gets around to opening the file itself (a crash between spawn and
+    # the CLI's own Popen) must still have something there to report from.
+    _private_open(os.path.join(run_dir, "err.log")).close()
+
+    # The turn's own first message is just the first inbox entry — `_send`
+    # (a later follow-up) writes the exact same shape into the exact same
+    # directory, and the host does not know or care which one started the
+    # session versus which one rode in on the CLI's own queue mid-turn.
+    _write_inbox_entry(run_dir, message)
+
+    # The session host owns the CLI's stdin pipe for the life of the session
+    # — see session_host.py's own module docstring for the fork-safety and
+    # process-group reasoning this mirrors from claude_spawn.SESSION_HELPER.
+    # `message_via_stdin` is accepted and ignored: every caller's message now
+    # rides the inbox instead, so there is no longer an argv-message form for
+    # it to choose between.
+    del message_via_stdin
+    req = {"agent": os.path.abspath(__file__), "run_dir": run_dir,
+           "file": file, "cwd": _workdir(file), "pane": pane,
+           "cli_mode": cli_mode, "session_id": session_id, "model": model,
+           "effort": effort, "extra_read_dirs": list(extra_read_dirs or [])}
+    proc = subprocess.Popen(
+        [sys.executable, _SESSION_HOST],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, env=_spawn_env(),
+        **_DETACH)
     try:
-        with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
-             _private_open(os.path.join(run_dir, "err.log")) as err:
-            # posix-spawn-exempt: `cmd` is the CLAUDE CLI argv (built by
-            # _claude_argv), never git — checked by hand. The git spawn in this
-            # file is the `git()` helper above, which resolves an absolute
-            # argv[0] and passes close_fds=False like every other one.
-            proc = subprocess.Popen(cmd, stdout=out, stderr=err,
-                                    cwd=_workdir(file),
-                                    stdin=stdin_fh or subprocess.DEVNULL,
-                                    env=spawn_env,
-                                    **_DETACH)
+        proc.stdin.write(json.dumps(req).encode("utf-8"))
     finally:
-        if stdin_fh is not None:
-            stdin_fh.close()
-    with _private_open(os.path.join(run_dir, "pid")) as f:
-        f.write(str(proc.pid))
+        proc.stdin.close()
+    # Transient: overwritten by the host with the CLI's OWN pid the moment it
+    # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
+    # the host's, to reach the CLI's whole process group. Written here, to the
+    # HOST's pid, only so `_alive` (and therefore `_poll`'s `done`) answers
+    # True from the instant `_start` returns rather than during the gap while
+    # a second interpreter is still starting up.
+    #
+    # O_EXCL, not `_private_open`'s truncate: the host (already running,
+    # racing this write with no ordering guaranteed between the two
+    # processes) does its own overwrite unconditionally, so if IT wins this
+    # write must be a no-op rather than clobbering the CLI's real pid back to
+    # the host's — `_cancel`'s killpg would then reach only the host's
+    # process group and orphan the CLI it was supposed to kill. If this
+    # write wins instead, the host's later unconditional overwrite still
+    # lands on top of it, same as before.
+    try:
+        fd = os.open(os.path.join(run_dir, "pid"),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        pass  # the host already wrote the CLI's own pid here — leave it
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(str(proc.pid))
     return {"run_id": run_id}
 
 
@@ -2383,6 +2568,55 @@ def _alive(run_dir: str) -> bool:
         return False
 
 
+def _turn_state(run_dir: str) -> tuple:
+    """(turn_open, tasks_pending), read off `out.jsonl` alone — no pid touched.
+
+    `turn_open` lifts the exact D415 rule `_poll` already applies (see its
+    `idle` there): a trailing `result` row means the turn that produced it is
+    over, and ANYTHING after it — a hook firing, a fresh `system/init`, more
+    text — reopens it, because that is the CLI waking itself for another turn
+    on the same held-open stdin. A run with no rows yet (freshly spawned,
+    `out.jsonl` not created or still empty) is open, same as `_poll` reads it:
+    only `FileNotFoundError` degrades to an empty read, matching its own try.
+
+    `tasks_pending` is the newest `background_tasks_changed` row's `tasks`
+    array, non-empty. That is the CLI's own authoritative list — `_poll` also
+    folds in the incremental `task_started`/`task_notification`/`task_updated`
+    rows for its live activity line, but a caller here only needs the same
+    yes/no a full `_poll` would eventually converge on, not the running
+    description text.
+
+    Both answers ignore the pid entirely, on purpose: a session host can hold
+    a `claude` process alive long past its last turn, so "the process exists"
+    and "a turn is open" stopped being the same fact the day the host shipped.
+    A caller that still wants the raw process check has `_alive`.
+    """
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
+                  errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        lines = []
+
+    idle = False
+    tasks = {}
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue  # half-written last line; next read gets it
+        if row.get("parent_tool_use_id"):
+            continue  # a subagent's own row, not the main turn's (see _poll)
+        t = row.get("type")
+        idle = t == "result"
+        if t == "system" and row.get("subtype") == "background_tasks_changed":
+            arr = row.get("tasks")
+            if isinstance(arr, list):
+                tasks = {str(x.get("task_id")): True
+                         for x in arr if isinstance(x, dict) and x.get("task_id")}
+    return not idle, bool(tasks)
+
+
 def _session_from_out(run_dir: str) -> str:
     """The session id the CLI announced in its first system row, or "".
 
@@ -2433,8 +2667,25 @@ def _registry_running(workdir: str) -> set:
     `busy`/`shell` is running; `idle`/`waiting` is not; a row with NO status is
     a headless `claude -p` that is alive, which is running for as long as the
     file exists. A dead pid (a crash left the file behind) counts for nothing.
-    Best-effort throughout: an unreadable registry is an empty answer."""
+    Best-effort throughout: an unreadable registry is an empty answer.
+
+    A headless row whose pid is OURS — one of this app's own run dirs — is
+    skipped rather than counted by file existence: since the session host
+    shipped, that pid can sit alive well past its last turn, and `_turn_state`
+    (off that run's own `out.jsonl`) already answers precisely whether a turn
+    is actually open. Only a FOREIGN headless session (started at a terminal,
+    invisible to RUNS) still needs this coarser heuristic."""
     want = os.path.abspath(workdir)
+    own_pids = set()
+    try:
+        for name in os.listdir(RUNS):
+            try:
+                with open(os.path.join(RUNS, name, "pid"), encoding="utf-8") as fh:
+                    own_pids.add(fh.read().strip())
+            except OSError:
+                continue
+    except OSError:
+        pass
     try:
         names = os.listdir(os.path.join(CLAUDE_DIR, "sessions"))
     except OSError:
@@ -2458,6 +2709,8 @@ def _registry_running(workdir: str) -> set:
             continue
         status = row.get("status")
         if isinstance(status, str) and status and status not in ("busy", "shell"):
+            continue
+        if not status and str(row.get("pid") or "") in own_pids:
             continue
         if not _pid_alive(str(row.get("pid") or "")):
             continue
@@ -2536,10 +2789,16 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
                 own = _session_from_out(run_dir)
             if session_id not in (meta.get("resumed_from", ""), own):
                 continue
-        # Liveness LAST: it is the only check that touches a pid, and the two
-        # above have already thrown out everything that is not this chat.
+        # Liveness LAST: the pid check alone used to be enough, because the
+        # process exited the moment its one turn did. A session host now
+        # holds `claude` open well past that, so "the process exists" is
+        # necessary but no longer sufficient — the transcript also has to
+        # say a turn is actually open (_turn_state) before this counts as
+        # "still streaming".
         if _alive(run_dir):
-            return {"run_id": name}
+            turn_open, _tasks_pending = _turn_state(run_dir)
+            if turn_open:
+                return {"run_id": name}
     return {"run_id": ""}
 
 
@@ -2557,8 +2816,9 @@ def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
     the CLI minted for it (the `session` file, or the head of out.jsonl before
     the first poll has written one), and either can be the id a row carries.
 
-    Liveness is checked LAST and only for runs this folder owns — it is the one
-    test that touches a pid.
+    Liveness is checked LAST and only for runs this folder owns — a pid check
+    (_alive) plus a turn-open check (_turn_state), since a session host can
+    hold the pid alive well past its last turn.
     """
     workdir = os.path.abspath(_workdir(file))
     try:
@@ -2578,7 +2838,11 @@ def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
         target = meta.get("file", "")
         if not target or os.path.abspath(_workdir(target)) != workdir:
             continue
+        # Alive AND turn-open — see _live_run's matching comment.
         if not _alive(run_dir):
+            continue
+        turn_open, _tasks_pending = _turn_state(run_dir)
+        if not turn_open:
             continue
         own = ""
         try:
@@ -2592,6 +2856,186 @@ def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
             if sid:
                 live.add(sid)
     return live
+
+
+def _host_alive(run_dir: str) -> bool:
+    """Whether `run_dir` has a LIVE session host, read off `host.json` alone.
+
+    Not `_alive`: that reads `run_dir/pid`, which is the CLI's own pid once
+    the host has overwritten it (see session_host.py), and the CLI can be
+    freshly dead — a crash, the tail end of an idle-reap — with `host.json`
+    still on disk for the instant before the host notices and removes it.
+    `host.json` is written once, right after the host spawns the CLI, and
+    removed in the host's own `finally` the moment it reaps (or dies) — so
+    its PRESENCE plus an alive PID inside it is the host's own two-part
+    answer to "is there still a queue to write a follow-up into"."""
+    try:
+        with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(host, dict):
+        return False
+    return _pid_alive(str(host.get("pid") or ""))
+
+
+def _live_host(file: str, session_id: str = "",
+               limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
+    """The id of a run for `file` whose session HOST is still up, or "".
+
+    `_live_run` above answers "is a TURN open right now" — the question a page
+    re-attaching to a stream needs. This answers a different one: "is there a
+    session I can hand a follow-up to", which is true for the whole life of a
+    chat, turn or no turn — a host sits idle between turns on purpose (that is
+    the entire point of it), so gating this on `_turn_state`'s `turn_open`
+    would make `action=send` miss every follow-up typed after a reply lands
+    and before the idle-reap timer ends the session, which is most of them.
+
+    Matching follows `_live_run`'s own rules exactly (same `meta.json` file
+    match, same `resumed_from`/`session`-file/`_session_from_out` session
+    match) — only the liveness check at the end differs.
+    """
+    file = os.path.abspath(file)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return {"run_id": ""}
+    if limit is not None:
+        names = names[:limit]
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if os.path.abspath(meta.get("file", "")) != file:
+            continue
+        if session_id:
+            own = ""
+            try:
+                with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+                    own = fh.read().strip()
+            except OSError:
+                pass
+            if not own:
+                own = _session_from_out(run_dir)
+            if session_id not in (meta.get("resumed_from", ""), own):
+                continue
+        if _host_alive(run_dir):
+            return {"run_id": name}
+    return {"run_id": ""}
+
+
+def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
+         effort: str = "", permission_mode: str = "") -> dict:
+    """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
+    process for it.
+
+    This is what makes two messages typed while a turn runs land as ONE
+    continuous reply instead of the page's own queue faking that with a
+    second CLI process (that queue is retired — see the plan's Task 6): the
+    message is written into `run_dir/inbox/` (`_write_inbox_entry`, the same
+    function `_start` uses for a turn's opening message) and the session
+    host already polling that directory picks it up on its next drain tick,
+    whether the CLI is mid-turn (absorbed into the running turn) or idle
+    (starts a fresh one on the same held-open stdin pipe).
+
+    `read_dirs` is the SAME per-message attachment-directory string `_start`
+    takes, but `--allowed-tools` is fixed at spawn time — a live session
+    cannot be handed a new `Read` rule mid-session. So a message naming a
+    directory the host was not already granted cannot be honored by sending:
+    silently dropping the directory would card the very file the user just
+    attached, so instead the whole session is ended (the same tree-kill
+    `action=cancel` uses) and `{"respawn": True}` tells the caller to call
+    `_start` fresh instead, which grants the new directory on the new spawn
+    line. `effort` (also fixed at spawn — there is no CLI control request for
+    it, unlike `model`) forces the exact same respawn when it differs from
+    what the host was started with. Either way, a caller that gets
+    `{"respawn": True}` must resend `message` itself through `_start` — this
+    function never does that on its own, since only the caller knows the
+    rest of `_start`'s arguments.
+
+    `model` and `permission_mode`, by contrast, the CLI accepts CHANGED
+    mid-session (`set_model`/`set_permission_mode` control requests, both
+    verified live against 2.1.251) — a value that differs from what
+    `host.json` recorded at spawn gets queued ahead of `message`, in the
+    same inbox, so the CLI applies it before the turn `message` opens sees
+    it. Neither is waited on the way `_cancel`'s `interrupt` is: nothing here
+    needs the CLI's answer to answer ITS OWN caller, only the eventual
+    `system/init`-style row the CLI writes on its own, which the page already
+    reads for other reasons.
+    """
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "no such run"}
+    try:
+        with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return {"error": "no live session"}
+    if not isinstance(host, dict) or not _pid_alive(str(host.get("pid") or "")):
+        return {"error": "no live session"}
+    wanted = set(_attach_dirs(read_dirs))
+    granted = set(host.get("read_dirs") or [])
+    if not wanted <= granted or (effort and effort != host.get("effort", "")):
+        # interrupt_first=False: unlike the stop button, this call means the
+        # session can no longer serve this caller as it stands — leaving the
+        # host up (an `interrupt` would) is not an option here, so it skips
+        # straight past that to ending the whole process tree.
+        _cancel(run_id, interrupt_first=False)
+        return {"respawn": True}
+    # `host.json`'s "model"/"mode" are compared against on every `_send`
+    # call for the life of the session — left stale after a change actually
+    # lands, EVERY later turn would see the same mismatch and re-queue the
+    # same `set_model`/`set_permission_mode` control request the CLI already
+    # applied, forever. Recorded here so only a REAL change ever queues one.
+    host_changed = False
+    if model and model != host.get("model", ""):
+        _write_control_request(run_dir, "set_model", model=model)
+        host["model"] = model
+        host_changed = True
+    if permission_mode:
+        # `host.json`'s "mode" is the CLI-wire form (_start's `cli_mode`,
+        # e.g. "acceptEdits"), the same shape `--permission-mode` takes and
+        # `set_permission_mode` answers with — map the incoming page value
+        # through the exact table `_start` uses so the comparison (and the
+        # control request itself, if one is needed) speaks the CLI's spelling
+        # and not the page's.
+        wire_mode = permission_mode if permission_mode in PERMISSION_MODES \
+            else DEFAULT_PERMISSION_MODE
+        cli_mode = PERMISSION_MODES[wire_mode]
+        if cli_mode != host.get("mode", ""):
+            _write_control_request(run_dir, "set_permission_mode",
+                                   mode=cli_mode)
+            host["mode"] = cli_mode
+            host_changed = True
+    if host_changed:
+        # Not racing the host itself: it writes host.json once, at spawn,
+        # and only ever removes it (in its own `finally`) after that — it
+        # never rewrites it mid-session, so this is the only writer for the
+        # life of the file.
+        with _private_open(os.path.join(run_dir, "host.json")) as f:
+            json.dump(host, f)
+    # Marks this message as sent-but-not-yet-echoed, so `_poll` (see its
+    # `pending_echo` handling) will not believe a stale trailing `result` in
+    # `out.jsonl` means the turn is done: at this exact instant the host may
+    # not have drained the inbox yet, let alone gotten the CLI to write the
+    # follow-up's own `--replay-user-messages` echo back — and until that
+    # echo lands, `out.jsonl` still ends exactly where the PREVIOUS turn left
+    # it. The byte offset (not just a flag) is what lets `_poll` tell THIS
+    # message's echo apart from an older turn's own opening echo that may
+    # still be sitting inside its current read window. `_poll` clears this
+    # file itself, the moment it actually sees the echo (or gives up because
+    # the process died).
+    try:
+        pending_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        pending_offset = 0
+    with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
+        f.write(str(pending_offset))
+    _write_inbox_entry(run_dir, message)
+    return {"sent": True}
 
 
 def _retry_info(row: dict):
@@ -3076,6 +3520,273 @@ def _tool_detail(name, inp) -> str:
     return d if len(d) <= 80 else d[:77] + "…"
 
 
+def _read_poll_cursor(run_dir: str, size: int) -> int:
+    """The byte offset in `out.jsonl` that `_poll` last proved safe to resume
+    from — see the advance logic at the bottom of `_read_current_turn` for
+    what "safe" means. Anything that doesn't resolve to a real offset inside
+    the CURRENT file — missing (first poll ever, or an old run predating this
+    file), garbage (hand-edited, truncated write), or past `size` (the file
+    got shorter somehow, or this cursor is stale from before something reset
+    the run dir) — falls back to 0, a full parse from the start. A bad cursor
+    must never make `_poll` skip real rows; the worst a wrong fallback costs
+    is one slow poll, so the check errs toward re-reading."""
+    try:
+        with open(os.path.join(run_dir, "cursor"), encoding="utf-8") as fh:
+            value = int(fh.read().strip())
+    except (OSError, ValueError):
+        return 0
+    if value < 0 or value > size:
+        return 0
+    return value
+
+
+def _write_poll_cursor(run_dir: str, value: int) -> None:
+    try:
+        with _private_open(os.path.join(run_dir, "cursor")) as fh:
+            fh.write(str(value))
+    except OSError:
+        pass  # costs the next poll a full re-parse; never worth raising over
+
+
+def _read_bg_tasks(run_dir: str) -> dict:
+    """The `task_id -> description` map `_poll` last computed, persisted
+    across cursor advances — see `_write_bg_tasks`."""
+    try:
+        with open(os.path.join(run_dir, "bg_tasks.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_bg_tasks(run_dir: str, bg_tasks: dict) -> None:
+    """`background_tasks_changed` is the CLI's own AUTHORITATIVE full list,
+    sent only when it changes — a page reading `activity.tasks`/
+    `tasks_pending` needs the last one it saw for as long as it stays true,
+    not just for the one poll whose narrow, cursor-bounded window (see
+    `_read_current_turn`) happened to contain the row. Once a genuine new
+    turn advances the cursor past that row, a poll scanning only what
+    changed since the last one has no way to see it again — so `_poll`
+    persists its own answer here every call and seeds the next call's scan
+    from it, the same way `cursor` itself survives between calls."""
+    try:
+        with _private_open(os.path.join(run_dir, "bg_tasks.json")) as fh:
+            json.dump(bg_tasks, fh)
+    except OSError:
+        pass  # costs the next poll a stale (not wrong-forever) answer
+
+
+def _starts_new_turn(row: dict) -> bool:
+    """Whether `row` is the CLI's own echo (`--replay-user-messages`) of a
+    message `_write_inbox_entry` put on the wire — the one row shape that
+    provably begins a fresh, user-authored turn.
+
+    A D415 wake looks like a `user` row too on the PERSISTED transcript (the
+    synthetic `<task-notification>` XML), but its `content` is a bare
+    string; a real echoed turn's `content` is always the list
+    `_write_inbox_entry` builds. The live `system/task_notification` shape
+    fails the `type == "user"` check outright. Both wake shapes correctly
+    read as "not a new turn" here.
+
+    A `tool_result` row is `type: "user"` with a list `content` too — one
+    lands after every tool call, far more often than a genuine new turn — so
+    the list's own block types have to be checked: `_write_inbox_entry`
+    always writes `text` blocks, never `tool_result` ones."""
+    if row.get("type") != "user":
+        return False
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list) or not content:
+        return False
+    return all(isinstance(item, dict) and item.get("type") == "text"
+               for item in content)
+
+
+def _read_current_turn(run_dir: str) -> tuple:
+    """(rows, cursor) — the parsed rows of `out.jsonl` from the last proven-safe
+    offset onward, and the offset `_poll` should persist for next time.
+
+    A run used to be one turn, so re-parsing the whole file every ~400ms was
+    cheap. Tasks 2-4 made a run a whole SESSION: one `claude` process, many
+    turns, one `out.jsonl` that only grows. Re-scanning it in full on every
+    poll turned an O(1)-per-tick cost into an O(session length) one: for a
+    page (or `claude_spawn.record_session_when_ready`) that has been watching
+    a run continuously, ticking every ~400ms, this bounds each read to just
+    what changed since the LAST tick — which, steady-state, is one turn's
+    worth of rows or less. A page attaching to an already-multi-turn run for
+    the first time still pays for a full scan, same as before this existed —
+    a one-time cost, not a per-tick one.
+
+    That steady-state narrowing also happens to fix a latent correctness bug,
+    not just a perf one: `_poll`'s per-turn state (`text_parts`, `saw_result`,
+    …) never reset at a `result` boundary, so a continuously-polled multi-turn
+    session used to concatenate every turn's streamed text into one blob
+    forever, and could mask a turn that crashed mid-stream because an EARLIER
+    turn's `result` row already made `saw_result` true for the whole file.
+    Once the cursor has advanced past a turn, later polls simply never see
+    its rows again, so that accumulation stops happening — except on the one
+    cold-attach read above, whose rows are a real, once-only reflection of
+    everything that already happened, not an ongoing leak.
+
+    The cursor only ever advances to the start of the newest row that is
+    provably a fresh, user-authored turn — `_starts_new_turn`'s check
+    (`_start`/`_send` echoed back by `--replay-user-messages`) AND a `result`
+    row closing the previous turn somewhere between `cursor` and it. The
+    second half matters because `_send` exists precisely to fold a follow-up
+    into a turn still in flight: the CLI echoes that follow-up back in the
+    exact same shape, but with no `result` in between, since the turn it is
+    joining has not closed. Treating that echo as a fresh turn boundary would
+    skip past text the current turn already streamed, so the NEXT poll's
+    `rows`/`segments` would shrink instead of only ever growing — the bug this
+    half of the rule exists to prevent, mirroring the one below it. A `result`
+    alone, even one with more bytes after it, is NOT enough either: a D415
+    wake (`system/task_notification`, or its persisted `<task-notification>`
+    form) is exactly a `result` followed by more bytes that belong to the
+    SAME displayed turn, not a new one — `_segments_from_rows` renders that
+    combination as one notice-joined reply, and a page rendering the whole
+    `segments` list fresh every poll (see `renderSegments` in template.html)
+    needs the ORIGINAL text still in that list on every later poll, not just
+    the wake's own continuation. Advancing past a `result` a wake continues
+    would make the next poll return only the wake, silently erasing the reply
+    already on screen. Everything before the newest genuine turn's own start
+    IS provably dead weight for every future poll (this one included, once
+    written back), because a real new turn only ever begins once the one
+    before it — wakes, absorbed follow-ups and all — is completely finished.
+
+    Reads via binary seek-then-decode, not a text-mode file's `.seek()`, on
+    the same reasoning `_scan_transcript` already leans on: the offset being
+    seeked to is one *this process* computed and persisted as a byte count,
+    and only a binary seek is guaranteed to land exactly there — a text-mode
+    file object's `.seek()` argument is an opaque cookie on some platforms,
+    not necessarily a raw byte offset, once `errors="replace"` decoding is in
+    the picture."""
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return [], 0
+
+    cursor = _read_poll_cursor(run_dir, size)
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(cursor)
+            blob = fh.read()
+    except OSError:
+        return [], cursor
+
+    # `blob.split(b"\n")` on "a\nb\n" gives [b"a", b"b", b""] — every element
+    # but the last was followed by a real newline byte; the last is either
+    # that trailing empty artifact (blob ends exactly on a newline) or a
+    # half-written final line (the writer's `\n` hasn't landed yet). Only the
+    # former group can ever move the cursor — the latter needs to be re-read
+    # from scratch next poll however it turns out, no matter what it parses to
+    # now.
+    parts = blob.split(b"\n")
+    complete, tail = parts[:-1], parts[-1]
+
+    # This call still returns every row from `cursor` to EOF, wake
+    # continuations included — a `result` followed by a `<task-notification>`
+    # wake is not a turn boundary from the page's point of view (see the
+    # `done`/`idle` comment on `_poll` itself: nothing genuinely ends until
+    # the process goes quiet), and `_segments_from_rows` is what turns that
+    # combined stream into a "notice" divider, not a second, isolated turn.
+    # `advance_to` only moves the offset the NEXT call starts from; it never
+    # trims what THIS call hands back. That keeps a page that has been
+    # watching a run continuously exactly as fast as one that just attached
+    # to it (both see, and pay for, only what has happened since either of
+    # them last looked) while a page that attaches to an already-multi-turn
+    # run for the very first time still gets its full history in that one
+    # read, same as the pre-cursor behavior — a one-time cost, not a
+    # per-poll one.
+    rows = []
+    line_start = cursor
+    advance_to = None
+    # A `_starts_new_turn` row only proves a genuine new turn when a `result`
+    # closed the one before it SINCE this scan started (i.e. since `cursor`,
+    # or since the last row this same scan already advanced past). `_send`
+    # exists precisely so a follow-up can be absorbed into a turn still in
+    # flight — the CLI echoes that follow-up back in exactly the same shape
+    # a fresh turn's opening message has, but with no `result` in between.
+    # Advancing on it anyway would jump the cursor past text the current
+    # turn already streamed, so the NEXT poll's `rows` (and therefore
+    # `segments`) would shrink — the docstring's "a real new turn only
+    # begins once the one before it is completely finished" premise holds
+    # for `_start`-opened turns, not for one folded in mid-turn by `_send`.
+    seen_result = False
+    for raw_line in complete:
+        pos = line_start + len(raw_line) + 1
+        try:
+            row = json.loads(raw_line.decode("utf-8", "replace"))
+        except ValueError:
+            line_start = pos
+            continue  # a stray blank/garbage line; not this poll's problem
+        rows.append(row)
+        # A subagent's own `result` row is not the main turn's — `_poll` and
+        # `_turn_state` both skip it before deciding anything off `type`, and
+        # this cursor needs to agree: otherwise a follow-up echoed back after
+        # a subagent finishes reads as a genuine turn boundary (the row right
+        # before it looks like the "result closed the previous turn" this
+        # rule requires), and the cursor jumps past text the main turn has
+        # already streamed.
+        if row.get("parent_tool_use_id"):
+            pass
+        elif row.get("type") == "result":
+            seen_result = True
+        elif seen_result and _starts_new_turn(row):
+            advance_to = line_start  # the newest genuine turn's own start
+            seen_result = False      # this turn needs its own result too
+        line_start = pos
+
+    if tail:
+        try:
+            rows.append(json.loads(tail.decode("utf-8", "replace")))
+        except ValueError:
+            pass  # half-written last line; next poll gets it, same as before
+
+    if advance_to is not None:
+        _write_poll_cursor(run_dir, advance_to)
+    return rows, cursor
+
+
+def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
+    """Is `run_dir`'s `cancelled` marker still true, given `cursor` — a proven
+    turn-boundary offset in `out.jsonl` (either `_read_current_turn`'s own
+    return value, mid-poll, or a fresh `_read_poll_cursor` off the persisted
+    file, for a caller like `_stopped_last` that has no scan of its own to
+    reuse)?
+
+    `_cancel` cannot remove the marker synchronously the instant an
+    `interrupt` control response lands — the CLI has not written that turn's
+    own error `result` yet, so an immediate removal races a caller reading
+    `cancelled` a moment later. So the marker outlives the turn it recorded,
+    paired with `interrupted_offset` (the byte offset `_cancel` captured
+    right before queuing the interrupt): once `cursor` has advanced to or
+    past that offset, a PROVEN new turn has started since, the interrupted
+    turn is over and already attributed, and both files are retired here
+    rather than tainting a later, unrelated turn as cancelled too.
+
+    No `interrupted_offset` (an old marker predating it, or a write that
+    failed) means staleness can't be proven — stays cancelled rather than
+    guessing."""
+    cancelled_marker = os.path.join(run_dir, "cancelled")
+    if not os.path.exists(cancelled_marker):
+        return False
+    offset_marker = os.path.join(run_dir, "interrupted_offset")
+    try:
+        with open(offset_marker, encoding="utf-8") as fh:
+            interrupted_offset = int(fh.read().strip())
+    except (OSError, ValueError):
+        return True
+    if cursor < interrupted_offset:
+        return True
+    for stale in (cancelled_marker, offset_marker):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+    return False
+
+
 def _poll(run_id: str, file: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
@@ -3163,29 +3874,23 @@ def _poll(run_id: str, file: str = "") -> dict:
     tool_inputs = {}       # tool_use id -> finalized input (from `assistant` rows)
     thinking_tokens = 0    # CLI's running estimate for the message in flight
     hooks_open = {}        # hook_id -> hook_name, started and not yet responded
-    bg_tasks = {}          # task_id -> description, started and not yet finished
+    # Seeded from what the last poll persisted (see `_write_bg_tasks`), not
+    # {} — `background_tasks_changed` is only sent on CHANGE, and once the
+    # cursor advances past the row that announced a still-running task, this
+    # poll's own window may say nothing about it at all.
+    bg_tasks = _read_bg_tasks(run_dir)
     agent_rows = 0         # rows a subagent wrote (parent_tool_use_id set)
     after_tool = False     # a tool_result landed and nothing has streamed since
     # Every row this poll managed to parse, handed to `_segments_from_rows` once
-    # the loop is done. Collected rather than parsed a second time: the file is
-    # re-read from scratch on every 400 ms tick, so a second `json.loads` pass
-    # over the whole turn is the cost worth avoiding — this list only holds a
-    # second reference to objects the loop already built. A half-written last
-    # line never reaches it, for the same reason it never reaches anything else
-    # here: the `continue` below is above the append.
+    # the loop is done. Collected rather than parsed a second time: `rows`
+    # (below) already did the one `json.loads` pass this poll needs, over just
+    # the bytes since the last closed turn — see `_read_current_turn` — so this
+    # list only holds a second reference to objects that pass already built.
     parsed = []
 
-    try:
-        lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
-                     errors="replace").read().splitlines()
-    except FileNotFoundError:
-        lines = []
+    rows, scan_cursor = _read_current_turn(run_dir)
 
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue  # half-written last line; next poll gets it
+    for row in rows:
         parsed.append(row)
         t = row.get("type")
         # Anything at all after a `result` is the run waking up for another turn
@@ -3332,6 +4037,8 @@ def _poll(run_id: str, file: str = "") -> dict:
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
 
+    _write_bg_tasks(run_dir, bg_tasks)
+
     # Last word on the verb: a run sitting in a retry is not thinking, and
     # saying so is the whole point — "Thinking…" with a frozen token count is
     # indistinguishable from a hang, which is what an overload used to look like.
@@ -3341,6 +4048,71 @@ def _poll(run_id: str, file: str = "") -> dict:
         # Result in, nothing back yet, no `status` row (older CLI): the honest
         # word is still "sending", not "Working" over a tool that has finished.
         phase = "requesting"
+
+    # A `_send` into this run is sitting between "queued" and "echoed" — see
+    # `_send`'s own comment on why that window exists. `idle` was computed off
+    # whatever `out.jsonl` happened to end with, which at this instant can
+    # still be the PREVIOUS turn's own trailing `result`: believing that would
+    # report the send as already finished and hand the page the previous
+    # turn's reply as the answer to the new message (the bug this guards).
+    # Liveness is left alone — a process that died before ever echoing the
+    # follow-up must still end the poll, not hang it waiting for an echo that
+    # is never coming.
+    #
+    # `pending_echo` holds the byte offset `out.jsonl` was at the moment
+    # `_send` queued the message — NOT just "does this poll's rows contain any
+    # `_starts_new_turn` row", which `rows` (from `_read_current_turn`) can
+    # already do on its own: the cursor has not necessarily advanced past an
+    # OLDER turn's own opening echo yet (see `_read_current_turn`'s
+    # `seen_result` rule), so that row would still be in this poll's window
+    # and would falsely look like the new message's own echo. Scanned
+    # directly off the file, seeking straight to the recorded offset, rather
+    # than through the cursor machinery — this is a one-time, bounded read
+    # (only the bytes written since the send) whether or not the cursor
+    # happens to reach that far this poll.
+    # Suppresses `text`/`segments` below, not just `idle`, for exactly as long
+    # as `pending_echo` holds — `rows` (from `_read_current_turn`) is still
+    # windowed off the OLD cursor while the echo is pending (that is the whole
+    # point of `_read_current_turn`'s own `seen_result` rule: it will not
+    # advance past the follow-up's echo either), so `text_parts`/`parsed` built
+    # from those same rows are still the PREVIOUS turn's content. Forcing
+    # `idle` false alone stopped `done` from lying, but a page's `pollLoop`
+    # still paints whatever `segments`/`text` a non-done poll carries into a
+    # fresh bubble — so the stale reply rendered anyway, then sat on screen
+    # until the new turn's own tokens started arriving.
+    echo_pending = False
+    pending_echo_path = os.path.join(run_dir, "pending_echo")
+    if os.path.exists(pending_echo_path):
+        try:
+            with open(pending_echo_path, encoding="utf-8") as fh:
+                pending_offset = int(fh.read().strip())
+        except (OSError, ValueError):
+            pending_offset = 0
+        saw_echo_since_send = False
+        try:
+            with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+                fh.seek(pending_offset)
+                tail = fh.read()
+        except OSError:
+            tail = b""
+        for raw_line in tail.split(b"\n"):
+            if not raw_line:
+                continue
+            try:
+                row = json.loads(raw_line.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if _starts_new_turn(row):
+                saw_echo_since_send = True
+                break
+        if saw_echo_since_send:
+            try:
+                os.remove(pending_echo_path)
+            except OSError:
+                pass
+        else:
+            idle = False
+            echo_pending = True
 
     # Finished: a `result` with nothing after it (the turn ended and no wake has
     # started another), or a process that is simply gone (D415).
@@ -3416,24 +4188,37 @@ def _poll(run_id: str, file: str = "") -> dict:
     except (OSError, json.JSONDecodeError):
         meta = {}
 
-    # First poll that sees the run finished CLEANLY sweeps anything left
+    # First poll that sees a turn finished CLEANLY sweeps anything it left
     # uncommitted into the app's repo (one-shot via a marker, like the
     # session record below). This is a FALLBACK: the app's CLAUDE.md tells
     # claude to commit as it works and end every turn with a clean tree, so
     # when it honoured that this add -A finds nothing and no commit happens.
     # Errored turns are skipped — a crash mid-edit is not a state worth
-    # enshrining; the next clean turn's sweep picks the survivors up. The
-    # marker is claimed BEFORE the commit so a racing concurrent poll can't
-    # double-commit.
-    commit_marker = os.path.join(run_dir, "committed")
-    if done and not error and "file" in meta \
-            and not os.path.exists(commit_marker):
-        try:
-            fd = os.open(commit_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
-            _commit_turn(meta["file"], meta.get("message", ""))
-        except OSError:
-            pass  # another poll claimed it, or the run dir is going away
+    # enshrining; the next clean turn's sweep picks the survivors up.
+    #
+    # A run is now a whole SESSION behind one held-open `claude` process, not
+    # one turn — so the marker has to be per-TURN, not per-run, or only the
+    # very first clean turn of a session could ever claim it and every later
+    # one (however cleanly it ended with its own uncommitted edits) would
+    # find the marker already there and sweep nothing. `out.jsonl` only ever
+    # grows, and a poll landing twice on the SAME finished turn sees the
+    # SAME size — so the marker is keyed by that size: `committed.<size>`,
+    # claimed BEFORE the commit (still via O_EXCL) so a racing concurrent
+    # poll of the same turn can't double-commit, while a later turn's own
+    # larger size gets its own, unclaimed marker.
+    try:
+        out_size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        out_size = None
+    if done and not error and "file" in meta and out_size is not None:
+        commit_marker = os.path.join(run_dir, "committed.%d" % out_size)
+        if not os.path.exists(commit_marker):
+            try:
+                fd = os.open(commit_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                _commit_turn(meta["file"], meta.get("message", ""))
+            except OSError:
+                pass  # another poll claimed it, or the run dir is going away
 
     # First poll that sees the session id records it in the run dir (marker
     # file keeps the write one-shot across the remaining polls).
@@ -3475,19 +4260,41 @@ def _poll(run_id: str, file: str = "") -> dict:
     # never a different turn. That is deliberate and pinned by a test — the
     # alternative was widening `text` on the fallback path, and its byte
     # identity is a harder constraint than this asymmetry is a cost.
-    return {"text": text, "done": done, "session_id": new_session, "error": error,
+    #
+    # WAS THIS RUN'S END ASKED FOR — read off the run rather than remembered
+    # by whoever asked (see `_cancel`, which writes `cancelled`). A landed
+    # `interrupt` leaves that marker in place — see `_cancel`'s own comment
+    # on why it cannot remove it the moment the control response comes back
+    # — paired with `interrupted_offset`, the byte offset of `out.jsonl` at
+    # the instant the interrupt was requested. `scan_cursor` (from
+    # `_read_current_turn`) only ever advances past a PROVEN turn boundary,
+    # so `scan_cursor >= interrupted_offset` is the earliest point a later
+    # poll can tell "a genuinely new turn has started since" apart from
+    # "still reporting the interrupted turn's own error" — the interrupted
+    # turn is over and already attributed, so the marker (and the offset
+    # beside it) are retired here rather than tainting turn 3 as cancelled
+    # too. `_cancelled_marker_state` also backs `_stopped_last`, which needs
+    # the identical staleness check off its own cursor read.
+    cancelled = _cancelled_marker_state(run_dir, scan_cursor)
+    return {"text": "" if echo_pending else text, "done": done,
+            "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
             "app_state": app_state, "mode": _live_mode(meta, permissions),
             "skills": skills, "retry": retry, "retry_total": retry_total,
             "retry_status": retry_status,
-            # WAS THIS RUN'S END ASKED FOR — read off the run rather than
-            # remembered by whoever asked. The page's own stop button sets a
-            # variable and can swallow the resulting error itself, but a stop
-            # from anywhere else (the tasks queue card's ✕, which goes through
-            # schedule.py) left this page reporting the kill as a crash. See
-            # `_cancel`, which writes the marker.
-            "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
+            # The page's own stop button sets a variable and can swallow the
+            # resulting error itself, but a stop from anywhere else (the
+            # tasks queue card's ✕, which goes through schedule.py) needs
+            # this field — see the `cancelled`/`interrupted_offset` handling
+            # above.
+            "cancelled": cancelled,
+            # Same array `activity.tasks` renders from, collapsed to the
+            # yes/no a session host's reap loop wants: background work still
+            # running is what holds a host open past an otherwise-idle turn
+            # (see _turn_state, which computes this same fact off out.jsonl
+            # alone for a caller with no reason to parse the whole file).
+            "tasks_pending": bool(bg_tasks),
             "activity": {
                 "tool": next(reversed(tools_open.values())) if tools_open else None,
                 "tools_open": len(tools_open),
@@ -3497,7 +4304,7 @@ def _poll(run_id: str, file: str = "") -> dict:
                 "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
                 "agent_rows": agent_rows,
             },
-            "segments": _segments_from_rows(parsed)}
+            "segments": [] if echo_pending else _segments_from_rows(parsed)}
 
 
 # ------------------------------------------------------- sessions & history
@@ -4067,7 +4874,24 @@ def _stopped_last(file: str, session_id: str) -> bool:
             continue
         # The newest run of this conversation — whatever it says, it is the
         # answer, so this returns rather than carrying on down the list.
-        return os.path.exists(os.path.join(run_dir, "cancelled"))
+        #
+        # `_poll` retires a stale `cancelled` marker (one whose interrupted
+        # turn was followed by a later, completed one) the next time it runs
+        # — but a session revisited only through history, never live-polled
+        # again after the interrupt, would never trigger that retirement, and
+        # this would keep reading the same stale marker forever. Reads the
+        # persisted cursor directly (no side effects of its own — unlike
+        # `_read_current_turn`, `_read_poll_cursor` never advances it) and
+        # runs it through the same staleness check `_poll` uses, so a
+        # conversation with a real later turn stops showing "Stopped" under
+        # it the first time ANYTHING (a live poll, or this history read
+        # itself) proves that turn happened.
+        try:
+            out_size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+        except OSError:
+            out_size = 0
+        cursor = _read_poll_cursor(run_dir, out_size)
+        return _cancelled_marker_state(run_dir, cursor)
     return False
 
 
@@ -4221,7 +5045,20 @@ def _history(file: str, session_id: str) -> dict:
     return {"turns": turns, "transcript": stat}
 
 
-def _cancel(run_id: str) -> dict:
+def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
+    """End a run — the STOP button's own action, and also `_send`'s way of
+    ending a session it cannot hand a mid-session change to (a `read_dirs`
+    that outgrew what was granted at spawn, or a changed `effort`).
+
+    `interrupt_first` is what tells those two callers apart. The stop button
+    wants the gentler `interrupt` control request tried first, keeping a live
+    host (and any background task it is holding open) alive — see the block
+    below. `_send`'s respawn path wants the opposite: it is calling BECAUSE
+    the session can no longer serve this caller as it stands, so it passes
+    `interrupt_first=False` to skip straight to ending the whole process
+    tree — trying `interrupt` there would just leave the very host `_send`
+    needs gone.
+    """
     run_dir = os.path.join(RUNS, run_id)
     # Same guard as _poll: run_id is joined into a path and drives a kill,
     # so reject anything that could resolve outside the runs dir.
@@ -4251,6 +5088,58 @@ def _cancel(run_id: str) -> dict:
     # included) on both platforms, but if it fails, a parked approval would
     # otherwise sit there holding the subprocess open for the full timeout.
     _deny_pending(run_dir, "cancelled")
+    if interrupt_first and _host_alive(run_dir):
+        # Interrupt the TURN, not the whole session. A live host survives an
+        # `interrupt` control request (verified live against 2.1.251) exactly
+        # the way it survives a trailing `result` — the CLI stays up on the
+        # same held-open stdin, ready for the next follow-up, and the pid
+        # file (the CLI's own) never changes. This is the whole reason a stop
+        # button no longer has to mean "end the session": a background task
+        # started earlier in the SAME session outlives a stop pressed on a
+        # later turn, and the next message continues this session instead of
+        # resuming a dead one.
+        # Captured BEFORE the request is queued — see `_await_control_response`
+        # for why that ordering is what makes the seek safe.
+        try:
+            out_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+        except OSError:
+            out_offset = 0
+        request_id = _write_control_request(run_dir, "interrupt")
+        response = _await_control_response(
+            run_dir, request_id, start_offset=out_offset)
+        if response is not None:
+            # The interrupt LANDED — the whole point of trying it first is
+            # that the session survives, so the `cancelled` marker written
+            # above must not outlive the turn it was asked for, or a clean
+            # turn 3 would read as "the turn finished before the stop
+            # landed" and a real error on turn 3 would be swallowed into a
+            # silent "Stopped." instead of shown.
+            #
+            # It must NOT be removed here, though: the CLI has only been told
+            # to abort, not finished aborting — its own error `result` row
+            # for the interrupted turn is written AFTER this control response
+            # comes back, and removing the marker now would leave every
+            # reader that is not the tab that pressed Stop (the tasks card, a
+            # second viewer) seeing that error with `cancelled` false, i.e.
+            # a crash. `out_offset`, captured above, is
+            # this turn's own boundary — `_poll` retires the marker itself,
+            # once its cursor proves a genuinely NEW turn has started past
+            # that offset, which is the earliest point "outliving the turn
+            # it was asked for" can actually be told apart from "still
+            # reporting the turn that was interrupted".
+            try:
+                with _private_open(
+                        os.path.join(run_dir, "interrupted_offset")) as fh:
+                    fh.write(str(out_offset))
+            except OSError:
+                pass
+            return {"cancelled": run_id,
+                    "still_queued": list(response.get("still_queued") or [])}
+        # No answer inside the timeout — the host may be stuck, or died
+        # between the liveness check above and now. Falls through to the
+        # tree-kill below exactly as if no host had ever been found: ending
+        # the whole session is the right fallback for "asked and got
+        # nothing back", not a hang.
     try:
         pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
     except (OSError, ValueError):
@@ -4373,4 +5262,23 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _terminal_command(file, session_id)
     if action == "cancel":
         return _cancel(run_id)
+    if action == "live_host":
+        # "Is there a session I can hand a follow-up to?" — asked BEFORE
+        # every send (see template.html's sendMessage): a host answering
+        # here is what turns a follow-up into an inbox write instead of a
+        # fresh `_start`. Unlike `live_run`, this says yes for a session
+        # sitting idle between turns too — see `_live_host`'s own comment.
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        return _live_host(file, session_id)
+    if action == "send":
+        # `read_dirs` is the SAME per-message attachment string `action=start`
+        # takes (see `_attach_dirs`), just re-checked against what the host
+        # was already granted at spawn time. `model`/`effort`/
+        # `permission_mode` are the picker's current values, sent on every
+        # turn exactly as `action=start` already receives them — `_send`
+        # itself decides which of the three (if any) actually changed, and
+        # whether that means a control request or a forced respawn.
+        return _send(run_id, message, read_dirs, model, effort,
+                    permission_mode)
     return {"error": f"unknown action: {action}"}

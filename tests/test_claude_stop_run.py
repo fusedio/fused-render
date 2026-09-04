@@ -129,6 +129,90 @@ def test_a_cancel_leaves_the_run_saying_its_end_was_asked_for(agent, tmp_path,
     assert agent._poll("run")["cancelled"] is True
 
 
+def test_a_successful_interrupt_retires_the_marker_once_a_later_turn_proves_it_stale(
+        agent, tmp_path, monkeypatch):
+    """B2 regression: `cancelled` used to be written unconditionally and never
+    cleared, so an INTERRUPTED turn — the whole point of which is that the
+    session survives — left every later poll of that session reporting
+    `cancelled: true` forever. Turn 3's normal end then read as "the turn
+    finished before the stop landed", and a genuine turn-3 error was
+    swallowed into a silent "Stopped." instead of being shown.
+
+    D696 keeps the marker in place the instant the interrupt lands (the CLI's
+    own error `result` for the interrupted turn hasn't been written yet, and
+    removing the marker synchronously would make that error read as a bare
+    crash to anyone but the tab that pressed Stop — see
+    `test_claude_stop_marker_retirement.py`). The invariant this test used to
+    pin by asserting immediate deletion is instead pinned here through the
+    retirement mechanism: a poll landing before any later turn is PROVEN to
+    have started must still read `cancelled: true`, and one landing after a
+    later turn's own boundary has been proven must read `cancelled: false`
+    with the marker gone."""
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir)
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path))
+    monkeypatch.setattr(agent, "_write_control_request",
+                        lambda *a, **k: "req-1")
+    monkeypatch.setattr(agent, "_await_control_response",
+                        lambda *a, **k: {"still_queued": []})
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+
+    # Turn 1 has already streamed something by the time Stop is pressed —
+    # `_cancel` captures `out.jsonl`'s current size as `interrupted_offset`.
+    streamed = json.dumps({"type": "assistant", "message": {
+        "content": [{"type": "text", "text": "partial"}]}}) + "\n"
+    (run_dir / "out.jsonl").write_text(streamed)
+
+    result = agent._cancel("run")
+    assert result == {"cancelled": "run", "still_queued": []}
+    assert (run_dir / "cancelled").exists()
+    assert (run_dir / "interrupted_offset").read_text().strip() == \
+        str(len(streamed.encode("utf-8")))
+
+    # The interrupted turn's own error `result` has landed, but nothing PROVEN
+    # to be a later turn has started yet — still reads as cancelled, not a
+    # crash (the complementary half D696 also fixed: see
+    # test_claude_stop_marker_retirement.py::
+    # test_a_stop_does_not_read_as_a_crash_to_a_second_viewer for the
+    # equivalent case driven against a real stub CLI).
+    error_result = json.dumps({"type": "result", "is_error": True,
+                                "result": "claude exited with an error"}) + "\n"
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(error_result)
+    poll = agent._poll("run")
+    assert poll["cancelled"] is True, \
+        "the interrupted turn's own error result must still read as cancelled"
+    assert (run_dir / "cancelled").exists()
+
+    # Turn 2 starts (the CLI's `--replay-user-messages` echo) and closes
+    # cleanly — a PROVEN new turn boundary past `interrupted_offset`.
+    echo = json.dumps({"type": "user", "message": {"role": "user",
+        "content": [{"type": "text", "text": "second message"}]}}) + "\n"
+    turn2_result = json.dumps({"type": "result",
+                                "result": "ok second message"}) + "\n"
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(echo)
+        fh.write(turn2_result)
+
+    # The cursor `_poll` hands `_cancelled_marker_state` is the offset the
+    # scan STARTED from, not the boundary it just found — that boundary is
+    # only persisted for the NEXT call to read (see `_read_current_turn`'s
+    # `advance_to`/`cursor` split). So this first poll still returns the
+    # pre-turn-2 cursor and reads cancelled; only the poll after it, reading
+    # the persisted advance, proves turn 2 and retires the marker.
+    poll = agent._poll("run")
+    assert poll["cancelled"] is True
+
+    poll = agent._poll("run")
+    assert poll["cancelled"] is False, \
+        "turn 2 genuinely completed — the marker from the STOPPED turn 1 " \
+        "must not keep painting turn 2's own clean reply as cancelled"
+    assert not (run_dir / "cancelled").exists(), \
+        "an interrupt that landed must not leave the session's every " \
+        "later turn reading as pre-emptively stopped"
+    assert not (run_dir / "interrupted_offset").exists()
+
+
 def test_a_reopened_chat_is_told_the_last_turn_was_stopped(agent, tmp_path,
                                                           monkeypatch):
     """The transcript cannot say why a reply stops mid-thought — a killed run
@@ -259,6 +343,41 @@ def test_the_ending_of_a_run_that_beat_the_stop_says_so(template):
     assert not end["error"]
     assert end["note"], "a stop that did not land must not be silent"
     assert end["keepText"] is True
+
+
+# ---------------------------------------------------------- stopAllowed, in node
+
+def _stop_allowed(run_id, seat, stopped_seat, template="claude"):
+    """Run the page's real `stopAllowed` over one (run_id, seat, stoppedSeat)
+    triple, the same node-extraction pattern `_run_ending` uses above."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own stop-allowed decision")
+    html = _html(template)
+    start = html.index("function stopAllowed(")
+    fn = html[start:html.index("\n\n", start)]
+    script = fn + "\nconsole.log(JSON.stringify(stopAllowed(%s, %s, %s)));" % (
+        json.dumps(run_id), json.dumps(seat), json.dumps(stopped_seat))
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_a_stop_already_asked_for_on_this_turn_is_not_repeated(template):
+    assert _stop_allowed("run-1", 3, 3, template) is False
+
+
+def test_a_new_turns_seat_is_not_blocked_by_an_earlier_turns_stop(template):
+    """B3 regression: `activeRun`'s run_id now spans a whole multi-turn
+    session behind a session host, so a guard keyed on run_id alone (rather
+    than the seat pollLoop hands out fresh each turn) went dead for every
+    turn after the first one Stop was ever pressed on. Pressing Stop again on
+    a LATER turn of the same run must still go through."""
+    assert _stop_allowed("run-1", 4, 3, template) is True
+
+
+def test_stop_is_never_allowed_with_no_run_or_no_seat(template):
+    assert _stop_allowed("", 1, 0, template) is False
+    assert _stop_allowed("run-1", 0, 0, template) is False
 
 
 # `test_the_two_chats_decide_endings_identically` lived here: it ran `runEnding`
