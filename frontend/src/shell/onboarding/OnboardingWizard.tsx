@@ -75,13 +75,19 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // relaunches on /home) the wizard RESUMES: this page load's memory, then the
   // server's stored step (shell/onboarding/state), then the first step. Every
   // step change is written back, fire-and-forget — the write is a courtesy to
-  // the next open, and a failed one must not hold this page.
+  // the next open, and a failed one must not hold this page. Not once the
+  // wizard has settled (complete / dismiss): a completed wizard's resume point
+  // is cleared, and a step change made while it is still mounted afterwards
+  // (Back after a composer `task_error`, a step pill) must not restore one.
   const [stepId, setStepId] = useState<StepId>(
     () => stepFromUrl() ?? asStepId(recallStep(config)) ?? "about",
   );
+  const settled = useRef(false);
   useEffect(() => {
-    rememberStep(stepId);
-    setOnboardingStep(stepId).catch(() => undefined);
+    if (!settled.current) {
+      rememberStep(stepId);
+      setOnboardingStep(stepId).catch(() => undefined);
+    }
     const url = new URL(location.href);
     if (url.searchParams.get(STEP_PARAM) === stepId) return;
     url.searchParams.set(STEP_PARAM, stepId);
@@ -105,8 +111,8 @@ export function OnboardingWizard({ config }: { config: Config }) {
 
   // Fire-and-forget, and at most one flag per visit: the flag is a courtesy
   // to the NEXT launch, and a failed write must not hold the page over the
-  // app the user is trying to reach.
-  const settled = useRef(false);
+  // app the user is trying to reach. (`settled` is declared above, by the
+  // step effect that reads it.)
   const markComplete = useCallback(() => {
     if (settled.current) return;
     settled.current = true;
