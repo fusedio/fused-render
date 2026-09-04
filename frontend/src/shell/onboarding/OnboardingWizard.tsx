@@ -15,13 +15,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 
-import { completeOnboarding, dismissOnboarding, type Config } from "@platform/lib/api";
+import {
+  completeOnboarding,
+  dismissOnboarding,
+  setOnboardingStep,
+  type Config,
+} from "@platform/lib/api";
 import { useClaudeSetup } from "@platform/lib/claude-setup";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
 import { FusedMark } from "@platform/ui/FusedMark";
 
+import { recallStep, rememberStep } from "./state";
 import { AboutStep } from "./AboutStep";
 import { ClaudeStep } from "./ClaudeStep";
 import { FdaStep } from "./FdaStep";
@@ -38,9 +44,11 @@ const STEPS: { id: StepId; label: string }[] = [
 
 // The step id rides in the query so a refresh and a link both land on it.
 const STEP_PARAM = "step";
-function stepFromUrl(): StepId | null {
-  const v = new URLSearchParams(location.search).get(STEP_PARAM);
+function asStepId(v: string | null | undefined): StepId | null {
   return STEPS.some((s) => s.id === v) ? (v as StepId) : null;
+}
+function stepFromUrl(): StepId | null {
+  return asStepId(new URLSearchParams(location.search).get(STEP_PARAM));
 }
 
 // Where the wizard lets go: the front door.
@@ -60,8 +68,18 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // is held, so the FDA step appearing once health answers "darwin" does not
   // shift the page under the user. Mirrored with replaceState: steps are not
   // history entries, Back leaves the wizard.
-  const [stepId, setStepId] = useState<StepId>(() => stepFromUrl() ?? "about");
+  //
+  // Without a step in the URL (Help › Setup wizard is a plain link, a restart
+  // relaunches on /home) the wizard RESUMES: this page load's memory, then the
+  // server's stored step (shell/onboarding/state), then the first step. Every
+  // step change is written back, fire-and-forget — the write is a courtesy to
+  // the next open, and a failed one must not hold this page.
+  const [stepId, setStepId] = useState<StepId>(
+    () => stepFromUrl() ?? asStepId(recallStep(config)) ?? "about",
+  );
   useEffect(() => {
+    rememberStep(stepId);
+    setOnboardingStep(stepId).catch(() => undefined);
     const url = new URL(location.href);
     if (url.searchParams.get(STEP_PARAM) === stepId) return;
     url.searchParams.set(STEP_PARAM, stepId);
@@ -90,6 +108,9 @@ export function OnboardingWizard({ config }: { config: Config }) {
   const markComplete = useCallback(() => {
     if (settled.current) return;
     settled.current = true;
+    // The server clears its resume step on complete; mirror that in this
+    // page load's memory so a reopen starts at the top, not at step 4.
+    rememberStep(null);
     completeOnboarding().catch(() => undefined);
   }, []);
   const finish = useCallback(
