@@ -532,17 +532,91 @@ def _check_stray_files(candidates: list[str], findings: list) -> None:
             ))
 
 
+# ---------------------------------------------------------------- repo mode
+
+# Mirrors community.py's _is_slug: the same shape the Showcase clone's own
+# catalog scan requires of a top-level app folder. Duplicated rather than
+# imported (see the module docstring) — a slug is the only membership test
+# every consumer of the community-apps repo (the Showcase tab, this doctor,
+# a human skimming a `git clone`) can apply without agreeing on anything
+# else first.
+_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,63}")
+
+
+def _is_slug(name: str) -> bool:
+    return bool(_SLUG_RE.fullmatch(name))
+
+
+def _is_repo_app_dir(path: str, name: str) -> bool:
+    """A top-level directory counts as an app for repo mode under the same
+    rule community._scan_catalog uses for the Showcase catalog: a slug-shaped
+    name carrying its own metadata.json. Anything else at the top level of a
+    folder-of-apps (a `.git`, a README, a docs/ folder) is silently not an
+    app, not a broken one."""
+    return _is_slug(name) and os.path.isfile(os.path.join(path, "metadata.json"))
+
+
+def _check_repo(repo_dir: str) -> list[dict]:
+    """`check()`'s repo-mode branch: one call to the single-app engine per
+    top-level app folder, findings pooled together and tagged with which app
+    each came from. Every finding's `path` stays relative to ITS OWN app
+    folder (exactly what a single-app run would have produced), with `app`
+    added on top — so a finding is still unambiguous on its own, and also
+    sortable/groupable by app for a CI log or a skill's summary."""
+    findings: list[dict] = []
+    try:
+        names = sorted(os.listdir(repo_dir))
+    except OSError:
+        return findings
+    for name in names:
+        sub = os.path.join(repo_dir, name)
+        if not os.path.isdir(sub) or not _is_repo_app_dir(sub, name):
+            continue
+        for finding in check(sub):
+            finding = dict(finding)
+            finding["app"] = name
+            findings.append(finding)
+    return findings
+
+
 # --------------------------------------------------------------------- API
 
 
 def check(app_dir: str) -> list[dict]:
-    """Every finding for the app rooted at `app_dir`: `{rule, severity, path,
-    line, excerpt}`, `path` always relative to `app_dir` (`.` for a
-    folder-level finding with no single file to point at, `line` 0 the same
-    way). Never raises — an unreadable app is one the caller already knows
-    is broken some other way, and a doctor that crashes on the app it was
-    asked to examine is not useful to anyone."""
+    """Every finding for `app_dir`: `{rule, severity, path, line, excerpt}`,
+    `path` always relative to `app_dir` (`.` for a folder-level finding with
+    no single file to point at, `line` 0 the same way). Never raises — an
+    unreadable app is one the caller already knows is broken some other
+    way, and a doctor that crashes on the app it was asked to examine is not
+    useful to anyone.
+
+    REPO MODE: when `app_dir` is not itself an app (no top-level page carries
+    the fused-app marker), it is treated as a folder of them — the shape of
+    `fusedio/fused-render-community-apps` — and findings come back pooled
+    across every top-level app folder, each carrying an extra `app` key
+    naming which one it came from. This is why `fused-render doctor` needs
+    no separate flag for CI: pointing it at the community-apps clone's root
+    just works, the same call either way."""
     app_dir = os.path.abspath(app_dir)
+
+    if _app_entry(app_dir) is None:
+        # Not an app itself — but neither is a fixture folder that just
+        # happens to have a subdirectory (e.g. a nested creds/ folder with a
+        # stray key in it). Only treat `app_dir` as a folder-of-apps when at
+        # least one top-level subdirectory actually passes the app-folder
+        # test below; otherwise fall through to single-app mode, which
+        # already has its own finding for "no entry page" (structure:no-entry).
+        try:
+            names = os.listdir(app_dir)
+        except OSError:
+            names = []
+        has_app_subdirs = any(
+            os.path.isdir(os.path.join(app_dir, n))
+            and _is_repo_app_dir(os.path.join(app_dir, n), n)
+            for n in names)
+        if has_app_subdirs:
+            return _check_repo(app_dir)
+
     findings: list[dict] = []
 
     candidates = _candidate_files(app_dir)

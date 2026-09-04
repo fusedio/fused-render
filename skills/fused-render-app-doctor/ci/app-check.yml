@@ -1,0 +1,62 @@
+name: app-check
+
+# Written for fusedio/fused-render-community-apps and committed there by
+# hand — see skills/fused-render-app-doctor/SKILL.md. This repo is a folder
+# of app folders, not a single app, so `fused-render doctor` is pointed at
+# its root with no path argument: repo mode (fused_render/app_doctor.py)
+# takes it from there, reviewing every top-level app folder and naming which
+# one each finding belongs to.
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+concurrency:
+  # Mirrors fused-render's own test.yml: a PR number is unique repo-wide,
+  # unlike head_ref, so two branches that happen to share a name never land
+  # in the same group and cancel each other's runs.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install fused-render
+        run: pip install fused-render
+
+      - name: Run the doctor
+        run: fused-render doctor --check .
+
+      - name: Run each app's own tests, where it has any
+        # A workflow that fails an app for having no tests would just teach
+        # people to delete the workflow — this only runs pytest inside an
+        # app folder that already carries a test_*.py/*_test.py of its own,
+        # and leaves every other app alone.
+        run: |
+          set -e
+          pip install pytest
+          status=0
+          for app in */; do
+            app="${app%/}"
+            [ -f "$app/metadata.json" ] || continue
+            if compgen -G "$app/test_*.py" > /dev/null \
+               || compgen -G "$app/*_test.py" > /dev/null \
+               || [ -d "$app/tests" ]; then
+              echo "::group::pytest $app"
+              python -m pytest "$app" -q || status=1
+              echo "::endgroup::"
+            fi
+          done
+          exit "$status"

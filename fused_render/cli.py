@@ -541,6 +541,12 @@ def _run_doctor(args: argparse.Namespace) -> None:
             print(f"\n{family} ({label}):")
             for f in group:
                 where = f["path"] if not f["line"] else f"{f['path']}:{f['line']}"
+                # Repo mode (app_doctor.check() reviewing a folder of apps)
+                # tags each finding with the app it came from — surface that
+                # here, since `where` alone is only unambiguous within one
+                # app's own tree.
+                if "app" in f:
+                    where = f"{f['app']}/{where}"
                 print(f"  {where}  {f['excerpt']}")
         print(f"\n{len(findings)} finding(s), "
               f"{'ok' if ok else 'FAILING'} under --check")
