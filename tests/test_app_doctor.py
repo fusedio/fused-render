@@ -219,6 +219,61 @@ def test_git_ignored_files_are_not_scanned(tmp_path):
     assert _leaks(findings) == []
 
 
+def test_a_gitignored_secret_is_not_scanned_without_a_git_repo(tmp_path):
+    """No `.git` at all here — `_walk_files` is the enumeration path in play,
+    and it must honour `.gitignore` on its own rather than only agreeing with
+    git when git is actually present to ask."""
+    _write(tmp_path, ".gitignore", "secrets.env\n")
+    _write(tmp_path, "secrets.env", 'TOKEN = "AKIAABCDEFGHIJKLMNOP"\n')
+    _write(tmp_path, "app.py", "print('hi')\n")
+    findings = app_doctor.check(str(tmp_path))
+    assert _leaks(findings) == []
+
+
+def test_a_directory_rule_prunes_its_whole_subtree_without_a_git_repo(tmp_path):
+    _write(tmp_path, ".gitignore", "build/\n")
+    _write(tmp_path, "build/out.py", 'TOKEN = "AKIAABCDEFGHIJKLMNOP"\n')
+    _write(tmp_path, "app.py", "print('hi')\n")
+    findings = app_doctor.check(str(tmp_path))
+    assert _leaks(findings) == []
+
+
+def test_a_glob_rule_hides_every_matching_file_without_a_git_repo(tmp_path):
+    _write(tmp_path, ".gitignore", "*.log\n")
+    _write(tmp_path, "app.log", 'DATA = "/home/bob/x"\n')
+    _write(tmp_path, "app.py", "print('hi')\n")
+    findings = app_doctor.check(str(tmp_path))
+    assert _leaks(findings) == []
+
+
+def test_a_negation_re_includes_a_file_without_a_git_repo(tmp_path):
+    _write(tmp_path, ".gitignore", "*.env\n!keep.env\n")
+    _write(tmp_path, "secrets.env", 'TOKEN = "AKIAABCDEFGHIJKLMNOP"\n')
+    _write(tmp_path, "keep.env", 'DATA = "/home/bob/x"\n')
+    findings = app_doctor.check(str(tmp_path))
+    hits = _leaks(findings)
+    assert all(f["path"] != "secrets.env" for f in hits)
+    assert any(f["path"] == "keep.env" for f in hits)
+
+
+def test_a_subdirectorys_gitignore_only_applies_to_its_own_subtree(tmp_path):
+    _write(tmp_path, "sub/.gitignore", "secrets.env\n")
+    _write(tmp_path, "sub/secrets.env", 'TOKEN = "AKIAABCDEFGHIJKLMNOP"\n')
+    _write(tmp_path, "secrets.env", 'OTHER = "AKIAZYXWVUTSRQPONMLK"\n')
+    findings = app_doctor.check(str(tmp_path))
+    hits = _leaks(findings)
+    assert all(f["path"] != "sub/secrets.env" for f in hits)
+    assert any(f["path"] == "secrets.env" for f in hits)
+
+
+def test_pycache_is_skipped_with_no_gitignore_present(tmp_path):
+    _write(tmp_path, "__pycache__/app.cpython-311.pyc",
+           'TOKEN = "AKIAABCDEFGHIJKLMNOP"')
+    _write(tmp_path, "app.py", "print('hi')\n")
+    findings = app_doctor.check(str(tmp_path))
+    assert _leaks(findings) == []
+
+
 def test_binary_files_are_skipped_without_raising(tmp_path):
     (tmp_path / "asset.bin").write_bytes(b"\x00\x01\x02AKIAABCDEFGHIJKLMNOP")
     assert _leaks(app_doctor.check(str(tmp_path))) == []

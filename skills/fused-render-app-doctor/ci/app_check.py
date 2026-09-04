@@ -44,6 +44,7 @@ every run as slow as the app's oldest commit.
 Run as `python app_check.py [path]` (path defaults to `.`): prints findings
 grouped by family, then exits 1 if any fired and 0 if the folder is clean.
 """
+import fnmatch
 import os
 import re
 import subprocess
@@ -75,7 +76,7 @@ def _finding(rule: str, path: str, line: int, excerpt: str) -> dict:
 # The bookkeeping folders app_git.py's own _GITIGNORE keeps out of an app's
 # history (see app_git.py's module docstring for why each one is there), plus
 # node_modules — never worth reading AS CONTENT.
-_IGNORED_DIR_NAMES = {".git", ".venv", ".fused", "node_modules"}
+_IGNORED_DIR_NAMES = {".git", ".venv", ".fused", "node_modules", "__pycache__"}
 _IGNORED_FILE_SUFFIXES = (".html.json",)
 _IGNORED_FILE_NAMES = {".claude-split.json", ".DS_Store"}
 _IGNORED_FILE_PREFIXES = (".fused-render-write-probe.",)
@@ -130,22 +131,143 @@ def _git_ls_files(app_dir: str) -> list[str] | None:
     return [n.decode("utf-8", "replace") for n in names]
 
 
+class _GitignoreRule:
+    """One non-blank, non-comment line of a `.gitignore`, in the subset that
+    actually shows up in an app's ignore file: a plain name (`secrets.env`),
+    a trailing-slash directory rule (`build/`), a glob (`*.log`), a rooted
+    pattern (`/dist`), and a `!`-negation of any of those. Matching is always
+    done relative to the directory the `.gitignore` itself sits in, the way
+    git resolves it — `_is_gitignored` is what supplies that relative path."""
+
+    __slots__ = ("pattern", "negate", "dir_only", "anchored")
+
+    def __init__(self, raw: str):
+        negate = raw.startswith("!")
+        if negate:
+            raw = raw[1:]
+        dir_only = raw.endswith("/")
+        if dir_only:
+            raw = raw[:-1]
+        # A pattern rooted with a leading slash, or carrying a slash anywhere
+        # but at the end, only ever matches at the .gitignore's own level —
+        # git does not let it match a same-named entry deeper in the tree.
+        # Everything else (a bare name or glob with no interior slash) is a
+        # basename rule: it matches that name at any depth.
+        anchored = raw.startswith("/") or "/" in raw
+        if raw.startswith("/"):
+            raw = raw[1:]
+        self.pattern = raw
+        self.negate = negate
+        self.dir_only = dir_only
+        self.anchored = anchored
+
+    def matches(self, local_rel: str, is_dir: bool) -> bool:
+        if self.dir_only and not is_dir:
+            return False
+        if self.anchored:
+            return fnmatch.fnmatch(local_rel, self.pattern)
+        name = local_rel.rsplit("/", 1)[-1]
+        return fnmatch.fnmatch(name, self.pattern)
+
+
+def _load_gitignore_rules(dir_abs: str) -> list[_GitignoreRule]:
+    """Rules from the `.gitignore` directly inside `dir_abs`, or `[]` when
+    there is none. A read failure (permissions, a symlink loop) is treated
+    the same as "no rules here" — a folder that cannot be read cannot be
+    trusted to say what it wants skipped, so this falls back to scanning
+    rather than raising."""
+    try:
+        with open(os.path.join(dir_abs, ".gitignore"),
+                   "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    rules = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        rules.append(_GitignoreRule(line))
+    return rules
+
+
+def _is_gitignored(
+    rel_path: str, is_dir: bool,
+    scopes: list[tuple[str, list[_GitignoreRule]]],
+) -> bool:
+    """Whether `rel_path` (app-relative, `/`-separated) is ignored, applying
+    each active `.gitignore` — outermost first — to the part of the path
+    under its own directory, the way git layers nested ignore files. A
+    scope's own rules are consulted in file order so a later `!`-negation
+    within that same file overrides an earlier match, and a deeper
+    `.gitignore` (later in `scopes`) has the final say over a shallower
+    one."""
+    ignored = False
+    for scope_dir, rules in scopes:
+        if scope_dir:
+            prefix = scope_dir + "/"
+            if rel_path == scope_dir:
+                local_rel = ""
+            elif rel_path.startswith(prefix):
+                local_rel = rel_path[len(prefix):]
+            else:
+                continue
+        else:
+            local_rel = rel_path
+        if not local_rel:
+            continue
+        for rule in rules:
+            if rule.matches(local_rel, is_dir):
+                ignored = not rule.negate
+    return ignored
+
+
 def _walk_files(app_dir: str) -> list[str]:
     """App-relative paths found by a bounded walk, for an app folder that is
     not (or not yet) a git repo. Honours the same ignore names `git ls-files`
-    would have hidden via app_git.py's own .gitignore, so the two enumeration
-    paths agree on what counts as app content."""
-    out = []
-    for root, dirs, files in os.walk(app_dir):
-        dirs[:] = sorted(d for d in dirs if d not in _IGNORED_DIR_NAMES
-                          and not d.startswith("."))
-        for name in sorted(files):
-            if _is_ignored_name(name):
-                continue
-            rel = os.path.relpath(os.path.join(root, name), app_dir)
-            out.append(rel.replace(os.sep, "/"))
-            if len(out) >= _MAX_FILES:
-                return out
+    would have hidden via app_git.py's own .gitignore, plus whatever the
+    app's own `.gitignore` file(s) say to skip — see `_is_gitignored` — so
+    the two enumeration paths agree on what counts as app content whether or
+    not the folder happens to be a git repo yet. An ignored directory is
+    pruned outright rather than walked and filtered, so a large ignored tree
+    (a `build/` full of generated output) costs nothing beyond the one
+    `os.scandir` call that finds it."""
+    app_dir = os.path.normpath(app_dir)
+    out: list[str] = []
+
+    def recurse(
+        dir_abs: str, dir_rel: str,
+        scopes: list[tuple[str, list[_GitignoreRule]]],
+    ) -> bool:
+        """Returns False once `_MAX_FILES` is hit, to unwind the recursion."""
+        own_rules = _load_gitignore_rules(dir_abs)
+        if own_rules:
+            scopes = scopes + [(dir_rel, own_rules)]
+        try:
+            entries = sorted(os.scandir(dir_abs), key=lambda e: e.name)
+        except OSError:
+            return True
+        for entry in entries:
+            name = entry.name
+            entry_rel = f"{dir_rel}/{name}" if dir_rel else name
+            if entry.is_dir(follow_symlinks=False):
+                if name in _IGNORED_DIR_NAMES or name.startswith("."):
+                    continue
+                if _is_gitignored(entry_rel, True, scopes):
+                    continue
+                if not recurse(entry.path, entry_rel, scopes):
+                    return False
+            else:
+                if _is_ignored_name(name):
+                    continue
+                if _is_gitignored(entry_rel, False, scopes):
+                    continue
+                out.append(entry_rel)
+                if len(out) >= _MAX_FILES:
+                    return False
+        return True
+
+    recurse(app_dir, "", [])
     return out
 
 
