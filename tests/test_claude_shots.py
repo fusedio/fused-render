@@ -2633,7 +2633,7 @@ def test_the_button_is_absent_wherever_there_is_nothing_to_photograph(html):
 def test_the_strip_carries_the_one_button_between_comment_and_record(html):
     """ONE button, in the #anncta strip (Akshil, 2026-08-27): it used to be a
     camera pill beside Send in both composers; it acts on the PREVIEW like Comment
-    and Record, so it sits with them — in that order: Comment, Screenshot, Record.
+    and Record, so it sits with them — first of the three: Screenshot, Comment, Record.
     The strip is the one row the home card and the chat both keep, so one copy
     serves both composers, and the chip still lands above whichever is showing.
     Hidden while a mode is armed, like the mic."""
@@ -2641,7 +2641,8 @@ def test_the_strip_carries_the_one_button_between_comment_and_record(html):
     assert 'class="pill viewshot"' not in html
     strip = _between(html, '<div id="anncta">', "\n      </div>")
     assert 'id="viewshot"' in strip
-    assert strip.index('id="annbtn"') < strip.index('id="viewshot"') < strip.index('id="annrec"')
+    # Screenshot · Comment · Annotate (Akshil, 2026-09-04)
+    assert strip.index('id="viewshot"') < strip.index('id="annbtn"') < strip.index('id="annrec"')
     assert "#anncta:has(#annbtn.on) #viewshot { display: none; }" in html
     btns = _between(html, "function shotBtns()", "\n}\n")
     assert '"viewshot"' in btns and "hviewshot" not in btns
