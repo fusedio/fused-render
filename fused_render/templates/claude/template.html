@@ -1307,6 +1307,22 @@
      border — it is dead space above the first line of the only thing the card is
      for. Halved rather than dropped: the turns still need to start off the edge. */
   body.chat-compact #log { padding-top: 12px; }
+  /* CHAT ONLY, from the first paint (see the const of that name): the pane
+     column and the divider between it and the chat are hidden by the class the
+     boot stamps synchronously, so the chat is full width before enterNoPane has
+     had its await and removes them for good. */
+  body.chat-only #left,
+  body.chat-only #divider {
+    display: none;
+  }
+  /* PEEK (`?peek=1`, see the const of that name) — the transcript and the
+     composer under a head the HOST draws. The strip and the top bar go; the
+     composer stays, which is the whole difference from compact. */
+  body.chat-peek #anntools,
+  body.chat-peek #topbar {
+    display: none;
+  }
+  body.chat-peek #log { padding-top: 12px; }
   /* TASK-023 (see showSession) — tabular figures for the same reason the
      composer block's `.sb-id` has them: the same identifier must not shift
      width as its digits change. */
@@ -4435,6 +4451,28 @@ const CHAT_ONLY = new URLSearchParams(location.search).get("chat_only") === "1";
 // frame and then took it away would be the one flicker on a wall of twelve.
 const COMPACT = new URLSearchParams(location.search).get("compact") === "1";
 if (COMPACT) document.body.classList.add("chat-compact");
+
+// CHAT_ONLY's FIRST PAINT. enterNoPane (below) takes the pane column out of the
+// document, but it runs once the boot has asked the server what this folder is
+// — an await away — and until then the layout was the two-column one: the chat
+// drawn at pane-width on the left of an empty column, then jumping to the full
+// width a moment later. On the Tasks page's popup that was the whole show
+// (Akshil, 2026-09-05: "first it opened only on the left side, then it made it
+// full screen"). CHAT_ONLY is a host fact already known here, so the stylesheet
+// is told now, the same way `chat-compact` is: the pane column and its divider
+// are hidden from the first frame, and the teardown later removes what was
+// never seen.
+if (CHAT_ONLY) document.body.classList.add("chat-only");
+
+// PEEK (`?peek=1`) — the Tasks page's card popup (TaskCards `TaskPeek`). The
+// chat at full size WITH its composer, unlike compact, but under a head the
+// host owns: the popup's own bar already says which task this is (ring, id,
+// title) and carries the doors — the List, the folder in Explorer, Archive — so
+// this document's strip (← Chats, the ⋮ menu) and its top bar would be a second
+// bar of the same facts under the first (Akshil, 2026-09-05). A host fact read
+// off this frame's own URL and stamped as a class, for compact's reasons.
+const PEEK = new URLSearchParams(location.search).get("peek") === "1";
+if (PEEK) document.body.classList.add("chat-peek");
 
 // A one-shot prompt the git sidebar's "Fix with AI" button built for a failed
 // operation is NOT read off this document's URL at all (review #804 round 2 —

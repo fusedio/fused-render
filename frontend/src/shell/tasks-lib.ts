@@ -2836,59 +2836,49 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
 
 // ---- the Cards view's set ----------------------------------------------------
 // The fourth view (Akshil, 2026-09-03: "a eagle eye view of all chats streaming
-// in at the same time"). It is not another arrangement of the same rows — it is
-// a DIFFERENT SET: every task whose work is happening right now, each one
-// showing its live conversation rather than a title and a time.
+// in at the same time"). It is not another arrangement of the same rows — each
+// card shows the task's live conversation rather than a title and a time.
 //
-// So the only three decisions it makes are here, out of the component, because
-// they are the ones worth testing and a grid of iframes is the last place to
-// test anything.
+// EVERY TASK BUT THE ARCHIVED ONES (Akshil, 2026-09-05: "we show all tasks here
+// except archived"). The wall began as the running set alone; a finished run's
+// transcript is as much worth a glance as a live one, and Archive is the one
+// lane whose whole meaning is "not on any wall". So the membership test is the
+// List's own rank order minus that lane, and the RANK is the List's too: which
+// lane comes first is written down exactly once (LIST_ORDER) and this view reads
+// it rather than keeping a second table in step. Needs attention at the top,
+// because a parked run is the one card that needs a person; Done at the bottom.
 //
-// WHICH LANES COUNT AS RUNNING is checked against BOARD_COLUMNS rather than
-// trusted on its own. Today that is two lanes — In Progress, the server's word
-// for "a turn is in flight or queued" (api.ts `Task.status`), and Needs
-// attention, the same turn parked on a question — but this is a NAME LIST
-// intersected with the board's columns, so a lane added there under one of these
-// names joins this view by existing, and a lane renamed out from under us drops
-// out of it instead of silently filtering to nothing. A hardcoded
-// `status === "in_progress"` would have to be found and edited on that day, and
-// the symptom of missing it is an empty page rather than an error.
+// The one decision that is this view's own is the clock inside a lane: `started`
+// rather than `last_active`, because `last_active` climbs on every write and
+// reaches this page within a second, so cards traded places for as long as
+// anything was talking (cardsForTasks, below).
 //
-// AN ORDERED LIST, NOT A SET (Akshil, 2026-09-03: cards sorted "the same way we
-// have in list … blocked first and then in progress"). The list's own order IS
-// the wall's rank order — `cardsForTasks` reads the index of a card's lane in
-// `CARD_LANES` — so which lane comes first is written down exactly once, here,
-// instead of in a second rank table that would have to be kept in step with
-// this one. That is also why the order is no longer BOARD_COLUMNS': the board
-// draws its columns left to right for its own reasons (In Progress before Needs
-// attention, which shares Blocked's lane anyway — schedule-lib.laneOf), and a
-// wall of live chats wants the one that has STOPPED to ask something at the top.
-const LIVE_LANE_NAMES: readonly string[] = [
-  "needs_attention",
-  "in_progress",
-];
+// So the only decisions it makes are here, out of the component, because they
+// are the ones worth testing and a grid of iframes is the last place to test
+// anything.
 
-/** The lanes a Cards view draws, top rank first — see LIVE_LANE_NAMES. */
-export const CARD_LANES: BoardColumn[] = LIVE_LANE_NAMES.filter(
-  (name): name is BoardColumn => BOARD_COLUMNS.some((c) => c.key === name),
-);
+/** The lanes a Cards view draws, top rank first — LIST_ORDER without Archive. */
+export const CARD_LANES: BoardColumn[] = LIST_ORDER.filter((key) => key !== "archived");
 
 /**
- * HOW MANY LIVE CHATS AT ONCE. Each card is an iframe running the chat template,
- * and that template polls its run every 400ms — so the cap is not a layout
- * choice, it is the budget: twelve documents polling four times what one does is
- * already the most a laptop should be asked for to answer "what is running".
+ * HOW MANY LIVE CHATS PER PAGE. Each card is an iframe running the chat template,
+ * and that template polls its run every 400ms — so the wall does not draw every
+ * running task at once. It draws NINE, and a "Show 9 more" card at the end adds
+ * the next nine on request (Akshil, 2026-09-05: "a show more button that shows
+ * nine more, nine more, nine more"). The budget is the reader's, taken a page at
+ * a time, rather than a ceiling the view imposes.
  *
- * Twelve rather than a rounder eight because the grid is 1-4 columns wide
- * (task-cards.css), and twelve is the number that fills every one of those
- * widths flush — a cap that leaves a ragged final row of one looks like a bug in
- * the grid rather than a limit that was chosen.
+ * Nine because the grid is three across and two rows deep before the fold
+ * (task-cards.css): six in view and a third row already loaded underneath for
+ * whoever scrolls, and every page after it three more full rows — so no page
+ * ends on a ragged row that would read as a bug in the grid.
  */
-export const CARD_CAP = 12;
+export const CARD_PAGE = 9;
 
-/** What the Cards view draws: the live tasks it can afford, and how many it had
- * to leave out. `hidden` is 0 whenever nothing was dropped, so the trailing
- * "+N more running" card is drawn on a truthy number and never on a zero. */
+/** What the Cards view draws: the live tasks within the pages shown so far, and
+ * how many are still behind the fold. `hidden` is 0 whenever nothing was left
+ * out, so the trailing "Show N more" card is drawn on a truthy number and never
+ * on a zero. */
 export interface TaskCardSet {
   cards: Task[];
   hidden: number;
@@ -2949,12 +2939,10 @@ export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string
  * that buried the only card on it that needs a person: a run parked on a
  * question stops ticking `last_active` the moment it asks, so the longer it
  * waits the further down it sinks — exactly backwards. The rank is a card's
- * lane's index in `CARD_LANES`, which is the one place the order is written
- * (see LIVE_LANE_NAMES), so this cannot drift out of step with the set of lanes
- * the view draws. It is the LIST's rule too (`sortByLane`/`LIST_ORDER`), applied
- * to the two lanes this view has — the same rows in the same order in both
- * views, which is what makes switching between them a change of shape rather
- * than of subject.
+ * lane's index in `CARD_LANES`, which is LIST_ORDER without Archive, so this
+ * cannot drift out of step with the List: the same rows in the same lane order
+ * in both views, which is what makes switching between them a change of shape
+ * rather than of subject.
  *
  * NEWEST TASK FIRST WITHIN A LANE, and `started` is what that means — when the
  * conversation BEGAN (server `_place`: the earliest of the scheduled entry's
@@ -3004,7 +2992,7 @@ export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string
  * A new array; the input is never mutated (it is the polled list, which React is
  * still holding).
  */
-export function cardsForTasks(tasks: Task[], cap: number = CARD_CAP): TaskCardSet {
+export function cardsForTasks(tasks: Task[], cap: number = CARD_PAGE): TaskCardSet {
   // `indexOf` rather than a Set: membership AND rank come off the one list, and
   // -1 — "this lane is not drawn here" — is the filter.
   const rank = (task: Task) => CARD_LANES.indexOf(taskColumn(task));
@@ -3038,9 +3026,9 @@ export function cardsForTasks(tasks: Task[], cap: number = CARD_CAP): TaskCardSe
     seen.add(id);
     all.push(row.task);
   }
-  // A cap of 0 or less is "no cap" rather than an empty page: the argument
-  // exists so a test can shrink the budget, and the failure mode of a bad number
-  // reaching it should not be a view that shows nothing.
+  // A cap of 0 or less is "no cap" rather than an empty page: the view passes
+  // pages × CARD_PAGE and a test can shrink it, and the failure mode of a bad
+  // number reaching it should not be a view that shows nothing.
   if (cap <= 0 || all.length <= cap) return { cards: all, hidden: 0 };
   return { cards: all.slice(0, cap), hidden: all.length - cap };
 }

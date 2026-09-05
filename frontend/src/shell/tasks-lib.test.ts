@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, TaskMessage } from "@platform/lib/api";
-import { BOARD_COLUMNS, BOARD_LANES, cardFrameSrc, laneOf } from "./schedule-lib";
+import { BOARD_COLUMNS, BOARD_LANES, cardFrameSrc, laneOf, peekFrameSrc } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   ALL_MESSAGES,
@@ -21,7 +21,7 @@ import {
   filingIntent,
   basename,
   canCancel,
-  CARD_CAP,
+  CARD_PAGE,
   CARD_LANES,
   cardKey,
   cardsForTasks,
@@ -6596,13 +6596,14 @@ function asking(key: string, at: number, over: Partial<Task> = {}): Task {
 }
 
 describe("cardsForTasks", () => {
-  it("draws the two running lanes, waiting first, and nothing else", () => {
-    // CARD_LANES is both the membership test and the rank order (see
-    // LIVE_LANE_NAMES), which is why this asserts the ORDER of the list and not
-    // merely its contents: change it and the wall re-sorts, with nothing else to
-    // keep in step. Every name in it is still a real board column, so a lane
-    // renamed out from under us fails here rather than silently drawing nothing.
-    expect(CARD_LANES).toEqual(["needs_attention", "in_progress"]);
+  it("draws every lane but Archive, in the List's own rank order", () => {
+    // Akshil, 2026-09-05: "we show all tasks here except archived". CARD_LANES is
+    // both the membership test and the rank order, and it is LIST_ORDER minus
+    // Archive rather than a second list — so the wall and the List can never
+    // disagree about which lane comes first. Every name in it is still a real
+    // board column.
+    expect(CARD_LANES).toEqual(LIST_ORDER.filter((k) => k !== "archived"));
+    expect(CARD_LANES).toEqual(["needs_attention", "blocked", "upcoming", "in_progress", "done"]);
     for (const key of CARD_LANES) expect(BOARD_COLUMNS.map((c) => c.key)).toContain(key);
     const rows = [
       running("a", 100),
@@ -6613,7 +6614,8 @@ describe("cardsForTasks", () => {
       asking("f", 50),
     ];
     // "f" is OLDER than "a" and still comes first: the lane outranks the clock.
-    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "a"]);
+    // "e" — archived — is the one row not drawn.
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "d", "c", "a", "b"]);
   });
 
   it("groups by lane before it sorts, blocked first, then in progress", () => {
@@ -6710,17 +6712,23 @@ describe("cardsForTasks", () => {
     expect(cardsForTasks(older).cards.map((t) => t.key)).toEqual(["a", "b"]);
   });
 
-  it("caps the wall and counts what it left out", () => {
-    const rows = Array.from({ length: CARD_CAP + 3 }, (_, i) =>
+  it("draws a page of nine and counts what is behind it", () => {
+    // Nine: six in view and one more row loaded under the fold (Akshil,
+    // 2026-09-05: "6 in view, and 3 more loaded if user wants to scroll").
+    expect(CARD_PAGE).toBe(9);
+    const rows = Array.from({ length: CARD_PAGE + 3 }, (_, i) =>
       running(`t${i}`, 1000 - i),
     );
     const set = cardsForTasks(rows);
-    expect(set.cards).toHaveLength(CARD_CAP);
+    expect(set.cards).toHaveLength(CARD_PAGE);
     expect(set.hidden).toBe(3);
-    // The cap keeps the TOP of the order, not an arbitrary slice.
+    // The page keeps the TOP of the order, not an arbitrary slice.
     expect(set.cards[0].key).toBe("t0");
-    // Exactly at the cap nothing is hidden, so no trailing card is drawn.
-    expect(cardsForTasks(rows.slice(0, CARD_CAP)).hidden).toBe(0);
+    // Exactly at the page nothing is hidden, so no trailing card is drawn.
+    expect(cardsForTasks(rows.slice(0, CARD_PAGE)).hidden).toBe(0);
+    // A second page is the same call with twice the cap — what the view does
+    // when "Show 9 more" is pressed.
+    expect(cardsForTasks(rows, 2 * CARD_PAGE).hidden).toBe(0);
   });
 
   it("never mutates the list React is still holding", () => {
@@ -6763,26 +6771,42 @@ describe("the Cards view's frame", () => {
   });
 
   it("says the empty state in the Board's own words and styling", () => {
-    expect(CARDS).toContain('"Nothing running right now."');
+    expect(CARDS).toContain('"Nothing to show here."');
+    // A task with no session yet: "Starting…" for a run in flight, and the
+    // honest phrase for a scheduled one that is simply not due.
+    expect(CARDS).toContain('taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"');
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
 
   it("lays the wall out three across, two down, and scrolls the rest — never sideways", () => {
-    // Six in view, then scroll (Akshil, 2026-09-04) — the frame inside is scaled
-    // so a third column stays readable. The wall is the scroll
+    // Six in view, nine loaded, then scroll (Akshil, 2026-09-04/05) — the frame
+    // inside is scaled so a third column stays readable. The wall is the scroll
     // container, in the List's own shape, and the rows are sized from it so two
     // rows fill the height the toolbar leaves on ANY monitor.
-    expect(CARDS_CSS).toContain(".schedule-page .schedule-main > .task-cards {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;\n}");
+    // The scroller is a pane in the List's own shape and the List's own column
+    // — same bar, same place, when switching views (Akshil, 2026-09-05). Nothing
+    // here widens `.schedule-main` or pads the column back in.
+    expect(block(CARDS_CSS, ".schedule-page .schedule-main > .task-cards-scroll")).toContain(
+      "flex: 1 1 auto;\n  min-height: 0;\n  overflow-y: auto;",
+    );
+    expect(CARDS_CSS).not.toContain("max-width: none");
+    expect(CARDS_CSS).not.toContain("padding-inline");
+    // ...and it wears the same 10px non-overlay bar as the List and the Board
+    // (schedule.css, "The scrollbar the Tasks page's ... scrollers wear").
+    const SCHED_CSS = readFileSync(join(SHELL, "../styles/schedule.css"), "utf8");
+    expect(SCHED_CSS).toContain(".tasks-list,\n.task-cards-scroll {\n  scrollbar-gutter: stable;");
+    expect(SCHED_CSS).toContain(".tasks-list::-webkit-scrollbar,\n.task-cards-scroll::-webkit-scrollbar {\n  width: 10px;");
+    expect(CARDS).toContain('<div className="task-cards-scroll" ref={wallRef}>');
+    // ...and a wheel in the margins reaches it, by the List's own rule — ONE
+    // hook for both views (useMarginWheel), not a second forwarding rule.
+    expect(CARDS).toContain("useMarginWheel(wallRef);");
+    expect(VIEWS).toContain("useMarginWheel(listRef);");
+    expect(VIEWS).not.toContain('addEventListener("wheel"');
     // ...and the page grows to the fold for THIS view only — every other view is
-    // content-sized, and the rows here are sized from the page.
-    expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards) {\n  flex: 1 1 auto;\n}");
+    // content-sized, and the rows here are sized from the pane.
+    expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards-scroll) {\n  flex: 1 1 auto;\n}");
+    expect(block(CARDS_CSS, ".schedule-page .schedule-main > .task-cards-scroll")).toContain("container-type: size");
     expect(CARDS_CSS).toContain("grid-template-columns: repeat(3, minmax(0, 1fr));");
-    // The wheel works in the gutters: the section spans the window on this view
-    // and the 1050px column is re-made as padding on the scroller itself
-    // (Akshil, 2026-09-04).
-    expect(CARDS_CSS).toContain(".schedule-page:has(> .schedule-main > .task-cards) > .schedule-main {\n  max-width: none;\n}");
-    expect(block(CARDS_CSS, ".task-cards")).toContain("padding-inline: max(0px, calc((100% - 1050px) / 2));");
-    expect(CARDS_CSS).toContain("> .schedule-main > .schedule-toolbar {\n  width: 100%;\n  max-width: 1050px;\n  margin-inline: auto;");
     // The chat inside is drawn at 3/4 and laid out at 4/3, so the product is
     // exactly the body — no clipping, no gap, readable at a third of the width.
     const frame = block(CARDS_CSS, ".task-card-frame");
@@ -6794,17 +6818,21 @@ describe("the Cards view's frame", () => {
     // not a native `title` that arrives a second later.
     expect(CARDS).toContain('<span className="task-card-title" data-hint={task.title}>');
     expect(CARDS).not.toContain('className="task-card-title" title=');
-    // Two rows: ring then id top-left (the List row's order), time and Open at
-    // the right, the title alone below (Akshil, 2026-09-04).
+    // Two rows: ring then id top-left (the List row's order), the time at the
+    // right, the title alone below (Akshil, 2026-09-04). No Open button
+    // (Akshil, 2026-09-05).
+    expect(CARDS).not.toContain("task-card-open");
+    expect(CARDS_CSS).not.toContain("task-card-open");
     expect(CARDS).toContain('<span className="tasks-id tasks-id--task">{task.task_id}</span>');
-    const head = CARDS.slice(CARDS.indexOf('<header className="task-card-head">'), CARDS.indexOf("</header>"));
+    const head = CARDS.slice(CARDS.indexOf('<header\n        className="task-card-head"'), CARDS.indexOf("</header>"));
+    expect(head.length).toBeGreaterThan(0);
     const row = head.slice(head.indexOf('<div className="task-card-head-row">'), head.indexOf("</div>"));
     expect(row.indexOf("<StatusIcon")).toBeLessThan(row.indexOf("tasks-id--task"));
     expect(row.indexOf("tasks-id--task")).toBeLessThan(row.indexOf("task-card-when"));
     expect(head.indexOf("</div>")).toBeLessThan(head.indexOf('className="task-card-title"'));
     expect(block(CARDS_CSS, ".task-card-head")).toContain("flex-direction: column");
     expect(block(CARDS_CSS, ".task-card-head-row > .task-card-when")).toContain("margin-left: auto");
-    expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100% - 12px) / 2));");
+    expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100cqh - 12px) / 2));");
     // A fixed COUNT, not auto-fill/auto-fit: the wall must not re-flow every time
     // the window grows by a card's worth.
     expect(CARDS_CSS).not.toMatch(/repeat\(auto-/);
@@ -6821,22 +6849,82 @@ describe("the Cards view's frame", () => {
     // (Akshil, 2026-09-03).
     expect(SCHEDULED.indexOf('data-view="cards"')).toBeLessThan(SCHEDULED.indexOf('data-view="calendar"'));
     expect(TASK_VIEWS).toEqual(["list", "board", "cards", "calendar"]);
-    // Open is a BUTTON — the app's own small secondary skin on a real link.
-    expect(CARDS).toContain('className="btn btn-secondary task-card-open"');
-    expect(CARDS_CSS).toContain(".schedule-main .task-card-head .task-card-open {");
     expect(SCHEDULED).toContain('pickView("cards")');
     expect(SCHEDULED).toContain('view === "cards" ? (');
     // The same filtered set every other view is handed.
     expect(SCHEDULED).toContain("<TaskCards");
   });
 
-  // bugbot, PR #969: CARD_LANES already includes needs_attention, but the
-  // overflow's "+N more running" handoff to the List filtered to a hardcoded
-  // ["in_progress"] — a waiting card that was on the grid vanished from the
-  // List it was handed off to. It has to hand off the SAME set the grid drew.
-  it("hands the overflow to the List filtered to every lane Cards drew, not just in_progress", () => {
-    expect(SCHEDULED).toContain("statuses: CARD_LANES");
-    expect(SCHEDULED).not.toContain('statuses: ["in_progress"]');
+  it("grows by a page of nine on the trailing card, and never navigates away", () => {
+    // "Show 9 more" adds the next page in place (Akshil, 2026-09-05). The old
+    // trailing card handed the overflow to the List; this one stays on the wall.
+    expect(CARDS).toContain("const [pages, setPages] = useState(1);");
+    expect(CARDS).toContain("cardsForTasks(tasks, pages * CARD_PAGE)");
+    expect(CARDS).toContain("onClick={() => setPages((n) => n + 1)}");
+    // A full-width strip UNDER the grid, not a cell in it (one card wide and a
+    // chat tall, with the rest of the row empty beneath).
+    expect(CARDS).toContain('className="task-cards-more"');
+    expect(CARDS).not.toContain("task-card--more");
+    expect(block(CARDS_CSS, ".task-cards-more")).toContain("width: 100%");
+    // Just "Show more" (Akshil, 2026-09-05) — the count is the wall's business.
+    expect(CARDS).toContain(">\n          Show more\n        </button>");
+    expect(CARDS).not.toContain("onShowRunning");
+    expect(SCHEDULED).not.toContain("onShowRunning");
+  });
+
+  it("opens the task's popup from the head, and the popup frames the chat with its composer", () => {
+    // Akshil, 2026-09-05: click the head → a 60%-of-the-window preview you can
+    // type into, with buttons for the List, the Explorer and Archive.
+    const head = CARDS.slice(CARDS.indexOf("<header"), CARDS.indexOf("</header>"));
+    expect(head).toContain('role="button"');
+    expect(head).toContain("onClick={() => onPeek(task)}");
+    expect(head).toContain('e.key === "Enter" || e.key === " "');
+    // The head has no Open of its own any more — the popup carries the doors.
+    expect(head).not.toContain("href");
+    // The app's one modal chassis, at 60vw, with the matching height in CSS.
+    expect(CARDS).toContain('import { Modal } from "@platform/ui/modal/Modal";');
+    expect(CARDS).toContain('width="54vw"');
+    expect(CARDS).toContain('dialogClassName="task-peek"');
+    // Narrower than it is tall (Akshil, 2026-09-05: "reduce the width a little
+    // bit but increase it in height").
+    expect(block(CARDS_CSS, ".modal-dialog.task-peek")).toContain("height: 82vh");
+    // Full-size chat WITH the composer: chat_only, never compact (compact hides
+    // the template's input box — it is the card's read-only cut).
+    // ...and `peek=1`, which takes the template's own strip and top bar away
+    // (the popup's head says all of that already).
+    expect(peekFrameSrc("/tpl/claude.html", "/Users/me/proj", "sess-9")).toBe(
+      "/render?path=%2Ftpl%2Fclaude.html&_file=%2FUsers%2Fme%2Fproj&chat_only=1&peek=1&session_id=sess-9",
+    );
+    // The two doors, folder then Archive, in the head beside the ✕ as the app's
+    // own buttons — icon AND word (Akshil, 2026-09-05: an icon alone "is not
+    // clear"). No "Open in Tasks": we are already in Tasks.
+    const acts = CARDS.slice(CARDS.indexOf("headActions={"), CARDS.indexOf("footer={"));
+    expect(acts).not.toContain("Open in Tasks");
+    expect(acts.indexOf("Open in Explorer")).toBeGreaterThan(-1);
+    expect(acts.indexOf("Open in Explorer")).toBeLessThan(acts.indexOf("{filing.label}"));
+    expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(2);
+    expect(acts).toContain("{ICON_FOLDER}\n              Open in Explorer");
+    // Bugbot, #1009: the popup follows the polls (a "Starting…" task gains its
+    // session), survives an empty wall (a failed poll, a filter), and puts the
+    // caret in the chat.
+    expect(CARDS).toContain("return tasks.find((t) => cardKey(t) === id) ?? peek;");
+    const emptyBranch = CARDS.slice(CARDS.indexOf("if (cards.length === 0) {"), CARDS.indexOf("return (\n    // The SCROLLER"));
+    expect(emptyBranch).toContain("{popup}");
+    expect(CARDS).toContain("initialFocus={frameRef}");
+    expect(readFileSync(join(SHELL, "../platform/ui/modal/Modal.tsx"), "utf8")).toContain("select:not([disabled]),iframe,");
+    // The dialog clips its own corners: the frame must not paint over the radius.
+    expect(block(CARDS_CSS, ".modal-dialog.task-peek")).toContain("overflow: hidden");
+    // The title shrinks to its words, so the hint is not over empty head.
+    expect(block(CARDS_CSS, ".task-card-title")).toContain("width: fit-content");
+    expect(block(CARDS_CSS, ".task-peek-name")).toContain("flex: 0 1 auto");
+    // Archive is the List row's own decision (filingIntent) and calls.
+    expect(CARDS).toContain("const filing = filingIntent(task);");
+    expect(CARDS).toContain('if (filing.kind === "archive") await archiveTask(task.key);');
+    // Esc closes even with the caret in the chat: the frame's own document gets
+    // the listener, since the chassis's listener on this document never hears
+    // a key pressed inside the frame (measured, 2026-09-05).
+    expect(CARDS).toContain('doc?.addEventListener("keydown", onKey);');
+    expect(CARDS).toContain('if (e.key === "Escape") onClose();');
   });
 });
 
