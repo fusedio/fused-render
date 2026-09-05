@@ -127,6 +127,13 @@
   min-width: 0;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
+  /* Its OWN ground, a step up from the card's: the frame under it is the chat
+     template, whose page colour is within a shade of the card's, so a head on
+     the card's ground read as one more line of the transcript (Akshil,
+     2026-09-05: "the card heading doesn't have enough contrast"). A wash of
+     the ink over the card colour rather than a token of its own, so the step
+     is the same size on both themes. */
+  background: color-mix(in srgb, var(--fg) 8%, var(--tasks-card-bg));
   /* The head is a button (TaskCards: it opens the task's popup) and says so
      the way every pressable strip on this page does — the pointer, and a wash
      on hover at the row's own weight (tasks.css `.tasks-row:hover`). */
@@ -135,7 +142,7 @@
 }
 
 .task-card-head:hover {
-  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  background: color-mix(in srgb, var(--fg) 12%, var(--tasks-card-bg));
 }
 
 .task-card-head:focus-visible {
