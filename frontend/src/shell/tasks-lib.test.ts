@@ -6904,6 +6904,14 @@ describe("the Cards view's frame", () => {
     expect(acts.indexOf("Open in Explorer")).toBeLessThan(acts.indexOf("{filing.label}"));
     expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(2);
     expect(acts).toContain("{ICON_FOLDER}\n              Open in Explorer");
+    // Bugbot, #1009: the popup follows the polls (a "Starting…" task gains its
+    // session), survives an empty wall (a failed poll, a filter), and puts the
+    // caret in the chat.
+    expect(CARDS).toContain("return tasks.find((t) => cardKey(t) === id) ?? peek;");
+    const emptyBranch = CARDS.slice(CARDS.indexOf("if (cards.length === 0) {"), CARDS.indexOf("return (\n    // The SCROLLER"));
+    expect(emptyBranch).toContain("{popup}");
+    expect(CARDS).toContain("initialFocus={frameRef}");
+    expect(readFileSync(join(SHELL, "../platform/ui/modal/Modal.tsx"), "utf8")).toContain("select:not([disabled]),iframe,");
     // The dialog clips its own corners: the frame must not paint over the radius.
     expect(block(CARDS_CSS, ".modal-dialog.task-peek")).toContain("overflow: hidden");
     // The title shrinks to its words, so the hint is not over empty head.

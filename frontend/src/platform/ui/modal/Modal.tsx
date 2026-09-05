@@ -35,8 +35,12 @@ import {
   isDisarmingInteraction,
 } from "./dirty-guard";
 
+// `iframe` is in the list because a framed document IS a focusable stop — the
+// Tasks page's card popup is a chat in a frame, and a trap that skipped it would
+// cycle the head's two buttons forever while the thing the dialog exists for
+// sat one Tab away and unreachable (Bugbot, #1009).
 const FOCUSABLE =
-  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
+  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),iframe,[tabindex]:not([tabindex="-1"])';
 
 export interface ModalProps {
   title: ReactNode;

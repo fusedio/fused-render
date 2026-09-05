@@ -114,11 +114,20 @@ export function TaskCards({
   onReload?: () => void;
 }) {
   // THE POPUP (Akshil, 2026-09-05): one task at a time, opened from a card's
-  // head. Held as the Task itself and not a key — a task that leaves the set
-  // (archived from inside the popup, or filtered away) keeps its popup until
-  // the reader closes it, because the frame in it is a real session and
+  // head. Held as the Task the head was clicked with, then REFRESHED from every
+  // poll below: a popup opened in the "Starting…" window — the usual moment,
+  // right after creating a task — has no session id yet, and the one that
+  // arrives two seconds later has to reach it or the popup never frames the
+  // chat (Bugbot, #1009). The clicked Task stays as the fallback so a task that
+  // leaves the set (archived from inside the popup, or filtered away) keeps its
+  // popup until the reader closes it: the frame in it is a real session, and
   // closing it under them would lose whatever they were typing.
   const [peek, setPeek] = useState<Task | null>(null);
+  const peekLive = useMemo(() => {
+    if (!peek) return null;
+    const id = cardKey(peek);
+    return tasks.find((t) => cardKey(t) === id) ?? peek;
+  }, [peek, tasks]);
   // HOW MANY PAGES THE READER HAS ASKED FOR. Nine cards to begin with, and each
   // press of the trailing card adds nine (Akshil, 2026-09-05). Never wound back
   // by a poll: the list refreshes every 20 seconds, and a wall that collapsed to
@@ -162,10 +171,29 @@ export function TaskCards({
     };
   }, []);
 
+  // The popup outlives the wall it was opened from: a failed poll empties
+  // `tasks`, and a filter can drop the last card, while someone is typing into
+  // the frame — so it is rendered beside whichever of the two the wall draws,
+  // never inside the branch that has cards (Bugbot, #1009).
+  const popup = peekLive && (
+    <TaskPeek
+      task={peekLive}
+      home={home}
+      template={templates[peekLive.target || peekLive.project] ?? null}
+      onClose={() => setPeek(null)}
+      onReload={onReload}
+    />
+  );
+
   if (cards.length === 0) {
     // The Board's empty styling, deliberately — one page, one way of saying
     // there is nothing here.
-    return <p className="schedule-tv-empty">{CARDS_EMPTY}</p>;
+    return (
+      <>
+        <p className="schedule-tv-empty">{CARDS_EMPTY}</p>
+        {popup}
+      </>
+    );
   }
 
   return (
@@ -200,15 +228,7 @@ export function TaskCards({
         />
       ))}
       </div>
-      {peek && (
-        <TaskPeek
-          task={peek}
-          home={home}
-          template={templates[peek.target || peek.project] ?? null}
-          onClose={() => setPeek(null)}
-          onReload={onReload}
-        />
-      )}
+      {popup}
       {hidden > 0 && (
         <button
           type="button"
@@ -419,6 +439,12 @@ function TaskPeek({
       width="54vw"
       dialogClassName="task-peek"
       plainBody
+      // The caret goes to the CHAT, not to the head's first button: the popup
+      // exists so a reader can type, and a keyboard Enter after opening it must
+      // not follow "Open in Explorer" instead (Bugbot, #1009). Null while the
+      // frame is not there yet ("Starting…"), and the chassis then falls back
+      // to its first focusable as every other dialog does.
+      initialFocus={frameRef}
       // THE DOORS, IN THE HEAD beside the ✕ (Akshil, 2026-09-05: "move them on
       // top where we have the close button"), each an icon WITH its word — an
       // icon alone was not clear — in the app's own small secondary button, the
