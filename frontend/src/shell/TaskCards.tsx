@@ -156,6 +156,17 @@ export function TaskCards({
     }
     return peek;
   }, [peek, tasks]);
+  // ...and the settled row is WRITTEN BACK as the peek (Bugbot, #1015, round
+  // 2): left as the pending snapshot, every later poll would re-resolve by the
+  // number this view stopped trusting, and a failed poll (`tasks` empty) or a
+  // filter dropping the row would fall back to the placeholder and tear down
+  // the framed chat. Adopted once, the popup matches by key from then on and
+  // keeps the settled snapshot as its fallback like any other peek.
+  useEffect(() => {
+    if (peek && peekLive && peekLive !== peek && !peek.session_id && peekLive.session_id) {
+      setPeek(peekLive);
+    }
+  }, [peek, peekLive]);
   // HOW MANY PAGES THE READER HAS ASKED FOR. Six cards to begin with, and each
   // press of the trailing strip adds six (Akshil, 2026-09-05). Never wound back
   // by a poll: the list refreshes every 20 seconds, and a wall that collapsed to

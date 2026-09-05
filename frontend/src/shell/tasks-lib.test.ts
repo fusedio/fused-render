@@ -6961,6 +6961,12 @@ describe("the Cards view's frame", () => {
     // twin got opened.
     expect(CARDS).toContain("if (!peek.session_id && peek.task_id) {");
     expect(CARDS).toContain("(t) => t.session_id && t.project === peek.project && t.task_id === peek.task_id,");
+    // ...and adopts the settled row as the peek, so later polls match by key
+    // and an empty poll keeps the framed chat (Bugbot, #1015, round 2).
+    expect(CARDS).toContain(
+      "if (peek && peekLive && peekLive !== peek && !peek.session_id && peekLive.session_id) {",
+    );
+    expect(CARDS).toContain("setPeek(peekLive);");
     const emptyBranch = CARDS.slice(CARDS.indexOf("if (cards.length === 0) {"), CARDS.indexOf("return (\n    // The SCROLLER"));
     expect(emptyBranch).toContain("{popup}");
     expect(CARDS).toContain("initialFocus={frameRef}");
