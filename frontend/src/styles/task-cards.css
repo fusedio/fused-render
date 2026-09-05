@@ -154,10 +154,12 @@
   min-width: 0;
 }
 
+/* The chip arrives inside IdentityChip's shield when it is a tag (and bare
+   when it is a label), so both shapes take the auto margin. Its skin is the
+   List row's, widened to this row in tasks.css. */
+.task-card-head-row > .schedule-tv-id-shield,
 .task-card-head-row > .schedule-tv-id {
   margin-left: auto;
-  min-width: 0;
-  overflow: hidden;
 }
 
 /* Row two: the title, ONE LINE, at a size that reads across a wall of six —

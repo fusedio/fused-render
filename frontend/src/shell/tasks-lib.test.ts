@@ -6832,6 +6832,12 @@ describe("the Cards view's frame", () => {
     expect(head.indexOf("</div>")).toBeLessThan(head.indexOf('className="task-card-title"'));
     expect(block(CARDS_CSS, ".task-card-head")).toContain("flex-direction: column");
     expect(block(CARDS_CSS, ".task-card-head-row > .schedule-tv-id")).toContain("margin-left: auto");
+    // The tag wears the List row's skin, widened to this row in tasks.css — not
+    // a copy of it here (Akshil, 2026-09-05: "project name ui as is from list").
+    const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
+    expect(TASKS_CSS).toContain(".task-card-head-row .schedule-tv-id--tag,\n.tasks-row .schedule-tv-id--tag {");
+    expect(TASKS_CSS).toContain(".task-card-head-row .schedule-tv-id--tag.is-on,\n.tasks-row .schedule-tv-id--tag.is-on {");
+    expect(CARDS_CSS).not.toContain("schedule-tv-id--tag");
     expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100cqh - 12px) / 2));");
     // A fixed COUNT, not auto-fill/auto-fit: the wall must not re-flow every time
     // the window grows by a card's worth.
@@ -6919,6 +6925,12 @@ describe("the Cards view's frame", () => {
     expect(headRow.indexOf("<IdentityChip")).toBeLessThan(headRow.indexOf("task-card-when"));
     expect(headRow.indexOf("tasks-id--task")).toBeLessThan(headRow.indexOf("<IdentityChip"));
     expect(block(CARDS_CSS, ".task-card-head-row > .schedule-tv-id")).toContain("margin-left: auto");
+    // The tag wears the List row's skin, widened to this row in tasks.css — not
+    // a copy of it here (Akshil, 2026-09-05: "project name ui as is from list").
+    const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
+    expect(TASKS_CSS).toContain(".task-card-head-row .schedule-tv-id--tag,\n.tasks-row .schedule-tv-id--tag {");
+    expect(TASKS_CSS).toContain(".task-card-head-row .schedule-tv-id--tag.is-on,\n.tasks-row .schedule-tv-id--tag.is-on {");
+    expect(CARDS_CSS).not.toContain("schedule-tv-id--tag");
     // Columns step on the WALL's width, not the window's: container queries
     // against the scroller, never a media query (Akshil, 2026-09-05: the
     // sidebar's 232px were invisible to a media query).
