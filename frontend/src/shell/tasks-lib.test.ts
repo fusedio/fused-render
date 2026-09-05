@@ -6596,14 +6596,14 @@ function asking(key: string, at: number, over: Partial<Task> = {}): Task {
 }
 
 describe("cardsForTasks", () => {
-  it("draws every lane but Archive, in the List's own rank order", () => {
-    // Akshil, 2026-09-05: "we show all tasks here except archived". CARD_LANES is
-    // both the membership test and the rank order, and it is LIST_ORDER minus
-    // Archive rather than a second list — so the wall and the List can never
-    // disagree about which lane comes first. Every name in it is still a real
-    // board column.
-    expect(CARD_LANES).toEqual(LIST_ORDER.filter((k) => k !== "archived"));
-    expect(CARD_LANES).toEqual(["needs_attention", "blocked", "upcoming", "in_progress", "done"]);
+  it("draws every lane, Archive included, in the List's own rank order", () => {
+    // Akshil, 2026-09-05: "show all status tasks in cards even archived ones"
+    // (that morning it was every lane but Archive). CARD_LANES is both the
+    // membership test and the rank order, and it is LIST_ORDER itself rather
+    // than a second list — so the wall and the List can never disagree about
+    // which lane comes first. Every name in it is still a real board column.
+    expect(CARD_LANES).toEqual(LIST_ORDER);
+    expect(CARD_LANES).toEqual(["needs_attention", "blocked", "upcoming", "in_progress", "done", "archived"]);
     for (const key of CARD_LANES) expect(BOARD_COLUMNS.map((c) => c.key)).toContain(key);
     const rows = [
       running("a", 100),
@@ -6614,8 +6614,8 @@ describe("cardsForTasks", () => {
       asking("f", 50),
     ];
     // "f" is OLDER than "a" and still comes first: the lane outranks the clock.
-    // "e" — archived — is the one row not drawn.
-    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "d", "c", "a", "b"]);
+    // "e" — archived — is drawn too, in the bottom lane.
+    expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "d", "c", "a", "b", "e"]);
   });
 
   it("groups by lane before it sorts, blocked first, then in progress", () => {
