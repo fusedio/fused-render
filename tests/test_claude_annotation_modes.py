@@ -360,7 +360,7 @@ def test_discard_throws_the_walkthrough_away(html):
     auto-send — and the clicks' empty marks are deleted with it. annRecEnd
     no-ops after it, so a stop click racing the discard cannot resurrect the
     walkthrough."""
-    assert "#anncta:has(#annrec.on) #anndiscard { display: inline-flex;" in html
+    assert "#anncta:not(.busy):has(#annbtn.on) #anndiscard { display: inline-flex;" in html
     # two ids on the hide: a bare #anndiscard loses to the base
     # `#anncta button` display rule on specificity, and the trash sat on the
     # strip in every state
@@ -395,7 +395,7 @@ def test_discard_throws_the_walkthrough_away(html):
     assert "fused.ai.transcribe" not in body and "annAutoSubmit" not in body
     assert "if (annOn && annArmEpoch === armed) annSetMode(false);" in body, \
         "a new arming that slipped into the settle is not this discard's to close"
-    assert 'annDiscardBtn.addEventListener("click", () => annRecDiscard());' in html
+    assert 'annDiscardBtn.addEventListener("click", () => (annRecOn ? annRecDiscard() : annNotesDiscard()));' in html
 
 
 def test_the_busy_seat_is_a_status_not_a_button(html):
@@ -471,13 +471,6 @@ def test_the_words_yield_only_when_they_truly_collide(html):
     # NOT scrollWidth: a flex row's scrollWidth floors at clientWidth, so the
     # picker reserve added to it would read as overflow on a half-empty strip
     assert "scrollWidth" not in body
-    # the OFF-screen picker's width is reserved, so arming (which slides it
-    # in) can never flip the words under the click — the row folds early
-    assert "const reserve = annToolReserve();" in body
-    probe = _block(html, "function annToolReserve()", "\n}\n")
-    assert "if (!annToolEl.hidden) return 0;" in probe
-    assert "annXO || !annToolEl.isConnected || annBtn.hidden" in probe
-    assert "annToolEl.offsetWidth" in probe
     assert "@container" not in html, "collision detection, not a breakpoint"
     assert "container-type" not in html
     assert "new ResizeObserver(annFitStrip).observe(annToolsEl);" in html
@@ -829,3 +822,151 @@ def test_the_capture_stream_state_is_declared_before_its_boot_time_teardown(html
     assert html.index("let annXOStream = null;") \
         < html.index("function annXORemove()") \
         < html.index('annSetMode(fused.params.get("annmode") === "1");')
+
+
+# ------------------------------------------------------- the annotation bar
+
+def test_the_bar_stands_in_every_layer(html):
+    """One bar per layer the pins can land in — the split layout's #leftview,
+    the hosted shadow layer, the cross-origin overlay — all built by the one
+    builder, so annBarPaint writes to any of them by class."""
+    assert html.count("annBarNode(") == 5          # builder, boot, two layers, one comment
+    inject = _block(html, "function annInjectLayer(", "\n}\n")
+    xo = _block(html, "function annXOLayer(", "\n}\n")
+    for body in (inject, xo):
+        assert "annBarNode(" in body
+        assert "bar: " in body                        # handed back with pins/hl
+    assert "annBar = layer && layer.bar;" in html
+    assert 'view.parentNode.insertBefore(annBarNode(document), view)' in html   # a row, not an overlay
+    # both stylesheets carry it: tokens in the page, literals in the layer
+    assert ".annbar.show { display: flex;" in html
+    assert '".annbar.show { display: flex;' in html
+    # ...and the layer restates the picker's looks, which follow it in there
+    assert '#anntool button[aria-checked="true"] { color: var(--on-accent, #1a1a1a); background: var(--accent, #d97757); }' in html
+
+
+def test_the_bar_carries_the_picker_and_done(html):
+    """The mock (Akshil, 2026-09-04): Element/Point and ✓ Done sit on the bar
+    over the app; the strip keeps the exits. The picker is the strip's OWN
+    node, portaled — one state, one set of handlers — and a cross-origin
+    target, which has no elements to pick, gets the sentence and Done alone.
+    Recording has no Done on the bar: the stop is the strip's ■/clock."""
+    body = _block(html, "function annBarPaint(", "\n}\n")
+    assert 'annOn && !annCta.classList.contains("busy")' in body
+    assert 'annBar.classList.toggle("rec", annRecOn)' in body
+    assert "if (show && !annXO) {" in body
+    assert "slot.ownerDocument.adoptNode(annToolEl);" in body
+    node = _block(html, "function annBarNode(", "\n}\n")
+    assert 'done.addEventListener("click", () => annDone());' in node
+    assert ".annbar.rec .done { display: none; }" in html
+    # renderAnn paints it right after the sync that binds the node
+    render = _block(html, "function renderAnn() {", "// pins over the frame")
+    assert render.index("annSyncTarget();") < render.index("annBarPaint();")
+    # the mic's start repaints too — annSetMode painted before annRecOn was set
+    rec = _block(html, "async function annRecBegin(", "\n}\n")
+    assert rec.index("annRecOn = true;") < rec.index("annBarPaint();")
+    # the strip no longer makes room for a picker that never comes
+    assert "annToolReserve" not in html
+
+
+def test_the_bar_speaks_one_plain_line(html):
+    """The lead is the mode; the sentence is one plain line per mode (Akshil,
+    2026-09-05: "one liner but easy to understand")."""
+    assert '"Voice annotation", "Click an element or a point, then say the change."' in html
+    assert '"Comment", "Click an element or a point, then type the change."' in html
+    # the tag is a LABEL (no border, no wash — it read as a button), red while
+    # recording; the sentence carries full ink at the composer's 13px
+    assert ".annbar.rec .tag { color: var(--error); }" in html
+    assert '".annbar.rec .tag { color: var(--error, #f26d6d); }"' in html
+    assert "border: 1px solid #d97757; background: rgba(217, 119, 87, .14); color: #d97757;" not in html
+    assert '".annbar .txt { min-width: 0; color: var(--fg, #ececf1); font-size: 13px;' in html
+
+
+def test_the_bar_wears_the_shell_s_theme(html):
+    """Chrome, not a pin: the bar in another document reads the SHELL's tokens
+    (copied onto the node, re-copied on a data-theme flip), with the dark
+    literals only as fallbacks — a dark strip over a light shell was the wrong
+    theme (Akshil, 2026-09-05)."""
+    assert '"--bg", "--surface", "--border", "--fg", "--dim", "--accent",' in html
+    theme = _block(html, "function annBarTheme(", "\n}\n")
+    assert "annBar.ownerDocument === document) return;" in theme
+    assert "getComputedStyle(document.documentElement)" in theme
+    assert "annBar.style.setProperty(t, v);" in theme
+    assert 'attributeFilter: ["data-theme"] });' in html
+    assert '".annbar { position: absolute; top: 0; left: 0; right: 0; box-sizing: border-box;"' in html
+    assert "background: var(--bg, #191a1e); border-bottom: 1px solid var(--border, #34363e);" in html
+    assert '#anntool button[aria-checked="true"] { color: var(--on-accent, #1a1a1a); background: var(--accent, #d97757); }' in html
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert "annBarTheme();" in paint
+
+
+def test_the_bar_can_stop_the_recording(html):
+    """■ plus the live clock on the bar while a walkthrough records (Akshil,
+    2026-09-05), in the recording's --error, replacing ✓ Done; the strip's
+    clock is mirrored by its one writer, and the clock never folds."""
+    node = _block(html, "function annBarNode(", "\n}\n")
+    assert 'stop.addEventListener("click", () => annRecEnd());' in node
+    assert '<span class="clk"></span>' in node
+    assert ".annbar .stop { display: none; }" in html
+    assert ".annbar.rec .stop {" in html
+    assert ".annbar.rec .done { display: none; }" in html
+    rec = _block(html, "function annRecPaint(", "\n}\n")
+    assert "annBarClock();" in rec
+    fit = _block(html, "function annBarFit(", "\n}\n")
+    assert "stop.offsetWidth" in fit
+    assert ".annbar.t2 #anntool .lbl, .annbar.t2 .done .lbl { display: none; }" in html   # not .clk
+
+
+def test_the_bar_pushes_the_app_down_instead_of_covering_it(html):
+    """Split: a real row before #leftview in the #left column. Hosted: a
+    43px !important margin on the target document's root while the bar
+    shows, handed back on hide and when the target changes; never the
+    cross-origin overlay's host document."""
+    assert "#left > .annbar { position: relative; flex-shrink: 0; }" in html
+    push = _block(html, "function annBarPush(", "\n}\n")
+    assert 'setProperty("margin-top", "43px", "important")' in push
+    assert 'removeProperty("margin-top")' in push
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert "annBar.getRootNode() !== document && !annXO" in paint
+    assert "annBarPush(show ? hostedDoc : null);" in paint
+    # losing the bar (target gone) still hands the pushed margin back
+    assert "if (!annBar) { annBarPush(null); return; }" in paint
+    # the bar's Done is exempt from the outside-click dismiss, like the strip's
+    dismiss = _block(html, 'document.addEventListener("mousedown", (e) => {\n  if (annPop.style.display', "\n});")
+    assert 't.closest(".annbar")' in dismiss
+
+
+def test_the_bar_folds_by_measure_not_breakpoint(html):
+    """Sentence first, buttons' words second — decided by summing the parts
+    against the box (the strip's annFitStrip idiom), refit on every resize
+    through the bar's OWN window's observer (the node may be in another
+    document). Controls never clip."""
+    body = _block(html, "function annBarFit(", "\n}\n")
+    assert 'annBar.classList.remove("t1", "t2", "t3");' in body
+    assert "txt.scrollWidth" in body                # natural width, not the clipped one
+    assert 'classList.add("t1")' in body and 'classList.add("t2")' in body
+    node = _block(html, "function annBarNode(", "\n}\n")
+    assert "doc.defaultView.ResizeObserver" in node
+    assert "if (bar === annBar) annBarFit();" in node
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert "annBarFit();" in paint
+    assert ".annbar.t1 .txt { display: none; }" in html
+    # two ids' worth: the strip's `#anntool .lbl` rule would outrank a class
+    assert ".annbar.t2 #anntool .lbl, .annbar.t2 .done .lbl { display: none; }" in html
+    assert ".annbar.t3 .tag b { display: none; }" in html
+    assert "@container" not in html
+
+
+def test_discard_covers_the_typed_round_too(html):
+    """The strip keeps BOTH exits in both modes (Akshil, 2026-09-04): the
+    trash beside ✓ Done throws this round's unsent notes away — an open draft
+    with them — and leaves the mode; earlier rounds' and sent notes stay."""
+    assert "#anncta:not(.busy):has(#annbtn.on) #anndiscard { display: inline-flex;" in html
+    body = _block(html, "function annNotesDiscard(", "\n}\n")
+    # not through Stopping…/Transcribing… either: annRecOn is already down and
+    # the marks are the recording's, waiting for words (Bugbot, PR #1008)
+    assert 'annRecOn || !annOn || annCta.classList.contains("busy")' in body
+    assert "annCloseComposer();" in body
+    assert "a.sent || (a.createdAt || 0) < annRoundStart" in body
+    assert "annSetMode(false);" in body
+    assert "(annRecOn ? annRecDiscard() : annNotesDiscard())" in html

@@ -297,14 +297,20 @@
   #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-word { display: none; }
   #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .cmt-done { display: block; }
   #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annbtn .done-word { display: var(--annlbl, inline); }
-  /* The discard seat exists ONLY while a walkthrough records — an outline
-     trash beside the stop, for throwing the recording away instead of
-     sending it. Derived from the same state class as every other face.
+  /* The discard seat exists while a MODE is on — an outline trash beside the
+     ■/clock or the ✓ Done, for throwing the walkthrough or the round's notes
+     away instead of sending them (Akshil, 2026-09-04: the strip keeps the
+     two exits, keep and discard, in both modes; what a click pins moved onto
+     the bar over the app). Derived from the same state class as every other
+     face. `:not(.busy)`: through Stopping…/Transcribing… the mode is still
+     armed but the recording's marks are waiting for their words, and a
+     discard there would delete them (Bugbot, PR #1008) — the old
+     #annrec.on gate hid the seat then, and so does this.
      `#anncta #anndiscard`, two ids, because a bare `#anndiscard` LOSES to
      the base `#anncta button` display rule on specificity and the trash sat
      on the strip in every state (Akshil, 2026-08-19). */
   #anncta #anndiscard { display: none; }
-  #anncta:has(#annrec.on) #anndiscard { display: inline-flex; padding: 0 8px; }
+  #anncta:not(.busy):has(#annbtn.on) #anndiscard { display: inline-flex; padding: 0 8px; }
   /* Two ids + the same pseudo-class count as the base hover above, or the
      resting brighten wins and the destructive hint never paints. */
   #anncta #anndiscard:hover:not(:disabled):not(.on) { color: var(--error); border-color: var(--error); }
@@ -649,6 +655,131 @@
     border-radius: 4px;
     background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
+  /* The annotation bar (Akshil, 2026-09-04, from a mock): the mode's
+     controls sit ON THE APP, across its top edge, while a mode is armed —
+     a lead segment in the accent fill saying what a click does now, then the
+     Element/Point picker (the strip's #anntool, PORTALED here: one node, one
+     state) and ✓ Done, on the bar's own dark ground. The strip across the
+     divider keeps only the way OUT of the mode (■ clock / ✓ Done, and the
+     trash). An overlay, not a row: the app under it is arbitrary and cannot
+     be reflowed, so the bar is 36px of the app's own top, gone on disarm.
+     `pointer-events: auto`, unlike the pins: it carries buttons. z 3 sits
+     above the pins (2) and under the composer (5). annBarPaint is the one
+     writer. This copy is the split layout's; ANN_LAYER_CSS carries the same
+     rules for the layers in other documents. */
+  .annbar {
+    position: absolute;
+    z-index: 3;
+    top: 0;
+    left: 0;
+    right: 0;
+    /* The STRIP's box, restated (#anntools: 26px seats, 8px 16px padding,
+       12px gap, one hairline) so the two rows line up across the divider
+       and the bar's buttons are the strip's buttons, not cousins of them. */
+    box-sizing: border-box;
+    height: 43px;
+    display: none;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    color: var(--fg);
+    font-size: 12px;
+    line-height: 1.3;
+    pointer-events: auto;
+    overflow: hidden;
+  }
+  .annbar.show { display: flex; animation: annbarin .18s ease; }
+  @keyframes annbarin { from { opacity: 0; transform: translateY(-6px); } }
+  @media (prefers-reduced-motion: reduce) { .annbar.show { animation: none; } }
+  /* The lead: a MODE TAG in the armed seat's own idiom (accent outline on a
+     faint accent wash — the filled seat shouted, Akshil 2026-08-19) and the
+     one sentence in the muted ink beside it. Recording wears --error like
+     the ■/clock across the divider: one mode, one colour, both panes. */
+  .annbar .lead { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; overflow: hidden; }
+  .annbar .tag {
+    flex-shrink: 0;
+    height: 26px;
+    color: var(--accent);
+    font-weight: 400;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .annbar .tag b { font-weight: inherit; }
+  .annbar .tag svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; flex-shrink: 0; }
+  .annbar .tag .ic-mic { display: none; }
+  .annbar.rec .tag .ic-mic { display: block; }
+  .annbar.rec .tag .ic-cmt { display: none; }
+  .annbar.rec .tag { color: var(--error); }
+  /* The sentence is the point of the bar: full ink at the composer's 13px,
+     not the muted 12px the strip's words wear (Akshil, 2026-09-05: "not
+     prominent enough" — and the mode's colour stays on the tag alone, so
+     nothing here shouts). */
+  .annbar .txt { min-width: 0; color: var(--fg); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .annbar .slot { display: flex; align-items: center; flex-shrink: 0; }
+  .annbar .slot:empty { display: none; }
+  .annbar .done {
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--accent);
+    font: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+    height: 26px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background .12s;
+  }
+  .annbar .done:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .annbar .done svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+  /* Recording: ✓ Done gives way to ■ plus the live clock — the same stop the
+     strip's seat carries, in the recording's --error, so the walkthrough can
+     be ended from the bar the user is looking at (Akshil, 2026-09-05). The
+     clock is state, not a label: it never folds. */
+  .annbar.rec .done { display: none; }
+  .annbar .stop { display: none; }
+  .annbar.rec .stop {
+    display: inline-flex;
+    border: 1px solid var(--error);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--error);
+    font: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+    height: 26px;
+    padding: 0 10px;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background .12s;
+  }
+  .annbar .stop:hover { background: color-mix(in srgb, var(--error) 14%, transparent); }
+  .annbar .stop svg { width: 14px; height: 14px; fill: currentColor; stroke: none; flex-shrink: 0; }
+  .annbar .stop .clk:empty { display: none; }
+  /* Narrow, by MEASURE (annBarFit — collision, never a breakpoint): first
+     the sentence yields (.t1), then the buttons' words (.t2), the tag's word
+     last of all. Controls never clip. */
+  .annbar.t1 .txt { display: none; }
+  /* Two ids' worth on the picker's words: `#anntool .lbl` up top reads the
+     strip's --annlbl token and would outrank a bare class here. */
+  .annbar.t2 #anntool .lbl, .annbar.t2 .done .lbl { display: none; }
+  .annbar.t2 #anntool button, .annbar.t2 .done { padding: 0 8px; }
+  .annbar.t3 .tag b { display: none; }
+  /* The split layout's bar is a real ROW above the frame — #left is a flex
+     column and the bar goes in before #leftview, so the app is pushed down,
+     not covered (Akshil, 2026-09-05: "it covers the top of the page"). The
+     hosted layers push their document with a margin instead (annBarPush). */
+  #left > .annbar { position: relative; flex-shrink: 0; }
   #annpop {
     position: absolute;
     z-index: 5;
@@ -1176,6 +1307,22 @@
      border — it is dead space above the first line of the only thing the card is
      for. Halved rather than dropped: the turns still need to start off the edge. */
   body.chat-compact #log { padding-top: 12px; }
+  /* CHAT ONLY, from the first paint (see the const of that name): the pane
+     column and the divider between it and the chat are hidden by the class the
+     boot stamps synchronously, so the chat is full width before enterNoPane has
+     had its await and removes them for good. */
+  body.chat-only #left,
+  body.chat-only #divider {
+    display: none;
+  }
+  /* PEEK (`?peek=1`, see the const of that name) — the transcript and the
+     composer under a head the HOST draws. The strip and the top bar go; the
+     composer stays, which is the whole difference from compact. */
+  body.chat-peek #anntools,
+  body.chat-peek #topbar {
+    display: none;
+  }
+  body.chat-peek #log { padding-top: 12px; }
   /* TASK-023 (see showSession) — tabular figures for the same reason the
      composer block's `.sb-id` has them: the same identifier must not shift
      width as its digits change. */
@@ -3637,6 +3784,8 @@
       <iframe id="leftframe" title="Preview"></iframe>
       <div id="annhl"></div>
       <div id="annpins"></div>
+      <!-- The annotation bar lands here at boot (annBarNode(document)): the
+           same node the layers in other documents get, so it is built once. -->
       <div id="annpop">
         <!-- Just the words (Akshil, 2026-08-19): the anchor chip and the
              per-note mic left this card. What a click pins is chosen up front
@@ -3712,9 +3861,8 @@
              empty marks deleted) where the stop seat keeps it. -->
         <button id="anndiscard" type="button" aria-label="Discard the recording"
                 title="Discard the recording — nothing is transcribed or sent"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11"/><path d="M5.5 4V2.75a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4"/><path d="M3.75 4l.6 9a1 1 0 0 0 1 .95h5.3a1 1 0 0 0 1-.95l.6-9"/><line x1="6.5" y1="7" x2="6.5" y2="10.5"/><line x1="9.5" y1="7" x2="9.5" y2="10.5"/></svg></button>
-        <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
-                title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><svg class="cmt-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl cmt-word">Comment</span><span class="lbl done-word">Done</span><span id="annreclbl"></span></button>
-        <!-- Screenshot, between Comment and Record (Akshil, 2026-08-27). It
+        <!-- Screenshot, FIRST of the three (Akshil, 2026-09-04; it sat between
+             Comment and Record from 2026-08-27). It
              was a camera pill beside Send in BOTH composers; it moved up
              here because it acts on the PREVIEW, like its two neighbours,
              not on the draft — the picture it takes still lands as a chip
@@ -3727,6 +3875,8 @@
         <button id="viewshot" class="viewshot" type="button"
                 aria-label="Screenshot the preview and attach it to this message"
                 title="Screenshot the preview and attach it to this message"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4"/></svg><span class="lbl">Screenshot</span></button>
+        <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
+                title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><svg class="cmt-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl cmt-word">Comment</span><span class="lbl done-word">Done</span><span id="annreclbl"></span></button>
         <button id="annrec" type="button" aria-pressed="false"
                 aria-label="Annotate with a spoken walkthrough"
                 title="Annotate with a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><span class="lbl rec-word">Annotate</span></button>
@@ -4301,6 +4451,28 @@ const CHAT_ONLY = new URLSearchParams(location.search).get("chat_only") === "1";
 // frame and then took it away would be the one flicker on a wall of twelve.
 const COMPACT = new URLSearchParams(location.search).get("compact") === "1";
 if (COMPACT) document.body.classList.add("chat-compact");
+
+// CHAT_ONLY's FIRST PAINT. enterNoPane (below) takes the pane column out of the
+// document, but it runs once the boot has asked the server what this folder is
+// — an await away — and until then the layout was the two-column one: the chat
+// drawn at pane-width on the left of an empty column, then jumping to the full
+// width a moment later. On the Tasks page's popup that was the whole show
+// (Akshil, 2026-09-05: "first it opened only on the left side, then it made it
+// full screen"). CHAT_ONLY is a host fact already known here, so the stylesheet
+// is told now, the same way `chat-compact` is: the pane column and its divider
+// are hidden from the first frame, and the teardown later removes what was
+// never seen.
+if (CHAT_ONLY) document.body.classList.add("chat-only");
+
+// PEEK (`?peek=1`) — the Tasks page's card popup (TaskCards `TaskPeek`). The
+// chat at full size WITH its composer, unlike compact, but under a head the
+// host owns: the popup's own bar already says which task this is (ring, id,
+// title) and carries the doors — the List, the folder in Explorer, Archive — so
+// this document's strip (← Chats, the ⋮ menu) and its top bar would be a second
+// bar of the same facts under the first (Akshil, 2026-09-05). A host fact read
+// off this frame's own URL and stamped as a class, for compact's reasons.
+const PEEK = new URLSearchParams(location.search).get("peek") === "1";
+if (PEEK) document.body.classList.add("chat-peek");
 
 // A one-shot prompt the git sidebar's "Fix with AI" button built for a failed
 // operation is NOT read off this document's URL at all (review #804 round 2 —
@@ -5695,6 +5867,17 @@ const annOwnFrame = document.getElementById("leftframe");
 let annFrame = CHAT_ONLY ? annMarkedFrame() : annOwnFrame;
 let annPins = document.getElementById("annpins");
 let annHl = document.getElementById("annhl");
+// The split layout's bar, appended after the pins so it paints above them
+// and under the composer (#annpop is z 5). annSyncTarget rebinds this to
+// the layer's own bar in the other two layouts.
+let annBar = annStageOrNull(document.getElementById("leftview"));
+function annStageOrNull(view) {
+  // A ROW above the frame, not an overlay on it: #left is a flex column and
+  // the bar takes its place before #leftview, so arming pushes the app down
+  // by the bar's height instead of hiding its first 43px (Akshil, 2026-09-05).
+  // The pins keep their coordinate space — #leftview is still the frame's box.
+  return view ? view.parentNode.insertBefore(annBarNode(document), view) : null;
+}
 let annStageEl = document.getElementById("leftview");
 let annLayerRoot = null;
 // The re-render observer on the target's document, declared UP HERE with the
@@ -5842,6 +6025,57 @@ function annXORemove() {
 // Returns the same {root, pins, hl, stage} shape annInjectLayer does, so the
 // pins, the composer portal and annPlacePop need no second code path — the
 // stage is the overlay host itself, whose box IS the frame's box.
+// The annotation bar's node, built for whichever document the layer stands
+// in — the split layout's #leftview, the hosted shadow layer, the cross-origin
+// overlay — so annBarPaint can write to any of them by class. Empty of words:
+// the paint fills them from the mode. The picker is NOT built here: it is the
+// strip's own #anntool, portaled into `.slot` by the paint (one node, one
+// state, one set of handlers). Done's handler is this window's annDone, which
+// works on a node in any same-origin document.
+function annBarNode(doc) {
+  const bar = doc.createElement("div");
+  bar.className = "annbar";
+  bar.setAttribute("role", "toolbar");
+  bar.setAttribute("aria-label", "Annotation");
+  const lead = doc.createElement("div");
+  lead.className = "lead";
+  const tag = doc.createElement("span");
+  tag.className = "tag";
+  // The strip's own glyphs — the Comment seat's bubble, the mic — so the tag
+  // names the mode with the very icon the user pressed to enter it.
+  tag.innerHTML = '<svg class="ic-cmt" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg>'
+    + '<svg class="ic-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg>'
+    + '<b></b>';
+  const txt = doc.createElement("span");
+  txt.className = "txt";
+  lead.append(tag, txt);
+  const slot = doc.createElement("div");
+  slot.className = "slot";
+  const done = doc.createElement("button");
+  done.className = "done";
+  done.type = "button";
+  done.title = "Send the notes to Claude and finish · Esc cancels";
+  done.setAttribute("aria-label", "Done — send the notes and finish");
+  done.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl">Done</span>';
+  done.addEventListener("click", () => annDone());
+  // ■ plus the live clock while a walkthrough records — annRecPaint mirrors
+  // the strip's clock into `.clk`, one writer for both faces of the same
+  // fact. Click ends the recording exactly as the strip's seat does.
+  const stop = doc.createElement("button");
+  stop.className = "stop";
+  stop.type = "button";
+  stop.title = "Stop the recording · Esc also stops it";
+  stop.setAttribute("aria-label", "Stop the recording");
+  stop.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg><span class="clk"></span>';
+  stop.addEventListener("click", () => annRecEnd());
+  bar.append(lead, slot, done, stop);
+  // The bar's box changes with the pane (the divider drags, the window
+  // resizes) — refit the words on every change. The observer is the bar's
+  // OWN window's: the node may live in another document.
+  const RO = doc.defaultView && doc.defaultView.ResizeObserver;
+  if (RO) new RO(() => { if (bar === annBar) annBarFit(); }).observe(bar);
+  return bar;
+}
 function annXOLayer() {
   let pdoc = null;
   try { pdoc = window.parent.document; } catch (err) { return null; }
@@ -5869,7 +6103,7 @@ function annXOLayer() {
     hl.className = "hl";
     const pins = pdoc.createElement("div");
     pins.className = "pins";
-    root.append(style, catcher, hl, pins);
+    root.append(style, catcher, hl, pins, annBarNode(pdoc));
     catcher.addEventListener("click", (e) => {
       if (!annOn) return;
       e.preventDefault();
@@ -5897,6 +6131,7 @@ function annXOLayer() {
   return { root: host.shadowRoot,
            pins: host.shadowRoot.querySelector(".pins"),
            hl: host.shadowRoot.querySelector(".hl"),
+           bar: host.shadowRoot.querySelector(".annbar"),
            stage: host };
 }
 
@@ -5955,6 +6190,71 @@ const ANN_LAYER_CSS = [
   ".hl { position: absolute; display: none; pointer-events: none;"
   + " border: 1.5px solid #d97757; border-radius: 4px;"
   + " background: rgba(217, 119, 87, .14); }",
+  // The annotation bar — see .annbar in the page sheet for the why; same
+  // numbers, literal colours for the same reason the pin's are. The picker's
+  // rules are the strip's #anntool rules restated: the node is portaled in
+  // here and the strip's stylesheet cannot follow it.
+  // The bar and the picker in it read the SHELL's tokens, not literals: unlike
+  // a pin or the composer card — which float over the app and bring one fixed
+  // look — the bar is chrome, a row of the same strip the chat pane shows, and
+  // a dark strip over a light shell is the wrong theme (Akshil, 2026-09-05).
+  // annBarPaint copies this document's tokens onto the bar node (ANN_BAR_TOKENS)
+  // and re-copies when the theme flips; the literals are only the dark
+  // fallbacks for a token that has not arrived.
+  ".annbar { position: absolute; top: 0; left: 0; right: 0; box-sizing: border-box;"
+  + " height: 43px; display: none; align-items: center; gap: 12px; padding: 8px 16px;"
+  + " background: var(--bg, #191a1e); border-bottom: 1px solid var(--border, #34363e);"
+  + " color: var(--fg, #ececf1); pointer-events: auto; overflow: hidden;"
+  + " font: 400 12px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }",
+  ".annbar.show { display: flex; animation: annbarin .18s ease; }",
+  "@keyframes annbarin { from { opacity: 0; transform: translateY(-6px); } }",
+  "@media (prefers-reduced-motion: reduce) { .annbar.show { animation: none; } }",
+  ".annbar .lead { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px;"
+  + " overflow: hidden; }",
+  ".annbar .tag { flex-shrink: 0; height: 26px; color: var(--accent, #d97757); font-weight: 400;"
+  + " white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }",
+  ".annbar .tag b { font-weight: inherit; }",
+  ".annbar .tag svg { width: 14px; height: 14px; fill: none; stroke: currentColor;"
+  + " stroke-width: 1.5; stroke-linecap: round; flex-shrink: 0; }",
+  ".annbar .tag .ic-mic { display: none; }",
+  ".annbar.rec .tag .ic-mic { display: block; }",
+  ".annbar.rec .tag .ic-cmt { display: none; }",
+  ".annbar.rec .tag { color: var(--error, #f26d6d); }",
+  ".annbar .txt { min-width: 0; color: var(--fg, #ececf1); font-size: 13px; white-space: nowrap;"
+  + " overflow: hidden; text-overflow: ellipsis; }",
+  ".annbar .slot { display: flex; align-items: center; flex-shrink: 0; }",
+  ".annbar .slot:empty { display: none; }",
+  ".annbar .done, .annbar.rec .stop { border: 1px solid var(--accent, #d97757); border-radius: 8px;"
+  + " background: transparent; color: var(--accent, #d97757);"
+  + " font: 400 12px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;"
+  + " white-space: nowrap; height: 26px; padding: 0 10px; margin: 0; display: inline-flex;"
+  + " align-items: center; gap: 6px; cursor: pointer; flex-shrink: 0; }",
+  ".annbar .done:hover { background: color-mix(in srgb, var(--accent, #d97757) 14%, transparent); }",
+  ".annbar .done svg { width: 14px; height: 14px; fill: none; stroke: currentColor;"
+  + " stroke-width: 1.5; stroke-linecap: round; }",
+  ".annbar.rec .done { display: none; }",
+  ".annbar .stop { display: none; }",
+  ".annbar.rec .stop { border-color: var(--error, #f26d6d); color: var(--error, #f26d6d); }",
+  ".annbar .stop:hover { background: color-mix(in srgb, var(--error, #f26d6d) 14%, transparent); }",
+  ".annbar .stop svg { width: 14px; height: 14px; fill: currentColor; stroke: none; flex-shrink: 0; }",
+  ".annbar .stop .clk:empty { display: none; }",
+  ".annbar.t1 .txt { display: none; }",
+  ".annbar.t2 #anntool .lbl, .annbar.t2 .done .lbl { display: none; }",
+  ".annbar.t2 #anntool button, .annbar.t2 .done { padding: 0 8px; }",
+  ".annbar.t3 .tag b { display: none; }",
+  "#anntool { display: flex; flex-shrink: 0; border: 1px solid var(--border, #34363e);"
+  + " border-radius: 8px; overflow: hidden; height: 26px; }",
+  "#anntool[hidden] { display: none; }",
+  "#anntool button { border: 0; background: transparent; color: var(--dim, #9a9fa9); margin: 0;"
+  + " font: 400 12px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;"
+  + " padding: 0 10px; height: 100%; display: inline-flex; align-items: center; gap: 5px;"
+  + " cursor: pointer; }",
+  "#anntool button + button { border-left: 1px solid var(--border, #34363e); }",
+  "#anntool button:hover { color: var(--fg, #ececf1); background: var(--surface, #26282f); }",
+  '#anntool button[aria-checked="true"] { color: var(--on-accent, #1a1a1a); background: var(--accent, #d97757); }',
+  "#anntool svg { width: 14px; height: 14px; fill: none; stroke: currentColor;"
+  + " stroke-width: 1.5; stroke-linecap: round; flex-shrink: 0; }",
+  "#anntool svg .fill { fill: currentColor; stroke: none; }",
   // The note composer's looks, restated for the document it gets PORTALED into
   // (annPortalPop). The node is the very one the markup declares — its handlers
   // and its draft ride along — but a stylesheet does not: `#annpop` and friends
@@ -6023,12 +6323,14 @@ function annInjectLayer(doc) {
     // Ring first, pins second: painted in tree order, so a pin is never hidden
     // behind the ring of the element it marks (#annpins/#annhl do this with
     // z-index in the split layout, where they are not siblings of nothing else).
-    root.append(style, hl, pins);
+    // The bar last of the three, above the pins and — the portaled composer
+    // is appended after it — under the card.
+    root.append(style, hl, pins, annBarNode(doc));
     doc.body.appendChild(host);
   }
   const root = host.shadowRoot;
   return { root, pins: root.querySelector(".pins"), hl: root.querySelector(".hl"),
-           stage: doc.documentElement };
+           bar: root.querySelector(".annbar"), stage: doc.documentElement };
 }
 
 // Point the four bindings at whatever the host is showing NOW. Cheap enough to
@@ -6068,6 +6370,7 @@ function annSyncTarget() {
   const layer = doc ? annInjectLayer(doc) : (annXO ? annXOLayer() : null);
   annPins = layer && layer.pins;
   annHl = layer && layer.hl;
+  annBar = layer && layer.bar;
   annStageEl = layer && layer.stage;
   annLayerRoot = (layer && layer.root) || null;
   // The composer, while portaled, is a node we LENT to that document — and this
@@ -6222,6 +6525,119 @@ function annLabelFor(i) {
   return s;
 }
 
+// The annotation bar's ONE writer. Shown while a mode is armed — the
+// controls it carries are the mode's — and gone on disarm; not while the seat
+// is busy transcribing (the mode is still armed then, but the clicks are over).
+// Derived, never toggled: every path that changes the answer (arm, disarm, the
+// mic starting or stopping) repaints through renderAnn or calls this directly.
+//
+// The picker RIDES the bar: the strip's #anntool is adopted into the current
+// layer's slot on show, so whichever document the layer is in this round, the
+// one picker and its one state (annSetTool) are what the user clicks. A
+// cross-origin target has no elements to pick (annXO — annToolShow refuses
+// it too), so its bar is the sentence and Done alone. Between rounds the
+// node is left where it last stood, hidden; a layer rebuilt by a live reload
+// simply adopts it again.
+const ANN_BAR = {
+  comment: ["Comment", "Click an element or a point, then type the change."],
+  rec: ["Voice annotation", "Click an element or a point, then say the change."],
+};
+// The bar's words fit or fold, by MEASURE (the strip's annFitStrip idiom —
+// collision detection, never a breakpoint): everything on, then the sentence
+// yields first (.t1), the buttons' words second (.t2). Summed by hand like
+// the strip's verdict, with the sentence at its NATURAL width (scrollWidth:
+// the ellipsis has already clipped offsetWidth), so a folded bar can still
+// tell when there is room to unfold.
+function annBarFit() {
+  if (!annBar || !annBar.classList.contains("show")) return;
+  annBar.classList.remove("t1", "t2", "t3");
+  const cs = annBar.ownerDocument.defaultView.getComputedStyle(annBar);
+  const gap = parseFloat(cs.columnGap) || 0;
+  const box = annBar.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const tag = annBar.querySelector(".tag"), txt = annBar.querySelector(".txt");
+  const slot = annBar.querySelector(".slot"), done = annBar.querySelector(".done");
+  const stop = annBar.querySelector(".stop");
+  // tag + picker + Done/■, with the row's gaps between whichever are present.
+  const need = () => {
+    const parts = [slot.offsetWidth, done.offsetWidth, stop.offsetWidth].filter(Boolean);
+    return tag.offsetWidth + parts.reduce((a, b) => a + b, 0) + gap * parts.length;
+  };
+  const words = need();
+  if (words + 10 + txt.scrollWidth > box) annBar.classList.add("t1");
+  if (words > box) {
+    annBar.classList.add("t2");
+    // Re-measured with the buttons' words gone: the tag's word is the last
+    // to yield, and only if the icon-only buttons still do not fit.
+    if (need() > box) annBar.classList.add("t3");
+  }
+}
+// The hosted bar is an overlay in someone else's document, and "it covers the
+// top of the page" (Akshil, 2026-09-05) is answered by PUSHING that document
+// down by the bar's height while the bar shows — a margin on its root,
+// set with the important priority so an app's own reset cannot undo it,
+// removed on hide. One
+// document at a time: a target that changes under an armed mode (live reload,
+// the shell's mode switch) hands the margin back before the new one takes it.
+// Not the cross-origin overlay (that bar stands in the HOST's document, which
+// is not the app) and not the split layout (its bar is a real row — see
+// annStageOrNull).
+// The shell's palette, handed to a bar standing in another document: the
+// tokens the layer's .annbar rules read (with dark literals as fallbacks),
+// copied as inline custom properties on the node. Read off THIS document's
+// root, so `data-theme` here is what the bar over there wears.
+const ANN_BAR_TOKENS = ["--bg", "--surface", "--border", "--fg", "--dim", "--accent",
+                        "--on-accent", "--error"];
+function annBarTheme() {
+  if (!annBar || annBar.ownerDocument === document) return;   // the page sheet has them
+  const cs = getComputedStyle(document.documentElement);
+  for (const t of ANN_BAR_TOKENS) {
+    const v = cs.getPropertyValue(t).trim();
+    if (v) annBar.style.setProperty(t, v);
+  }
+}
+// A theme flip repaints the bar (the tokens are copied, not live).
+new MutationObserver(() => annBarPaint())
+  .observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+// The strip's clock, mirrored onto the bar's stop seat — same text, same tick.
+function annBarClock() {
+  const clk = annBar && annBar.querySelector(".stop .clk");
+  if (clk) clk.textContent = annRecOn ? annRecLbl.textContent : "";
+}
+let annPushedDoc = null;
+function annBarPush(doc) {
+  if (annPushedDoc && annPushedDoc !== doc) {
+    try { annPushedDoc.documentElement.style.removeProperty("margin-top"); } catch (err) { /* torn down */ }
+  }
+  annPushedDoc = doc;
+  if (doc) doc.documentElement.style.setProperty("margin-top", "43px", "important");
+}
+function annBarPaint() {
+  // No bar (the hosted target went away, or is showing nothing marked) still
+  // hands a pushed document its margin back (Bugbot, PR #1008): the frame the
+  // shell keeps mounted must not keep a 43px gap with no bar on it.
+  if (!annBar) { annBarPush(null); return; }
+  const show = annOn && !annCta.classList.contains("busy");
+  const hostedDoc = annBar.getRootNode() !== document && !annXO ? annBar.ownerDocument : null;
+  annBarPush(show ? hostedDoc : null);
+  const words = ANN_BAR[annRecOn ? "rec" : "comment"];
+  annBar.classList.toggle("rec", annRecOn);
+  annBarTheme();
+  annBarClock();
+  annBar.querySelector(".tag b").textContent = words[0];
+  annBar.querySelector(".txt").textContent = words[1];
+  annBar.classList.toggle("show", show);
+  if (!show) annBar.classList.remove("t1", "t2", "t3");   // a fresh fit on the next show
+  if (show && !annXO) {
+    const slot = annBar.querySelector(".slot");
+    if (annToolEl.parentNode !== slot) {
+      try {
+        slot.ownerDocument.adoptNode(annToolEl);
+        slot.appendChild(annToolEl);
+      } catch (err) { /* document torn down mid-gesture: next paint retries */ }
+    }
+  }
+  annBarFit();
+}
 function renderAnn() {
   // No pane, no pins and no chips: both hosts (#annpins over the frame, the two
   // #annchips rows in the composers) describe notes anchored to a document this
@@ -6243,6 +6659,9 @@ function renderAnn() {
   // `annCapable()` is false, and there is genuinely nothing to photograph.)
   if (noPane && !CHAT_ONLY) { renderShotChips(); return; }
   annSyncTarget();
+  // After the sync, which is what binds annBar to the layer the pins are
+  // about to land in.
+  annBarPaint();
   // pins over the frame
   if (annPins) {
     annPins.innerHTML = "";
@@ -6734,8 +7153,13 @@ document.addEventListener("mousedown", (e) => {
   // could reach annDone, silently dropping the words the user was about to
   // send (Bugbot, PR #664). The Element/Point picker rides along — choosing
   // the next click's tool is not walking away from this note.
+  // ...and the bar over the app (its ✓ Done, ■ and the picker it carries):
+  // the split layout's bar is in THIS document, and a mousedown on its Done
+  // closed the composer before annDone could commit the draft (Bugbot, PR
+  // #1008). Hosted, the bar is inside the layer host, which the target
+  // document's own handler already exempts.
   if (annPop.contains(t) || (t.closest && (t.closest(".annpin") || t.closest(".annchip")
-      || t.closest("#anncta") || t.closest("#anntool")))) return;
+      || t.closest("#anncta") || t.closest("#anntool") || t.closest(".annbar")))) return;
   annCloseComposer();
 });
 annDelBtn.addEventListener("click", () => {
@@ -6871,24 +7295,10 @@ function annToolHide() {
 // #anntools itself: annFitStrip writes #anntools's own class list, and
 // observing the node it writes would make every verdict schedule the next.
 const annToolsEl = document.getElementById("anntools");
-// The picker's width while it is OFF screen — RESERVED in the verdict below,
-// so arming Comment (which slides the picker in) can never flip the words to
-// icons under the click (Akshil, 2026-08-19: "it should remain consistent").
-// The row collapses a little early instead: words stay only where they would
-// still fit WITH the picker. Probed by giving the hidden node one out-of-flow
-// layout pass via inline style — not [hidden], which the observers watch, so
-// a probe never schedules a re-probe — inside a pre-paint callback, so
-// nothing flashes. No reservation for a picker that can never arrive: a
-// removed node (enterNoPane), a cross-origin target (annXO — annToolShow
-// refuses it), or no target at all (the buttons themselves are hidden).
-function annToolReserve() {
-  if (!annToolEl.hidden) return 0;   // already in the row, already measured
-  if (annXO || !annToolEl.isConnected || annBtn.hidden) return 0;
-  annToolEl.style.cssText = "display: flex; visibility: hidden; position: absolute;";
-  const w = annToolEl.offsetWidth;
-  annToolEl.style.cssText = "";
-  return w;
-}
+// No reserve for the picker any more: it slides onto the BAR over the app
+// (annBarPaint), never into this row, so the words here have nothing to make
+// room for. (2026-08-19 to 2026-09-04 it was reserved off screen so arming
+// could not flip the words under the click.)
 // NOT scrollWidth: a flex row's scrollWidth is floored at clientWidth, so
 // slack is invisible to it and adding the reserve would read as overflow on
 // a half-empty strip. The need is summed by hand — visible children, the
@@ -6904,8 +7314,6 @@ function annFitStrip() {
     need += c.offsetWidth;
     kids += 1;
   }
-  const reserve = annToolReserve();
-  if (reserve) { need += reserve; kids += 1; }
   if (kids > 1) need += (parseFloat(cs.columnGap) || 0) * (kids - 1);
   if (need > annToolsEl.clientWidth) annToolsEl.classList.add("tight");
 }
@@ -7004,6 +7412,8 @@ function annSetMode(on) {
     annBtn.setAttribute("aria-label", annOn
       ? "Done — send the notes and finish commenting"
       : "Comment on the " + paneNoun);
+    annDiscardBtn.setAttribute("aria-label", "Discard the notes");
+    annDiscardBtn.title = "Discard the notes — nothing is sent";
   }
   // Arming over a cross-origin target is the natural moment to raise the ONE
   // share prompt the tab-capture screenshots need (annXOStreamGet keeps the
@@ -7102,6 +7512,7 @@ function annRecPaint() {
   const secs = (performance.now() - annRecStartedAt) / 1000;
   annRecLbl.textContent = annRecClock(secs)
     + (annRecIds.length ? " · " + annRecIds.length : "");
+  annBarClock();
 }
 // Warm the transcriber the moment a recording STARTS, so the words are not
 // waiting on a cold model when it stops — the load runs while the reader is
@@ -7205,6 +7616,10 @@ async function annRecBegin() {
   annToolShow();
   annRecBtn.classList.add("on");
   annRecBtn.setAttribute("aria-pressed", "true");
+  // The bar swaps to the recording's sentence (and loses its Done — the stop
+  // is in the strip): annSetMode(true) above painted it before annRecOn was
+  // set, and nothing else repaints until the first mark.
+  annBarPaint();
   // Both buttons are exits now: the Comment seat has become the ■/clock stop
   // control (the stylesheet swaps its face off `.on`), and the pulsing mic
   // stops too — either click ends the walkthrough. The aria-label too, not
@@ -7215,6 +7630,8 @@ async function annRecBegin() {
   annRecBtn.title = "Recording — click to stop · Esc also stops it";
   annBtn.setAttribute("aria-label", "Stop the recording");
   annBtn.title = "Stop the recording · Esc also stops it";
+  annDiscardBtn.setAttribute("aria-label", "Discard the recording");
+  annDiscardBtn.title = "Discard the recording — nothing is transcribed or sent";
   annRecPaint();
   annRecTimerId = setInterval(annRecPaint, 250);
 }
@@ -7459,6 +7876,7 @@ async function annRecEnd() {
   annBtn.title = "Stopping the recording…";
   annCta.classList.add("busy");
   annRecLbl.textContent = "Stopping…";
+  annBarPaint();   // the clicks are over: the bar goes with them
   // The ending that KEEPS the file (CP-4) — `cancel()` is the discard. Its
   // reply is the finished file, so nothing here uploads anything. Swallowed
   // like the transcription below: a failed stop leaves the clicks stamped and
@@ -7637,6 +8055,7 @@ async function annRecDiscard() {
   annBtn.title = "Discarding the recording…";
   annCta.classList.add("busy");
   annRecLbl.textContent = "Discarding…";
+  annBarPaint();   // the clicks are over: the bar goes with them
   // `cancel()` STOPS AND DELETES (CP-4) — the ✕'s own meaning — where a stop
   // would leave the file behind. It cannot lose to the stop seat either: the
   // handle memoizes ONE ending, so a stop click landing inside this await gets
@@ -7669,7 +8088,24 @@ async function annRecDiscard() {
   // the settle is not this discard's to close.
   if (annOn && annArmEpoch === armed) annSetMode(false);
 }
-annDiscardBtn.addEventListener("click", () => annRecDiscard());
+// Comment mode's discard (Akshil, 2026-09-04): the round's unsent notes are
+// deleted — an open draft with them — and the mode goes away. Earlier rounds'
+// notes are not this round's to throw (annRoundStart), and sent ones are
+// already Claude's.
+function annNotesDiscard() {
+  // Not while a walkthrough settles either (Bugbot, PR #1008): annRecOn is
+  // already down through Stopping…/Transcribing…, and the marks are the
+  // recording's, waiting for words — not a typed round to throw away.
+  if (annRecOn || !annOn || annCta.classList.contains("busy")) return;
+  annCloseComposer();
+  const keep = annotations.filter((a) => a.sent || (a.createdAt || 0) < annRoundStart);
+  if (keep.length !== annotations.length) {
+    annotations = keep;
+    annSave();
+  }
+  annSetMode(false);
+}
+annDiscardBtn.addEventListener("click", () => (annRecOn ? annRecDiscard() : annNotesDiscard()));
 
 // ── hosted only: keeping up with a target this document cannot hear ────────
 // The split layout is told about its pane by the pane itself — one iframe, one
