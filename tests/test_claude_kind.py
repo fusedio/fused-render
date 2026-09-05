@@ -477,11 +477,17 @@ def test_the_hosted_pin_overlay_is_injected_into_the_target_document():
     # Found again rather than stacked: a second call on the same document reuses
     # the layer it already put there.
     assert 'doc.querySelector("[" + ANN_LAYER_MARK + "]")' in inject
-    # The injected stylesheet travels with the injection and names no token — it
-    # lives in a document that never heard of this page's palette.
+    # The injected stylesheet travels with the injection and the PIN, RING and
+    # COMPOSER rules name no token — they float over the app in a document that
+    # never heard of this page's palette. The bar's rules (and the picker's,
+    # which rides it) are the exception since 2026-09-05: the bar is shell
+    # chrome and reads the shell's tokens, copied onto the node by annBarTheme,
+    # with the dark literals only as fallbacks.
     css = code[code.index("const ANN_LAYER_CSS = ["):]
     css = css[:css.index('].join("\\n");')]
-    assert "var(--" not in css
+    floating = css[:css.index(".annbar {")] + css[css.index('"#annpop { position: absolute;'):]
+    assert "var(--" not in floating
+    assert "var(--bg, #191a1e)" in css   # fallback beside every token
     assert "box-sizing: border-box" in css, \
         "no reset comes with a shadow tree, and the ring's border would grow it"
     # And the app's own outline never reports our layer as part of the app.
@@ -659,8 +665,11 @@ def test_the_re_render_observer_follows_the_target_document():
     # (2026-08-19) watches the #anntools clusters for the strip's word-fit, and
     # fitComposerChrome's (2026-08-20) watches the composer rows and the landing
     # title for the control row's compact/stack verdict. Both stay in the PARENT
-    # document and never look at the target's.
-    assert code.count("new MutationObserver") == 3
+    # document and never look at the target's. The fourth (2026-09-05) watches
+    # THIS document's `data-theme` to re-copy the shell's tokens onto the bar —
+    # also a fact about this document's own chrome, never the pane's.
+    assert code.count("new MutationObserver") == 4
+    assert 'attributeFilter: ["data-theme"] });' in code
     fit = code[code.index("const mo = new MutationObserver(annFitStrip);"):]
     fit = fit[:fit.index("\n}")]
     assert "[annToolEl, annCta]" in fit, \
