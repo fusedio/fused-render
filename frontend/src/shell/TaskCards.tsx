@@ -231,14 +231,12 @@ export function TaskCards({
           // reload). This is what makes a poll a re-render and not twelve
           // reloads.
           //
-          // And not `task.key` either, which is what this was and which is a
-          // key that CHANGES under one task: a scheduled run is listed as
-          // `pending:<entry>` until its session reports, then relisted under the
-          // session id (§5), so every card was being torn down and rebuilt about
-          // two seconds after it appeared. `cardKey` carries across that
-          // handover, and it says at length why the task NUMBER is the half that
-          // does — and why the one case where even the number moves cannot reach
-          // a card that has a session to frame.
+          // `cardKey` — the row key, since 2026-09-06 — rather than the task
+          // NUMBER it was for three days: two sessions can share a number (the
+          // rekey at the pending → session handover is refused when the session
+          // already holds one), and a wall keyed on the number drew one of the
+          // two and opened the other. cardKey says why the handover remount
+          // this gives back only ever rebuilds a "Starting…" placeholder.
           key={cardKey(task)}
           task={task}
           home={home}

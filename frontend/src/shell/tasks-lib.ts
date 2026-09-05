@@ -2890,49 +2890,39 @@ export interface TaskCardSet {
 }
 
 /**
- * WHAT A CARD IS, ACROSS THE ONE MOMENT ITS ROW CHANGES IDENTITY.
+ * WHAT A CARD IS: the server's row key — the session id once there is one, the
+ * `pending:<entry>` key before it.
  *
- * A scheduled run is claimed and sent before anything knows which Claude session
- * it opened, so for that whole window the task is listed under `pending:<entry>`
- * — and the moment the session reports, the SAME task is relisted under the
- * session id and the pending key is declared gone (§5, routers/tasks.py). Keyed
- * on `task.key`, React sees that as one card leaving and another arriving: the
- * whole card is torn down and rebuilt. Measured on this branch, about two
- * seconds after every new task appeared — one of the "multiple" shifts the user
- * reported (Akshil, 2026-09-03).
+ * It was the (project, task number) pair from 2026-09-03 to 2026-09-06, so a
+ * scheduled run's card could carry across the pending → session handover
+ * without a remount (`task_id` is moved onto the session key by that
+ * transition — tasks_store.ensure_ids' `rekeys` pass). That rested on ONE NUMBER
+ * NAMING ONE TASK, and a live list showed it does not: four (project, number)
+ * pairs each held two different sessions — an archived "Current worktrees" and
+ * a done "Investigate Python 3.12" both as TASK-007, say — because the rekey is
+ * refused when the session key already holds a number and the pending row's
+ * number is respent. Keyed on the pair, the wall drew ONE of each twin (the
+ * dedupe below kept the first) and the popup, resolving the clicked card by the
+ * same pair, could land on the OTHER — a card saying one task and a modal
+ * opening another (Akshil, 2026-09-06). Showing Archive on the wall is what
+ * surfaced it: that is where the twins live.
  *
- * THE NUMBER IS WHAT USUALLY SURVIVES IT. `task_id` is allocated once and then
- * MOVED onto the session key by that same transition (tasks_store.ensure_ids'
- * `rekeys` pass, which exists for exactly this), so "TASK-097" names one task
- * across the handover while `key` does not.
+ * WHAT THE PAIR BOUGHT IS NOT WORTH THAT. The handover it smoothed happens only
+ * while the task has no session — while its card is a "Starting…" placeholder
+ * with nothing to frame — so what is torn down and rebuilt at the handover is a
+ * placeholder, in the same grid slot, and no streaming conversation is ever
+ * touched: a card that has a frame has a session key, and a session key never
+ * changes. The row key, on the other hand, is unique by construction (it IS the
+ * server's row identity), so two sessions are two cards and a click resolves to
+ * the card it landed on and nothing else.
  *
- * NOT ALWAYS, AND IT DOES NOT NEED TO BE — this is the part worth knowing. The
- * rekey is refused when the session key ALREADY holds a number, which happens
- * when the transcript is listed before the scheduled entry has been joined to
- * it: the session is numbered on its own, and the pending row's number is
- * SPENT (`ensure_ids` says so, and a live task_ids.json shows both outcomes —
- * three tasks whose number moved onto the session id, and one left stranded
- * under `pending:…` while its session took the next number). So the identity can
- * still change once.
- *
- * WHAT MAKES THAT HARMLESS is WHEN it can happen: only while the task has no
- * session id, which is exactly while its card has nothing to frame and is
- * showing "Starting…" (TaskCards). Once a card is streaming, its key is a
- * session key with a number already on it, and `ensure_ids` never renumbers what
- * it has numbered — so no conversation on this wall can be torn down. The worst
- * case is a placeholder replaced by a placeholder, in the same grid slot.
- *
- * THE PAIR, not the number alone: numbers are allocated per PROJECT, so two
- * projects may each hold a TASK-097 and the wall can show both. `\u0000` as the
- * joiner because it is the one character neither a path nor a task number can
- * contain, so no pair can be spelled two ways.
- *
- * FALLS BACK TO `key` when there is no number: `ensure_ids` answers `{}` on a
- * read-only state dir (the numbers stay blank until it is writable again), and a
- * card with no identity at all is worse than one that remounts.
+ * Still a function of its own rather than `task.key` at the call sites, because
+ * the identity is a decision this view makes and one that has already changed
+ * once; the seams that read it (the React key, the dedupe, the popup's lookup)
+ * should keep reading one name.
  */
 export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string {
-  return task.task_id ? `${task.project}\u0000${task.task_id}` : task.key;
+  return task.key;
 }
 
 /**
@@ -2989,10 +2979,10 @@ export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string
  *
  * ONE CARD PER IDENTITY. Deduplicated on `cardKey`, which is what the view keys
  * its iframes on — two rows resolving to one card would be a React duplicate key
- * and two iframes fighting over one slot. The server does not emit such a pair
- * (a pending row is gone the moment its entry has a session — routers/tasks.py
- * on `/api/tasks/changes`), so this is a guard rather than a fix, and it keeps
- * the FIRST of the two, which is the one the sort already placed.
+ * and two iframes fighting over one slot. With the identity the row key (see
+ * cardKey) the server cannot emit such a pair, so this is a guard rather than a
+ * fix, and it keeps the FIRST of the two, which is the one the sort already
+ * placed.
  *
  * A new array; the input is never mutated (it is the polled list, which React is
  * still holding).

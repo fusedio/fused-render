@@ -6662,25 +6662,25 @@ describe("cardsForTasks", () => {
     expect(cardsForTasks(after).cards.map((t) => t.key)).toEqual(order);
   });
 
-  it("is one card per identity, across the pending → session handover", () => {
-    // A scheduled run is listed under `pending:<entry>` until its session
-    // reports, then under the session id — one task, two keys, and keying a card
-    // on `task.key` tore the whole card down two seconds after it appeared.
-    // `cardKey` is what carries across that (see its own note for the one case
-    // where even the number moves, and why that case cannot reach a card that is
-    // already streaming), and the set is deduplicated on it so a server that
-    // ever did list both at once would draw one card rather than two fighting
-    // over a slot.
+  it("is one card per ROW: two sessions sharing a task number are two cards", () => {
+    // The identity was the (project, number) pair until 2026-09-06, when a live
+    // list showed two different sessions under one TASK-007 — the wall drew one
+    // of them and the popup could open the other (Akshil: a card "says different
+    // task on card but open different task in modal"). The row key is unique by
+    // construction; see cardKey for why the handover it stops smoothing only ever
+    // rebuilt a "Starting…" placeholder.
+    const a = task({ key: "sess-a", task_id: "TASK-007", status: "archived", project: "/p" });
+    const b = task({ key: "sess-b", task_id: "TASK-007", status: "done", project: "/p" });
+    expect(cardKey(a)).not.toBe(cardKey(b));
+    expect(cardsForTasks([a, b]).cards.map((t) => t.key)).toEqual(["sess-b", "sess-a"]);
+    // The handover: the pending row and the settled row are two identities now,
+    // and a server that listed both at once would draw both — the dedupe is a
+    // guard against a same-key pair only.
     const pending = running("pending:e1", 100, { task_id: "TASK-097", session_id: "" });
     const settled = running("sess-9", 100, { task_id: "TASK-097" });
-    expect(cardKey(pending)).toBe(cardKey(settled));
-    expect(cardsForTasks([pending, settled]).cards.map((t) => t.key))
-      .toEqual(["pending:e1"]);
-    // Two projects may each hold a TASK-097 — the number is allocated per
-    // project — so the pair, not the number, is the identity.
-    expect(cardKey({ key: "k", task_id: "TASK-097", project: "/a" }))
-      .not.toBe(cardKey({ key: "k", task_id: "TASK-097", project: "/b" }));
-    // No number at all (a read-only state dir): the row's own key stands in.
+    expect(cardKey(pending)).not.toBe(cardKey(settled));
+    expect(cardsForTasks([settled, settled]).cards.map((t) => t.key)).toEqual(["sess-9"]);
+    // No number at all (a read-only state dir): still the row's own key.
     expect(cardKey({ key: "sess-3", task_id: "", project: "/a" })).toBe("sess-3");
   });
 
