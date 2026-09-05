@@ -6712,10 +6712,10 @@ describe("cardsForTasks", () => {
     expect(cardsForTasks(older).cards.map((t) => t.key)).toEqual(["a", "b"]);
   });
 
-  it("draws a page of nine and counts what is behind it", () => {
-    // Nine: six in view and one more row loaded under the fold (Akshil,
-    // 2026-09-05: "6 in view, and 3 more loaded if user wants to scroll").
-    expect(CARD_PAGE).toBe(9);
+  it("draws a page of six and counts what is behind it", () => {
+    // Six: exactly the two rows in view (Akshil, 2026-09-05: "6 cards loaded
+    // instead of nine, and show 6 more cards when we click on show more").
+    expect(CARD_PAGE).toBe(6);
     const rows = Array.from({ length: CARD_PAGE + 3 }, (_, i) =>
       running(`t${i}`, 1000 - i),
     );
@@ -6779,7 +6779,7 @@ describe("the Cards view's frame", () => {
   });
 
   it("lays the wall out three across, two down, and scrolls the rest — never sideways", () => {
-    // Six in view, nine loaded, then scroll (Akshil, 2026-09-04/05) — the frame
+    // Six in view, six loaded, then Show more (Akshil, 2026-09-04/05) — the frame
     // inside is scaled so a third column stays readable. The wall is the scroll
     // container, in the List's own shape, and the rows are sized from it so two
     // rows fill the height the toolbar leaves on ANY monitor.
@@ -6831,7 +6831,17 @@ describe("the Cards view's frame", () => {
     expect(row.indexOf("tasks-id--task")).toBeLessThan(row.indexOf("task-card-when"));
     expect(head.indexOf("</div>")).toBeLessThan(head.indexOf('className="task-card-title"'));
     expect(block(CARDS_CSS, ".task-card-head")).toContain("flex-direction: column");
-    expect(block(CARDS_CSS, ".task-card-head-row > .task-card-when")).toContain("margin-left: auto");
+    expect(block(CARDS_CSS, ".task-card-head-row > .schedule-tv-id")).toContain("margin-left: auto");
+    // The tag wears the List row's skin, widened to this row in tasks.css — not
+    // a copy of it here (Akshil, 2026-09-05: "project name ui as is from list").
+    const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
+    expect(TASKS_CSS).toContain(".task-card-head-row .schedule-tv-id--tag,\n.tasks-row .schedule-tv-id--tag {");
+    expect(TASKS_CSS).toContain(".task-card-head-row .schedule-tv-id--tag.is-on,\n.tasks-row .schedule-tv-id--tag.is-on {");
+    // ...except the ROW's vertical trick, which this one-line head undoes: no
+    // negative margin, no stretched shield, so the name sits on the same line
+    // as the id and the time (Akshil, 2026-09-05, screenshot).
+    expect(block(CARDS_CSS, ".task-card-head-row .schedule-tv-id--tag")).toContain("margin-block: 0");
+    expect(block(CARDS_CSS, ".task-card-head-row .schedule-tv-id-shield")).toContain("align-self: center");
     expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100cqh - 12px) / 2));");
     // A fixed COUNT, not auto-fill/auto-fit: the wall must not re-flow every time
     // the window grows by a card's worth.
@@ -6855,7 +6865,7 @@ describe("the Cards view's frame", () => {
     expect(SCHEDULED).toContain("<TaskCards");
   });
 
-  it("grows by a page of nine on the trailing card, and never navigates away", () => {
+  it("grows by a page of six on the trailing strip, and never navigates away", () => {
     // "Show 9 more" adds the next page in place (Akshil, 2026-09-05). The old
     // trailing card handed the overflow to the List; this one stays on the wall.
     expect(CARDS).toContain("const [pages, setPages] = useState(1);");
@@ -6879,6 +6889,9 @@ describe("the Cards view's frame", () => {
     expect(head).toContain('role="button"');
     expect(head).toContain("onClick={() => onPeek(task)}");
     expect(head).toContain('e.key === "Enter" || e.key === " "');
+    // ...for keys pressed on the head itself: the folder chip inside it is a
+    // button whose Enter/Space bubble up (Bugbot, #1011).
+    expect(head).toContain("if (e.target !== e.currentTarget) return;");
     // The head has no Open of its own any more — the popup carries the doors.
     expect(head).not.toContain("href");
     // The app's one modal chassis, at 60vw, with the matching height in CSS.
@@ -6895,14 +6908,47 @@ describe("the Cards view's frame", () => {
     expect(peekFrameSrc("/tpl/claude.html", "/Users/me/proj", "sess-9")).toBe(
       "/render?path=%2Ftpl%2Fclaude.html&_file=%2FUsers%2Fme%2Fproj&chat_only=1&peek=1&session_id=sess-9",
     );
-    // The two doors, folder then Archive, in the head beside the ✕ as the app's
+    // The two doors, Archive then folder, in the head beside the ✕ as the app's
     // own buttons — icon AND word (Akshil, 2026-09-05: an icon alone "is not
     // clear"). No "Open in Tasks": we are already in Tasks.
     const acts = CARDS.slice(CARDS.indexOf("headActions={"), CARDS.indexOf("footer={"));
     expect(acts).not.toContain("Open in Tasks");
     expect(acts.indexOf("Open in Explorer")).toBeGreaterThan(-1);
-    expect(acts.indexOf("Open in Explorer")).toBeLessThan(acts.indexOf("{filing.label}"));
+    // Archive first, the folder last, beside the close button (Akshil, 2026-09-05).
+    expect(acts.indexOf("{filing.label}")).toBeLessThan(acts.indexOf("Open in Explorer"));
     expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(2);
+    // The folder chip, the List row's own, at the right before the time — and
+    // the List's TAG: pressed, it filters the page (Akshil, 2026-09-05), through
+    // the one handler Scheduled hands both views, wearing the pinned state.
+    const headRow = CARDS.slice(CARDS.indexOf('<div className="task-card-head-row">'), CARDS.indexOf("</div>", CARDS.indexOf('<div className="task-card-head-row">')));
+    expect(headRow).toContain("name={basename(task.project)}");
+    expect(headRow).toContain("onPick={project.onPick && (() => project.onPick?.(task.project))}");
+    expect(headRow).toContain("active={project.pinned}");
+    expect(SCHEDULED).toContain("const pickProject = (project: string) =>");
+    expect((SCHEDULED.match(/onPickProject=\{pickProject\}/g) ?? []).length).toBe(2);
+    expect((SCHEDULED.match(/pinnedProjects=\{filters\.projects\}/g) ?? []).length).toBe(2);
+    // ...and shown by the List's rule: only when the cards span folders, or the
+    // page is pinned to one.
+    expect(CARDS).toContain("spansProjects(cards) || pinnedProjects.length > 0");
+    expect(headRow.indexOf("<IdentityChip")).toBeLessThan(headRow.indexOf("task-card-when"));
+    expect(headRow.indexOf("tasks-id--task")).toBeLessThan(headRow.indexOf("<IdentityChip"));
+    expect(block(CARDS_CSS, ".task-card-head-row > .schedule-tv-id")).toContain("margin-left: auto");
+    // The tag wears the List row's skin, widened to this row in tasks.css — not
+    // a copy of it here (Akshil, 2026-09-05: "project name ui as is from list").
+    const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
+    expect(TASKS_CSS).toContain(".task-card-head-row .schedule-tv-id--tag,\n.tasks-row .schedule-tv-id--tag {");
+    expect(TASKS_CSS).toContain(".task-card-head-row .schedule-tv-id--tag.is-on,\n.tasks-row .schedule-tv-id--tag.is-on {");
+    // ...except the ROW's vertical trick, which this one-line head undoes: no
+    // negative margin, no stretched shield, so the name sits on the same line
+    // as the id and the time (Akshil, 2026-09-05, screenshot).
+    expect(block(CARDS_CSS, ".task-card-head-row .schedule-tv-id--tag")).toContain("margin-block: 0");
+    expect(block(CARDS_CSS, ".task-card-head-row .schedule-tv-id-shield")).toContain("align-self: center");
+    // Columns step on the WALL's width, not the window's: container queries
+    // against the scroller, never a media query (Akshil, 2026-09-05: the
+    // sidebar's 232px were invisible to a media query).
+    expect(CARDS_CSS).not.toContain("@media");
+    expect(CARDS_CSS).toContain("@container (max-width: 920px)");
+    expect(CARDS_CSS).toContain("@container (max-width: 600px)");
     expect(acts).toContain("{ICON_FOLDER}\n              Open in Explorer");
     // Bugbot, #1009: the popup follows the polls (a "Starting…" task gains its
     // session), survives an empty wall (a failed poll, a filter), and puts the

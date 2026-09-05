@@ -680,6 +680,12 @@ button.tasks-caret,
    focus. `-4px/-6px` negative margins with matching padding, so growing the box
    costs no layout — the chip occupies the same space it did as a bare label and
    nothing beside it moves when the pointer arrives. */
+/* AND THE CARDS WALL'S HEAD ROW, on every rule of this tag from here down: the
+   folder chip in a card's head is this same tag (Akshil, 2026-09-05: "project
+   name ui as is from list view"), and a skin scoped to `.tasks-row` alone left
+   it a bare button there. One skin, two hosts; only the row's `::after` band
+   stays the row's, because its reach is the row's own padding. */
+.task-card-head-row .schedule-tv-id--tag,
 .tasks-row .schedule-tv-id--tag {
   appearance: none;
   border: 0;
@@ -746,6 +752,7 @@ button.tasks-caret,
    (so the pill keeps its own hover, cursor and press) while the shield's own
    `z-index: 2` keeps the whole subtree above `.tasks-rowlink` at `z-index: 1`.
    That is the entire mechanism by which a near-miss stops opening the task. */
+.task-card-head-row .schedule-tv-id-shield,
 .tasks-row .schedule-tv-id-shield {
   flex: 0 0 auto;
   display: inline-flex;
@@ -771,11 +778,14 @@ button.tasks-caret,
    a row rather than on a bar. On the BUTTON, which is the pill: the wash and the
    target are the same box again, and the shield above it is what keeps a
    near-miss from doing anything at all. */
+.task-card-head-row .schedule-tv-id--tag:hover,
+.task-card-head-row .schedule-tv-id--tag:focus-visible,
 .tasks-row .schedule-tv-id--tag:hover,
 .tasks-row .schedule-tv-id--tag:focus-visible {
   background: var(--ctl-quiet-bg-hover);
 }
 
+.task-card-head-row .schedule-tv-id--tag:focus-visible,
 .tasks-row .schedule-tv-id--tag:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 0;
@@ -803,6 +813,7 @@ button.tasks-caret,
 
    ON THE BUTTON, which is the pill again since the shield took over the target
    (2026-08-24): the state and the thing it is a state OF are one box. */
+.task-card-head-row .schedule-tv-id--tag.is-on,
 .tasks-row .schedule-tv-id--tag.is-on {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
@@ -810,6 +821,8 @@ button.tasks-caret,
 
 /* Hover must not wash the accent away — the quiet rule above is a plain
    `background`, and on the ON chip it would win by source order. */
+.task-card-head-row .schedule-tv-id--tag.is-on:hover,
+.task-card-head-row .schedule-tv-id--tag.is-on:focus-visible,
 .tasks-row .schedule-tv-id--tag.is-on:hover,
 .tasks-row .schedule-tv-id--tag.is-on:focus-visible {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
@@ -820,6 +833,7 @@ button.tasks-caret,
    so the chip's only child is its name. The class itself is still live for the
    OTHER folder rows in this file's neighbour (the recents list), which draw their
    own glyph. */
+.task-card-head-row .schedule-tv-id--tag.is-on .schedule-tv-id-name,
 .tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name {
   color: var(--fg);
   opacity: 1;
@@ -829,6 +843,7 @@ button.tasks-caret,
    board card it is the thing that must shrink. On a task ROW it is not: the title
    is, and a chip that shrank alongside it would ellipsise a folder name while the
    title still had room. Scoped here so the card keeps its own answer. */
+.task-card-head-row .schedule-tv-id,
 .tasks-row .schedule-tv-id {
   flex: 0 0 auto;
 }
@@ -845,6 +860,7 @@ button.tasks-caret,
    is deliberately untouched here (it keeps `.tasks-msg-time`'s register, which the
    thread below shares — two weights for one fact is how a row and its thread part
    company). */
+.task-card-head-row .schedule-tv-id-name,
 .tasks-row .schedule-tv-id-name {
   color: var(--fg);
 }

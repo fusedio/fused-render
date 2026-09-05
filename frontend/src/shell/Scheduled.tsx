@@ -397,6 +397,22 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     };
   }, []);
 
+  // A folder chip pressed on a row or a card: filter the page to that
+  // project, pressing the pinned one again clears it. It REPLACES the project
+  // selection rather than adding to it — the gesture means "show me this
+  // folder", and a press that quietly widened an existing selection would be
+  // the opposite of what it looks like. Everything else about the filters is
+  // left alone, so a status or a search already on stays on. A TOGGLE, because
+  // the chip stays on screen wearing the state: pressing the folder you are
+  // already filtered to is the obvious way to let it go. ONE handler for the
+  // List and the Cards wall (Akshil, 2026-09-05: the card's chip must filter
+  // like the List's), so the two cannot drift.
+  const pickProject = (project: string) =>
+    setFilters((f) => ({
+      ...f,
+      projects: f.projects.length === 1 && f.projects[0] === project ? [] : [project],
+    }));
+
   const pickView = (v: TaskView) => {
     setView(v);
     // Into the URL, so the view is a thing you can link to and reload onto.
@@ -621,6 +637,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               home={home}
               onReload={reload}
+              // The folder chip in a card's head is the List row's filter tag
+              // (Akshil, 2026-09-05): same handler, same pinned state.
+              onPickProject={pickProject}
+              pinnedProjects={filters.projects}
             />
           ) : (
             <TaskList
@@ -639,20 +659,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // an existing selection would be the opposite of what it looks
               // like. Everything else about the filters is left alone, so a
               // status or a search already on stays on.
-              onPickProject={(project) =>
-                setFilters((f) => ({
-                  ...f,
-                  // A TOGGLE, because the chip stays on screen wearing the
-                  // state: pressing the folder you are already filtered to is
-                  // the obvious way to let it go, and it is the only way that
-                  // does not send the reader to the toolbar popover to undo a
-                  // gesture they made in the list.
-                  projects:
-                    f.projects.length === 1 && f.projects[0] === project
-                      ? []
-                      : [project],
-                }))
-              }
+              onPickProject={pickProject}
               // Which project the page is pinned to — so the chip survives the
               // filter that makes every row agree, and shows that it is on.
               pinnedProjects={filters.projects}
