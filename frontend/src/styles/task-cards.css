@@ -323,6 +323,14 @@
   white-space: nowrap;
 }
 
+/* The popup's head is the card head grown, so it stands on the same ground
+   (.task-card-head: --row-bg-hover) — the chassis's head is transparent over
+   the dialog, which here is the chat frame's own colour (Akshil, 2026-09-06:
+   "inside the modal the heading contrast color change is not applied"). */
+.task-peek .modal-head {
+  background: var(--row-bg-hover);
+}
+
 /* The chassis's h2 is the head's flexible cell; it must not stretch the title
    group to the actions, or the group's empty right half would wear the hint. */
 .task-peek .modal-head > h2 {
