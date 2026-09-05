@@ -1,7 +1,7 @@
 // The Tasks page's fourth view: CARDS — every task's conversation, side by
 // side, the running ones streaming (Akshil, 2026-09-03: "like a eagle eye view
-// of all chats streaming in at the same time"; 2026-09-05: "all tasks here
-// except archived").
+// of all chats streaming in at the same time"; 2026-09-05: every status,
+// "even archived ones").
 //
 // It is the one view on this page that does not draw ROWS ABOUT tasks. The List,
 // the Board and the Calendar all answer "what is there and where does it sit";
@@ -108,8 +108,8 @@ export function TaskCards({
   onPickProject,
   pinnedProjects = [],
 }: {
-  /** Already filtered, in the SERVER's order — `cardsForTasks` drops the
-   * archived ones and orders the rest, which is the one thing this view does to
+  /** Already filtered, in the SERVER's order — `cardsForTasks` orders it by
+   * lane (every lane, Archive last), which is the one thing this view does to
    * the set it is handed and the one place it is decided. */
   tasks: Task[];
   home?: string;

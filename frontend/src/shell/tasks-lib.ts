@@ -2839,14 +2839,16 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
 // in at the same time"). It is not another arrangement of the same rows — each
 // card shows the task's live conversation rather than a title and a time.
 //
-// EVERY TASK BUT THE ARCHIVED ONES (Akshil, 2026-09-05: "we show all tasks here
-// except archived"). The wall began as the running set alone; a finished run's
-// transcript is as much worth a glance as a live one, and Archive is the one
-// lane whose whole meaning is "not on any wall". So the membership test is the
-// List's own rank order minus that lane, and the RANK is the List's too: which
-// lane comes first is written down exactly once (LIST_ORDER) and this view reads
-// it rather than keeping a second table in step. Needs attention at the top,
-// because a parked run is the one card that needs a person; Done at the bottom.
+// EVERY TASK, EVERY STATUS (Akshil, 2026-09-05, later the same day: "show all
+// status tasks in cards even archived ones"). The wall began as the running set
+// alone, grew to every lane but Archive that morning, and now draws Archive too:
+// an archived conversation is still a conversation worth a glance, and the
+// Status filter — not the view — is where a reader narrows the wall. So the
+// membership test is the List's own rank order, whole, and the RANK is the
+// List's too: which lane comes first is written down exactly once (LIST_ORDER)
+// and this view reads it rather than keeping a second table in step. Needs
+// attention at the top, because a parked run is the one card that needs a
+// person; Archive at the bottom, under Done.
 //
 // The one decision that is this view's own is the clock inside a lane: `started`
 // rather than `last_active`, because `last_active` climbs on every write and
@@ -2857,8 +2859,10 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
 // are the ones worth testing and a grid of iframes is the last place to test
 // anything.
 
-/** The lanes a Cards view draws, top rank first — LIST_ORDER without Archive. */
-export const CARD_LANES: BoardColumn[] = LIST_ORDER.filter((key) => key !== "archived");
+/** The lanes a Cards view draws, top rank first — LIST_ORDER, whole. Kept as
+ * its own name so the view's membership test reads as a decision, not a
+ * coincidence of the List's table. */
+export const CARD_LANES: BoardColumn[] = LIST_ORDER;
 
 /**
  * HOW MANY LIVE CHATS PER PAGE. Each card is an iframe running the chat template,
@@ -2940,7 +2944,7 @@ export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string
  * that buried the only card on it that needs a person: a run parked on a
  * question stops ticking `last_active` the moment it asks, so the longer it
  * waits the further down it sinks — exactly backwards. The rank is a card's
- * lane's index in `CARD_LANES`, which is LIST_ORDER without Archive, so this
+ * lane's index in `CARD_LANES`, which is LIST_ORDER whole, so this
  * cannot drift out of step with the List: the same rows in the same lane order
  * in both views, which is what makes switching between them a change of shape
  * rather than of subject.

@@ -630,10 +630,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             <TaskBoard tasks={shown} home={home} onReload={reload} />
           ) : view === "cards" ? (
             <TaskCards
-              // The FILTERED set, like every other view: Cards narrows it again
-              // (tasks-lib.cardsForTasks drops Archive), and a Project or a
-              // Search the reader set on another view is a lens they meant to
-              // keep — the same argument that put the toolbar on the calendar.
+              // The FILTERED set, like every other view: Cards only ORDERS it
+              // (tasks-lib.cardsForTasks — every lane, Archive last), and a
+              // Project, Status or Search the reader set on another view is a
+              // lens they meant to keep — the same argument that put the
+              // toolbar on the calendar.
               tasks={shown}
               home={home}
               onReload={reload}
