@@ -305,6 +305,11 @@ function TaskCard({
         aria-label={`Preview ${task.task_id}`}
         onClick={() => onPeek(task)}
         onKeyDown={(e) => {
+          // Only a key pressed ON THE HEAD. The folder chip inside it is a real
+          // button of its own; its Enter and Space bubble here, and answering
+          // them would cancel the chip's press and open the popup instead of
+          // filtering (Bugbot, #1011).
+          if (e.target !== e.currentTarget) return;
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             onPeek(task);

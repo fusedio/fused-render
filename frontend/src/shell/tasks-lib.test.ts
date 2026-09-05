@@ -6889,6 +6889,9 @@ describe("the Cards view's frame", () => {
     expect(head).toContain('role="button"');
     expect(head).toContain("onClick={() => onPeek(task)}");
     expect(head).toContain('e.key === "Enter" || e.key === " "');
+    // ...for keys pressed on the head itself: the folder chip inside it is a
+    // button whose Enter/Space bubble up (Bugbot, #1011).
+    expect(head).toContain("if (e.target !== e.currentTarget) return;");
     // The head has no Open of its own any more — the popup carries the doors.
     expect(head).not.toContain("href");
     // The app's one modal chassis, at 60vw, with the matching height in CSS.
