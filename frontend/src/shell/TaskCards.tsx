@@ -137,7 +137,24 @@ export function TaskCards({
   const peekLive = useMemo(() => {
     if (!peek) return null;
     const id = cardKey(peek);
-    return tasks.find((t) => cardKey(t) === id) ?? peek;
+    const byKey = tasks.find((t) => cardKey(t) === id);
+    if (byKey) return byKey;
+    // THE HANDOVER (Bugbot, #1015). A popup opened on a "Starting…" card holds
+    // a `pending:<entry>` row, and the row that replaces it two seconds later
+    // is keyed by the session — a different cardKey now — so by key alone the
+    // popup would keep the placeholder and never frame the chat. The task
+    // NUMBER is what usually carries across that moment (ensure_ids' rekeys
+    // pass), so a peek WITHOUT a session may follow its number to the row that
+    // has one. Only a session-less peek: a peek with a session has a key that
+    // never changes, and following the number from THERE is exactly how a twin
+    // — two sessions under one number — got opened in the first place (cardKey).
+    if (!peek.session_id && peek.task_id) {
+      const settled = tasks.find(
+        (t) => t.session_id && t.project === peek.project && t.task_id === peek.task_id,
+      );
+      if (settled) return settled;
+    }
+    return peek;
   }, [peek, tasks]);
   // HOW MANY PAGES THE READER HAS ASKED FOR. Six cards to begin with, and each
   // press of the trailing strip adds six (Akshil, 2026-09-05). Never wound back

@@ -6953,7 +6953,14 @@ describe("the Cards view's frame", () => {
     // Bugbot, #1009: the popup follows the polls (a "Starting…" task gains its
     // session), survives an empty wall (a failed poll, a filter), and puts the
     // caret in the chat.
-    expect(CARDS).toContain("return tasks.find((t) => cardKey(t) === id) ?? peek;");
+    expect(CARDS).toContain("const byKey = tasks.find((t) => cardKey(t) === id);");
+    // ...and across the pending → session handover, a popup opened on a
+    // "Starting…" card follows its NUMBER to the row that gained a session —
+    // only a session-less peek does (Bugbot, #1015): a peek with a session has
+    // a key that never changes, and following the number from there is how a
+    // twin got opened.
+    expect(CARDS).toContain("if (!peek.session_id && peek.task_id) {");
+    expect(CARDS).toContain("(t) => t.session_id && t.project === peek.project && t.task_id === peek.task_id,");
     const emptyBranch = CARDS.slice(CARDS.indexOf("if (cards.length === 0) {"), CARDS.indexOf("return (\n    // The SCROLLER"));
     expect(emptyBranch).toContain("{popup}");
     expect(CARDS).toContain("initialFocus={frameRef}");
