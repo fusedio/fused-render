@@ -360,7 +360,7 @@ def test_discard_throws_the_walkthrough_away(html):
     auto-send — and the clicks' empty marks are deleted with it. annRecEnd
     no-ops after it, so a stop click racing the discard cannot resurrect the
     walkthrough."""
-    assert "#anncta:has(#annbtn.on) #anndiscard { display: inline-flex;" in html
+    assert "#anncta:not(.busy):has(#annbtn.on) #anndiscard { display: inline-flex;" in html
     # two ids on the hide: a bare #anndiscard loses to the base
     # `#anncta button` display rule on specificity, and the trash sat on the
     # strip in every state
@@ -929,6 +929,11 @@ def test_the_bar_pushes_the_app_down_instead_of_covering_it(html):
     paint = _block(html, "function annBarPaint(", "\n}\n")
     assert "annBar.getRootNode() !== document && !annXO" in paint
     assert "annBarPush(show ? hostedDoc : null);" in paint
+    # losing the bar (target gone) still hands the pushed margin back
+    assert "if (!annBar) { annBarPush(null); return; }" in paint
+    # the bar's Done is exempt from the outside-click dismiss, like the strip's
+    dismiss = _block(html, 'document.addEventListener("mousedown", (e) => {\n  if (annPop.style.display', "\n});")
+    assert 't.closest(".annbar")' in dismiss
 
 
 def test_the_bar_folds_by_measure_not_breakpoint(html):
@@ -956,8 +961,11 @@ def test_discard_covers_the_typed_round_too(html):
     """The strip keeps BOTH exits in both modes (Akshil, 2026-09-04): the
     trash beside ✓ Done throws this round's unsent notes away — an open draft
     with them — and leaves the mode; earlier rounds' and sent notes stay."""
-    assert "#anncta:has(#annbtn.on) #anndiscard { display: inline-flex;" in html
+    assert "#anncta:not(.busy):has(#annbtn.on) #anndiscard { display: inline-flex;" in html
     body = _block(html, "function annNotesDiscard(", "\n}\n")
+    # not through Stopping…/Transcribing… either: annRecOn is already down and
+    # the marks are the recording's, waiting for words (Bugbot, PR #1008)
+    assert 'annRecOn || !annOn || annCta.classList.contains("busy")' in body
     assert "annCloseComposer();" in body
     assert "a.sent || (a.createdAt || 0) < annRoundStart" in body
     assert "annSetMode(false);" in body

@@ -302,12 +302,15 @@
      away instead of sending them (Akshil, 2026-09-04: the strip keeps the
      two exits, keep and discard, in both modes; what a click pins moved onto
      the bar over the app). Derived from the same state class as every other
-     face.
+     face. `:not(.busy)`: through Stopping…/Transcribing… the mode is still
+     armed but the recording's marks are waiting for their words, and a
+     discard there would delete them (Bugbot, PR #1008) — the old
+     #annrec.on gate hid the seat then, and so does this.
      `#anncta #anndiscard`, two ids, because a bare `#anndiscard` LOSES to
      the base `#anncta button` display rule on specificity and the trash sat
      on the strip in every state (Akshil, 2026-08-19). */
   #anncta #anndiscard { display: none; }
-  #anncta:has(#annbtn.on) #anndiscard { display: inline-flex; padding: 0 8px; }
+  #anncta:not(.busy):has(#annbtn.on) #anndiscard { display: inline-flex; padding: 0 8px; }
   /* Two ids + the same pseudo-class count as the base hover above, or the
      resting brighten wins and the destructive hint never paints. */
   #anncta #anndiscard:hover:not(:disabled):not(.on) { color: var(--error); border-color: var(--error); }
@@ -6571,7 +6574,10 @@ function annBarPush(doc) {
   if (doc) doc.documentElement.style.setProperty("margin-top", "43px", "important");
 }
 function annBarPaint() {
-  if (!annBar) return;
+  // No bar (the hosted target went away, or is showing nothing marked) still
+  // hands a pushed document its margin back (Bugbot, PR #1008): the frame the
+  // shell keeps mounted must not keep a 43px gap with no bar on it.
+  if (!annBar) { annBarPush(null); return; }
   const show = annOn && !annCta.classList.contains("busy");
   const hostedDoc = annBar.getRootNode() !== document && !annXO ? annBar.ownerDocument : null;
   annBarPush(show ? hostedDoc : null);
@@ -7109,8 +7115,13 @@ document.addEventListener("mousedown", (e) => {
   // could reach annDone, silently dropping the words the user was about to
   // send (Bugbot, PR #664). The Element/Point picker rides along — choosing
   // the next click's tool is not walking away from this note.
+  // ...and the bar over the app (its ✓ Done, ■ and the picker it carries):
+  // the split layout's bar is in THIS document, and a mousedown on its Done
+  // closed the composer before annDone could commit the draft (Bugbot, PR
+  // #1008). Hosted, the bar is inside the layer host, which the target
+  // document's own handler already exempts.
   if (annPop.contains(t) || (t.closest && (t.closest(".annpin") || t.closest(".annchip")
-      || t.closest("#anncta") || t.closest("#anntool")))) return;
+      || t.closest("#anncta") || t.closest("#anntool") || t.closest(".annbar")))) return;
   annCloseComposer();
 });
 annDelBtn.addEventListener("click", () => {
@@ -8044,7 +8055,10 @@ async function annRecDiscard() {
 // notes are not this round's to throw (annRoundStart), and sent ones are
 // already Claude's.
 function annNotesDiscard() {
-  if (annRecOn || !annOn) return;
+  // Not while a walkthrough settles either (Bugbot, PR #1008): annRecOn is
+  // already down through Stopping…/Transcribing…, and the marks are the
+  // recording's, waiting for words — not a typed round to throw away.
+  if (annRecOn || !annOn || annCta.classList.contains("busy")) return;
   annCloseComposer();
   const keep = annotations.filter((a) => a.sent || (a.createdAt || 0) < annRoundStart);
   if (keep.length !== annotations.length) {
