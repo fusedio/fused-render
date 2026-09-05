@@ -478,7 +478,9 @@
   /* The constructive twin of `.danger`: "Select all" rides the Changes header
      beside "Discard all", and the two are the section's opposite verbs — one
      keeps every change, one throws every change away — so they wear opposite
-     colours in the same outline shape. */
+     colours in the same outline shape. Green is for the ADDING direction only:
+     once everything is in, the same button reads "Deselect all" and drops to
+     the plain grey outline, because undoing a selection is neutral, not good. */
   .btn.good { color: var(--good-fg); border-color: var(--good-line); }
   .btn.good:hover:not([disabled]) { color: var(--good-fg); background: var(--good-bg); border-color: var(--good-fg); }
   .btn.good[disabled] { color: var(--ink-3); border-color: var(--line); }
@@ -3999,7 +4001,7 @@ function render(data, stashes, diff) {
   const anyConflict = changes.some((c) => c.conflicted && !c.resolved);
   const selectAll = changes.length ? action(selectOp,
       [icon(CHECK_GLYPH, 14), btnLabel(allIn ? "Deselect all" : "Select all")], {
-    className: "good",
+    className: allIn ? "" : "good",
     disabled: anyConflict,
     label: anyConflict ? "Resolve the conflicted files before selecting all"
          : allIn ? "Remove every change from the next commit"
