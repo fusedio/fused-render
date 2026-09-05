@@ -117,6 +117,14 @@ EXPECTED_STARTUP = [
     "_startup_resurrect_background_apps",
     "_startup_sync_user_plugin",
     "_startup_schedule",
+    # SPEC §48 / D701: the self-fix reconcile, registered between `schedule`
+    # and `tasks_watch` because that is where its `@on_startup` sits in
+    # `create_app` — this list is a record of registration order, not a
+    # preference about it.
+    "_startup_selffix_reconcile",
+    # SF-7d: and immediately after it, the resume that finishes a stamp for a
+    # fix session whose watcher died with the server that started it.
+    "_startup_selffix_resume",
     "_startup_tasks_watch",
     "_startup_ai_idle_reaper",
     "_startup_ai_hardware_refresh",

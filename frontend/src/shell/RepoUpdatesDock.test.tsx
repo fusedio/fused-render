@@ -6,13 +6,15 @@
 // reason: no polling, and no persisted `collapsed` state (both live in the
 // default-exported `RepoUpdatesDock` this file never mounts) — so most tests
 // here render it directly with a fixed row list and no globals at all. The
-// exceptions are noted where they happen: a `location`/`window`/`history`
-// stub, installed and torn down once at file load so router.ts's real
-// module can be imported (see the comment just below), and a per-test
-// `globalThis.fetch` stub in the one test that presses a row's own button.
+// exceptions are noted where they happen: the shared
+// `location`/`window`/`history` shim, installed once at file load so
+// router.ts's real module can be imported (see the comment just below), and
+// a per-test `globalThis.fetch` stub in the one test that presses a row's
+// own button.
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 import type { Job } from "@platform/lib/jobs";
+import { installDomShim } from "@platform/lib/testDomShim";
 
 // NEITHER "@platform/lib/router" NOR "@platform/lib/api" is `mock.module`d
 // here — found the hard way, live: an earlier version of this file DID mock
@@ -29,37 +31,27 @@ import type { Job } from "@platform/lib/jobs";
 // exact lesson for `@platform/lib/api` ("a real ES module namespace export
 // is frozen... this stubs `globalThis.fetch` instead") — the same principle
 // applies to router.ts. So instead of mocking either module, this file
-// installs the minimal `location`/`window`/`history` globals router.ts's
-// own module-init code touches (mirroring `hook-harness.ts`'s `Clock`) and
+// installs the SHARED `location`/`window`/`history` shim router.ts's own
+// module-init code needs (`installDomShim`, platform/lib/testDomShim.ts) and
 // then imports the REAL router.ts — a real, unfrozen, behaviorally correct
 // module every other file can also import safely alongside this one.
-(globalThis as Record<string, unknown>).location = { pathname: "/x", search: "" };
-(globalThis as Record<string, unknown>).window = {
-  parent: undefined,
-  top: undefined,
-  dispatchEvent: () => true,
-};
-(globalThis as Record<string, unknown>).history = {
-  state: null,
-  replaceState: () => {},
-  pushState: () => {},
-};
+//
+// The shim is shared and process-wide, and it is NOT torn back down here.
+// An earlier version of this file hand-rolled its own three globals and
+// deleted them again right after the import, reasoning that nothing below
+// needs them — but "nothing below in THIS file" is not the scope that
+// matters. bun runs every file in one process and does not reset globals
+// between them, so the delete landed on the four files that import router.ts
+// statically (ActivityDock, StatusBar, DownloadManager, appSeed): a static
+// import is hoisted above any shim call of their own, so they depend on
+// `location` still standing when their module graph evaluates. See
+// testDomShim.ts.
+installDomShim();
 
 const { RepoUpdatesCardView, RepoUpdatesDockView } = await import("@shell/RepoUpdatesDock");
 const { repoRows } = await import("@shell/repo-updates-lib");
 import type { RepoRow, RepoStatus } from "@shell/repo-updates-lib";
 import type { AttentionRow } from "@shell/tasks-lib";
-
-// The globals above exist only to get router.ts's module-init code through
-// ITS one-time evaluation above (triggered by the dynamic import) — nothing
-// in this file's own tests touches `window`/`location`/`history` again, so
-// they are torn back down immediately rather than left standing for
-// whichever file happens to run next in the same process (mirroring
-// `hook-harness.ts` Clock's own install/restore discipline, just inlined
-// since this file only ever needs the install once, at load).
-delete (globalThis as Record<string, unknown>).location;
-delete (globalThis as Record<string, unknown>).window;
-delete (globalThis as Record<string, unknown>).history;
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];

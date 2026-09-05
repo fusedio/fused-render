@@ -72,6 +72,7 @@ from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
+from fused_render.server.routers.selffix import router as selffix_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
 from fused_render.server.routers.tasks import router as tasks_router
@@ -476,6 +477,30 @@ def create_app(start_dir: str) -> FastAPI:
 
         schedule.start()
 
+    # Has a modified installation been put back? (selffix.reconcile). A startup
+    # handler rather than the create_app body for the usual reason — tests build
+    # apps without running lifespan — and on its own thread because it hashes
+    # the whole package when, and only when, a marker is actually there.
+    @on_startup
+    async def _startup_selffix_reconcile():
+        from fused_render import selffix
+
+        selffix.start_reconcile()
+
+    # Did a fix session outlive the server that was watching it? Its watcher is
+    # a thread and dies with that process; the claude session is detached and
+    # does not — and the restart most likely to happen is the one the session
+    # itself causes by editing .py files under a dev server. Without this the
+    # install could end up patched with no badge (SF-7d, routers/selffix.resume).
+    # Its own thread for the same reason as the reconcile above: it can hash the
+    # package, and only when a session pointer with a `before` is actually there.
+    @on_startup
+    async def _startup_selffix_resume():
+        from fused_render.server.routers import selffix as selffix_router
+
+        threading.Thread(target=selffix_router.resume, daemon=True,
+                         name="fused-render-selffix-resume").start()
+
     # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
     # Claude Code's live-session registry, prompt history and live transcripts.
     # A startup event for the same reason as `_startup_schedule`: it is a
@@ -691,6 +716,11 @@ def create_app(start_dir: str) -> FastAPI:
     # check / an install; both carry the D3 X-Fused guard and 404 unless the
     # mac app started the update manager.
     app.include_router(update_router)
+    # Self-fix (routers/selffix.py): a Claude session on this INSTALLATION when
+    # something failed on the user's machine, and the modified-install mark it
+    # leaves behind. Sibling of the updater above on purpose — one of them
+    # changes this install, the other replaces it.
+    app.include_router(selffix_router)
     # Managed template engines (routers/engines.py): a template's daemon rides
     # this stable origin instead of its ephemeral port, and the routes heal a
     # dead child under the URLs the page holds (engine_host.py). The map

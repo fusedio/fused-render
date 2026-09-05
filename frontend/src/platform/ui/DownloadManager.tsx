@@ -96,6 +96,14 @@ import {
   type Job,
 } from "@platform/lib/jobs";
 import { repoName } from "@platform/lib/format";
+import { navigateUrl } from "@platform/lib/router";
+import { useSelfFixReadiness } from "@platform/lib/hooks";
+import { TroubleCard } from "@platform/ui/TroubleCard";
+import {
+  failureContextFromJob,
+  fixSessionUrl,
+  startSelfFix,
+} from "@platform/lib/selffix";
 import type { RunningEngine } from "@platform/lib/api";
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
@@ -299,6 +307,85 @@ function Bar({ job }: { job: Job }) {
   );
 }
 
+// "Fix this" — the self-fix trigger (SPEC §48, SF-1). Offered on a FAILED row
+// and nowhere else, which is the whole of its placement argument: a failure is
+// the one moment where the app has already admitted it cannot do the thing, so
+// an offer to go and look at why is not an interruption. On a running row it
+// would be noise; on a finished one it would be a question nobody asked.
+//
+// Starting the session is only half the click. The other half is LANDING THE
+// USER IN IT: the shell navigates to the install folder with the chat sidebar
+// attached to the run that was just started, so what happens next is something
+// they watch and answer permission cards for, not something that happens to
+// their app while they look at a spinner.
+function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) => void }) {
+  const [busy, setBusy] = useState(false);
+  // WORDED BEFORE THE CLICK, not after (SF-13d, SF-13f). Two preconditions the
+  // row can know in advance, and each changes what it is honest to offer:
+  //
+  //   read-only      the session can diagnose but not fix → "Diagnose this"
+  //   Claude absent  no session can start AT ALL → do not offer one. The button
+  //                  names the thing that would make it possible instead.
+  //
+  // Claude-missing wins, because without the CLI neither mode runs. Preferences
+  // says both in sentences; a row has space for a verb, so the verb changes.
+  const { readOnly, claudeMissing, recheck } = useSelfFixReadiness();
+
+  // THE CLICK ALWAYS ASKS THE SERVER, even when we believe Claude is missing.
+  // Short-circuiting on the cached answer looked like an obvious saving — we
+  // know the outcome, why spend the spawn — and it was the one thing this
+  // button must not do: it tells the user to go and install Claude Code, so the
+  // state it cached is the state it is asking them to change, and the retry
+  // that followed was answered from a belief formed before they acted. The
+  // wasted spawn on a machine that really has no CLI is a fast failure and the
+  // right price for a retry that works.
+  const start = async () => {
+    setBusy(true);
+    onError(null);
+    try {
+      const started = await startSelfFix(failureContextFromJob(job));
+      // A directory, always — the install root. See SelfFixPanel for why the
+      // hint matters on this particular navigation.
+      navigateUrl(fixSessionUrl(started), { isDir: true });
+    } catch (e) {
+      // Reported ON THE ROW (the caller renders it under the status line)
+      // rather than as a toast: the row is what the user clicked, and every
+      // refusal left here is a fact about the app that they need in front of the
+      // thing that failed — Claude Code not installed, Claude not signed in, or
+      // a session already running in this installation (SF-13a). Read-only is no
+      // longer among them; it changes the button's verb instead.
+      onError(String((e as Error)?.message || e));
+    } finally {
+      setBusy(false);
+      // The attempt is the moment the answer may have just changed.
+      recheck();
+    }
+  };
+
+  return (
+    <button
+      className="dl-fix"
+      onClick={start}
+      disabled={busy}
+      title={
+        claudeMissing
+          ? "This needs Claude Code, which isn't installed on this machine — see how to get it"
+          : readOnly
+            ? "This installation is read-only: open a Claude session to find the cause and write it up — applying the fix needs a copy you own"
+            : "Open a Claude session on this installation and try to fix it here"
+      }
+    >
+      {busy
+        ? "Starting…"
+        : claudeMissing
+          ? "Set up Claude Code"
+          : readOnly
+            ? "Diagnose this"
+            : "Fix this"}
+    </button>
+  );
+}
+
 // ---- Engine rows (status-bar merge) ----------------------------------------
 // FORMERLY shell/EnginesDock.tsx, its own chip/panel. The status-bar
 // consolidation collapsed Engines and Jobs into one "Activity" chip (see
@@ -490,6 +577,42 @@ export function JobRow({
   // the server is authoritative about whether the work actually stopped —
   // it was only ever wrong for a request that never landed at all.
   const [failure, setFailure] = useState<string | null>(null);
+  // TWO FAILURE STATES, because a row has two kinds of failure and they are
+  // NOT presented alike. `failure` is the row's own action refusing (cancel,
+  // dismiss) and reads as a plain sentence on the status line. `fixFailure` is
+  // a self-fix session that could not start, and draws the compact
+  // TroubleCard, whose whole point is that "Claude isn't installed" needs
+  // somewhere to go rather than a red line.
+  //
+  // Folding the fix into `failure` was tried and is wrong in both directions:
+  // the card renders on any failure of an error-state row, so a rejected
+  // DISMISS was captioned "starting a fix session"; and a refused fix then
+  // painted the status line as well, saying it twice. One state cannot answer
+  // "what happened" and "how should it be shown" at once.
+  //
+  // Mutually exclusive by construction — each writer clears the other below —
+  // so the row still shows one failure, never two stacked.
+  const [fixFailure, setFixFailure] = useState<string | null>(null);
+
+  // ONE FAILURE AT A TIME, ENFORCED WHERE IT IS WRITTEN. Clearing the other at
+  // the START of each action is not enough, because the two are independently
+  // in flight: nothing disables Dismiss while a fix is starting (`FixButton`
+  // owns its own `busy`), so a fix that rejects and THEN a dismiss that
+  // rejects left `fixFailure` standing while `failure` was set, and the row
+  // drew the sentence and the card together — exactly the stacking the split
+  // was meant to make impossible.
+  //
+  // Going through these two rather than the setters means a writer cannot
+  // forget the other half: the clear is part of what "show this failure"
+  // means, not a step beside it.
+  const showRowFailure = (msg: string | null) => {
+    setFailure(msg);
+    setFixFailure(null);
+  };
+  const showFixFailure = (msg: string | null) => {
+    setFixFailure(msg);
+    setFailure(null);
+  };
   const running = isRunning(job);
   const fraction = jobFraction(job);
   const amount = jobAmount(job);
@@ -541,7 +664,7 @@ export function JobRow({
 
   const cancel = async () => {
     setBusy(true);
-    setFailure(null);
+    showRowFailure(null);
     try {
       await cancelFn(job.id);
       // The row stays — the work has not stopped — but the label has to move
@@ -552,7 +675,7 @@ export function JobRow({
       // heard of, a 500, an offline server. `onPatch` above did NOT run, so
       // there is nothing for the refresh to correct; without this the button
       // just goes quiet, which reads as broken because it is.
-      setFailure("Could not cancel — check your connection and retry.");
+      showRowFailure("Could not cancel — check your connection and retry.");
     } finally {
       setBusy(false);
       onChanged();
@@ -561,14 +684,14 @@ export function JobRow({
 
   const dismiss = async () => {
     setBusy(true);
-    setFailure(null);
+    showRowFailure(null);
     try {
       await dismissFn(job.id);
       onPatch((js) => js.filter((j) => j.id !== job.id));
     } catch {
       // Same class of problem as `cancel` above: a rejected request left the
       // row exactly as it was with nothing said about why.
-      setFailure("Could not dismiss — check your connection and retry.");
+      showRowFailure("Could not dismiss — check your connection and retry.");
     } finally {
       setBusy(false);
       onChanged();
@@ -592,6 +715,12 @@ export function JobRow({
         </span>
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
+        )}
+        {job.state === "error" && (
+          <FixButton
+            job={job}
+            onError={showFixFailure}
+          />
         )}
         {canCancel && (
           <button
@@ -645,6 +774,21 @@ export function JobRow({
           comes back once a later poll succeeds or the row's own next action
           clears `failure`. */}
       {statusLine && <div className="dl-status">{statusLine}</div>}
+      {/* The compact trouble card rather than a bare red line: the most likely
+          failure here is Claude Code missing or signed out, and "Claude didn't
+          start" with nowhere to go is the shape of message this whole surface
+          exists to replace. Facts are not fetched for this one — the card sits
+          in a notification and the Preferences tab is where the full report
+          lives.
+          `fixFailure`, NOT `failure` — the caption below names starting a fix
+          session, so it may only render for a failure that IS one. */}
+      {fixFailure && (
+        <TroubleCard
+          compact
+          what={`starting a fix session for "${job.title || job.id}"`}
+          error={fixFailure}
+        />
+      )}
     </div>
   );
 }

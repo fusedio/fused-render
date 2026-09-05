@@ -62,8 +62,9 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
+import { SelfFixPanel } from "@shell/SelfFixPanel";
 
-type PrefsTab = "render" | "ai" | "indexing" | "lan";
+type PrefsTab = "render" | "ai" | "indexing" | "selffix" | "lan";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -780,11 +781,16 @@ export default function Preferences() {
   // /ai-models?tab=engines before this page renders, which is why an unknown
   // tab falling back to "render" is not the answer for that one — a bookmark
   // pointing at the engine picker should land ON the engine picker.
+  //
+  // A membership test rather than a ternary chain: the nesting was the line
+  // every new branch conflicted on, and adding one more should not mean
+  // re-indenting the rest — which is exactly what happened when "ai" and
+  // "selffix" arrived from two directions at once.
   const tab: PrefsTab =
-    requested === "indexing" ? "indexing"
-    : requested === "ai" ? "ai"
-    : requested === "lan" ? "lan"
-    : "render";
+    requested === "indexing" || requested === "ai" || requested === "selffix"
+      || requested === "lan"
+      ? requested
+      : "render";
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "render") params.delete("tab");
@@ -844,6 +850,20 @@ export default function Preferences() {
             >
               Render local network
             </button>
+            {/* Named for what a stuck user would look for, not for the
+                feature (SF-14). The siblings are noun phrases and this is an
+                imperative, deliberately: it is the one tab somebody opens
+                Preferences *in order to find*, and matching the grammar would
+                cost the only thing that matters about it. Ungated, like
+                Indexing — a user whose app is misbehaving must not have to
+                have enabled something first. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "selffix" ? " active" : "")}
+              onClick={() => setTab("selffix")}
+            >
+              Fix this app
+            </button>
           </div>
           <div className="prefs-tabpanel">
             {tab === "render" && (
@@ -862,6 +882,7 @@ export default function Preferences() {
               </>
             )}
             {tab === "indexing" && <IndexingPanel prefs={prefs} onChange={setPrefs} />}
+            {tab === "selffix" && <SelfFixPanel />}
           </div>
         </>
       )}

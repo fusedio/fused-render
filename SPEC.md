@@ -10578,7 +10578,19 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   Repair left a permanent "could not be read" sitting beside that notice's own
   "Fixed". The remembered message is dropped at the same moment, so the
   identical fault arriving again is announced again instead of reading as a
-  repair that held.
+  repair that held. **A DIFFERENT error supersedes the toast it replaces**, on
+  the same argument: the registry has one state at a time, so what is on screen
+  is stale by definition. Pushing without dismissing left two sticky toasts and
+  only ever took down the newer, so the older outlived the repair.
+  **All of it reads off ONE value — what the screen is currently saying — and
+  not a set of messages already seen.** A set answers "have we ever mentioned
+  this?", which is the wrong question: a registry that failed with A, was edited
+  to fail with B, then edited back to A left the toast describing B, because A
+  counted as already announced. What stays true as the registry moves between
+  states is "is the screen already saying exactly this?". The transitions live
+  in `syncRegistryToast` rather than in the effect that calls it — every bug this
+  has had was a transition rather than anything rendered, and a component effect
+  is not a place a test can reach.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
   **Two commands now**, one per platform: the strip attached the macOS/Linux
@@ -11654,3 +11666,789 @@ the rules around it.
 - **Sequenced-after, deliberately absent here**: any cache eviction the app
   does not write itself, any UI that shows or clears an app's `.fused/`, and
   any `window.fused` accessor for the paths.
+---
+
+## 48. Self-Fix — A Claude Session on This Installation (D701)
+
+Goal: when the app fails on a machine we cannot see, the user has one more
+option than "dismiss it and hope" — they can ask Claude to look at the failure
+*in the installed app itself*, watch it work, and send the account of what it
+found back to us.
+
+Before this, a failed row in the download manager was terminal in both senses:
+the work had stopped, and so had the app's usefulness about it. The error text
+was the whole story, the code that produced it was invisible, and the only
+channel back to the developers was the user's own retelling of what they saw.
+
+The feature has two halves that meet at a file on disk — a session that changes
+the installation, and the mark that says so.
+
+### 42.1 The session
+
+- **SF-1** **The trigger is an option on a FAILURE**, not a menu entry: a row in
+  the download manager (§36) whose `state` is `error` grows a **Fix this** button
+  beside its ✕ (**Diagnose this** where the installation is read-only, SF-13d). That placement is the whole argument — a failure is the one
+  moment the app has already admitted it cannot do the thing, so an offer to go
+  and look at why is not an interruption. On a running row it would be noise; on
+  a finished one, a question nobody asked. The trigger is a plain function over a
+  title and a message (`platform/lib/selffix.ts`), so any other surface that
+  learns to report a failure can offer the same option without a second
+  mechanism.
+- **SF-2** **The session opens on the INSTALL ROOT** — the installed
+  `fused_render` package (`selffix.install_root`), which is the code we wrote
+  plus the templates and built shell we ship with it. Deliberately not its
+  parent: that is `site-packages` (in the mac app,
+  `Contents/Resources/lib/python3.12`), and handing an agent every third-party
+  dependency as its working directory invites a "fix" inside pydantic — neither
+  ours to change nor anything a report could usefully describe.
+- **SF-3** **The user LANDS IN IT.** `POST /api/selffix/start` spawns the
+  detached session (the fork-safe helper in `claude_spawn.py`, same discipline as
+  the app scaffolder and scheduled messages) and answers `{run_id, target,
+  incident, report}`; the shell then navigates to
+  `/explorer/view/<install>?_side=claude&run=<run_id>` — the explorer's companion
+  column, attached to the run that was just started, the same `_side=claude`
+  handoff the Inbox and scheduled messages use. Without the run id the sidebar
+  opens on the folder, sees nothing, and shows an empty composer while a session
+  works three feet away in a process nobody is watching.
+- **SF-3a** **The handoff says the target is a DIRECTORY** (`{ isDir: true }`,
+  the same hint the scaffolder's identical hop passes). It always is — the
+  install root — so it is a fact rather than a guess, and without it the explorer
+  paints file chrome until `stat` answers. A visible stutter on the one
+  navigation this feature promises.
+- **SF-4** **Permission mode is `prompt`, not `auto`.** The app scaffolder runs
+  unattended and takes the broadest mode it offers; this session edits the
+  application itself, and a user who asked for a local fix has not thereby agreed
+  to let a model rewrite their installation unwatched. Affordable here precisely
+  because SF-3 puts the session in front of them: every escalation is a card they
+  answer in the sidebar they are already looking at.
+- **SF-5** **The incident is written down first, and the report exists before the
+  session writes a word of it.** `record_incident` writes both files into the
+  state dir: the failure (operation, detail, error text, page, app version,
+  Python, platform, install root) and a report **pre-filled with it**. Two
+  reasons, the second being the real one — a version chip that promises a report
+  must always have a file to open, and what a developer most needs is known *now*
+  and is not something a summarising model should be trusted to copy back
+  accurately. The session rewrites the file; if it never gets that far, what
+  survives is still the more useful half.
+- **SF-5a** **The prompt fences the agent in.** It establishes where it is (an
+  installed copy: no test suite, no git history, no PR to open), what it may
+  touch (only under the install root; source and text only — never a compiled
+  artefact, never the minified `static/shell-dist/`, never the bundle's binaries
+  or `Info.plist`; no package installs; not `~/.claude` or `~/.fused-render`),
+  and that **the report is the deliverable** — the fix helps one machine, the
+  report is the only thing that can help everyone else. "I could not fix this
+  here" is stated as a good outcome, so the model is not pushed into a guess.
+
+### 42.2 The mark
+
+- **SF-6** **The mark lives INSIDE the installation**, at
+  `<install root>/.fused-render-selffix/` — never in `~/.fused-render`. A
+  per-user file would be a lie in both directions: a second account on the same
+  machine runs the same modified bytes and would see a clean badge, and a user
+  who reinstalls would keep a badge for an install that no longer contains the
+  change. The placement is not bookkeeping, it *is* the mechanism: **replacing
+  the installation removes the mark, with no uninstall hook anyone has to
+  remember to run.** The dir holds the marker, the pristine baseline, the
+  incidents and the reports; it is gitignored, excluded from the wheel by the
+  same rule, and — crucially — excluded from the digest below, so writing an
+  incident is not itself a modification of the installation.
+- **SF-7** **The APP decides that something changed, not the model.** A session
+  asked to stamp its own work is a session that can forget to, and the one thing
+  this feature must not do is leave an installation quietly carrying somebody's
+  patch. So the server takes a **content digest** of the install tree before the
+  spawn (`ensure_baseline` — the last moment it is still what we shipped; nothing
+  runs at install time, so there is no earlier hook), and the watcher re-hashes
+  on the session's `done` tick and every ~16s in between. Content, never
+  mtimes: a reinstall rewrites every mtime without changing a byte.
+  `__pycache__` and `.pyc` are excluded, or every installation would be
+  "modified" the first time it ran. **`.venv` on the same ground**: derived,
+  reproducible, and never part of what we shipped. The app never puts one in
+  this tree — D630 sends any folder inside the installed package to the home
+  store, because that tree is read-only in most shapes it ships — so on a real
+  installation the exclusion costs nothing. It earns its place on a source
+  checkout, where a developer may have hand-synced a template's venv under
+  `fused_render/templates/<name>/` (`core_templates`' staging `ignore` exists
+  for that same folder); hashing it would walk thousands of files on every
+  re-hash to answer a question about bytes we do not own.
+  **A read that fails gets ONE retry, budgeted.** An unreadable file folds a
+  distinct token in rather than raising, so a tree we cannot fully read never
+  hashes equal to one we can — but that token is only safe because a file
+  unreadable in EVERY walk folds it every time and cancels out of the
+  comparison. The digest moves when readability CHANGES between two walks, and
+  on Windows that is routine rather than exotic: an antivirus or the indexer
+  takes a sharing lock for a few milliseconds and lets go. `settle` reads any
+  difference as "this session changed the install", so a lock that cleared on
+  its own would stamp a marker and point the badge at a session that edited
+  nothing — SF-7b's failure, arriving through the filesystem instead of through
+  the comparison. The retry is capped per walk so a genuinely unreadable
+  subtree cannot stretch a walk that runs every ~16s during a live session;
+  past the cap the token is folded straight in, which is right for a failure
+  that is not transient. Both halves need pinning: the transient case passes
+  with or without a budget.
+- **SF-7b** **The comparison is against the tree AS THIS SESSION FOUND IT**, not
+  against the release (`begin_session` returns both digests; `settle` measures
+  the former). They are the same on a clean install and differ the moment an
+  earlier session has changed something — and there, measuring against the
+  release answers *"is this install modified?"*, which was already true before
+  the new session did anything. A session that edited NOTHING would be recorded
+  as a fix, and its own do-nothing report would become the `latest_report` the
+  badge points at, sending the user to a document that explains none of the
+  changes it is warning them about. On a dismissed badge it would also re-light
+  it — overturning a decision the user had explicitly made, on the strength of a
+  session that did nothing.
+- **SF-7c** **A marker for this version VETOES a fresh baseline**, because taking
+  the baseline from the tree in front of us is only honest on the first session
+  of a version, and the marker is a standing claim that this tree is not the one
+  we shipped. The baseline file can go missing under a live marker in two
+  ordinary ways — the fix session IS an agent editing this installation and can
+  delete its state dir, and the first write can have failed with `OSError` (the
+  read-only path, where `ensure_baseline` carries the digest back in memory and
+  logs) — and re-taking it from the PATCHED tree makes `reconcile` find
+  `current == pristine` on the next start and clear the badge while the patch is
+  still on disk. Silently un-warning a modified install is the exact failure SF-7
+  exists to prevent, arriving through the bookkeeping instead of through the
+  model. The repair is usually exact rather than defensive: the marker carries
+  `baseline_digest`, so the lost pristine digest is recovered from it and the
+  file rewritten. When the marker has none either — it was stamped in a session
+  whose own baseline write failed — **nothing is written and the digest comes
+  back empty**, `reconcile` finds no pristine and leaves the badge alone. A badge
+  that outstays its modification is cosmetic; one that vanishes over a live patch
+  is not, and that asymmetry is which way to fail. An UPGRADE is not this case:
+  the marker's version is then the old one, the new release really did replace
+  the tree, and `reconcile` discards such a marker on sight anyway.
+- **SF-7a** **Only a self-fix session ever sets it.** There is deliberately no
+  continuous verification. What is recorded is a *provenance* claim — "Claude
+  changed this installation while fixing something, here is its report" — and not
+  an *integrity* claim ("these bytes differ from the release"), which cannot be
+  made honestly without shipping a signed per-file manifest. The cost is that a
+  modification made some other way is not marked, which is the right silence: a
+  source checkout rebuilds `static/shell-dist` on every watch tick, and a badge
+  that lit up for that would mean nothing anywhere else.
+- **SF-7d** **The stamp survives a restart of the server that started the
+  session, because the session does.** The watcher is a daemon thread owned by
+  the process that spawned the fix; the `claude` process is detached and
+  outlives it. The restart most likely to happen is the one the fix session
+  *causes* — it edits `.py` files under a dev server watching them — which is
+  the same fact the one-at-a-time guard was redesigned around (SF-11), and the
+  guard survives it only because liveness is derived from the runs directory
+  rather than remembered. The stamp had no equivalent: the thread died, `settle`
+  was never called against that session's `before`, and `reconcile` cannot stand
+  in for it because it returns early when no marker exists — precisely the state
+  a session that never got to stamp leaves behind. An installation could
+  therefore end up patched with **no badge**, which is the one outcome this
+  section exists to prevent. So the session pointer carries the stamp's inputs
+  (`before` and the marker's three strings), and one startup handler finishes
+  the job: **one `settle` against that `before`** for what already changed, and
+  **a re-attached watcher, only while the run's own process is alive**, for what
+  changes next. Two things this deliberately is NOT. It is not a lease — nothing
+  expires, nothing is granted, and liveness is still *asked* of the pid, so what
+  a restart recovers is an unfinished stamp and never a claim on the tree. And
+  it does not measure against the BASELINE, which would be the easy way to
+  notice drift and the wrong one: that turns the badge into an integrity claim
+  about the bytes, which SF-7a refuses to make. A stamp still requires a session
+  we recorded starting. A pointer with no `before` — one written by an older
+  version, or by a diagnostic session, which has nothing to stamp — resumes
+  nothing at all. **And no stamp is ever recorded for a tree byte-identical to
+  what this version shipped**, which is the hazard this recovery itself creates
+  and must not leave standing: the pointer lives in the state dir, a
+  same-version reinstall does not remove it (the very reason SF-8's reconcile
+  exists), so a `before` describing a PATCHED tree can outlive that tree and the
+  resume would light a badge on a restored, clean copy. `reconcile` cannot
+  rescue that one — it is a sibling startup thread and stands down when the
+  marker moves under its walk. The veto sits in `settle` rather than in the
+  resume because the live watcher has the same hole: a session whose `before`
+  was a patched tree and which UNDID the patch would otherwise be marked for the
+  act of restoring the installation. This is not the integrity claim SF-7a
+  refuses — nothing here stamps a badge from baseline drift; it only declines to
+  make a provenance claim that these particular bytes falsify. **And it
+  RETRACTS a marker that is now lying**: skipping the mark is not enough on its
+  own, because a session that undoes an earlier, already-stamped patch would
+  leave the badge amber and pointing at a report whose changes are no longer on
+  disk until the next process start — `reconcile` runs once per boot, and the
+  user who just watched the fix restore their install is the one left reading
+  the stale warning. `_discard`, deliberately not `clear()`, for both of
+  reconcile's reasons: that takes the same non-reentrant lock, and it records a
+  DISMISSAL, which this is not. The retraction re-reads under the lock and fires
+  only while the marker still describes a tree that is NOT this one — a marker
+  whose digest IS `current` was written against these bytes while the walk ran,
+  which makes the walk the stale reading of the two. Finally, the veto reads the
+  pristine digest the way `ensure_baseline` already does, falling back to the
+  marker's own `baseline_digest` when the baseline FILE is gone: a fix session
+  is an agent editing this installation and can delete the state dir, so
+  otherwise the one state in which the baseline is missing would be the one in
+  which the veto silently stops working — and it PERSISTS that recovery before
+  discarding the marker it came out of, exactly as `ensure_baseline` does, or the
+  retraction would delete the last copy of the release hash and the next restore
+  would mark a clean tree again. **The pristine case is decided before the
+  "nothing moved" early-out**, which is the whole of it rather than an ordering
+  detail: the watcher always settles against the session's ORIGINAL `before`, so
+  a session that patches (raising the badge on a mid-session tick, which is when
+  the user sees it) and then puts the tree back arrives with
+  `current == before` — the likeliest revert there is, and the one the user is
+  watching happen. Decided after that early-out, the retraction never ran for
+  it.
+- **SF-8** **Reinstalling ALWAYS clears it**, and two independent checks back
+  that up because "the tree was replaced" is not something the app may merely
+  assume:
+  * a **version stamp** in the marker, checked on every read (`status`). `pip
+    uninstall` removes only what its RECORD lists, so a marker can outlive an
+    upgrade that replaced everything around it. A marker whose version is not the
+    running one describes an installation that is gone and is deleted on sight —
+    on the READ path, so the badge is gone the moment the new version serves its
+    first request, not after the next restart, and without a walk that a config
+    poll must never pay for. **That check and its unlink are ONE step, under the
+    same lock every writer takes.** Split apart they stop being about the same
+    file: `status` is the most frequent caller in the module (every
+    `/api/config` poll) and the only reader that deletes, so a `mark_modified`
+    landing between the check and the unlink writes a fresh marker for the
+    version now installed and has it deleted — the badge for a fix that really
+    happened never appearing, from the ordinary upgrade-then-fix sequence rather
+    than a contrived one.
+  * a **digest reconciliation** at startup (`reconcile`), on a thread, and only
+    when a marker exists. This catches what the version stamp cannot see: a
+    *same-version* reinstall — the repair install someone does precisely because
+    the app is behaving oddly. If the tree hashes back to the recorded baseline,
+    the modification is gone and so is the marker.
+- **SF-9** **The version indicator is the badge** (`platform/ui/VersionChip`).
+  Not a badge beside it: "v0.4.18" is a claim about which bytes are running, and
+  once a session has edited this copy the number names the release it *came
+  from*, not what it *is*. A separate badge would leave a confident, wrong version
+  string sitting next to it. Amber, not red — nothing is broken, a fix was
+  applied, possibly successfully; the chip says "this is not stock", which is a
+  caveat. It carries a mark as well as a colour, and the accessible name says in
+  words what the colour says.
+- **SF-10** **Clicking it answers three questions in the order people ask them**:
+  what happened (**Open the report** — navigates to the markdown file in the
+  app's own viewer; plus copy-to-clipboard for pasting elsewhere), who needs to
+  know (**Open an issue**, prefilled with version, platform and the report's
+  path — never the report body, which is a document and would blow the URL
+  length), and how to get a normal copy back (**reinstall**, worded for *this*
+  install: `brew reinstall --cask`, the DMG drag, the installer, `pip install
+  --force-reinstall`, or `git status` for a checkout — with the promise from SF-6
+  said out loud). A quiet **Dismiss this badge** clears the marker and nothing
+  else: the badge is a claim about this machine and the person at it may have
+  settled it by hand, but the report files are not theirs to lose by dismissing a
+  badge.
+- **SF-10a** **The panel GROWS UPWARD from the chip**, pinned by its bottom edge
+  (`panelAnchor`), because the chip is the trailing slot of the sidebar's LAST
+  row and therefore sits at the floor of the window by construction. Hung
+  downward from the chip instead, a `max-height: 70vh` panel opens 70vh below
+  the bottom of the screen, and every one of SF-10's three answers is in the
+  part you cannot reach — the failure is total, and it is invisible to the
+  clamp that was there, which was horizontal only. This is the same shape and
+  the same bug as the sidebar's own Settings menu and its Tours flyout, both of
+  which already grow upward out of that row for exactly this reason.
+- **SF-11** **Cheap on the poll, expensive on the click.** The chip's PRESENCE
+  rides `/api/config`'s `modified_install` (one small JSON read; present only
+  when modified, so there is no `modified: false` shape to truthiness-check). The
+  panel's CONTENTS — the report listing, and on a mac a `brew list` subprocess to
+  word the reinstall — are `GET /api/selffix`, fetched once when the panel opens.
+- **SF-12** **The badge appears while you are watching.** The mark is set
+  server-side mid-session, and nothing pushes that to a shell that read
+  `/api/config` at boot; left there, the badge for a fix you just watched happen
+  would show up on your next launch. So the chip polls at two cadences — 60s
+  always, 5s for 30 minutes after a fix STARTS — keyed off a `localStorage`
+  timestamp (`fused-render:selffix-ping`) written at start.
+- **SF-11a** **The chip probes ONCE ON MOUNT**, not after a first full interval
+  — the same thing `UpdateBadge` and `DownloadManager` do, and for a reason
+  specific to this state: the `seed` prop is the config the shell booted with,
+  and the startup `reconcile` (SF-8) may still have been clearing a same-version
+  reinstall's marker when that answer was served. Nothing pushes the result of
+  that sweep to the browser, so waiting for the first timer left an amber badge
+  over a clean installation — disagreeing with Preferences, which fetches on
+  open — for up to a minute after launch.
+- **SF-12a** **A state change is nudged on TWO channels, and neither is
+  redundant**: `storage` (`fused-render:selffix-changed`) fires in every
+  same-origin document EXCEPT the one that wrote it, so it reaches other tabs
+  and never this one; a `fused:selffix-changed` window event reaches this one
+  and no other. Both surfaces that change the state — the download-manager row
+  that STARTS a fix and the Preferences tab that DISMISSES a badge — are
+  normally in the very document the chip lives in, so either channel alone
+  leaves the badge stale for a full idle interval in exactly the case the user
+  is looking straight at it. **One nudge for both events**, because the
+  listener's response is identical (cancel the timer, re-read) and the cadence
+  is decided separately from the stamp above: a "started" nudge dispatched on a
+  dismiss would be a lie, and a second event with the same handler would be
+  ceremony. The stamp is written BEFORE the nudge, so a listener re-reading the
+  cadence sees this start rather than the previous one; a dismiss moves the
+  nudge and never the stamp, or every tab would enter the 5s lane for half an
+  hour over a state change that is already over. A clock that has gone backwards past the stamp reads as *not*
+  watching: a badge a minute late costs nothing, a permanent 5s poll costs a
+  request every 5s for the life of the app.
+- **SF-12a1** **EVERY surface that shows this state listens to the nudge — both
+  of them.** The chip and the Preferences tab are two views of one fact, and for
+  a while only the chip was subscribed: a dismiss from the chip's panel, or a
+  session stamping the install from another tab, left Preferences asserting the
+  opposite of what the sidebar showed until the tab was remounted. That is the
+  disagreeing-surfaces failure SF-12a exists to prevent, arriving through the one
+  door with no listener on it. The tab's own dismiss then stopped re-reading
+  locally as well: `clearSelfFix` already nudges, so a second refresh path would
+  be a second place for the two to fall out of step. The tab needs no in-flight
+  guard of its own (unlike SF-12b) because its whole response is one re-read, and
+  the effect's own teardown drops the previous fetch.
+- **SF-12a2** **A message about a request is only true until the next one, and
+  hiding a surface is not the same as closing it.** Two states outlived what
+  made them, both because the nudge above turned a one-shot read into a
+  repeating one. The Preferences tab set `error` on a failed load and never
+  cleared it, so the banner sat over a server that had been answering again for
+  ten minutes; it is cleared on every success now, and an error takes the WHOLE
+  tab only when no snapshot has ever landed — after that it is a note above
+  content that is still broadly true, since one blip (the server restarting
+  mid-fix, which is a thing fix sessions cause) should not take away the
+  reinstall instructions. And the chip's open-panel coordinate survived the
+  badge disappearing: the stock-install early return stops RENDERING the panel
+  without clearing `at`, so when the badge came back — a real sequence, since a
+  dismissal is scoped to one tree state (SF-15) and a session still editing
+  re-stamps past it — the panel reopened over a sidebar nobody had clicked.
+- **SF-12a3** **A dismiss PATCHES local state and the nudge still re-reads**,
+  and the two are not the duplicate path SF-12a1 removed. What was removed was a
+  second *re-read trigger*; this is an optimistic *edit*, which the nudge's read
+  then confirms — the version chip has always worked this way. It became
+  necessary the moment a failed re-read stopped blanking the tab (SF-12a2): with
+  the last good snapshot preserved, a dismiss whose follow-up read failed left
+  Preferences saying "Modified" beside a chip that had already gone clean. The
+  server has confirmed the clear by then, so the marker is known-gone and saying
+  so is not a guess.
+- **SF-12b** **A nudge ABANDONS the read already in flight**, it does not merely
+  cancel the next one. The two cadences above mean a `/api/config` read is
+  usually outstanding, and the request that resolves after a dismiss still
+  carries the state from before it — so cancelling only the pending timer left
+  the dismissed badge to come back a moment later, from a reply that was already
+  on the wire when the user clicked. Every read carries the generation it was
+  issued under (`PollGen`, descended from the `epochRef` idiom
+  `DownloadManager` uses for the same hazard) and applies only if that
+  generation is still current; a dismiss, a nudge and a new seed each move it.
+  The panel's own optimistic clear goes through the same move rather than
+  through the raw setter, so the two cannot disagree.
+- **SF-12c** **…and it is TWO counters, because a read can be stale without its
+  LOOP being stale.** Landing, a poll asks two questions — may I paint this, and
+  am I still the loop — and one number answers them both wrongly. Guarding only
+  the paint leaves the abandoned read to schedule the next tick anyway: the hook
+  holds ONE timer handle, so the orphan's `setTimeout` overwrites the live
+  loop's, and from then on two chains poll forever with nothing pointing at
+  either but the newest — not even the unmount cleanup. That is not a rare
+  interleaving; `noteFixStarted` writes both storage keys, so every OTHER tab
+  re-arms twice while the first read is open. Guarding both on one counter fails
+  the opposite way: a fresher `seed` prop overtakes the answer while starting no
+  new loop, so retiring the loop there leaves a chip that never polls again for
+  the life of the page. Hence `reads` (bumped by anything that overtakes an
+  answer) and `chain` (bumped only by a nudge, which does both), with the rule
+  itself in `lib/selffix` under test rather than as two `useRef`s a component
+  has to keep in step.
+- **SF-14** **The other way in is Preferences → "Fix this app"**, because most
+  of what is wrong with an app never raises anything: a preview renders the
+  wrong dates, a folder takes ten seconds to open, a button does nothing. No
+  error means no failed row, which meant no way in at all — leaving the user
+  with exactly the option this feature exists to replace, describing it to us
+  and waiting for a release. The tab takes a SENTENCE (`note` on the same
+  `POST /api/selffix/start`; one of `message`/`note`/`title` is required,
+  because a session handed nothing reads code at random and then reports on
+  having done so). **Which brief a session gets turns on whether the user
+  DESCRIBED it — the presence of `note` — and never on whether error text came
+  with it**: a failed job row is allowed to carry an empty `message` (the
+  manager renders a bare "Failed"), and keying off the text handed that row the
+  Preferences brief, which claims nothing crashed and steers the session away
+  from tracing a failure that really happened. A free-text box and not a form: the user does not know which
+  subsystem is at fault — that is the session's job — and a dropdown of our
+  subsystem names asks them to guess it before they may ask for help.
+- **SF-14a** **With no traceback, the incident carries different evidence.** The
+  user's own words lead the body, the file says outright that **nothing
+  crashed** (so the session does not hunt a traceback that was never produced,
+  nor read its absence as a dead end), this process's app log rides along
+  INLINE and bounded (`LOG_TAIL_BYTES`; a path the session has to go and find is
+  a step it may not take, and a multi-megabyte paste buries the description it
+  is meant to support), and the call-log store is named for reading directly.
+  The prompt branches too: *reproduce what they describe before you change
+  anything, and if you cannot reproduce it say so and change nothing* — a
+  described problem nobody can observe is a question, not a diagnosis.
+- **SF-14b** **That tab is also the feature's HOME, as opposed to its
+  notification.** The version chip's popover must stay small and says *something
+  happened, here is the report*; the tab is the full-size account — every report
+  ever written (including those a dismissed badge left behind, so "did I already
+  ask about this?" is answerable either way) and the dismiss — with room to read
+  it. Read-only installs say so up front here rather than only on click, since
+  there is space to say it.
+- **SF-14b1** **With no marker the tab says NOTHING about the bytes**, because
+  it cannot. It used to read *"Unmodified — this is the released build, exactly
+  as it shipped"*, and Dismiss makes that a lie by design: it clears the mark
+  and deliberately keeps the patch (SF-15), so the next snapshot met a
+  dismissed installation still carrying Claude's changes and told the user it
+  was pristine — the one direction this feature must never be wrong in. What
+  the app knows is PROVENANCE, not integrity (SF-7a): that a self-fix session
+  changed this copy, never that nothing did. Rewording it to "no modified badge
+  is active" was rejected as a quieter way of answering a question we cannot
+  answer; the section states the version, the path and the reports, and stops.
+  *An integrity claim would need a signed per-file manifest we do not ship —
+  which is SF-7a's argument, arriving at the UI.*
+- **SF-14b2** **The tab does NOT say how to reinstall**, and losing that
+  section is the point rather than an omission. It used to carry the same
+  restore block as the chip — the per-install command, the `git status` line for
+  a checkout — which put "here is how to throw this copy away" in front of
+  somebody who had opened Preferences to *describe a bug*. Reinstall advice
+  answers a question the BADGE raises ("this copy is not the released one, how
+  do I get back?"), so it belongs where the badge is and nowhere else; the
+  payload is still served, and `VersionChip` still renders it. The read-only
+  banner lost its *"see the reinstall instructions below"* with it, and could
+  not simply be re-pointed: it fires on installs that were never modified, where
+  the chip's panel does not exist either. It states its own remedy instead —
+  install somewhere you own — because a banner whose only advice is a pointer at
+  a section that is gone (or unreachable) is worse than one that says less.
+- **SF-14c** **"Every report" means WHILE a badge is up as well**, and the tab
+  reads the DIRECTORY beside the marker rather than instead of it. The marker's
+  `fixes` is capped (`selffix.MAX_FIXES`), a dismiss drops the marker while
+  keeping the files, and a session that changed nothing still writes one — so a
+  listing gated on *no marker* hid all three in the state where someone is most
+  likely to be looking. `list_reports` walks the directory for exactly that
+  reason; gating its output on the marker was the UI contradicting the server
+  that fed it. The two lists are shown together and de-duplicated by path
+  (`unlistedReports`): titled fix rows first, everything else under them, so the
+  rule is "every report is reachable and none appears twice" rather than a
+  condition on which state the install is in.
+- **SF-15** **A dismissal is REMEMBERED, and it is scoped to the tree state it
+  was made for.** The watcher re-stamps every few ticks and once more when the
+  turn ends, so dismissing mid-session — the likeliest moment, since the badge
+  appears while the user is watching — was undone seconds later by the next
+  stamp of the very same change. `clear` records the dismissed digest (the
+  marker's own, so no second walk) and `settle` skips stamping while the tree
+  still hashes to it. Scoped, not permanent: "I have seen this and do not want
+  a badge for it", never "never badge me again" — a session that goes on to
+  change something else moves the digest past it and the badge legitimately
+  returns, retiring the spent record as it does. The dismissal expires with its
+  version, like the marker and the baseline.
+- **SF-15a** **The build output is hashed on a shipped install and skipped on a
+  source checkout.** `scripts/dev.sh` runs `vite build --watch` beside the
+  server, so on a checkout `static/shell-dist` is rewritten whenever the
+  developer touches a frontend file — concurrently with a fix session, which
+  would then be blamed for it and get a badge plus a `latest_report` pointing at
+  a session that changed nothing. Nothing rewrites it on a real install, and a
+  session that hand-patched the bundle there really has modified the app, so it
+  stays covered. The one place the digest's answer depends on the KIND of
+  install, and the honest split rather than a convenience: on a checkout that
+  tree is the developer's own toolchain output, not part of what we shipped.
+- **SF-16** **`reconcile` re-reads under the lock after its walk.** Hashing the
+  tree takes long enough for the world to move: a `clear` or a watcher's
+  `mark_modified` can land mid-walk, and writing back the object read BEFORE it
+  silently undid either — a dismissed badge reappearing, or a just-recorded fix
+  losing its report. The slow walk stays outside the lock (it must); the
+  object written back is the one read fresh inside it.
+- **SF-16b** **A fresh marker does not rescue a stale MEASUREMENT.** Re-reading
+  under the lock (SF-16) fixes the object written back and does nothing for the
+  decision, which is made from the digest the walk produced — and that digest
+  describes the tree as the walk found it, not as it is now. A `mark_modified`
+  landing mid-walk separates the two exactly: the walk can read a tree that
+  still looks pristine, so "restored — clear the mark" would delete the marker
+  that fix session had just written, losing the record of it, which is the very
+  outcome SF-16's re-read exists to prevent. So the walk's answer is usable only
+  while nothing moved: if the marker changed at all between the pre-walk read
+  and the one under the lock, `reconcile` does nothing and leaves the next start
+  to walk again. A badge a few bytes out of date is what this function is
+  allowed to be wrong about; a lost fix record is not.
+- **SF-16a** **…and so does `settle`.** Same shape, one function over: it tests
+  the dismissal before a walk long enough for the user to click Dismiss in the
+  middle, and `mark_modified` would then delete a dismissal it never saw. The
+  check in `settle` is an early out; the authoritative one is inside
+  `mark_modified`'s lock, where it declines to stamp at all.
+- **SF-13** **A read-only installation gets a DIAGNOSTIC session, not a
+  refusal.** It was a 409, on the argument that a session which cannot write
+  spends several minutes reading and then reports a fix that was never applied —
+  which, to the user watching, reads exactly like a fix that was. That argument
+  is about a session which does not KNOW it cannot write. Told up front, the
+  same session is the most useful thing available on a machine nobody can patch:
+  it names the cause and writes it down for someone who can, which beats a
+  refusal that leaves the user holding the original error and nothing else. An
+  admin-installed copy is precisely where a user is least able to help
+  themselves, so it is the wrong place to be strictest.
+  **Four things follow, and each one alone would make the session worthless.**
+  (a) *The prompt says so, in its own section.* An agent that discovers the
+  permission error itself spends its remaining turns routing around it; told the
+  tree is read-only, it spends them on the cause. Its step 2 becomes *work out
+  what the fix would be, precisely enough that someone with write access could
+  apply it* — which file, which lines, what to change them to.
+  (b) *The report moves out of the installation* (`records_dir()`:
+  `<home>/selffix` rather than the state dir). It is the entire deliverable
+  here, and left at the default path the session's last act would be to create
+  a file inside the tree it could not write to — losing the diagnosis with it.
+  **The MARKER stays where it is**, and that is not an inconsistency: a marker
+  is a claim about an INSTALLATION and must die with it (SF-8), while a report
+  is a document about a machine's problem and deliberately outlives one. On a
+  read-only install there was never anything to mark.
+  (c) *No baseline and no watcher.* Both write into the tree, and both exist to
+  answer "did this session change it?" — a question whose answer is no by
+  construction. **The SESSION POINTER moves with the reports** (SF-13c1's
+  `session.json`, also `records_dir()`) and does not get this treatment, because
+  the guard it feeds is needed here just as much: a diagnostic session holds the
+  installation open for reading exactly as long as a fixing one, and the bounded
+  runs-directory scan scrolls past it just the same. Left in the state dir it
+  failed silently on every start — `note_session` is best-effort by design —
+  costing the long-session half of the guard on the one kind of install where
+  the user cannot investigate why.
+  (c1) *No fast poll either.* `startSelfFix` stamps `localStorage` so the
+  version chip drops to a 5s cadence for half an hour, which is how a badge
+  appears while the user is still watching the session that earned it. A
+  diagnostic session cannot earn one, so the stamp would buy 360 extra polls of
+  a value guaranteed not to move — hence `diagnostic` on the start response, and
+  `shouldNoteStart`.
+  (d) *The UI sets the expectation rather than closing the door, on BOTH ways
+  in*: in Preferences the button reads **Start a diagnostic session** and the
+  note beside it says a session can diagnose but not fix, with the fix needing a
+  copy the user owns — not an error banner, because nothing has gone wrong. On a
+  failed download row, where there is space for a verb and not a sentence, **Fix
+  this** becomes **Diagnose this** (the title attribute carries the sentence).
+  That second half was missed at first, and the way it was wrong is worth
+  keeping: the row promised a fix to *everyone*, so the one user who cannot be
+  helped locally was the one told most confidently that they could — and found
+  out only when the session ended. The row needs the answer BEFORE the click,
+  which is why `read_only` rides `/api/config` (present only when true, like
+  `modified_install`) instead of the `GET /api/selffix` snapshot that also
+  reports it: the snapshot costs a directory walk and a brew probe, and this is
+  one `os.access`. `useInstallReadOnly` caches the PROMISE rather than the
+  answer, so three failed rows ask once; a failed read is not cached, so one
+  dropped request does not pin the label for the session; and absence answers
+  *writable*, because nearly every install is, and a verb that briefly
+  overpromises beats mis-wording the button for everyone whose config fetch was
+  merely slow.
+- **SF-13f** **A precondition that can be CHECKED is checked before the session is
+  OFFERED — and only the ones that can.** Two of them can, and they come from two
+  places because they are two kinds of fact, each with an owner that already
+  exists.
+  **`read_only`** — an `os.access` on the install root — rides `/api/config`
+  beside `modified_install`, cheap enough for a payload every page already reads,
+  and decides FIX versus DIAGNOSE.
+  **Whether Claude Code is usable comes from `claude_health` (#621) and nowhere
+  else**, through its own `GET /api/claude/health`. That module is the package's
+  ONE resolver of the CLI, and it exists because four independent copies of the
+  candidate list once let a binary in `~/.bun/bin` produce a working
+  Claude-config tab and an `ai_unavailable` on the same machine in the same
+  second. A self-fix gate resolving the CLI for itself would be that bug again in
+  a new place — the button refusing while the health strip beside it calls the
+  install fine — so both the server's refusal and the button's wording read
+  `found` from that snapshot. Its own endpoint rather than `/api/config` is that
+  router's call, and its reason is stated there: those facts are backed by
+  process spawns behind a disk cache, and the config payload is on every page
+  load.
+  **Only the BLOCKING one is a reason not to offer.** `found: false` means no
+  session can start at all, so it outranks `read_only` and changes what the
+  button says. `outdated` and `signed_out` are real findings — `claude_health`
+  measures both, and the first-run strip reports them proactively — but neither
+  stops this button offering a session: an outdated CLI may well run one, and a
+  signed-out user is told by §42's card within seconds of trying. Being wrong
+  about those costs one failed attempt; refusing to offer over them would cost a
+  session that would have worked.
+  **The pre-check WORDS the button; it never DECIDES the click.** That split is
+  the correction to a trap this feature dug for itself. The obvious reading of
+  "we already know the answer" is to short-circuit — answer from the cached value
+  and skip a spawn whose outcome is known — and it is wrong here for a reason
+  specific to this precondition: **the button exists to tell the user to go and
+  install Claude Code**, so the one state it caches is the one state it is
+  actively asking them to change. A user who did exactly what it said and clicked
+  again in the same tab was told the binary was still missing, until they thought
+  to reload. That is worse than never pre-checking at all, because before the
+  pre-check the second click started a session. So every click asks the server —
+  the only thing that knows the current answer — and the cached value only picks
+  the verb, with `recheck` re-reading afterwards so the wording catches up on the
+  same interaction rather than at the next page load.
+  **And the server's own answer must not be a cache when it is about to
+  REFUSE.** "Ask the server" is only worth the round trip if the server
+  measures. The gate reads `claude_health`, whose snapshot is disk-cached for a
+  minute, so the rule above held for the browser and failed one layer down. A
+  cached YES is taken — being wrong costs one spawn that fails and says why in
+  its own words, the answer this route gave before the gate existed. A cached NO
+  re-measures first: being wrong there refuses the very click this feature
+  exists to invite, and the cache is blindest at exactly that moment. It
+  invalidates on the resolved binary's mtime, and a snapshot that resolved
+  NOTHING has no path to stat — an install into a directory already on PATH
+  moves no path, changes no PATH string, and touches no file it knows about, so
+  only age ever clears it, which makes the minute after the install precisely
+  the window this button is clicked in. The probe costs seconds, is paid only
+  where the answer would otherwise be no, on a route about to start a Claude
+  session; and it writes the cache, so the label catches up on its next read
+  without a second endpoint.
+  **The machine's answer outranks the request's**, which is where the pre-check
+  lands server-side: `/api/selffix/start` refuses a missing CLI BEFORE it
+  validates the body. Preferences offers *Set up Claude Code* with the
+  description box empty — there is nothing to describe yet, the CLI is the
+  problem — so validating first answered that click with *say what is wrong*,
+  and the user never reached the install card the button exists to show. Asking
+  someone to describe a problem for a session that cannot start on this computer
+  is a form to fill in for nothing. The body check is not gone, only outranked:
+  on a machine that can run a session, a request naming no failure and no
+  description is still the one thing a session cannot work from.
+  It also means there is exactly ONE copy of the missing-CLI sentence, in
+  `claude_spawn.CLAUDE_MISSING_ERROR`: a shell-side copy existed to serve the
+  short-circuit, and went with it rather than being kept honest by a parity test
+  nothing needed. The row's verb becomes **Set up Claude Code** and Preferences
+  says the same in a sentence: naming the precondition, not the failed download,
+  because that is the thing standing between the user and a session.
+- **SF-9a** **The chip is a SIBLING of the Settings trigger, not content inside
+  it**, and it wears that row's own `.version-chip` pill. Both follow from the
+  same fact — the version moved out of the brand row into the Settings row's
+  trailing slot (#737) — and both were got wrong by inheriting the old row's
+  arrangement. The slot is inside the trigger's `<button>`, which is right for
+  the Tasks count because a count is TEXT; this slot holds a CONTROL once the
+  install is modified, and a button inside a button is not merely invalid markup
+  — the click meant for the report bubbles to the trigger and opens the Settings
+  menu, so the badge cannot do the one thing it exists for. So the ROW carries
+  the padding, radius and hover, and the trigger is a transparent child that
+  grows to fill whatever the chip leaves. The styling half is the same mistake
+  twice over: rules still scoped to `.sidebar-brand` matched nothing after the
+  move, and the chip kept naming the brand row's class instead of the pill this
+  slot already had, so BOTH states painted as plain body text. The rule worth
+  carrying: **when an element moves rows, its selectors and its container's
+  assumptions move with it — a class name that still reads right is not evidence
+  that it still matches.**
+- **SF-13f1** **The stale belief licensed the BODY as well as the verb, and
+  `recheck` only fixed the verb.** The same trap as SF-13f, one layer down and
+  found the same way. Preferences leaves the button live over an EMPTY box while
+  the CLI is missing, so that belief is what permits an empty request at all;
+  the server, ordering the machine before the request, never validates that body
+  while the CLI really is absent. Install the CLI and click again and the same
+  empty body now reaches validation, so the click that followed the button's own
+  instruction is answered *say what is wrong* — a refusal aimed at a question
+  the user has stopped asking, on a panel that is at that instant re-rendering
+  to ask it properly. The download-manager row never had this: its context
+  always carries a title, so its body is legal on either machine.
+  So the recheck is part of REPORTING the failure rather than tidying up after
+  it — awaited, not fired into `finally` — and a refusal that the install itself
+  explains is dropped rather than shown (`claudeArrivedMidClick`). Dropped, not
+  reworded: the re-render IS the answer, since the not-installed note goes, the
+  verb becomes *Start a fix session*, and the button sits disabled over the box
+  it now needs filled. Only the empty-note case is dropped; a click that carried
+  a description sent a body the server would have taken either way, so its
+  failure is real and is shown. The general rule underneath: **when a cached
+  belief is what made a request legal, discovering the belief was stale
+  invalidates the answer, not just the label.**
+  **And the drop needs a READING, not a default.** The first cut of this asked
+  only whether the fresh answer said the CLI was present, and `claudeMissing:
+  false` is two facts wearing one name: *found*, and *could not tell* — a health
+  probe that fails answers FALSE deliberately, because defaulting the other way
+  would mis-word the button for everyone whose fetch was merely slow (SF-13f).
+  Read as proof of an install, that default made a failed probe on the way back
+  from a genuine missing-CLI refusal swallow the install card the click went to
+  fetch, leaving a blank panel over a disabled button — strictly worse than the
+  message it replaced, and in exactly the corner this feature exists to serve.
+  So the readiness carries `claudeChecked` — the probe ANSWERED — and the drop
+  requires it. The rule generalises past this button: **a default chosen to be
+  safe for a LABEL is not safe for a decision that DISCARDS information**, and
+  the two need separate names the moment one of them is used to throw something
+  away.
+  **And a fresh answer goes to every mounted row, not only the one that asked
+  for it.** A failed probe is deliberately not remembered, so the next row to
+  mount opens a new one — and what it learns is a fact about the MACHINE.
+  Delivered to its own caller alone, it left the rows that mounted earlier
+  holding the probe that failed: one row saying *Set up Claude Code* beside
+  another still offering *Fix this*, about one machine. That is the same
+  disagreement the SHARED cache exists to prevent, reached through the mount
+  path rather than `recheck`'s, so the mount path broadcasts too.
+- **SF-13e** **WRITERS take the first records home that will have them; READERS
+  look in all of them** (`record_homes`). `writable()` is `os.access` on the
+  install root — a PREDICTION, and one that answers only for the real uid's
+  permission bits. It knows nothing about an ACL that denies, a volume remounted
+  read-only under a running app, an immutable flag, or a full disk, so an
+  installation can predict *writable* and refuse the very next write. Two things
+  broke on that, and both are worse than the prediction being wrong:
+  (i) *the start route returned 500* instead of a diagnostic session — a hard
+  failure on exactly the installation SF-13 exists to help. The incident is now
+  written to the first home that accepts it, and the route reads the returned
+  path (`in_state_dir`) to decide the mode: the prediction proposes, the write
+  disposes.
+  (ii) *reports vanished from the panel.* `list_reports` walked only the home
+  today's prediction names, so a report a diagnostic session wrote out of tree
+  stopped being listed the moment the install started looking writable — a
+  `chmod`, a move out of `/Applications`, an admin copy whose ownership changed.
+  The files were never deleted; the panel had stopped looking where it put them,
+  which breaks SF-13b's promise that a report outlives the installation. The
+  listing now merges both homes and sorts by time across them, because which
+  directory a report landed in is an accident of the day's permissions and not
+  something a user has any reason to sort by. The SESSION POINTER follows the
+  same rule for the same reason: written in one home it must still be found from
+  the other, or a second agent starts on a tree the first is still editing.
+  **They are TWO lists, not one shared one** (`record_homes` for writers,
+  `reader_homes` for readers), and collapsing them reintroduces the bug in the
+  other direction. A writer must not be offered the state dir once the tree is
+  known unwritable: that is a guaranteed exception per record to learn what
+  `os.access` had already answered correctly. A reader has no such excuse —
+  nothing about a home's writability bears on whether it can be READ — so its
+  list never consults the prediction at all. Sharing the writer's list meant an
+  install that WAS writable and is now not (a `chmod`, a remount, an ownership
+  change) dropped its in-tree reports and, worse, its session pointer out of
+  view; that pointer is half the one-at-a-time guard (SF-13a), so a live fix
+  session would stop excluding a second one the moment the tree it is editing
+  turned read-only underneath it.
+- **SF-13a** **ONE Claude session at a time in the installation** (409 naming
+  the run), because they all edit the same tree: two agents rewriting one
+  installation is not a slow path but a conflict, and each report then describes
+  a state that never existed. A user with two failed rows clicking Fix on both
+  is the ordinary way to get there.
+- **SF-13b** **The guard is ASKED, not remembered.** `agent._live_run(<install
+  root>)` — a scan of the runs directory for a run whose target is this tree and
+  whose pid is alive. It was a module-global claim with a token and a TTL, and
+  that was wrong in the one way that mattered: **the claude process is DETACHED
+  and outlives this server, while the claim lived in memory and did not.** A
+  restart cleared the guard with an agent still editing — and the restart most
+  likely to happen is the one the fix session itself CAUSES, since it edits `.py`
+  files under a dev server watching them. Persisting a lease instead would mean a
+  lease file, a TTL for it, recovery at startup, and a way to tell a stale lease
+  from a live one: four pieces of state to keep in step with a fact already on
+  disk. Asking also answers the question we actually care about rather than a
+  proxy for it — **a chat the user opened on the install folder by hand is
+  another agent in the same tree**, and the old claim could not see it. What
+  remains in memory is a plain mutex held across one request's look-and-spawn, so
+  two simultaneous clicks cannot both find the directory quiet; it is released a
+  second later and holds nothing about the session now running.
+- **SF-13c** **The watcher thread is bookkeeping, not the guard**, which is what
+  makes its failure uninteresting. While the guard was a claim the watcher had to
+  release, a thread that failed to start forced a choice between two harms — free
+  the guard with an agent live, or hold it on a timer — and the branch needed an
+  argument either way. Now the session excludes the next one because its process
+  is alive, watched or not. One cost survives and no lock could have prevented
+  it: unwatched means unstamped, so the badge will not appear for what that
+  session changes, since the mark is a provenance claim only a watched session
+  can make (SF-7a) and is never inferred from a digest.
+- **SF-13c1** **The guard asks TWICE, and either "busy" is enough.** The scan is
+  BOUNDED — `_live_run` reads the newest runs on the machine before filtering by
+  target — which is right for a chat turn ("a turn does not outlive 60 later
+  ones") and wrong for this one: a fix session is the long-running case by
+  construction, and a machine firing scheduled tasks can start 60 runs beside it,
+  at which point the scan stops seeing the very session it is guarding. So the
+  run this app started is ALSO named directly, in `records_dir()`'s
+  `session.json` (SF-13, and SF-13c2 for its name there), and asked about by
+  pid. That file is a **pointer,
+  not a lease**, and the distinction is the whole design: nothing expires it,
+  nothing recovers it at startup, and a record left by a finished session — or by
+  a machine that lost power mid-fix — reads as "not running" the moment its pid
+  is gone. The next start overwrites it. Writing it is best-effort, because a
+  pointer that could not be written costs the long-session half of the guard
+  while the scan still covers the ordinary case, and refusing to start a fix over
+  that is the wrong trade. The two lookups are not two answers to reconcile: each
+  covers a case the other cannot (the pointer knows our own long run; the scan
+  knows the chat someone opened on the folder by hand).
+- **SF-13c2** **The pointer's NAME carries the installation only where its
+  DIRECTORY does not.** The guard is per-install; one of its two homes is
+  per-USER. In the state dir the plain `session.json` is right and a name
+  derived from the root would be worse: that directory travels with the tree, so
+  the file keeps being found after the install is moved or renamed, which a
+  path-derived name would stop doing. `records_dir()`'s out-of-tree home is
+  shared by every copy the user has installed, so there the name folds in a
+  short digest of the resolved install root. One shared `session.json` made the
+  one-at-a-time guard MACHINE-wide, and it failed in both directions at once: a
+  live diagnostic session on an admin-installed copy answered "busy" for the
+  user's own second copy — the very remedy SF-13's read-only path names, refused
+  to the user who took the advice — and where both copies are read-only, the
+  second start OVERWROTE the first's pointer, costing the long-session half of
+  the guard on an install still running. Neither reads as a bug from the
+  outside: one is a 409 that looks like the guard working, the other is silent.
+- **SF-13c3** **The RECORDS follow the same rule as the pointer beside them.**
+  `reports/` and `incidents/` keep their plain names in the state dir and fold
+  the same install-root digest into the directory name in the shared
+  out-of-tree home. Namespacing the pointer and not the records left a listing
+  that mixed installations: a diagnostic session on an admin copy — the case
+  that MUST write out of tree, so the likeliest to collide — put its report in
+  the same `reports/` as the user's own copy, and each panel then listed both
+  machines' problems with nothing to tell them apart, including the file
+  `issueUrl` offers to open. Keyed on the install ROOT and not on the tree, so
+  it does not weaken SF-13b: a reinstall in place keeps the same root and finds
+  everything it wrote before.
+- **SF-13d** **The lookup fails OPEN**, reasoned rather than a coin toss:
+  everything it can fail on (the agent not loading, an unreadable runs directory)
+  fails the spawn moments later too, with a message naming what actually went
+  wrong instead of "already running".

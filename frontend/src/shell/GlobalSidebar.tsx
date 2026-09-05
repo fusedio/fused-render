@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import { ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
+import VersionChip from "@platform/ui/VersionChip";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
@@ -198,21 +199,35 @@ function PreferencesTrigger({
   trailing?: React.ReactNode;
   onToggle: (el: HTMLElement) => void;
 }) {
+  // THE TRAILING SLOT IS A SIBLING OF THE BUTTON, not a child of it — the one
+  // place this row departs from `NavItem`, and the reason is what goes in it.
+  // Tasks puts a count there, which is text and sits happily inside a button.
+  // This row's is the VERSION CHIP, and once a self-fix session has modified
+  // the install that chip becomes a control of its own (SPEC §48). A button
+  // inside a button is invalid, and worse than invalid here: the click that
+  // should open the report bubbles to this trigger and opens the Settings menu
+  // instead, so the badge's one job cannot be done.
+  //
+  // So the ROW is the `.sidebar-item` — it owns the padding, the radius and the
+  // hover — and the trigger inside it is a transparent full-height child that
+  // grows to fill everything the chip does not take.
   return (
-    <button
-      type="button"
-      className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
-      aria-haspopup="menu"
-      aria-expanded={open}
-      onClick={(e) => onToggle(e.currentTarget)}
-    >
-      <span className="icon">
-        {PREFERENCES_ICON}
-        {dot}
-      </span>{" "}
-      Settings
+    <div className={"sidebar-item sidebar-prefs-row" + (active ? " active" : "")}>
+      <button
+        type="button"
+        className="sidebar-prefs-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => onToggle(e.currentTarget)}
+      >
+        <span className="icon">
+          {PREFERENCES_ICON}
+          {dot}
+        </span>{" "}
+        Settings
+      </button>
       {trailing && <span className="sidebar-item-trail">{trailing}</span>}
-    </button>
+    </div>
   );
 }
 
@@ -785,9 +800,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             active={prefsActive}
             trailing={
               config.version ? (
-                <span className="version-chip" title={`Fused Render v${config.version}`}>
-                  v{config.version}
-                </span>
+                /* VersionChip rather than a plain span: a version string is a
+                   claim about which bytes are running, so when a self-fix
+                   session has changed this install the chip is what says so and
+                   opens its report (SPEC §48). Until then it renders the same
+                   v-string this slot always showed. */
+                <VersionChip
+                  version={config.version}
+                  modified={config.modified_install ?? null}
+                />
               ) : undefined
             }
             onToggle={togglePrefsMenu}

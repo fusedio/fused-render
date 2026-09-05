@@ -2,6 +2,7 @@
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
+import type { ModifiedInstall } from "@platform/lib/selffix";
 
 export interface FdaState {
   // What THIS server process can read. Final for the process's lifetime.
@@ -39,6 +40,18 @@ export interface Config {
   // packaged mac app started the update manager; absent on dev servers and
   // the Windows/Linux packages (those update through their supervisor).
   update?: UpdateStatus;
+  // A Claude session changed this installation (fused_render/selffix.py) — the
+  // sidebar's version chip turns amber and leads to its report. PRESENT ONLY
+  // WHEN MODIFIED: there is no `modified: false` shape, because the ordinary
+  // state of an installation is that nobody has touched it, and a field that is
+  // always there invites a truthiness check that a `{modified: false}` object
+  // would silently pass.
+  modified_install?: ModifiedInstall;
+  // The installation cannot be written to, so a self-fix session started here
+  // can only DIAGNOSE (fused_render/selffix.py, SPEC §48 SF-13). PRESENT ONLY
+  // WHEN READ-ONLY, for the same reason as `modified_install` above: the
+  // ordinary install is one the user owns.
+  read_only?: boolean;
   // Full Disk Access state (fused_render/shell/fda.py) — present only on the
   // packaged mac app when the probe is conclusive. Read through the one store
   // in platform/lib/fda.ts (FdaStrip + the onboarding FdaStep); absent means
