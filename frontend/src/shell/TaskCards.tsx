@@ -495,9 +495,22 @@ function TaskPeek({
       // THE DOORS, IN THE HEAD beside the ✕ (Akshil, 2026-09-05: "move them on
       // top where we have the close button"), each an icon WITH its word — an
       // icon alone was not clear — in the app's own small secondary button, the
-      // one the toolbar above this popup wears. Order: the folder, then Archive.
+      // one the toolbar above this popup wears. Order: Archive, then the folder
+      // (Akshil, 2026-09-05: "switch archive and open explorer buttons").
       headActions={
         <>
+          {filing && (
+            <button
+              type="button"
+              className="btn btn-secondary modal-head-act"
+              disabled={acting}
+              title={filing.title}
+              onClick={refile}
+            >
+              {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
+              {filing.label}
+            </button>
+          )}
           {explorer && (
             <a
               // A real link with a real href, so ⌘-click and middle-click open
@@ -515,18 +528,6 @@ function TaskPeek({
               {ICON_FOLDER}
               Open in Explorer
             </a>
-          )}
-          {filing && (
-            <button
-              type="button"
-              className="btn btn-secondary modal-head-act"
-              disabled={acting}
-              title={filing.title}
-              onClick={refile}
-            >
-              {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
-              {filing.label}
-            </button>
           )}
         </>
       }

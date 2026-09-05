@@ -6905,13 +6905,14 @@ describe("the Cards view's frame", () => {
     expect(peekFrameSrc("/tpl/claude.html", "/Users/me/proj", "sess-9")).toBe(
       "/render?path=%2Ftpl%2Fclaude.html&_file=%2FUsers%2Fme%2Fproj&chat_only=1&peek=1&session_id=sess-9",
     );
-    // The two doors, folder then Archive, in the head beside the ✕ as the app's
+    // The two doors, Archive then folder, in the head beside the ✕ as the app's
     // own buttons — icon AND word (Akshil, 2026-09-05: an icon alone "is not
     // clear"). No "Open in Tasks": we are already in Tasks.
     const acts = CARDS.slice(CARDS.indexOf("headActions={"), CARDS.indexOf("footer={"));
     expect(acts).not.toContain("Open in Tasks");
     expect(acts.indexOf("Open in Explorer")).toBeGreaterThan(-1);
-    expect(acts.indexOf("Open in Explorer")).toBeLessThan(acts.indexOf("{filing.label}"));
+    // Archive first, the folder last, beside the close button (Akshil, 2026-09-05).
+    expect(acts.indexOf("{filing.label}")).toBeLessThan(acts.indexOf("Open in Explorer"));
     expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(2);
     // The folder chip, the List row's own, at the right before the time — and
     // the List's TAG: pressed, it filters the page (Akshil, 2026-09-05), through
