@@ -2863,17 +2863,18 @@ export const CARD_LANES: BoardColumn[] = LIST_ORDER.filter((key) => key !== "arc
 /**
  * HOW MANY LIVE CHATS PER PAGE. Each card is an iframe running the chat template,
  * and that template polls its run every 400ms — so the wall does not draw every
- * running task at once. It draws NINE, and a "Show 9 more" card at the end adds
- * the next nine on request (Akshil, 2026-09-05: "a show more button that shows
- * nine more, nine more, nine more"). The budget is the reader's, taken a page at
- * a time, rather than a ceiling the view imposes.
+ * task at once. It draws SIX, and a "Show more" strip under the grid adds the
+ * next six on request (Akshil, 2026-09-05: "have 6 cards loaded instead of
+ * nine, and show 6 more cards when we click on show more"). The budget is the
+ * reader's, taken a page at a time, rather than a ceiling the view imposes.
  *
- * Nine because the grid is three across and two rows deep before the fold
- * (task-cards.css): six in view and a third row already loaded underneath for
- * whoever scrolls, and every page after it three more full rows — so no page
- * ends on a ragged row that would read as a bug in the grid.
+ * Six because the grid is three across and two rows deep before the fold
+ * (task-cards.css): one page is exactly what is in view, and every page after
+ * it two more full rows — so no page ends on a ragged row that would read as a
+ * bug in the grid. (Nine was tried first: the third row sat under the fold,
+ * loading, for a wall nobody had asked to scroll yet.)
  */
-export const CARD_PAGE = 9;
+export const CARD_PAGE = 6;
 
 /** What the Cards view draws: the live tasks within the pages shown so far, and
  * how many are still behind the fold. `hidden` is 0 whenever nothing was left

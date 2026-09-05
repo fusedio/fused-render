@@ -23,7 +23,7 @@
 //     array. A card keyed by anything but the task would remount its iframe on
 //     each poll, which is a reload of a live conversation every 20 seconds.
 //   * A BUDGET. Live documents are not free, so the wall is drawn a page of
-//     nine at a time (tasks-lib.CARD_PAGE) and grows only when asked.
+//     six at a time (tasks-lib.CARD_PAGE) and grows only when asked.
 //
 // Everything about WHICH tasks and in WHAT ORDER is tasks-lib.cardsForTasks —
 // pure, tested, and out of here, because a wall of iframes is the last place
@@ -34,14 +34,16 @@ import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
-import { StatusIcon } from "./ScheduleTaskViews";
+import { IdentityChip, StatusIcon } from "./ScheduleTaskViews";
 import {
   CARD_PAGE,
+  basename,
   cardKey,
   cardsForTasks,
   filingIntent,
   firstLine,
   opensElsewhere,
+  spansProjects,
   taskColumn,
   taskHref,
   taskWhen,
@@ -103,6 +105,8 @@ export function TaskCards({
   tasks,
   home = "",
   onReload,
+  onPickProject,
+  pinnedProjects = [],
 }: {
   /** Already filtered, in the SERVER's order — `cardsForTasks` drops the
    * archived ones and orders the rest, which is the one thing this view does to
@@ -112,6 +116,13 @@ export function TaskCards({
   /** After the popup archives or unarchives: the card's lane changed, so the
    * page re-reads — the same call the Board's drops and the List's row make. */
   onReload?: () => void;
+  /** The folder chip is the List row's FILTER TAG (Akshil, 2026-09-05): pressed,
+   * it narrows the page to that project; pressed again, lets it go. The same
+   * handler the List is handed, so the two chips cannot mean different things. */
+  onPickProject?: (project: string) => void;
+  /** Which projects the page is pinned to — the chip wears the ON state, and
+   * survives the filter that makes every card agree (see `showProject`). */
+  pinnedProjects?: string[];
 }) {
   // THE POPUP (Akshil, 2026-09-05): one task at a time, opened from a card's
   // head. Held as the Task the head was clicked with, then REFRESHED from every
@@ -128,12 +139,19 @@ export function TaskCards({
     const id = cardKey(peek);
     return tasks.find((t) => cardKey(t) === id) ?? peek;
   }, [peek, tasks]);
-  // HOW MANY PAGES THE READER HAS ASKED FOR. Nine cards to begin with, and each
-  // press of the trailing card adds nine (Akshil, 2026-09-05). Never wound back
+  // HOW MANY PAGES THE READER HAS ASKED FOR. Six cards to begin with, and each
+  // press of the trailing strip adds six (Akshil, 2026-09-05). Never wound back
   // by a poll: the list refreshes every 20 seconds, and a wall that collapsed to
   // its first page each time would undo the reader's own gesture under them.
   const [pages, setPages] = useState(1);
   const { cards, hidden } = useMemo(() => cardsForTasks(tasks, pages * CARD_PAGE), [tasks, pages]);
+  // The List's rule for whether the chip is worth its pixels: only when the
+  // cards span more than one folder — or the page is pinned to one, in which
+  // case the chip is the thing that says so and the way to let it go.
+  const showProject = useMemo(
+    () => spansProjects(cards) || pinnedProjects.length > 0,
+    [cards, pinnedProjects],
+  );
   // The wheel works in the gutters either side of the column (Akshil,
   // 2026-09-05: "when I try to scroll, it does not scroll") — forwarded to the
   // wall, the List's own rule, rather than by widening the scroller, which is
@@ -223,8 +241,14 @@ export function TaskCards({
           // a card that has a session to frame.
           key={cardKey(task)}
           task={task}
+          home={home}
           template={templates[task.target || task.project] ?? null}
           onPeek={setPeek}
+          project={
+            showProject
+              ? { pinned: pinnedProjects.includes(task.project), onPick: onPickProject }
+              : null
+          }
         />
       ))}
       </div>
@@ -244,12 +268,18 @@ export function TaskCards({
 
 function TaskCard({
   task,
+  home,
   template,
   onPeek,
+  project,
 }: {
   task: Task;
+  home: string;
   template: string | null;
   onPeek: (task: Task) => void;
+  /** Draw the folder chip, and how: null hides it (one folder, nothing to tell
+   * apart); otherwise whether the page is pinned to it and the tag's handler. */
+  project: { pinned: boolean; onPick?: (project: string) => void } | null;
 }) {
   const when = taskWhen(task);
   const title = firstLine(task.title) || "(untitled)";
@@ -275,6 +305,11 @@ function TaskCard({
         aria-label={`Preview ${task.task_id}`}
         onClick={() => onPeek(task)}
         onKeyDown={(e) => {
+          // Only a key pressed ON THE HEAD. The folder chip inside it is a real
+          // button of its own; its Enter and Space bubble here, and answering
+          // them would cancel the chip's press and open the popup instead of
+          // filtering (Bugbot, #1011).
+          if (e.target !== e.currentTarget) return;
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             onPeek(task);
@@ -296,6 +331,23 @@ function TaskCard({
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}
+          {/* The folder, as the List row prints it — the same chip, the same
+              basename, the full path on hover — at the right, before the time
+              (Akshil, 2026-09-05: "same here, top right corner, left side of
+              time"). The List's order too: folder first, time last, because
+              the last thing before the edge is the one a reader lands on and
+              the time is what changes. And the List's TAG, not a label
+              (Akshil, 2026-09-05: "when we click on them they filter?"): the
+              chip stops its own press (IdentityChip's shield), so pressing the
+              folder filters the page and does not also open the popup. */}
+          {project && (
+            <IdentityChip
+              name={basename(task.project)}
+              title={tildePath(task.project, home)}
+              onPick={project.onPick && (() => project.onPick?.(task.project))}
+              active={project.pinned}
+            />
+          )}
           <span className="task-card-when" title={when.title}>
             {when.text}
           </span>
@@ -448,9 +500,22 @@ function TaskPeek({
       // THE DOORS, IN THE HEAD beside the ✕ (Akshil, 2026-09-05: "move them on
       // top where we have the close button"), each an icon WITH its word — an
       // icon alone was not clear — in the app's own small secondary button, the
-      // one the toolbar above this popup wears. Order: the folder, then Archive.
+      // one the toolbar above this popup wears. Order: Archive, then the folder
+      // (Akshil, 2026-09-05: "switch archive and open explorer buttons").
       headActions={
         <>
+          {filing && (
+            <button
+              type="button"
+              className="btn btn-secondary modal-head-act"
+              disabled={acting}
+              title={filing.title}
+              onClick={refile}
+            >
+              {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
+              {filing.label}
+            </button>
+          )}
           {explorer && (
             <a
               // A real link with a real href, so ⌘-click and middle-click open
@@ -468,18 +533,6 @@ function TaskPeek({
               {ICON_FOLDER}
               Open in Explorer
             </a>
-          )}
-          {filing && (
-            <button
-              type="button"
-              className="btn btn-secondary modal-head-act"
-              disabled={acting}
-              title={filing.title}
-              onClick={refile}
-            >
-              {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
-              {filing.label}
-            </button>
           )}
         </>
       }
