@@ -43,6 +43,7 @@ import {
   filingIntent,
   firstLine,
   opensElsewhere,
+  spansProjects,
   taskColumn,
   taskHref,
   taskWhen,
@@ -104,6 +105,8 @@ export function TaskCards({
   tasks,
   home = "",
   onReload,
+  onPickProject,
+  pinnedProjects = [],
 }: {
   /** Already filtered, in the SERVER's order — `cardsForTasks` drops the
    * archived ones and orders the rest, which is the one thing this view does to
@@ -113,6 +116,13 @@ export function TaskCards({
   /** After the popup archives or unarchives: the card's lane changed, so the
    * page re-reads — the same call the Board's drops and the List's row make. */
   onReload?: () => void;
+  /** The folder chip is the List row's FILTER TAG (Akshil, 2026-09-05): pressed,
+   * it narrows the page to that project; pressed again, lets it go. The same
+   * handler the List is handed, so the two chips cannot mean different things. */
+  onPickProject?: (project: string) => void;
+  /** Which projects the page is pinned to — the chip wears the ON state, and
+   * survives the filter that makes every card agree (see `showProject`). */
+  pinnedProjects?: string[];
 }) {
   // THE POPUP (Akshil, 2026-09-05): one task at a time, opened from a card's
   // head. Held as the Task the head was clicked with, then REFRESHED from every
@@ -135,6 +145,13 @@ export function TaskCards({
   // its first page each time would undo the reader's own gesture under them.
   const [pages, setPages] = useState(1);
   const { cards, hidden } = useMemo(() => cardsForTasks(tasks, pages * CARD_PAGE), [tasks, pages]);
+  // The List's rule for whether the chip is worth its pixels: only when the
+  // cards span more than one folder — or the page is pinned to one, in which
+  // case the chip is the thing that says so and the way to let it go.
+  const showProject = useMemo(
+    () => spansProjects(cards) || pinnedProjects.length > 0,
+    [cards, pinnedProjects],
+  );
   // The wheel works in the gutters either side of the column (Akshil,
   // 2026-09-05: "when I try to scroll, it does not scroll") — forwarded to the
   // wall, the List's own rule, rather than by widening the scroller, which is
@@ -227,6 +244,11 @@ export function TaskCards({
           home={home}
           template={templates[task.target || task.project] ?? null}
           onPeek={setPeek}
+          project={
+            showProject
+              ? { pinned: pinnedProjects.includes(task.project), onPick: onPickProject }
+              : null
+          }
         />
       ))}
       </div>
@@ -249,11 +271,15 @@ function TaskCard({
   home,
   template,
   onPeek,
+  project,
 }: {
   task: Task;
   home: string;
   template: string | null;
   onPeek: (task: Task) => void;
+  /** Draw the folder chip, and how: null hides it (one folder, nothing to tell
+   * apart); otherwise whether the page is pinned to it and the tag's handler. */
+  project: { pinned: boolean; onPick?: (project: string) => void } | null;
 }) {
   const when = taskWhen(task);
   const title = firstLine(task.title) || "(untitled)";
@@ -305,10 +331,18 @@ function TaskCard({
               (Akshil, 2026-09-05: "same here, top right corner, left side of
               time"). The List's order too: folder first, time last, because
               the last thing before the edge is the one a reader lands on and
-              the time is what changes. A plain label here, not the List's
-              filter tag: a card is opened by its head, and a button inside
-              that head would compete with the press that opens it. */}
-          <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
+              the time is what changes. And the List's TAG, not a label
+              (Akshil, 2026-09-05: "when we click on them they filter?"): the
+              chip stops its own press (IdentityChip's shield), so pressing the
+              folder filters the page and does not also open the popup. */}
+          {project && (
+            <IdentityChip
+              name={basename(task.project)}
+              title={tildePath(task.project, home)}
+              onPick={project.onPick && (() => project.onPick?.(task.project))}
+              active={project.pinned}
+            />
+          )}
           <span className="task-card-when" title={when.title}>
             {when.text}
           </span>

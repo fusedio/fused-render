@@ -6903,11 +6903,19 @@ describe("the Cards view's frame", () => {
     expect(acts.indexOf("Open in Explorer")).toBeGreaterThan(-1);
     expect(acts.indexOf("Open in Explorer")).toBeLessThan(acts.indexOf("{filing.label}"));
     expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(2);
-    // The folder chip, the List row's own, at the right before the time
-    // (Akshil, 2026-09-05) — a plain label, never the List's filter tag.
+    // The folder chip, the List row's own, at the right before the time — and
+    // the List's TAG: pressed, it filters the page (Akshil, 2026-09-05), through
+    // the one handler Scheduled hands both views, wearing the pinned state.
     const headRow = CARDS.slice(CARDS.indexOf('<div className="task-card-head-row">'), CARDS.indexOf("</div>", CARDS.indexOf('<div className="task-card-head-row">')));
-    expect(headRow).toContain("<IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />");
-    expect(headRow).not.toContain("onPick");
+    expect(headRow).toContain("name={basename(task.project)}");
+    expect(headRow).toContain("onPick={project.onPick && (() => project.onPick?.(task.project))}");
+    expect(headRow).toContain("active={project.pinned}");
+    expect(SCHEDULED).toContain("const pickProject = (project: string) =>");
+    expect((SCHEDULED.match(/onPickProject=\{pickProject\}/g) ?? []).length).toBe(2);
+    expect((SCHEDULED.match(/pinnedProjects=\{filters\.projects\}/g) ?? []).length).toBe(2);
+    // ...and shown by the List's rule: only when the cards span folders, or the
+    // page is pinned to one.
+    expect(CARDS).toContain("spansProjects(cards) || pinnedProjects.length > 0");
     expect(headRow.indexOf("<IdentityChip")).toBeLessThan(headRow.indexOf("task-card-when"));
     expect(headRow.indexOf("tasks-id--task")).toBeLessThan(headRow.indexOf("<IdentityChip"));
     expect(block(CARDS_CSS, ".task-card-head-row > .schedule-tv-id")).toContain("margin-left: auto");
