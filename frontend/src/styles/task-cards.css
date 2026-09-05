@@ -1,4 +1,4 @@
-/* Tasks → Cards: every running conversation, side by side, streaming.
+/* Tasks → Cards: every task's conversation, side by side, the live ones streaming.
    (shell/TaskCards.tsx — the page's fourth view.)
 
    The other three views draw ROWS about tasks. This one draws the tasks
@@ -17,69 +17,55 @@
    §1). Only what is new to it lives here. */
 
 /* -- the wall ----------------------------------------------------------------- */
-/* THREE ACROSS, TWO DOWN, THEN SCROLL (Akshil, 2026-09-04: six cards in view,
-   scroll for the rest — back up from four once the frame inside was scaled to
-   stay readable at that width, below). The wall is the page's scroll container —
-   the same `flex: 1; min-height: 0; overflow-y: auto` shape the List uses — and
-   the rows are sized from the container, not from the content, so exactly two
-   rows fill whatever height the toolbar leaves and the third row is the first
-   thing under the fold. A fixed pixel height would be six cards on one monitor
-   and four-and-a-half on another.
+/* THREE ACROSS, TWO DOWN, THEN SCROLL (Akshil, 2026-09-04: six cards in view;
+   2026-09-05: nine LOADED a page, so the third row is already there under the
+   fold for whoever scrolls). The SCROLLER is `.task-cards-scroll`, in exactly
+   the List's shape — the same `flex: 1; min-height: 0; overflow-y: auto` in the
+   same 1050px content column, so the bar stands where the List's bar stands and
+   the two views line up when you switch between them (Akshil, 2026-09-05: "make
+   sure we have the same in both"). The grid inside it sizes its rows from the
+   SCROLLER's height — `cqh`, with the scroller as the size container — so
+   exactly two rows fill whatever height the toolbar leaves and the third is the
+   first thing under the fold. A fixed pixel height would be six cards on one
+   monitor and four-and-a-half on another. The 260px floor wins on a short
+   window, where the wall simply scrolls sooner.
 
    Fixed column COUNT rather than auto-fill: the number of monitors on the wall
    is the thing the reader gets used to, and a wall that re-flows from three to
    four columns when the window grows by 60px is a wall whose cards have all
    moved. Narrow windows step down to two and one, at breakpoints chosen where a
    card would otherwise fall under ~300px — the width below which a chat turn
-   stops being a paragraph. Below one row's worth of height (a short window) the
-   row floor keeps a card readable and the wall simply scrolls sooner. */
+   stops being a paragraph. */
 /* The page itself is content-sized (`flex: 0 1 auto`, so a short List is a short
    page), which for every other view is right: their content is rows, and rows
-   have a height of their own. A wall's rows are sized FROM the page, so the page
+   have a height of their own. A wall's rows are sized FROM the pane, so the page
    has to reach the bottom first or "two rows fill the height" resolves against a
    height of nothing. Scoped with `:has()` so the other three views keep their
    shape — a Board with two cards must not become a full-height Board. */
-.schedule-page:has(> .schedule-main > .task-cards) {
+.schedule-page:has(> .schedule-main > .task-cards-scroll) {
   flex: 1 1 auto;
 }
 
-/* THE WHEEL WORKS IN THE GUTTERS. The page's content column is capped at 1050px
-   and centred (schedule.css), which for a List is right: rows are read, and a
-   line of text wider than that is not. But when the scroller IS that column,
-   the space either side of it is dead — the pointer resting there scrolls
-   nothing (Akshil, 2026-09-04: "i should be able to scroll when my mouse is in
-   left and right space"). So on this view the section spans the window and the
-   wall is the scroller edge to edge, with the 1050px column re-made INSIDE it
-   as padding — the cards sit exactly where they did, the toolbar keeps its
-   column, and the scrollbar moves to the window edge (preferences.css makes
-   the same argument for the settings page). */
-.schedule-page:has(> .schedule-main > .task-cards) > .schedule-main {
-  max-width: none;
-}
-
-.schedule-page:has(> .schedule-main > .task-cards) > .schedule-main > .schedule-toolbar {
-  width: 100%;
-  max-width: 1050px;
-  margin-inline: auto;
-  box-sizing: border-box;
-}
-
-.schedule-page .schedule-main > .task-cards {
+.schedule-page .schedule-main > .task-cards-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* The List's rule, for the List's reason (tasks.css): a wheel that reaches
+     the end stops there instead of bouncing the page. */
+  overscroll-behavior: contain;
+  /* The grid's row height is a fraction of THIS box (`cqh` below). */
+  container-type: size;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .task-cards {
+  flex: none;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-auto-rows: max(260px, calc((100% - 12px) / 2));
+  grid-auto-rows: max(260px, calc((100cqh - 12px) / 2));
   gap: 12px;
-  /* The content column, as padding on the scroller (see the gutter note above):
-     zero until the window is wider than the column, then half the surplus each
-     side. `%` here is the wall's own width, which is the window's. */
-  padding-inline: max(0px, calc((100% - 1050px) / 2));
-  box-sizing: border-box;
   /* Belt and braces against the one failure this view must not have: a page that
      scrolls sideways. A grid item's default `min-width: auto` lets a wide child
      (an iframe with its own layout in it) push its track past `1fr`, and the
@@ -109,7 +95,7 @@
    so a wall of them is a grid and not a staircase and six of them are what fits
    before the fold. About a dozen lines of transcript on a laptop — enough to see
    what a run is DOING and not enough to invite reading it here. Reading happens
-   behind Open. */
+   on the List, one segment away. */
 .task-card {
   display: flex;
   flex-direction: column;
@@ -134,11 +120,24 @@
   min-width: 0;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
+  /* The head is a button (TaskCards: it opens the task's popup) and says so
+     the way every pressable strip on this page does — the pointer, and a wash
+     on hover at the row's own weight (tasks.css `.tasks-row:hover`). */
+  cursor: pointer;
+  user-select: none;
 }
 
-/* Row one: ring then id at the left edge (the List row's order), the time and
-   Open at the right. `margin-left: auto` on the time is what pushes the
-   right-hand pair over. */
+.task-card-head:hover {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+.task-card-head:focus-visible {
+  outline: 2px solid var(--focus, var(--fg-muted));
+  outline-offset: -2px;
+}
+
+/* Row one: ring then id at the left edge (the List row's order), the time at
+   the right. `margin-left: auto` on the time is what pushes it over. */
 .task-card-head-row {
   display: flex;
   align-items: center;
@@ -154,7 +153,12 @@
    the card's whole width is its own now, so it no longer competes with the id
    and the time for one strip. Ellipsed; the full text rides `data-hint`. */
 .task-card-title {
+  /* Shrink-to-fit inside the row, not a full-width block: the hint rides
+     `data-hint` on THIS element, so a block would show the title's tooltip
+     over the empty run to its right (Akshil, 2026-09-05). */
   display: block;
+  width: fit-content;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -170,24 +174,6 @@
   font-size: 11px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
-}
-
-/* Open wears the app's `.btn btn-secondary` skin and only its SIZE is overridden
-   here: a 32px button in a 33px header is a header that is all button. The
-   selector carries `.schedule-main` so it outranks the `.prefs-section .btn`
-   grouping in buttons-modal.css (0,2,x) whatever the stylesheet order. */
-.schedule-main .task-card-head .task-card-open {
-  flex: none;
-  height: 22px;
-  padding: 0 8px;
-  font-size: 11px;
-  border-radius: 4px;
-  text-decoration: none;
-}
-
-.task-card-open:hover {
-  background: color-mix(in srgb, var(--fg) 6%, transparent);
-  text-decoration: none;
 }
 
 /* -- the live pane ------------------------------------------------------------ */
@@ -231,27 +217,106 @@
   color: var(--fg-muted);
 }
 
-/* -- the trailing card -------------------------------------------------------- */
-/* Past the cap (tasks-lib.CARD_CAP) the wall stops embedding and starts
-   counting. It is a card and not a footnote under the grid on purpose: it sits
-   in the flow of the thing it is talking about, so the wall reads as "these
-   twelve, and N more" rather than as a page with a caveat at the bottom. */
-.task-card--more {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 12px;
+/* -- show more ---------------------------------------------------------------- */
+/* Past the page (tasks-lib.CARD_PAGE) the wall stops embedding and offers the
+   next nine: one full-width strip under the grid, in the card's own dashed
+   voice, sized like a control and not like a card — it used to be a grid cell,
+   which made it one card wide and a whole chat tall (Akshil, 2026-09-05).
+   Pressing it adds a page in place; it never navigates away. */
+.task-cards-more {
+  flex: none;
+  width: 100%;
+  height: 36px;
+  font: inherit;
   font-size: 12px;
   color: var(--fg-muted);
-  text-decoration: none;
   background: none;
-  border-style: dashed;
-  box-shadow: none;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  cursor: pointer;
 }
 
-.task-card--more:hover {
+.task-cards-more:hover {
   color: var(--fg);
   border-color: var(--fg-muted);
-  text-decoration: none;
+}
+
+/* -- the popup ---------------------------------------------------------------- */
+/* A card's head opens the task as a tall column — a little over half the
+   window wide and most of its height (Akshil, 2026-09-05: "reduce the width a
+   little bit but increase it in height"; a chat is read top to bottom) — on the
+   app's one modal chassis. The dialog's width is set by the component
+   (`width="54vw"`); this gives it the HEIGHT — a fixed one, not max-height,
+   because the body is a frame that fills whatever it is given and a dialog
+   sized by its content would size itself by nothing. Floors and ceilings keep
+   it usable on a laptop and sane on a 5K display. */
+.modal-dialog.task-peek {
+  height: 82vh;
+  min-height: 420px;
+  min-width: min(640px, 100%);
+  max-width: 1100px;
+  max-height: 92vh;
+  /* The frame is a square document painted to the body's edges, and the body
+     is the dialog's last child: without this the frame's corners paint over
+     the dialog's 10px radius and the popup has square feet (Akshil,
+     2026-09-05, screenshot). Nothing in this dialog needs to overflow it. */
+  overflow: hidden;
+}
+
+/* The title is the card head's own row — ring, id chip, name — so the popup
+   reads as the card grown, not as a different thing about the same task. */
+.task-peek-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.task-peek-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The chassis's h2 is the head's flexible cell; it must not stretch the title
+   group to the actions, or the group's empty right half would wear the hint. */
+.task-peek .modal-head > h2 {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The body is the frame and nothing else: no padding (the chat has its own
+   margins), no scrolling of its own (the transcript scrolls inside the frame),
+   and it takes every pixel the head and footer leave. */
+.task-peek > .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  background: var(--bg);
+}
+
+.task-peek-frame {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.task-peek > .modal-body > .task-card-starting {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+/* A refused archive says so in the footer, in the List row's quiet voice, and
+   pushes the buttons right by taking the free space. */
+.task-peek-note {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--fg-muted);
 }

@@ -58,6 +58,12 @@ export interface ModalProps {
   dialogClassName?: string;
   // Tooltip for the ✕ button (e.g. "the action keeps running" for a busy={false} modal).
   closeTitle?: string;
+  // Controls that sit in the head BESIDE the ✕ — the same row, the same weight
+  // (`.deploy-close`), to its left. For a dialog whose actions are about the
+  // thing it shows rather than about the form in it (the Tasks page's card
+  // popup: open in List, open in Explorer, archive), where a footer row of
+  // buttons under a live chat read as a form's Save/Cancel.
+  headActions?: ReactNode;
   // Drop the `deploy-body` form vocabulary from the body — its descendant
   // `button`/`p` rules (fields.css) out-specify a component's own classes and
   // would re-skin a surface that arrives already designed. For hosting a
@@ -78,6 +84,7 @@ export function Modal({
   dialogClassName,
   closeTitle,
   plainBody = false,
+  headActions,
 }: ModalProps) {
   const titleId = useId();
   // Exit animation. Callers render this as `{open && <Modal …/>}`, so the modal
@@ -298,6 +305,7 @@ export function Modal({
               frees rclone's callback port, which is what closing out from under
               it would strand). So the corner is empty for those seconds rather
               than occupied by something inert. */}
+          {headActions && <div className="modal-head-actions">{headActions}</div>}
           {!busy && (
             <button
               type="button"
