@@ -23,7 +23,7 @@
 //     array. A card keyed by anything but the task would remount its iframe on
 //     each poll, which is a reload of a live conversation every 20 seconds.
 //   * A BUDGET. Live documents are not free, so the wall is drawn a page of
-//     nine at a time (tasks-lib.CARD_PAGE) and grows only when asked.
+//     six at a time (tasks-lib.CARD_PAGE) and grows only when asked.
 //
 // Everything about WHICH tasks and in WHAT ORDER is tasks-lib.cardsForTasks —
 // pure, tested, and out of here, because a wall of iframes is the last place
@@ -34,9 +34,10 @@ import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
-import { StatusIcon } from "./ScheduleTaskViews";
+import { IdentityChip, StatusIcon } from "./ScheduleTaskViews";
 import {
   CARD_PAGE,
+  basename,
   cardKey,
   cardsForTasks,
   filingIntent,
@@ -128,8 +129,8 @@ export function TaskCards({
     const id = cardKey(peek);
     return tasks.find((t) => cardKey(t) === id) ?? peek;
   }, [peek, tasks]);
-  // HOW MANY PAGES THE READER HAS ASKED FOR. Nine cards to begin with, and each
-  // press of the trailing card adds nine (Akshil, 2026-09-05). Never wound back
+  // HOW MANY PAGES THE READER HAS ASKED FOR. Six cards to begin with, and each
+  // press of the trailing strip adds six (Akshil, 2026-09-05). Never wound back
   // by a poll: the list refreshes every 20 seconds, and a wall that collapsed to
   // its first page each time would undo the reader's own gesture under them.
   const [pages, setPages] = useState(1);
@@ -223,6 +224,7 @@ export function TaskCards({
           // a card that has a session to frame.
           key={cardKey(task)}
           task={task}
+          home={home}
           template={templates[task.target || task.project] ?? null}
           onPeek={setPeek}
         />
@@ -244,10 +246,12 @@ export function TaskCards({
 
 function TaskCard({
   task,
+  home,
   template,
   onPeek,
 }: {
   task: Task;
+  home: string;
   template: string | null;
   onPeek: (task: Task) => void;
 }) {
@@ -296,6 +300,15 @@ function TaskCard({
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}
+          {/* The folder, as the List row prints it — the same chip, the same
+              basename, the full path on hover — at the right, before the time
+              (Akshil, 2026-09-05: "same here, top right corner, left side of
+              time"). The List's order too: folder first, time last, because
+              the last thing before the edge is the one a reader lands on and
+              the time is what changes. A plain label here, not the List's
+              filter tag: a card is opened by its head, and a button inside
+              that head would compete with the press that opens it. */}
+          <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
           <span className="task-card-when" title={when.title}>
             {when.text}
           </span>

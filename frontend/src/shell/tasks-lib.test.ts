@@ -6712,10 +6712,10 @@ describe("cardsForTasks", () => {
     expect(cardsForTasks(older).cards.map((t) => t.key)).toEqual(["a", "b"]);
   });
 
-  it("draws a page of nine and counts what is behind it", () => {
-    // Nine: six in view and one more row loaded under the fold (Akshil,
-    // 2026-09-05: "6 in view, and 3 more loaded if user wants to scroll").
-    expect(CARD_PAGE).toBe(9);
+  it("draws a page of six and counts what is behind it", () => {
+    // Six: exactly the two rows in view (Akshil, 2026-09-05: "6 cards loaded
+    // instead of nine, and show 6 more cards when we click on show more").
+    expect(CARD_PAGE).toBe(6);
     const rows = Array.from({ length: CARD_PAGE + 3 }, (_, i) =>
       running(`t${i}`, 1000 - i),
     );
@@ -6779,7 +6779,7 @@ describe("the Cards view's frame", () => {
   });
 
   it("lays the wall out three across, two down, and scrolls the rest — never sideways", () => {
-    // Six in view, nine loaded, then scroll (Akshil, 2026-09-04/05) — the frame
+    // Six in view, six loaded, then Show more (Akshil, 2026-09-04/05) — the frame
     // inside is scaled so a third column stays readable. The wall is the scroll
     // container, in the List's own shape, and the rows are sized from it so two
     // rows fill the height the toolbar leaves on ANY monitor.
@@ -6831,7 +6831,7 @@ describe("the Cards view's frame", () => {
     expect(row.indexOf("tasks-id--task")).toBeLessThan(row.indexOf("task-card-when"));
     expect(head.indexOf("</div>")).toBeLessThan(head.indexOf('className="task-card-title"'));
     expect(block(CARDS_CSS, ".task-card-head")).toContain("flex-direction: column");
-    expect(block(CARDS_CSS, ".task-card-head-row > .task-card-when")).toContain("margin-left: auto");
+    expect(block(CARDS_CSS, ".task-card-head-row > .schedule-tv-id")).toContain("margin-left: auto");
     expect(CARDS_CSS).toContain("grid-auto-rows: max(260px, calc((100cqh - 12px) / 2));");
     // A fixed COUNT, not auto-fill/auto-fit: the wall must not re-flow every time
     // the window grows by a card's worth.
@@ -6855,7 +6855,7 @@ describe("the Cards view's frame", () => {
     expect(SCHEDULED).toContain("<TaskCards");
   });
 
-  it("grows by a page of nine on the trailing card, and never navigates away", () => {
+  it("grows by a page of six on the trailing strip, and never navigates away", () => {
     // "Show 9 more" adds the next page in place (Akshil, 2026-09-05). The old
     // trailing card handed the overflow to the List; this one stays on the wall.
     expect(CARDS).toContain("const [pages, setPages] = useState(1);");
@@ -6903,6 +6903,20 @@ describe("the Cards view's frame", () => {
     expect(acts.indexOf("Open in Explorer")).toBeGreaterThan(-1);
     expect(acts.indexOf("Open in Explorer")).toBeLessThan(acts.indexOf("{filing.label}"));
     expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(2);
+    // The folder chip, the List row's own, at the right before the time
+    // (Akshil, 2026-09-05) — a plain label, never the List's filter tag.
+    const headRow = CARDS.slice(CARDS.indexOf('<div className="task-card-head-row">'), CARDS.indexOf("</div>", CARDS.indexOf('<div className="task-card-head-row">')));
+    expect(headRow).toContain("<IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />");
+    expect(headRow).not.toContain("onPick");
+    expect(headRow.indexOf("<IdentityChip")).toBeLessThan(headRow.indexOf("task-card-when"));
+    expect(headRow.indexOf("tasks-id--task")).toBeLessThan(headRow.indexOf("<IdentityChip"));
+    expect(block(CARDS_CSS, ".task-card-head-row > .schedule-tv-id")).toContain("margin-left: auto");
+    // Columns step on the WALL's width, not the window's: container queries
+    // against the scroller, never a media query (Akshil, 2026-09-05: the
+    // sidebar's 232px were invisible to a media query).
+    expect(CARDS_CSS).not.toContain("@media");
+    expect(CARDS_CSS).toContain("@container (max-width: 920px)");
+    expect(CARDS_CSS).toContain("@container (max-width: 600px)");
     expect(acts).toContain("{ICON_FOLDER}\n              Open in Explorer");
     // Bugbot, #1009: the popup follows the polls (a "Starting…" task gains its
     // session), survives an empty wall (a failed poll, a filter), and puts the

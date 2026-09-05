@@ -18,7 +18,7 @@
 
 /* -- the wall ----------------------------------------------------------------- */
 /* THREE ACROSS, TWO DOWN, THEN SCROLL (Akshil, 2026-09-04: six cards in view;
-   2026-09-05: nine LOADED a page, so the third row is already there under the
+   2026-09-05: six a page — one page is what is in view, Show more adds the
    fold for whoever scrolls). The SCROLLER is `.task-cards-scroll`, in exactly
    the List's shape — the same `flex: 1; min-height: 0; overflow-y: auto` in the
    same 1050px content column, so the bar stands where the List's bar stands and
@@ -78,13 +78,20 @@
   min-width: 0;
 }
 
-@media (max-width: 1000px) {
+/* COLUMNS FOLLOW THE WIDTH THE WALL HAS, not the window's (Akshil, 2026-09-05:
+   with the sidebar collapsed the wall stepped from three to two exactly right,
+   and with it open — 232px narrower — it did not, because a media query cannot
+   see the sidebar). The scroller is already a size container (for the rows,
+   above), so the steps are container queries against it: three across while a
+   card keeps ~300px — the width below which a chat turn stops being a
+   paragraph — then two, then one. */
+@container (max-width: 920px) {
   .task-cards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 680px) {
+@container (max-width: 600px) {
   .task-cards {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -136,8 +143,10 @@
   outline-offset: -2px;
 }
 
-/* Row one: ring then id at the left edge (the List row's order), the time at
-   the right. `margin-left: auto` on the time is what pushes it over. */
+/* Row one: ring then id at the left edge (the List row's order), the folder
+   chip and the time at the right. `margin-left: auto` on the chip is what
+   pushes the right-hand pair over; the chip gives way first when the row is
+   short, the time never does. */
 .task-card-head-row {
   display: flex;
   align-items: center;
@@ -145,8 +154,10 @@
   min-width: 0;
 }
 
-.task-card-head-row > .task-card-when {
+.task-card-head-row > .schedule-tv-id {
   margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* Row two: the title, ONE LINE, at a size that reads across a wall of six —
@@ -219,7 +230,7 @@
 
 /* -- show more ---------------------------------------------------------------- */
 /* Past the page (tasks-lib.CARD_PAGE) the wall stops embedding and offers the
-   next nine: one full-width strip under the grid, in the card's own dashed
+   next six: one full-width strip under the grid, in the card's own dashed
    voice, sized like a control and not like a card — it used to be a grid cell,
    which made it one card wide and a whole chat tall (Akshil, 2026-09-05).
    Pressing it adds a page in place; it never navigates away. */
