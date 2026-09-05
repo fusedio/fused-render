@@ -162,6 +162,22 @@
   margin-left: auto;
 }
 
+/* CENTRED ON THE ROW'S OWN LINE. The List row pays for the tag's 3px of padding
+   with `margin-block: -3px` and lets the shield stretch to the row's height,
+   which is right in a 36px row and wrong here: this row is one text line tall,
+   the stretched shield is shorter than the tag, and centring a negative-margin
+   box in it landed the folder name 1.5px above the id and the time (Akshil,
+   2026-09-05, screenshot). No negative margin and no stretch: the tag stands at
+   its own height, the shield takes that height, and the row centres it with
+   everything else. */
+.task-card-head-row .schedule-tv-id-shield {
+  align-self: center;
+}
+
+.task-card-head-row .schedule-tv-id--tag {
+  margin-block: 0;
+}
+
 /* Row two: the title, ONE LINE, at a size that reads across a wall of six —
    the card's whole width is its own now, so it no longer competes with the id
    and the time for one strip. Ellipsed; the full text rides `data-hint`. */
