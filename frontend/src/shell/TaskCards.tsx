@@ -137,8 +137,36 @@ export function TaskCards({
   const peekLive = useMemo(() => {
     if (!peek) return null;
     const id = cardKey(peek);
-    return tasks.find((t) => cardKey(t) === id) ?? peek;
+    const byKey = tasks.find((t) => cardKey(t) === id);
+    if (byKey) return byKey;
+    // THE HANDOVER (Bugbot, #1015). A popup opened on a "Starting…" card holds
+    // a `pending:<entry>` row, and the row that replaces it two seconds later
+    // is keyed by the session — a different cardKey now — so by key alone the
+    // popup would keep the placeholder and never frame the chat. The task
+    // NUMBER is what usually carries across that moment (ensure_ids' rekeys
+    // pass), so a peek WITHOUT a session may follow its number to the row that
+    // has one. Only a session-less peek: a peek with a session has a key that
+    // never changes, and following the number from THERE is exactly how a twin
+    // — two sessions under one number — got opened in the first place (cardKey).
+    if (!peek.session_id && peek.task_id) {
+      const settled = tasks.find(
+        (t) => t.session_id && t.project === peek.project && t.task_id === peek.task_id,
+      );
+      if (settled) return settled;
+    }
+    return peek;
   }, [peek, tasks]);
+  // ...and the settled row is WRITTEN BACK as the peek (Bugbot, #1015, round
+  // 2): left as the pending snapshot, every later poll would re-resolve by the
+  // number this view stopped trusting, and a failed poll (`tasks` empty) or a
+  // filter dropping the row would fall back to the placeholder and tear down
+  // the framed chat. Adopted once, the popup matches by key from then on and
+  // keeps the settled snapshot as its fallback like any other peek.
+  useEffect(() => {
+    if (peek && peekLive && peekLive !== peek && !peek.session_id && peekLive.session_id) {
+      setPeek(peekLive);
+    }
+  }, [peek, peekLive]);
   // HOW MANY PAGES THE READER HAS ASKED FOR. Six cards to begin with, and each
   // press of the trailing strip adds six (Akshil, 2026-09-05). Never wound back
   // by a poll: the list refreshes every 20 seconds, and a wall that collapsed to
@@ -231,14 +259,12 @@ export function TaskCards({
           // reload). This is what makes a poll a re-render and not twelve
           // reloads.
           //
-          // And not `task.key` either, which is what this was and which is a
-          // key that CHANGES under one task: a scheduled run is listed as
-          // `pending:<entry>` until its session reports, then relisted under the
-          // session id (§5), so every card was being torn down and rebuilt about
-          // two seconds after it appeared. `cardKey` carries across that
-          // handover, and it says at length why the task NUMBER is the half that
-          // does — and why the one case where even the number moves cannot reach
-          // a card that has a session to frame.
+          // `cardKey` — the row key, since 2026-09-06 — rather than the task
+          // NUMBER it was for three days: two sessions can share a number (the
+          // rekey at the pending → session handover is refused when the session
+          // already holds one), and a wall keyed on the number drew one of the
+          // two and opened the other. cardKey says why the handover remount
+          // this gives back only ever rebuilds a "Starting…" placeholder.
           key={cardKey(task)}
           task={task}
           home={home}
