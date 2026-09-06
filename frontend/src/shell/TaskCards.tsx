@@ -492,7 +492,7 @@ function TaskCard({
                 type="button"
                 className="task-card-door"
                 disabled={acting}
-                title={note || filing.title}
+                title={note || filing.label}
                 aria-label={filing.label}
                 onClick={refile}
               >
