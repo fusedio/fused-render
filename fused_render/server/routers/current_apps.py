@@ -118,10 +118,31 @@ def api_current_apps_open(patch: FolderPatch):
     dot — the app's own unread state, judged against its tasks' `last_active`
     on the same clock — and it touches no task: reading is the tasks' verb
     (``/read`` above), opening is the desk's. A path not on the desk answers
-    ``opened: false`` rather than an error; there is no dot to clear."""
+    ``opened: false`` rather than an error; there is no dot to clear.
+
+    The stamp is the LATER of now and the newest `last_active` among the Done
+    rows under the folder, not the wall clock alone. `last_active` keeps a
+    scheduled message's DUE time even after the message was run early (see
+    `tasks._row`: the listing sorts a message due tomorrow near the top), so a
+    finished run can carry a `last_active` in the future — against a wall-clock
+    stamp its dot would survive every open until the due time passed (Bugbot,
+    2026-09-07). Taking the max clears what is done right now and still lights
+    on the next completion, whose `last_active` climbs past this one."""
     folder = _require_folder(patch.path)
     at = time.time()
+    for row in tasks_router._task_rows():
+        if row.get("status") in _NOT_DONE:
+            continue
+        project = canonical_fs_path(str(row.get("project") or ""))
+        if project and current_apps.is_under(project, folder):
+            at = max(at, float(row.get("last_active") or 0.0))
     return {"ok": True, "opened": current_apps.mark_opened(folder, at), "opened_at": at}
+
+
+# The lanes that are NOT Done — the client's `statusColumn` reads every status
+# it does not know as Done, so the complement is the list to keep, not a list
+# of Done words that a new status would silently fall out of.
+_NOT_DONE = frozenset({"upcoming", "in_progress", "needs_attention", "blocked", "archived"})
 
 
 @router.post("/api/current-apps/archive")

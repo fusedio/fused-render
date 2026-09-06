@@ -65,6 +65,11 @@ import {
 // and is folder paths now, and a slug-shaped order would match nothing.
 export const ORDER_KEY = "fused-render:current-apps-order:v2";
 
+// A cross-window nudge, not a store: set to the stamp after POST
+// /api/current-apps/open lands, so the other windows' sections refetch the
+// desk (the server row is the truth; this only says "look again").
+export const DESK_CHANGED_KEY = "fused-render:current-apps-changed";
+
 /** The picked emoji as a standalone icon.svg document — square viewBox, no
  *  fixed size, transparent ground (a colour emoji carries its own colours, so
  *  it reads on both themes; see skills/fused-render-app-icon). The same file
@@ -418,7 +423,20 @@ export default function CurrentAppsSection() {
     const guess = Date.now() / 1000;
     setOpenedLocal((m) => new Map(m).set(path, guess));
     openCurrentApp(path).then(
-      (r) => setOpenedLocal((m) => new Map(m).set(path, r.opened_at)),
+      (r) => {
+        setOpenedLocal((m) => new Map(m).set(path, r.opened_at));
+        // Tell the OTHER windows the desk changed: `storage` fires only in
+        // other documents (the ORDER_KEY wiring above, the chat's activity
+        // stamp), and their sections refetch on it. Without this a second
+        // window keeps the dot until something else makes it refetch (Bugbot,
+        // 2026-09-07). Value is the stamp so two opens in one second still
+        // differ; a blocked store just means no cross-window nudge.
+        try {
+          localStorage.setItem(DESK_CHANGED_KEY, String(r.opened_at));
+        } catch {
+          /* no store: this window is up to date, the others catch up on their own */
+        }
+      },
       () => {
         // A failed stamp leaves the guess: the dot stays out for this page,
         // and comes back on the next launch if the server never heard.
@@ -509,9 +527,18 @@ export default function CurrentAppsSection() {
   // /api/current-apps/add) and announces it over the window — apps cannot
   // import this section — so the new row lands on top as its page opens,
   // rather than on the next task pulse (platform/lib/tasksChanged).
+  // The same nudge from ANOTHER window (DESK_CHANGED_KEY): an open there
+  // stamped a row on the server, and this window's dot has to follow.
   useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === DESK_CHANGED_KEY) refetch();
+    };
     window.addEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
-    return () => window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [refetch]);
 
   // ---- the icon picker -------------------------------------------------------
