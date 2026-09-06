@@ -317,12 +317,22 @@ def test_the_other_two_seats_are_inert_while_a_mode_is_on(html):
     assert ("() => (annRecOn ? null : annOn ? annDone() : annSetMode(true)));") in html
     assert ("() => (annRecOn ? annRecEnd() : annOn ? null : annRecBegin()));") in html
     assert ("#anncta:has(#annbtn.on) #viewshot,\n"
-            "  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec,\n"
+            "  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annrec,\n"
             "  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }") in html
     shot = _block(html, "async function shotAttachPane()", "\n}\n")
     assert "if (shotBusy || annOn || !annCapable()) return;" in shot
     back = _block(html, 'document.getElementById("back").onclick = () => {', "\n};")
-    assert "if (annOn) annSetMode(false);" in back
+    assert "annLeave();" in back
+    # a LIVE walkthrough is discarded, not ended — ending would transcribe and
+    # auto-send into whatever chat the page is on by then (Bugbot, PR #1022);
+    # and a transcription already in flight keeps its words once the user left
+    leave = _block(html, "function annLeave() {", "\n}\n")
+    assert "annLeaveGen += 1;" in leave
+    assert "if (annRecOn) annRecDiscard();" in leave
+    assert "else if (annOn) annSetMode(false);" in leave
+    end = _block(html, "async function annRecEnd()", "\n}\n")
+    assert "const left = annLeaveGen;" in end
+    assert "if ((spoke || intro) && annLeaveGen === left) {" in end
     # Bugbot, PR #1022: the mic refuses the settle too, the resting Comment
     # seat is not named "Stop", and aria-disabled follows the dimming
     begin = _block(html, "async function annRecBegin()", "\n}\n")
@@ -456,13 +466,21 @@ def test_the_three_seats_stay_and_the_armed_one_reads_active(html):
     assert ".cmt-stop { display: block; }" not in html
     assert "#annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none; }" in html
     assert "#annbtn.on { color: var(--accent); background: transparent; border-color: var(--accent); }" in html
-    assert "#annrec.on { color: var(--error); border-color: var(--error); }" in html
+    assert "#annrec.on { color: var(--accent); border-color: var(--accent); }" in html
     assert "annrecpulse" not in html   # steady, no flashing (2026-09-06)
     assert "#anncta:has(#annrec.on) #annbtn.on { color: var(--dim); border-color: var(--border); }" in html
     # transcribing: annRecEnd stamps .busy and the status stands ALONE on the
-    # Comment seat — the clock itself is the bar's, never the strip's
+    # ANNOTATE seat (2026-09-06) — the clock itself is the bar's, never the strip's
     assert "#anncta:not(.busy) #annreclbl { display: none; }" in html
-    assert "#anncta.busy #annbtn .cmt-word { display: none; }" in html
+    assert "#anncta.busy #annrec .rec-word { display: none; }" in html
+    assert "#anncta.busy #annrec { color: var(--accent); border-color: var(--accent); }" in html
+    rec = _block(html, '<button id="annrec"', "</button>")
+    assert 'id="annreclbl"' in rec
+    cmt = _block(html, '<button id="annbtn"', "</button>")
+    assert 'id="annreclbl"' not in cmt
+    # entering a chat from the landing leaves the mode, like ← Chats
+    enter = _block(html, "function enterChat() {", "\n}\n")
+    assert "annLeave();" in enter
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert 'annCta.classList.add("busy");' in end
     assert 'annCta.classList.remove("busy");' in end
@@ -511,7 +529,7 @@ def test_a_transcribed_walkthrough_autosends_only_when_words_landed(html):
     body = _block(html, "async function annRecEnd()", "\n}\n")
     assign = body.index("annRecAssign(ids, rec.segments)")
     gate = body.index("c && c.content && !c.sent")
-    send = body.index("if (spoke || intro) {")
+    send = body.index("if ((spoke || intro) && annLeaveGen === left) {")
     assert assign < gate < send
     # the intro is seeded OUTSIDE the !sending gate: a walkthrough that ends
     # during a live run parks its words in the composer to ride the next send

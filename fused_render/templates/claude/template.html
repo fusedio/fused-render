@@ -244,9 +244,10 @@
   /* The recording state borrows --error, the one token already meant for
      "something the user should notice is live" (it colours a failed run) —
      no new token to keep in step across the two palettes. */
-  /* Steady, no pulse (Akshil, 2026-09-06: "don't do fancy flashing") — the
-     live clock on the bar already says the recording is running. */
-  #annrec.on { color: var(--error); border-color: var(--error); }
+  /* Armed the same way Comment is — accent outline, steady, no pulse (Akshil,
+     2026-09-06: "don't do fancy flashing", "why red? why not same as
+     others"). The bar's ■ and clock carry the recording's own red. */
+  #annrec.on { color: var(--accent); border-color: var(--accent); }
   /* The icons: stroke glyphs in the button's own ink, so state colours (the
      hover brighten, the recording --error) reach them for free. `.fill` seats
      are the solid parts — the picker's inner square, the stop block. */
@@ -298,9 +299,13 @@
   #anncta:has(#annrec.on) #annbtn.on { color: var(--dim); border-color: var(--border); }
   /* #annreclbl is status, not the clock (the bar's ■ carries that): it shows
      only through Stopping…/Transcribing…, when annCta wears .busy, and then
-     it stands ALONE on the seat — the word "Comment" yields to it. */
+     it stands ALONE on the ANNOTATE seat — the walkthrough's own seat, so the
+     word "Annotate" yields to it and the seat keeps its armed accent while
+     the words are on their way (Akshil, 2026-09-06: the status sat on the
+     Comment seat, "why does the comment button say transcribing"). */
   #anncta:not(.busy) #annreclbl { display: none; }
-  #anncta.busy #annbtn .cmt-word { display: none; }
+  #anncta.busy #annrec .rec-word { display: none; }
+  #anncta.busy #annrec { color: var(--accent); border-color: var(--accent); }
   /* The OTHER two seats go inert while a mode is on (Akshil, 2026-09-06: "if
      I click on the other one it shouldn't work"): dimmed like a disabled seat,
      no hover, no pointer. Their click handlers refuse the same states, so a
@@ -308,7 +313,7 @@
      Esc, and ← Chats), never a neighbouring seat. Derived from the two state
      classes like every other face here. */
   #anncta:has(#annbtn.on) #viewshot,
-  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec,
+  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annrec,
   #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }
   /* Empty label must not hold a gap seat open beside the icon. */
   #annreclbl:empty { display: none; }
@@ -3863,10 +3868,10 @@
                 aria-label="Screenshot the preview and attach it to this message"
                 title="Screenshot the preview and attach it to this message"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4"/></svg><span class="lbl">Screenshot</span></button>
         <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
-                title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><svg class="cmt-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl cmt-word">Comment</span><span class="lbl done-word">Done</span><span id="annreclbl"></span></button>
+                title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><svg class="cmt-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl cmt-word">Comment</span><span class="lbl done-word">Done</span></button>
         <button id="annrec" type="button" aria-pressed="false"
                 aria-label="Annotate with a spoken walkthrough"
-                title="Annotate with a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><span class="lbl rec-word">Annotate</span></button>
+                title="Annotate with a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><span class="lbl rec-word">Annotate</span><span id="annreclbl"></span></button>
       </div>
       <!-- More options (⋮), beside the annotate switch. One item today: hand
            this session to a real terminal. The LABEL is decided at open time
@@ -7869,6 +7874,7 @@ async function annRecEnd() {
   const handle = annRecHandle;
   const ids = annRecIds;
   const armed = annArmEpoch;
+  const left = annLeaveGen;   // the conversation this walkthrough belongs to
   clearInterval(annRecTimerId);
   annRecTimerId = null;
   annRecIds = [];
@@ -7999,7 +8005,9 @@ async function annRecEnd() {
     // The intro is seeded even when a live run blocks the auto-send: the words
     // wait in the composer (beside the pending notes) and ride the user's next
     // send, instead of evaporating because the walkthrough ended mid-turn.
-    if (spoke || intro) {
+    // ...unless the user LEFT the conversation while the words were on their
+    // way (annLeave bumped the generation): then they are nobody's to send.
+    if ((spoke || intro) && annLeaveGen === left) {
       annPrefillComposer(intro);
       if (activeRun || !sending) annAutoSubmit();  // a live run gets it as a follow-up — see annDone
     }
@@ -8128,6 +8136,19 @@ function annNotesDiscard() {
 }
 // One dispatcher for the bar's trash, whichever mode is on.
 function annDiscard() { return annRecOn ? annRecDiscard() : annNotesDiscard(); }
+// Leaving the conversation — ← Chats, or a chat opened from the landing —
+// takes an armed mode down with it (Akshil, 2026-09-06). A LIVE walkthrough
+// is DISCARDED, not ended: annRecEnd keeps, transcribes and auto-sends, and
+// with the page already on another chat that send would open a conversation
+// nobody asked for (Bugbot, PR #1022). The generation covers the settle: a
+// transcription already in flight when the user leaves lands after this
+// bump, and annRecEnd sees a stale generation and keeps its words to itself.
+let annLeaveGen = 0;
+function annLeave() {
+  annLeaveGen += 1;
+  if (annRecOn) annRecDiscard();
+  else if (annOn) annSetMode(false);
+}
 
 // ── hosted only: keeping up with a target this document cannot hear ────────
 // The split layout is told about its pane by the pane itself — one iframe, one
@@ -12671,8 +12692,7 @@ function consumeAnchor() {
 document.getElementById("back").onclick = () => {
   // Leaving the chat leaves the mode too (Akshil, 2026-09-06): an armed
   // Comment or a live walkthrough has nothing to point at on the landing.
-  // The Esc path — a recording is ended by annSetMode's own branch.
-  if (annOn) annSetMode(false);
+  annLeave();
   // Live even mid-turn (Akshil, 2026-08-19 — "when it is working I can't
   // click back"). The old `if (sending) return` guarded against orphaning the
   // streaming run's UI, but the architecture already survives leaving: the
@@ -12767,6 +12787,10 @@ document.getElementById("back").onclick = () => {
 };
 
 function enterChat() {
+  // Entering a chat leaves an armed mode behind, exactly as ← Chats does
+  // (Akshil, 2026-09-06): the pins belonged to the screen the reader is
+  // leaving. Nothing is armed at boot, so the resume path is a no-op here.
+  annLeave();
   chatEl.classList.remove("home");
   stopWatchRecent();
   // The strip belongs to ONE conversation. Chips from the previous chat are
