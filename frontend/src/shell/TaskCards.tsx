@@ -32,6 +32,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { archiveTask, statPath, unarchiveTask } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { ChatFrame, ChatFramePlaceholder } from "@platform/ui/ChatFrame";
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
 import { IdentityChip, StatusIcon } from "./ScheduleTaskViews";
@@ -56,7 +57,7 @@ import { useMarginWheel } from "./useMarginWheel";
  *  view's claim is about the set it was handed and it cannot tell those apart. */
 export const CARDS_EMPTY = "Nothing to show here.";
 
-/** The claude template's path for one folder, cached for this mounting.
+/** The claude template's path for one folder, cached for the LIFE OF THE PAGE.
  *
  *  It is a per-FOLDER answer and not a constant: the mode registry lets a user
  *  put their own template in front of `claude` for a path (§16), and a view that
@@ -64,35 +65,82 @@ export const CARDS_EMPTY = "Nothing to show here.";
  *  surface where it is most visible. Resolved through the same call the canvas
  *  workspace uses for the same reason (/api/fs/stat → `templates`).
  *
- *  One request per DISTINCT folder, and most walls are one or two folders' worth
- *  of work, so this is a call or two rather than one per card. */
-function useChatTemplates(dirs: string[]): Record<string, string> {
-  const [paths, setPaths] = useState<Record<string, string>>({});
-  // Folders already asked about — including the ones that ANSWERED with no
-  // claude mode at all, which is why this is a set of asked and not a check of
-  // `paths`: a folder with no chat template must be asked once, not once per
-  // poll for as long as the card is up.
-  const asked = useRef<Set<string>>(new Set());
+ *  MODULE LEVEL, not a ref inside the hook, because the answer outlives the
+ *  mounting that asked for it. This view remounts constantly — List → Cards and
+ *  back, the popup opening, the app page's Tasks tab — and a cache scoped to one
+ *  mounting meant every re-entry re-resolved every folder and drew a whole wall
+ *  of "Starting…" for a few hundred milliseconds first. A stat's answer about
+ *  which template serves a folder does not change under us often enough to be
+ *  worth that; a reload re-reads it.
+ *
+ *  `null` in the map is a real answer — "asked, and this folder has no claude
+ *  mode at all" — and must be kept, or a folder without a chat template is
+ *  re-asked once per poll for as long as a card is up. `undefined` (absent) is
+ *  therefore the ONLY "not known yet", which is what lets a card tell resolving
+ *  apart from nothing-to-frame (see TaskCard). */
+const chatTemplateCache = new Map<string, string | null>();
+/** Folders being stat'd right now, so two mountings (the wall and its popup, or
+ *  a remount landing mid-flight) share one request instead of racing two. */
+const chatTemplateInFlight = new Map<string, Promise<void>>();
+
+function resolveChatTemplate(dir: string): Promise<void> {
+  const running = chatTemplateInFlight.get(dir);
+  if (running) return running;
+  const p = statPath(dir)
+    .then((st) => {
+      chatTemplateCache.set(dir, st.templates?.find((t) => t.mode === "claude")?.path ?? null);
+    })
+    .catch(() => {
+      // A folder that has gone away, or a stat that failed. Recorded as "no
+      // chat template here" rather than left unknown: unknown means a skeleton
+      // forever, and there is nothing this card can frame either way.
+      chatTemplateCache.set(dir, null);
+    })
+    .finally(() => {
+      chatTemplateInFlight.delete(dir);
+    });
+  chatTemplateInFlight.set(dir, p);
+  return p;
+}
+
+/** The template path per folder: a string, `null` for "no chat template here",
+ *  or ABSENT while the folder is still being resolved.
+ *
+ *  Seeded from the cache SYNCHRONOUSLY on the first render, which is the whole
+ *  point of the cache being module-level: a remount frames its cards on the
+ *  render that mounts them, with no resolving beat in between. */
+function useChatTemplates(dirs: string[]): Record<string, string | null> {
+  const seed = () => {
+    const known: Record<string, string | null> = {};
+    for (const dir of dirs) {
+      if (chatTemplateCache.has(dir)) known[dir] = chatTemplateCache.get(dir) ?? null;
+    }
+    return known;
+  };
+  const [paths, setPaths] = useState<Record<string, string | null>>(seed);
   // `dirs` is a fresh array on every poll; the effect must fire on its
-  // CONTENTS, or it re-runs 20 seconds apart forever (harmlessly, thanks to
-  // `asked`, but it is a loop nobody should have to reason about).
+  // CONTENTS, or it re-runs 20 seconds apart forever (harmlessly, thanks to the
+  // cache, but it is a loop nobody should have to reason about).
   const key = dirs.join("\u0000");
   useEffect(() => {
     let cancelled = false;
+    const publish = (dir: string) => {
+      if (cancelled) return;
+      setPaths((m) =>
+        dir in m && m[dir] === (chatTemplateCache.get(dir) ?? null)
+          ? m
+          : { ...m, [dir]: chatTemplateCache.get(dir) ?? null },
+      );
+    };
     for (const dir of key.split("\u0000")) {
-      if (!dir || asked.current.has(dir)) continue;
-      asked.current.add(dir);
-      void statPath(dir)
-        .then((st) => {
-          if (cancelled) return;
-          const found = st.templates?.find((t) => t.mode === "claude")?.path;
-          if (found) setPaths((m) => ({ ...m, [dir]: found }));
-        })
-        .catch(() => {
-          // A folder that has gone away, or a stat that failed: the card falls
-          // back to its "Starting…" pane rather than the page failing. There is
-          // nothing to say here that the card does not already show.
-        });
+      if (!dir) continue;
+      // Already answered — including by another mounting since this one's state
+      // was seeded, which is why this publishes rather than skipping.
+      if (chatTemplateCache.has(dir)) {
+        publish(dir);
+        continue;
+      }
+      void resolveChatTemplate(dir).then(() => publish(dir));
     }
     return () => {
       cancelled = true;
@@ -225,7 +273,9 @@ export function TaskCards({
     <TaskPeek
       task={peekLive}
       home={home}
-      template={templates[peekLive.target || peekLive.project] ?? null}
+      // NOT `?? null`: absent means the folder is still being resolved and
+      // the body shows a skeleton, where null means there is nothing to frame.
+      template={templates[peekLive.target || peekLive.project]}
       onClose={() => setPeek(null)}
       onReload={onReload}
     />
@@ -268,7 +318,9 @@ export function TaskCards({
           key={cardKey(task)}
           task={task}
           home={home}
-          template={templates[task.target || task.project] ?? null}
+          // Absent while the folder resolves, null when it has no chat
+          // template — the card draws a different body for each.
+          template={templates[task.target || task.project]}
           onPeek={setPeek}
           project={
             showProject
@@ -301,7 +353,10 @@ function TaskCard({
 }: {
   task: Task;
   home: string;
-  template: string | null;
+  /** The folder's chat template: a path, `null` when the folder has none, and
+   * `undefined` while the stat behind it is still in flight — three states,
+   * because the body says something different for each (below). */
+  template: string | null | undefined;
   onPeek: (task: Task) => void;
   /** Draw the folder chip, and how: null hides it (one folder, nothing to tell
    * apart); otherwise whether the page is pinned to it and the tag's handler. */
@@ -310,11 +365,18 @@ function TaskCard({
   const when = taskWhen(task);
   const title = firstLine(task.title) || "(untitled)";
   // Both halves have to be there before anything can be framed: no session means
-  // there is no conversation yet, and no template means the folder's stat has not
-  // answered (or has no chat mode at all).
+  // there is no conversation yet, and no template means the folder's stat has
+  // not answered (or has no chat mode at all).
   const src = task.session_id && template
     ? cardFrameSrc(template, task.target || task.project, task.session_id)
     : null;
+  // THE THIRD STATE, and the reason `template` is not just a path-or-null: the
+  // task HAS a session, so there is a conversation to show, and the only thing
+  // missing is which template shows it — a fact this card is a few hundred
+  // milliseconds from having. That is a chat that has not arrived yet, not a
+  // run that has not started, so it wears the frame's own skeleton and says
+  // nothing. "Starting…" here was the wall's popcorn (design.md).
+  const resolving = !src && !!task.session_id && template === undefined;
 
   return (
     <section className="task-card" aria-label={`${task.task_id} ${title}`}>
@@ -388,17 +450,17 @@ function TaskCard({
       </header>
       <div className="task-card-body">
         {src ? (
-          <iframe
+          // The frame and its cover, one component (platform/ui/ChatFrame): the
+          // iframe stays invisible until the chat inside it says its transcript
+          // is painted, with the skeleton over it until then. The card's own
+          // class rides the iframe, so the scaled fit below is untouched.
+          <ChatFrame
             className="task-card-frame"
             src={src}
             title={`${task.task_id} ${title}`}
-            // NO `sandbox`, like every other /render frame in this app. It would
-            // have to carry `allow-same-origin allow-scripts` to work at all —
-            // the template is a script that reads its own URL and talks to this
-            // window through the runtime — and a sandbox holding both grants is
-            // a sandbox that grants everything, with the side effect of being
-            // the one frame in the app whose contract differs from the rest.
           />
+        ) : resolving ? (
+          <ChatFramePlaceholder />
         ) : (
           // No session to frame. For a scheduled task that is simply not due yet;
           // for anything else it is the window between "claimed and sent" and
@@ -433,7 +495,8 @@ function TaskPeek({
 }: {
   task: Task;
   home: string;
-  template: string | null;
+  /** As TaskCard's: path, `null` for none, `undefined` while resolving. */
+  template: string | null | undefined;
   onClose: () => void;
   onReload?: () => void;
 }) {
@@ -441,6 +504,8 @@ function TaskPeek({
   const src = task.session_id && template
     ? peekFrameSrc(template, task.target || task.project, task.session_id)
     : null;
+  // The card's third state, for the card's reason (TaskCard, above).
+  const resolving = !src && !!task.session_id && template === undefined;
   // The List row's own fallback: a run with no session yet is still reachable
   // through its folder (schedule-lib, above `folderHref`).
   const explorer = taskHref(task) ?? folderHref(task);
@@ -573,13 +638,17 @@ function TaskPeek({
       }
     >
       {src ? (
-        <iframe
-          ref={frameRef}
+        // The card's wrapper, at full size. `frameRef` still reaches the iframe
+        // itself — the Esc listener above and the chassis's `initialFocus` both
+        // want the element, not the box around it.
+        <ChatFrame
+          frameRef={frameRef}
           className="task-peek-frame"
           src={src}
           title={`${task.task_id} ${title}`}
-          // No `sandbox`, for the card frame's reason (TaskCard, above).
         />
+      ) : resolving ? (
+        <ChatFramePlaceholder />
       ) : (
         <p className="task-card-starting">
           {taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"}
