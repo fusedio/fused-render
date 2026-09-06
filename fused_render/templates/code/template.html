@@ -65,13 +65,13 @@
   }
   #bar .grow { flex: 1 1 auto; }
   #status-text { color: var(--fg-muted); }
-  /* The buffer's size rides beside the save state — "433 lines │ Saved" — the
-     way an editor's status bar is read: two facts, two segments, a hairline
+  /* The caret's place rides beside the save state — "Ln 12, Col 4 │ Saved" —
+     the way an editor's status bar is read: two facts, two segments, a hairline
      between them (VS Code, Cursor, Zed all segment the bar; none joins the two
      into a sentence). One span, so the bar's own 12px gap does not push them
      apart further; the divider is the status's left border and goes when
      either half is empty (the conflict banner blanks the status; an unloaded
-     file has no count). */
+     file has no caret). */
   #state { display: inline-flex; align-items: center; white-space: nowrap; color: var(--fg-muted); }
   #lines:not(:empty) + #status-text:not(:empty) {
     margin-left: 8px;
@@ -221,14 +221,18 @@
       }
     }
 
-    // The line count the bar prints, from the live document (CM's Text keeps it
-    // as a field, so this is a read and not a scan). Painted on load and on
-    // every edit that changed the doc; blank while nothing is loaded.
+    // The caret's place, as every editor's status bar prints it — "Ln 12, Col 4"
+    // (VS Code, Cursor, Zed): where you ARE, which is what a reader glances at
+    // the bar for, rather than how long the file is. Column is 1-based and
+    // counted in characters from the line start (CM's `head - line.from`).
+    // Painted on load and on every update that moved the selection or changed
+    // the doc; blank while nothing is loaded.
     function paintLines() {
       if (!linesEl) return;
       if (!view) { linesEl.textContent = ""; return; }
-      const n = view.state.doc.lines;
-      linesEl.textContent = n + (n === 1 ? " line" : " lines");
+      const head = view.state.selection.main.head;
+      const line = view.state.doc.lineAt(head);
+      linesEl.textContent = "Ln " + line.number + ", Col " + (head - line.from + 1);
     }
 
     function setDirty(d) {
@@ -386,8 +390,8 @@
         ...(wantsDark() ? [CM.oneDark] : []),
         // docChanged fires on any user edit → mark the buffer modified.
         CM.EditorView.updateListener.of((update) => {
+          if (update.selectionSet || update.docChanged) paintLines();
           if (update.docChanged) {
-            paintLines();
             setDirty(true);
             clearTimeout(saveTimer);
             saveTimer = setTimeout(autosave, 250);
