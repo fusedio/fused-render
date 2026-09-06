@@ -15496,7 +15496,14 @@ function onEscape(e) {
   e.preventDefault();
   if (act === "close-viewer") shotViewClose();
   else if (act === "close-composer") annCloseComposer();
-  else annSetMode(false);
+  // Esc in a typed Comment mode is CANCEL (Akshil, 2026-09-06: "I press
+  // escape, it doesn't discard it") — this round's unsent notes go, not just
+  // the mode; the bar's trash and this key are the same exit. A live
+  // walkthrough keeps its own Esc (stop and keep — annSetMode's branch), and
+  // through Stopping…/Transcribing… the marks are the recording's to settle,
+  // so those two still only leave the mode.
+  else if (annRecOn || annCta.classList.contains("busy")) annSetMode(false);
+  else annNotesDiscard();
 }
 
 // Bound on BOTH documents. Annotate mode is driven with the pointer over the
