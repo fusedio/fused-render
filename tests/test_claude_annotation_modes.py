@@ -321,18 +321,6 @@ def test_the_other_two_seats_are_inert_while_a_mode_is_on(html):
             "  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }") in html
     shot = _block(html, "async function shotAttachPane()", "\n}\n")
     assert "if (shotBusy || annOn || !annCapable()) return;" in shot
-    back = _block(html, 'document.getElementById("back").onclick = () => {', "\n};")
-    assert "annLeave();" in back
-    # a LIVE walkthrough is discarded, not ended — ending would transcribe and
-    # auto-send into whatever chat the page is on by then (Bugbot, PR #1022);
-    # and a transcription already in flight keeps its words once the user left
-    leave = _block(html, "function annLeave() {", "\n}\n")
-    assert "annLeaveGen += 1;" in leave
-    assert "if (annRecOn) annRecDiscard();" in leave
-    assert "else if (annOn) annSetMode(false);" in leave
-    end = _block(html, "async function annRecEnd()", "\n}\n")
-    assert "const left = annLeaveGen;" in end
-    assert "if ((spoke || intro) && annLeaveGen === left) {" in end
     # Bugbot, PR #1022: the mic refuses the settle too, the resting Comment
     # seat is not named "Stop", and aria-disabled follows the dimming
     begin = _block(html, "async function annRecBegin()", "\n}\n")
@@ -412,8 +400,9 @@ def test_discard_throws_the_walkthrough_away(html):
         assert fn.index("const armed = annArmEpoch;") < stop
         assert fn.index("annRecIds = [];") < stop
         assert fn.index("annRecHandle = null;") < stop
-    assert body.index('annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");') \
-        < body.index("await handle.cancel()")
+    # the mic is named for the settle BEFORE the cancel, idle again after it
+    assert body.index('annRecBtn.setAttribute("aria-label", "Discarding the recording");') \
+        < body.index("await handle.cancel()") < body.index("annRecIdleName();")
     assert "annotations = annotations.filter((a) => !ids.has(a.id));" in body
     assert "renderAnn();" in body, "discarded pins leave the screen even if Esc already disarmed"
     assert "fused.ai.transcribe" not in body and "annAutoSubmit" not in body
@@ -428,7 +417,17 @@ def test_the_busy_seat_is_a_status_not_a_button(html):
     finally re-enables it and the disarm renames it."""
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert "annBtn.disabled = true;" in end
-    assert 'annBtn.setAttribute("aria-label", "Transcribing the walkthrough");' in end
+    # the status is the ANNOTATE seat's (2026-09-06, Bugbot PR #1022): it is
+    # the seat that shows #annreclbl, so it is the seat named for it; the
+    # Comment seat is merely unavailable, and the settle's end idle-names the mic
+    assert 'annRecBtn.setAttribute("aria-label", "Transcribing the walkthrough");' in end
+    assert 'annRecBtn.setAttribute("aria-label", "Stopping the recording");' in end
+    assert 'annBtn.setAttribute("aria-label", "Comment — unavailable while the recording settles");' in end
+    assert 'annBtn.setAttribute("aria-label", "Transcribing the walkthrough");' not in html
+    assert "annRecIdleName();" in end
+    disc = _block(html, "async function annRecDiscard()", "\n}\n")
+    assert 'annRecBtn.setAttribute("aria-label", "Discarding the recording");' in disc
+    assert "annRecIdleName();" in disc
     assert "annBtn.disabled = false;" in end
     # ...and any mode TRANSITION ends the status's claim early: Esc during a
     # transcription disarms through annSetMode, which must not leave the seat
@@ -451,7 +450,7 @@ def test_the_live_recording_is_never_announced_as_done(html):
     begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert 'annRecBtn.setAttribute("aria-label", "Stop the recording");' in begin
     end = _block(html, "async function annRecEnd()", "\n}\n")
-    assert 'annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");' in end
+    assert "annRecIdleName();" in end   # the idle name comes back when the settle ends
 
 
 def test_the_three_seats_stay_and_the_armed_one_reads_active(html):
@@ -479,9 +478,9 @@ def test_the_three_seats_stay_and_the_armed_one_reads_active(html):
     assert 'id="annreclbl"' in rec
     cmt = _block(html, '<button id="annbtn"', "</button>")
     assert 'id="annreclbl"' not in cmt
-    # entering a chat from the landing leaves the mode, like ← Chats
-    enter = _block(html, "function enterChat() {", "\n}\n")
-    assert "annLeave();" in enter
+    # a mode SURVIVES switching chats for now (Akshil, 2026-09-06) — the
+    # discard-on-leave lands in its own PR
+    assert "annLeave" not in html
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert 'annCta.classList.add("busy");' in end
     assert 'annCta.classList.remove("busy");' in end
@@ -530,7 +529,7 @@ def test_a_transcribed_walkthrough_autosends_only_when_words_landed(html):
     body = _block(html, "async function annRecEnd()", "\n}\n")
     assign = body.index("annRecAssign(ids, rec.segments)")
     gate = body.index("c && c.content && !c.sent")
-    send = body.index("if ((spoke || intro) && annLeaveGen === left) {")
+    send = body.index("if (spoke || intro) {")
     assert assign < gate < send
     # the intro is seeded OUTSIDE the !sending gate: a walkthrough that ends
     # during a live run parks its words in the composer to ride the next send

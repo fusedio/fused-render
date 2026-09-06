@@ -7879,7 +7879,6 @@ async function annRecEnd() {
   const handle = annRecHandle;
   const ids = annRecIds;
   const armed = annArmEpoch;
-  const left = annLeaveGen;   // the conversation this walkthrough belongs to
   clearInterval(annRecTimerId);
   annRecTimerId = null;
   annRecIds = [];
@@ -7893,8 +7892,11 @@ async function annRecEnd() {
   // Point into the next typed comment is a visible fact, not a trap.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
-  annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");
-  annRecBtn.title = "Annotate with a spoken walkthrough — talk while you click, and each click becomes a note";
+  // The settle's status is THIS seat's (2026-09-06, #annreclbl lives here):
+  // named for what is happening, idle-named again by annRecIdleName when the
+  // settle ends. The Comment seat is merely unavailable meanwhile.
+  annRecBtn.setAttribute("aria-label", "Stopping the recording");
+  annRecBtn.title = "Stopping the recording…";
   // The settle window is a STATUS, not a Done button (Bugbot, PR #665): with
   // #annrec.on gone the armed CSS would show an enabled ✓ Done for however
   // long the stop takes — milliseconds where the app records natively, longer
@@ -7904,8 +7906,8 @@ async function annRecEnd() {
   // treatment the transcription below gets: disabled, .busy (the face yields
   // to #annreclbl), named for what is happening.
   annBtn.disabled = true;
-  annBtn.setAttribute("aria-label", "Stopping the recording");
-  annBtn.title = "Stopping the recording…";
+  annBtn.setAttribute("aria-label", "Comment — unavailable while the recording settles");
+  annBtn.title = "Unavailable while the recording settles";
   annCta.classList.add("busy");
   annRecLbl.textContent = "Stopping…";
   annBarPaint();   // the clicks are over: the bar goes with them
@@ -7938,6 +7940,7 @@ async function annRecEnd() {
     // no-op disarm below is already epoch-guarded.
     if (!annRecOn) {
       annCta.classList.remove("busy");
+      annRecIdleName();
       annRecLbl.textContent = "";
       annBtn.disabled = false;
       // Derived from the state, not assumed armed (Bugbot, PR #665): an Esc
@@ -7961,9 +7964,11 @@ async function annRecEnd() {
   // quietly in the background.
   if (!annRecOn) {
     annRecBtn.disabled = true;
+    annRecBtn.setAttribute("aria-label", "Transcribing the walkthrough");
+    annRecBtn.title = "Transcribing the walkthrough — the notes send themselves when the words land";
     annBtn.disabled = true;
-    annBtn.setAttribute("aria-label", "Transcribing the walkthrough");
-    annBtn.title = "Transcribing the walkthrough — the notes send themselves when the words land";
+    annBtn.setAttribute("aria-label", "Comment — unavailable while the recording settles");
+    annBtn.title = "Unavailable while the recording settles";
     annCta.classList.add("busy");
     annRecLbl.textContent = "Transcribing…";
   }
@@ -8010,9 +8015,7 @@ async function annRecEnd() {
     // The intro is seeded even when a live run blocks the auto-send: the words
     // wait in the composer (beside the pending notes) and ride the user's next
     // send, instead of evaporating because the walkthrough ended mid-turn.
-    // ...unless the user LEFT the conversation while the words were on their
-    // way (annLeave bumped the generation): then they are nobody's to send.
-    if ((spoke || intro) && annLeaveGen === left) {
+    if (spoke || intro) {
       annPrefillComposer(intro);
       if (activeRun || !sending) annAutoSubmit();  // a live run gets it as a follow-up — see annDone
     }
@@ -8029,6 +8032,7 @@ async function annRecEnd() {
       annRecBtn.disabled = false;
       annBtn.disabled = false;
       annCta.classList.remove("busy");
+      annRecIdleName();
       annRecLbl.textContent = "";   // "Transcribing…" only ever describes now
       // The disarm below renames the seat on the normal path; when the guards
       // skip it (re-armed mid-transcription, or Esc already disarmed) the
@@ -8082,11 +8086,11 @@ async function annRecDiscard() {
   // the same disabled status annRecEnd shows — never an enabled Done.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
-  annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");
-  annRecBtn.title = "Annotate with a spoken walkthrough — talk while you click, and each click becomes a note";
+  annRecBtn.setAttribute("aria-label", "Discarding the recording");
+  annRecBtn.title = "Discarding the recording…";
   annBtn.disabled = true;
-  annBtn.setAttribute("aria-label", "Discarding the recording");
-  annBtn.title = "Discarding the recording…";
+  annBtn.setAttribute("aria-label", "Comment — unavailable while the recording settles");
+  annBtn.title = "Unavailable while the recording settles";
   annCta.classList.add("busy");
   annRecLbl.textContent = "Discarding…";
   annBarPaint();   // the clicks are over: the bar goes with them
@@ -8100,6 +8104,7 @@ async function annRecDiscard() {
   // busy state, labels and clock alone (Bugbot, PR #665).
   if (!annRecOn) {
     annCta.classList.remove("busy");
+      annRecIdleName();
     annRecLbl.textContent = "";
     annBtn.disabled = false;
     // Derived, same reason as annRecEnd's restores: Esc during this settle
@@ -8141,19 +8146,13 @@ function annNotesDiscard() {
 }
 // One dispatcher for the bar's trash, whichever mode is on.
 function annDiscard() { return annRecOn ? annRecDiscard() : annNotesDiscard(); }
-// Leaving the conversation — ← Chats, or a chat opened from the landing —
-// takes an armed mode down with it (Akshil, 2026-09-06). A LIVE walkthrough
-// is DISCARDED, not ended: annRecEnd keeps, transcribes and auto-sends, and
-// with the page already on another chat that send would open a conversation
-// nobody asked for (Bugbot, PR #1022). The generation covers the settle: a
-// transcription already in flight when the user leaves lands after this
-// bump, and annRecEnd sees a stale generation and keeps its words to itself.
-let annLeaveGen = 0;
-function annLeave() {
-  annLeaveGen += 1;
-  if (annRecOn) annRecDiscard();
-  else if (annOn) annSetMode(false);
+// The Annotate seat's resting name, restored when a settle (stop, transcribe,
+// discard) ends — the settle named the seat for its status (2026-09-06).
+function annRecIdleName() {
+  annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");
+  annRecBtn.title = "Annotate with a spoken walkthrough — talk while you click, and each click becomes a note";
 }
+
 
 // ── hosted only: keeping up with a target this document cannot hear ────────
 // The split layout is told about its pane by the pane itself — one iframe, one
@@ -12695,9 +12694,6 @@ function consumeAnchor() {
 // Clear the session param so a reload lands on the landing page,
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
-  // Leaving the chat leaves the mode too (Akshil, 2026-09-06): an armed
-  // Comment or a live walkthrough has nothing to point at on the landing.
-  annLeave();
   // Live even mid-turn (Akshil, 2026-08-19 — "when it is working I can't
   // click back"). The old `if (sending) return` guarded against orphaning the
   // streaming run's UI, but the architecture already survives leaving: the
@@ -12792,10 +12788,6 @@ document.getElementById("back").onclick = () => {
 };
 
 function enterChat() {
-  // Entering a chat leaves an armed mode behind, exactly as ← Chats does
-  // (Akshil, 2026-09-06): the pins belonged to the screen the reader is
-  // leaving. Nothing is armed at boot, so the resume path is a no-op here.
-  annLeave();
   chatEl.classList.remove("home");
   stopWatchRecent();
   // The strip belongs to ONE conversation. Chips from the previous chat are
