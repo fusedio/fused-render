@@ -16,7 +16,11 @@
 // embed of its own (only the outer shell is top-level).
 //
 // WHAT: "Open in explorer" for any target — the same path under the VIEW
-// prefix, full shell chrome — plus, for a `.fused`, the shared
+// prefix, full shell chrome; for a FOLDER embed (an app dir opened from the
+// CLI or a link) it opens the folder's app ENTRY page (`/api/apps/entry`, the
+// one rule in app_listing), not the listing: the user was looking at the app,
+// and the explorer should show them that same page with its chrome, falling
+// back to the folder only when there is no entry — plus, for a `.fused`, the shared
 // CloneAppFileButton (one control, one label rule: "Clone" / "Go to local
 // version") told to land on the view URL, since `navigate` would keep the
 // embed prefix and drop the clone folder into a chrome-free listing with no
@@ -31,7 +35,7 @@
 // posture as FdaStrip.
 import { useState } from "react";
 
-import { revealPath } from "@platform/lib/api";
+import { getAppEntry, revealPath } from "@platform/lib/api";
 import { IS_TOP_EMBED, viewUrlForFsPath } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -43,6 +47,21 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
   if (!IS_TOP_EMBED || dismissed) return null;
   const isFused = isDir === false && fsPath.toLowerCase().endsWith(".fused");
   const name = fsPath.split("/").filter(Boolean).pop() || fsPath;
+  // Full page load, not `navigate`: the prefix (embed vs view) is read once
+  // at module init, so switching it IS a new document. A folder resolves to
+  // its entry page first; an entry-less or unreadable folder opens as itself.
+  const openInExplorer = async () => {
+    let target = fsPath;
+    if (isDir) {
+      try {
+        const info = await getAppEntry(fsPath);
+        if (info.entry) target = info.entry;
+      } catch {
+        /* no entry answer — the folder itself is still the right place */
+      }
+    }
+    location.assign(viewUrlForFsPath(target));
+  };
   return (
     <div className="embed-strip" role="toolbar" aria-label="Embedded view">
       <span className="embed-strip-name" title={fsPath}>
@@ -54,9 +73,7 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
           type="button"
           className="bar-ctl bar-ctl-bordered"
           title="Open this page in the explorer, with the sidebar and toolbar"
-          // Full page load, not `navigate`: the prefix (embed vs view) is
-          // read once at module init, so switching it IS a new document.
-          onClick={() => location.assign(viewUrlForFsPath(fsPath))}
+          onClick={() => void openInExplorer()}
         >
           {MenuIcons.open}
           Open in explorer
