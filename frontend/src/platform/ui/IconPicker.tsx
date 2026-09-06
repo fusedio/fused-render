@@ -81,7 +81,9 @@ export function brandedIconSvg(node: IconNode): string {
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
     `<rect width="64" height="64" rx="14" fill="${BRAND_BLACK}"/>` +
     '<g transform="translate(14 14) scale(1.5)" fill="none" ' +
-    `stroke="${BRAND_YELLOW}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+    // 2.5 not lucide's 2: the row draws the file at 14px, where a 2-unit
+    // stroke lands under a pixel and reads faint beside the emoji rows.
+    `stroke="${BRAND_YELLOW}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">` +
     inner +
     "</g></svg>"
   );
@@ -242,7 +244,14 @@ function pushRecent(tab: IconPickerTab, id: string) {
 // ---- component -------------------------------------------------------------
 
 const GRID_COLS = 8;
+const CHUNK_ROWS = 8;
 const TAB_LABEL: Record<IconPickerTab, string> = { emoji: "Emoji", icon: "Icons" };
+
+function chunk<T>(list: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
 
 /** One lucide glyph drawn inline from its node data, on currentColor. */
 function LucideGlyph({ node, className }: { node: IconNode; className?: string }) {
@@ -433,15 +442,21 @@ export default function IconPicker({
       className="fixed z-[1001] flex w-[292px] flex-col gap-2 rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-md"
     >
       <div className="flex items-center justify-between gap-2 border-b border-border pb-1">
-        <Tabs value={tab} onValueChange={(v) => switchTab(v as IconPickerTab)}>
-          <TabsList variant="line" className="h-7">
-            {tabs.map((t) => (
-              <TabsTrigger key={t} value={t} className="px-2 text-[13px]">
-                {TAB_LABEL[t]}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        {tabs.length > 1 ? (
+          <Tabs value={tab} onValueChange={(v) => switchTab(v as IconPickerTab)}>
+            <TabsList variant="line" className="h-7">
+              {tabs.map((t) => (
+                <TabsTrigger key={t} value={t} className="px-2 text-[13px]">
+                  {TAB_LABEL[t]}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        ) : (
+          // A one-tab picker (Bookmarks) shows the name as a plain heading —
+          // a single underlined tab would suggest a choice that isn't there.
+          <div className="px-2 text-[13px] font-medium">{TAB_LABEL[tab]}</div>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -499,18 +514,24 @@ export default function IconPicker({
         {loaded && visible.length === 0 && (
           <div className="px-1 py-3 text-xs text-muted-foreground">No match</div>
         )}
-        {visible.map((section) => (
-          // content-visibility lets the browser skip laying out the ~1800
-          // off-screen cells until they scroll into view.
+        {visible.flatMap((section) =>
+          // Each section is cut into blocks of CHUNK_ROWS grid rows, each with
+          // its own content-visibility: the browser then skips laying out the
+          // blocks below the fold. One block per section would skip nothing —
+          // the Icons tab is a single ~1800-cell section whose top edge is
+          // always on screen.
+          chunk(section.cells, GRID_COLS * CHUNK_ROWS).map((cells, c) => (
           <div
-            key={section.name}
-            className="[content-visibility:auto] [contain-intrinsic-size:auto_200px]"
+            key={`${section.name}-${c}`}
+            className="[content-visibility:auto] [contain-intrinsic-size:auto_270px]"
           >
-            <div className="px-1 pt-2 pb-1 text-[11px] font-medium text-muted-foreground">
-              {section.name}
-            </div>
+            {c === 0 && (
+              <div className="px-1 pt-2 pb-1 text-[11px] font-medium text-muted-foreground">
+                {section.name}
+              </div>
+            )}
             <div className="grid grid-cols-8 gap-0.5">
-              {section.cells.map((cell) => {
+              {cells.map((cell) => {
                 const i = flatIdx++;
                 const isActive = i === activeIdx;
                 return (
@@ -535,7 +556,8 @@ export default function IconPicker({
               })}
             </div>
           </div>
-        ))}
+          )),
+        )}
       </div>
     </div>
   );
