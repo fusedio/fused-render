@@ -513,6 +513,21 @@ button.tasks-caret,
   white-space: nowrap;
 }
 
+
+/* "Folder missing" — the one row-level mark that means "this cannot be opened"
+   (ScheduleTaskViews, above the folder chip; the Board card's foot wears the
+   same one). Error colour, the chip's size, no box: a word, not a pill, in the
+   same register as the folder name beside it. Above the stretched link like
+   the chip, so the hint is its own and not the row's. */
+.tasks-row-missing {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--error);
+  white-space: nowrap;
+}
+
 /* -- THE ROW MARKS' HIT ZONES (Akshil, 2026-08-24) ----------------------------
    "the hover area is messed up … increase [the] hover area — not the actual
    visual ui area, only hover of that part up down and left right".

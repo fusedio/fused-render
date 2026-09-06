@@ -42,6 +42,7 @@ import {
   basename,
   cardKey,
   cardsForTasks,
+  emptyPaneText,
   filingIntent,
   firstLine,
   opensElsewhere,
@@ -51,6 +52,7 @@ import {
   taskWhen,
   tildePath,
 } from "./tasks-lib";
+import { MISSING_FOLDER_TOAST, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import { useMarginWheel } from "./useMarginWheel";
 
 /** What the page says when there is nothing to draw — the Board's own words,
@@ -94,7 +96,9 @@ function resolveChatTemplate(dir: string): Promise<void> {
     .catch(() => {
       // A folder that has gone away, or a stat that failed. Recorded as "no
       // chat template here" rather than left unknown: unknown means a skeleton
-      // forever, and there is nothing this card can frame either way.
+      // forever, and there is nothing this card can frame either way. WHY it
+      // failed is the page's question, answered once for every view by
+      // Scheduled's useMissingFolders and handed down as `missing`.
       chatTemplateCache.set(dir, null);
     })
     .finally(() => {
@@ -156,6 +160,7 @@ export function TaskCards({
   onReload,
   onPickProject,
   pinnedProjects = [],
+  missing,
 }: {
   /** Already filtered, in the SERVER's order — `cardsForTasks` orders it by
    * lane (every lane, Archive last), which is the one thing this view does to
@@ -172,6 +177,11 @@ export function TaskCards({
   /** Which projects the page is pinned to — the chip wears the ON state, and
    * survives the filter that makes every card agree (see `showProject`). */
   pinnedProjects?: string[];
+  /** Folders the disk no longer has — the SAME set the List and the Board read
+   * (Scheduled → useMissingFolders), so the three views can never disagree
+   * about one folder. A card in one says "Folder no longer exists" and its
+   * folder door goes disabled. */
+  missing?: ReadonlySet<string>;
 }) {
   // THE POPUP (Akshil, 2026-09-05): one task at a time, opened from a card's
   // head. Held as the Task the head was clicked with, then REFRESHED from every
@@ -277,6 +287,7 @@ export function TaskCards({
       // NOT `?? null`: absent means the folder is still being resolved and
       // the body shows a skeleton, where null means there is nothing to frame.
       template={templates[peekLive.target || peekLive.project]}
+      folderMissing={missing?.has(taskFolder(peekLive)) ?? false}
       onClose={() => setPeek(null)}
       onReload={onReload}
     />
@@ -322,6 +333,7 @@ export function TaskCards({
           // Absent while the folder resolves, null when it has no chat
           // template — the card draws a different body for each.
           template={templates[task.target || task.project]}
+          folderMissing={missing?.has(taskFolder(task)) ?? false}
           onPeek={setPeek}
           onReload={onReload}
           project={
@@ -350,12 +362,15 @@ function TaskCard({
   task,
   home,
   template,
+  folderMissing,
   onPeek,
   onReload,
   project,
 }: {
   task: Task;
   home: string;
+  /** The folder is gone from the disk (Scheduled → useMissingFolders). */
+  folderMissing: boolean;
   /** The folder's chat template: a path, `null` when the folder has none, and
    * `undefined` while the stat behind it is still in flight — three states,
    * because the body says something different for each (below). */
@@ -373,7 +388,11 @@ function TaskCard({
   // Both halves have to be there before anything can be framed: no session means
   // there is no conversation yet, and no template means the folder's stat has
   // not answered (or has no chat mode at all).
-  const src = task.session_id && template
+  // A GONE folder frames nothing, whatever the template cache still remembers
+  // (Bugbot, #1023): the cache is module-level and outlives the page, so a
+  // folder deleted between two visits would still have a path here and the
+  // card would frame the Explorer's stat error.
+  const src = task.session_id && template && !folderMissing
     ? cardFrameSrc(template, task.target || task.project, task.session_id)
     : null;
   // THE DOORS ON THE HEAD (Akshil, 2026-09-06): the popup's two, Archive (or
@@ -381,7 +400,18 @@ function TaskCard({
   // reader can file a card or step into its folder without opening the popup
   // first. Same intent, same href, same calls as TaskPeek's head — one set of
   // doors drawn in two places, not two sets.
-  const explorer = taskHref(task) ?? folderHref(task);
+  // THE FOURTH STATE of the pane (after frame, resolving, no-session text): the
+  // folder is gone — the page's stat 404'd — so nothing will ever be
+  // framed and the pane says so in the error colour every other view gives the
+  // same fact (List row, Board card: "Folder missing").
+  const gone = folderMissing;
+  // The folder door goes DISABLED on a folder that is gone (Akshil, 2026-09-06:
+  // "show disabled explorer button with same message"): its href would be the
+  // Explorer at that path, which answers with the raw stat error this whole
+  // change exists to stop (Bugbot, #1023), so the door stays where the eye
+  // expects it, greyed, and says why on hover and on press. Archive stays live —
+  // it is the way out.
+  const explorer = gone ? null : (taskHref(task) ?? folderHref(task));
   const filing = filingIntent(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
@@ -485,14 +515,20 @@ function TaskCard({
             it: a press here stops before the head's onClick, so a door never
             also opens the popup. Keys are already the head's concern only when
             pressed on the head itself (onKeyDown above). */}
-        {(filing || explorer) && (
-          <span className="task-card-doors" onClick={(e) => e.stopPropagation()}>
+        {(filing || explorer || gone) && (
+          // `data-hint=""` is the OPT-OUT (hints.ts): the strip sits over the
+          // title, and the hint panel resolves by piercing the stack under the
+          // pointer, so without it a door answered with the task's name (Akshil,
+          // 2026-09-06). Each door carries its own hint instead of a native
+          // `title` — the app's panel shows on pointerover, a title after the
+          // browser's second, which read as no caption at all.
+          <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
             {filing && (
               <button
                 type="button"
                 className="task-card-door"
                 disabled={acting}
-                title={note || filing.label}
+                data-hint={note || filing.label}
                 aria-label={filing.label}
                 onClick={refile}
               >
@@ -505,7 +541,7 @@ function TaskCard({
                 // the folder in a tab — the rule every row on this page follows.
                 className="task-card-door"
                 href={explorer}
-                title={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
+                data-hint={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
                 aria-label="Open in Explorer"
                 onClick={(e) => {
                   if (opensElsewhere(e)) return;
@@ -515,6 +551,18 @@ function TaskCard({
               >
                 {ICON_FOLDER}
               </a>
+            )}
+            {gone && (
+              <button
+                type="button"
+                className="task-card-door is-disabled"
+                aria-disabled="true"
+                data-hint={MISSING_FOLDER_TOAST}
+                aria-label="Open in Explorer — folder deleted"
+                onClick={toastMissingFolder}
+              >
+                {ICON_FOLDER}
+              </button>
             )}
           </span>
         )}
@@ -538,8 +586,8 @@ function TaskCard({
           // "we know which chat that is" (schedule-lib, above `folderHref`) — a
           // real state, a few seconds to a few minutes long. Either way the card
           // says which rather than framing the wrong thing or an empty box.
-          <p className="task-card-starting">
-            {taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"}
+          <p className={"task-card-starting" + (gone ? " is-missing" : "")}>
+            {emptyPaneText(task, gone)}
           </p>
         )}
       </div>
@@ -561,6 +609,7 @@ function TaskPeek({
   task,
   home,
   template,
+  folderMissing,
   onClose,
   onReload,
 }: {
@@ -568,18 +617,22 @@ function TaskPeek({
   home: string;
   /** As TaskCard's: path, `null` for none, `undefined` while resolving. */
   template: string | null | undefined;
+  /** As TaskCard's. */
+  folderMissing: boolean;
   onClose: () => void;
   onReload?: () => void;
 }) {
   const title = firstLine(task.title) || "(untitled)";
-  const src = task.session_id && template
+  const src = task.session_id && template && !folderMissing
     ? peekFrameSrc(template, task.target || task.project, task.session_id)
     : null;
-  // The card's third state, for the card's reason (TaskCard, above).
+  // The card's third and fourth states, for the card's reasons (TaskCard, above).
   const resolving = !src && !!task.session_id && template === undefined;
+  const gone = folderMissing;
   // The List row's own fallback: a run with no session yet is still reachable
-  // through its folder (schedule-lib, above `folderHref`).
-  const explorer = taskHref(task) ?? folderHref(task);
+  // through its folder (schedule-lib, above `folderHref`) — unless the folder
+  // is gone, when the door goes disabled and says why (the card's rule).
+  const explorer = gone ? null : (taskHref(task) ?? folderHref(task));
   const filing = filingIntent(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
@@ -696,6 +749,19 @@ function TaskPeek({
               Open in Explorer
             </a>
           )}
+          {gone && (
+            <button
+              type="button"
+              className="btn btn-secondary modal-head-act"
+              aria-disabled="true"
+              aria-label="Open in Explorer — folder deleted"
+              data-hint={MISSING_FOLDER_TOAST}
+              onClick={toastMissingFolder}
+            >
+              {ICON_FOLDER}
+              Open in Explorer
+            </button>
+          )}
         </>
       }
       // The footer exists only while there is a sentence for it: a refused
@@ -721,8 +787,8 @@ function TaskPeek({
       ) : resolving ? (
         <ChatFramePlaceholder />
       ) : (
-        <p className="task-card-starting">
-          {taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"}
+        <p className={"task-card-starting" + (gone ? " is-missing" : "")}>
+          {emptyPaneText(task, gone)}
         </p>
       )}
     </Modal>

@@ -2896,6 +2896,15 @@ export interface TaskCardSet {
   hidden: number;
 }
 
+/** What a Cards-view pane says when there is no frame to draw (TaskCards).
+ *  `folderMissing` is a folder the server answered 404 for: nothing will ever
+ *  be framed for it, and "Starting…" would be a promise the card cannot keep
+ *  (Akshil, 2026-09-06: "some cards are stuck at starting"). */
+export function emptyPaneText(task: Pick<Task, "status">, folderMissing: boolean): string {
+  if (folderMissing) return "Folder no longer exists";
+  return taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…";
+}
+
 /**
  * WHAT A CARD IS: the server's row key — the session id once there is one, the
  * `pending:<entry>` key before it.

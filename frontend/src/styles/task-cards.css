@@ -311,9 +311,22 @@
   border-color: var(--fg-muted);
 }
 
-.task-card-doors > .task-card-door:disabled {
+.task-card-doors > .task-card-door:disabled,
+.task-card-doors > .task-card-door.is-disabled,
+.task-card-doors > .task-card-door.is-disabled:hover {
   opacity: 0.5;
-  cursor: default;
+  cursor: not-allowed;
+  border-color: var(--border);
+}
+
+/* The popup's disabled folder door: the same greyed skin, `aria-disabled` and
+   not `disabled` so it stays hoverable and pressable — its hint says why, and
+   its press raises the toast; a real `disabled` swallows both in WebKit. */
+.task-peek .modal-head-act[aria-disabled="true"],
+.task-peek .modal-head-act[aria-disabled="true"]:hover {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--border);
 }
 
 .task-card-doors > .task-card-door:focus-visible {
@@ -380,6 +393,23 @@
   height: 100%;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+/* "Folder no longer exists" — the error colour the List row's and the Board
+   card's "Folder missing" mark wear (tasks.css `.tasks-row-missing`), so the
+   same fact reads the same on every view (Akshil, 2026-09-06). */
+.task-card-starting.is-missing {
+  color: var(--error);
+}
+
+/* A pane with no frame in it wears the CARD's ground, not the page's. The body
+   is `--bg` so a loading frame shows no seam against the chat template, whose
+   page colour is within a shade of the card's — but with only a sentence in it,
+   `--bg` read as a darker well cut into the card (Akshil, 2026-09-06,
+   screenshot: "the bg color is different"). Same rule for the popup's body. */
+.task-card-body:has(> .task-card-starting),
+.task-peek > .modal-body:has(> .task-card-starting) {
+  background: var(--tasks-card-bg);
 }
 
 /* -- show more ---------------------------------------------------------------- */
