@@ -1,180 +1,266 @@
-// Notion-style emoji picker popover for bookmark icons: search box, emoji
-// grid grouped by category, and a Remove action that restores the default ★.
+// Notion-style icon picker popover: an Emoji tab (the whole Unicode set, from
+// emojibase), an Icons tab (the whole lucide set, branded on pick as a black
+// rounded square with the glyph in fused yellow), a filter box, a shuffle
+// button that picks at random from the active tab, a Recent row per tab, and
+// a Remove action that restores the caller's default glyph.
+//
 // Pure presentation — the caller owns positioning (anchor rect) and persists
-// the chosen icon.
-import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+// the pick. Both data sets load lazily on first open: `emojibase-data` and the
+// vanilla `lucide` package are imported by nothing else in the shell, so they
+// land in chunks of their own instead of the main bundle (a dynamic import of
+// `lucide-react` would not — it is statically imported all over the shell).
+import React, {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Search, Shuffle } from "lucide-react";
 
-interface Category {
-  name: string;
-  // [emoji, space-separated search keywords]
-  emoji: [string, string][];
-}
+import { cn } from "@platform/lib/utils";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 
-const CATEGORIES: Category[] = [
-  {
-    name: "Frequent",
-    emoji: [
-      ["⭐", "star favorite"],
-      ["📌", "pin pushpin"],
-      ["📁", "folder directory"],
-      ["📄", "page document file"],
-      ["📊", "chart bar graph analytics"],
-      ["📈", "chart up trending growth"],
-      ["🗺️", "map geo"],
-      ["🌍", "globe earth world"],
-      ["🏠", "home house"],
-      ["🔥", "fire hot"],
-      ["✅", "check done todo"],
-      ["🚀", "rocket launch ship"],
-      ["💡", "idea bulb light"],
-      ["🔖", "bookmark tag"],
-      ["🧪", "test experiment lab"],
-      ["🐛", "bug debug"],
-    ],
-  },
-  {
-    name: "Work",
-    emoji: [
-      ["📅", "calendar date schedule"],
-      ["🗂️", "dividers files organize"],
-      ["🗃️", "card box archive"],
-      ["📋", "clipboard list tasks"],
-      ["📝", "memo note write"],
-      ["✏️", "pencil edit"],
-      ["📎", "paperclip attach"],
-      ["🔍", "search magnify find"],
-      ["🔒", "lock secure private"],
-      ["🔑", "key access secret"],
-      ["⚙️", "gear settings config"],
-      ["🛠️", "tools hammer wrench build"],
-      ["🔧", "wrench fix tool"],
-      ["📦", "package box release"],
-      ["🗄️", "cabinet database storage"],
-      ["💾", "disk save database"],
-      ["🖥️", "computer desktop server"],
-      ["💻", "laptop code"],
-      ["⌨️", "keyboard type"],
-      ["🖨️", "printer print"],
-      ["📤", "outbox export upload"],
-      ["📥", "inbox import download"],
-      ["✉️", "mail email envelope"],
-      ["💼", "briefcase work business"],
-    ],
-  },
-  {
-    name: "Data & science",
-    emoji: [
-      ["📉", "chart down decline"],
-      ["🧮", "abacus math calculate"],
-      ["🔬", "microscope science research"],
-      ["🔭", "telescope astronomy"],
-      ["🧬", "dna genetics bio"],
-      ["⚗️", "alembic chemistry"],
-      ["🧲", "magnet attract"],
-      ["📐", "ruler triangle measure"],
-      ["🌡️", "thermometer temperature weather"],
-      ["⚡", "zap lightning fast energy"],
-      ["🛰️", "satellite space imagery"],
-      ["📡", "antenna signal dish"],
-      ["🤖", "robot ai bot"],
-      ["🧠", "brain ml intelligence"],
-    ],
-  },
-  {
-    name: "Nature & places",
-    emoji: [
-      ["🌎", "globe americas world"],
-      ["🌏", "globe asia world"],
-      ["🗾", "map japan"],
-      ["🏔️", "mountain peak terrain"],
-      ["🌋", "volcano eruption"],
-      ["🏖️", "beach coast"],
-      ["🌊", "wave ocean water"],
-      ["🌲", "tree evergreen forest"],
-      ["🌱", "seedling plant grow"],
-      ["🌸", "blossom flower"],
-      ["☀️", "sun sunny weather"],
-      ["🌙", "moon night"],
-      ["☁️", "cloud weather"],
-      ["🌧️", "rain weather"],
-      ["❄️", "snow snowflake winter"],
-      ["🌈", "rainbow color"],
-      ["🏙️", "city skyline urban"],
-      ["🏗️", "construction crane building"],
-      ["🏭", "factory industry"],
-      ["🛣️", "road highway"],
-      ["✈️", "airplane flight travel"],
-      ["🚗", "car auto vehicle"],
-      ["🚂", "train locomotive rail"],
-      ["🚢", "ship boat vessel"],
-    ],
-  },
-  {
-    name: "Symbols",
-    emoji: [
-      ["❤️", "heart love red"],
-      ["🧡", "heart orange"],
-      ["💚", "heart green"],
-      ["💙", "heart blue"],
-      ["💜", "heart purple"],
-      ["🟥", "square red"],
-      ["🟧", "square orange"],
-      ["🟨", "square yellow"],
-      ["🟩", "square green"],
-      ["🟦", "square blue"],
-      ["🟪", "square purple"],
-      ["⬛", "square black"],
-      ["🔴", "circle red dot"],
-      ["🟠", "circle orange dot"],
-      ["🟡", "circle yellow dot"],
-      ["🟢", "circle green dot"],
-      ["🔵", "circle blue dot"],
-      ["🟣", "circle purple dot"],
-      ["⚠️", "warning caution alert"],
-      ["❗", "exclamation important"],
-      ["❓", "question help"],
-      ["🚫", "prohibited no ban"],
-      ["♻️", "recycle refresh"],
-      ["🔄", "arrows refresh sync"],
-      ["➕", "plus add new"],
-      ["🎯", "target dart goal"],
-      ["🏁", "flag finish checkered"],
-      ["🚩", "flag red marker"],
-      ["🎉", "party celebrate tada"],
-      ["💎", "gem diamond"],
-      ["🏆", "trophy win award"],
-      ["⏰", "alarm clock time"],
-      ["⏳", "hourglass pending time"],
-      ["🔔", "bell notification"],
-      ["👀", "eyes watch look"],
-      ["🎨", "art palette design"],
-      ["🎵", "music note"],
-      ["📷", "camera photo image"],
-      ["🎥", "movie camera video"],
-      ["🍕", "pizza food"],
-      ["☕", "coffee cafe"],
-      ["🐍", "snake python"],
-      ["🦀", "crab rust"],
-      ["🐳", "whale docker"],
-      ["🐙", "octopus github"],
-    ],
-  },
-];
+export type IconPickerTab = "emoji" | "icon";
+
+/** What a pick hands back. An icon pick carries the finished branded svg so a
+ *  caller that stores files (the Projects rows' icon.svg) writes it as is. */
+export type IconPick =
+  | { kind: "emoji"; emoji: string }
+  | { kind: "icon"; name: string; svg: string };
 
 interface IconPickerProps {
-  anchor: { top: number; left: number }; // viewport coords of the glyph
-  onPick: (icon: string) => void;
+  /** Viewport rect of the glyph that opened the picker. */
+  anchor: { top: number; left: number };
+  onPick: (pick: IconPick) => void;
   onRemove: () => void;
   onClose: () => void;
-  /** Selector for THIS picker's own trigger glyphs — an outside mousedown on
+  /** CSS selector for the glyphs that toggle this picker. A mousedown on
    *  one of them is left to the host's click handler (the toggle), everything
    *  else closes. Each host must scope it to its own glyphs: two sections
    *  sharing a loose selector leave each other's pickers open (Bugbot,
    *  2026-08-31). Defaults to the Bookmarks section's glyphs. */
   toggleSelector?: string;
+  /** Which tabs to offer. Bookmarks store a single emoji string and can't take
+   *  an svg, so they pass ["emoji"]; the Projects rows take both. */
+  tabs?: IconPickerTab[];
 }
 
+// ---- brand -----------------------------------------------------------------
+
+/** fused yellow, baked in: icon.svg is a static file with no theme context, and
+ *  the light theme's `--accent` is a darker olive (tokens.css) that would read
+ *  wrong on the black plate anyway. */
+const BRAND_YELLOW = "#E5FF44";
+const BRAND_BLACK = "#000000";
+
+type IconNode = [tag: string, attrs: Record<string, string | number>][];
+
+function escapeAttr(v: string | number): string {
+  return String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+/** A lucide icon on the brand plate as a standalone icon.svg document: a
+ *  64-unit square, black rounded rect, the 24-unit glyph scaled 1.5× and
+ *  centred with 14 units of margin, stroked in fused yellow. */
+export function brandedIconSvg(node: IconNode): string {
+  const inner = node
+    .map(([tag, attrs]) => {
+      const a = Object.entries(attrs)
+        .filter(([k]) => k !== "key")
+        .map(([k, v]) => ` ${k}="${escapeAttr(v)}"`)
+        .join("");
+      return `<${tag}${a}/>`;
+    })
+    .join("");
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+    `<rect width="64" height="64" rx="14" fill="${BRAND_BLACK}"/>` +
+    '<g transform="translate(14 14) scale(1.5)" fill="none" ' +
+    `stroke="${BRAND_YELLOW}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+    inner +
+    "</g></svg>"
+  );
+}
+
+// ---- data ------------------------------------------------------------------
+
+interface Cell {
+  /** Stable id: the emoji itself, or the icon's kebab name. */
+  id: string;
+  /** Lower-cased haystack the filter runs `includes` over. */
+  search: string;
+  /** Hover title. */
+  title: string;
+  node?: IconNode;
+}
+
+interface Section {
+  name: string;
+  cells: Cell[];
+}
+
+/** Keywords the emojibase tags don't carry — the old curated table's developer
+ *  vocabulary, kept so "python" and "docker" still find their emoji. */
+const EXTRA_KEYWORDS: Record<string, string> = {
+  "🐍": "python",
+  "🦀": "rust",
+  "🐳": "docker",
+  "🐙": "github",
+  "🚀": "launch ship",
+  "🐛": "debug",
+  "🧪": "test lab",
+  "📊": "analytics",
+  "🗄️": "database",
+  "💾": "database",
+  "🖥️": "server",
+  "💻": "code",
+  "⚙️": "settings config",
+  "📦": "release",
+  "🔒": "private",
+  "📤": "export",
+  "📥": "import",
+  "🌍": "world geo",
+  "🗺️": "geo",
+  "🛰️": "imagery",
+  "🤖": "ai bot",
+  "🧠": "ml intelligence",
+  "✅": "done todo",
+  "💡": "idea",
+  "🔄": "refresh sync",
+};
+
+// emojibase group ids: 2 is "component" (skin swatches, hair) — not pickable
+// icons. Regional indicators carry no group at all.
+const COMPONENT_GROUP = 2;
+
+let emojiCache: Promise<Section[]> | null = null;
+function loadEmoji(): Promise<Section[]> {
+  if (!emojiCache) {
+    emojiCache = Promise.all([
+      import("emojibase-data/en/compact.json"),
+      import("emojibase-data/en/messages.json"),
+    ]).then(([compact, messages]) => {
+      type Compact = { group?: number; label: string; order: number; tags?: string[]; unicode: string };
+      const list = (compact.default as Compact[])
+        .filter((e) => e.group !== undefined && e.group !== COMPONENT_GROUP)
+        .sort((a, b) => a.order - b.order);
+      const groups = (messages.default as { groups: { key: string; message: string; order: number }[] })
+        .groups;
+      const byGroup = new Map<number, Cell[]>();
+      for (const e of list) {
+        const extra = EXTRA_KEYWORDS[e.unicode] ?? "";
+        const cell: Cell = {
+          id: e.unicode,
+          title: e.label,
+          search: [e.label, ...(e.tags ?? []), extra].join(" ").toLowerCase(),
+        };
+        const arr = byGroup.get(e.group!) ?? [];
+        arr.push(cell);
+        byGroup.set(e.group!, arr);
+      }
+      return groups
+        .slice()
+        .sort((a, b) => a.order - b.order)
+        .filter((g) => byGroup.has(g.order))
+        .map((g) => ({
+          name: g.message.replace(/^\w/, (c) => c.toUpperCase()),
+          cells: byGroup.get(g.order)!,
+        }));
+    });
+  }
+  return emojiCache;
+}
+
+let iconCache: Promise<Section[]> | null = null;
+function loadIcons(): Promise<Section[]> {
+  if (!iconCache) {
+    iconCache = import("lucide").then((m) => {
+      // `icons` includes aliases re-exporting the same node array — keep the
+      // first (canonical) name per array.
+      const seen = new Set<IconNode>();
+      const cells: Cell[] = [];
+      for (const [pascal, node] of Object.entries(m.icons as Record<string, IconNode>)) {
+        if (seen.has(node)) continue;
+        seen.add(node);
+        const words = pascal
+          .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+          .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2")
+          .toLowerCase();
+        cells.push({ id: words.replace(/ /g, "-"), title: words, search: words, node });
+      }
+      cells.sort((a, b) => a.id.localeCompare(b.id));
+      return [{ name: "Icons", cells }];
+    });
+  }
+  return iconCache;
+}
+
+function useSections(tab: IconPickerTab): Section[] | null {
+  const [state, setState] = useState<Partial<Record<IconPickerTab, Section[]>>>({});
+  useEffect(() => {
+    if (state[tab]) return;
+    let live = true;
+    (tab === "emoji" ? loadEmoji() : loadIcons()).then((sections) => {
+      if (live) setState((cur) => ({ ...cur, [tab]: sections }));
+    });
+    return () => {
+      live = false;
+    };
+  }, [tab, state]);
+  return state[tab] ?? null;
+}
+
+// ---- recent ----------------------------------------------------------------
+
+const RECENT_MAX = 16;
+const recentKey = (tab: IconPickerTab) => `fused-render:icon-picker-recent:${tab}`;
+
+function readRecent(tab: IconPickerTab): string[] {
+  try {
+    const raw = localStorage.getItem(recentKey(tab));
+    const v = raw ? JSON.parse(raw) : [];
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function pushRecent(tab: IconPickerTab, id: string) {
+  try {
+    const next = [id, ...readRecent(tab).filter((x) => x !== id)].slice(0, RECENT_MAX);
+    localStorage.setItem(recentKey(tab), JSON.stringify(next));
+  } catch {
+    // Storage full or blocked: Recent is a convenience, the pick still lands.
+  }
+}
+
+// ---- component -------------------------------------------------------------
+
 const GRID_COLS = 8;
+const TAB_LABEL: Record<IconPickerTab, string> = { emoji: "Emoji", icon: "Icons" };
+
+/** One lucide glyph drawn inline from its node data, on currentColor. */
+function LucideGlyph({ node, className }: { node: IconNode; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      {node.map(([tag, attrs], i) => React.createElement(tag, { ...attrs, key: i }))}
+    </svg>
+  );
+}
 
 export default function IconPicker({
   anchor,
@@ -182,13 +268,16 @@ export default function IconPicker({
   onRemove,
   onClose,
   toggleSelector = ".bookmark-glyph:not(.folder-glyph):not(.current-app-glyph)",
+  tabs = ["emoji", "icon"],
 }: IconPickerProps) {
+  const [tab, setTab] = useState<IconPickerTab>(tabs[0] ?? "emoji");
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const baseId = useId();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const restoreRef = useRef<Element | null>(null);
+  const sections = useSections(tab);
 
   // Capture the opener on mount and restore focus to it on unmount (Esc or a
   // pick), so focus never drops to <body> when the autofocused search unmounts.
@@ -236,7 +325,9 @@ export default function IconPicker({
   }, [onClose, toggleSelector]);
 
   // Keep the popover on-screen: it opens below the glyph, flips above when it
-  // would overflow the bottom edge.
+  // would overflow the bottom edge. Query, tab and data arrival all change the
+  // height, so reposition on each.
+  const loaded = sections !== null;
   useLayoutEffect(() => {
     const el = rootRef.current;
     if (!el) return;
@@ -246,22 +337,47 @@ export default function IconPicker({
     }
     el.style.top = `${top}px`;
     el.style.left = `${Math.min(anchor.left, window.innerWidth - el.offsetWidth - 8)}px`;
-    // query changes the popover height (filtered grid), so reposition on it too.
-  }, [anchor, query]);
+  }, [anchor, query, tab, loaded]);
+
+  const all = useMemo(() => (sections ?? []).flatMap((s) => s.cells), [sections]);
+  const byId = useMemo(() => new Map(all.map((c) => [c.id, c])), [all]);
 
   const q = query.trim().toLowerCase();
-  const sections = CATEGORIES.map((cat) => ({
-    name: cat.name,
-    emoji: q ? cat.emoji.filter(([, kw]) => kw.includes(q)) : cat.emoji,
-  })).filter((cat) => cat.emoji.length > 0);
+  const visible = useMemo<Section[]>(() => {
+    if (!sections) return [];
+    if (q) {
+      const hits = all.filter((c) => c.search.includes(q));
+      return hits.length ? [{ name: "Results", cells: hits }] : [];
+    }
+    const recent = readRecent(tab)
+      .map((id) => byId.get(id))
+      .filter((c): c is Cell => !!c);
+    return recent.length ? [{ name: "Recent", cells: recent }, ...sections] : sections;
+  }, [sections, all, byId, q, tab]);
 
   // Flat order of the visible grid, for arrow-key navigation. `active` indexes
   // into this list; the search input keeps focus and exposes the highlighted
   // cell via aria-activedescendant. Sections start each grid row fresh, but a
   // single flat ±GRID_COLS Up/Down is predictable enough across them.
-  const flat = sections.flatMap((cat) => cat.emoji.map(([emoji]) => emoji));
+  const flat = useMemo(() => visible.flatMap((s) => s.cells), [visible]);
   const activeIdx = Math.min(active, Math.max(0, flat.length - 1));
   const cellId = (i: number) => `${baseId}-cell-${i}`;
+
+  const pick = useCallback(
+    (cell: Cell) => {
+      pushRecent(tab, cell.id);
+      if (cell.node) onPick({ kind: "icon", name: cell.id, svg: brandedIconSvg(cell.node) });
+      else onPick({ kind: "emoji", emoji: cell.id });
+    },
+    [tab, onPick],
+  );
+
+  // Random draws from the whole tab, not the filtered view: "surprise me"
+  // shouldn't depend on what happens to be typed in the box.
+  const random = () => {
+    if (all.length === 0) return;
+    pick(all[Math.floor(Math.random() * all.length)]);
+  };
 
   const moveActive = (delta: number) => {
     if (flat.length === 0) return;
@@ -290,64 +406,135 @@ export default function IconPicker({
         break;
       case "Enter":
         e.preventDefault();
-        if (flat[activeIdx]) onPick(flat[activeIdx]);
+        if (flat[activeIdx]) pick(flat[activeIdx]);
         break;
       // Escape is handled by the document-level listener (closes the popover).
     }
+  };
+
+  const switchTab = (next: IconPickerTab) => {
+    setTab(next);
+    setQuery("");
+    setActive(0);
+    inputRef.current?.focus();
   };
 
   // Track the flat position while rendering the grouped sections.
   let flatIdx = 0;
 
   return (
-    <div className="icon-picker" ref={rootRef} role="dialog" aria-label="Choose icon">
-      <div className="icon-picker-head">
-        <input
-          ref={inputRef}
-          type="text"
-          className="icon-picker-search"
-          placeholder="Filter…"
-          aria-label="Filter icons"
-          role="combobox"
-          aria-expanded="true"
-          aria-controls={`${baseId}-grid`}
-          aria-activedescendant={flat.length > 0 ? cellId(activeIdx) : undefined}
-          value={query}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-            setQuery(e.target.value);
-            setActive(0);
-          }}
-          onKeyDown={onSearchKeyDown}
-        />
-        <button className="icon-picker-remove" title="Reset to default star" onClick={onRemove}>
+    <div
+      ref={rootRef}
+      role="dialog"
+      aria-label="Choose icon"
+      // data-slot: the shell re-declares Tailwind's shadow tokens on [data-slot]
+      // elements only (tokens.css stores bare colours in --shadow-*).
+      data-slot="icon-picker"
+      className="fixed z-[1001] flex w-[292px] flex-col gap-2 rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-md"
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-border pb-1">
+        <Tabs value={tab} onValueChange={(v) => switchTab(v as IconPickerTab)}>
+          <TabsList variant="line" className="h-7">
+            {tabs.map((t) => (
+              <TabsTrigger key={t} value={t} className="px-2 text-[13px]">
+                {TAB_LABEL[t]}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground"
+          title="Reset to the default glyph"
+          onClick={onRemove}
+        >
           Remove
-        </button>
+        </Button>
       </div>
-      <div className="icon-picker-body" id={`${baseId}-grid`} role="listbox" aria-label="Icons">
-        {sections.length === 0 && <div className="icon-picker-empty">No match</div>}
-        {sections.map((cat) => (
-          <React.Fragment key={cat.name}>
-            <div className="icon-picker-cat">{cat.name}</div>
-            <div className="icon-picker-grid">
-              {cat.emoji.map(([emoji, kw]) => {
+
+      <div className="flex items-center gap-1.5">
+        <div className="relative min-w-0 flex-1">
+          <Search
+            className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <Input
+            ref={inputRef}
+            type="text"
+            className="h-7 pl-7 text-[13px] md:text-[13px]"
+            placeholder="Filter…"
+            aria-label={`Filter ${TAB_LABEL[tab].toLowerCase()}`}
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={`${baseId}-grid`}
+            aria-activedescendant={flat.length > 0 ? cellId(activeIdx) : undefined}
+            value={query}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              setQuery(e.target.value);
+              setActive(0);
+            }}
+            onKeyDown={onSearchKeyDown}
+          />
+        </div>
+        <Button
+          variant="outline"
+          size="icon-sm"
+          title={`Random ${tab === "icon" ? "icon" : "emoji"}`}
+          aria-label={`Random ${tab === "icon" ? "icon" : "emoji"}`}
+          disabled={!loaded}
+          onClick={random}
+        >
+          <Shuffle />
+        </Button>
+      </div>
+
+      <div
+        id={`${baseId}-grid`}
+        role="listbox"
+        aria-label={TAB_LABEL[tab]}
+        className="max-h-[288px] overflow-y-auto"
+      >
+        {!loaded && <div className="px-1 py-3 text-xs text-muted-foreground">Loading…</div>}
+        {loaded && visible.length === 0 && (
+          <div className="px-1 py-3 text-xs text-muted-foreground">No match</div>
+        )}
+        {visible.map((section) => (
+          // content-visibility lets the browser skip laying out the ~1800
+          // off-screen cells until they scroll into view.
+          <div
+            key={section.name}
+            className="[content-visibility:auto] [contain-intrinsic-size:auto_200px]"
+          >
+            <div className="px-1 pt-2 pb-1 text-[11px] font-medium text-muted-foreground">
+              {section.name}
+            </div>
+            <div className="grid grid-cols-8 gap-0.5">
+              {section.cells.map((cell) => {
                 const i = flatIdx++;
+                const isActive = i === activeIdx;
                 return (
                   <button
-                    key={emoji}
+                    key={cell.id}
                     id={cellId(i)}
+                    type="button"
                     role="option"
-                    aria-selected={i === activeIdx}
+                    aria-selected={isActive}
                     tabIndex={-1}
-                    className={"icon-picker-cell" + (i === activeIdx ? " active" : "")}
-                    title={kw}
-                    onClick={() => onPick(emoji)}
+                    data-slot="icon-picker-cell"
+                    title={cell.title}
+                    onClick={() => pick(cell)}
+                    className={cn(
+                      "flex size-8 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-[19px] leading-none text-foreground hover:bg-muted",
+                      isActive && "bg-muted ring-2 ring-ring ring-inset",
+                    )}
                   >
-                    {emoji}
+                    {cell.node ? <LucideGlyph node={cell.node} className="size-[18px]" /> : cell.id}
                   </button>
                 );
               })}
             </div>
-          </React.Fragment>
+          </div>
         ))}
       </div>
     </div>

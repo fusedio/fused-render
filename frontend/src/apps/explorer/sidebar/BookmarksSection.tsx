@@ -32,7 +32,7 @@ import {
 import { bookmarkSaveTarget } from "@platform/lib/bookmark-file";
 import { exportBookmarkFile } from "@platform/lib/api";
 import { isRowDragActive } from "@apps/explorer/listing/row-drag";
-import IconPicker from "@platform/ui/IconPicker";
+import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "@platform/lib/bookmarks";
 import {
   useUrlVersion,
@@ -501,11 +501,14 @@ export default function BookmarksSection() {
     setIconPicker((cur) => (cur?.id === id ? null : { id, top: rect.top, left: rect.left }));
   };
 
-  const onPickIcon = async (icon: string | null) => {
+  // Bookmarks store a single emoji string (bookmarks.ts), so the picker is
+  // opened on its Emoji tab only — the svg an icon pick would carry has
+  // nowhere to live here.
+  const onPickIcon = async (pick: IconPick | null) => {
     const target = iconPicker;
     setIconPicker(null);
     if (target) {
-      await setBookmarkIcon(target.id, icon);
+      await setBookmarkIcon(target.id, pick && pick.kind === "emoji" ? pick.emoji : null);
       notifyBookmarksChanged();
     }
   };
@@ -927,7 +930,8 @@ export default function BookmarksSection() {
       {iconPicker && (
         <IconPicker
           anchor={iconPicker}
-          onPick={(icon) => onPickIcon(icon)}
+          tabs={["emoji"]}
+          onPick={(pick) => onPickIcon(pick)}
           onRemove={() => onPickIcon(null)}
           onClose={() => setIconPicker(null)}
         />

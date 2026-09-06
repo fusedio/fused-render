@@ -34,7 +34,7 @@ import {
   setAppIcon,
   type CurrentAppEntry,
 } from "@platform/lib/api";
-import IconPicker from "@platform/ui/IconPicker";
+import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
@@ -476,8 +476,8 @@ export default function CurrentAppsSection() {
   }, [refetch]);
 
   // ---- the icon picker -------------------------------------------------------
-  // The glyph toggles the Bookmarks' emoji picker (IconPicker), anchored to
-  // itself. A pick is wrapped in a standalone svg and written to the folder's
+  // The glyph toggles the shared IconPicker (emoji + branded lucide icons),
+  // anchored to itself. A pick is written as a standalone svg to the folder's
   // icon.svg (POST /api/apps/icon) — the file the row and the tab favicon
   // already read — and the refetch brings back the new mtime, which is what
   // busts the <img> cache. Remove deletes the file; the row falls back to the
@@ -498,13 +498,16 @@ export default function CurrentAppsSection() {
     },
     [],
   );
-  const onPickIcon = async (icon: string | null) => {
+  const onPickIcon = async (pick: IconPick | null) => {
     const target = iconPicker;
     setIconPicker(null);
     if (!target) return;
     try {
-      if (icon === null) await removeAppIcon(target.path);
-      else await setAppIcon(target.path, emojiIconSvg(icon));
+      if (pick === null) await removeAppIcon(target.path);
+      // An icon pick arrives as the finished branded svg; an emoji gets the
+      // same standalone wrapper a hand-authored icon.svg would have.
+      else if (pick.kind === "icon") await setAppIcon(target.path, pick.svg);
+      else await setAppIcon(target.path, emojiIconSvg(pick.emoji));
     } catch {
       // A failed write leaves the old glyph; the refetch shows the truth.
     }
@@ -754,7 +757,7 @@ export default function CurrentAppsSection() {
         <IconPicker
           anchor={iconPicker}
           toggleSelector=".current-app-icon-toggle"
-          onPick={(icon) => onPickIcon(icon)}
+          onPick={(pick) => onPickIcon(pick)}
           onRemove={() => onPickIcon(null)}
           onClose={() => setIconPicker(null)}
         />
