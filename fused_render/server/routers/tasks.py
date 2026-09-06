@@ -1992,6 +1992,12 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
 _PULSE_FIELDS = (
     "key", "status", "unread", "last_active", "project",
     "task_id", "title", "target", "session_id",
+    # The desk's change detector (shell/CurrentAppsSection `pulseSignal`): the
+    # sidebar refetches the projects table when a task's `happened_at` moves,
+    # since that is exactly when `current_apps.observe` can have flipped a
+    # row's unread. `last_active` cannot stand in — a recurring task whose run
+    # finished early keeps its due time there and the digest would not move.
+    "happened_at",
 )
 
 

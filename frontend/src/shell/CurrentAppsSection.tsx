@@ -173,7 +173,10 @@ try {
  *  the caller passes a digest of the task pulse (`pulseSignal`), since a task
  *  appearing adds a row and a task finishing flips a row's `unread`, both on
  *  the server. Errors keep the last answer: a failed read is not an empty desk. */
-function useCurrentApps(signal: string, refreshEpoch: number): CurrentAppEntry[] {
+function useCurrentApps(
+  signal: string,
+  refreshEpoch: number,
+): { entries: CurrentAppEntry[]; reload: () => Promise<void> } {
   const [apps, setApps] = useState<CurrentAppEntry[]>(knownApps);
   useEffect(() => {
     let live = true;
@@ -189,7 +192,15 @@ function useCurrentApps(signal: string, refreshEpoch: number): CurrentAppEntry[]
       live = false;
     };
   }, [signal, refreshEpoch]);
-  return apps;
+  // A fetch the caller can WAIT for — the open gesture needs to know when the
+  // table on screen is one read after its POST, which a counter bump cannot
+  // say. Rejects on a failed read; the caller decides what that means.
+  const reload = useCallback(async () => {
+    const r = await getCurrentApps();
+    knownApps = r.apps ?? [];
+    setApps(knownApps);
+  }, []);
+  return { entries: apps, reload };
 }
 
 interface RowDragProps {
@@ -372,13 +383,15 @@ export default function CurrentAppsSection() {
   // read state and activity — so the table reloads when a task appears or
   // leaves (the one thing that adds a row) AND when one changes lane or speaks
   // (the things that flip a row's `unread` on the server, which is computed
-  // inside the same listing the pulse reads). `last_active` is a fine CHANGE
-  // DETECTOR — it moves whenever the task does — it was only ever wrong as a
-  // threshold. Sorted, so a re-ordered pulse does not refetch.
+  // inside the same listing the pulse reads). The activity term is
+  // `happened_at`, the clock `observe` itself compares — NOT `last_active`,
+  // which keeps a scheduled due time and so does not move when a recurring
+  // run finishes early (Bugbot, 2026-09-07). Sorted, so a re-ordered pulse
+  // does not refetch.
   const pulseSignal = useMemo(
     () =>
       rows
-        .map((r) => `${r.key} ${r.status} ${r.unread} ${r.last_active}`)
+        .map((r) => `${r.key} ${r.status} ${r.happened_at ?? 0}`)
         .sort()
         .join("\n"),
     [rows],
@@ -388,24 +401,27 @@ export default function CurrentAppsSection() {
     [rows],
   );
   const [refreshEpoch, setRefreshEpoch] = useState(0);
-  const entries = useCurrentApps(pulseSignal, refreshEpoch);
+  const { entries, reload } = useCurrentApps(pulseSignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
   // turns that mutation into a render.
   const [orderEpoch, setOrderEpoch] = useState(0);
-  // The rows the user opened in THIS window and the server has not yet answered
-  // for, so the dot dies on the click rather than on the refetch. A path leaves
-  // the set the moment a fetch shows the server agreeing (`unread: false`) — so
-  // a LATER completion, which sets the flag again, is not masked by a stale
-  // entry from this session.
+  // The rows the user opened in THIS window whose open the server has not yet
+  // answered — so the dot dies on the click rather than on the refetch. A path
+  // leaves the set once the read AFTER its POST has landed (`onSeen`), whatever
+  // that read says: from then on the server's flag is drawn as is, so a
+  // completion after the stamp — or an `observe` that raced the open — shows
+  // rather than being masked for the page's lifetime (Bugbot, 2026-09-07).
   const [clearedHere, setClearedHere] = useState<ReadonlySet<string>>(() => new Set());
-  useEffect(() => {
-    setClearedHere((prev) => {
-      if (!prev.size) return prev;
-      const next = new Set(prev);
-      for (const e of entries) if (!e.unread) next.delete(e.path);
-      return next.size === prev.size ? prev : next;
-    });
-  }, [entries]);
+  const uncover = useCallback(
+    (path: string) =>
+      setClearedHere((s) => {
+        if (!s.has(path)) return s;
+        const next = new Set(s);
+        next.delete(path);
+        return next;
+      }),
+    [],
+  );
   const apps = useMemo(() => {
     const found = currentApps(entries, runningProjects, clearedHere);
     // Assigning during render is safe because it is idempotent: an app that
@@ -415,16 +431,15 @@ export default function CurrentAppsSection() {
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
   }, [entries, runningProjects, clearedHere, orderEpoch]);
-  // The user opened `path`: clear the dot here at once, and tell the server
-  // (POST /api/current-apps/open — the row's `opened_at` and `unread` are its
-  // to keep). The refetch on the answer brings the row back agreeing.
+  // The user opened `path`: clear the dot here at once, tell the server (POST
+  // /api/current-apps/open — the row's `opened_at` and `unread` are its to
+  // keep), then read the table back and hand the row to the server's flag.
   const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
   const onSeen = useCallback(
     (path: string) => {
       setClearedHere((s) => new Set(s).add(path));
       openCurrentApp(path).then(
-        (r) => {
-          refetch();
+        async (r) => {
           // Tell the OTHER windows the desk changed: `storage` fires only in
           // other documents (the ORDER_KEY wiring above, the chat's activity
           // stamp), and their sections refetch on it. Without this a second
@@ -436,6 +451,17 @@ export default function CurrentAppsSection() {
           } catch {
             /* no store: this window is up to date, the others catch up on their own */
           }
+          // Awaited, not a counter bump: the cover comes off only once a read
+          // that started AFTER the server stamped the row is on screen. A read
+          // already in flight when the POST landed could still say unread.
+          try {
+            await reload();
+          } catch {
+            // The read failed: ask again through the counter. The cover still
+            // comes off — a cover that outlives its POST is the masking bug.
+            refetch();
+          }
+          uncover(path);
         },
         () => {
           // The server never heard. The dot stays hidden for this page — it
@@ -446,7 +472,7 @@ export default function CurrentAppsSection() {
         },
       );
     },
-    [refetch],
+    [reload, refetch, uncover],
   );
   // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
   // those move rows on screen and write nothing to the store; the saved order is

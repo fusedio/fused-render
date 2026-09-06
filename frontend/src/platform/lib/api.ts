@@ -2721,6 +2721,12 @@ export interface Task {
   // server, which reads the same way.
   started?: number;
   last_active: number;
+  // WHEN SOMETHING LAST ACTUALLY HAPPENED — a run finishing, a transcript
+  // growing — and 0 when nothing has. Unlike `last_active` it never carries a
+  // scheduled due time or a creation stamp (tasks.py `_row`). The desk's
+  // unread flag is judged against it server-side, and the sidebar refetches the
+  // projects table when it moves. Absent on an older server.
+  happened_at?: number;
   message_count: number;
   // WHEN THIS NEXT RUNS, and WHICH schedule entry that run is: `min(at)` over
   // every PENDING entry the task has, epoch seconds, decided by the server
@@ -2768,6 +2774,7 @@ export type TaskPulseTask = Pick<
   | "status"
   | "unread"
   | "last_active"
+  | "happened_at"
   | "project"
   | "task_id"
   | "title"
