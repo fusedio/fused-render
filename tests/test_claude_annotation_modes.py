@@ -468,7 +468,8 @@ def test_the_three_seats_stay_and_the_armed_one_reads_active(html):
     assert "#annbtn.on { color: var(--accent); background: transparent; border-color: var(--accent); }" in html
     assert "#annrec.on { color: var(--accent); border-color: var(--accent); }" in html
     assert "annrecpulse" not in html   # steady, no flashing (2026-09-06)
-    assert "#anncta:has(#annrec.on) #annbtn.on { color: var(--dim); border-color: var(--border); }" in html
+    assert ("#anncta:has(#annrec.on) #annbtn.on,\n"
+            "  #anncta.busy #annbtn.on { color: var(--dim); border-color: var(--border); }") in html
     # transcribing: annRecEnd stamps .busy and the status stands ALONE on the
     # ANNOTATE seat (2026-09-06) — the clock itself is the bar's, never the strip's
     assert "#anncta:not(.busy) #annreclbl { display: none; }" in html

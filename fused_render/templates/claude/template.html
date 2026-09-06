@@ -295,8 +295,13 @@
      glyphs and words stay baked into the markup, never shown. */
   #annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none; }
   /* ONE active seat: while a walkthrough records the mic is the live control,
-     so the Comment seat (armed underneath, annRecBegin arms the mode) rests. */
-  #anncta:has(#annrec.on) #annbtn.on { color: var(--dim); border-color: var(--border); }
+     so the Comment seat (armed underneath, annRecBegin arms the mode) rests —
+     and keeps resting through Stopping…/Transcribing… (`.busy`), when the
+     mic's `.on` is already down but the mode is still armed until the settle
+     disarms it (Akshil, 2026-09-06: "for a moment comment also becomes
+     active"). The Annotate seat carries the status through that window. */
+  #anncta:has(#annrec.on) #annbtn.on,
+  #anncta.busy #annbtn.on { color: var(--dim); border-color: var(--border); }
   /* #annreclbl is status, not the clock (the bar's ■ carries that): it shows
      only through Stopping…/Transcribing…, when annCta wears .busy, and then
      it stands ALONE on the ANNOTATE seat — the walkthrough's own seat, so the
