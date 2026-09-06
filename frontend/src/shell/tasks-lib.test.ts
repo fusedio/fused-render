@@ -6905,7 +6905,10 @@ describe("the Cards view's frame", () => {
     const doors = block(CARDS_CSS, ".task-card-doors");
     expect(doors).toContain("position: absolute");
     expect(doors).toContain("visibility: hidden");
-    expect(CARDS_CSS).toContain(".task-card-head:hover .task-card-doors,\n.task-card-head:focus-within .task-card-doors {");
+    // Keyboard focus, not any focus: a click leaves focus in the head too, and
+    // `:focus-within` would pin the doors up after the pointer left (Bugbot).
+    expect(CARDS_CSS).toContain(".task-card-head:hover .task-card-doors,\n.task-card-head:has(:focus-visible) .task-card-doors {");
+    expect(CARDS_CSS).not.toContain(":focus-within .task-card-doors");
     // Same calls as the popup's doors — one set drawn in two places.
     expect(CARDS.split("await archiveTask(task.key)").length).toBe(3);
     expect(CARDS.split("await unarchiveTask(task.key)").length).toBe(3);

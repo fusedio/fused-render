@@ -70,8 +70,8 @@
      in the same breath (Akshil, 2026-09-06: "club it in with x lines saved").
      The dot belongs to the pair: it goes when either half is empty (the
      conflict banner blanks the status; a file that has not loaded has no count). */
-  #lines { color: var(--fg-muted); white-space: nowrap; }
-  #lines:not(:empty) + #status-text:not(:empty)::before { content: "\00b7 "; }
+  #state { display: inline-flex; align-items: baseline; white-space: nowrap; color: var(--fg-muted); }
+  #lines:not(:empty) + #status-text:not(:empty)::before { content: "\00b7 "; margin-left: 4px; }
   #status-text.error { color: var(--error); }
   #conflict {
     display: none;
@@ -147,8 +147,7 @@
       <button id="overwrite">Overwrite</button>
     </span>
     <span id="ro" hidden></span>
-    <span id="lines"></span>
-    <span id="status-text">Saved</span>
+    <span id="state"><span id="lines"></span><span id="status-text">Saved</span></span>
     <button id="save" disabled>Save</button>
   </div>
   <div id="root"><div id="skel-code" aria-hidden="true">

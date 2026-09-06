@@ -230,8 +230,12 @@
    the title row so the head's height and the title's width never move; the
    strip wears the head's hover ground so a long title is masked under it
    rather than showing through. `visibility` and not `display`, so the fade
-   can run and a hidden strip takes no clicks. `:focus-within` for the keyboard:
-   Tab reaches the doors, and reaching them shows them. */
+   can run and a hidden strip takes no clicks. For the keyboard, `:has(
+   :focus-visible)` and NOT `:focus-within`: a mouse click on the head or the
+   folder chip leaves focus inside the head too, and `:focus-within` kept the
+   doors up after the pointer left (Bugbot, #1018) — the same stuck reveal the
+   List rows rejected. `:focus-visible` is true only for focus the keyboard
+   gave, so Tab reaches the doors and shows them, and a click does neither. */
 .task-card-doors {
   position: absolute;
   right: 8px;
@@ -247,7 +251,7 @@
 }
 
 .task-card-head:hover .task-card-doors,
-.task-card-head:focus-within .task-card-doors {
+.task-card-head:has(:focus-visible) .task-card-doors {
   opacity: 1;
   visibility: visible;
 }
