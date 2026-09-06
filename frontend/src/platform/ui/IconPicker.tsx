@@ -65,8 +65,8 @@ function escapeAttr(v: string | number): string {
 }
 
 /** A lucide icon on the brand plate as a standalone icon.svg document: a
- *  64-unit square, black rounded rect, the 24-unit glyph scaled 1.5× and
- *  centred with 14 units of margin, stroked in fused yellow. */
+ *  64-unit square, black rounded rect, the 24-unit glyph scaled 1.75× and
+ *  centred with 11 units of margin, stroked in fused yellow. */
 export function brandedIconSvg(node: IconNode): string {
   const inner = node
     .map(([tag, attrs]) => {
@@ -80,7 +80,10 @@ export function brandedIconSvg(node: IconNode): string {
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
     `<rect width="64" height="64" rx="14" fill="${BRAND_BLACK}"/>` +
-    '<g transform="translate(14 14) scale(1.5)" fill="none" ' +
+    // 1.75: a 42-unit glyph with 11 of margin — at favicon size the plate
+    // vanishes into a dark tab strip and only the glyph shows, so it has to
+    // carry the icon on its own.
+    '<g transform="translate(11 11) scale(1.75)" fill="none" ' +
     // 2.5 not lucide's 2: the row draws the file at 14px, where a 2-unit
     // stroke lands under a pixel and reads faint beside the emoji rows.
     `stroke="${BRAND_YELLOW}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">` +
