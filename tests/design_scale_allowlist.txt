@@ -1,0 +1,5 @@
+# Rhythm literals the scale does not cover, one per line: path::literal  # why
+# Keep this short. A pattern that recurs belongs in scale.css as a step.
+styles/explorer.css::padding-right: …96px   # listing row reserves the size column width (geometry, not rhythm)
+styles/explorer.css::padding-right: …116px  # listing row reserves size + mtime columns
+styles/explorer.css::padding-right: …210px  # listing row reserves size + mtime + wide mtime

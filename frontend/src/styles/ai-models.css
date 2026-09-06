@@ -23,7 +23,7 @@
   flex-direction: column;
   gap: var(--am-gap-card);
   max-width: 760px;
-  font-size: 13px;
+  font-size: var(--text-dense);
   /* The row grid's two fixed tracks, named once so the lines UNDER a row can
      start where its control does. A note about the engine that belongs to the
      card's left edge instead reads as a sentence about the capability. */
@@ -55,7 +55,7 @@
   display: grid;
   grid-template-columns: var(--am-engine-cap-col) minmax(0, 260px) minmax(0, 1fr);
   align-items: center;
-  gap: 8px var(--am-engine-col-gap);
+  gap: var(--space-2) var(--am-engine-col-gap);
 }
 
 @media (max-width: 620px) {
@@ -110,7 +110,7 @@
   align-items: center;
   text-align: left;
   appearance: none;
-  padding-right: 30px;
+  padding-right: var(--space-8);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%239aa0a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
@@ -165,9 +165,9 @@
 .am-engine-option {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 6px;
+  gap: var(--space-1-5);
+  padding: var(--space-2) var(--space-2-5);
+  border-radius: var(--radius-control);
   cursor: pointer;
 }
 
@@ -181,7 +181,7 @@
 
 .am-engine-option-check {
   flex: 0 0 14px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 19px;
   color: var(--accent);
 }
@@ -194,7 +194,7 @@
 }
 
 .am-engine-option-label {
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg);
   white-space: normal;
 }
@@ -208,7 +208,7 @@
 }
 
 .am-engine-option-desc {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   white-space: normal;
 }
@@ -229,7 +229,7 @@
      rather than about the capability naming the row. */
   margin-left: calc(var(--am-engine-cap-col) + var(--am-engine-col-gap));
   max-width: 60ch;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -286,13 +286,13 @@
 .am-subgroup-head {
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .am-section-head {
   justify-content: space-between;
   border-bottom: 1px solid var(--border);
-  padding-bottom: 6px;
+  padding-bottom: var(--space-1-5);
   margin-bottom: var(--am-gap-head);
 }
 
@@ -305,7 +305,7 @@
 
 .am-section-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-title);
   font-weight: 600;
 }
 
@@ -317,7 +317,7 @@
    the parent from the child. */
 .am-subgroup-title {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -347,7 +347,7 @@
 
 .am-subgroup-size {
   flex: 0 0 auto;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -370,7 +370,7 @@
 .am-group-note {
   margin: 0 0 var(--am-gap-head);
   max-width: 110ch;
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.5;
   color: var(--fg-muted);
 }
@@ -402,7 +402,7 @@
   scroll-snap-type: x proximity;
   /* Room for the scrollbar under the cards rather than over them, so an
      overlay scrollbar does not come to rest on a footer's Download button. */
-  padding-bottom: 6px;
+  padding-bottom: var(--space-1-5);
 }
 
 /* Same family as the Kanban board's lanes (schedule.css, its "one decision
@@ -460,7 +460,7 @@
   background: transparent;
   background-clip: padding-box;
   border: 2px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 /* A second arm besides `is-scrolling`, so a keyboard user tabbing through
@@ -590,7 +590,7 @@
   border: 0;
   background: transparent;
   color: var(--fg-muted);
-  font-size: 20px;
+  font-size: var(--text-display);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -663,14 +663,14 @@
 .am-hub-host:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 
 .am-head-actions {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* The head now holds the MODEL half of the id only (`RepoCard.modelName`), so
@@ -681,7 +681,7 @@
    overflow the plate. */
 .am-card-name {
   min-width: 0;
-  font-size: 14px;
+  font-size: var(--text-body);
   color: inherit;
   text-decoration: none;
   white-space: normal;
@@ -696,7 +696,7 @@
 .am-card-name:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 
 /* -- the caption line: which repo it is, then what it costs -----------------
@@ -719,10 +719,10 @@
 .am-card-sub {
   display: flex;
   align-items: baseline;
-  gap: 7px;
+  gap: var(--space-2);
   min-width: 0;
-  margin-top: 3px;
-  font-size: 11.5px;
+  margin-top: var(--space-1);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -746,7 +746,7 @@
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  margin-left: -2px;
+  margin-left: calc(-1 * var(--space-0-5));
   color: var(--accent);
   cursor: default;
 }
@@ -754,7 +754,7 @@
 .am-card-pick:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 
 /* The (i), pinned to the head's right corner whatever the name's length —
@@ -790,8 +790,8 @@
  * (.btn-primary). An accent OUTLINE was never the exception; the fill was. */
 .am-card-try {
   width: auto;
-  padding: 0 8px;
-  font-size: 12px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-meta);
   font-weight: 600;
   text-decoration: none;
   background: transparent;
@@ -876,8 +876,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 4px 10px;
-  font-size: 12px;
+  gap: var(--space-1) var(--space-2-5);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   /* One line's worth, reserved. The row is rendered for every card now (the
      engine tag is a fact about all of them), and a dataset with nothing to say
@@ -890,14 +890,14 @@
    in the slot the engine tag used to occupy and wear its chrome — a small
    outlined pill, the same vocabulary as the facts that used to sit beside it. */
 .am-card-engine {
-  padding: 1px 6px;
-  font-size: 11px;
+  padding: 1px var(--space-1-5);
+  font-size: var(--text-caption);
   /* Muted, flatly: the two tags left wearing this base are a stopped download
      and a component, and both are quiet facts. The per-family hues that used to
      override it are gone with the tags that carried them. */
   color: var(--fg-muted);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   white-space: nowrap;
   /* A long label in a narrow column ellipsizes rather than pushing the card's
      other facts onto a third line. The title attribute carries the full one. */
@@ -974,17 +974,17 @@
 /* The stored weight width — the difference between a 7GB download and a 24GB
    one of the same model, so it reads as a property, not an aside. */
 .am-card-quant {
-  padding: 1px 6px;
-  font-size: 11px;
+  padding: 1px var(--space-1-5);
+  font-size: var(--text-caption);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .am-card-library::before {
   /* A separator that belongs to the optional item, so the line has no dangling
      middot when the library is unknown. */
   content: "·";
-  margin-right: 10px;
+  margin-right: var(--space-2-5);
 }
 
 /* -- the (i) panel: everything the face gave up (2026-08-24) -----------------
@@ -1009,12 +1009,12 @@
   z-index: 60;
   min-width: 184px;
   max-width: 280px;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-popover);
   box-shadow: 0 8px 24px var(--shadow-md);
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   line-height: 1.5;
   color: var(--fg-muted);
 }
@@ -1026,7 +1026,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .am-info-label {
@@ -1051,8 +1051,8 @@
    control that says where it goes. */
 .am-info-more {
   display: block;
-  margin-top: 7px;
-  padding-top: 7px;
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border);
   color: var(--accent);
   text-decoration: none;
@@ -1091,9 +1091,9 @@
    buttons appear and disappear beside it. */
 .am-tabs {
   display: inline-flex;
-  margin-right: 4px;
+  margin-right: var(--space-1);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -1104,9 +1104,9 @@
    text-decoration line the strip renders as five underlined links inside a
    pill, which reads as prose rather than as a control. */
 .am-tab {
-  padding: 5px 12px;
+  padding: var(--space-1-5) var(--space-3);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   background: transparent;
   border: 0;
@@ -1150,7 +1150,7 @@
 .am-hub-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   /* A section's worth of air under it, not a card's. This row CHANGES which
      view is below it, and at 8px it sat flush against the heading of the thing
      it changes — reading as part of that section rather than as the control
@@ -1175,13 +1175,13 @@
   min-width: 0;
   /* Room on the right for the ✕, always — reserving it only while the button
      is there would shift the text under the cursor on the first keystroke. */
-  padding: 7px 30px 7px 10px;
+  padding: var(--space-2) var(--space-8) var(--space-2) var(--space-2-5);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 
 /* The platform's own clear button, removed. It empties the TEXT and leaves the
@@ -1206,12 +1206,12 @@
   height: 20px;
   padding: 0;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1;
   color: var(--fg-muted);
   background: transparent;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   cursor: pointer;
 }
 
@@ -1240,15 +1240,15 @@
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: 32px;
-  padding: 0 10px;
+  padding: 0 var(--space-2-5);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
 }
 
@@ -1317,7 +1317,7 @@
    like the page is breaking. */
 .am-hub-stale {
   opacity: 0.55;
-  transition: opacity 120ms ease-out;
+  transition: opacity var(--dur-fast) ease-out;
 }
 
 /* Signing in to Hugging Face, offered where a gated result needs it (D426).
@@ -1332,7 +1332,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   margin: 0 0 var(--am-gap-head);
 }
 
@@ -1350,7 +1350,7 @@
   flex: 0 0 auto;
   color: var(--fg-muted);
   text-decoration: none;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .am-card-explore-link:hover {
@@ -1361,7 +1361,7 @@
 .am-card-explore-link:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 
 /* -- what a model is doing right now (SPEC §40) ------------------------------
@@ -1372,9 +1372,9 @@
 .am-card-runtime {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin-top: 8px;
-  font-size: 12px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -1441,11 +1441,11 @@
    misalignment in the screenshot. */
 .am-card-fix {
   flex: 0 0 auto;
-  padding: 2px 7px;
+  padding: var(--space-0-5) var(--space-2);
   border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--warning) 12%, transparent);
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 500;
   line-height: 1.5;
   white-space: nowrap;
@@ -1466,14 +1466,14 @@
 .am-card-why {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1-5);
   /* The one thing in this strip that gives up width. Every button beside it is
      `flex: 0 0 auto`, so the sentence absorbs the whole remainder and shrinks to
      nothing before a control does. */
   flex: 1 1 auto;
   min-width: 0;
-  margin-right: 2px;
-  font-size: 11px;
+  margin-right: var(--space-0-5);
+  font-size: var(--text-caption);
   line-height: 1.35;
   color: var(--fg-muted);
 }
@@ -1578,7 +1578,7 @@
    squeezing both. `margin-left: auto` still holds it right on a wide one. */
 .am-card-runtime {
   flex-wrap: wrap;
-  row-gap: 2px;
+  row-gap: var(--space-0-5);
 }
 
 /* -- loaded, said loudly -----------------------------------------------------
@@ -1720,13 +1720,13 @@
 
 .am-loaded-badge {
   flex: 0 0 auto;
-  padding: 2px 8px;
-  font-size: 10.5px;
+  padding: var(--space-0-5) var(--space-2);
+  font-size: var(--text-micro);
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   /* The .am-suggest-have pattern: a filled pill whose text is the PAGE background,
      which stays readable in both themes without a second token — dark text on
      the bright green above, white on the darker green below. */
@@ -1747,7 +1747,7 @@
   flex: 1 1 auto;
   min-width: 40px;
   height: 3px;
-  border-radius: 2px;
+  border-radius: var(--radius-hairline);
   background: var(--border);
   overflow: hidden;
 }
@@ -1756,7 +1756,7 @@
   display: block;
   height: 100%;
   background: var(--accent);
-  transition: width 200ms linear;
+  transition: width var(--dur-base) linear;
 }
 
 /* The measureless fill: a short stripe that travels the track. It says "moving"
@@ -1793,8 +1793,8 @@
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
-  margin-right: -4px;
-  font-size: 13px;
+  margin-right: calc(-1 * var(--space-1));
+  font-size: var(--text-dense);
   line-height: 1;
 }
 
@@ -1810,13 +1810,13 @@
    opacity still dims it for a refused or busy card. */
 .am-card-power {
   flex: 0 0 auto;
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -1905,7 +1905,7 @@
    reason: it qualifies the heading rather than competing with it. */
 .am-discover-summary {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -1916,7 +1916,7 @@
   display: flex;
   flex: 0 1 auto;
   align-items: baseline;
-  gap: 12px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
@@ -1930,7 +1930,7 @@
   flex: 0 0 auto;
   padding: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg);
   background: transparent;
   border: 0;
@@ -1945,7 +1945,7 @@
 .am-hub-back:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 
 /* Why a capability cannot run here, and which backend serves it when it can.
@@ -1954,7 +1954,7 @@
 .am-suggested-why,
 .am-suggested-runner {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -1973,17 +1973,17 @@
    was here is now the `:has` rule's job for every note on both tabs. */
 
 .am-suggest-note {
-  margin-top: 6px;
-  font-size: 12px;
+  margin-top: var(--space-1-5);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
 /* The checkmark is the whole reason this list is here rather than in a doc:
    "you already have this one" is what turns a shortlist into a decision. */
 .am-suggest-have {
-  padding: 1px 7px;
-  font-size: 11px;
-  border-radius: 999px;
+  padding: 1px var(--space-2);
+  font-size: var(--text-caption);
+  border-radius: var(--radius-pill);
   color: var(--bg);
   background: var(--accent);
   white-space: nowrap;
@@ -1997,10 +1997,10 @@
    that one sat beside a Download button that would 403 and this one replaces
    that button with the link that opens the gate (`gateChrome`). */
 .am-card-gate {
-  padding: 0 6px;
-  font-size: 11px;
+  padding: 0 var(--space-1-5);
+  font-size: var(--text-caption);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: var(--fg-muted);
   white-space: nowrap;
 }
@@ -2027,31 +2027,31 @@
 .am-usage {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-3-5);
 }
 
 .am-usage-card {
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .am-usage-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
 /* The window's headline figure. Tabular so the number does not jiggle its own
    caption sideways as it grows during a generation. */
 .am-usage-headline {
-  font-size: 15px;
+  font-size: var(--text-title);
   font-variant-numeric: tabular-nums;
 }
 
 .am-usage-sub {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 /* The picker rides .am-tabs, but it is a control inside a card rather than the
@@ -2134,36 +2134,36 @@
 .am-usage-axis {
   display: flex;
   justify-content: space-between;
-  margin-top: 4px;
-  font-size: 11px;
+  margin-top: var(--space-1);
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .am-usage-heading {
-  margin-top: 6px;
-  font-size: 13px;
+  margin-top: var(--space-1-5);
+  font-size: var(--text-dense);
   color: var(--fg-muted);
 }
 
 .am-usage-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .am-usage-tile {
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 
 .am-usage-tile-value {
-  font-size: 22px;
+  font-size: var(--text-display);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .am-usage-tile-label {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -2172,13 +2172,13 @@
 .am-usage-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-variant-numeric: tabular-nums;
 }
 
 .am-usage-table th,
 .am-usage-table td {
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   text-align: right;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
@@ -2204,12 +2204,12 @@
 }
 
 .am-usage-empty p {
-  margin: 0 0 6px;
+  margin: 0 0 var(--space-1-5);
 }
 
 .am-usage-note {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -2223,8 +2223,8 @@
 .am-usage-tierlines {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 24px;
-  font-size: 12px;
+  gap: var(--space-1-5) var(--space-6);
+  font-size: var(--text-meta);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2233,7 +2233,7 @@
 }
 
 .am-usage-failtypes {
-  margin-top: -4px;
+  margin-top: calc(-1 * var(--space-1));
 }
 
 /* The $/million box on a model row. Sized to the number it holds — a full-width
@@ -2242,15 +2242,15 @@
    left to the browser: they are how a rate gets nudged. */
 .am-usage-rate {
   width: 72px;
-  padding: 2px 4px;
+  padding: var(--space-0-5) var(--space-1);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-variant-numeric: tabular-nums;
   text-align: right;
   color: var(--fg);
   background: var(--ctl-quiet-bg);
   border: 1px solid var(--ctl-quiet-border);
-  border-radius: 5px;
+  border-radius: var(--radius-control);
 }
 
 .am-usage-rate:focus-visible {
@@ -2261,7 +2261,7 @@
 /* The estimated total. A footer, not another tile: it is the sum of the column
    above it and belongs at the bottom of that column. */
 .am-usage-table tfoot td {
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   font-weight: 600;
   border-top: 1px solid var(--border);
 }
@@ -2276,13 +2276,13 @@
    not a status, and the id beside it already implies the answer. */
 .am-usage-tier {
   display: inline-block;
-  margin-right: 6px;
-  padding: 0 5px;
-  font-size: 10px;
+  margin-right: var(--space-1-5);
+  padding: 0 var(--space-1-5);
+  font-size: var(--text-micro);
   line-height: 16px;
   color: var(--fg-muted);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   vertical-align: 1px;
 }
 
@@ -2349,10 +2349,10 @@
    changing `.am-section` itself, which the rest of the page's own sections
    (not panels) still use. */
 .am-bench .am-section {
-  padding: 16px 20px 20px;
+  padding: var(--space-4) var(--space-5) var(--space-5);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
 }
 
 /* The border-bottom rule `.am-section-head` normally draws would sit oddly
@@ -2392,7 +2392,7 @@
 .am-bench-section-heading {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 /* The info glyph itself — icon-only, the same reset every other icon-only
@@ -2421,7 +2421,7 @@
 .am-bench-workload-info:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 /* The section head's control group — the Metric select and the Share button.
@@ -2447,7 +2447,7 @@
      select is a glyph with no text baseline at all. */
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 /* Share (D480): the chart, this machine's hardware and the fused render mark
@@ -2465,8 +2465,8 @@
 .am-bench-metricsel {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: var(--space-2);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -2508,7 +2508,7 @@
 
 .am-bench-compare-body {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 /* Shared by the name column AND the empty spacer in the axis row below it —
@@ -2522,14 +2522,14 @@
 .am-bench-compare-names {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .am-bench-compare-name {
   height: 22px;
   display: flex;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--text-caption);
   overflow: hidden;
   white-space: nowrap;
 }
@@ -2563,7 +2563,7 @@
 .am-bench-compare-rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .am-bench-compare-row {
@@ -2579,13 +2579,13 @@
 .am-bench-compare-bar {
   height: 10px;
   min-width: 2px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: var(--accent);
 }
 
 .am-bench-compare-value {
-  margin-left: 6px;
-  font-size: 11px;
+  margin-left: var(--space-1-5);
+  font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
   white-space: nowrap;
@@ -2593,8 +2593,8 @@
 
 .am-bench-compare-foot {
   display: flex;
-  gap: 10px;
-  margin-top: 4px;
+  gap: var(--space-2-5);
+  margin-top: var(--space-1);
 }
 
 .am-bench-compare-axis {
@@ -2602,7 +2602,7 @@
   flex: 1 1 auto;
   min-width: 0;
   height: 14px;
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
@@ -2635,9 +2635,9 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   margin-top: var(--am-gap-head);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 /* The idle Run All button (D479) — see the long comment in BenchmarkTab.tsx
@@ -2653,15 +2653,15 @@
 .am-bench-runall-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 10px 5px 8px;
-  font-size: 12px;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-2-5) var(--space-1-5) var(--space-2);
+  font-size: var(--text-meta);
   font-weight: 600;
   font-family: inherit;
   background: transparent;
   color: var(--fg);
   border: 1px solid var(--fg);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
 }
 
@@ -2687,7 +2687,7 @@
 .am-bench-runall-progress {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-muted);
 }
 
@@ -2704,7 +2704,7 @@
 .am-bench-rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-top: var(--am-gap-head);
 }
 
@@ -2716,7 +2716,7 @@
    `.am-bench-runall` entirely, and in that case the rows keep their full
    head gap under the chart above, same as always. */
 .am-bench-runall + .am-bench-rows {
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
 }
 
 /* One model, one line: who, the bar, the number, the button. Compacted from a
@@ -2749,11 +2749,11 @@
      column already flexes), so widening this one costs nothing. */
   grid-template-columns: 16px minmax(0, 30ch) minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
-  padding: 6px 10px;
+  gap: var(--space-3);
+  padding: var(--space-1-5) var(--space-2-5);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   /* No `cursor`/focus ring here any more — those are conditional on
      `.expandable` (below) and on the row's own focusable descendant
      respectively. This is a plain container: BenchmarkTab.tsx puts NO
@@ -2814,7 +2814,7 @@
 
 .am-bench-model {
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   /* `middleEllipsis` (lib/benchmark.ts) does the truncating now, to a budget
      matching this column's width — the middle, not the tail, is what it
      elides, because two names sharing a long prefix differ at the END. This
@@ -2856,7 +2856,7 @@ button.am-bench-model:focus-visible {
    the name, since the name column is now too narrow to fit both. */
 .am-bench-gone {
   display: block;
-  font-size: 10px;
+  font-size: var(--text-micro);
   color: var(--fg-muted);
 }
 
@@ -2877,8 +2877,8 @@ button.am-bench-model:focus-visible {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 10px;
-  font-size: 12px;
+  gap: var(--space-1) var(--space-2-5);
+  font-size: var(--text-meta);
 }
 
 /* No `white-space: nowrap` here (there used to be one) — below roughly
@@ -2911,7 +2911,7 @@ button.am-bench-model:focus-visible {
 .am-bench-busy {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-muted);
 }
 
@@ -2961,11 +2961,11 @@ button.am-bench-model:focus-visible {
    whose headline already gave the answer, not something that needs to shout
    once it is finally visible. */
 .am-bench-rowexpand-detail {
-  margin: 0 0 10px;
+  margin: 0 0 var(--space-2-5);
   max-width: 60ch;
   color: var(--fg-muted);
   white-space: pre-wrap;
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 /* -- icon-only buttons: the spinner glyph's motion (SPEC AI-14) --------------
@@ -2992,7 +2992,7 @@ button.am-bench-model:focus-visible {
    not the ErrorBanner for the same reason. */
 .am-bench-stopped {
   margin: 0 0 var(--am-gap-head);
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -3002,7 +3002,7 @@ button.am-bench-model:focus-visible {
 .am-bench-delta {
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .am-bench-delta.better {
@@ -3030,7 +3030,7 @@ button.am-bench-model:focus-visible {
 .am-bench-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: var(--space-4);
   margin-bottom: var(--am-gap-head);
 }
 
@@ -3072,16 +3072,16 @@ button.am-bench-model:focus-visible {
   /* Full row width for free: this is a SIBLING of `.am-bench-row`'s grid, not
      a cell inside it, so it never has to fight that row's
      `grid-template-columns` for room the chart needs in full. */
-  padding: 10px 12px 12px;
+  padding: var(--space-2-5) var(--space-3) var(--space-3);
   /* Cancels `.am-bench-rows`' own 6px flex `gap` between this and the row
      above it — a negative margin equal to the gap is the standard way to
      opt ONE pair of flex/grid siblings out of an otherwise-uniform gap
      without touching the container itself (the gap must still separate
      every OTHER pair of rows normally). */
-  margin-top: -6px;
+  margin-top: calc(-1 * var(--space-1-5));
   border: 1px solid var(--accent);
   border-top: none;
-  border-radius: 0 0 6px 6px;
+  border-radius: 0 0 var(--radius-control) var(--radius-control);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
 }
 
@@ -3133,17 +3133,17 @@ button.am-bench-model:focus-visible {
 .am-bench-trend-single {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 .am-bench-trend-value {
-  font-size: 20px;
+  font-size: var(--text-display);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .am-bench-trend-note {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -3157,7 +3157,7 @@ button.am-bench-model:focus-visible {
   /* Tight on purpose: the tick labels are meant to read as PART of the axis
      they name, not a separate column floating beside it — a wider gap here
      is what made the y-axis numbers look detached from the plot's left edge. */
-  gap: 3px;
+  gap: var(--space-1);
 }
 
 .am-bench-yaxis {
@@ -3175,7 +3175,7 @@ button.am-bench-model:focus-visible {
      as "this line" and not "the line below me". */
   transform: translateY(-50%);
   text-align: right;
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
@@ -3265,7 +3265,7 @@ button.am-bench-model:focus-visible {
 .am-bench-endlabel {
   position: absolute;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   pointer-events: none;
@@ -3279,10 +3279,10 @@ button.am-bench-model:focus-visible {
 .am-bench-axis {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  margin-top: 4px;
-  padding-left: 39px; /* clears the y-axis label column (36px + 3px gap) */
-  font-size: 11px;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+  padding-left: var(--space-10); /* clears the y-axis label column (36px + 3px gap) */
+  font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
@@ -3294,9 +3294,9 @@ button.am-bench-model:focus-visible {
    things, and a fourth would either crowd the middle tick or (if excluded
    from the distribution) sit at an arbitrary offset from it. */
 .am-bench-axis-caption {
-  margin-top: 2px;
-  padding-left: 39px;
-  font-size: 10px;
+  margin-top: var(--space-0-5);
+  padding-left: var(--space-10);
+  font-size: var(--text-micro);
   color: var(--fg-muted);
 }
 
@@ -3307,20 +3307,20 @@ button.am-bench-model:focus-visible {
    what keeps "collapsed" from meaning "hidden". */
 .am-bench-history {
   margin-top: var(--am-gap-head);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .am-bench-history > summary {
   cursor: pointer;
   color: var(--fg-muted);
-  padding: 4px 0;
+  padding: var(--space-1) 0;
 }
 
 /* The table is wider than a narrow window on purpose (eight columns of facts),
    so it scrolls INSIDE this box rather than making the page scroll sideways. */
 .am-bench-tablewrap {
   overflow-x: auto;
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
 }
 
 .am-bench-table {
@@ -3331,7 +3331,7 @@ button.am-bench-model:focus-visible {
 
 .am-bench-table th,
 .am-bench-table td {
-  padding: 5px 8px;
+  padding: var(--space-1-5) var(--space-2);
   text-align: left;
   border-bottom: 1px solid var(--border);
 }
@@ -3354,7 +3354,7 @@ button.am-bench-model:focus-visible {
    heading rather than a few pixels of text inside it. */
 .am-bench-sort {
   width: 100%;
-  padding: 5px 8px;
+  padding: var(--space-1-5) var(--space-2);
   border: 0;
   background: none;
   color: inherit;
@@ -3382,13 +3382,13 @@ button.am-bench-model:focus-visible {
    Marked so a reader knows why no delta is drawn across it. */
 .am-bench-rev {
   color: var(--warning-soft);
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .am-bench-forget {
-  padding: 0 6px;
+  padding: 0 var(--space-1-5);
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: none;
   color: var(--fg-muted);
   font: inherit;

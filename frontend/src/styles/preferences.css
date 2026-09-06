@@ -9,11 +9,11 @@
    entry needed. */
 .sidebar-footer {
   margin-top: auto;
-  padding: 6px;
+  padding: var(--space-1-5);
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .sidebar-footer .prefs-link {
@@ -22,9 +22,9 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 8px 4px;
-  border-radius: 6px;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-1);
+  border-radius: var(--radius-control);
   background: none;
   border: none;
   font: inherit;
@@ -38,7 +38,7 @@
 }
 
 .sidebar-footer .prefs-label {
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   line-height: 1;
   max-width: 100%;
   overflow: hidden;
@@ -57,7 +57,7 @@
    list treatment as the sub-app list at the top. */
 .sidebar-settings {
   margin-top: auto;
-  padding-top: 6px;
+  padding-top: var(--space-1-5);
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
 }
@@ -75,7 +75,7 @@
 .files-home-inner {
   max-width: 1120px;
   margin: 0 auto;
-  padding: 36px 28px 72px;
+  padding: var(--space-10) var(--space-7) var(--space-18);
 }
 
 /* Doubled selector: home.css loads after this file, so plain .files-hero
@@ -88,8 +88,8 @@
   border-color: transparent;
   /* With the card invisible and no brand row above the box, its padding reads
      as dead air on both sides of the one control here. */
-  padding-top: 18px;
-  padding-bottom: 10px;
+  padding-top: var(--space-5);
+  padding-bottom: var(--space-2-5);
   margin-bottom: 0;
 }
 
@@ -101,17 +101,17 @@
    right edge. Quiet on purpose: an outlined pill, no accent fill, so it sits
    beside the tabs as a peer instead of shouting over them. */
 .files-hero-cta {
-  margin: 0 0 6px auto;
+  margin: 0 0 var(--space-1-5) auto;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  font-size: 12.5px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-3);
+  font-size: var(--text-dense);
   font-weight: 600;
   color: var(--fg-muted);
   background: none;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
@@ -134,13 +134,13 @@
 .files-search {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 12px;
+  gap: var(--space-2-5);
+  padding: 0 var(--space-3);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   box-shadow: 0 2px 10px color-mix(in srgb, var(--fg) 5%, transparent);
-  transition: border-color 120ms ease;
+  transition: border-color var(--dur-fast) ease;
 }
 
 .files-search:focus-within {
@@ -159,12 +159,12 @@
 .files-search-input:focus {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 12px 0;
+  padding: var(--space-3) 0;
   border: none;
   outline: none;
   box-shadow: none;
   background: transparent;
-  font-size: 14px;
+  font-size: var(--text-body);
   line-height: 1.4;
   color: inherit;
 }
@@ -178,11 +178,11 @@
 
 .files-search-clear {
   flex: none;
-  padding: 3px 10px;
-  font-size: 11.5px;
+  padding: var(--space-1) var(--space-2-5);
+  font-size: var(--text-meta);
   font-weight: 600;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-alt);
   color: var(--fg-muted);
   cursor: pointer;
@@ -195,14 +195,14 @@
 /* The results panel: attached to the bar, not a separate card floating below
    it — hence the small gap and no border of its own. */
 .fh-panel {
-  margin-top: 10px;
+  margin-top: var(--space-2-5);
 }
 
 /* The line above the list: match count and the keys that drive it, or why
    there is no count (index still building, a failure, a scan in flight). */
 .fh-result-note {
-  margin: 0 0 8px;
-  font-size: 12px;
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-meta);
   line-height: 16px;
   min-height: 16px;
   color: var(--fg-muted);
@@ -224,13 +224,13 @@
 .fh-index-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  margin-left: 8px;
-  padding: 1px 7px 1px 6px;
+  gap: var(--space-1-5);
+  margin-left: var(--space-2);
+  padding: 1px var(--space-2) 1px var(--space-1-5);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-alt);
-  font-size: 11px;
+  font-size: var(--text-caption);
   line-height: 16px;
   color: var(--fg-muted);
   vertical-align: baseline;
@@ -285,16 +285,16 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  padding: var(--space-2-5) var(--space-3);
   background: var(--bg-alt);
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 
 .fh-index-cta-text {
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg);
 }
 
@@ -309,15 +309,15 @@
 
 .fh-result-note kbd {
   font: inherit;
-  padding: 0 4px;
+  padding: 0 var(--space-1);
   margin: 0 1px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--bg-alt);
 }
 
 .fh-section {
-  margin-top: 30px;
+  margin-top: var(--space-8);
 }
 
 /* -- Home page sections (shell/Home.tsx) --------------------------------------
@@ -331,7 +331,7 @@
   max-width: none;
   /* Tighter than the explorer home's 36px: the search bar is the first thing
      on the front door, so it sits closer to the top. */
-  padding-top: 8px;
+  padding-top: var(--space-2);
 }
 
 .home-wide .files-search-wrap {
@@ -343,13 +343,13 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3-5);
 }
 
 .home-sec-title {
   margin: 0;
-  font-size: 17px;
+  font-size: var(--text-heading);
   font-weight: 700;
 }
 
@@ -365,8 +365,8 @@
 .home-sec-more {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12.5px;
+  gap: var(--space-1);
+  font-size: var(--text-dense);
   font-weight: 600;
   color: var(--fg-muted);
   text-decoration: none;
@@ -389,7 +389,7 @@
 
 .home-row {
   display: flex;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .home-row > * {
@@ -411,13 +411,13 @@
    room to not read as a stray line of text, nowhere near a card's worth of
    empty box. */
 .home-section .fh-empty {
-  padding: 20px 0;
+  padding: var(--space-5) 0;
   text-align: center;
 }
 
 .fh-empty {
   margin: 0;
-  font-size: 13.5px;
+  font-size: var(--text-body);
   color: var(--fg-muted);
 }
 
@@ -551,7 +551,7 @@
   max-height: max(440px, calc(100dvh - 11rem));
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
 }
 
 .fh-results li + li {
@@ -564,8 +564,8 @@
   display: flex;
   width: 100%;
   align-items: center;
-  gap: 10px;
-  padding: 8px 14px;
+  gap: var(--space-2-5);
+  padding: var(--space-2) var(--space-3-5);
   text-align: left;
   text-decoration: none;
   color: inherit;
@@ -600,7 +600,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--text-dense);
   font-weight: 600;
 }
 
@@ -610,15 +610,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
 .fh-result-meta {
   flex: none;
   display: inline-flex;
-  gap: 12px;
-  font-size: 11.5px;
+  gap: var(--space-3);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -670,8 +670,8 @@
 }
 
 .fh-ai-action {
-  padding-top: 12px;
-  padding-bottom: 12px;
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
 }
 
 .fh-ai-action .fh-result-name {
@@ -707,7 +707,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-style: italic;
   color: var(--fg-muted);
 }
@@ -727,15 +727,15 @@
   flex: none;
   width: 52px;
   text-align: right;
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
 .fh-ai-hint kbd {
   font: inherit;
-  padding: 0 4px;
+  padding: 0 var(--space-1);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--bg-alt);
 }
 
@@ -744,11 +744,11 @@
 .fh-ai-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  margin-right: 8px;
-  padding: 1px 7px 1px 5px;
-  border-radius: 999px;
-  font-size: 11px;
+  gap: var(--space-1);
+  margin-right: var(--space-2);
+  padding: 1px var(--space-2) 1px var(--space-1-5);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-caption);
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--accent);
@@ -763,8 +763,8 @@
 
 /* The "Understood as: …" echo line above AI search results. */
 .fh-search-summary {
-  margin: 0 0 8px;
-  font-size: 12.5px;
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-dense);
   color: var(--fg-muted);
 }
 
@@ -774,19 +774,19 @@
 .fh-tabs {
   display: flex;
   align-items: flex-end;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3-5);
   border-bottom: 1px solid var(--border);
 }
 
 .fh-tablist {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .fh-tab {
-  padding: 0 2px 10px;
-  margin-right: 14px;
-  font-size: 13px;
+  padding: 0 var(--space-0-5) var(--space-2-5);
+  margin-right: var(--space-3-5);
+  font-size: var(--text-dense);
   font-weight: 600;
   color: var(--fg-muted);
   background: none;
@@ -812,25 +812,25 @@
   justify-content: center;
   width: 34px;
   height: 34px;
-  border-radius: 9px;
+  border-radius: var(--radius-card);
   background: color-mix(in srgb, var(--fg) 5%, transparent);
   color: var(--accent);
 }
 
 .fh-card-emoji {
-  font-size: 17px;
+  font-size: var(--text-heading);
   line-height: 1;
 }
 
 .fh-card-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 
 .fh-card-name {
-  font-size: 13.5px;
+  font-size: var(--text-body);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -838,7 +838,7 @@
 }
 
 .fh-card-path {
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -854,7 +854,7 @@
 .fhb-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .fhb-card {
@@ -865,17 +865,17 @@
   text-decoration: none;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-tile);
   /* The card carries the padding and the body well brings its own radius, so
      the body reads as an inset floating panel (the ref design) rather than a
      full-bleed border-top split. */
-  padding: 6px;
+  padding: var(--space-1-5);
   box-shadow: 0 1px 2px var(--shadow-sm);
   overflow: hidden;
   transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease,
-    transform 0.15s ease;
+    border-color var(--dur-base) ease,
+    box-shadow var(--dur-base) ease,
+    transform var(--dur-base) ease;
 }
 
 .fhb-card:hover {
@@ -887,8 +887,8 @@
 .fhb-card-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 8px 11px;
+  gap: var(--space-2-5);
+  padding: var(--space-2) var(--space-2) var(--space-3);
   min-width: 0;
 }
 
@@ -897,12 +897,12 @@
 .fhb-card .fh-card-icon {
   width: 36px;
   height: 36px;
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   border: 1px solid color-mix(in srgb, var(--fg) 7%, transparent);
 }
 
 .fhb-card .fh-card-name {
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 650;
 }
 
@@ -918,7 +918,7 @@
   aspect-ratio: 16 / 10;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   overflow: hidden;
 }
 
@@ -968,11 +968,11 @@
   flex-direction: column;
   align-items: stretch;
   aspect-ratio: 16 / 10;
-  padding: 10px 10px 0;
+  padding: var(--space-2-5) var(--space-2-5) 0;
   /* The base --bg (a step darker than the card's --bg-alt) so the sheets —
      lifted toward --fg below — read clearly against the well they sit in. */
   background: var(--bg);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   overflow: hidden;
 }
 
@@ -983,30 +983,30 @@
   flex: 0 0 auto;
   /* A step below .fh-card-path (11.5px) — the sheet labels must read smaller
      than the card's own path line. */
-  font-size: 10px;
+  font-size: var(--text-micro);
   /* Lifted a step above --bg-panel so the sheets separate from the stack's
      --bg well; separation is carried by shadow, the hairline only stops
      same-value surfaces from fusing. */
   background: color-mix(in srgb, var(--fg) 7%, var(--bg-panel));
   border: 1px solid color-mix(in srgb, var(--fg) 13%, var(--bg-panel));
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   box-shadow: 0 1px 2px var(--shadow-sm), 0 4px 12px var(--shadow-sm);
-  transition: margin 0.18s ease;
+  transition: margin var(--dur-base) ease;
 }
 
 .fhb-sheet-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
-  padding: 11px;
-  transition: padding 0.18s ease;
+  padding: var(--space-3);
+  transition: padding var(--dur-base) ease;
 }
 
 /* Hover breathes the title rows open a hair along with the fan. */
 .fhb-card:hover .fhb-sheet-row {
-  padding-top: 12px;
-  padding-bottom: 12px;
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-3);
 }
 
 /* Depth cascade: the front sheet (d0) is full width and holds the body; each
@@ -1018,17 +1018,17 @@
   min-height: 0;
   z-index: 3;
   border-bottom: none;
-  border-radius: 12px 12px 0 0;
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
   overflow: hidden;
 }
 
 .fhb-sheet-d1 {
-  margin: 0 10px -33px;
+  margin: 0 var(--space-2-5) calc(-1 * var(--space-8));
   z-index: 2;
 }
 
 .fhb-sheet-d2 {
-  margin: 0 20px -33px;
+  margin: 0 var(--space-5) calc(-1 * var(--space-8));
   z-index: 1;
 }
 
@@ -1038,7 +1038,7 @@
 .fhb-sheet-d1,
 .fhb-sheet-d2 {
   border-bottom: none;
-  border-radius: 12px 12px 0 0;
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
 }
 
 /* The back sheet's page body: a blank strip a step off the sheet's own fill,
@@ -1081,7 +1081,7 @@
    move apart, not just a page-edge sliver. */
 .fhb-card:hover .fhb-sheet-d1,
 .fhb-card:hover .fhb-sheet-d2 {
-  margin-bottom: -18px;
+  margin-bottom: calc(-1 * var(--space-5));
 }
 
 .fhb-sheet-icon {
@@ -1125,8 +1125,8 @@
   align-items: center;
   justify-content: center;
   min-height: 60px;
-  padding: 12px;
-  font-size: 12px;
+  padding: var(--space-3);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -1136,11 +1136,11 @@
   align-items: center;
   justify-content: center;
   aspect-ratio: 16 / 10;
-  padding: 12px;
-  font-size: 12px;
+  padding: var(--space-3);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   background: rgba(var(--tint), 0.04);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   text-align: center;
 }
 
@@ -1156,7 +1156,7 @@
    this card is not. */
 .fhb-empty {
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 .fhb-empty-mark {
@@ -1181,16 +1181,16 @@
 .fhb-more {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 14px auto 0;
-  padding: 5px 14px;
-  font-size: 12px;
+  gap: var(--space-1-5);
+  margin: var(--space-3-5) auto 0;
+  padding: var(--space-1-5) var(--space-3-5);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease;
+  transition: color var(--dur-fast) ease, border-color var(--dur-fast) ease;
 }
 
 .fhb-more:hover {
@@ -1203,7 +1203,7 @@
   background: var(--bg-popover);
   color: var(--tour-fg);
   border: 1px solid rgba(var(--tint), 0.12);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   box-shadow: 0 8px 30px var(--shadow-lg);
 }
 
@@ -1246,7 +1246,7 @@
   background: transparent;
   color: var(--tour-desc);
   border: 1px solid rgba(var(--tint), 0.12);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   text-shadow: none;
 }
 
@@ -1269,16 +1269,16 @@
 }
 
 .prefs-page {
-  padding: 18px 22px 32px;
+  padding: var(--space-5) var(--space-6) var(--space-8);
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--space-6);
   /* Full-width scroll container so the scrollbar sits at the window edge, not
      inset at the 760px content boundary. The content column is capped by the
      child rule below (previously max-width lived here, which made the narrow
      760px box itself the scroller — a mid-page scrollbar). */
   overflow-y: auto;
-  font-size: 13px;
+  font-size: var(--text-dense);
 }
 
 /* Cap the settings/mounts content column while the scroller stays full-width.
@@ -1292,15 +1292,15 @@
    Templates page's bindings/library tabs. */
 .prefs-tabs {
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
   border-bottom: 1px solid var(--border);
 }
 
 .prefs-tab {
   font: inherit;
-  font-size: 13px;
-  padding: 9px 4px;
-  margin-right: 20px;
+  font-size: var(--text-dense);
+  padding: var(--space-2-5) var(--space-1);
+  margin-right: var(--space-5);
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
@@ -1320,20 +1320,20 @@
 .prefs-tabpanel {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--space-6);
 }
 
 .prefs-section {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 .prefs-section h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 600;
-  padding-bottom: 6px;
+  padding-bottom: var(--space-1-5);
   border-bottom: 1px solid var(--border);
 }
 
@@ -1344,9 +1344,9 @@
 .prefs-section code {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-size: 12px;
+  border-radius: var(--radius-xs);
+  padding: 1px var(--space-1-5);
+  font-size: var(--text-meta);
   /* `anywhere`, not `word-break: break-all`: both stop a long path or client ID
      from overflowing, but break-all also split short tokens that would have fit
      on the next line — "env_auth" rendered as "en / v_auth" mid-sentence in the
@@ -1356,9 +1356,9 @@
 
 .prefs-section button {
   font: inherit;
-  padding: 5px 12px;
+  padding: var(--space-1-5) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg);
   color: var(--fg);
   cursor: pointer;
@@ -1381,7 +1381,7 @@
 .prefs-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -1389,13 +1389,13 @@
    is a path or glob, where a mistaken space matters. */
 .prefs-textarea {
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.5;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   resize: vertical;
 }
 
@@ -1415,8 +1415,8 @@
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 10px;
+  border-radius: var(--radius-control);
+  padding: var(--space-2) var(--space-2-5);
 }
 
 /* ---- the index Query panel (shell/Indexing.tsx) ------------------------- */
@@ -1435,14 +1435,14 @@
    what actually ran, and read-only text rather than a second editable box —
    editing it means putting it in the box above and re-running. */
 .index-query-sql {
-  margin: 10px 0 0;
-  padding: 8px 10px;
+  margin: var(--space-2-5) 0 0;
+  padding: var(--space-2) var(--space-2-5);
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.5;
   /* A compiled statement can be one long line; it scrolls rather than reflowing
      the panel, which is the same trade the input above makes. */
@@ -1455,11 +1455,11 @@
    predicted, and letting it size the panel would push the rest of Preferences
    sideways. */
 .index-query-results {
-  margin-top: 10px;
+  margin-top: var(--space-2-5);
   max-height: 420px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 
 .index-query-results table {
@@ -1469,12 +1469,12 @@
   width: max-content;
   min-width: 100%;
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .index-query-results th,
 .index-query-results td {
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   text-align: left;
   white-space: nowrap;
   border-bottom: 1px solid var(--border);
@@ -1499,18 +1499,18 @@
 /* Share on local network: QR pairing + paired devices (Preferences ▸ Render). */
 .lan-pair {
   display: flex;
-  gap: 20px;
+  gap: var(--space-5);
   align-items: flex-start;
-  margin-top: 14px;
+  margin-top: var(--space-3-5);
 }
 .lan-pair-qr {
   flex: 0 0 168px;
   width: 168px;
   height: 168px;
-  padding: 10px;
+  padding: var(--space-2-5);
   background: var(--qr-paper); /* a QR is read by a camera: always dark-on-white */
-  border-radius: 10px;
-  transition: opacity 160ms ease;
+  border-radius: var(--radius-card);
+  transition: opacity var(--dur-base) ease;
 }
 .lan-pair-qr svg {
   display: block;
@@ -1522,16 +1522,16 @@
   min-width: 0;
 }
 .lan-pair-text p {
-  margin: 0 0 10px;
+  margin: 0 0 var(--space-2-5);
 }
 .lan-devices {
-  margin-top: 18px;
+  margin-top: var(--space-5);
 }
 .lan-devices-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: var(--space-1-5);
 }
 .lan-devices ul {
   list-style: none;
@@ -1542,8 +1542,8 @@
 .lan-devices li {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 0;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
   border-bottom: 1px solid var(--border);
 }
 .lan-device-name {
@@ -1552,5 +1552,5 @@
 }
 .lan-devices li .deploy-muted {
   flex: 1;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }

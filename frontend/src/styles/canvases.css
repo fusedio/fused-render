@@ -14,34 +14,34 @@
 .canvases-inner {
   max-width: 1180px;
   margin: 0 auto;
-  padding: 32px 28px 64px;
+  padding: var(--space-8) var(--space-7) var(--space-16);
 }
 
 .canvases-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .canvases-title {
   margin: 0;
-  font-size: 22px;
+  font-size: var(--text-display);
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
 .canvases-sub {
-  margin: 0 0 20px;
+  margin: 0 0 var(--space-5);
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--text-dense);
 }
 
 .canvases-head-actions {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .canvases-search {
@@ -52,9 +52,9 @@
 .canvases-account {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 /* Card grid ---------------------------------------------------------------- */
@@ -66,13 +66,13 @@
 .canvases-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 34px 24px;
+  gap: var(--space-8) var(--space-6);
 }
 
 .canvas-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
   text-align: left;
   padding: 0;
   background: none;
@@ -100,8 +100,8 @@
   overflow: hidden;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  transition: border-color 120ms ease;
+  border-radius: var(--radius-control);
+  transition: border-color var(--dur-fast) ease;
 }
 
 /* The border+name shift is the whole hover affordance now that the card has no
@@ -117,7 +117,7 @@
 .canvas-card:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 
 /* Server-provided preview image filling the frame. */
@@ -136,7 +136,7 @@
   position: absolute;
   inset: 0;
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   align-items: stretch;
   justify-items: stretch;
 }
@@ -147,39 +147,39 @@
   min-width: 0;
   min-height: 0;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 /* Only a canvas with zero UDFs lands here — there is nothing to tile. */
 .canvas-card-noshot {
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg-muted);
 }
 
 .canvas-card-body {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: var(--space-2);
 }
 
 .canvas-card-name {
-  font-size: 20px;
+  font-size: var(--text-display);
   font-weight: 400;
   letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: color 120ms ease;
+  transition: color var(--dur-fast) ease;
 }
 
 /* UDF count (or the clone hint) — the louder of the two stat lines. */
 .canvas-card-stat {
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg);
 }
 
 .canvas-card-meta {
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg-muted);
 }
 
@@ -187,10 +187,10 @@
 .canvases-new-form {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .canvases-empty {
   color: var(--fg-muted);
-  padding: 32px 0;
+  padding: var(--space-8) 0;
 }

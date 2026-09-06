@@ -8,7 +8,7 @@
 .mount-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .mount-panel-lede {
@@ -20,7 +20,7 @@
 .mount-panel-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 12px;
+  gap: var(--space-2-5) var(--space-3);
   align-items: end;
 }
 
@@ -44,7 +44,7 @@
 .mount-panel-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: var(--space-2-5);
   align-items: end;
 }
 
@@ -56,7 +56,7 @@
 .mount-note-check {
   display: flex;
   align-items: flex-start;
-  gap: 4px;
+  gap: var(--space-1);
   cursor: pointer;
 }
 
@@ -64,7 +64,7 @@
 .mount-setup {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .mount-steps-head {
@@ -82,7 +82,7 @@
   list-style: none;
   counter-reset: mount-step;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 /* No font-size on the body text: a step's sentence IS body text, so it
@@ -92,8 +92,8 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px 10px 34px;
+  gap: var(--space-1);
+  padding: var(--space-2-5) var(--space-3) var(--space-2-5) var(--space-8);
   line-height: 1.5;
 }
 
@@ -108,7 +108,7 @@
   top: 10px;
   width: 34px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.625; /* 12px × this = the 13px title's 19.5px line box */
   color: var(--fg-muted);
 }
@@ -117,7 +117,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .mount-step-title {
@@ -146,7 +146,7 @@
 }
 
 .mount-step-project {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   max-width: 420px;
 }
 
@@ -158,10 +158,10 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 22px 16px;
+  gap: var(--space-1);
+  padding: var(--space-6) var(--space-4);
   border: 1px dashed var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   text-align: center;
   cursor: pointer;
   background: rgba(var(--tint), 0.03);
@@ -182,18 +182,18 @@
 }
 
 .mount-drop-sub {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
 .mount-manual > summary {
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
 .mount-manual > .mount-panel-grid {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 /* "Add a custom S3 remote …" — a quiet inline link-button. */
@@ -204,7 +204,7 @@
   cursor: pointer;
   padding: 0;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   text-decoration: underline;
 }
@@ -218,12 +218,12 @@
    in-between widths; this is the small-end polish. */
 @media (max-width: 560px) {
   .prefs-page {
-    padding: 14px 14px 24px;
-    gap: 18px;
+    padding: var(--space-3-5) var(--space-3-5) var(--space-6);
+    gap: var(--space-5);
   }
 
   .mounts-title {
-    font-size: 16px;
+    font-size: var(--text-heading);
   }
 
   .mounts-actions {
@@ -255,12 +255,12 @@
 .prefs-radio {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
+  gap: var(--space-2-5);
   cursor: pointer;
 }
 
 .prefs-radio input {
-  margin-top: 3px;
+  margin-top: var(--space-1);
   accent-color: var(--accent);
 }
 
@@ -275,13 +275,13 @@
 .prefs-field {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: var(--space-1-5);
 }
 
 .prefs-field > label {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .prefs-field select:disabled {
@@ -292,17 +292,17 @@
 /* Registry table: pattern -> template chips (+ source badge). */
 .prefs-registry-table {
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .prefs-registry-table td {
-  padding: 5px 10px 5px 0;
+  padding: var(--space-1-5) var(--space-2-5) var(--space-1-5) 0;
   border-top: 1px solid var(--border);
   vertical-align: top;
 }
 
 .prefs-registry-table .registry-templates code + code {
-  margin-left: 5px;
+  margin-left: var(--space-1-5);
 }
 
 .prefs-registry-table .default-mode {
@@ -315,9 +315,9 @@
 
 .registry-source {
   display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 11px;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-caption);
   border: 1px solid var(--border);
   color: var(--fg-muted);
   white-space: nowrap;

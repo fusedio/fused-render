@@ -6,13 +6,13 @@
 .mount-add-form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-3-5);
 }
 
 .mount-hero {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 /* Primary by SIZE AND WEIGHT, never by a bigger font: the page holds exactly
@@ -26,7 +26,7 @@
 .mount-hero .field-control {
   width: 100%;
   height: 40px;
-  padding: 0 14px;
+  padding: 0 var(--space-3-5);
 }
 
 .mount-hero .field-control:focus {
@@ -40,9 +40,9 @@
 .mount-grid {
   display: grid;
   grid-template-columns: minmax(110px, 0.9fr) minmax(150px, 1.1fr) minmax(150px, 1.4fr) auto;
-  gap: 10px;
+  gap: var(--space-2-5);
   align-items: end;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   outline: 2px solid transparent;
   outline-offset: 6px;
 }
@@ -73,7 +73,7 @@
    the connected-remote line, and the single explainer. */
 .mount-note {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.5;
   color: var(--fg-muted);
 }
@@ -92,13 +92,13 @@
 .mount-providers {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding-top: 14px;
+  gap: var(--space-2-5);
+  padding-top: var(--space-3-5);
   border-top: 1px solid var(--border);
 }
 
 .mount-providers-head {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -125,7 +125,7 @@
    shared 10px, so a section boundary and a line of hint text were spaced the
    same and nothing grouped. */
 .mounts-page .prefs-section {
-  gap: 14px;
+  gap: var(--space-3-5);
 }
 
 /* Page header — title + one-line intro on the left, global actions on the
@@ -134,39 +134,39 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 
 .mounts-title,
 .prefs-title {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--text-heading);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .prefs-title {
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3-5);
 }
 
 .mounts-subtitle {
-  margin: 4px 0 0;
+  margin: var(--space-1) 0 0;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.45;
   max-width: 54ch;
 }
 
 .mounts-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
 
 /* Refresh glyph in the Restart button — sized independently of the label. */
 .mounts-restart-icon {
-  font-size: 14px;
+  font-size: var(--text-body);
   line-height: 1;
 }
 
@@ -176,10 +176,10 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: var(--space-2-5);
+  padding: var(--space-3-5) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-alt);
 }
 
@@ -199,7 +199,7 @@
    own spacing via the adjacent-sibling margin below. */
 .mount-callout-body {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.5;
 }
 
@@ -208,7 +208,7 @@
 }
 
 .mount-callout-body p + p {
-  margin-top: 3px;
+  margin-top: var(--space-1);
 }
 
 .mount-callout-body code {
@@ -219,18 +219,18 @@
 .mount-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 .mount-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3-5);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-alt);
-  transition: border-color 0.12s ease;
+  transition: border-color var(--dur-fast) ease;
 }
 
 .mount-card:not(.mount-card--skeleton):hover {
@@ -269,11 +269,11 @@
 .mount-card-main {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   /* Wrap on a narrow pane: the name block (flex:1) keeps the first row and the
      action buttons drop to a second row rather than crushing the name. */
   flex-wrap: wrap;
-  row-gap: 10px;
+  row-gap: var(--space-2-5);
 }
 
 /* The name/remote block is the flexible column; never let it shrink to zero
@@ -287,7 +287,7 @@
    ride to the next line as a group. */
 .mount-card-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   margin-left: auto;
 }
@@ -333,7 +333,7 @@
 
 .mount-card-name .mount-dot {
   display: inline-block;
-  margin-right: 8px;
+  margin-right: var(--space-2);
   vertical-align: middle;
 }
 
@@ -357,7 +357,7 @@
 /* Inline qualifier after a mount name ("— read-only", "— disconnected"). */
 .mount-hint {
   font-weight: 400;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 .mount-hint.warn {
@@ -366,7 +366,7 @@
 
 /* The remote spec shown under a mount name, clipped to one line. */
 .mount-remote {
-  font-size: 12px;
+  font-size: var(--text-meta);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -378,7 +378,7 @@
 
 /* Live preview of the rclone spec the Add button will mount. */
 .mount-spec {
-  font-size: 12px;
+  font-size: var(--text-meta);
   margin: 0;
 }
 .mount-spec .warn {
@@ -387,9 +387,9 @@
 
 /* Empty state — a quiet dashed panel pointing at the Add-mount form. */
 .mount-empty {
-  padding: 16px 18px;
+  padding: var(--space-4) var(--space-5);
   border: 1px dashed var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   text-align: center;
   color: var(--fg-muted);
 }
@@ -402,7 +402,7 @@
 .mount-picker {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
-  gap: 8px;
+  gap: var(--space-2);
   align-items: stretch;
   /* Every row the same height, not just every card within a row. Grid sizes
      rows independently by default, so a one-line row sat visibly shorter than
@@ -426,12 +426,12 @@
   display: flex;
   /* Mark on the left, name over cost to its right. */
   flex-direction: row;
-  gap: 10px;
+  gap: var(--space-2-5);
   align-items: center;
   text-align: left;
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-alt);
   cursor: pointer;
   font: inherit;
@@ -461,7 +461,7 @@
 .mount-provider-text {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--space-1);
   min-width: 0;
   flex: 1;
 }
@@ -488,7 +488,7 @@
    page's one secondary size: this was the last `em` left on the page, and at
    0.8em it rendered at 10.4px, a ninth size nothing else used. */
 .mount-provider-cost {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   line-height: 1.4;
 }

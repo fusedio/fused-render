@@ -7,13 +7,13 @@
 .schedule-form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .schedule-quick {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -97,11 +97,11 @@
    a flex child allowed to be SHORTER than its content; without it each one
    floors at its content height and the inner scroller never engages. */
 .schedule-page {
-  padding-top: 12px;
+  padding-top: var(--space-3);
   /* `.prefs-page`'s 32px bottom padding was breathing room under a stack of
      cards; under a full-height pane it is just a strip of dead page. */
-  padding-bottom: 12px;
-  gap: 12px;
+  padding-bottom: var(--space-3);
+  gap: var(--space-3);
   overflow: hidden;
   min-height: 0;
 }
@@ -115,7 +115,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 /* The three views, each filling what the toolbar leaves and scrolling inside. */
@@ -143,8 +143,8 @@
 .schedule-card-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 12px;
+  gap: var(--space-2-5);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -154,7 +154,7 @@
 }
 
 .schedule-card-why {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   /* Server errors arrive as prose of any length (a traceback line, a long
      path in a 400) — cap and scroll rather than let one bad run stretch its
@@ -169,9 +169,9 @@
 .schedule-card-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: auto;
-  padding-top: 2px;
+  padding-top: var(--space-0-5);
 }
 
 .schedule-card-actions:empty {
@@ -180,8 +180,8 @@
 
 .schedule-state {
   font-weight: 600;
-  padding: 1px 8px;
-  border-radius: 999px;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
   border: 1px solid var(--border);
   background: var(--bg);
 }
@@ -212,7 +212,7 @@
 .schedule-toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 /* The toggle owns the row's single auto margin, so everything after it —
@@ -235,7 +235,7 @@
 .schedule-form-seg {
   display: inline-flex;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   overflow: hidden;
 }
 
@@ -301,7 +301,7 @@
 .prefs-section .schedule-view-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .schedule-view-btn > svg {
@@ -324,7 +324,7 @@
 
 .schedule-form-row {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 .schedule-form-row .field {
@@ -356,7 +356,7 @@
   --cal-days: 7;
   --cal-gutter: 56px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   background: var(--bg-alt);
   overflow: hidden;
 }
@@ -373,14 +373,14 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
-  padding: 10px 12px;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2-5) var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 
 .schedule-cal-nav {
   display: inline-flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 /* THE RIGHT-HAND END OF THE BAR: the range toggle, then the month. It exists to
@@ -405,7 +405,7 @@
 .schedule-cal-bar-end {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   margin-left: auto;
 }
 
@@ -415,7 +415,7 @@
    label cannot buy room by breaking "Aug 30 – Sep 2, 2026" across two lines: a
    tight bar is meant to wrap the flex line above, not to shred this label. */
 .schedule-cal-range {
-  font-size: 16px;
+  font-size: var(--text-heading);
   color: var(--fg);
   white-space: nowrap;
 }
@@ -424,7 +424,7 @@
    stray text. The chevrons only widen a touch for a decent hit target. */
 .schedule-cal-nav .btn {
   min-width: 32px;
-  padding: 0 10px;
+  padding: 0 var(--space-2-5);
 }
 
 .schedule-cal-head,
@@ -444,20 +444,20 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 8px 0 6px;
+  gap: var(--space-0-5);
+  padding: var(--space-2) 0 var(--space-1-5);
   border-left: 1px solid transparent;
 }
 
 .schedule-cal-day-name {
-  font-size: 11px;
+  font-size: var(--text-caption);
   letter-spacing: 0.8px;
   text-transform: uppercase;
   color: var(--fg-muted);
 }
 
 .schedule-cal-day-num {
-  font-size: 22px;
+  font-size: var(--text-display);
   line-height: 1;
   color: var(--fg);
   width: 36px;
@@ -465,7 +465,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .schedule-cal-day-head.is-today .schedule-cal-day-name {
@@ -508,7 +508,7 @@
 
 .schedule-cal-gutter {
   position: relative;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -517,7 +517,7 @@
   right: 8px;
   transform: translateY(-50%);
   background: var(--bg-alt);
-  padding: 0 2px;
+  padding: 0 var(--space-0-5);
 }
 
 .schedule-cal-col {
@@ -553,7 +553,7 @@
   top: -5px;
   width: 8px;
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--error);
 }
 
@@ -574,30 +574,30 @@
      inline is what lets the :hover rule below outrank it. */
   z-index: calc(var(--lane, 0) + 1);
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
   align-items: center;
   height: 21px;
-  padding: 0 6px;
+  padding: 0 var(--space-1-5);
   border: none;
   border-left: 3px solid var(--chip, var(--accent));
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--chip, var(--accent)) 22%, var(--bg-alt));
   color: var(--fg);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-caption);
   line-height: 1.5;
   text-align: left;
   overflow: hidden;
   cursor: pointer;
-  transition: filter 0.1s ease;
+  transition: filter var(--dur-fast) ease;
 }
 
 /* The 4-day range exists for WIDTH — four columns are wide enough to read a
    task title, so the label gets a step of size and a little more room. */
 .schedule-cal.is-wide .schedule-cal-chip {
   height: 23px;
-  font-size: 12px;
-  padding: 0 8px;
+  font-size: var(--text-meta);
+  padding: 0 var(--space-2);
 }
 
 /* Emil's rule for a surface touched dozens of times a day: the hover is a
@@ -636,7 +636,7 @@
 .schedule-cal .schedule-cal-chip-rep {
   flex: none;
   opacity: 0.8;
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 /* The `+N`: how many MORE of this task's messages fall on this day, nested
@@ -644,11 +644,11 @@
    column with 24 identical chips. */
 .schedule-cal .schedule-cal-chip-more {
   flex: none;
-  padding: 0 4px;
-  border-radius: 999px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--chip, var(--accent)) 55%, var(--bg-alt));
   color: var(--fg);
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-weight: 600;
 }
 
@@ -798,19 +798,19 @@
   max-height: min(70vh, 560px);
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
+  gap: var(--space-3);
+  padding: var(--space-4);
   /* Nothing escapes the card; everything that could overflow scrolls inside it
      (the thread) or clamps (the title). */
   overflow: hidden;
   background: var(--bg-popover, var(--bg-alt));
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   box-shadow: 0 8px 30px var(--shadow-sm);
   /* One short settle from where the click happened — opened often enough that
      anything slower than ~120ms would start to feel like waiting. */
   transform-origin: top left;
-  animation: schedule-popover-in 0.12s ease-out;
+  animation: schedule-popover-in var(--dur-fast) ease-out;
 }
 
 @keyframes schedule-popover-in {
@@ -828,7 +828,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* The task's colour, restated where the thread is read — so the popover and the
@@ -837,12 +837,12 @@
   width: 10px;
   height: 10px;
   flex: none;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: var(--chip, var(--accent));
 }
 
 .schedule-cal-pop-id {
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 600;
   letter-spacing: 0.4px;
   color: var(--fg-muted);
@@ -867,7 +867,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 
 /* Scoped under the rail, not bare: the Tasks page wraps this popover in
@@ -883,7 +883,7 @@
   height: 24px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
@@ -933,7 +933,7 @@
    very long title stops. */
 .schedule-pop-title {
   flex: none;
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 500;
   line-height: 1.4;
   color: var(--fg);
@@ -959,10 +959,10 @@
   flex: none;
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -985,7 +985,7 @@
 .schedule-cal-thread {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   /* The ONLY part of the popover that scrolls, and the only one that gives: it
      takes whatever height the pinned parts leave (`1 1 auto`) and `min-height:
      0` is what actually lets it go below its content — without it a flex child
@@ -1004,9 +1004,9 @@
      sibling at 0 wins on DOM order, so the ring showed through the sticky
      label's own background (QA 2026-08-17). */
   z-index: 1;
-  padding: 2px 0;
+  padding: var(--space-0-5) 0;
   background: var(--bg-popover, var(--bg-alt));
-  font-size: 11px;
+  font-size: var(--text-caption);
   letter-spacing: 0.6px;
   text-transform: uppercase;
   color: var(--fg-muted);
@@ -1015,7 +1015,7 @@
 .schedule-cal-msgs {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1024,7 +1024,7 @@
 .schedule-cal-msg {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 
@@ -1040,18 +1040,18 @@
   flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
-  padding: 4px 6px;
+  padding: var(--space-1) var(--space-1-5);
   border: none;
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--fg);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   text-align: left;
   cursor: pointer;
-  transition: background-color 0.1s ease;
+  transition: background-color var(--dur-fast) ease;
 }
 
 .schedule-cal-popover .schedule-cal-msg-open:hover:not(:disabled),
@@ -1159,7 +1159,7 @@
    flush against the label without this (Bugbot, PR #541). */
 .schedule-card-actions .btn svg,
 .schedule-cal-popover .btn svg {
-  margin-right: 5px;
+  margin-right: var(--space-1-5);
   transform: translateY(2px);
 }
 
@@ -1185,8 +1185,8 @@
    shared `.btn:focus-visible` ring already outlines it. */
 .schedule-cal-pop-run,
 .prefs-section .schedule-cal-pop-run {
-  transition: color 0.08s ease, background-color 0.08s ease,
-    border-color 0.08s ease;
+  transition: color var(--dur-instant) ease, background-color var(--dur-instant) ease,
+    border-color var(--dur-instant) ease;
 }
 
 .schedule-cal-pop-run:hover:not(:disabled),
@@ -1249,7 +1249,7 @@
 .schedule-form-line {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .schedule-form-line svg {
@@ -1266,7 +1266,7 @@
    column (14px icon + 12px gap). */
 .schedule-form-line--sub,
 .schedule-form-sub {
-  margin-left: 26px;
+  margin-left: var(--space-7);
 }
 
 /* The native disclosure marker is the platform's, not ours: a black WebKit
@@ -1283,9 +1283,9 @@
 .schedule-form-more summary {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg-muted);
   user-select: none;
   list-style: none;
@@ -1309,7 +1309,7 @@
   flex: none;
   /* transform alone: the summary's colour transitions on hover, and one rule
      owning both smears the mark. */
-  transition: transform 0.12s ease-out;
+  transition: transform var(--dur-fast) ease-out;
 }
 
 .schedule-form-more[open] .schedule-form-more-caret {
@@ -1325,7 +1325,7 @@
 .schedule-form-more summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 /* THE GAP UNDER THE WHEN-ROW (Akshil, 2026-08-23). More options holds two
@@ -1335,11 +1335,11 @@
    the size the card already spaces its blocks by; the first child never takes
    it, so a card whose fold contains only Permissions is unchanged. */
 .schedule-form-more > * + * {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .schedule-form-more[open] summary {
-  margin-bottom: 10px;
+  margin-bottom: var(--space-2-5);
 }
 
 /* Reference-card refinements (Akshil, 2026-08-14, Google new-event screenshot):
@@ -1368,8 +1368,8 @@
 .prefs-section .schedule-cal-popover .btn,
 .deploy-body .schedule-cal-popover .btn {
   height: 28px;
-  font-size: 12px;
-  padding: 0 10px;
+  font-size: var(--text-meta);
+  padding: 0 var(--space-2-5);
 }
 
 /* -- Recent paths: the path field's dropdown ------------------------------
@@ -1396,14 +1396,14 @@
   z-index: 20;
   display: flex;
   flex-direction: column;
-  padding: 4px;
+  padding: var(--space-1);
   /* Same elevation as every other trigger-anchored panel (see .schedule-pop). */
   background: var(--bg-popover, var(--bg));
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   box-shadow: 0 8px 24px var(--shadow-sm);
   transform-origin: top;
-  animation: schedule-pop-in 0.1s ease-out;
+  animation: schedule-pop-in var(--dur-fast) ease-out;
 }
 
 .schedule-recents-path {
@@ -1422,7 +1422,7 @@
   height: 1px;
   flex: none;
   background: var(--border);
-  margin: 4px -4px;
+  margin: var(--space-1) calc(-1 * var(--space-1));
 }
 
 /* Plain text, not accent (Akshil, 2026-08-16): the separator and the position
@@ -1450,9 +1450,9 @@
    it is the mirror of Browse's: found-things above, existing things below. */
 .schedule-form .schedule-recents-new {
   align-items: flex-start;
-  padding-bottom: 8px;
+  padding-bottom: var(--space-2);
   border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 
 /* Same armor as Browse's hairline: the ambient button:hover skins repaint
@@ -1464,13 +1464,13 @@
 
 .schedule-form .schedule-recents-new svg {
   /* Pulled onto the first line's baseline now the row is two lines tall. */
-  margin-top: 2px;
+  margin-top: var(--space-0-5);
 }
 
 .schedule-recents-new-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   flex: 1;
 }
@@ -1478,14 +1478,14 @@
 .schedule-recents-new-top {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 
 /* The line that says WHEN the folder starts existing. Muted and small: the
    badge above already carried the fact, this only dates it. */
 .schedule-recents-new-why {
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -1503,7 +1503,7 @@
   display: flex;
   flex: 1;
   min-width: 0;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .schedule-pop-wrap {
@@ -1523,9 +1523,9 @@
 .prefs-section button.schedule-when-field,
 .prefs-section .schedule-when-field {
   height: 32px;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   text-align: left;
   color: var(--fg);
   background: var(--bg-alt);
@@ -1534,7 +1534,7 @@
      with no edges, read as text (audit 2026-08-16). The accent still takes
      over on :focus and --error on .is-invalid, below. */
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -1602,7 +1602,7 @@ input.schedule-when-field {
 .deploy-body .schedule-picker-crumb,
 .deploy-body .schedule-form-seg .btn,
 .prefs-section .schedule-form-seg .btn {
-  transition: background-color 0.08s ease;
+  transition: background-color var(--dur-instant) ease;
 }
 
 .schedule-when-field:focus,
@@ -1625,14 +1625,14 @@ input.schedule-when-field {
      dropdown — goes higher (audit 2026-08-16). */
   background: var(--bg-popover, var(--bg));
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   box-shadow: 0 8px 24px var(--shadow-sm);
-  padding: 10px;
+  padding: var(--space-2-5);
   /* 100ms is the whole budget: these open on a click the user already
      committed to, so the motion is only there to say WHERE the panel came
      from — the trigger's own edge. */
   transform-origin: top;
-  animation: schedule-pop-in 0.1s ease-out;
+  animation: schedule-pop-in var(--dur-fast) ease-out;
 }
 
 @keyframes schedule-pop-in {
@@ -1643,7 +1643,7 @@ input.schedule-when-field {
 }
 
 .schedule-pop--time {
-  padding: 4px;
+  padding: var(--space-1);
 }
 
 /* The custom select: same quiet chip as the when-fields, caret at the end.
@@ -1655,7 +1655,7 @@ input.schedule-when-field {
   display: inline-flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -1697,7 +1697,7 @@ input.schedule-when-field {
    the chip that opened it and the units menu three times wider (audit
    2026-08-16). */
 .schedule-pop--menu {
-  padding: 5px;
+  padding: var(--space-1-5);
   display: flex;
   flex-direction: column;
   max-height: 300px;
@@ -1707,14 +1707,14 @@ input.schedule-when-field {
 .schedule-menu-item,
 .deploy-body .schedule-menu-item,
 .prefs-section .schedule-menu-item {
-  padding: 7px 12px;
+  padding: var(--space-2) var(--space-3);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   text-align: left;
   color: var(--fg);
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   align-self: stretch;
   width: 100%;
@@ -1794,13 +1794,13 @@ input.schedule-when-field {
 .schedule-mini-cal-head {
   display: flex;
   align-items: center;
-  gap: 2px;
-  margin-bottom: 6px;
+  gap: var(--space-0-5);
+  margin-bottom: var(--space-1-5);
 }
 
 .schedule-mini-cal-title {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--text-dense);
   font-weight: 600;
 }
 
@@ -1810,7 +1810,7 @@ input.schedule-when-field {
   width: 24px;
   height: 24px;
   padding: 0;
-  font-size: 14px;
+  font-size: var(--text-body);
   color: var(--fg-muted);
   background: transparent;
   border: none;
@@ -1830,11 +1830,11 @@ input.schedule-when-field {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   justify-items: center;
-  row-gap: 2px;
+  row-gap: var(--space-0-5);
 }
 
 .schedule-mini-cal-dow {
-  font-size: 10px;
+  font-size: var(--text-micro);
   color: var(--fg-muted);
   line-height: 24px;
 }
@@ -1849,7 +1849,7 @@ input.schedule-when-field {
   align-items: center;
   justify-content: center;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg);
   background: transparent;
   border: none;
@@ -1912,14 +1912,14 @@ input.schedule-when-field {
 .schedule-time-slot,
 .deploy-body .schedule-time-slot,
 .prefs-section .schedule-time-slot {
-  padding: 6px 12px;
+  padding: var(--space-1-5) var(--space-3);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   text-align: left;
   color: var(--fg);
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   align-self: stretch;
   width: 100%;
@@ -1958,26 +1958,26 @@ input.schedule-when-field {
   z-index: 50;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 14px 16px 16px;
+  gap: var(--space-3-5);
+  padding: var(--space-3-5) var(--space-4) var(--space-4);
   background: var(--bg-popover, var(--bg-alt));
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   box-shadow: 0 12px 40px var(--shadow-lg);
-  animation: schedule-explorer-in 0.18s ease-out;
+  animation: schedule-explorer-in var(--dur-base) ease-out;
 }
 
 .schedule-recur-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-title);
   font-weight: 600;
 }
 
 .schedule-recur-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: 13px;
+  gap: var(--space-2-5);
+  font-size: var(--text-dense);
 }
 
 /* The number fields wear the when-chips' clothes: same height, same fill, same
@@ -1991,13 +1991,13 @@ input.schedule-when-field {
   width: 64px;
   flex: none;
   height: 32px;
-  padding: 0 10px;
+  padding: 0 var(--space-2-5);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   appearance: textfield;
   -moz-appearance: textfield;
 }
@@ -2026,7 +2026,7 @@ input.schedule-when-field {
 
 .schedule-recur-circles {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 /* The seven weekday discs. aria-pressed carries the state; the fill says it.
@@ -2044,7 +2044,7 @@ input.schedule-when-field {
   align-items: center;
   justify-content: center;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 600;
   color: var(--fg-muted);
   background: var(--bg-alt);
@@ -2082,8 +2082,8 @@ input.schedule-when-field {
 .schedule-recur-ends {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  font-size: 13px;
+  gap: var(--space-2);
+  font-size: var(--text-dense);
 }
 
 .schedule-recur-ends-label {
@@ -2099,7 +2099,7 @@ input.schedule-when-field {
 .schedule-recur-detail {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* The end DATE is a chip that drops the same month grid the when-row uses —
@@ -2121,7 +2121,7 @@ input.schedule-when-field {
 
 .modal-overlay .modal-dialog {
   left: 0;
-  transition: left 0.18s ease-out;
+  transition: left var(--dur-base) ease-out;
 }
 
 .modal-dialog:has(.schedule-explorer:not(.is-closing)),
@@ -2144,15 +2144,15 @@ input.schedule-when-field {
   z-index: 50;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px 16px;
+  gap: var(--space-2-5);
+  padding: var(--space-3-5) var(--space-4) var(--space-4);
   /* A panel, not a dropdown: the one surface in this feature that goes to the
      high elevation (audit 2026-08-16). */
   background: var(--bg-popover, var(--bg-alt));
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   box-shadow: 0 12px 40px var(--shadow-lg);
-  animation: schedule-explorer-in 0.18s ease-out;
+  animation: schedule-explorer-in var(--dur-base) ease-out;
 }
 
 @keyframes schedule-explorer-in {
@@ -2167,7 +2167,7 @@ input.schedule-when-field {
    faded end state for the frames between animation end and unmount. */
 .schedule-explorer.is-closing,
 .schedule-recur.is-closing {
-  animation: schedule-explorer-out 0.18s ease-in forwards;
+  animation: schedule-explorer-out var(--dur-base) ease-in forwards;
   pointer-events: none;
 }
 
@@ -2179,7 +2179,7 @@ input.schedule-when-field {
 }
 
 .schedule-explorer-title {
-  font-size: 15px;
+  font-size: var(--text-title);
   font-weight: 600;
 }
 
@@ -2191,7 +2191,7 @@ input.schedule-when-field {
 }
 
 .schedule-explorer .schedule-picker-foot {
-  margin-top: 2px;
+  margin-top: var(--space-0-5);
 }
 
 /* Files are answers, folders are places: same row, quieter glyph. */
@@ -2204,11 +2204,11 @@ input.schedule-when-field {
 .schedule-picker {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   background: var(--bg);
-  padding: 10px;
+  padding: var(--space-2-5);
 }
 
 /* Crumbs replace the old ‹-plus-path head: every ancestor is a click, the
@@ -2222,10 +2222,10 @@ input.schedule-when-field {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   overflow: hidden;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 /* The tail owns the leftover room; the ancestors shrink to their ellipsis. */
@@ -2241,14 +2241,14 @@ input.schedule-when-field {
    row has no room for. */
 .schedule-picker-crumb-ellipsis {
   flex: none;
-  padding: 2px 4px;
+  padding: var(--space-0-5) var(--space-1);
   color: var(--fg-muted);
 }
 
 .schedule-picker-crumb-seg {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 
@@ -2263,13 +2263,13 @@ input.schedule-when-field {
 .schedule-picker-crumb,
 .deploy-body .schedule-picker-crumb,
 .prefs-section .schedule-picker-crumb {
-  padding: 2px 6px;
+  padding: var(--space-0-5) var(--space-1-5);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   background: transparent;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   max-width: 160px;
   overflow: hidden;
@@ -2302,7 +2302,7 @@ input.schedule-when-field {
 }
 
 .schedule-picker-filter {
-  font-size: 12px;
+  font-size: var(--text-meta);
   height: 28px;
 }
 
@@ -2314,7 +2314,7 @@ input.schedule-when-field {
   display: flex;
   flex-direction: column;
   align-content: flex-start;
-  transition: opacity 0.1s ease;
+  transition: opacity var(--dur-fast) ease;
 }
 
 /* Mid-navigation: the outgoing listing stays put, dimmed, until the next one
@@ -2335,15 +2335,15 @@ input.schedule-when-field {
   align-self: stretch;
   width: 100%;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   text-align: left;
   color: var(--fg);
   background: transparent;
   border: none;
-  border-radius: 6px;
-  padding: 6px 8px;
+  border-radius: var(--radius-control);
+  padding: var(--space-1-5) var(--space-2);
   cursor: pointer;
 }
 
@@ -2387,7 +2387,7 @@ input.schedule-when-field {
 .schedule-picker-foot {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* -- Naming a folder that does not exist yet ------------------------------
@@ -2412,8 +2412,8 @@ input.schedule-when-field {
   align-self: stretch;
   width: 100%;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px 8px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-2);
 }
 
 .schedule-picker-new-name {
@@ -2426,16 +2426,16 @@ input.schedule-when-field {
    two. */
 .schedule-picker-new-ok {
   flex: none;
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
 }
 
 .schedule-new-badge {
   flex: none;
-  padding: 1px 6px;
-  border-radius: 999px;
+  padding: 1px var(--space-1-5);
+  border-radius: var(--radius-pill);
   border: 1px solid var(--border);
   background: var(--bg-alt);
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 600;
   letter-spacing: 0.01em;
   text-transform: none;
@@ -2448,8 +2448,8 @@ input.schedule-when-field {
 .schedule-save,
 .schedule-picker-foot .btn-primary,
 .deploy-body .schedule-picker-foot .btn-primary {
-  border-radius: 999px;
-  padding: 0 22px;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-6);
 }
 
 /* The ⌘↩ pill inside Save. Drawn in the button's own ink at a lower alpha so
@@ -2458,8 +2458,8 @@ input.schedule-when-field {
 .schedule-save {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding-right: 14px;
+  gap: var(--space-2);
+  padding-right: var(--space-3-5);
 }
 .schedule-save-key {
   display: inline-flex;
@@ -2467,18 +2467,18 @@ input.schedule-when-field {
   /* Glyph, plus, glyph — with air between them (Akshil, screenshot,
      2026-08-27: "a little bit of space between these two icons and a plus
      icon"). Set glyph-to-glyph the two read as one unfamiliar ligature. */
-  gap: 3px;
+  gap: var(--space-1);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--text-caption);
   line-height: 1;
-  padding: 3px 6px;
-  border-radius: 5px;
+  padding: var(--space-1) var(--space-1-5);
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, currentColor 14%, transparent);
   color: inherit;
   opacity: 0.85;
 }
 .schedule-save-key-plus {
-  font-size: 9px;
+  font-size: var(--text-micro);
   opacity: 0.7;
 }
 
@@ -2489,7 +2489,7 @@ input.schedule-when-field {
 }
 
 .schedule-form-line--top svg {
-  margin-top: 9px;
+  margin-top: var(--space-2-5);
 }
 
 .schedule-form-description {
@@ -2569,7 +2569,7 @@ input.schedule-when-field {
   flex: 0 0 16px;
   box-sizing: border-box;
   border: 2px solid currentColor;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 /* The hues. One mark wears them — the status ring. A board card's unread dot
@@ -2636,7 +2636,7 @@ input.schedule-when-field {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-weight: 700;
   line-height: 1;
   color: currentColor;
@@ -2699,7 +2699,7 @@ input.schedule-when-field {
   margin: auto;
   width: 8px;
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: currentColor;
 }
 
@@ -2754,24 +2754,24 @@ input.schedule-when-field {
   top: 0;
   left: 0;
   z-index: 30;
-  padding: 3px 7px;
-  font-size: 11px;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-caption);
   line-height: 1.3;
   font-weight: 500;
   white-space: nowrap;
   color: var(--fg);
   background: var(--bg-popover);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   box-shadow: 0 2px 8px var(--shadow-sm);
   opacity: 0;
   visibility: hidden;
   transition:
-    opacity 0.1s ease,
-    visibility 0.1s ease,
-    top 0s 0.1s,
-    left 0s 0.1s,
-    transform 0s 0.1s;
+    opacity var(--dur-fast) ease,
+    visibility var(--dur-fast) ease,
+    top 0s var(--dur-fast),
+    left 0s var(--dur-fast),
+    transform 0s var(--dur-fast);
   pointer-events: none;
 }
 
@@ -2842,7 +2842,7 @@ input.schedule-when-field {
 .schedule-tv-id {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 0 1 auto;
 }
@@ -2856,7 +2856,7 @@ input.schedule-when-field {
 }
 
 .schedule-tv-id-name {
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   max-width: 160px;
   white-space: nowrap;
@@ -2878,7 +2878,7 @@ input.schedule-when-field {
 .schedule-tv-filters {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex: 0 1 auto;
   min-width: 0;
 }
@@ -2904,8 +2904,8 @@ input.schedule-when-field {
 .schedule-tv-search .schedule-tv-search-input {
   width: 100%;
   min-width: 0;
-  padding-left: 28px;
-  font-size: 12px;
+  padding-left: var(--space-7);
+  font-size: var(--text-meta);
 }
 
 .schedule-tv-pop-wrap {
@@ -2917,18 +2917,18 @@ input.schedule-when-field {
 .prefs-section .schedule-tv-filter-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 32px;
-  padding: 0 10px;
+  padding: 0 var(--space-2-5);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   align-self: center;
-  transition: border-color 0.08s ease, background-color 0.08s ease;
+  transition: border-color var(--dur-instant) ease, background-color var(--dur-instant) ease;
 }
 
 .schedule-tv-filter-btn:hover:not(:disabled),
@@ -2943,11 +2943,11 @@ input.schedule-when-field {
 
 .schedule-tv-filter-count {
   min-width: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
+  padding: 0 var(--space-1-5);
+  border-radius: var(--radius-pill);
   background: rgba(var(--accent-rgb), 0.16);
   color: var(--accent-soft);
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-weight: 600;
   line-height: 16px;
   text-align: center;
@@ -2961,13 +2961,13 @@ input.schedule-when-field {
   left: 0;
   z-index: 40;
   width: 190px;
-  padding: 4px;
+  padding: var(--space-1);
   display: flex;
   flex-direction: column;
   gap: 1px;
   background: var(--bg-popover);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 8px 24px var(--shadow-md);
 }
 
@@ -2975,20 +2975,20 @@ input.schedule-when-field {
 .prefs-section .schedule-tv-pop-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   align-self: stretch;
   box-sizing: border-box;
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   text-align: left;
   color: var(--fg);
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
-  transition: background-color 0.08s ease;
+  transition: background-color var(--dur-instant) ease;
 }
 
 .schedule-tv-pop-item:hover:not(:disabled),
@@ -3010,7 +3010,7 @@ input.schedule-when-field {
 .schedule-tv-note,
 .schedule-page .prefs-section > p.schedule-tv-note {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -3019,7 +3019,7 @@ input.schedule-when-field {
    runs are one thing, and ruling between them would break the group up. */
 .schedule-tv-tree {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -3030,11 +3030,11 @@ input.schedule-when-field {
 .schedule-tv-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
-  font-size: 13px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-dense);
   cursor: pointer;
-  transition: background-color 0.08s ease;
+  transition: background-color var(--dur-instant) ease;
 }
 
 .schedule-tv-row:hover {
@@ -3058,11 +3058,11 @@ input.schedule-when-field {
   color: var(--fg-muted);
   background: transparent;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   cursor: pointer;
   /* transform, not `all`: the row's own background is transitioning too, and
      one rule owning both made the caret smear on hover. */
-  transition: transform 0.12s ease, color 0.08s ease;
+  transition: transform var(--dur-fast) ease, color var(--dur-instant) ease;
 }
 
 .schedule-tv-caret.is-open {
@@ -3084,7 +3084,7 @@ input.schedule-when-field {
 .schedule-tv-label {
   flex: 0 0 auto;
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -3102,7 +3102,7 @@ input.schedule-when-field {
 
 .schedule-tv-meta {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   white-space: nowrap;
 }
@@ -3113,10 +3113,10 @@ input.schedule-when-field {
 .schedule-tv-acts {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   flex: 0 0 auto;
   opacity: 0;
-  transition: opacity 0.08s ease;
+  transition: opacity var(--dur-instant) ease;
 }
 
 .schedule-tv-row:hover .schedule-tv-acts,
@@ -3136,9 +3136,9 @@ input.schedule-when-field {
   color: var(--fg-muted);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
-  transition: background-color 0.08s ease, color 0.08s ease;
+  transition: background-color var(--dur-instant) ease, color var(--dur-instant) ease;
 }
 
 .schedule-tv-act:hover:not(:disabled),
@@ -3157,16 +3157,16 @@ input.schedule-when-field {
    answer ("it already sent"), not a page-level fault. */
 .schedule-tv-row-error {
   margin: 0;
-  padding: 0 12px 8px 56px;
-  font-size: 11px;
+  padding: 0 var(--space-3) var(--space-2) var(--space-14);
+  font-size: var(--text-caption);
   color: var(--error);
 }
 
 .schedule-tv-empty {
   margin: 0;
-  padding: 40px 12px;
+  padding: var(--space-10) var(--space-3);
   text-align: center;
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg-muted);
 }
 
@@ -3178,12 +3178,12 @@ input.schedule-when-field {
 .schedule-tv-board {
   display: flex;
   align-items: stretch;
-  gap: 12px;
+  gap: var(--space-3);
   /* Height comes from the page's flex chain now, not a magic viewport calc
      that had to be re-guessed every time the header changed (2026-08-16). */
   min-height: 320px;
   overflow-x: auto;
-  padding-bottom: 8px;
+  padding-bottom: var(--space-2);
 }
 
 .schedule-tv-lane {
@@ -3199,20 +3199,20 @@ input.schedule-when-field {
 .prefs-section .schedule-tv-lane-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   align-self: stretch;
   box-sizing: border-box;
-  padding: 6px 8px;
-  margin-bottom: 4px;
+  padding: var(--space-1-5) var(--space-2);
+  margin-bottom: var(--space-1);
   font: inherit;
   text-align: left;
   color: var(--fg);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
-  transition: background-color 0.08s ease;
+  transition: background-color var(--dur-instant) ease;
 }
 
 .schedule-tv-lane-head:hover:not(:disabled),
@@ -3222,7 +3222,7 @@ input.schedule-when-field {
 }
 
 .schedule-tv-lane-label {
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -3231,7 +3231,7 @@ input.schedule-when-field {
 
 .schedule-tv-lane-count {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
@@ -3275,19 +3275,19 @@ input.schedule-when-field {
   /* Loosened from 4px on 2026-08-17: at 4px the cards read as one ribbed strip
      rather than as separate objects, which is half of what made the lane look
      like a panel full of rows. */
-  gap: 8px;
+  gap: var(--space-2);
   /* Stated with the border, as everywhere else on this page: the width is safe
      either way (a stretched flex item fits its margin box to the 260px lane, so
      the edge lands inside), but `min-height` below is not — content-box would
      make the floor 122px and the number here would stop being the number the
      board actually has. */
   box-sizing: border-box;
-  padding: 6px;
+  padding: var(--space-1-5);
   /* Transparent, not absent: the drag rules below still speak in `border-color`
      and the 1px is part of the box the `min-height` above is measured against,
      so removing the declaration would move the floor as well as the edge. */
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--tasks-lane-bg);
 }
 
@@ -3356,7 +3356,7 @@ input.schedule-when-field {
   background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
   background-clip: padding-box;
   border: 3px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .schedule-tv-lane-body::-webkit-scrollbar-thumb:hover,
@@ -3401,19 +3401,19 @@ input.schedule-when-field {
      on one dataset and a card that breathes less than a row makes the Board read
      as the cramped one. 6px/10px/12px went to 8px/12px/14px — the same step the
      rows took, so the change is one decision rather than two. */
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   box-sizing: border-box;
-  padding: 12px 14px;
+  padding: var(--space-3) var(--space-3-5);
   font: inherit;
   text-align: left;
   color: var(--fg);
   background: var(--tasks-card-bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 1px 2px var(--shadow-sm);
   cursor: pointer;
-  transition: background-color 0.08s ease, border-color 0.08s ease;
+  transition: background-color var(--dur-instant) ease, border-color var(--dur-instant) ease;
 }
 
 /* Hover now moves the FILL as well as the edge. It did not have to while the
@@ -3501,7 +3501,7 @@ input.schedule-when-field {
 .schedule-tv-card-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -3535,7 +3535,7 @@ input.schedule-when-field {
    overflow, deliberately; the lane body's `overflow-y` is a scroller for the
    column, which is a different thing and further out. */
 .schedule-tv-card-title {
-  font-size: 12.5px;
+  font-size: var(--text-dense);
   line-height: 1.35;
   overflow-wrap: anywhere;
   min-width: 0;
@@ -3584,14 +3584,14 @@ input.schedule-when-field {
    above, which still needs `overflow-wrap` for its own sake. */
 
 .schedule-tv-card-next {
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   color: var(--fg-muted);
 }
 
 .schedule-tv-card-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -3600,17 +3600,17 @@ input.schedule-when-field {
   width: 100%;
   align-self: stretch;
   box-sizing: border-box;
-  margin-top: 2px;
-  padding: 6px 8px;
+  margin-top: var(--space-0-5);
+  padding: var(--space-1-5) var(--space-2);
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   font-weight: 500;
   color: var(--fg-muted);
   background: transparent;
   border: 1px dashed var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
-  transition: color 0.08s ease, border-color 0.08s ease;
+  transition: color var(--dur-instant) ease, border-color var(--dur-instant) ease;
 }
 
 .schedule-tv-more:hover:not(:disabled),
@@ -3622,8 +3622,8 @@ input.schedule-when-field {
 
 .schedule-tv-showing {
   margin: 0;
-  padding: 2px 4px 0;
-  font-size: 11px;
+  padding: var(--space-0-5) var(--space-1) 0;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -3649,15 +3649,15 @@ input.schedule-when-field {
   flex: 0 0 52px;
   min-height: 220px;
   box-sizing: border-box;
-  padding: 8px 6px;
+  padding: var(--space-2) var(--space-1-5);
   align-self: stretch;
   font: inherit;
   color: var(--fg);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background-color 0.08s ease;
+  transition: background-color var(--dur-instant) ease;
 }
 
 /* `border-color` is restated here and it is NOT redundant: `.prefs-section
@@ -3689,10 +3689,10 @@ input.schedule-when-field {
 }
 
 .schedule-tv-rail-label {
-  margin-top: 8px;
+  margin-top: var(--space-2);
   writing-mode: vertical-rl;
   transform: rotate(180deg);
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -3707,10 +3707,10 @@ input.schedule-when-field {
    accent wash a drop puts under it. */
 .schedule-tv-rail-count {
   margin-top: auto;
-  padding: 1px 6px;
-  border-radius: 999px;
+  padding: 1px var(--space-1-5);
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
@@ -3752,11 +3752,11 @@ input.schedule-when-field {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .schedule-pop-write .schedule-pop-title {
-  font-size: 16px;
+  font-size: var(--text-heading);
   font-weight: 600;
   line-height: 1.3;
 }
@@ -3770,7 +3770,7 @@ input.schedule-when-field {
    earn their room only if the prose above them stays short too. */
 .schedule-pop-desc {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.45;
   color: var(--fg-muted);
   overflow-wrap: anywhere;

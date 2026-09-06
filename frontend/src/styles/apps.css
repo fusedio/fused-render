@@ -11,7 +11,7 @@
 .apps-inner {
   max-width: 1120px;
   margin: 0 auto;
-  padding: 36px 28px 72px;
+  padding: var(--space-10) var(--space-7) var(--space-18);
 }
 
 /* Facet selector at the left edge (its own `margin-right: auto`), then the
@@ -26,8 +26,8 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
-  margin-bottom: 14px;
+  gap: var(--space-2-5);
+  margin-bottom: var(--space-3-5);
 }
 
 /* Search is the last item in the toolbar's right-aligned group (see
@@ -39,14 +39,14 @@
 .apps-search {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex: 0 1 240px;
   max-width: 340px;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   height: 34px;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--fg-muted);
 }
 
@@ -58,7 +58,7 @@
   flex: 1;
   min-width: 0;
   height: 100%;
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg);
   background: none;
   border: none;
@@ -76,17 +76,17 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .apps-tag-chip {
-  padding: 5px 12px;
-  font-size: 12px;
+  padding: var(--space-1-5) var(--space-3);
+  font-size: var(--text-meta);
   font-family: ui-monospace, Menlo, Consolas, monospace;
   color: var(--fg-muted);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
 }
 
@@ -118,8 +118,8 @@
 }
 
 .apps-count {
-  margin-bottom: 12px;
-  font-size: 12px;
+  margin-bottom: var(--space-3);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -127,14 +127,14 @@
    page's error banner: the local apps in the grid below loaded fine, so this
    states what is missing without claiming the page failed. */
 .apps-showcase-note {
-  margin-bottom: 12px;
-  padding: 8px 10px;
-  font-size: 12px;
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-2-5);
+  font-size: var(--text-meta);
   line-height: 1.5;
   color: var(--fg-muted);
   background: color-mix(in srgb, var(--fg) 4%, var(--bg));
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 /* Filter facet selector (Category | Folders): a small segmented control that
@@ -148,19 +148,19 @@
 .apps-filter-mode {
   display: inline-flex;
   margin-right: auto;
-  padding: 2px;
+  padding: var(--space-0-5);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .apps-filter-mode-btn {
-  padding: 4px 12px;
-  font-size: 12.5px;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-dense);
   color: var(--fg-muted);
   background: none;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
 }
 
@@ -182,7 +182,7 @@
 .apps-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 18px;
+  gap: var(--space-5);
 }
 
 /* An <a>, not a button: middle-click / Cmd-click / "Open in new tab" have to
@@ -201,13 +201,13 @@
   text-decoration: none;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   overflow: hidden;
   cursor: pointer;
   transition:
-    border-color 0.12s ease,
-    box-shadow 0.12s ease,
-    transform 0.12s ease;
+    border-color var(--dur-fast) ease,
+    box-shadow var(--dur-fast) ease,
+    transform var(--dur-fast) ease;
 }
 
 .app-pcard:hover {
@@ -301,12 +301,12 @@
   height: 26px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg-alt);
   color: var(--fg-muted);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--dur-fast) ease;
 }
 .app-pcard:hover .app-pcard-export,
 .app-pcard-export:focus-visible {
@@ -327,13 +327,13 @@ body[data-capture-shooting] .app-pcard-export {
 .app-pcard-body {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 11px 14px 12px;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-3-5) var(--space-3);
   min-width: 0;
 }
 
 .app-pcard-title {
-  font-size: 13.5px;
+  font-size: var(--text-body);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -343,19 +343,19 @@ body[data-capture-shooting] .app-pcard-export {
 .app-pcard-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
 .app-pcard-tag {
   flex: 0 0 auto;
-  padding: 1px 8px;
+  padding: 1px var(--space-2);
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .app-pcard-name {

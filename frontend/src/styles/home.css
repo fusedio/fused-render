@@ -16,7 +16,7 @@
 .home-inner {
   max-width: 880px;
   margin: 0 auto;
-  padding: 40px 28px 72px;
+  padding: var(--space-10) var(--space-7) var(--space-18);
 }
 
 /* Hero: no card around it any more (the bordered panel and its accent wash are
@@ -25,8 +25,8 @@
 .home-hero {
   position: relative;
   overflow: hidden;
-  padding: 36px 64px 34px;
-  margin-bottom: 22px;
+  padding: var(--space-10) var(--space-16) var(--space-8);
+  margin-bottom: var(--space-6);
 }
 
 .home-hero > * {
@@ -46,8 +46,8 @@
      the mark reads as attached to the headline rather than adrift left of it.
      Small because the PNG's own baked-in canvas padding is doing most of the
      spacing already. */
-  gap: 4px 2px;
-  margin: 0 0 18px;
+  gap: var(--space-1) var(--space-0-5);
+  margin: 0 0 var(--space-5);
   text-align: center;
 }
 
@@ -70,7 +70,7 @@
 /* The headline itself now that the wordmark is gone: title-sized, muted, with
    the accent span carrying the only colour. */
 .home-hero-tagline {
-  font-size: 22px;
+  font-size: var(--text-display);
   font-weight: 500;
   letter-spacing: -0.02em;
   color: var(--fg-muted);
@@ -91,18 +91,18 @@
    footer bar with the keyboard hint and the round send button. */
 .home-composer-wrap {
   width: 100%;
-  margin-bottom: 18px;
+  margin-bottom: var(--space-5);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 .home-composer {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-panel);
   box-shadow: 0 2px 10px color-mix(in srgb, var(--fg) 5%, transparent);
-  transition: border-color 120ms ease;
+  transition: border-color var(--dur-fast) ease;
 }
 
 .home-composer:focus-within {
@@ -116,19 +116,19 @@
 .home-composer-annots {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 12px 16px 0;
+  gap: var(--space-1-5);
+  padding: var(--space-3) var(--space-4) 0;
 }
 
 .home-composer-annot {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 6px 3px 8px;
-  border-radius: 8px;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-1-5) var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--fg) 10%, transparent);
   color: var(--fg);
-  font-size: 12.5px;
+  font-size: var(--text-dense);
   font-weight: 500;
   line-height: 1.4;
 }
@@ -140,9 +140,9 @@
 .home-composer-annot-x {
   border: none;
   background: none;
-  padding: 0 2px;
-  margin-left: 2px;
-  font-size: 11px;
+  padding: 0 var(--space-0-5);
+  margin-left: var(--space-0-5);
+  font-size: var(--text-caption);
   line-height: 1;
   color: inherit;
   opacity: 0.55;
@@ -166,8 +166,8 @@
   box-shadow: none;
   background: transparent;
   resize: none;
-  padding: 14px 16px 6px;
-  font-size: 14px;
+  padding: var(--space-3-5) var(--space-4) var(--space-1-5);
+  font-size: var(--text-body);
   line-height: 1.5;
   /* 3 to 10 lines of 21px plus the 20px vertical padding; the height itself is
      written inline by `useAutoGrow` (platform/lib/autoGrow.ts), these are only
@@ -184,8 +184,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 6px 10px 10px 16px;
+  gap: var(--space-2-5);
+  padding: var(--space-1-5) var(--space-2-5) var(--space-2-5) var(--space-4);
 }
 
 /* The bar's left end: the model/effort pickers, then the create phase text.
@@ -196,7 +196,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 
@@ -209,14 +209,14 @@
 .home-composer-pick {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding-left: 6px;
-  border-radius: 999px;
+  gap: var(--space-1);
+  padding-left: var(--space-1-5);
+  border-radius: var(--radius-pill);
   color: var(--fg-muted);
   cursor: pointer;
   transition:
-    color 120ms ease,
-    background-color 120ms ease;
+    color var(--dur-fast) ease,
+    background-color var(--dur-fast) ease;
 }
 
 .home-composer-pick:hover:not(:has(:disabled)) {
@@ -241,13 +241,13 @@
    right padding is the space that glyph is drawn in. */
 .home-composer .home-composer-pick-sel {
   height: auto;
-  padding: 3px 18px 3px 2px;
-  font-size: 12px;
+  padding: var(--space-1) var(--space-5) var(--space-1) var(--space-0-5);
+  font-size: var(--text-meta);
   color: inherit;
   background-color: transparent;
   background-position: right 4px center;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: inherit;
 }
 
@@ -271,7 +271,7 @@
 }
 
 .home-composer-hint {
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -289,8 +289,8 @@
   color: var(--bg);
   cursor: pointer;
   transition:
-    opacity 120ms ease,
-    transform 120ms ease;
+    opacity var(--dur-fast) ease,
+    transform var(--dur-fast) ease;
 }
 
 .home-composer-send:hover:not(:disabled) {
@@ -315,14 +315,14 @@
      so a row narrower than the composer sits centred and only goes edge-to-edge
      once the chips actually overflow. */
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .home-composer-sample-strip {
   display: flex;
   flex-wrap: nowrap;
-  gap: 8px;
+  gap: var(--space-2);
   /* min-width:0 so the strip is allowed to be narrower than its content —
      without it a flex item's auto min-size keeps it at full content width and
      the row overflows the composer instead of scrolling. */
@@ -346,22 +346,22 @@
 .home-composer-sample {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   /* Never shrink or wrap a chip: the strip scrolls instead. */
   flex: 0 0 auto;
   white-space: nowrap;
   scroll-snap-align: start;
-  padding: 5px 12px;
+  padding: var(--space-1-5) var(--space-3);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--text-dense);
   color: var(--fg-muted);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
   transition:
-    color 120ms ease,
-    border-color 120ms ease;
+    color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
 }
 
 .home-composer-sample:hover:not(:disabled) {
@@ -382,12 +382,12 @@
 /* Icon-only round chip that advances to the next batch of ideas. Outside the
    scrolling strip, so it holds its place at the end of the row. */
 .home-composer-shuffle {
-  padding: 5px 8px;
+  padding: var(--space-1-5) var(--space-2);
   flex: 0 0 auto;
 }
 
 .home-section {
-  margin-top: 36px;
+  margin-top: var(--space-10);
 }
 
 /* ---- AI Playground strip cards ------------------------------------------- */
@@ -407,11 +407,11 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   aspect-ratio: 16 / 10;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   overflow: hidden;
 }
 
@@ -435,7 +435,7 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .home-pg-glyph {
@@ -445,7 +445,7 @@
   justify-content: center;
   width: 60px;
   height: 60px;
-  border-radius: 16px;
+  border-radius: var(--radius-tile);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
   background: color-mix(in srgb, var(--accent) 9%, var(--bg-alt));
   color: var(--accent);
@@ -472,7 +472,7 @@
 .home-pg-blurb {
   position: relative;
   max-width: 85%;
-  font-size: 12.5px;
+  font-size: var(--text-dense);
   text-align: center;
   color: var(--fg-muted);
 }
@@ -484,8 +484,8 @@
 /* Empty voice. */
 .home-empty {
   color: var(--fg-muted);
-  font-size: 13px;
-  padding: 18px 0;
+  font-size: var(--text-dense);
+  padding: var(--space-5) 0;
 }
 
 /* The ask-for-a-name row (HomeHero.tsx, phase "askName"): shown in the
@@ -495,21 +495,21 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   flex: 1;
 }
 
 .home-composer-name-why {
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
 .home-composer .home-composer-name-input {
   height: auto;
   width: 180px;
-  padding: 3px 8px;
-  font-size: 12px;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-meta);
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 
@@ -521,9 +521,9 @@
   border: none;
   background: transparent;
   color: var(--fg-muted);
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   cursor: pointer;
-  padding: 2px 4px;
+  padding: var(--space-0-5) var(--space-1);
 }
 
 .home-composer-name-cancel:hover {

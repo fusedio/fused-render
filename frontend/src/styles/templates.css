@@ -7,12 +7,12 @@
   max-width: 880px;
   width: 100%;
   margin: 0 auto;
-  padding: 32px 24px;
+  padding: var(--space-8) var(--space-6);
 }
 
 .templates-header h1 {
-  margin: 0 0 6px;
-  font-size: 20px;
+  margin: 0 0 var(--space-1-5);
+  font-size: var(--text-display);
   font-weight: 600;
 }
 
@@ -24,16 +24,16 @@
 /* Tabs. */
 .templates-tabs {
   display: flex;
-  gap: 4px;
-  margin-top: 20px;
+  gap: var(--space-1);
+  margin-top: var(--space-5);
   border-bottom: 1px solid var(--border);
 }
 
 .templates-tab {
   font: inherit;
-  font-size: 13px;
-  padding: 9px 4px;
-  margin-right: 20px;
+  font-size: var(--text-dense);
+  padding: var(--space-2-5) var(--space-1);
+  margin-right: var(--space-5);
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
@@ -51,16 +51,16 @@
 }
 
 .templates-tabpanel {
-  padding-top: 18px;
+  padding-top: var(--space-5);
 }
 
 /* Toolbar (both tabs). */
 .templates-toolbar {
   display: flex;
   align-items: stretch;
-  gap: 10px;
+  gap: var(--space-2-5);
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3-5);
 }
 
 .templates-toolbar-push {
@@ -72,7 +72,7 @@
    floating onto its own row (margin-left:auto on a single wrapped flex item). */
 .templates-toolbar-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--space-2-5);
   flex-wrap: wrap;
   align-items: stretch;
   margin-left: auto;
@@ -80,13 +80,13 @@
 
 .templates-search {
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   height: 32px;
   background: var(--bg-alt);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0 10px;
+  border-radius: var(--radius-control);
+  padding: 0 var(--space-2-5);
   flex: 1 1 200px;
   min-width: 150px;
 }
@@ -98,13 +98,13 @@
 
 .templates-toolbar select {
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   height: 32px;
   background: var(--bg-alt);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0 8px;
+  border-radius: var(--radius-control);
+  padding: 0 var(--space-2);
 }
 
 /* Segmented control (filters, key-shape picker, import resolutions):
@@ -112,22 +112,22 @@
    no accent borders. */
 .templates-seg {
   display: inline-flex;
-  gap: 2px;
-  padding: 3px;
+  gap: var(--space-0-5);
+  padding: var(--space-1);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg-alt);
 }
 
 .templates-seg-btn {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1;
-  padding: 6px 11px;
+  padding: var(--space-1-5) var(--space-3);
   background: none;
   color: var(--fg-muted);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   cursor: pointer;
 }
 
@@ -150,24 +150,24 @@
 .templates-delete-opts {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 2px 0 10px;
+  gap: var(--space-1-5);
+  margin: var(--space-0-5) 0 var(--space-2-5);
 }
 
 .templates-delete-opt {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  gap: var(--space-2);
+  font-size: var(--text-dense);
   cursor: pointer;
 }
 
 .templates-add-btn {
   font: inherit;
-  font-size: 12px;
-  padding: 5px 10px;
+  font-size: var(--text-meta);
+  padding: var(--space-1-5) var(--space-2-5);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg-alt);
   color: var(--fg);
   cursor: pointer;
@@ -181,22 +181,22 @@
 .templates-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--text-dense);
 }
 
 .templates-table thead th {
   text-align: left;
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-muted);
-  padding: 0 10px 8px 0;
+  padding: 0 var(--space-2-5) var(--space-2) 0;
   border-bottom: 1px solid var(--border);
 }
 
 .templates-table td {
-  padding: 10px 10px 10px 0;
+  padding: var(--space-2-5) var(--space-2-5) var(--space-2-5) 0;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
@@ -219,12 +219,12 @@
 }
 
 .templates-col-pattern .templates-dot {
-  margin-right: 7px;
+  margin-right: var(--space-2);
   vertical-align: middle;
 }
 
 .templates-col-templates .templates-chip {
-  margin: 2px 5px 2px 0;
+  margin: var(--space-0-5) var(--space-1-5) var(--space-0-5) 0;
   vertical-align: middle;
 }
 
@@ -240,9 +240,9 @@
 .templates-key-pill {
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 12px;
+  border-radius: var(--radius-xs);
+  padding: var(--space-0-5) var(--space-1-5);
+  font-size: var(--text-meta);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
@@ -250,16 +250,16 @@
 .templates-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
+  gap: var(--space-1-5);
+  padding: var(--space-1) var(--space-2-5);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-alt);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .templates-chip.small {
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
 }
 
 .templates-chip.default {
@@ -276,7 +276,7 @@
 }
 
 .templates-chip-badge {
-  font-size: 9px;
+  font-size: var(--text-micro);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--accent);
@@ -284,13 +284,13 @@
 
 .templates-chip-x {
   font: inherit;
-  font-size: 10px;
+  font-size: var(--text-micro);
   line-height: 1;
   border: none;
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 0 0 0 2px;
+  padding: 0 0 0 var(--space-0-5);
 }
 
 .templates-chip-x:hover {
@@ -299,9 +299,9 @@
 
 .templates-pill {
   display: inline-block;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 11px;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-caption);
   border: 1px solid var(--border);
   color: var(--fg-muted);
   white-space: nowrap;
@@ -325,7 +325,7 @@
 .templates-editor .deploy-body,
 .templates-import .deploy-body,
 .templates-new .deploy-body {
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 /* The row-editor / import step content is wrapped in a <form> (so Enter
@@ -334,11 +334,11 @@
 .templates-import .deploy-body > form {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 .templates-field-hint {
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 /* Quick-pick extensions already in the registry: chip buttons under the tag
@@ -346,13 +346,13 @@
 .templates-ext-suggest-wrap {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .templates-ext-suggestions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   align-items: flex-start;
   align-content: flex-start;
   /* Truncate at exactly 3 chip rows: chips are pinned to 24px tall below, so
@@ -387,11 +387,11 @@
 .templates-chip-input {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   align-items: center;
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg);
 }
 
@@ -406,7 +406,7 @@
   border: none;
   background: none;
   color: var(--fg);
-  padding: 2px 0;
+  padding: var(--space-0-5) 0;
 }
 
 .templates-chip-draft:focus {
@@ -425,33 +425,33 @@
 .templates-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .templates-field > label,
 .templates-field-label {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 500;
 }
 
 .templates-key-fixed {
-  font-size: 13px;
+  font-size: var(--text-dense);
 }
 
 .templates-keybuilder {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .templates-key-input {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0 8px;
+  border-radius: var(--radius-control);
+  padding: 0 var(--space-2);
   background: var(--bg);
   align-self: flex-start;
 }
@@ -461,7 +461,7 @@
   background: none;
   color: var(--fg);
   border: none;
-  padding: 7px 2px;
+  padding: var(--space-2) var(--space-0-5);
   min-width: 120px;
 }
 
@@ -479,30 +479,30 @@
 }
 
 .templates-key-preview {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
 .templates-broken-note {
-  margin-top: 10px;
-  padding: 8px 10px;
+  margin-top: var(--space-2-5);
+  padding: var(--space-2) var(--space-2-5);
   border: 1px solid var(--error);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: rgba(var(--error-rgb), 0.08);
   color: var(--error);
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1.45;
 }
 
 .templates-key-error {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--error);
 }
 
 .templates-chiplist {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   align-items: center;
   min-height: 24px;
 }
@@ -513,7 +513,7 @@
 }
 
 .templates-reorder-hint {
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 /* Add-template picker popover (row editor). */
@@ -528,7 +528,7 @@
   flex-direction: column;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 8px 24px var(--shadow-lg);
 }
 
@@ -536,7 +536,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   border-bottom: 1px solid var(--border);
 }
 
@@ -545,28 +545,28 @@
   min-height: 0; /* let the list scroll inside the bounded picker, not spill */
   max-height: 240px;
   overflow-y: auto;
-  padding: 6px;
+  padding: var(--space-1-5);
 }
 
 .templates-picker-cat {
-  font-size: 10px;
+  font-size: var(--text-micro);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--fg-muted);
-  padding: 6px 6px 3px;
+  padding: var(--space-1-5) var(--space-1-5) var(--space-1);
 }
 
 .templates-picker-cell {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--space-2);
   width: 100%;
   text-align: left;
   font: inherit;
-  font-size: 13px;
-  padding: 6px 8px;
+  font-size: var(--text-dense);
+  padding: var(--space-1-5) var(--space-2);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
   color: var(--fg);
   cursor: pointer;
@@ -590,8 +590,8 @@
 .templates-inv-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 20px;
+  gap: var(--space-1);
+  margin-top: var(--space-5);
 }
 
 .templates-inv-group:first-child {
@@ -601,13 +601,13 @@
 .templates-inv-grouphead {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11px;
+  gap: var(--space-2);
+  font-size: var(--text-caption);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-muted);
-  padding-bottom: 8px;
+  padding-bottom: var(--space-2);
 }
 
 .templates-inv-count {
@@ -617,7 +617,7 @@
 }
 
 .templates-lock {
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .templates-inv-check {
@@ -634,24 +634,24 @@
 }
 
 .templates-inv-name .templates-icon-dot {
-  margin-right: 7px;
+  margin-right: var(--space-2);
 }
 
 .templates-inv-name .templates-pill {
-  margin-left: 8px;
+  margin-left: var(--space-2);
 }
 
 .templates-inv-usedby .templates-usedby-chip {
   display: inline-block;
-  margin: 2px 4px 2px 0;
+  margin: var(--space-0-5) var(--space-1) var(--space-0-5) 0;
 }
 
 .templates-usedby-chip {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-size: 11px;
+  border-radius: var(--radius-xs);
+  padding: 1px var(--space-1-5);
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -662,16 +662,16 @@
 }
 
 .templates-inv-actions .templates-ghost-btn {
-  margin-left: 6px;
+  margin-left: var(--space-1-5);
 }
 
 /* Ghost action buttons. */
 .templates-ghost-btn {
   font: inherit;
-  font-size: 12px;
-  padding: 3px 8px;
+  font-size: var(--text-meta);
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
@@ -688,8 +688,8 @@
 }
 
 .templates-hint {
-  margin-top: 18px;
-  font-size: 12px;
+  margin-top: var(--space-5);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -697,11 +697,11 @@
 .templates-import-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .templates-import-table td {
-  padding: 6px 10px 6px 0;
+  padding: var(--space-1-5) var(--space-2-5) var(--space-1-5) 0;
   border-top: 1px solid var(--border);
   vertical-align: middle;
 }
@@ -717,35 +717,35 @@
 .templates-warnings {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: 12px;
+  gap: var(--space-0-5);
+  font-size: var(--text-meta);
 }
 
 /* Recommended-binding chips (import wizard step 2). */
 .templates-recs-toggle {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--space-1);
 }
 
 .templates-recs-toggle-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
+  gap: var(--space-2);
+  font-size: var(--text-dense);
   font-weight: 500;
   cursor: pointer;
 }
 
 .templates-recs-subline {
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 /* The strip visually belongs to the manifest row above it: dashed separator
    instead of the table's solid row border. */
 .templates-import-table tr.templates-rec-strip td {
   border-top: 1px dashed var(--border);
-  padding: 5px 0 8px;
+  padding: var(--space-1-5) 0 var(--space-2);
 }
 
 .templates-rec-strip.inert .templates-rec-row,
@@ -756,12 +756,12 @@
 .templates-rec-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   align-items: center;
 }
 
 .templates-rec-label {
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -771,12 +771,12 @@
 .templates-rec-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  padding: 2px 9px;
+  font-size: var(--text-caption);
+  padding: var(--space-0-5) var(--space-2-5);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: none;
   color: var(--fg-muted);
   align-self: auto;
@@ -813,7 +813,7 @@
 .templates-rec-badge {
   display: inline-block;
   font-family: system-ui, sans-serif;
-  font-size: 9px;
+  font-size: var(--text-micro);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -829,11 +829,11 @@
 
 .deploy-body .templates-rec-add-input {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--text-caption);
   width: 90px;
-  padding: 2px 9px;
+  padding: var(--space-0-5) var(--space-2-5);
   border: 1px solid var(--accent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-alt);
   color: var(--fg);
 }
@@ -847,22 +847,22 @@
 }
 
 .templates-rec-warn {
-  margin-top: 5px;
-  font-size: 11px;
+  margin-top: var(--space-1-5);
+  font-size: var(--text-caption);
   color: var(--warning-soft);
 }
 
 .templates-result-bindings {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
 .templates-result {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
+  gap: var(--space-1);
+  font-size: var(--text-dense);
 }
 
 .templates-result-line {
@@ -874,9 +874,9 @@
    their intended looks at higher specificity. */
 .deploy-body .templates-picker-cell {
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   width: 100%;
 }
 
@@ -888,8 +888,8 @@
 .deploy-body .templates-chip-x {
   border: none;
   background: none;
-  padding: 0 0 0 2px;
-  font-size: 10px;
+  padding: 0 0 0 var(--space-0-5);
+  font-size: var(--text-micro);
   color: var(--fg-muted);
 }
 
@@ -900,9 +900,9 @@
 }
 
 .deploy-body .templates-seg-btn {
-  padding: 6px 11px;
+  padding: var(--space-1-5) var(--space-3);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: none;
   color: var(--fg-muted);
 }
@@ -927,7 +927,7 @@
 
 .templates-inv-icon {
   display: inline-flex;
-  margin-right: 8px;
+  margin-right: var(--space-2);
   color: var(--fg-muted);
   vertical-align: middle;
 }

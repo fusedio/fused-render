@@ -1,0 +1,100 @@
+/* The design SCALE: type roles, spacing, radius, control heights, motion,
+ * fonts. Theme-agnostic — colour lives in tokens.css, and this file is
+ * deliberately outside the dark/light palette blocks so the theme contract
+ * (tests/test_theme.py) does not ask for a light twin of a font size.
+ *
+ * Two consumers read these, and only these:
+ *   - styles/*.css        → var(--text-dense), var(--space-3), var(--radius-card)
+ *   - Tailwind utilities  → text-dense, p-3, rounded-card (mapped in tailwind.css)
+ * so a legacy rule and a composite resolve to the same px, the same ms.
+ *
+ * tests/test_design_scale.py refuses a px literal for any of these
+ * properties outside this file. Add a step here, never a literal there.
+ * Spacing is Tailwind's own 4px scale (p-3 = 12px); the --space-* names exist
+ * so hand-written CSS can say the same thing. */
+:root {
+  /* ---- Fonts ---------------------------------------------------------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* ---- Type roles: size / line-height / weight -------------------------
+     micro    10  badges, uppercase tags, sub-captions
+     caption  11  secondary labels, footnotes
+     meta     12  labels, hints, measurements (mono + tabular-nums)
+     dense    13  list rows, controls in dense surfaces, composer text
+     body     14  default document size (set on <body>)
+     control  14  buttons, tabs, card titles — medium weight, single line
+     title    15  section / stage titles
+     heading  16  page-level headings inside a panel
+     display  20  the one big number or the page title                     */
+  --text-micro: 10px;
+  --text-micro--line-height: 1.3;
+  --text-micro--font-weight: 500;
+  --text-caption: 11px;
+  --text-caption--line-height: 1.4;
+  --text-caption--font-weight: 500;
+  --text-meta: 12px;
+  --text-meta--line-height: 1.4;
+  --text-meta--font-weight: 400;
+  --text-dense: 13px;
+  --text-dense--line-height: 1.4;
+  --text-dense--font-weight: 400;
+  --text-body: 14px;
+  --text-body--line-height: 1.5;
+  --text-body--font-weight: 400;
+  --text-control: 14px;
+  --text-control--line-height: 1;
+  --text-control--font-weight: 500;
+  --text-title: 15px;
+  --text-title--line-height: 1.3;
+  --text-title--font-weight: 600;
+  --text-heading: 16px;
+  --text-heading--line-height: 1.3;
+  --text-heading--font-weight: 600;
+  --text-display: 20px;
+  --text-display--line-height: 1.2;
+  --text-display--font-weight: 600;
+
+  /* ---- Spacing (4px base, halves allowed) ------------------------------ */
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-2-5: 10px;
+  --space-3: 12px;
+  --space-3-5: 14px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-14: 56px; /* empty-state / hero padding */
+  --space-16: 64px;
+  --space-18: 72px;
+
+  /* ---- Radius ---------------------------------------------------------- */
+  --radius-hairline: 2px; /* progress tracks, meters */
+  --radius-xs: 4px; /* checkboxes, tiny chips, thumbnails */
+  --radius-control: 6px; /* buttons, inputs, menu items, tabs */
+  --radius-md: 8px; /* rows, attach chips, small cards */
+  --radius-card: 10px; /* model rows, cards */
+  --radius-panel: 12px; /* composer, result cards, dialogs */
+  --radius-tile: 16px; /* large tiles, hero cards, app thumbnails */
+  --radius-pill: 999px;
+
+  /* ---- Control heights ------------------------------------------------- */
+  --h-control-xs: 24px;
+  --h-control-sm: 28px;
+  --h-control-md: 32px;
+  --h-control-lg: 36px;
+
+  /* ---- Motion ---------------------------------------------------------- */
+  --dur-instant: 80ms; /* hover colour/border */
+  --dur-fast: 120ms; /* reveal/hide a control, swap an icon */
+  --dur-base: 160ms; /* fade a panel in/out */
+  --dur-glide: 240ms; /* move layout (rail fold, grid tracks) */
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-glide: cubic-bezier(0.2, 0.7, 0.3, 1);
+}

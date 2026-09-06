@@ -11,9 +11,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 16px;
+  padding: var(--space-2-5) var(--space-4);
   border-bottom: 1px solid var(--border);
-  gap: 12px;
+  gap: var(--space-3);
   /* Pin the height to the tallest state (28px mode control + 10px×2
      padding + 1px border) so the header can't grow when the loading spinner is
      replaced by the real switcher on stat resolve — otherwise the name and the
@@ -28,13 +28,13 @@
 .preview-title {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   min-width: 0;
   flex: 1 1 auto;
 }
 
 .preview-header h1 {
-  font-size: 15px;
+  font-size: var(--text-title);
   font-weight: 600;
   margin: 0;
   overflow: hidden;
@@ -45,7 +45,7 @@
 .preview-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex: 0 0 auto;
 }
 
@@ -65,9 +65,9 @@
 .preview-actions button:not(.bar-ctl):not(.bar-menu-item),
 .preview-actions a {
   font: inherit;
-  padding: 5px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg);
   color: var(--fg);
   text-decoration: none;
@@ -120,8 +120,8 @@
   width: 16px;
   height: 16px;
   border: 1.5px solid currentColor;
-  border-radius: 4px;
-  font-size: 9px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-micro);
   font-weight: 700;
   line-height: 1;
 }
@@ -159,9 +159,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--text-dense);
 }
 
 
@@ -229,7 +229,7 @@
   flex: 0 0 5px;
   cursor: col-resize;
   background: transparent;
-  margin: 0 -2px;
+  margin: 0 calc(-1 * var(--space-0-5));
   z-index: 2;
   /* The drag is pointer-captured; without this, touch scrolling fights it. */
   touch-action: none;
@@ -358,8 +358,8 @@ html.side-reopening iframe {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 8px;
-  padding: var(--topbar-pad-y) 10px;
+  gap: var(--space-2);
+  padding: var(--topbar-pad-y) var(--space-2-5);
   height: var(--topbar-h);
   box-sizing: border-box;
   border-bottom: 1px solid var(--border);
@@ -379,10 +379,10 @@ html.side-reopening iframe {
 }
 
 .metadata-card {
-  margin: 24px;
-  padding: 20px;
+  margin: var(--space-6);
+  padding: var(--space-5);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   background: var(--bg-alt);
   max-width: 480px;
 }
@@ -390,8 +390,8 @@ html.side-reopening iframe {
 .metadata-card dl {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 6px 16px;
-  margin: 0 0 16px 0;
+  gap: var(--space-1-5) var(--space-4);
+  margin: 0 0 var(--space-4) 0;
 }
 
 .metadata-card dt {
@@ -412,7 +412,7 @@ html.side-reopening iframe {
 .metadata-stack {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 /* The "get me out of this" panel FallbackPreview shows above the plain
@@ -425,28 +425,28 @@ html.side-reopening iframe {
 }
 
 .registry-fix-notice p {
-  margin: 0 0 10px 0;
+  margin: 0 0 var(--space-2-5) 0;
 }
 
 .registry-fix-notice code {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  padding: 1px var(--space-1-5);
 }
 
 .registry-fix-hint {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .registry-fix-error {
   color: var(--error);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .status-message {
-  padding: 24px;
+  padding: var(--space-6);
   color: var(--fg-muted);
 }
 
@@ -454,18 +454,18 @@ html.side-reopening iframe {
    whose listing hit the server cap. Its Load more button fetches the next
    page (resumable S3-direct route only). */
 .listing-truncated .status-message {
-  padding: 10px 16px;
-  font-size: 12px;
+  padding: var(--space-2-5) var(--space-4);
+  font-size: var(--text-meta);
   border-top: 1px solid var(--border);
 }
 .listing-load-more {
-  margin-left: 10px;
-  padding: 3px 10px;
+  margin-left: var(--space-2-5);
+  padding: var(--space-1) var(--space-2-5);
   background: transparent;
   color: var(--accent);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12px;
+  border-radius: var(--radius-control);
+  font-size: var(--text-meta);
   cursor: pointer;
 }
 .listing-load-more:hover:not(:disabled) {
@@ -484,11 +484,11 @@ html.side-reopening iframe {
 .status-message.error {
   background: var(--error-page-bg);
   border: 2px solid var(--error-page-border);
-  border-radius: 10px;
-  padding: 14px 16px;
+  border-radius: var(--radius-card);
+  padding: var(--space-3-5) var(--space-4);
   color: var(--error-page-fg);
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--text-dense);
   white-space: pre-wrap;
   word-break: break-word;
   overflow: visible;
@@ -570,11 +570,11 @@ body.embed:not(.snapshot) .preview-browse-chip {
   display: inline-flex;
   align-items: center;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-caption);
   line-height: 1;
-  padding: 5px 9px;
+  padding: var(--space-1-5) var(--space-2-5);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--bg-alt);
   color: var(--fg-muted);
   cursor: pointer;
@@ -594,7 +594,7 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  padding: 6px;
+  padding: var(--space-1-5);
 }
 
 .panel-root > * {
@@ -604,7 +604,7 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
 
 .panel-split {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
   height: 100%;
 }
@@ -628,7 +628,7 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   flex-direction: column;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -641,11 +641,11 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
 .panel-bar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   /* Pins to the tallest state (24px control + 4px x 2 padding) so the bar
      can't grow when the mode control lands after the pane's stat resolves. */
   min-height: 32px;
-  padding: 4px 6px;
+  padding: var(--space-1) var(--space-1-5);
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   user-select: none;
@@ -660,7 +660,7 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
 .panel-crumbs {
   flex: 1 1 auto;
   scrollbar-width: none;
-  font-size: 11px;
+  font-size: var(--text-caption);
 }
 
 .panel-crumbs::-webkit-scrollbar {
@@ -672,8 +672,8 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
    feel like a different app, and the size was most of the reason. */
 .panel-bar .bar-ctl {
   height: 24px;
-  padding: 0 6px;
-  font-size: 11px;
+  padding: 0 var(--space-1-5);
+  font-size: var(--text-caption);
 }
 
 .panel-bar .bar-ctl-icon {
@@ -704,13 +704,13 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
 }
 
 .panel-bar .bar-rule {
-  margin: 0 6px;
+  margin: 0 var(--space-1-5);
 }
 
 /* The layout bookmark's ★, at the pane bar's left edge — pane scale, and it
    must not be squeezed by the flex:1 crumbs beside it. */
 .panel-bar .bookmark-star-btn {
-  padding: 3px;
+  padding: var(--space-1);
 }
 
 .panel-bar .bookmark-star-btn svg {
@@ -719,8 +719,8 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
 }
 
 .panel-bar .star-btn {
-  font-size: 11px;
-  padding: 2px 8px;
+  font-size: var(--text-caption);
+  padding: var(--space-0-5) var(--space-2);
 }
 
 /* Close keeps the right-most slot and its error-red hover. */
@@ -756,9 +756,9 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
 .tabs-bar {
   display: flex;
   align-items: stretch;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-height: 30px;
-  padding: 3px 6px 0;
+  padding: var(--space-1) var(--space-1-5) 0;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
@@ -774,7 +774,7 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
 .tab {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex: 0 0 auto;
   max-width: 200px;
   background: none;
@@ -782,9 +782,9 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   border-bottom: 2px solid transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 5px 8px;
+  padding: var(--space-1-5) var(--space-2);
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .tab:hover {
@@ -810,7 +810,7 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   flex: 0 0 auto;
   width: 15px;
   height: 15px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   color: var(--fg-muted);
 }
 
@@ -826,9 +826,9 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   flex: 0 0 auto;
   width: 15px;
   height: 15px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   color: var(--fg-muted);
-  font-size: 14px;
+  font-size: var(--text-body);
   line-height: 1;
 }
 
@@ -853,8 +853,8 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   flex: 0 0 auto;
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 4px 5px;
-  border-radius: 4px;
+  padding: var(--space-1) var(--space-1-5);
+  border-radius: var(--radius-xs);
 }
 
 .pane-mode-btn:hover {
@@ -883,20 +883,20 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   flex-direction: column;
   gap: 1px;
   min-width: 120px;
-  padding: 4px;
+  padding: var(--space-1);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   box-shadow: 0 4px 16px var(--shadow-md);
 }
 
 .pane-mode-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 12px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   cursor: pointer;
   white-space: nowrap;
@@ -920,21 +920,21 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   /* Full width of the listing like the strip is on Home (a band, not a
      floating plate). Side gutters: the cell's own 24px of padding plus 40px
      here — wider than Home's 28px on purpose, the listing is a wider column. */
-  margin: 8px 40px 16px;
+  margin: var(--space-2) var(--space-10) var(--space-4);
   /* The listing's td is `white-space: nowrap` (one entry per line); this cell
      holds prose and a card, both of which must wrap inside the 640px. */
   white-space: normal;
 }
 .access-denied-text {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-3);
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--text-dense);
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .access-denied-text code {
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 .access-denied .claude-health {
   margin-bottom: 0;

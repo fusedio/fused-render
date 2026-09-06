@@ -78,10 +78,10 @@ html, body {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
   color: var(--fg);
   background: var(--bg);
-  font-size: 14px;
+  font-size: var(--text-body);
 }
 
 #app {
@@ -132,14 +132,14 @@ iframe {
   top: 0;
   z-index: 9000;
   max-width: min(46ch, 80vw);
-  padding: 4px 8px;
-  font-size: 11.5px;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-meta);
   line-height: 1.35;
   font-weight: 500;
   color: var(--fg);
   background: var(--bg-popover);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   box-shadow: 0 4px 14px var(--shadow-sm);
   pointer-events: none;
   /* Hidden by DISPLAY rather than opacity: an invisible panel that still has a

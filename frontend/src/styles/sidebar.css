@@ -97,8 +97,8 @@ body:has(.sidebar-resize-handle.resizing) {
   /* Puts the expand control's centre on 24px — the line the sidebar header,
      #breadcrumb and the app header all stand on — so the control keeps its
      position across collapse and expand, on every route. */
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: var(--space-2-5);
+  padding-bottom: var(--space-2-5);
 }
 
 /* 28px square, 16px glyph, .bar-ctl geometry and hover wash (explorer.css) —
@@ -112,7 +112,7 @@ body:has(.sidebar-resize-handle.resizing) {
   flex-shrink: 0;
   padding: 0;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
@@ -149,9 +149,9 @@ a.sidebar-rail-btn {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  margin-top: 8px;
-  padding-top: 8px;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border);
   flex: 1 1 auto;
   min-height: 0;
@@ -163,7 +163,7 @@ a.sidebar-rail-btn {
   width: 28px;
   height: 1px;
   flex-shrink: 0;
-  margin: 4px 0;
+  margin: var(--space-1) 0;
   background: var(--border);
 }
 
@@ -189,9 +189,9 @@ a.sidebar-rail-btn {
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 14px 16px;
-  font-size: 13.5px;
+  gap: var(--space-2-5);
+  padding: var(--space-3-5) var(--space-4);
+  font-size: var(--text-body);
   font-weight: 650;
   letter-spacing: 0.01em;
   border-bottom: 1px solid var(--border);
@@ -202,7 +202,7 @@ a.sidebar-rail-btn {
 .sidebar-brand .brand-home-link {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--space-2-5);
   min-width: 0;
   color: inherit;
   text-decoration: none;
@@ -238,12 +238,12 @@ a.sidebar-rail-btn {
 .version-chip {
   display: inline-flex;
   align-items: center;
-  padding: 0 6px;
+  padding: 0 var(--space-1-5);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: rgba(var(--tint), 0.05);
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 9.5px;
+  font-size: var(--text-micro);
   line-height: 14px;
   letter-spacing: 0.01em;
   font-variant-numeric: tabular-nums;
@@ -252,7 +252,7 @@ a.sidebar-rail-btn {
 }
 
 .sidebar-section {
-  padding: 8px;
+  padding: var(--space-2);
 }
 
 /* Consecutive heading groups in the shell's app-switcher (shell/ShellSidebar):
@@ -267,13 +267,13 @@ a.sidebar-rail-btn {
 .sidebar-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 10px;
-  border-radius: 8px;
+  gap: var(--space-2-5);
+  padding: var(--space-2) var(--space-2-5);
+  border-radius: var(--radius-md);
   color: var(--fg);
   text-decoration: none;
   cursor: pointer;
-  font-size: 13.5px;
+  font-size: var(--text-body);
   /* The expand glide lays these rows out at every width between the rail's
      44px and the settled one; a label allowed to wrap ("AI Models") spends
      those frames as two lines — a phantom extra row that flashes in and out
@@ -311,7 +311,7 @@ a.sidebar-rail-btn {
 .sidebar-item-trail {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-left: auto;
   /* The row's `gap: 10px` already stands between the label and this; without
      shrink-0 a long label would squeeze the count instead of ellipsising. */
@@ -328,19 +328,19 @@ a.sidebar-rail-btn {
    hand-tuned 10.5px pill is exactly how two counts in one sidebar end up half a
    pixel and one shade apart. */
 .sidebar-count-chip {
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   line-height: 1;
   color: var(--fg-muted);
   background: rgba(var(--tint), 0.07);
-  border-radius: 8px;
-  padding: 3px 6px;
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-1-5);
   letter-spacing: normal;
 }
 
 /* The AI Models row's "Beta" tag: same chip element, recoloured to the accent
    so it reads as a label about the feature rather than a count of anything. */
 .sidebar-beta-chip {
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-weight: 650;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -393,7 +393,7 @@ a.sidebar-rail-btn {
    Both are why the two rules below are load-bearing rather than cosmetic: no
    part of the cycle may leave any part of a letter unpainted. */
 .sidebar-running {
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   /* The CLIP BOX, not just the text's spacing: ascenders and descenders have to
      fall inside the painted area or they are not drawn at all. */
   line-height: 1.6;
@@ -555,7 +555,7 @@ button.sidebar-prefs-trigger {
   border: none;
   font: inherit;
   text-align: left;
-  font-size: 13.5px;
+  font-size: var(--text-body);
 }
 
 /* The pop-up it opens: the shared .context-menu chassis, pinned by its
@@ -593,8 +593,8 @@ button.sidebar-prefs-trigger {
    own surface; this override was the sidebar's and had nothing left to match. */
 
 .sidebar-heading {
-  padding: 10px 10px 6px;
-  font-size: 11px;
+  padding: var(--space-2-5) var(--space-2-5) var(--space-1-5);
+  font-size: var(--text-caption);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -625,14 +625,14 @@ button.sidebar-prefs-trigger {
   /* Above the rows' own stacking contexts (.bookmark-glyph/.bookmark-badge
      are position:relative + z-index:1, and later in the DOM). */
   z-index: 2;
-  padding-top: 18px;
+  padding-top: var(--space-5);
   box-shadow: 0 1px 0 var(--bg-alt);
 }
 
 .sidebar-empty {
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 /* Recents (SPEC §29): sits between the bookmark tree and the pinned footer.
@@ -652,23 +652,23 @@ button.sidebar-prefs-trigger {
 .recents-heading {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   cursor: pointer;
   user-select: none;
   text-transform: none;
   letter-spacing: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .sidebar-heading-chevron {
   flex: 0 0 auto;
   width: 6px;
   height: 6px;
-  margin: 0 1px 1px 2px;
+  margin: 0 1px 1px var(--space-0-5);
   border-right: 1.5px solid currentColor;
   border-bottom: 1.5px solid currentColor;
   transform: rotate(45deg);
-  transition: transform 120ms ease;
+  transition: transform var(--dur-fast) ease;
   opacity: 0.8;
 }
 
@@ -715,9 +715,9 @@ button.sidebar-prefs-trigger {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 10px;
-  border-radius: 8px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-2-5);
+  border-radius: var(--radius-md);
   cursor: pointer;
   /* Opaque equivalent of this row's background, for the hover actions' fade
      mask (see .bookmark-actions). Kept in sync with the state rules below. */
@@ -741,7 +741,7 @@ button.sidebar-prefs-trigger {
 .bookmark-glyph {
   flex: 0 0 auto;
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
   cursor: pointer;
   width: 14px;
   text-align: center;
@@ -751,7 +751,7 @@ button.sidebar-prefs-trigger {
 
 /* Custom emoji icons render at natural color, slightly larger than the star. */
 .bookmark-glyph.custom-icon {
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 .bookmark-row.active .bookmark-glyph {
@@ -765,7 +765,7 @@ button.sidebar-prefs-trigger {
 .bookmark-missing-badge {
   flex: 0 0 auto;
   color: var(--error);
-  font-size: 11px;
+  font-size: var(--text-caption);
   cursor: help;
   /* a.bookmark-name::after stretches over the whole row (see below); without
      its own stacking context this badge would sit under that overlay and
@@ -852,13 +852,13 @@ button.sidebar-prefs-trigger {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin-left: 20px;
-  padding-left: 5px;
+  margin-left: var(--space-5);
+  padding-left: var(--space-1-5);
   border-left: 1px solid rgba(var(--tint), 0.13);
 }
 
 .child-row {
-  padding-left: 8px;
+  padding-left: var(--space-2);
 }
 
 .bookmark-name {
@@ -869,7 +869,7 @@ button.sidebar-prefs-trigger {
   white-space: nowrap;
   color: var(--fg);
   text-decoration: none;
-  font-size: 13px;
+  font-size: var(--text-dense);
 }
 
 /* Stretched-link pattern: the anchor's ::after covers the whole row so the
@@ -905,9 +905,9 @@ a.bookmark-name::after {
   transition:
     opacity var(--dur-fast) var(--ease-out),
     visibility var(--dur-fast) var(--ease-out);
-  gap: 2px;
+  gap: var(--space-0-5);
   z-index: 1;
-  padding-left: 26px;
+  padding-left: var(--space-7);
   background: linear-gradient(to right, transparent, var(--row-bg) 26px);
 }
 
@@ -924,10 +924,10 @@ a.bookmark-name::after {
   max-width: 340px;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   box-shadow: 0 8px 24px var(--shadow-lg);
-  padding: 10px 12px;
-  font-size: 12px;
+  padding: var(--space-2-5) var(--space-3);
+  font-size: var(--text-meta);
   pointer-events: none;
   display: none;
 }
@@ -937,14 +937,14 @@ a.bookmark-name::after {
   font-weight: 600;
   word-break: break-all;
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-size: var(--text-meta);
 }
 
 #bookmark-tooltip .tip-params {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 3px 10px;
-  margin-top: 8px;
+  gap: var(--space-1) var(--space-2-5);
+  margin-top: var(--space-2);
 }
 
 #bookmark-tooltip .tip-key {
@@ -961,12 +961,12 @@ a.bookmark-name::after {
 #bookmark-tooltip .tip-none {
   color: var(--fg-muted);
   font-style: italic;
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
 }
 
 #bookmark-tooltip .tip-missing {
   color: var(--error);
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
 }
 
 .icon-btn {
@@ -975,9 +975,9 @@ a.bookmark-name::after {
   border: none;
   color: var(--fg-muted);
   cursor: pointer;
-  font-size: 12px;
-  padding: 2px 5px;
-  border-radius: 4px;
+  font-size: var(--text-meta);
+  padding: var(--space-0-5) var(--space-1-5);
+  border-radius: var(--radius-xs);
 }
 
 .icon-btn:hover {
@@ -1001,12 +1001,12 @@ a.bookmark-name::after {
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  padding: var(--space-0-5) var(--space-1-5);
 }
 
 /* Icon picker popover (Notion-style): search + Remove header, categorized
@@ -1017,27 +1017,27 @@ a.bookmark-name::after {
   width: 264px;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   box-shadow: 0 8px 24px var(--shadow-lg);
-  padding: 8px;
+  padding: var(--space-2);
 }
 
 .icon-picker-head {
   display: flex;
-  gap: 6px;
-  margin-bottom: 6px;
+  gap: var(--space-1-5);
+  margin-bottom: var(--space-1-5);
 }
 
 .icon-picker-search {
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 8px;
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-2);
 }
 
 .icon-picker-search:focus {
@@ -1048,13 +1048,13 @@ a.bookmark-name::after {
 .icon-picker-remove {
   flex: 0 0 auto;
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   background: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
 }
 
 .icon-picker-remove:hover {
@@ -1068,11 +1068,11 @@ a.bookmark-name::after {
 }
 
 .icon-picker-cat {
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
-  padding: 6px 4px 3px;
+  padding: var(--space-1-5) var(--space-1) var(--space-1);
 }
 
 .icon-picker-grid {
@@ -1082,13 +1082,13 @@ a.bookmark-name::after {
 
 .icon-picker-cell {
   font: inherit;
-  font-size: 15px;
+  font-size: var(--text-title);
   line-height: 1;
   background: none;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
-  padding: 5px 0;
+  padding: var(--space-1-5) 0;
   text-align: center;
 }
 
@@ -1104,29 +1104,29 @@ a.bookmark-name::after {
 
 .icon-picker-empty {
   color: var(--fg-muted);
-  font-size: 12px;
-  padding: 10px 4px;
+  font-size: var(--text-meta);
+  padding: var(--space-2-5) var(--space-1);
 }
 
 
 /* -- Self-update badge (platform/ui/UpdateBadge, packaged mac app only) ----- */
 
 .update-badge {
-  margin: 2px 8px;
-  font-size: 12px;
+  margin: var(--space-0-5) var(--space-2);
+  font-size: var(--text-meta);
 }
 
 .update-badge-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: rgba(var(--tint), 0.07);
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--text-meta);
   cursor: pointer;
   text-align: left;
 }
@@ -1151,10 +1151,10 @@ a.bookmark-name::after {
 }
 
 .update-badge-panel {
-  padding: 8px;
+  padding: var(--space-2);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .update-badge-text {
@@ -1168,19 +1168,19 @@ a.bookmark-name::after {
 
 .update-badge-action {
   align-self: flex-start;
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--accent);
   color: var(--bg);
-  font-size: 12px;
+  font-size: var(--text-meta);
   cursor: pointer;
 }
 
 .update-badge-command {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .update-badge-command code {
@@ -1191,21 +1191,21 @@ a.bookmark-name::after {
      rather than pushing the button off it. */
   flex: 0 1 auto;
   min-width: 0;
-  padding: 4px 6px;
-  border-radius: 4px;
+  padding: var(--space-1) var(--space-1-5);
+  border-radius: var(--radius-xs);
   background: rgba(var(--tint), 0.09);
-  font-size: 11px;
+  font-size: var(--text-caption);
   overflow-x: auto;
   white-space: nowrap;
 }
 
 .update-badge-copy {
-  padding: 3px 8px;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: none;
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: var(--text-caption);
   cursor: pointer;
 }
 
@@ -1248,7 +1248,7 @@ a.bookmark-name::after {
 .current-app-unread {
   position: static;
   flex: 0 0 auto;
-  margin-left: 6px;
+  margin-left: var(--space-1-5);
 }
 
 .current-app-archive:disabled {
@@ -1276,7 +1276,7 @@ a.bookmark-name::after {
 }
 
 .current-app-new .current-app-glyph {
-  font-size: 14px;
+  font-size: var(--text-body);
   line-height: 1;
 }
 

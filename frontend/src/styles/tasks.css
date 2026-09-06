@@ -47,7 +47,7 @@
    stands beside the frame and the rows run edge to edge. */
 .tasks-list-frame {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 /* The scroller used to clip the row washes to the corners. The frame must NOT
    do it with `overflow: hidden`: the ring's unread-count tooltip hangs below
@@ -55,15 +55,15 @@
    END rows round their own outer corners instead — one px inside the frame's
    8px so the wash meets the border's inner edge — and nothing is clipped. */
 .tasks-list-frame > .tasks-node:first-child > .tasks-row {
-  border-top-left-radius: 7px;
-  border-top-right-radius: 7px;
+  border-top-left-radius: var(--radius-md);
+  border-top-right-radius: var(--radius-md);
 }
 /* The last node's LAST CHILD, not its row: an open task's row is not the
    frame's bottom — its thread (or note, or loading line) is — and a curve on
    the row there would sit mid-group over square frame corners (Bugbot). */
 .tasks-list-frame > .tasks-node:last-child > :last-child {
-  border-bottom-left-radius: 7px;
-  border-bottom-right-radius: 7px;
+  border-bottom-left-radius: var(--radius-md);
+  border-bottom-right-radius: var(--radius-md);
 }
 
 /* Hairlines between TASKS only. A task and its thread are one thing, and a
@@ -130,9 +130,9 @@
   align-items: center;
   gap: var(--tasks-row-gap);
   padding: var(--tasks-row-pad-y) var(--tasks-row-pad);
-  font-size: 13px;
+  font-size: var(--text-dense);
   cursor: pointer;
-  transition: background-color 0.08s ease;
+  transition: background-color var(--dur-instant) ease;
   /* What `.tasks-rowlink` below is measured against. The row's navigation is a
      real <a> stretched over the whole row rather than a click handler on this
      div, so ⌘-click, middle click and "Open in new tab" are the browser's job
@@ -300,7 +300,7 @@ button.tasks-caret,
   justify-content: center;
   /* transform, not `all`: the row's background is transitioning too, and one
      rule owning both smears the caret on hover. */
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-fast) ease;
 }
 
 .tasks-caret-glyph.is-open {
@@ -337,7 +337,7 @@ button.tasks-caret,
 .tasks-rowlink:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .tasks-title {
@@ -394,7 +394,7 @@ button.tasks-caret,
    the title and finds the id when it goes looking (Akshil, 2026-08-18: the id
    should read gray and quiet, the title bright). */
 .tasks-id--task {
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 400;
 }
 
@@ -432,7 +432,7 @@ button.tasks-caret,
 }
 
 .tasks-id--message {
-  font-size: 10.5px;
+  font-size: var(--text-micro);
   opacity: 0.85;
 }
 
@@ -507,7 +507,7 @@ button.tasks-caret,
    it. */
 .tasks-row-time {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -573,8 +573,8 @@ button.tasks-caret,
   align-items: center;
   padding-block: var(--tasks-row-pad-y);
   margin-block: calc(var(--tasks-row-pad-y) * -1);
-  padding-inline: 5px;
-  margin-inline: -5px;
+  padding-inline: var(--space-1-5);
+  margin-inline: calc(-1 * var(--space-1-5));
 }
 
 /* The folder tag grows too, VERTICALLY ONLY — and it does it in its own rule
@@ -593,7 +593,7 @@ button.tasks-caret,
    jitters as it goes 9 → 10 reads as movement in a list that has not changed. */
 .tasks-row-msgs {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -602,7 +602,7 @@ button.tasks-caret,
      bare number beside a folder and a time would be unlabelled again. */
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--space-1);
 }
 
 /* Optically centred with the digits rather than sitting on their baseline: the
@@ -661,9 +661,9 @@ button.tasks-caret,
   align-self: stretch;
   padding-block: var(--tasks-row-pad-y);
   margin-block: calc(var(--tasks-row-pad-y) * -1);
-  padding-right: 4px;
-  padding-left: 4px;
-  margin-right: -4px;
+  padding-right: var(--space-1);
+  padding-left: var(--space-1);
+  margin-right: calc(-1 * var(--space-1));
 }
 /* NO HOVER SKIN OF ITS OWN (Akshil, 2026-08-27: "when I hover over the file
    icon, it changes color and it feels like a button"). It is a caption on the
@@ -701,16 +701,16 @@ button.tasks-caret,
      `.schedule-tv-id-shield` around it, which paints nothing at all — see its
      rule below. This element is back to being exactly the thing a reader sees
      and presses. */
-  padding: 3px 5px;
-  border-radius: 5px;
-  transition: background-color 120ms ease;
+  padding: var(--space-1) var(--space-1-5);
+  border-radius: var(--radius-control);
+  transition: background-color var(--dur-fast) ease;
   /* …and its 3px does not get to grow the ROW. The shield around it is
      `align-self: stretch`, so the flex line is sized from this element plus the
      shield's padding — which made every task row 39px instead of 36px. The
      negative margin puts this element's CONTRIBUTION back to its ink height and
      leaves the box it paints alone, the same trick every other mark on this row
      uses. */
-  margin-block: -3px;
+  margin-block: calc(-1 * var(--space-1));
   /* ABOVE THE STRETCHED ROW LINK, like the caret and the hover actions — and
      for the reason those two carry the same pair. `.tasks-rowlink` is an
      absolutely positioned <a> over the whole row at `z-index: 1`, so a control
@@ -896,10 +896,10 @@ button.tasks-caret,
   color: var(--fg-muted);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+  transition: opacity var(--dur-instant) ease, background-color var(--dur-instant) ease, color var(--dur-instant) ease;
   /* Above the row's stretched link, or the link would eat the press and every
      one of these buttons would navigate instead of acting. */
   position: relative;
@@ -1111,7 +1111,7 @@ button.tasks-caret,
   --tasks-archive-reach-l: 0px;
   inset: var(--tasks-archive-reach-y) var(--tasks-archive-reach-r)
     var(--tasks-archive-reach-y) var(--tasks-archive-reach-l);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 /* The handover. The ring fades as the button arrives — the same `opacity` swap,
@@ -1147,7 +1147,7 @@ button.tasks-caret,
 }
 
 .tasks-rowmark .schedule-ring {
-  transition: opacity 0.08s ease;
+  transition: opacity var(--dur-instant) ease;
 }
 
 /* THE PRESS'S RECEIPT (Akshil, 2026-08-19). Clicking Archive keeps the pointer on
@@ -1248,7 +1248,7 @@ button.tasks-caret,
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   pointer-events: none;
 }
 
@@ -1317,7 +1317,7 @@ button.tasks-caret,
    is "wait", not "broken". A red line here would report a working safeguard as
    a failure. */
 .tasks-row-note {
-  padding: 0 var(--tasks-row-pad) 6px var(--tasks-rail-x);
+  padding: 0 var(--tasks-row-pad) var(--space-1-5) var(--tasks-rail-x);
 }
 
 /* Mid-cancel. The row is by definition being pointed at, so the button is
@@ -1337,9 +1337,9 @@ button.tasks-caret,
    the common case and it is a real answer: the message sent while the user was
    reaching for the button. */
 .tasks-msg-error {
-  margin: 0 0 2px;
-  padding: 2px 8px 4px 12px;
-  font-size: 11px;
+  margin: 0 0 var(--space-0-5);
+  padding: var(--space-0-5) var(--space-2) var(--space-1) var(--space-3);
+  font-size: var(--text-caption);
   color: var(--error);
 }
 
@@ -1358,7 +1358,7 @@ button.tasks-caret,
 .tasks-thread {
   display: flex;
   flex-direction: column;
-  padding: 2px 12px 8px calc(var(--tasks-msg-ring-x) - var(--tasks-msg-indent));
+  padding: var(--space-0-5) var(--space-3) var(--space-2) calc(var(--tasks-msg-ring-x) - var(--tasks-msg-indent));
 }
 
 .tasks-msg {
@@ -1368,10 +1368,10 @@ button.tasks-caret,
   /* The full indent, not indent-minus-1: the 1px used to be the rule's own
      width, and the row has to keep landing in the same column now that the
      rule is gone. */
-  padding: var(--tasks-msg-pad-y) 10px var(--tasks-msg-pad-y) var(--tasks-msg-indent);
-  font-size: 12.5px;
+  padding: var(--tasks-msg-pad-y) var(--space-2-5) var(--tasks-msg-pad-y) var(--tasks-msg-indent);
+  font-size: var(--text-dense);
   cursor: pointer;
-  transition: background-color 0.08s ease;
+  transition: background-color var(--dur-instant) ease;
   /* Same stretched-link treatment as the task row above: a message row is a
      real link to its own turn in the transcript, so ⌘-click opens it in a tab. */
   position: relative;
@@ -1418,7 +1418,7 @@ button.tasks-caret,
    digits are one width. */
 .tasks-msg-time {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1439,8 +1439,8 @@ button.tasks-caret,
   align-items: center;
   padding-block: var(--tasks-msg-pad-y);
   margin-block: calc(var(--tasks-msg-pad-y) * -1);
-  padding-inline: 5px;
-  margin-inline: -5px;
+  padding-inline: var(--space-1-5);
+  margin-inline: calc(-1 * var(--space-1-5));
 }
 
 /* No `.tasks-msg-ran` any more. It printed "ran 07:12 today" beside the due time
@@ -1456,9 +1456,9 @@ button.tasks-caret,
    and why none of them survived. */
 
 .tasks-thread-error {
-  margin: 4px 0 0;
-  padding-left: 12px;
-  font-size: 11px;
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-3);
+  font-size: var(--text-caption);
   color: var(--error);
 }
 
@@ -1522,9 +1522,9 @@ button.tasks-caret,
    so there is no spinner and no skeleton: a moving glyph for a sub-second wait is
    more motion than information. */
 .tasks-thread-loading {
-  margin: 4px 0 0;
+  margin: var(--space-1) 0 0;
   padding-left: var(--tasks-msg-indent);
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -1602,12 +1602,12 @@ button.tasks-caret,
 }
 
 .tasks-run-hint {
-  margin: 0 0 2px;
-  padding: 3px 8px;
-  border-radius: 6px;
+  margin: 0 0 var(--space-0-5);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--activity) 14%, transparent);
   color: var(--activity);
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 600;
   text-align: center;
   /* It appears mid-drag, and a pointer event on it would count as leaving the
@@ -1637,7 +1637,7 @@ button.tasks-caret,
    same tabular figures, so the pair still reads as one register. */
 .tasks-row-next {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1682,11 +1682,11 @@ button.tasks-caret,
   display: inline-flex;
   align-items: center;
   height: 14px;
-  padding: 0 6px;
-  border-radius: 999px;
+  padding: 0 var(--space-1-5);
+  border-radius: var(--radius-pill);
   border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
   color: var(--fg-muted);
-  font-size: 10px;
+  font-size: var(--text-micro);
   line-height: 1;
   white-space: nowrap;
 }
@@ -1734,7 +1734,7 @@ button.tasks-caret,
   width: 26px;
   padding: 0;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-caption);
   line-height: 1;
   color: var(--fg-muted);
   background: var(--bg);
@@ -1745,9 +1745,9 @@ button.tasks-caret,
      the check has no way to tell a filter chip from a message row. Same result,
      and the guard it protects stays exact. */
   border-width: 1px 1px 1px 0;
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
   cursor: pointer;
-  transition: color 0.08s ease, background-color 0.08s ease;
+  transition: color var(--dur-instant) ease, background-color var(--dur-instant) ease;
 }
 
 /* ONE CONTROL, ONE HOVER. The trigger and its ✕ are two boxes for geometry only
