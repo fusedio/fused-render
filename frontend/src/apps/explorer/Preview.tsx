@@ -173,11 +173,14 @@ function usePreviewSideSlot(): HTMLElement | null {
 // which is why this probes on mount and re-probes per file rather than trusting
 // anything cached.
 //
-// Header-only, like ExportAppButton beside it, and with the same consequence
-// worth knowing: embed mode hides the whole topbar, so a `.fused` opened by
-// double-click shows no Clone. Reaching it means opening the file in the
-// explorer (owner's call — the embed stays chrome-free, D386/D390).
-function CloneAppFileButton({ fsPath }: { fsPath: string }) {
+// Lives in the header, like ExportAppButton beside it — which embed mode
+// hides, so a `.fused` opened by double-click used to show no Clone at all
+// (D390's chrome-free posture, accepted in D397). The top-level embed's
+// EmbedStrip now renders this same button (one control, one label rule) with
+// `toView`: from the embed shell, `navigate` would keep the embed prefix and
+// land the clone folder as a chrome-free listing with no way out (D282's dead
+// end), so the strip's copy goes to the folder's VIEW URL instead.
+export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?: boolean }) {
   const [target, setTarget] = useState<{ path: string; cloned: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -193,15 +196,17 @@ function CloneAppFileButton({ fsPath }: { fsPath: string }) {
     };
   }, [fsPath]);
   if (!target) return null;
+  const land = (dir: string) =>
+    toView ? location.assign(viewUrlForFsPath(dir)) : navigate(dir, { isDir: true });
   const go = async () => {
     if (busy) return;
     // Already cloned: this is pure navigation, so it never needs the spinner
     // or the write route.
-    if (target.cloned) return navigate(target.path, { isDir: true });
+    if (target.cloned) return land(target.path);
     setBusy(true);
     try {
       const r = await cloneAppFile(fsPath);
-      navigate(r.path, { isDir: true });
+      land(r.path);
     } catch (e) {
       pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
       setBusy(false);
