@@ -204,6 +204,10 @@ def record_homes() -> list[str]:
         WRITERS take the first home that will actually have them.
         READERS look in all of them  (`reader_homes`, and it is a SEPARATE list).
 
+    One writer is deliberately exempt: `note_session` writes the session pointer
+    to EVERY home, because it is bookkeeping rather than a document and the
+    first home is inside the tree the fix session may delete — see there.
+
     The state dir is not offered here when the tree is known unwritable: it is
     the one home we already know cannot take a write, and trying it first would
     spend an exception per record to learn what `os.access` had answered
@@ -682,20 +686,43 @@ def note_session(run_id: str, *, before: str = "", report: str = "",
     recovers is the unfinished STAMP, never a claim on the tree — liveness is
     still asked of the process and never remembered.
 
+    WRITTEN TO EVERY HOME — the one write in this module that does not stop at
+    the first home that will have it (`record_homes`). That rule is right for a
+    DOCUMENT: a report written twice is two reports, and the reader would have
+    to pick. This is not a document. It is the only persisted input `resume`
+    has, and on a writable install the first home is the state dir — inside the
+    very tree the session was invited to edit. A fix session is an agent editing
+    this installation and can delete `.fused-render-selffix` (`ensure_baseline`
+    already defends the baseline against exactly that), and deleting it takes
+    the pointer with it. Add the restart this feature says is most likely — the
+    one the session CAUSES — and the install ends up patched with no badge,
+    which is the outcome the whole feature exists to prevent.
+
+    The second copy cannot raise a false badge over a reinstall, which is the
+    hazard that would otherwise argue for keeping the pointer in the tree so it
+    dies with it: a same-version reinstall does NOT remove the state dir (pip's
+    RECORD never listed it, which is why `reconcile` exists at all), so the
+    baseline still sitting there vetoes the stamp inside `settle` — the case
+    `test_a_same_version_reinstall_under_a_leftover_pointer_stays_clean` pins.
+    And a stale pointer stops being able to stamp anything after one start
+    anyway: `resume` retires the digest as soon as the run is gone.
+
     Best-effort. A pointer that could not be written costs the long-session half
     of the guard, and the scan still covers the ordinary case; refusing to start
     a fix over it would be the wrong trade.
     """
+    wrote = False
     for home in record_homes():
         try:
             _write_json(_session_file(home),
                         {"schema": 2, "run_id": str(run_id),
                          "before": str(before), "report": str(report),
                          "incident": str(incident), "title": str(title)})
-            return
+            wrote = True
         except OSError:
             continue
-    logger.debug("could not record the fix session id", exc_info=True)
+    if not wrote:
+        logger.debug("could not record the fix session id", exc_info=True)
 
 
 def session_record() -> dict:

@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import shlex
+import shutil
 import threading
 
 import pytest
@@ -2096,6 +2097,37 @@ def test_a_finished_session_stops_costing_a_tree_walk_on_every_start(
                         lambda *a, **k: walks.append(1) or real_digest(*a, **k))
     REAL_RESUME()
     assert walks == [], "a later start re-walked the tree for a finished session"
+
+
+def test_a_session_that_deleted_the_state_dir_is_still_stamped_after_a_restart(
+        install, monkeypatch):
+    """The pointer must not die with the tree the session is editing.
+
+    `record_homes` has writers stop at the first home that will have them, and
+    on a writable install that is the state dir — INSIDE the package the fix
+    session was invited to change. This module already knows that session can
+    delete `.fused-render-selffix` (`ensure_baseline` defends the baseline
+    against exactly that, and `_pristine_digest` recovers from it). The pointer
+    had no such recovery: deleted with the dir, `resume` finds nothing to settle
+    against, `reconcile` returns early because no marker exists either, and the
+    patch on disk is left with no badge — the one outcome the feature exists to
+    prevent. So `note_session` writes to every home, and the out-of-tree copy is
+    what survives.
+    """
+    before = _pristine()
+    selffix.note_session("r-wiper", before=before)
+
+    (install / "jobs.py").write_text("patched\n")
+    shutil.rmtree(selffix.state_dir())  # the session tidies away "stray" state
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    REAL_RESUME()
+
+    assert selffix.status() is not None, (
+        "a patched install came back from the restart with no badge — the "
+        "session had deleted the pointer along with the state dir")
+    assert selffix.status()["fixes"][0]["run_id"] == "r-wiper"
 
 
 def test_a_live_session_keeps_its_digest_across_the_resume(install, monkeypatch):
