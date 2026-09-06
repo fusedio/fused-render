@@ -26,7 +26,7 @@ ALLOWLIST_PATH = os.path.join(REPO_ROOT, "tests", "design_scale_allowlist.txt")
 # Files that MAY carry literals: the scale itself, the shadcn bridge/theme
 # mapping, and the vendored shadcn primitives (installed, not authored).
 CSS_EXEMPT = {"scale.css", "tailwind.css"}
-TSX_EXEMPT_DIRS = (os.path.join("platform", "shadcn") + os.sep,)
+TSX_EXEMPT_DIRS = ("platform/shadcn/",)
 
 # Properties whose px values must come from the scale. `1px` is a hairline
 # (borders, dividers) and stays a literal; `0` is not a size.
@@ -94,12 +94,14 @@ def _css_files() -> list[str]:
 def _tsx_files() -> list[str]:
     out: list[str] = []
     for root, _dirs, files in os.walk(SRC_DIR):
-        rel_root = os.path.relpath(root, SRC_DIR)
-        if any(rel_root.startswith(d.rstrip(os.sep)) for d in TSX_EXEMPT_DIRS):
+        # Forward slashes on every platform: the allowlist and the exempt
+        # prefixes are written that way, and Windows walks with backslashes.
+        rel_root = os.path.relpath(root, SRC_DIR).replace(os.sep, "/")
+        if any(rel_root.startswith(d) for d in TSX_EXEMPT_DIRS):
             continue
         for f in files:
             if f.endswith((".tsx", ".ts")) and not f.endswith((".test.tsx", ".test.ts")):
-                out.append(os.path.join(rel_root, f))
+                out.append(f"{rel_root}/{f}" if rel_root != "." else f)
     return sorted(out)
 
 
