@@ -254,7 +254,7 @@ const ICON_MSG = icon(
 const ICON_MARK_READ = icon(
   <><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></>, 13);
 // Filing away. lucide `archive`: a lidded box with a pull-slot in the front.
-const ICON_ARCHIVE = icon(
+export const ICON_ARCHIVE = icon(
   <><rect x="2" y="3" width="20" height="5" rx="1" />
     <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
     <path d="M10 12h4" /></>, 13);
@@ -268,7 +268,7 @@ const ICON_ARCHIVE = icon(
 // The box's walls are two short paths rather than one closed body, which is what
 // leaves the gap the arrow comes through. Same 13px, same stroke, same lid as
 // above, so the two glyphs sit on each other exactly.
-const ICON_UNARCHIVE = icon(
+export const ICON_UNARCHIVE = icon(
   <><rect x="2" y="3" width="20" height="5" rx="1" />
     <path d="M4 8v11a2 2 0 0 0 2 2h2" />
     <path d="M20 8v11a2 2 0 0 1-2 2h-2" />

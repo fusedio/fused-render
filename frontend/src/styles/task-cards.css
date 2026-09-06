@@ -247,11 +247,29 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding-left: 8px;
+  padding-left: 6px;
   background: color-mix(in srgb, var(--fg) 5%, var(--row-bg-hover));
   opacity: 0;
   visibility: hidden;
   transition: opacity 120ms ease;
+}
+
+/* The strip's left edge FADES IN over the title instead of cutting it (Akshil,
+   2026-09-06: "add a fading thing so it looks like it is fading in"): a 24px
+   run from transparent to the strip's own ground, hung off the left edge. */
+.task-card-doors::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 100%;
+  width: 24px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--fg) 5%, var(--row-bg-hover))
+  );
+  pointer-events: none;
 }
 
 .task-card-head:hover .task-card-doors,
@@ -285,7 +303,11 @@
   text-decoration: none;
 }
 
+/* Both doors hover ALIKE — the page's `.prefs-section button:hover` fills a
+   button with --bg-alt and an accent border, and the folder is an <a> it never
+   touches, so without saying so here the two doors lit up differently. */
 .task-card-doors > .task-card-door:hover:not(:disabled) {
+  background: transparent;
   border-color: var(--fg-muted);
 }
 

@@ -34,7 +34,7 @@ import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
-import { IdentityChip, StatusIcon } from "./ScheduleTaskViews";
+import { ICON_ARCHIVE, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";
 import {
   CARD_PAGE,
   basename,
@@ -66,8 +66,11 @@ export const CARDS_EMPTY = "Nothing to show here.";
  *
  *  One request per DISTINCT folder, and most walls are one or two folders' worth
  *  of work, so this is a call or two rather than one per card. */
-function useChatTemplates(dirs: string[]): Record<string, string> {
-  const [paths, setPaths] = useState<Record<string, string>>({});
+/** Per folder: the claude template's path; `null` when the folder cannot be
+ *  stat'ed at all (deleted, unmounted — the scratch dir of an old run); absent
+ *  while the stat is still out, or when the folder answered with no chat mode. */
+function useChatTemplates(dirs: string[]): Record<string, string | null> {
+  const [paths, setPaths] = useState<Record<string, string | null>>({});
   // Folders already asked about — including the ones that ANSWERED with no
   // claude mode at all, which is why this is a set of asked and not a check of
   // `paths`: a folder with no chat template must be asked once, not once per
@@ -89,9 +92,13 @@ function useChatTemplates(dirs: string[]): Record<string, string> {
           if (found) setPaths((m) => ({ ...m, [dir]: found }));
         })
         .catch(() => {
-          // A folder that has gone away, or a stat that failed: the card falls
-          // back to its "Starting…" pane rather than the page failing. There is
-          // nothing to say here that the card does not already show.
+          // A folder that has gone away, or a stat that failed. Recorded as
+          // `null` so the card can SAY so: it used to fall through to
+          // "Starting…" and sat there for ever — a done run whose scratch
+          // folder was deleted is not starting anything (Akshil, 2026-09-06:
+          // "some cards are stuck at starting").
+          if (cancelled) return;
+          setPaths((m) => ({ ...m, [dir]: null }));
         });
     }
     return () => {
@@ -99,6 +106,14 @@ function useChatTemplates(dirs: string[]): Record<string, string> {
     };
   }, [key]);
   return paths;
+}
+
+/** What the empty pane says when there is no frame to draw. `template === null`
+ *  is a folder the server could not stat: nothing will ever be framed for it,
+ *  and "Starting…" would be a promise the card cannot keep. */
+export function emptyPaneText(task: Task, template: string | null | undefined): string {
+  if (template === null) return "Folder no longer exists";
+  return taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…";
 }
 
 export function TaskCards({
@@ -225,7 +240,7 @@ export function TaskCards({
     <TaskPeek
       task={peekLive}
       home={home}
-      template={templates[peekLive.target || peekLive.project] ?? null}
+      template={templates[peekLive.target || peekLive.project]}
       onClose={() => setPeek(null)}
       onReload={onReload}
     />
@@ -268,7 +283,7 @@ export function TaskCards({
           key={cardKey(task)}
           task={task}
           home={home}
-          template={templates[task.target || task.project] ?? null}
+          template={templates[task.target || task.project]}
           onPeek={setPeek}
           onReload={onReload}
           project={
@@ -303,7 +318,7 @@ function TaskCard({
 }: {
   task: Task;
   home: string;
-  template: string | null;
+  template: string | null | undefined;
   onPeek: (task: Task) => void;
   /** After a door archives or unarchives: the card's lane changed, so the page
    * re-reads (the popup's own rule, TaskPeek). */
@@ -472,9 +487,7 @@ function TaskCard({
           // "we know which chat that is" (schedule-lib, above `folderHref`) — a
           // real state, a few seconds to a few minutes long. Either way the card
           // says which rather than framing the wrong thing or an empty box.
-          <p className="task-card-starting">
-            {taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"}
-          </p>
+          <p className="task-card-starting">{emptyPaneText(task, template)}</p>
         )}
       </div>
     </section>
@@ -500,7 +513,7 @@ function TaskPeek({
 }: {
   task: Task;
   home: string;
-  template: string | null;
+  template: string | null | undefined;
   onClose: () => void;
   onReload?: () => void;
 }) {
@@ -648,9 +661,7 @@ function TaskPeek({
           // No `sandbox`, for the card frame's reason (TaskCard, above).
         />
       ) : (
-        <p className="task-card-starting">
-          {taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"}
-        </p>
+        <p className="task-card-starting">{emptyPaneText(task, template)}</p>
       )}
     </Modal>
   );
@@ -659,7 +670,7 @@ function TaskPeek({
 // The head's icons, in MenuIcons' own stroke (platform/ui/MenuIcons: 16px,
 // 24-grid, 1.5 stroke, round joins) so they sit in the app's buttons at the
 // weight its menus draw. Inline rather than added to that record because they
-// are this popup's and nothing else's — a folder, an archive box.
+// are this popup's and nothing else's — the folder.
 const ICON_PROPS = {
   width: 16,
   height: 16,
@@ -679,20 +690,7 @@ const ICON_FOLDER = (
   </svg>
 );
 
-/** Archive — the box with its lid. */
-const ICON_ARCHIVE = (
-  <svg {...ICON_PROPS}>
-    <path d="M3.5 5.5h17v3.5h-17z" />
-    <path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9" />
-    <path d="M10 13h4" />
-  </svg>
-);
-
-/** Unarchive — the same box, the lid open and an arrow out of it. */
-const ICON_UNARCHIVE = (
-  <svg {...ICON_PROPS}>
-    <path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9" />
-    <path d="M3.5 9h17" />
-    <path d="M12 16v-6M9.5 12.5 12 10l2.5 2.5" />
-  </svg>
-);
+// Archive and Unarchive are the List row's own glyphs (ScheduleTaskViews:
+// lucide `archive` / `archive-restore`), imported, not redrawn: the same box a
+// reader learned on the row is the box on the card and in the popup (Akshil,
+// 2026-09-06: "why is it different from the list unarchive icon").

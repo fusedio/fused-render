@@ -109,6 +109,7 @@ import {
   viewUrl,
   mergeTaskChanges,
 } from "./tasks-lib";
+import { emptyPaneText } from "./TaskCards";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
 const NOW = Date.parse("2026-08-16T12:00:00");
@@ -6925,6 +6926,26 @@ describe("the Cards view's frame", () => {
     expect(CARDS_CSS).toContain(".task-card-doors > .task-card-door {");
     expect(CARDS_CSS).not.toMatch(/\n\.task-card-door[:\s{]/);
     expect(block(CARDS_CSS, ".task-card-doors > .task-card-door")).toContain("padding: 0");
+  });
+
+  it("wears the List's archive glyphs, hovers both doors alike, fades in at the left, and names a folder that is gone", () => {
+    // Akshil, 2026-09-06: same icon as the List row; same hover for the button
+    // and the <a>; a gradient on the strip's left edge; and a card whose folder
+    // the server cannot stat says so instead of "Starting…" for ever.
+    expect(CARDS).toContain('import { ICON_ARCHIVE, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";');
+    expect(CARDS).not.toContain("const ICON_ARCHIVE =");
+    expect(VIEWS).toContain("export const ICON_ARCHIVE = icon(");
+    expect(VIEWS).toContain("export const ICON_UNARCHIVE = icon(");
+    expect(block(CARDS_CSS, ".task-card-doors > .task-card-door:hover:not(:disabled)")).toContain("background: transparent");
+    const fade = block(CARDS_CSS, ".task-card-doors::before");
+    expect(fade).toContain("right: 100%");
+    expect(fade).toContain("linear-gradient(");
+    expect(fade).toContain("pointer-events: none");
+    expect(CARDS).toContain("setPaths((m) => ({ ...m, [dir]: null }));");
+    expect(emptyPaneText(task({ status: "done" }), null)).toBe("Folder no longer exists");
+    expect(emptyPaneText(task({ status: "done" }), undefined)).toBe("Starting…");
+    expect(emptyPaneText(task({ status: "upcoming" }), undefined)).toBe("Not started yet");
+    expect(CARDS.split("{emptyPaneText(task, template)}").length).toBe(3);
   });
 
   it("filters by LANE: one Blocked tick brings the broken run and the parked one", () => {
