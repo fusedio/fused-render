@@ -287,7 +287,9 @@ export default function IconPicker({
   const [active, setActive] = useState(0);
   const baseId = useId();
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  // The shadcn Input is a plain function component (no forwardRef under React
+  // 18), so a `ref` on it would be dropped — find the box through the root.
+  const searchInput = () => rootRef.current?.querySelector<HTMLInputElement>("input");
   const restoreRef = useRef<Element | null>(null);
   const sections = useSections(tab);
 
@@ -301,7 +303,7 @@ export default function IconPicker({
   }, []);
 
   useEffect(() => {
-    inputRef.current?.focus();
+    searchInput()?.focus();
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (rootRef.current && rootRef.current.contains(target)) return;
@@ -428,7 +430,7 @@ export default function IconPicker({
     setTab(next);
     setQuery("");
     setActive(0);
-    inputRef.current?.focus();
+    searchInput()?.focus();
   };
 
   // Track the flat position while rendering the grouped sections.
@@ -478,7 +480,6 @@ export default function IconPicker({
             aria-hidden="true"
           />
           <Input
-            ref={inputRef}
             type="text"
             className="h-7 pl-7 text-[13px] md:text-[13px]"
             placeholder="Filter…"
