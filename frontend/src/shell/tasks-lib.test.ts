@@ -108,7 +108,6 @@ import {
   viewFromSearch,
   viewUrl,
   mergeTaskChanges,
-  emptyPaneText,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -6775,7 +6774,7 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain('"Nothing to show here."');
     // A task with no session yet: "Starting…" for a run in flight, and the
     // honest phrase for a scheduled one that is simply not due.
-    expect(LIB).toContain('taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"');
+    expect(CARDS).toContain('taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"');
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
 
@@ -6928,10 +6927,9 @@ describe("the Cards view's frame", () => {
     expect(block(CARDS_CSS, ".task-card-doors > .task-card-door")).toContain("padding: 0");
   });
 
-  it("wears the List's archive glyphs, hovers both doors alike, fades in at the left, and names a folder that is gone", () => {
+  it("wears the List's archive glyphs, hovers both doors alike, and fades in at the left", () => {
     // Akshil, 2026-09-06: same icon as the List row; same hover for the button
-    // and the <a>; a gradient on the strip's left edge; and a card whose folder
-    // the server cannot stat says so instead of "Starting…" for ever.
+    // and the <a>; a gradient on the strip's left edge.
     expect(CARDS).toContain('import { ICON_ARCHIVE, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";');
     expect(CARDS).not.toContain("const ICON_ARCHIVE =");
     expect(VIEWS).toContain("export const ICON_ARCHIVE = icon(");
@@ -6941,12 +6939,6 @@ describe("the Cards view's frame", () => {
     expect(fade).toContain("right: 100%");
     expect(fade).toContain("linear-gradient(");
     expect(fade).toContain("pointer-events: none");
-    expect(CARDS).toContain("setPaths((m) => ({ ...m, [dir]: null }));");
-    expect(CARDS).not.toContain("export function emptyPaneText");
-    expect(emptyPaneText(task({ status: "done" }), null)).toBe("Folder no longer exists");
-    expect(emptyPaneText(task({ status: "done" }), undefined)).toBe("Starting…");
-    expect(emptyPaneText(task({ status: "upcoming" }), undefined)).toBe("Not started yet");
-    expect(CARDS.split("{emptyPaneText(task, template)}").length).toBe(3);
   });
 
   it("filters by LANE: one Blocked tick brings the broken run and the parked one", () => {

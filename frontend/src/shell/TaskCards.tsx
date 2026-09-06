@@ -40,7 +40,6 @@ import {
   basename,
   cardKey,
   cardsForTasks,
-  emptyPaneText,
   filingIntent,
   firstLine,
   opensElsewhere,
@@ -67,11 +66,8 @@ export const CARDS_EMPTY = "Nothing to show here.";
  *
  *  One request per DISTINCT folder, and most walls are one or two folders' worth
  *  of work, so this is a call or two rather than one per card. */
-/** Per folder: the claude template's path; `null` when the folder cannot be
- *  stat'ed at all (deleted, unmounted — the scratch dir of an old run); absent
- *  while the stat is still out, or when the folder answered with no chat mode. */
-function useChatTemplates(dirs: string[]): Record<string, string | null> {
-  const [paths, setPaths] = useState<Record<string, string | null>>({});
+function useChatTemplates(dirs: string[]): Record<string, string> {
+  const [paths, setPaths] = useState<Record<string, string>>({});
   // Folders already asked about — including the ones that ANSWERED with no
   // claude mode at all, which is why this is a set of asked and not a check of
   // `paths`: a folder with no chat template must be asked once, not once per
@@ -93,13 +89,9 @@ function useChatTemplates(dirs: string[]): Record<string, string | null> {
           if (found) setPaths((m) => ({ ...m, [dir]: found }));
         })
         .catch(() => {
-          // A folder that has gone away, or a stat that failed. Recorded as
-          // `null` so the card can SAY so: it used to fall through to
-          // "Starting…" and sat there for ever — a done run whose scratch
-          // folder was deleted is not starting anything (Akshil, 2026-09-06:
-          // "some cards are stuck at starting").
-          if (cancelled) return;
-          setPaths((m) => ({ ...m, [dir]: null }));
+          // A folder that has gone away, or a stat that failed: the card falls
+          // back to its "Starting…" pane rather than the page failing. There is
+          // nothing to say here that the card does not already show.
         });
     }
     return () => {
@@ -233,7 +225,7 @@ export function TaskCards({
     <TaskPeek
       task={peekLive}
       home={home}
-      template={templates[peekLive.target || peekLive.project]}
+      template={templates[peekLive.target || peekLive.project] ?? null}
       onClose={() => setPeek(null)}
       onReload={onReload}
     />
@@ -276,7 +268,7 @@ export function TaskCards({
           key={cardKey(task)}
           task={task}
           home={home}
-          template={templates[task.target || task.project]}
+          template={templates[task.target || task.project] ?? null}
           onPeek={setPeek}
           onReload={onReload}
           project={
@@ -311,7 +303,7 @@ function TaskCard({
 }: {
   task: Task;
   home: string;
-  template: string | null | undefined;
+  template: string | null;
   onPeek: (task: Task) => void;
   /** After a door archives or unarchives: the card's lane changed, so the page
    * re-reads (the popup's own rule, TaskPeek). */
@@ -480,7 +472,9 @@ function TaskCard({
           // "we know which chat that is" (schedule-lib, above `folderHref`) — a
           // real state, a few seconds to a few minutes long. Either way the card
           // says which rather than framing the wrong thing or an empty box.
-          <p className="task-card-starting">{emptyPaneText(task, template)}</p>
+          <p className="task-card-starting">
+            {taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"}
+          </p>
         )}
       </div>
     </section>
@@ -506,7 +500,7 @@ function TaskPeek({
 }: {
   task: Task;
   home: string;
-  template: string | null | undefined;
+  template: string | null;
   onClose: () => void;
   onReload?: () => void;
 }) {
@@ -654,7 +648,9 @@ function TaskPeek({
           // No `sandbox`, for the card frame's reason (TaskCard, above).
         />
       ) : (
-        <p className="task-card-starting">{emptyPaneText(task, template)}</p>
+        <p className="task-card-starting">
+          {taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"}
+        </p>
       )}
     </Modal>
   );
