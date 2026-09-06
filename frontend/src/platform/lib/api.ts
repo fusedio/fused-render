@@ -2362,10 +2362,25 @@ export interface CurrentAppEntry {
   icon?: string | null;
   icon_mtime?: number | null;
   added_at: number | null;
+  /** Epoch (server clock) of the last `openCurrentApp` — the stamp the
+   *  sidebar's green dot is judged against. Null: never opened since the
+   *  stamp shipped. */
+  opened_at?: number | null;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
   return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
+}
+
+/** The user opened the app: stamp its row `opened_at` (server clock). Clears
+ *  the sidebar's green dot; touches no task. */
+export function openCurrentApp(
+  path: string,
+): Promise<{ ok: boolean; opened: boolean; opened_at: number }> {
+  return postJson<{ ok: boolean; opened: boolean; opened_at: number }>(
+    "/api/current-apps/open",
+    { path },
+  );
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself

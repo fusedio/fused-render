@@ -18,6 +18,8 @@ The row's right-click menu adds three more verbs, all folder-scoped:
   folder read, in one pass.
 * ``POST /api/current-apps/archive`` — the DELETE's task half without its desk
   half: archive every task under the folder, keep the row.
+* ``POST /api/current-apps/open`` — stamp the row opened (its ``openedAt``):
+  the sidebar's green dot clears on this, not on reading the tasks.
 
 Two ways onto the desk: the tasks listing (`current_apps.observe`, run inside
 `tasks._task_rows`) adds the app of every new task, and
@@ -107,6 +109,19 @@ def api_current_apps_add(patch: FolderPatch):
     if not os.path.isdir(folder):
         raise HTTPException(status_code=404, detail="no such folder")
     return {"ok": True, "added": current_apps.add(folder), "path": folder}
+
+
+@router.post("/api/current-apps/open")
+def api_current_apps_open(patch: FolderPatch):
+    """The user opened the app: stamp the row's ``openedAt`` with the server
+    clock (`current_apps.mark_opened`). This is what clears the sidebar's green
+    dot — the app's own unread state, judged against its tasks' `last_active`
+    on the same clock — and it touches no task: reading is the tasks' verb
+    (``/read`` above), opening is the desk's. A path not on the desk answers
+    ``opened: false`` rather than an error; there is no dot to clear."""
+    folder = _require_folder(patch.path)
+    at = time.time()
+    return {"ok": True, "opened": current_apps.mark_opened(folder, at), "opened_at": at}
 
 
 @router.post("/api/current-apps/archive")

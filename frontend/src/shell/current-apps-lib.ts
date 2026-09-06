@@ -76,94 +76,58 @@ export function isUnderDir(project: string, dir: string): boolean {
 // trigger — a completion under the app lights the dot — but the app clears it
 // on its own gesture, opening the app, and nothing done to the task clears it.
 //
-// So each app carries a stamp of its own: the highest `last_active` among the
-// done tasks under it AS OF the last time the user opened it. A done task with a
-// later stamp is a completion the user has not opened the app for since, and
-// the dot is on. `last_active` moves with every message, so a task that speaks
-// again after being seen lights the dot again — the same reasoning as
-// tasks-lib.TasksSeen, per app instead of per task.
+// So the app row itself carries the stamp — `opened_at` in the desk's own
+// store (current_apps.json, written by POST /api/current-apps/open with the
+// server's clock). A done task under the app whose `last_active` (the same
+// server clock) is later than the stamp is a completion the user has not opened
+// the app for since, and the dot is on. `last_active` moves with every message,
+// so a task that speaks again after the open lights the dot again — the same
+// reasoning as tasks-lib.TasksSeen, per app instead of per task. The desk
+// store rather than localStorage because the stamp is a fact about the desk,
+// like the row's addedAt: it belongs beside the row and follows the user to
+// every window on this machine (owner, 2026-09-07).
 //
-// An app with NO stamp has never been opened since this shipped. For it the
-// old rule holds — a done task with unread output — so the upgrade changes
-// nothing on screen: apps whose tasks were read stay quiet rather than every
-// old completion lighting at once. The first open stamps it and it is on the
-// new rule from then on.
-//
-// The store is localStorage, for the reasons `appOrder` gives below, written
-// only by the open gesture (one writer, no poll race).
-
-/** app path -> `last_active` of the newest completion seen under it. */
-export type ProjectsSeen = Record<string, number>;
+// A row with NO stamp has never been opened since this shipped. For it the old
+// rule holds — a done task with unread output — so the upgrade changes nothing
+// on screen: apps whose tasks were read stay quiet rather than every old
+// completion lighting at once. The first open stamps it and it is on the new
+// rule from then on.
 
 /** The done tasks' fields the rule reads. */
 export type DoneStamp = Pick<TaskPulseTask, "project" | "last_active" | "unread">;
 
-/** Does `app` have a completion the user has not opened it for? `done` is the
- *  pulse's Done-lane rows (any project — the containment test is here). */
+/** Does the app at `path`, opened at `openedAt` (null: never), have a completion
+ *  the user has not opened it for? `done` is the pulse's Done-lane rows (any
+ *  project — the containment test is here). */
 export function projectUnread(
-  app: string,
+  path: string,
+  openedAt: number | null | undefined,
   done: Iterable<DoneStamp>,
-  seen: ProjectsSeen,
 ): boolean {
-  const stamp = seen[app];
   for (const t of done) {
-    if (!isUnderDir(t.project || "", app)) continue;
-    if (stamp === undefined ? t.unread > 0 : t.last_active > stamp) return true;
+    if (!isUnderDir(t.project || "", path)) continue;
+    if (openedAt == null ? t.unread > 0 : t.last_active > openedAt) return true;
   }
   return false;
 }
 
-/** `seen` after the user opened `app`: stamped with the newest completion under
- *  it (0 when none — the stamp still records that the app was opened, so the
- *  fallback rule no longer applies). Pruned to `live` (the apps on the desk), so
- *  the store cannot grow past the list it describes; guarded on a non-empty
- *  list so an unloaded list cannot wipe it. */
-export function seenAfterOpen(
-  seen: ProjectsSeen,
-  app: string,
-  done: Iterable<DoneStamp>,
-  live: Iterable<string>,
-): ProjectsSeen {
-  const keep = new Set(live);
-  const next: ProjectsSeen = {};
-  for (const [k, v] of Object.entries(seen)) {
-    if (!keep.size || keep.has(k)) next[k] = v;
-  }
-  let at = 0;
-  for (const t of done) {
-    if (isUnderDir(t.project || "", app)) at = Math.max(at, t.last_active);
-  }
-  next[app] = at;
-  return next;
-}
-
-/** What came out of localStorage is a string written by SOMEONE ELSE (an older
- *  build, a hand-edited devtools row): anything unreadable degrades to "no app
- *  opened yet" — the fallback rule — rather than throwing inside a render. */
-export function parseProjectsSeen(raw: string | null): ProjectsSeen {
-  if (!raw) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {};
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-  const out: ProjectsSeen = {};
-  for (const [key, at] of Object.entries(parsed as Record<string, unknown>)) {
-    if (typeof at === "number" && Number.isFinite(at)) out[key] = at;
-  }
-  return out;
+/** The later of the server's stamp and the client's optimistic one; null when
+ *  neither exists (never opened). */
+function latestOpen(server: number | null | undefined, local: number | undefined): number | null {
+  if (server == null) return local ?? null;
+  return local === undefined ? server : Math.max(server, local);
 }
 
 /** The store's rows as sidebar rows, in the store's ADDED order (oldest
  *  first), with the running dot read off the projects of the tasks currently
- *  in progress and the unread dot off `projectUnread` (done rows + stamps). */
+ *  in progress and the unread dot off `projectUnread` (the Done-lane rows
+ *  against each row's `opened_at`). `openedOverride` is the client's optimistic
+ *  stamp for a row it just opened, ahead of the refetch. */
 export function currentApps(
   entries: CurrentAppEntry[],
   runningProjects: Iterable<string>,
   done: Iterable<DoneStamp> = [],
-  seen: ProjectsSeen = {},
+  openedOverride: ReadonlyMap<string, number> = new Map(),
 ): CurrentApp[] {
   const live = [...runningProjects];
   const finished = [...done];
@@ -174,7 +138,7 @@ export function currentApps(
     kind: e.kind,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
-    unread: projectUnread(e.path, finished, seen),
+    unread: projectUnread(e.path, latestOpen(e.opened_at, openedOverride.get(e.path)), finished),
     iconUrl: e.icon ? iconUrlFor(e.icon, e.icon_mtime) : null,
   }));
 }

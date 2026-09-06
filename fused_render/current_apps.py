@@ -2,7 +2,8 @@
 
 ``~/.fused-render/current_apps.json``::
 
-    {"apps": [{"path": "/Users/me/Fused/local/foo", "addedAt": "<iso>"}],
+    {"apps": [{"path": "/Users/me/Fused/local/foo", "addedAt": "<iso>",
+               "openedAt": <epoch, optional — see mark_opened>}],
      "seen": ["<task key>", ...]}
 
 The sidebar's "Current apps" section (D487) used to DERIVE this list from the
@@ -201,6 +202,26 @@ def remove(path: str) -> bool:
     return True
 
 
+def mark_opened(path: str, at: float) -> bool:
+    """Stamp `path` as OPENED at `at` (epoch seconds, the server's clock) — the
+    row's ``openedAt``. The sidebar's green dot is the app's own unread state
+    (owner, 2026-09-07): a task finishing under the app lights it, and only
+    opening the app clears it — whatever is done to the task. The client
+    judges a done task's ``last_active`` (the same server clock) against this
+    stamp, so it lives in this table beside the app, not in the browser: it
+    is a fact about the desk, and it should follow the user across windows.
+    True when the row exists and was stamped; False for a path not on the desk
+    (nothing to clear on)."""
+    folder = canonical_fs_path(os.path.abspath(path)).rstrip("/")
+    state = read_state()
+    for a in state["apps"]:
+        if a["path"] == folder:
+            a["openedAt"] = float(at)
+            write_state(state)
+            return True
+    return False
+
+
 def _added_epoch(ts) -> float | None:
     if not isinstance(ts, str):
         return None
@@ -231,8 +252,10 @@ def list_apps() -> list[dict]:
     (folder name), ``kind`` (``linked`` for a registry folder, ``workspace``
     otherwise), ``entry`` (the page to run, or None), ``exists``, ``icon`` /
     ``icon_mtime`` (the optional ``icon.svg``, see `app_icon`), ``added_at``
-    (epoch). A folder that is gone or unreadable still lists — the row is the
-    user's to remove — with ``exists`` false and no entry."""
+    (epoch), ``opened_at`` (epoch of the last `mark_opened`, or None for a row
+    never opened since the stamp shipped). A folder that is gone or unreadable
+    still lists — the row is the user's to remove — with ``exists`` false and
+    no entry."""
     linked = {
         canonical_fs_path(os.path.abspath(e["path"])).rstrip("/")
         for e in registered_apps.read_entries()
@@ -261,5 +284,7 @@ def list_apps() -> list[dict]:
             "icon": icon["icon"] if icon else None,
             "icon_mtime": icon["mtime"] if icon else None,
             "added_at": _added_epoch(a.get("addedAt")),
+            "opened_at": (a["openedAt"] if isinstance(a.get("openedAt"), (int, float))
+                          else None),
         })
     return out

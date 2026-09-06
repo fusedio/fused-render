@@ -27,6 +27,7 @@ import React, {
 import {
   archiveCurrentAppTasks,
   getCurrentApps,
+  openCurrentApp,
   readCurrentAppTasks,
   removeAppIcon,
   removeCurrentApp,
@@ -53,58 +54,16 @@ import {
   currentApps,
   moveSlug,
   orderedSlugs,
-  parseProjectsSeen,
   parseSavedOrder,
   reorderTo,
-  seenAfterOpen,
   type AppOrder,
   type CurrentApp,
   type DoneStamp,
-  type ProjectsSeen,
 } from "@shell/current-apps-lib";
 
 // Bumped from `current-apps-order` with the redesign: the saved list was slugs
 // and is folder paths now, and a slug-shaped order would match nothing.
 export const ORDER_KEY = "fused-render:current-apps-order:v2";
-
-// The per-app unread stamps (current-apps-lib.ProjectsSeen): app path -> the
-// newest completion under it the user has opened the app for. Same store shape
-// and wiring as `appOrder` below — hydrated at import, written by ONE gesture
-// (opening an app), heard cross-tab through `storage`.
-export const PROJECTS_SEEN_KEY = "fused-render:current-apps-seen:v1";
-
-let projectsSeen: ProjectsSeen = {};
-
-function readProjectsSeen(): ProjectsSeen {
-  try {
-    return parseProjectsSeen(localStorage.getItem(PROJECTS_SEEN_KEY));
-  } catch {
-    return {};
-  }
-}
-
-function saveProjectsSeen(next: ProjectsSeen): void {
-  projectsSeen = next;
-  try {
-    localStorage.setItem(PROJECTS_SEEN_KEY, JSON.stringify(next));
-  } catch {
-    // A blocked store just means the dot's memory lasts as long as the page.
-  }
-}
-
-// Mounted sections, so an open in another tab clears the dot in this one.
-const seenListeners = new Set<() => void>();
-
-try {
-  projectsSeen = readProjectsSeen();
-  window.addEventListener("storage", (e: StorageEvent) => {
-    if (e.key !== PROJECTS_SEEN_KEY) return;
-    projectsSeen = parseProjectsSeen(e.newValue);
-    for (const listener of seenListeners) listener();
-  });
-} catch {
-  // No store and no window: the stamps live and die with this page.
-}
 
 /** The picked emoji as a standalone icon.svg document — square viewBox, no
  *  fixed size, transparent ground (a colour emoji carries its own colours, so
@@ -431,35 +390,40 @@ export default function CurrentAppsSection() {
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const entries = useCurrentApps(keySignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
-  // turns that mutation into a render. `seenEpoch` is the same for the stamps.
+  // turns that mutation into a render.
   const [orderEpoch, setOrderEpoch] = useState(0);
-  const [seenEpoch, setSeenEpoch] = useState(0);
+  // The stamp lives on the server row (`opened_at`); this is the client's
+  // optimistic copy for the row just opened, so the dot goes out on the click
+  // and not on the refetch. Held per path, never dropped: the server's stamp
+  // overtakes it on the next fetch (current-apps-lib.latestOpen), and a stale
+  // override cannot re-light anything since it only ever raises the stamp.
+  const [openedLocal, setOpenedLocal] = useState<ReadonlyMap<string, number>>(
+    () => new Map(),
+  );
   const apps = useMemo(() => {
-    const found = currentApps(entries, runningProjects, doneRows, projectsSeen);
+    const found = currentApps(entries, runningProjects, doneRows, openedLocal);
     // Assigning during render is safe because it is idempotent: an app that
     // already has a sequence keeps it, so a double-invoked render (StrictMode)
     // or a re-run on the same rows cannot renumber anything.
     assignSequences(appOrder, found);
     return bySequence(found, appOrder);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal, seenEpoch the stamp signal
-  }, [entries, runningProjects, doneRows, orderEpoch, seenEpoch]);
-  // The one writer of the stamps: the user opened `path`. Pruned to the apps on
-  // the desk, so a removed app's stamp goes with it.
-  const onSeen = useCallback(
-    (path: string) => {
-      saveProjectsSeen(
-        seenAfterOpen(projectsSeen, path, doneRows, entries.map((e) => e.path)),
-      );
-      setSeenEpoch((n) => n + 1);
-    },
-    [doneRows, entries],
-  );
-  useEffect(() => {
-    const bump = () => setSeenEpoch((n) => n + 1);
-    seenListeners.add(bump);
-    return () => {
-      seenListeners.delete(bump);
-    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
+  }, [entries, runningProjects, doneRows, openedLocal, orderEpoch]);
+  // The user opened `path`: stamp the row on the server (POST
+  // /api/current-apps/open) and, ahead of the answer, locally with the client
+  // clock. The server's stamp replaces the guess when the answer lands — the
+  // two clocks are the same machine, and the answer's `opened_at` is the truth
+  // the tasks' `last_active` is measured on.
+  const onSeen = useCallback((path: string) => {
+    const guess = Date.now() / 1000;
+    setOpenedLocal((m) => new Map(m).set(path, guess));
+    openCurrentApp(path).then(
+      (r) => setOpenedLocal((m) => new Map(m).set(path, r.opened_at)),
+      () => {
+        // A failed stamp leaves the guess: the dot stays out for this page,
+        // and comes back on the next launch if the server never heard.
+      },
+    );
   }, []);
   // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
   // those move rows on screen and write nothing to the store; the saved order is
