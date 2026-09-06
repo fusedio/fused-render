@@ -8181,7 +8181,11 @@ function annDiscard() { return annRecOn ? annRecDiscard() : annNotesDiscard(); }
 let annLeaveGen = 0;
 function annLeave() {
   annLeaveGen += 1;
-  if (annRecOn) { annRecDiscard(); return; }
+  // A live walkthrough: discarded (its own marks go with it, async), and the
+  // sweep below still drops any OTHER unsent notes — chips an earlier, closed
+  // round left behind (Bugbot, PR #1025). annRecDiscard's own disarm is
+  // epoch-guarded, so the one below does not echo.
+  if (annRecOn) annRecDiscard();
   annCloseComposer();
   const keep = annotations.filter((a) => a.sent);
   if (keep.length !== annotations.length) {
@@ -12835,10 +12839,6 @@ document.getElementById("back").onclick = () => {
 };
 
 function enterChat() {
-  // Entering a chat from the landing closes and discards unsent annotation
-  // work, exactly as ← Chats does (Akshil, 2026-09-06) — see annLeave.
-  // Nothing is armed or pending at boot, so the resume path is a no-op here.
-  annLeave();
   chatEl.classList.remove("home");
   stopWatchRecent();
   // The strip belongs to ONE conversation. Chips from the previous chat are
@@ -17732,6 +17732,11 @@ function addChatRow(list, s) {
     // move, and the same URL, "open this task" makes from the Tasks list.
     if (pane) return openPaneChat(pane, s.id);
     fused.params.set("session_id", s.id);
+    // Opening a PAST chat closes and discards unsent annotation work, exactly
+    // as ← Chats does (Akshil, 2026-09-06) — see annLeave. HERE and not in
+    // enterChat (Bugbot, PR #1025): a send from the home composer enters chat
+    // too, and its notes are the message — annPending is read after this.
+    annLeave();
     showSession();
     enterChat();
     await loadHistory(s.id);
