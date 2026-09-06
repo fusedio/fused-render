@@ -6992,6 +6992,9 @@ describe("the Cards view's frame", () => {
     // ...and a gone folder frames nothing even when the module-level template
     // cache still holds its path (Bugbot: deleted between two visits).
     expect(CARDS.split("const gone = folderMissing;").length).toBe(3);
+    // ...and a gone folder never wears the resolving skeleton while its template
+    // stat is still out (Bugbot): the sentence wins the moment the page knows.
+    expect(CARDS.split("const resolving = !src && !folderMissing && !!task.session_id && template === undefined;").length).toBe(3);
     expect(CARDS).toContain("task.session_id && template && !folderMissing\n    ? cardFrameSrc(");
     expect(CARDS).toContain("task.session_id && template && !folderMissing\n    ? peekFrameSrc(");
     // ...and the folder door goes DISABLED, saying why on hover and on press, on

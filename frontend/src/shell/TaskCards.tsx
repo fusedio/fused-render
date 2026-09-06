@@ -440,7 +440,7 @@ function TaskCard({
   // milliseconds from having. That is a chat that has not arrived yet, not a
   // run that has not started, so it wears the frame's own skeleton and says
   // nothing. "Starting…" here was the wall's popcorn (design.md).
-  const resolving = !src && !!task.session_id && template === undefined;
+  const resolving = !src && !folderMissing && !!task.session_id && template === undefined;
 
   return (
     <section className="task-card" aria-label={`${task.task_id} ${title}`}>
@@ -627,7 +627,7 @@ function TaskPeek({
     ? peekFrameSrc(template, task.target || task.project, task.session_id)
     : null;
   // The card's third and fourth states, for the card's reasons (TaskCard, above).
-  const resolving = !src && !!task.session_id && template === undefined;
+  const resolving = !src && !folderMissing && !!task.session_id && template === undefined;
   const gone = folderMissing;
   // The List row's own fallback: a run with no session yet is still reachable
   // through its folder (schedule-lib, above `folderHref`) — unless the folder
