@@ -21,6 +21,15 @@ what the user sees or does**. Written from the AI Models Playground migration
 
 ## Layers (already in place, extend — don't fork)
 
+0. **Design scale** — `frontend/src/styles/scale.css` (type roles, 4px
+   spacing, radius ladder, control heights, durations, easings, fonts) with
+   `tailwind.css` mapping the same vars to `text-<role>`, `rounded-<name>`,
+   `ease-glide`. Composites say `text-dense p-3 rounded-card`; legacy CSS says
+   `var(--text-dense) var(--space-3) var(--radius-card)`; both resolve to one
+   value. `tests/test_design_scale.py` refuses px literals for those
+   properties anywhere else (allowlist: `tests/design_scale_allowlist.txt`).
+   Full reference: `docs/DESIGN_SYSTEM.md`.
+
 1. **Token bridge** — `frontend/src/styles/tailwind.css`. Every shadcn
    semantic var aliases a `tokens.css` token in one `:root` block; light/dark
    comes free from `tokens.css`. `primary` = the app's filled button
