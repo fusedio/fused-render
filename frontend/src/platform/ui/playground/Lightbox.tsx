@@ -68,7 +68,7 @@ export function Lightbox({
  *  it, and the click is swallowed there too (by the caller's own
  *  `stopPropagation`). */
 export const lightboxImageClass =
-  "max-h-full max-w-full cursor-default rounded-[8px] shadow-[0_18px_48px_var(--scrim-lift)]";
+  "max-h-full max-w-full cursor-default rounded-md shadow-[0_18px_48px_var(--scrim-lift)]";
 
 /** Fixed scrim colours, not theme ones: this chip sits on arbitrary photo
  *  pixels, so the values are the same in both palettes by design — and they are
@@ -77,7 +77,7 @@ export function LightboxClose({ className, ...props }: ComponentProps<"button">)
   return (
     <button
       className={cn(
-        "absolute top-4 right-5 h-[34px] w-[34px] cursor-pointer rounded-[8px] border-none bg-[var(--scrim-chip-bg)] text-[15px] leading-none text-[var(--scrim-fg)]",
+        "absolute top-4 right-5 h-[34px] w-[34px] cursor-pointer rounded-md border-none bg-[var(--scrim-chip-bg)] text-title leading-none text-[var(--scrim-fg)]",
         INHERIT_FONT_FACE,
         "hover:bg-[var(--scrim-chip-bg-hover)]",
         className,
@@ -94,7 +94,7 @@ export function LightboxBox({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "flex max-h-full min-h-0 max-w-full cursor-default flex-col items-center gap-[14px]",
+        "flex max-h-full min-h-0 max-w-full cursor-default flex-col items-center gap-3.5",
         className,
       )}
       {...props}
@@ -107,4 +107,4 @@ export function LightboxBox({ className, ...props }: ComponentProps<"div">) {
  *  the capture draws the raw frame, so what lands on disk is what the lens
  *  saw. */
 export const webcamVideoClass =
-  "max-h-[calc(100vh_-_180px)] max-w-full rounded-[8px] bg-[var(--scrim-letterbox)] shadow-[0_18px_48px_var(--scrim-lift)] [transform:scaleX(-1)]";
+  "max-h-[calc(100vh_-_180px)] max-w-full rounded-md bg-[var(--scrim-letterbox)] shadow-[0_18px_48px_var(--scrim-lift)] [transform:scaleX(-1)]";

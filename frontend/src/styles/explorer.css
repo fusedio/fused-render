@@ -35,8 +35,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: var(--topbar-pad-y) 16px;
+  gap: var(--space-2-5);
+  padding: var(--topbar-pad-y) var(--space-4);
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
   /* Exact, so the bar neither grows when the portaled mode control lands after
@@ -54,7 +54,7 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 
 /* ★ bookmark button, at the tail of the path. Subtle: bare glyph, no box —
@@ -69,15 +69,15 @@
   justify-content: center;
   /* 5px around a 14px glyph = the same 24px box (and hover pill) the 16px
      glyph used to make, so shrinking the star cost no hit area. */
-  padding: 5px;
+  padding: var(--space-1-5);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
   transition:
-    color var(--dur-fast) var(--ease-out),
-    background-color var(--dur-fast) var(--ease-out);
+    color var(--dur-instant) var(--ease-out),
+    background-color var(--dur-instant) var(--ease-out);
 }
 
 /* Optical, not geometric: the star box centres on the crumb row's centre
@@ -106,7 +106,7 @@
    read as the star touching it (Akshil: "a little more padding"). 13px of
    air: looser than the 8px crumb gap, still inside the path's zone. */
 #breadcrumb .bookmark-star-btn {
-  margin-left: -6px;
+  margin-left: calc(-1 * var(--space-1-5));
 }
 
 .bookmark-star-btn:hover {
@@ -134,7 +134,7 @@
   overflow-x: auto;
   white-space: nowrap;
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--text-meta);
 }
 
 /* GNOME-path-bar behaviour, main bar only (the panel pane does the same at
@@ -216,10 +216,10 @@
   flex: 1 1 auto;
   min-width: 0;
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
-  padding: 2px 6px;
+  font-size: var(--text-meta);
+  padding: var(--space-0-5) var(--space-1-5);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--bg-alt);
   color: var(--fg);
 }
@@ -242,8 +242,8 @@
   color: color-mix(in srgb, var(--fg) 60%, var(--fg-muted));
   text-decoration: none;
   cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 6px;
+  padding: var(--space-0-5) var(--space-1);
+  border-radius: var(--radius-control);
 }
 
 /* GNOME-style compress-then-scroll truncation, main bar only (the panel pane
@@ -280,7 +280,7 @@
      reason, and only for that reason. */
   --crumb-hit: 20px;
   position: relative;
-  padding-block: calc(2px + var(--crumb-hit));
+  padding-block: calc(var(--space-0-5) + var(--crumb-hit));
   margin-block: calc(-1 * var(--crumb-hit));
 }
 
@@ -292,7 +292,7 @@
   content: "";
   position: absolute;
   inset: var(--crumb-hit) 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   pointer-events: none;
 }
 
@@ -385,7 +385,7 @@
 .path-crumb-sep,
 .panel-crumb-sep {
   color: var(--fg-muted);
-  margin: 0 4px;
+  margin: 0 var(--space-1);
 }
 
 /* Crumb hover, both bars — fg brighten + underline, no accent yellow. The
@@ -401,7 +401,7 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* The portal target collapses entirely when no view has filled it (loading,
@@ -463,14 +463,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 28px;
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   line-height: 1;
   color: var(--fg-muted);
   cursor: pointer;
@@ -529,7 +529,7 @@
   flex: 0 0 auto;
   width: 1px;
   height: 18px;
-  margin: 0 10px;
+  margin: 0 var(--space-2-5);
   background: var(--border);
 }
 
@@ -537,7 +537,7 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 
 /* ---- a side column's HEADER STRIP, and there are two of them --------------
@@ -567,7 +567,7 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-left: auto;
 }
 
@@ -658,10 +658,10 @@
   flex-direction: column;
   gap: 1px;
   width: max-content;
-  padding: 4px;
+  padding: var(--space-1);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 8px 24px var(--shadow-md);
 }
 
@@ -676,14 +676,14 @@
 .bar-menu-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   width: 100%;
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--text-dense);
   color: var(--fg);
   text-align: left;
   cursor: pointer;
@@ -753,18 +753,18 @@
 .bar-menu-sep {
   flex: 0 0 auto;
   height: 1px;
-  margin: 4px 8px;
+  margin: var(--space-1) var(--space-2);
   background: var(--border);
 }
 
 .star-btn {
   flex: 0 0 auto;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--text-dense);
   white-space: nowrap;
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg);
   color: var(--fg-muted);
   cursor: pointer;
@@ -828,7 +828,7 @@
      the bar portals into the listing's left column and fades in with the
      content it now belongs to. Replays because App keys this node on the nav
      epoch (an iframe's param write doesn't bump it). */
-  animation: content-in 110ms var(--ease-out);
+  animation: content-in var(--dur-instant) var(--ease-out);
 }
 
 @keyframes content-in {
@@ -941,7 +941,7 @@
      figures don't share the cell with the button, so they keep the full
      width. */
   table.listing-table thead th.col-size {
-    padding-right: 34px;
+    padding-right: var(--space-8);
   }
 }
 
@@ -972,7 +972,7 @@
   flex: 0 0 5px;
   cursor: col-resize;
   background: transparent;
-  margin: 0 -2px;
+  margin: 0 calc(-1 * var(--space-0-5));
   z-index: 2;
   /* The drag is pointer-captured; without this, touch scrolling fights it. */
   touch-action: none;
@@ -1070,12 +1070,12 @@
   margin: auto;
   text-align: center;
   color: var(--fg-muted);
-  padding: 32px;
+  padding: var(--space-8);
 }
 
 .listing-pane .pane-big-icon {
   display: inline-flex;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .listing-pane .pane-big-icon .file-icon {
@@ -1086,21 +1086,21 @@
 
 .listing-pane .pane-title {
   color: var(--fg);
-  font-size: 15px;
-  margin-bottom: 4px;
+  font-size: var(--text-title);
+  margin-bottom: var(--space-1);
   word-break: break-all;
 }
 
 .listing-pane .pane-hint {
-  font-size: 12.5px;
+  font-size: var(--text-dense);
 }
 
 .listing-pane .pane-open-btn {
-  margin-top: 14px;
+  margin-top: var(--space-3-5);
   font: inherit;
-  padding: 6px 14px;
+  padding: var(--space-1-5) var(--space-3-5);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg);
   color: var(--fg);
   cursor: pointer;
@@ -1140,8 +1140,8 @@
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 8px;
-  padding: var(--topbar-pad-y) 10px;
+  gap: var(--space-2);
+  padding: var(--topbar-pad-y) var(--space-2-5);
   height: var(--topbar-h);
   box-sizing: border-box;
   border-bottom: 1px solid var(--border);
@@ -1162,7 +1162,7 @@ table.pane-mini-list {
 }
 
 table.pane-mini-list td {
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
   overflow: hidden;
@@ -1184,7 +1184,7 @@ table.pane-mini-list tr.row.ignored td.name {
 table.pane-mini-list td.name {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 table.pane-mini-list td.name .label {
@@ -1200,7 +1200,7 @@ table.pane-mini-list td.size {
 }
 
 table.pane-mini-list td.status-message {
-  padding: 14px 10px;
+  padding: var(--space-3-5) var(--space-2-5);
 }
 
 /* Skeleton loading state: shimmering bars shaped like the real listing rows
@@ -1209,7 +1209,7 @@ table.pane-mini-list td.status-message {
 .skel-bar {
   display: inline-block;
   height: 10px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
   background-size: 200% 100%;
   animation: skel-shimmer 1.2s ease-in-out infinite;
@@ -1218,7 +1218,7 @@ table.pane-mini-list td.status-message {
 .skel-bar.icon-skel {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   flex: 0 0 auto;
 }
 
@@ -1244,15 +1244,15 @@ table.listing-table tr.skel-row:hover {
 .skel-lines {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
   max-width: 420px;
-  padding: 6px 0;
+  padding: var(--space-1-5) 0;
 }
 
 .listing-pane .pane-skel {
   flex: 1 1 auto;
-  margin: 14px;
-  border-radius: 8px;
+  margin: var(--space-3-5);
+  border-radius: var(--radius-md);
   background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
   background-size: 200% 100%;
   animation: skel-shimmer 1.2s ease-in-out infinite;
@@ -1269,10 +1269,10 @@ table.listing-table tr.skel-row:hover {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: var(--topbar-h);
   box-sizing: border-box;
-  padding: var(--topbar-pad-y) 16px;
+  padding: var(--topbar-pad-y) var(--space-4);
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
@@ -1284,7 +1284,7 @@ table.listing-table tr.skel-row:hover {
    above them ends on. Hang the button into the padding so the glyph, not the
    box, lines up; the 28px hit area is unchanged. */
 .listing-search > .bar-overflow:last-child {
-  margin-right: -6px;
+  margin-right: calc(-1 * var(--space-1-5));
 }
 
 /* ---- …and the same row once it has moved INTO the crumb bar --------------
@@ -1411,7 +1411,7 @@ table.listing-table tr.skel-row:hover {
   flex: 0 0 0px;
   width: 0;
   min-width: 0;
-  margin-left: -8px;
+  margin-left: calc(-1 * var(--space-2));
   overflow: hidden;
   opacity: 0;
 }
@@ -1486,7 +1486,7 @@ table.listing-table tr.skel-row:hover {
      `flex-grow` is the animated property because grow, not `width`, is what
      spans the strip; the row's own grow above is instant, so the field opens
      leftward from the bar's right edge (`justify-content: flex-end`). */
-  transition: flex-grow 130ms ease-out;
+  transition: flex-grow var(--dur-instant) ease-out;
 }
 
 /* Terse now ("1.2K · 45.1K…" rather than the full sentence — Listing.tsx keeps
@@ -1536,11 +1536,11 @@ table.listing-table tr.skel-row:hover {
 
 .listing-search .listing-search-input {
   width: 100%;
-  padding-right: 10px;
+  padding-right: var(--space-2-5);
   /* Room for the magnifier below: 9px gutter + a 14px glyph + 5px before the
      text. The glyph is out of flow, so this padding is the only thing keeping
      the placeholder and the caret off it. */
-  padding-left: 28px;
+  padding-left: var(--space-7);
 }
 
 /* The magnifier INSIDE the field's left edge — the same glyph the tight-bar
@@ -1589,7 +1589,7 @@ table.listing-table tr.skel-row:hover {
   top: 50%;
   transform: translateY(-50%);
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
   white-space: nowrap;
   pointer-events: none;
 }
@@ -1621,7 +1621,7 @@ table.listing-table tr.skel-row:hover {
   top: 50%;
   width: 11px;
   height: 11px;
-  margin-top: -5.5px;
+  margin-top: calc(-1 * var(--space-1-5));
   border: 1.5px solid var(--border);
   border-top-color: var(--fg-muted);
   border-radius: 50%;
@@ -1639,7 +1639,7 @@ table.listing-table tr.skel-row:hover {
    value) is catching up to the latest keystroke on a large search. */
 .listing-stale {
   opacity: 0.6;
-  transition: opacity 0.1s ease-out;
+  transition: opacity var(--dur-instant) ease-out;
 }
 
 /* Results a generation behind, with nothing on its way to replace them: the
@@ -1657,12 +1657,12 @@ table.listing-table tr.skel-row:hover {
 .listing-search-input {
   width: 100%;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: var(--radius-control);
+  padding: var(--space-1-5) var(--space-2-5);
 }
 
 .listing-search-input::placeholder {
@@ -1680,7 +1680,7 @@ table.listing-table tr.skel-row:hover {
 .search-mark {
   background: rgba(var(--accent-rgb), 0.22);
   color: var(--fg);
-  border-radius: 2px;
+  border-radius: var(--radius-hairline);
 }
 
 /* Relative path shown in an explorer search row, in place of a bare name. */
@@ -1744,17 +1744,17 @@ table.listing-table th.col-size {
    so the label and its sort arrow have to stop short of it. */
 table.listing-table th.col-mtime {
   width: 172px;
-  padding-right: 34px;
+  padding-right: var(--space-8);
 }
 
 table.listing-table th {
   text-align: left;
   font-weight: 600;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  padding: 8px 16px;
+  padding: var(--space-2) var(--space-4);
   position: sticky;
   top: 0;
   z-index: 1; /* stay above rows scrolling underneath */
@@ -1785,11 +1785,11 @@ table.listing-table .listing-head-menu {
   height: 22px;
   padding: 0;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: background 90ms var(--ease-out), color 90ms var(--ease-out);
+  transition: background var(--dur-instant) var(--ease-out), color var(--dur-instant) var(--ease-out);
 }
 
 /* The same wash every other quiet icon button in the chrome uses (.bar-ctl). */
@@ -1824,10 +1824,10 @@ table.listing-table th.sorted {
    to a different column DOES replace it — that one fades in. */
 table.listing-table .sort-arrow {
   display: inline-block;
-  margin-left: 5px;
-  font-size: 9px;
-  transition: transform 100ms var(--ease-out);
-  animation: sort-arrow-in 100ms var(--ease-out);
+  margin-left: var(--space-1-5);
+  font-size: var(--text-micro);
+  transition: transform var(--dur-instant) var(--ease-out);
+  animation: sort-arrow-in var(--dur-instant) var(--ease-out);
 }
 
 table.listing-table .sort-arrow.desc {
@@ -1868,7 +1868,7 @@ table.listing-table tr.row.flip-animating {
 }
 
 table.listing-table td {
-  padding: 9px 16px;
+  padding: var(--space-2-5) var(--space-4);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
   overflow: hidden;
@@ -2018,14 +2018,14 @@ body.fs-dragging.fs-drag-refused * {
   will-change: transform;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 260px;
-  padding: 5px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   border: 1px solid var(--accent);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--bg-panel);
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--text-meta);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2035,11 +2035,11 @@ body.fs-dragging.fs-drag-refused * {
 .fs-drag-count {
   flex: none;
   min-width: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
+  padding: 0 var(--space-1-5);
+  border-radius: var(--radius-card);
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 600;
   text-align: center;
 }
@@ -2047,8 +2047,8 @@ body.fs-dragging.fs-drag-refused * {
 table.listing-table td.name {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 14px;
+  gap: var(--space-2);
+  font-size: var(--text-body);
   /* Positioning context for .clip-mark below. */
   position: relative;
 }
@@ -2068,7 +2068,7 @@ table.listing-table td.name {
 table.listing-table td.name .row-handle {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -2107,14 +2107,14 @@ table.listing-table tr.row.selected {
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   line-height: 1;
   /* 2px + the 1px border = the 3px the pill reads as */
-  padding: 2px 5px;
-  border-radius: 4px;
+  padding: var(--space-0-5) var(--space-1-5);
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border);
   color: var(--fg-muted);
   background: var(--bg-alt);

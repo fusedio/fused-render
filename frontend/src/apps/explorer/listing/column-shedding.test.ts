@@ -111,7 +111,10 @@ test("SIZE's header reserves berth for the folder ⋮ while MODIFIED is shed", (
   const wide = shedding.find((b) => /th\.col-mtime[^{]*\{[^}]*width:\s*0/s.test(b.body));
   expect(wide).toBeDefined();
   const berth = ruleFor(wide!.body, "th.col-size");
-  expect(berth).toMatch(/padding-right:\s*\d+px/);
+  // The 96/116/210px column-reservation literals below stayed literals by design
+  // (allowlisted); this berth rule now reads var(--space-8) after the design-scale
+  // rewrite, so accept either form (2026-09-06).
+  expect(berth).toMatch(/padding-right:\s*(\d+px|var\(--space-[\w-]+\))/);
   expect(berth).not.toMatch(/width:/);
 });
 

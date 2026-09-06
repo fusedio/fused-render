@@ -36,9 +36,9 @@ export function StarterPill({ className, ...props }: ComponentProps<"button">) {
   return (
     <button
       className={cn(
-        "group/starter flex flex-none cursor-pointer items-center gap-2 rounded-[999px] border border-solid border-[var(--border)] bg-transparent px-3.5 py-[7px] text-left text-[12.5px] whitespace-nowrap text-[var(--fg-muted)]",
+        "group/starter flex flex-none cursor-pointer items-center gap-2 rounded-pill border border-solid border-[var(--border)] bg-transparent px-3.5 py-2 text-left text-dense whitespace-nowrap text-[var(--fg-muted)]",
         INHERIT_FONT,
-        "transition-[color,border-color] duration-[.12s] ease-[ease]",
+        "transition-[color,border-color] duration-(--dur-fast) ease-[ease]",
         "hover:border-[var(--accent)] hover:text-[var(--fg)]",
         className,
       )}
@@ -69,7 +69,7 @@ export function StarterRotate({ className, ...props }: ComponentProps<"button">)
   return (
     <button
       className={cn(
-        "flex h-[33px] w-[33px] flex-none cursor-pointer items-center justify-center rounded-[50%] border border-solid border-[var(--border)] bg-transparent p-0 text-[var(--fg-muted)]",
+        "flex h-[33px] w-[33px] flex-none cursor-pointer items-center justify-center rounded-full border border-solid border-[var(--border)] bg-transparent p-0 text-[var(--fg-muted)]",
         "[&_svg]:h-[15px] [&_svg]:w-[15px]",
         "hover:border-[var(--accent)] hover:bg-[rgba(var(--accent-rgb),0.08)] hover:text-[var(--fg)]",
         className,

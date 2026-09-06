@@ -5,6 +5,7 @@
  * Palette tokens live in styles/tokens.css (tests/test_theme.py). */
 @import "./styles/tailwind.css";
 @import "./styles/tokens.css";
+@import "./styles/scale.css";
 @import "./styles/base.css";
 @import "./styles/sidebar.css";
 @import "./styles/explorer.css";

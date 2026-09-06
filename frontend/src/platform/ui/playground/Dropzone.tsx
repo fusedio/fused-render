@@ -8,7 +8,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@platform/lib/utils";
 
 export const dropzoneVariants = cva(
-  "flex items-center gap-4 rounded-[12px] border-[1.5px] p-[18px]",
+  "flex items-center gap-4 rounded-panel border-[1.5px] p-4",
   {
     variants: {
       dragging: {
@@ -39,11 +39,11 @@ export function DropCopy({ className, ...props }: ComponentProps<"div">) {
 }
 
 export function DropTitle({ className, ...props }: ComponentProps<"p">) {
-  return <p className={cn("m-0 text-[13.5px] font-semibold", className)} {...props} />;
+  return <p className={cn("m-0 text-body font-semibold", className)} {...props} />;
 }
 
 export function DropSub({ className, ...props }: ComponentProps<"p">) {
-  return <p className={cn("m-0 text-[12.5px] text-[var(--fg-muted)]", className)} {...props} />;
+  return <p className={cn("m-0 text-dense text-[var(--fg-muted)]", className)} {...props} />;
 }
 
 /** A <label> lying over a file input that covers it completely — the whole word

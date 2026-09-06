@@ -40,6 +40,8 @@ Four invariants, all from the same run of reviews (Akshil, 2026-08-17):
 import os
 import re
 
+from _theme_sources import read_repo_file
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CSS = os.path.join(REPO_ROOT, "frontend", "src", "styles", "new-task.css")
 
@@ -97,10 +99,22 @@ def _fills(css: str) -> list[tuple[str, str]]:
 _SURFACE = ("new-task-field", "new-task-title", "new-task-ask")
 
 
+def _scale() -> dict[str, str]:
+    """The design scale's steps, so a `var(--text-dense)` resolves to its px."""
+    text = read_repo_file("frontend/src/styles/scale.css")
+    return dict(re.findall(r"^\s*(--[a-z0-9-]+):\s*([^;]+);", text, re.M))
+
+
 def _px(value: str) -> int:
     """A length in px. A bare `0` is a length too — CSS drops the unit on zero,
-    and `padding: 6px 0` is exactly how "no horizontal padding" is written."""
-    found = re.fullmatch(r"(\d+)(?:px)?", value.strip())
+    and `padding: 6px 0` is exactly how "no horizontal padding" is written.
+    A scale token (`var(--space-3)`, `var(--text-dense)`) is read through
+    styles/scale.css — the sheet says the step, the scale says the number."""
+    value = value.strip()
+    var = re.fullmatch(r"var\((--[a-z0-9-]+)\)", value)
+    if var:
+        value = _scale()[var.group(1)].strip()
+    found = re.fullmatch(r"(\d+)(?:px)?", value)
     assert found, f"not a px length: {value!r}"
     return int(found.group(1))
 

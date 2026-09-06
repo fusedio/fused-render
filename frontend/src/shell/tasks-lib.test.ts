@@ -2343,8 +2343,10 @@ describe("the unread mark", () => {
     // The LEFT term is the whole claim: the full indent, not indent-minus-1, so
     // the row lands in the column the rule used to leave room beside. The vertical
     // term is the breathing-room variable and is free to move (2026-08-18).
+    // The horizontal term now reads var(--space-2-5), the design-scale rewrite's
+    // snap of the old 9px to 10px (2026-09-06).
     expect(body).toMatch(
-      /\.tasks-msg\s*\{[^}]*padding: var\(--tasks-msg-pad-y\) 10px var\(--tasks-msg-pad-y\) var\(--tasks-msg-indent\)/,
+      /\.tasks-msg\s*\{[^}]*padding: var\(--tasks-msg-pad-y\) var\(--space-2-5\) var\(--tasks-msg-pad-y\) var\(--tasks-msg-indent\)/,
     );
   });
 
@@ -2366,8 +2368,10 @@ describe("the unread mark", () => {
     // The Board took the same step, so a card does not read as the cramped view of
     // the two — and the action strip's `top`, which is derived from the card's own
     // padding, moved with it rather than being left riding high on the head.
+    // padding rewritten to the design-scale vars carrying the same 12px/14px
+    // (2026-09-06); `top` below is a positional prop and stayed a literal.
     expect(SCHEDULE_CSS).toMatch(
-      /\.prefs-section \.schedule-tv-board \.schedule-tv-card \{[^}]*padding: 12px 14px/,
+      /\.prefs-section \.schedule-tv-board \.schedule-tv-card \{[^}]*padding: var\(--space-3\) var\(--space-3-5\)/,
     );
     expect(block(TASKS_CSS, ".tasks-card-acts")).toContain("top: 9px");
   });
@@ -2628,7 +2632,7 @@ describe("the board's surfaces", () => {
     // And NO visible edge: an open column is an invisible panel, not a box.
     expect(lane).not.toContain("border: 1px solid var(--border)");
     expect(lane).toContain("border: 1px solid transparent");
-    expect(lane).toContain("border-radius: 8px");
+    expect(lane).toContain("border-radius: var(--radius-md)"); // rewritten from 8px (2026-09-06)
     // Stated with it, so `min-height: 120px` stays the floor the board actually has.
     expect(lane).toContain("box-sizing: border-box");
     // One box all the way round, not a rule down one side.
@@ -2642,7 +2646,7 @@ describe("the board's surfaces", () => {
     const rail = block(SCHEDULE_CSS, ".schedule-tv-rail");
     expect(rail).toContain("background: transparent");
     expect(rail).toContain("border: 1px solid var(--border)");
-    expect(rail).toContain("border-radius: 8px");
+    expect(rail).toContain("border-radius: var(--radius-md)"); // rewritten from 8px (2026-09-06)
   });
 
   it("makes the card lift off the LANE, in both themes, from tokens", () => {
@@ -2707,8 +2711,9 @@ describe("the board's surfaces", () => {
     // The lane keeps the geometry those states are drawn with — the padding that
     // insets the outline off the top card, and the radius the wash takes.
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane-body");
-    expect(lane).toContain("padding: 6px");
-    expect(lane).toContain("border-radius: 8px");
+    // Rewritten to design-scale vars carrying the same 6px/8px (2026-09-06).
+    expect(lane).toContain("padding: var(--space-1-5)");
+    expect(lane).toContain("border-radius: var(--radius-md)");
     // And it keeps a floor, so an EMPTY lane — which now shows its header and
     // nothing else, because "nothing scheduled" should look like nothing — is still
     // something a card can be dragged into.
@@ -2771,10 +2776,11 @@ describe("the board's surfaces", () => {
     // 8px/5px at first, then 10px/6px, and 12px/8px on 2026-08-18 alongside the
     // List's rows — one step for both views, so neither becomes the cramped one.
     // On the repo's even scale, and no type size moved with it.
-    expect(card).toContain("padding: 12px 14px");
-    expect(card).toContain("gap: 8px");
-    expect(block(SCHEDULE_CSS, ".schedule-tv-card-head")).toContain("gap: 8px");
-    expect(block(SCHEDULE_CSS, ".schedule-tv-lane-body")).toContain("gap: 8px");
+    // Rewritten to design-scale vars carrying the same 12px/14px/8px (2026-09-06).
+    expect(card).toContain("padding: var(--space-3) var(--space-3-5)");
+    expect(card).toContain("gap: var(--space-2)");
+    expect(block(SCHEDULE_CSS, ".schedule-tv-card-head")).toContain("gap: var(--space-2)");
+    expect(block(SCHEDULE_CSS, ".schedule-tv-lane-body")).toContain("gap: var(--space-2)");
     // The action strip is centred on the head off the card's TOP PADDING (plus half
     // the head's line, less half a 22px button), so loosening the card without
     // moving this leaves the strip riding high over the head: 12 + 8 - 11 = 9.
@@ -4625,8 +4631,8 @@ describe("the time a task row prints", () => {
     expect(block(TASKS_CSS, ".tasks-row-time")).toContain("font-variant-numeric: tabular-nums");
     expect(block(TASKS_CSS, ".tasks-msg-time")).toContain("font-variant-numeric: tabular-nums");
     // Same weight and colour as a message row's time — one kind of fact, one
-    // register.
-    for (const decl of ["font-size: 11px", "color: var(--fg-muted)"]) {
+    // register. font-size rewritten to var(--text-caption), still 11px (2026-09-06).
+    for (const decl of ["font-size: var(--text-caption)", "color: var(--fg-muted)"]) {
       expect(block(TASKS_CSS, ".tasks-row-time")).toContain(decl);
       expect(block(TASKS_CSS, ".tasks-msg-time")).toContain(decl);
     }
@@ -6338,7 +6344,7 @@ describe("the tasks toolbar", () => {
     const lane = block(SCHEDULE_CSS, ".schedule-tv-lane");
     expect(lane).toContain("flex: 0 0 260px");
     const board = block(SCHEDULE_CSS, ".schedule-tv-board");
-    expect(board).toContain("gap: 12px");
+    expect(board).toContain("gap: var(--space-3)"); // rewritten from 12px (2026-09-06)
     const page = block(SCHEDULE_CSS, ".prefs-page.schedule-page > *");
     expect(page).toContain(`max-width: ${measure}px`);
     // Centred, and applied to every child so the header travels with the views — a
@@ -7103,7 +7109,7 @@ describe("the outcome pill, beside the id in both views", () => {
     // alarm (the red ring is the alarm).
     expect(TASKS_CSS).toContain(".tasks-outcome-pill");
     const rule = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-outcome-pill"));
-    expect(rule).toMatch(/border-radius: 999px/);
+    expect(rule).toMatch(/border-radius: var\(--radius-pill\)/); // rewritten from 999px (2026-09-06)
     expect(rule).toMatch(/border: 1px solid/);
   });
 });
@@ -7597,7 +7603,7 @@ describe("the list row's message count", () => {
     // digits so a count going 9 → 10 does not shift the column.
     const rule = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-msgs {"));
     const body = rule.slice(0, rule.indexOf("}"));
-    expect(body).toContain("font-size: 11px");
+    expect(body).toContain("font-size: var(--text-caption)"); // rewritten from 11px (2026-09-06)
     expect(body).toContain("color: var(--fg-muted)");
     expect(body).toContain("flex: 0 0 auto");
     expect(body).toContain("font-variant-numeric: tabular-nums");
@@ -7655,12 +7661,15 @@ describe("the folder chip as a filter tag", () => {
     // target and the WASH grew together into a slab around an 11px word — "that
     // is such a bad design and hover … keep the tag/button size same". The
     // enlarged target moved to the shield around it (next test).
-    expect(body).toContain("padding: 3px 5px");
-    expect(body).toContain("border-radius: 5px");
-    // …and its 3px must not grow the ROW: the shield is stretched, so the flex
+    // Rewritten to design-scale vars: 3px/5px snapped up to --space-1/--space-1-5
+    // (4px/6px), and the 5px radius snapped up to --radius-control (6px) (2026-09-06).
+    expect(body).toContain("padding: var(--space-1) var(--space-1-5)");
+    expect(body).toContain("border-radius: var(--radius-control)");
+    // …and its margin must not grow the ROW: the shield is stretched, so the flex
     // line is sized from this element plus the shield's box, which made every row
     // 39px instead of 36px until this went in. Verified in the browser after: 36.
-    expect(body).toContain("margin-block: -3px");
+    // margin-block derives from the same --space-1 the padding snapped to.
+    expect(body).toContain("margin-block: calc(-1 * var(--space-1))");
     // The wash and the focus ring are on the pill, not on a child — one box for
     // the thing a reader sees, presses, and gets feedback from.
     expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag:hover,");

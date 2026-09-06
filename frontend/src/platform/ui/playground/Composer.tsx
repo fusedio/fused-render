@@ -24,7 +24,7 @@ export const TOUR_COMPOSER = "pg-composer";
 export const TOUR_SEND = "pg-send";
 
 export const composerVariants = cva(
-  `${TOUR_COMPOSER} flex gap-2 rounded-[12px] border border-solid border-[var(--border)] bg-[var(--bg-alt)] p-2 ` +
+  `${TOUR_COMPOSER} flex gap-2 rounded-panel border border-solid border-[var(--border)] bg-[var(--bg-alt)] p-2 ` +
     "focus-within:border-[var(--accent)] focus-within:shadow-[0_0_0_3px_rgba(var(--accent-rgb),0.12)]",
   {
     variants: {
@@ -56,7 +56,7 @@ export function Composer({
  *  an inline height: this is the backstop that keeps the box scrollable rather
  *  than unbounded if that inline height is ever stale. */
 const composerFieldBase =
-  `min-w-0 flex-1 resize-none border-none bg-transparent px-1 py-1.5 text-[13.5px] leading-[1.5] text-[var(--fg)] outline-none max-h-[calc(15em_+_12px)] ${INHERIT_FONT_FACE}`;
+  `min-w-0 flex-1 resize-none border-none bg-transparent px-1 py-1.5 text-body text-[var(--fg)] outline-none max-h-[calc(15em_+_12px)] ${INHERIT_FONT_FACE}`;
 
 /** A three-line floor, because a prompt worth running is usually two or three
  *  lines and a box that starts at one makes it look like a search field. It has
@@ -156,7 +156,7 @@ export const clearVariants = cva("", {
       inline: "mr-2 mb-auto inline-flex h-8 flex-none items-center px-1.5",
       bare: "mr-2 mb-0 inline-flex h-8 flex-none items-center px-1.5",
       corner:
-        "absolute top-2.5 right-2.5 m-0 h-auto rounded-[8px] px-2.5 py-[5px] " +
+        "absolute top-2.5 right-2.5 m-0 h-auto rounded-md px-2.5 py-1.5 " +
         "[&:hover:not(:disabled)]:bg-[rgba(var(--tint),0.08)]",
     },
   },
@@ -183,7 +183,7 @@ export function ClearButton({
  *  2px accent OUTLINE at a 2px offset), its `transition-all` (`.btn` has none)
  *  and its 1px press nudge (`.btn` does not move). */
 export const stageButtonVariants = cva(
-  `${TOUR_SEND} h-8 flex-none gap-[7px] rounded-[6px] border border-solid px-3.5 py-0 text-[13px] transition-none ` +
+  `${TOUR_SEND} h-8 flex-none gap-2 rounded-control border border-solid px-3.5 py-0 text-dense transition-none ` +
     INHERIT_FONT_FAMILY +
     " focus-visible:ring-0 focus-visible:outline-2 focus-visible:outline-[var(--accent)] focus-visible:outline-offset-2 " +
     "active:not-aria-[haspopup]:translate-y-0 disabled:opacity-50",

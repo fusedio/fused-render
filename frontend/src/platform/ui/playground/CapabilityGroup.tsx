@@ -60,7 +60,7 @@ export function CapabilityGroup({
         <span className="inline-flex flex-none [&_svg]:h-[18px] [&_svg]:w-[18px]">{icon}</span>
         {/* The label as written — "Text generation", "Not supported" — instead
             of tracked-out caps. */}
-        <span className="text-[14px] font-semibold">{title}</span>
+        <span className="text-body font-semibold">{title}</span>
       </summary>
       {children}
     </details>

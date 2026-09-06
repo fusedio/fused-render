@@ -15,7 +15,7 @@ export function StageHeader({ className, ...props }: ComponentProps<"div">) {
 /** One line naming the action — the hero card above carries the model. */
 export function StageTitle({ className, ...props }: ComponentProps<"h2">) {
   return (
-    <h2 className={cn("m-0 text-[15px] font-semibold tracking-[-0.01em]", className)} {...props} />
+    <h2 className={cn("m-0 text-title tracking-[-0.01em]", className)} {...props} />
   );
 }
 
@@ -28,7 +28,7 @@ export function StageTitle({ className, ...props }: ComponentProps<"h2">) {
  *  tilted icon left behind. It rides `--pg-glide`, the same beat as the track
  *  it opens, so the two read as one movement. */
 export const configCogVariants = cva(
-  "inline-flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-[6px] border-none bg-transparent p-0 " +
+  "inline-flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-control border-none bg-transparent p-0 " +
     "hover:bg-[rgba(var(--tint),0.07)] hover:text-[var(--fg)] " +
     "[&_svg]:transition-[transform] [&_svg]:duration-[var(--pg-glide)] [&_svg]:ease-[cubic-bezier(0.2,0.7,0.3,1)] " +
     "motion-reduce:[&_svg]:transition-none",

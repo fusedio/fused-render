@@ -9,7 +9,7 @@ import { cn } from "@platform/lib/utils";
 import { INHERIT_FONT } from "./classes";
 
 export const attachButtonVariants = cva(
-  "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-[999px] border border-solid px-2.5 text-xs " +
+  "inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-pill border border-solid px-2.5 text-xs " +
     INHERIT_FONT +
     " [&_input[type=file]]:hidden",
   {

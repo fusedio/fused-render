@@ -19,24 +19,24 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   /* Same column as .app-page-body below, so the heading lines up with the
      tab strip and the frame instead of hugging the window edge. */
   width: min(1050px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 14px 0 10px;
+  padding: var(--space-3-5) 0 var(--space-2-5);
 }
 
 .app-page-title {
   min-width: 0;
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .app-page-title h1 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--text-heading);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -47,7 +47,7 @@
 .app-page-folder {
   flex: 0 1 auto;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   text-decoration: none;
   overflow: hidden;
@@ -71,7 +71,7 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* The gutter frame — the same width story as the playground's `StageFrame`
@@ -88,8 +88,8 @@
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px 0 16px;
+  gap: var(--space-3-5);
+  padding: var(--space-4) 0 var(--space-4);
 }
 /* The tab strip is shadcn's Tabs (line variant, AppPage.tsx) — the anchors
    under the triggers only need to lose the underline. NOT the colour: this
@@ -130,7 +130,7 @@
   min-height: 0;
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   background: var(--bg);
 }
 
@@ -147,8 +147,8 @@
 
 .app-page-empty {
   margin: 0;
-  padding: 24px 0;
-  font-size: 13px;
+  padding: var(--space-6) 0;
+  font-size: var(--text-dense);
   color: var(--fg-muted);
 }
 
@@ -166,7 +166,7 @@
   min-height: 0;
   display: flex;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   overflow: hidden;
   background: var(--bg);
 }
@@ -187,16 +187,16 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 
 .app-files-tree-head {
-  padding: 0 12px 0 14px;
+  padding: 0 var(--space-3) 0 var(--space-3-5);
 }
 
 .app-files-eyebrow {
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -207,8 +207,8 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 6px;
-  font-size: 13px;
+  padding: var(--space-1-5);
+  font-size: var(--text-dense);
 }
 
 .app-files-tree ul {
@@ -220,8 +220,8 @@
 /* The indent guide: each nested branch is one rule, 7px in from its parent's
    twist — depth reads as lines, not as a growing left margin. */
 .app-files-tree ul.app-files-branch {
-  margin-left: 15px;
-  padding-left: 6px;
+  margin-left: var(--space-4);
+  padding-left: var(--space-1-5);
   border-left: 1px solid var(--border);
 }
 
@@ -229,13 +229,13 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
   min-width: 0;
   height: 28px;
-  padding: 0 8px 0 4px;
+  padding: 0 var(--space-2) 0 var(--space-1);
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
   color: var(--fg);
   font: inherit;
@@ -285,7 +285,7 @@
 .app-files-twist svg {
   width: 14px;
   height: 14px;
-  transition: transform 120ms ease;
+  transition: transform var(--dur-fast) ease;
 }
 
 .app-files-twist svg.is-open {
@@ -323,7 +323,7 @@
    selected so the column stays a list of names first. */
 .app-files-meta {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
 }
@@ -339,8 +339,8 @@
 }
 
 .app-files-caption {
-  margin: 10px 8px 4px;
-  font-size: 12px;
+  margin: var(--space-2-5) var(--space-2) var(--space-1);
+  font-size: var(--text-meta);
   line-height: 1.5;
   color: var(--fg-muted);
 }
@@ -358,20 +358,20 @@
 }
 
 .app-files-head {
-  padding: 0 10px 0 16px;
+  padding: 0 var(--space-2-5) 0 var(--space-4);
 }
 
 .app-files-title {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .app-files-title h2 {
   margin: 0;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--text-dense);
   font-weight: 500;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   overflow: hidden;
@@ -386,7 +386,7 @@
 }
 
 .app-files-slash {
-  margin: 0 3px;
+  margin: 0 var(--space-1);
   opacity: 0.6;
 }
 
@@ -395,7 +395,7 @@
    trick the page strip uses with its own border-b. */
 .app-files-modes {
   align-self: flex-end;
-  padding-bottom: 5px;
+  padding-bottom: var(--space-1-5);
 }
 
 .app-files-mode-icon {
@@ -409,7 +409,7 @@
 .app-files-mode-icon svg {
   width: 14px;
   height: 14px;
-  font-size: 10px;
+  font-size: var(--text-micro);
 }
 
 .app-files-stage {
@@ -421,7 +421,7 @@
 
 .app-files-stage > .skeleton-lines,
 .app-files-stage > .error-banner {
-  margin: 16px;
+  margin: var(--space-4);
 }
 
 .app-files-frame {
@@ -439,9 +439,9 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 24px;
-  font-size: 13px;
+  gap: var(--space-2-5);
+  padding: var(--space-6);
+  font-size: var(--text-dense);
   color: var(--fg-muted);
 }
 

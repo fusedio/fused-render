@@ -22,7 +22,7 @@ export function AnswerLabel({ className, ...props }: ComponentProps<"p">) {
   return (
     <p
       className={cn(
-        "m-0 flex min-w-0 items-baseline gap-2 text-[12px] font-semibold text-[var(--fg-muted)]",
+        "m-0 flex min-w-0 items-baseline gap-2 text-meta font-semibold text-[var(--fg-muted)]",
         className,
       )}
       {...props}
@@ -39,7 +39,7 @@ export function AnswerProvenance({ className, ...props }: ComponentProps<"span">
   return (
     <span
       className={cn(
-        "min-w-0 truncate text-[12px] font-normal text-[var(--fg-muted)] opacity-75 tabular-nums",
+        "min-w-0 truncate text-meta text-[var(--fg-muted)] opacity-75 tabular-nums",
         className,
       )}
       {...props}
@@ -53,7 +53,7 @@ export function AnswerCard({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "relative rounded-[12px] border border-solid border-[var(--border)] bg-[var(--bg-alt)] py-[14px] pr-[44px] pl-4 text-[13.5px] leading-[1.6] [overflow-wrap:anywhere]",
+        "relative rounded-panel border border-solid border-[var(--border)] bg-[var(--bg-alt)] py-3.5 pr-12 pl-4 text-body leading-[1.6] [overflow-wrap:anywhere]",
         className,
       )}
       {...props}
@@ -66,7 +66,7 @@ export function TurnFoot({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "mt-1.5 flex items-baseline gap-3 text-[11.5px] text-[var(--fg-muted)] tabular-nums",
+        "mt-1.5 flex items-baseline gap-3 text-meta text-[var(--fg-muted)] tabular-nums",
         className,
       )}
       {...props}
@@ -79,7 +79,7 @@ export function TurnFoot({ className, ...props }: ComponentProps<"div">) {
 export function ThinkBlock({ className, ...props }: ComponentProps<"details">) {
   return (
     <details
-      className={cn("mb-2 text-[12px] text-[var(--fg-muted)] [&>summary]:cursor-pointer", className)}
+      className={cn("mb-2 text-meta text-[var(--fg-muted)] [&>summary]:cursor-pointer", className)}
       {...props}
     />
   );
@@ -96,12 +96,12 @@ export function ThinkBody({ className, ...props }: ComponentProps<"div">) {
 
 /** What the run is doing, said plainly. */
 export function StageStatus({ className, ...props }: ComponentProps<"p">) {
-  return <p className={cn("m-0 text-[12.5px] text-[var(--fg-muted)]", className)} {...props} />;
+  return <p className={cn("m-0 text-dense text-[var(--fg-muted)]", className)} {...props} />;
 }
 
 /** What went wrong. */
 export function StageError({ className, ...props }: ComponentProps<"p">) {
-  return <p className={cn("m-0 text-[12.5px] text-[var(--error)]", className)} {...props} />;
+  return <p className={cn("m-0 text-dense text-[var(--error)]", className)} {...props} />;
 }
 
 /** The URL asked for a capability this machine cannot run, and the stage below
@@ -109,7 +109,7 @@ export function StageError({ className, ...props }: ComponentProps<"p">) {
 export function BlockedAsk({ className, ...props }: ComponentProps<"p">) {
   return (
     <p
-      className={cn("mt-0 mr-0 mb-2.5 ml-0 text-[12.5px] leading-[1.45] text-[var(--fg-muted)]", className)}
+      className={cn("mt-0 mr-0 mb-2.5 ml-0 text-dense leading-[1.45] text-[var(--fg-muted)]", className)}
       {...props}
     />
   );

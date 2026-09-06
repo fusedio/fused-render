@@ -586,7 +586,7 @@ export default function PlaygroundTab() {
                     // where a figure goes reads as "unmeasured", which is
                     // not the fact. The badge says what IS the fact.
                     <ModelSize
-                      className="text-[10.5px] uppercase tracking-[0.06em]"
+                      className="text-micro uppercase tracking-[0.06em]"
                       title={model.note ?? undefined}
                     >
                       system
@@ -686,7 +686,7 @@ export default function PlaygroundTab() {
                   // Where the apple row WOULD be, when it is not: the reason,
                   // in the group it belongs to, so a reader looking for it
                   // finds an answer rather than an absence.
-                  <CapabilityGroupNote className="mt-[6px]">{appleNote}</CapabilityGroupNote>
+                  <CapabilityGroupNote className="mt-1.5">{appleNote}</CapabilityGroupNote>
                 )}
             </CapabilityGroup>
           );

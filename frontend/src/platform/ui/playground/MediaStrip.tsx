@@ -11,7 +11,7 @@ export function MediaStrip({ className, ...props }: ComponentProps<"div">) {
 }
 
 export const mediaStripItemVariants = cva(
-  "h-[84px] cursor-pointer rounded-[8px] border border-solid",
+  "h-[84px] cursor-pointer rounded-md border border-solid",
   {
     variants: {
       active: {

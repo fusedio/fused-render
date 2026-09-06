@@ -11,7 +11,7 @@ export function SegmentList({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "relative flex min-h-[140px] flex-1 flex-col gap-[5px] overflow-y-auto rounded-[12px] border border-solid border-[var(--border)] bg-[var(--bg-alt)] pt-3 pr-[44px] pb-3 pl-[14px]",
+        "relative flex min-h-[140px] flex-1 flex-col gap-1.5 overflow-y-auto rounded-panel border border-solid border-[var(--border)] bg-[var(--bg-alt)] pt-3 pr-12 pb-3 pl-3.5",
         className,
       )}
       {...props}
@@ -21,7 +21,7 @@ export function SegmentList({ className, ...props }: ComponentProps<"div">) {
 
 export function Segment({ className, ...props }: ComponentProps<"div">) {
   return (
-    <div className={cn("flex gap-3 text-[13px] leading-[1.55]", className)} {...props} />
+    <div className={cn("flex gap-3 text-dense leading-[1.55]", className)} {...props} />
   );
 }
 
@@ -31,7 +31,7 @@ export function SegmentTime({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
       className={cn(
-        "w-[42px] flex-none pt-0.5 text-[11.5px] text-[var(--fg-muted)] tabular-nums",
+        "w-[42px] flex-none pt-0.5 text-meta text-[var(--fg-muted)] tabular-nums",
         className,
       )}
       {...props}
@@ -53,7 +53,7 @@ export function TranscriptText({
   return (
     <p
       className={cn(
-        "m-0 text-[13px] leading-[1.6] whitespace-pre-wrap",
+        "m-0 text-dense leading-[1.6] whitespace-pre-wrap",
         empty && "text-[var(--fg-muted)]",
         className,
       )}

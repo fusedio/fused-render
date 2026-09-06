@@ -467,11 +467,13 @@ describe("one nav dot, worn by two rows", () => {
     const chip = SIDEBAR_CSS.slice(SIDEBAR_CSS.indexOf(".sidebar-count-chip {"));
     const body = chip.slice(0, chip.indexOf("}"));
     for (const decl of [
-      "font-size: 10.5px",
+      // Rhythm reads the design scale (styles/scale.css): micro type, md
+      // radius, 4×6 padding (3px snapped to the 4px step).
+      "font-size: var(--text-micro)",
       "color: var(--fg-muted)",
       "background: rgba(var(--tint), 0.07)",
-      "border-radius: 8px",
-      "padding: 3px 6px",
+      "border-radius: var(--radius-md)",
+      "padding: var(--space-1) var(--space-1-5)",
     ]) {
       expect(body).toContain(decl);
     }

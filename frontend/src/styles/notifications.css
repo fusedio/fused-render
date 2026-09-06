@@ -13,7 +13,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: min(360px, calc(100vw - 32px));
   pointer-events: none;
 }
@@ -47,20 +47,20 @@
 
 .toast-slot.leaving {
   grid-template-rows: 0fr;
-  margin-bottom: -8px; /* cancels .notif-host's gap as the row closes */
+  margin-bottom: calc(-1 * var(--space-2)); /* cancels .notif-host's gap as the row closes */
 }
 
 .toast {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   max-width: 100%;
-  padding: 8px 10px 8px 12px;
-  font-size: 12px;
+  padding: var(--space-2) var(--space-2-5) var(--space-2) var(--space-3);
+  font-size: var(--text-meta);
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--error);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 6px 20px var(--shadow-lg);
   animation: toast-in var(--dur-med) var(--ease-out);
 }
@@ -105,9 +105,9 @@
   background: none;
   border: none;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--text-meta);
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0 var(--space-0-5);
 }
 
 .toast-close:hover {
@@ -119,11 +119,11 @@
   flex: 0 0 auto;
   background: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--text-meta);
   cursor: pointer;
-  padding: 3px 8px;
+  padding: var(--space-1) var(--space-2);
 }
 
 .toast-action:hover {
@@ -174,7 +174,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 0;
-  padding: 0 var(--status-bar-gutter) 0 8px;
+  padding: 0 var(--status-bar-gutter) 0 var(--space-2);
   /* FIXED 22px, VS Code's own status-bar height (D576, user: "lets follow
      exactly what vscode is doing for the status bar") — `height`, not
      `min-height`, because every item is now full-height and nothing inside
@@ -275,7 +275,7 @@
   flex: 0 0 auto;
   width: 1px;
   height: 11px;
-  margin: 0 3px;
+  margin: 0 var(--space-1);
   background: var(--fg-muted);
   opacity: 0.5;
 }
@@ -293,7 +293,7 @@
 .dl-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   /* A FULL-HEIGHT SQUARE RECTANGLE (D576) — the single biggest difference from
      round 4, which drew an inset pill: `padding: 3px 8px` with a compensating
@@ -303,12 +303,12 @@
      runs edge to edge vertically. The negative margin is gone along with the
      inset it was compensating for. */
   height: 100%;
-  padding: 0 5px;
+  padding: 0 var(--space-1-5);
   border-radius: 0;
   font: inherit;
   /* 12px regular — VS Code's status bar runs 12px at normal weight; round 4's
      11px was a guess at "denser". `.dl-summary`'s weight goes with it, below. */
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg);
   background: none;
   border: none;
@@ -350,7 +350,7 @@
    "Models 2" = two. */
 .dl-toggle.sc {
   position: relative;
-  gap: 5px;
+  gap: var(--space-1-5);
   /* No overflow clip here: the progress line sits 1px ABOVE the chip's box
      (into the bar's top border) and would lose that pixel. The label clips
      itself (`.dl-summary`'s ellipsis). */
@@ -367,13 +367,13 @@
    and a second colour on the numeral would be the same fact said twice. */
 .sc-num {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-weight: 650;
   line-height: 1;
   color: var(--accent);
   background: rgba(var(--accent-rgb), 0.12);
-  border-radius: 8px;
-  padding: 2px 5px;
+  border-radius: var(--radius-md);
+  padding: var(--space-0-5) var(--space-1-5);
   font-variant-numeric: tabular-nums;
 }
 
@@ -500,13 +500,13 @@
   position: absolute;
   bottom: 100%;
   right: var(--status-bar-gutter);
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
   width: max-content;
   max-width: min(340px, calc(100vw - 32px));
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 6px 20px var(--shadow-lg);
   animation: toast-in var(--dur-med) var(--ease-out);
   overflow: hidden;
@@ -560,9 +560,9 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 6px 10px;
-  font-size: 12px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-2-5);
+  font-size: var(--text-meta);
   border-top: 1px solid var(--border);
 }
 
@@ -655,7 +655,7 @@
    one. */
 .dl-panel-empty {
   min-width: min(238px, calc(100vw - 34px));
-  padding: 10px;
+  padding: var(--space-2-5);
   /* Centred (D592, user: "also make the 'no jobs' etc text center aligned in
      the popover"). One rule covers all four sections because they already
      share this class — `No models loaded` / `No engines running` / `No jobs` /
@@ -663,7 +663,7 @@
      stranded fragment left-aligned; centred it reads as the panel's own
      state. */
   text-align: center;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -703,12 +703,12 @@
 .dl-clear,
 .dl-jobs-clear {
   flex: 0 0 auto;
-  padding: 2px 8px;
-  font-size: 11px;
+  padding: var(--space-0-5) var(--space-2);
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   background: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
 }
 
@@ -735,8 +735,8 @@
    principle D604 already applied to Clear/Cancel queued. Quiet on purpose:
    this is a sub-heading inside an already-labelled chip, not a second chip. */
 .dl-section-head {
-  padding: 6px 10px 0;
-  font-size: 10px;
+  padding: var(--space-1-5) var(--space-2-5) 0;
+  font-size: var(--text-micro);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -805,7 +805,7 @@
    correctness argument as deleting dead branches. */
 .dl-row {
   min-width: min(238px, calc(100vw - 34px));
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
 }
 
 /* A reporter that went away: dimmed, because the numbers below are the last
@@ -818,9 +818,9 @@
 .dl-row-head {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  font-size: 12px;
-  margin-bottom: 5px;
+  gap: var(--space-2);
+  font-size: var(--text-meta);
+  margin-bottom: var(--space-1-5);
 }
 
 /* THE TITLE WRAPS INSTEAD OF COMPETING (D596, user: "we have a ton of free
@@ -906,11 +906,11 @@
    token and wrapping one mid-word reads worse than truncating it; at full panel
    width it now almost never reaches that. Full id stays on hover. */
 .dl-model {
-  margin-bottom: 5px;
+  margin-bottom: var(--space-1-5);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
 }
 
@@ -936,7 +936,7 @@
    `.dl-amount`/`.dl-mem-live`, which already carry their own overflow rules,
    and neither of those changes here. */
 .dl-row-figures {
-  margin-bottom: 5px;
+  margin-bottom: var(--space-1-5);
 }
 
 /* ZEROED WHEN IT IS THE LAST CHILD — the common case, since most rows carry
@@ -978,7 +978,7 @@
    not under pressure at all. */
 .dl-amount {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -1023,7 +1023,7 @@
    D577, `.dl-pct` did not). */
 .dl-pct {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums; /* the percentage must not jitter as it counts */
 }
@@ -1050,12 +1050,12 @@
    does not exist between them. */
 .dl-row-cancel {
   flex: 0 0 auto;
-  padding: 3px 10px;
-  font-size: 11px;
+  padding: var(--space-1) var(--space-2-5);
+  font-size: var(--text-caption);
   color: var(--fg);
   background: var(--row-bg-hover);
   border: 1px solid var(--fg-muted);
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   cursor: pointer;
 }
 
@@ -1105,8 +1105,8 @@
   align-items: center;
   justify-content: center;
   min-width: 16px;
-  padding: 0 2px;
-  font-size: 11px;
+  padding: 0 var(--space-0-5);
+  font-size: var(--text-caption);
   line-height: 1;
   color: var(--fg-muted);
   background: none;
@@ -1130,8 +1130,8 @@
 }
 
 .dl-status {
-  margin-top: 5px;
-  font-size: 11px;
+  margin-top: var(--space-1-5);
+  font-size: var(--text-caption);
   line-height: 1.4;
   color: var(--fg-muted);
   /* Clamped, not clipped to one line: the two longest things that land here are
@@ -1184,7 +1184,7 @@ button.dl-row:hover {
 
 .dl-bar {
   height: 4px;
-  border-radius: 2px;
+  border-radius: var(--radius-hairline);
   background: rgba(var(--fg-muted-rgb), 0.22);
   overflow: hidden;
 }
@@ -1241,12 +1241,12 @@ button.dl-row:hover {
    verb family (Unload/Stop/Cancel), so it was not a fit for Update/Switch. */
 .q-all {
   flex: 0 0 auto;
-  padding: 2px 8px;
-  font-size: 11px;
+  padding: var(--space-0-5) var(--space-2);
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   background: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
 }
 
@@ -1279,14 +1279,14 @@ button.dl-row:hover {
    .notif-host — this only describes the card. */
 .server-status {
   max-width: 100%;
-  padding: 10px 12px;
-  font-size: 12px;
+  padding: var(--space-2-5) var(--space-3);
+  font-size: var(--text-meta);
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--error);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   box-shadow: 0 6px 20px var(--shadow-lg);
-  animation: server-status-in 0.15s ease-out;
+  animation: server-status-in var(--dur-base) ease-out;
 }
 
 @keyframes server-status-in {
@@ -1303,7 +1303,7 @@ button.dl-row:hover {
 .server-status-title {
   font-weight: 600;
   color: var(--error);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 
 .server-status-body {
@@ -1313,13 +1313,13 @@ button.dl-row:hover {
 
 .server-status-retry,
 .server-status-launch {
-  margin-top: 8px;
-  padding: 3px 10px;
-  font-size: 12px;
+  margin-top: var(--space-2);
+  padding: var(--space-1) var(--space-2-5);
+  font-size: var(--text-meta);
   color: var(--fg);
   background: none;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   cursor: pointer;
 }
 
@@ -1332,7 +1332,7 @@ button.dl-row:hover {
    dressed as the sibling button; inline-block so padding/margin apply. */
 .server-status-launch {
   display: inline-block;
-  margin-right: 8px;
+  margin-right: var(--space-2);
   color: inherit;
   text-decoration: none;
 }
@@ -1356,7 +1356,7 @@ button.dl-row:hover {
 /* The FDA strip's (FdaStrip.tsx) how-to, an ordered list in the strip body. */
 .fda-steps {
   margin: 0;
-  padding-left: 18px;
+  padding-left: var(--space-5);
 }
 
 .fda-steps li {
@@ -1369,8 +1369,8 @@ button.dl-row:hover {
   border: none;
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 4px 8px;
-  font-size: 15px;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-title);
   line-height: 1;
 }
 

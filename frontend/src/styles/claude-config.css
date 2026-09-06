@@ -66,7 +66,7 @@
   overflow-x: hidden;
   overflow-y: auto;
   background: var(--bg);
-  font-size: 13px;
+  font-size: var(--text-dense);
 }
 
 /* No longer its own bounded, clipped box: .cc-root is the scroll container
@@ -102,10 +102,10 @@
   align-items: center;
   justify-content: space-between;
   flex: 0 0 auto;
-  gap: 12px;
+  gap: var(--space-3);
   height: 49px;
   box-sizing: border-box;
-  padding: 0 14px 0 16px;
+  padding: 0 var(--space-3-5) 0 var(--space-4);
   background: var(--bg-alt);
   border-bottom: 1px solid var(--border);
 }
@@ -115,7 +115,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 15px;
+  font-size: var(--text-title);
   font-weight: 600;
 }
 
@@ -128,18 +128,18 @@
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-weight: 500;
   white-space: nowrap;
-  padding: 5px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: border-color 120ms var(--ease-out), color 120ms var(--ease-out);
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 
 .cc-gitchip:hover {
@@ -206,8 +206,8 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  gap: 4px;
-  padding: 0 16px;
+  gap: var(--space-1);
+  padding: 0 var(--space-4);
   overflow-x: auto;
   scrollbar-width: none;
   -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
@@ -232,12 +232,12 @@
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex: 0 0 auto;
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--text-dense);
   white-space: nowrap;
-  padding: 9px 10px 8px;
+  padding: var(--space-2-5) var(--space-2-5) var(--space-2);
   border: none;
   border-bottom: 2px solid transparent;
   background: none;
@@ -260,7 +260,7 @@
 .cc-tab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 /* -- content column -------------------------------------------------------- */
@@ -303,20 +303,20 @@
   min-width: 0;
   box-sizing: border-box;
   overflow-x: clip;
-  padding: 24px 28px 40px;
+  padding: var(--space-6) var(--space-7) var(--space-10);
 }
 
 .cc-heading {
-  margin: 0 0 2px;
-  font-size: 20px;
+  margin: 0 0 var(--space-0-5);
+  font-size: var(--text-display);
   font-weight: 600;
 }
 
 /* The file (or git object) the section actually edits — the one thing a settings
    UI over someone's dotfiles owes them. */
 .cc-caption {
-  margin-bottom: 22px;
-  font-size: 12px;
+  margin-bottom: var(--space-6);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   overflow-wrap: anywhere;
 }
@@ -329,8 +329,8 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 22px;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
 }
 
 .cc-caption-row .cc-caption {
@@ -353,7 +353,7 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
 }
 
 /* Sticky, so a long list scrolls under the one row that names it, filters it
@@ -378,10 +378,10 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  row-gap: 8px;
-  column-gap: 10px;
-  margin: 0 0 18px;
-  padding: 10px 0;
+  row-gap: var(--space-2);
+  column-gap: var(--space-2-5);
+  margin: 0 0 var(--space-5);
+  padding: var(--space-2-5) 0;
   background: var(--bg);
 }
 
@@ -396,7 +396,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -411,7 +411,7 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 100%;
   margin-left: auto;
   overflow-x: auto;
@@ -455,12 +455,12 @@
 }
 
 .cc-group {
-  margin-bottom: 26px;
+  margin-bottom: var(--space-7);
 }
 
 .cc-group-title {
-  margin: 0 0 10px;
-  font-size: 11px;
+  margin: 0 0 var(--space-2-5);
+  font-size: var(--text-caption);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -473,30 +473,30 @@
    folder-level actions (Reveal, Clear) on the right, then a .cc-list card of
    its files underneath. */
 .cc-memgroup {
-  margin-bottom: 22px;
+  margin-bottom: var(--space-6);
 }
 
 .cc-memgroup-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .cc-memgroup-title {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: var(--space-2-5);
   min-width: 0;
-  font-size: 12.5px;
+  font-size: var(--text-dense);
   font-weight: 500;
   overflow-wrap: anywhere;
 }
 
 .cc-memgroup-count {
   flex: 0 0 auto;
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   font-weight: 400;
   color: var(--fg-muted);
 }
@@ -505,7 +505,7 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 /* Clear used to be a red outlined .btn, always visible, repeated on every one
@@ -524,7 +524,7 @@
 }
 
 .cc-empty {
-  padding: 30px 0;
+  padding: var(--space-8) 0;
   text-align: center;
   color: var(--fg-muted);
 }
@@ -533,7 +533,7 @@
 .cc-empty-action {
   display: flex;
   justify-content: center;
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .cc-mono {
@@ -545,8 +545,8 @@
 .cc-row {
   display: flex;
   align-items: flex-start;
-  gap: 14px;
-  padding: 10px 0;
+  gap: var(--space-3-5);
+  padding: var(--space-2-5) 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -574,7 +574,7 @@
 .cc-row-meta {
   flex: 1 1 auto;
   min-width: 0;
-  padding-top: 3px;
+  padding-top: var(--space-1);
 }
 
 .cc-row-label {
@@ -582,8 +582,8 @@
 }
 
 .cc-row-doc {
-  margin-top: 2px;
-  font-size: 12px;
+  margin-top: var(--space-0-5);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -624,7 +624,7 @@
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
-  column-gap: 6px;
+  column-gap: var(--space-1-5);
 }
 
 .cc-row-control select.field-control,
@@ -648,7 +648,7 @@
    "Select all", an empty CLAUDE.md's placeholder) — just not in the
    Preferences control column any more (see .cc-row-hint below). */
 .cc-unset {
-  font-size: 12px;
+  font-size: var(--text-meta);
   font-style: italic;
   color: var(--fg-muted);
   overflow: hidden;
@@ -702,7 +702,7 @@
   .cc-row {
     flex-direction: column;
     align-items: stretch;
-    gap: 6px;
+    gap: var(--space-1-5);
   }
 
   .cc-row-meta {
@@ -725,11 +725,11 @@
    History page's "Uncommitted changes" statement. */
 
 .cc-card {
-  padding: 14px 16px;
-  margin-bottom: 10px;
+  padding: var(--space-3-5) var(--space-4);
+  margin-bottom: var(--space-2-5);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .cc-card-title {
@@ -738,8 +738,8 @@
 }
 
 .cc-card-sub {
-  margin-top: 3px;
-  font-size: 12px;
+  margin-top: var(--space-1);
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   overflow-wrap: anywhere;
 }
@@ -748,8 +748,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-top: 12px;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 /* -- segmented switch (Plugins: Installed / Discover) ---------------------- */
@@ -761,14 +761,14 @@
   display: inline-flex;
   flex: 0 0 auto;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
 .cc-seg-btn {
-  padding: 5px 12px;
+  padding: var(--space-1-5) var(--space-3);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
   background: transparent;
   border: 0;
@@ -804,7 +804,7 @@
 .cc-split {
   display: flex;
   align-items: flex-start;
-  gap: 20px;
+  gap: var(--space-5);
   width: 100%;
 }
 
@@ -835,8 +835,8 @@
    left, number right) and made a label look like a control. See the comment at
    its call site for why the count went rather than the shape. */
 .cc-index-header {
-  padding: 0 8px 6px;
-  font-size: 11px;
+  padding: 0 var(--space-2) var(--space-1-5);
+  font-size: var(--text-caption);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -852,8 +852,8 @@
 .cc-index-item {
   display: flex;
   align-items: center;
-  gap: 2px;
-  border-radius: 6px;
+  gap: var(--space-0-5);
+  border-radius: var(--radius-control);
   color: var(--fg-muted);
 }
 
@@ -871,15 +871,15 @@
 .cc-index-filter {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   text-align: left;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
   color: inherit;
   cursor: pointer;
@@ -895,8 +895,8 @@
    now identical to theirs (both render through the same .cc-index-item +
    .cc-index-filter shape). */
 .cc-index-item.cc-index-all {
-  margin-bottom: 4px;
-  padding-bottom: 4px;
+  margin-bottom: var(--space-1);
+  padding-bottom: var(--space-1);
   border-bottom: 1px solid var(--border);
 }
 
@@ -912,14 +912,14 @@
 .cc-index-add {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-  padding: 5px 8px;
+  gap: var(--space-1-5);
+  margin-top: var(--space-2-5);
+  padding: var(--space-1-5) var(--space-2);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-meta);
   text-align: left;
   color: var(--fg-muted);
   cursor: pointer;
@@ -993,8 +993,8 @@
 .cc-pager {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-top: 14px;
+  gap: var(--space-2);
+  padding-top: var(--space-3-5);
 }
 
 .cc-pager > :first-child {
@@ -1022,21 +1022,21 @@
 .cc-list {
   width: 100%;
   box-sizing: border-box;
-  margin-bottom: 10px;
+  margin-bottom: var(--space-2-5);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
 .cc-list .cc-lrow-line {
-  padding-left: 14px;
-  padding-right: 14px;
+  padding-left: var(--space-3-5);
+  padding-right: var(--space-3-5);
 }
 
 .cc-list .cc-lrow-details {
-  padding-left: 34px;
-  padding-right: 14px;
+  padding-left: var(--space-8);
+  padding-right: var(--space-3-5);
 }
 
 .cc-list .cc-lrow:last-child {
@@ -1050,8 +1050,8 @@
 .cc-lrow-line {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 0;
+  gap: var(--space-2-5);
+  padding: var(--space-2) 0;
   white-space: nowrap;
 }
 
@@ -1072,7 +1072,7 @@
 .cc-lrow-body {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   flex: 1 1 auto;
   min-width: 0;
   font: inherit;
@@ -1091,7 +1091,7 @@
 .cc-lrow-body:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .cc-lrow-name {
@@ -1104,7 +1104,7 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -1154,7 +1154,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 3px;
+  gap: var(--space-1);
   max-width: 100%;
 }
 
@@ -1171,7 +1171,7 @@
 
 .cc-lrow-meta {
   flex: 0 0 auto;
-  font-size: 11.5px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -1179,7 +1179,7 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   margin-left: auto;
 }
 
@@ -1197,7 +1197,7 @@
 .cc-lrow-inline-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 
 /* A column, not a label: versions run from "v1.0.0" to a 12-char commit sha,
@@ -1215,8 +1215,8 @@
 /* The expanded panel: prose, so it wraps and drops the row's nowrap. Indented
    to the row's text column and quiet — it is the same item, not a new one. */
 .cc-lrow-details {
-  padding: 2px 0 12px 10px;
-  font-size: 12px;
+  padding: var(--space-0-5) 0 var(--space-3) var(--space-2-5);
+  font-size: var(--text-meta);
   line-height: 1.55;
   white-space: normal;
   color: var(--fg-muted);
@@ -1232,8 +1232,8 @@
 .cc-lrow-dl {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 2px 10px;
-  margin-top: 6px;
+  gap: var(--space-0-5) var(--space-2-5);
+  margin-top: var(--space-1-5);
 }
 
 .cc-lrow-dt {
@@ -1264,8 +1264,8 @@
 .cc-modal-field {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: var(--space-2-5);
+  margin-bottom: var(--space-2-5);
 }
 
 .cc-modal-field:last-child {
@@ -1274,7 +1274,7 @@
 
 .cc-modal-field > label {
   flex: 0 0 100px;
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -1312,8 +1312,8 @@
   display: grid;
   grid-template-columns: fit-content(16rem) 1fr;
   align-content: start;
-  margin-top: 4px;
-  padding-left: 12px;
+  margin-top: var(--space-1);
+  padding-left: var(--space-3);
   border-left: 1px solid var(--border);
 }
 
@@ -1339,11 +1339,11 @@
    the last line of the paragraph. */
 .cc-lrow-details .cc-pblurb {
   max-width: 68ch;
-  margin: 0 0 14px;
+  margin: 0 0 var(--space-3-5);
 }
 
 .cc-pgroup + .cc-pgroup {
-  margin-top: 14px;
+  margin-top: var(--space-3-5);
 }
 
 /* The app's established eyebrow (.cc-index-header's size, weight, tracking and
@@ -1351,9 +1351,9 @@
 .cc-pgroup-title {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  margin: 0 0 3px;
-  font-size: 11px;
+  gap: var(--space-1-5);
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-caption);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1370,10 +1370,10 @@
 }
 
 .cc-pitem {
-  gap: 12px;
-  padding: 2px 6px;
-  margin-left: -6px;
-  border-radius: 4px;
+  gap: var(--space-3);
+  padding: var(--space-0-5) var(--space-1-5);
+  margin-left: calc(-1 * var(--space-1-5));
+  border-radius: var(--radius-xs);
   color: inherit;
   text-decoration: none;
   white-space: nowrap;
@@ -1405,9 +1405,9 @@
 .cc-pfiles {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  margin-top: 14px;
-  padding-top: 8px;
+  gap: var(--space-2-5);
+  margin-top: var(--space-3-5);
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
   text-decoration: none;
@@ -1416,7 +1416,7 @@
 
 .cc-pfiles-label {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1446,8 +1446,8 @@
    opens the panel) — same specificity, so the more specific selector here
    rather than !important is what wins it back. */
 .cc-lrow-details .cc-ptruncated {
-  margin: 10px 0 0;
-  font-size: 12px;
+  margin: var(--space-2-5) 0 0;
+  font-size: var(--text-meta);
   font-style: italic;
   color: var(--fg-muted);
 }
@@ -1472,24 +1472,24 @@
 .cc-mdgrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .cc-mdcard {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
-  padding: 16px 18px;
+  padding: var(--space-4) var(--space-5);
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .cc-mdcard-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 
@@ -1504,19 +1504,19 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: auto;
 }
 
 .cc-mdcard-meta {
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--fg-muted);
   white-space: nowrap;
 }
 
 .cc-mdcard-actions {
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 
 /* Icon-only quiet action button; the label lives in title/aria-label. */
@@ -1528,7 +1528,7 @@
   height: 26px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
@@ -1566,13 +1566,13 @@
 }
 
 .cc-count {
-  font-size: 11px;
+  font-size: var(--text-caption);
   font-weight: 400;
   color: var(--fg-muted);
 }
 
 .cc-change {
-  font-size: 11px;
+  font-size: var(--text-caption);
   color: var(--warning);
 }
 
@@ -1581,11 +1581,11 @@
 .cc-pill {
   display: inline-block;
   vertical-align: middle;
-  padding: 2px 7px;
-  font-size: 10px;
+  padding: var(--space-0-5) var(--space-2);
+  font-size: var(--text-micro);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--border);
   color: var(--fg-muted);
 }
@@ -1641,7 +1641,7 @@
   position: absolute;
   inset: 0;
   background: var(--border);
-  border-radius: 22px;
+  border-radius: var(--radius-pill);
   transition: background var(--dur-med) var(--ease-out);
   cursor: pointer;
 }
@@ -1711,12 +1711,12 @@
 /* -- preformatted output (statusline preview, file view/edit) --------------- */
 
 .cc-pre {
-  margin: 12px 0 0;
-  padding: 10px 12px;
-  font-size: 12px;
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2-5) var(--space-3);
+  font-size: var(--text-meta);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: auto;
@@ -1726,8 +1726,8 @@
    roomier padding and no top margin, since it is the first thing on the page. */
 .cc-statusline {
   margin-top: 0;
-  padding: 14px 16px;
-  font-size: 13px;
+  padding: var(--space-3-5) var(--space-4);
+  font-size: var(--text-dense);
 }
 
 /* -- definition list (statusline metadata) --------------------------------- */
@@ -1737,9 +1737,9 @@
 .cc-dl {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 8px 16px;
-  margin: 20px 0 0;
-  font-size: 12.5px;
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-5) 0 0;
+  font-size: var(--text-dense);
 }
 
 .cc-dl-key {
@@ -1755,13 +1755,13 @@
 
 .cc-note {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-dense);
   line-height: 1.5;
 }
 
 .cc-delta-head {
-  margin: 14px 0 6px;
-  font-size: 12px;
+  margin: var(--space-3-5) 0 var(--space-1-5);
+  font-size: var(--text-meta);
   font-weight: 600;
   color: var(--fg-muted);
 }
@@ -1771,8 +1771,8 @@
 }
 
 .cc-delta {
-  padding: 6px 0;
-  font-size: 13px;
+  padding: var(--space-1-5) 0;
+  font-size: var(--text-dense);
   border-bottom: 1px solid var(--border);
   overflow-wrap: anywhere;
 }
@@ -1782,7 +1782,7 @@
 }
 
 .cc-delta-fromto {
-  font-size: 12px;
+  font-size: var(--text-meta);
   color: var(--fg-muted);
 }
 
@@ -1814,20 +1814,20 @@
 .cc-pick {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  font-size: 13px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) 0;
+  font-size: var(--text-dense);
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   overflow-wrap: anywhere;
 }
 
 .cc-pick-all {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .cc-pick-group {
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .cc-pick-grouplabel {
@@ -1836,7 +1836,7 @@
 
 /* Children sit under their group's checkbox. */
 .cc-pick-file {
-  padding-left: 24px;
+  padding-left: var(--space-6);
 }
 
 /* -- ANSI (statusline preview) --------------------------------------------- */
@@ -1949,7 +1949,7 @@
   .cc-skills-list .cc-lrow-body {
     flex-direction: column;
     align-items: stretch;
-    gap: 4px;
+    gap: var(--space-1);
   }
 
   .cc-skills-list .cc-lrow-name {

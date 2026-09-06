@@ -19,7 +19,7 @@ export function AttachChip({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
       className={cn(
-        "mr-auto inline-flex items-center gap-1 rounded-[8px] border border-solid border-[var(--border)] bg-[var(--bg)] p-[3px]",
+        "mr-auto inline-flex items-center gap-1 rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] p-1",
         className,
       )}
       {...props}
@@ -39,8 +39,8 @@ export function AttachOpen({ className, ...props }: ComponentProps<"button">) {
   return (
     <button
       className={cn(
-        "block cursor-zoom-in rounded-[5px] border-none bg-transparent p-0 leading-none",
-        "[&_img]:h-7 [&_img]:w-7 [&_img]:rounded-[5px] [&_img]:bg-[rgba(var(--tint),0.08)] [&_img]:object-cover",
+        "block cursor-zoom-in rounded-control border-none bg-transparent p-0 leading-none",
+        "[&_img]:h-7 [&_img]:w-7 [&_img]:rounded-control [&_img]:bg-[rgba(var(--tint),0.08)] [&_img]:object-cover",
         "hover:[&_img]:opacity-[0.82]",
         className,
       )}
@@ -54,7 +54,7 @@ export function AttachDrop({ className, ...props }: ComponentProps<"button">) {
   return (
     <button
       className={cn(
-        "h-[22px] w-[22px] flex-none cursor-pointer rounded-[5px] border-none bg-transparent text-xs leading-none text-[var(--fg-muted)]",
+        "h-[22px] w-[22px] flex-none cursor-pointer rounded-control border-none bg-transparent text-xs leading-none text-[var(--fg-muted)]",
         INHERIT_FONT_FACE,
         "hover:bg-[rgba(var(--tint),0.1)] hover:text-[var(--fg)]",
         className,
@@ -65,5 +65,5 @@ export function AttachDrop({ className, ...props }: ComponentProps<"button">) {
 }
 
 export function AttachNote({ className, ...props }: ComponentProps<"span">) {
-  return <span className={cn("text-[11.5px] text-[var(--fg-muted)]", className)} {...props} />;
+  return <span className={cn("text-meta text-[var(--fg-muted)]", className)} {...props} />;
 }

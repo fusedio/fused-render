@@ -20,13 +20,13 @@ export const TOUR_MODEL_RAIL = "pg-side";
  *  16px because a viewport-filling tab has nothing below the composer, and the
  *  22px gap under the head row that every other tab gets from its caption. */
 export const playgroundFillClass =
-  "flex flex-col overflow-y-hidden pb-4! [&>.cc-page-head]:mb-[22px]";
+  "flex flex-col overflow-y-hidden pb-4! [&>.cc-page-head]:mb-6";
 
 export function PlaygroundBody({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "flex min-h-0 flex-1 items-stretch gap-[22px] pg-narrow:flex-col",
+        "flex min-h-0 flex-1 items-stretch gap-6 pg-narrow:flex-col",
         className,
       )}
       {...props}
@@ -41,7 +41,7 @@ export function ModelRail({ className, ...props }: ComponentProps<"aside">) {
     <aside
       className={cn(
         TOUR_MODEL_RAIL,
-        "flex min-h-0 flex-[0_0_300px] flex-col gap-[14px] overflow-y-auto border-r border-[var(--border)] pr-[18px]",
+        "flex min-h-0 flex-[0_0_300px] flex-col gap-3.5 overflow-y-auto border-r border-[var(--border)] pr-4",
         "pg-narrow:max-h-[38vh] pg-narrow:w-full pg-narrow:flex-none pg-narrow:border-r-0 pg-narrow:border-b pg-narrow:pr-0 pg-narrow:pb-3",
         className,
       )}
@@ -77,7 +77,7 @@ export function StageScroller({ className, ...props }: ComponentProps<"div">) {
     <div
       className={cn(
         "@container flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-x-clip overflow-y-auto",
-        "[--pg-gap:16px] [--pg-card:240px] [--pg-glide:240ms] [--pg-fade:160ms]",
+        "[--pg-gap:16px] [--pg-card:240px] [--pg-glide:var(--dur-glide)] [--pg-fade:var(--dur-base)]",
         className,
       )}
       {...props}
