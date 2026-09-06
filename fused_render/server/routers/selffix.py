@@ -27,7 +27,7 @@ import threading
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import claude_health, claude_spawn, selffix
+from fused_render import __version__, claude_health, claude_spawn, selffix
 from fused_render.server import templates as _server_templates
 from fused_render.server.common import _error, _require_fused
 
@@ -263,6 +263,13 @@ def resume() -> None:
     nothing to stamp — the read-only install a diagnostic session runs on is the
     one whose digest cannot move.
 
+    NEITHER DOES ONE FROM ANOTHER VERSION. The pointer now outlives the tree it
+    describes (`selffix.note_session` writes it out of tree too), and an upgrade
+    replaces that tree: `before` then names a digest of files this installation
+    no longer has, so settling against it would stamp the new version for the
+    old one's changes. The run id still stands — the guard only asks whether
+    that process is alive, which is true whatever version started it.
+
     Never raises. This runs on a startup thread, and a badge that is late is not
     a reason to fail a boot.
     """
@@ -270,6 +277,9 @@ def resume() -> None:
         record = selffix.session_record()
         before = str(record.get("before") or "")
         run_id = str(record.get("run_id") or "")
+        version = str(record.get("version") or "")
+        if version and version != __version__:
+            before = ""
         if not before or not run_id:
             return
         incident = str(record.get("incident") or "")
@@ -437,7 +447,7 @@ def api_selffix_start(body: dict = Body(default={}),
             # branch cannot write to. There is also nothing for it to measure —
             # a digest exists to answer "did this session change the tree?", and
             # on a read-only install the answer is no by construction.
-            before = "" if diagnostic else selffix.begin_session()[1]
+            baseline, before = ("", "") if diagnostic else selffix.begin_session()
         except OSError as exc:
             return _error(f"could not read the installation: {exc}", status=500)
 
@@ -461,8 +471,8 @@ def api_selffix_start(body: dict = Body(default={}),
         # which restarts mid-session can still stamp what this one changed: the
         # watcher below dies with this process, the session does not (SF-7d,
         # `resume`). Derived above rather than after the spawn for that reason.
-        selffix.note_session(str(run_id), before=before, report=report,
-                             incident=incident, title=title)
+        selffix.note_session(str(run_id), before=before, baseline=baseline,
+                             report=report, incident=incident, title=title)
 
     # NOT WATCHED WHEN DIAGNOSTIC. The watcher exists to notice that the tree
     # changed and stamp the installation; on a read-only one it would poll a

@@ -648,8 +648,8 @@ def session_path() -> str:
     return _session_file(records_dir())
 
 
-def note_session(run_id: str, *, before: str = "", report: str = "",
-                 incident: str = "", title: str = "") -> None:
+def note_session(run_id: str, *, before: str = "", baseline: str = "",
+                 report: str = "", incident: str = "", title: str = "") -> None:
     """Record which run is fixing this installation — and what it would take to
     stamp that run's work if this process does not live to do it.
 
@@ -698,14 +698,20 @@ def note_session(run_id: str, *, before: str = "", report: str = "",
     one the session CAUSES — and the install ends up patched with no badge,
     which is the outcome the whole feature exists to prevent.
 
-    The second copy cannot raise a false badge over a reinstall, which is the
-    hazard that would otherwise argue for keeping the pointer in the tree so it
-    dies with it: a same-version reinstall does NOT remove the state dir (pip's
-    RECORD never listed it, which is why `reconcile` exists at all), so the
-    baseline still sitting there vetoes the stamp inside `settle` — the case
-    `test_a_same_version_reinstall_under_a_leftover_pointer_stays_clean` pins.
-    And a stale pointer stops being able to stamp anything after one start
-    anyway: `resume` retires the digest as soon as the run is gone.
+    WHICH IS WHY THE POINTER CARRIES ITS OWN PRISTINE DIGEST, and its version.
+    Surviving the tree is only half the job — a pointer that outlives the tree
+    must not then stamp a copy of it that nobody patched. The veto that stops
+    that lives in `settle` and needs the release digest, which came from the
+    state dir the surviving cases have just lost. So `baseline` rides along and
+    `_pristine_digest` reads it as a third source, exactly as it already reads
+    the marker when `baseline.json` is gone; the two survivals then tell each
+    other apart. A tree REPLACED at the same path (an uninstall-reinstall, a
+    rebuilt venv) is byte-identical to the release, so the veto fires and the
+    copy stays clean; a tree PATCHED by a session that deleted the state dir is
+    not, so it still stamps. `version` guards the other axis: a pointer written
+    under a different version measures a tree that no longer exists, and
+    `resume` declines to settle against it — the same distrust `ensure_baseline`
+    already shows a baseline stamped by another version.
 
     Best-effort. A pointer that could not be written costs the long-session half
     of the guard, and the scan still covers the ordinary case; refusing to start
@@ -715,8 +721,9 @@ def note_session(run_id: str, *, before: str = "", report: str = "",
     for home in record_homes():
         try:
             _write_json(_session_file(home),
-                        {"schema": 2, "run_id": str(run_id),
-                         "before": str(before), "report": str(report),
+                        {"schema": 3, "version": __version__,
+                         "run_id": str(run_id), "before": str(before),
+                         "baseline": str(baseline), "report": str(report),
                          "incident": str(incident), "title": str(title)})
             wrote = True
         except OSError:
@@ -921,19 +928,31 @@ def begin_session(*, now: float | None = None) -> tuple[str, str]:
 def _pristine_digest() -> str:
     """The digest this VERSION shipped, or "".
 
-    `baseline.json` first, and the marker's own `baseline_digest` when that file
-    has none for this version — the baseline can be GONE and the pristine hash
-    still known, because a fix session is an agent editing this installation and
-    can delete the state dir, and the first write can have failed. This is the
-    same recovery `ensure_baseline` performs, in a form the read paths can share
+    `baseline.json` first, then the marker's own `baseline_digest`, then the
+    session pointer's — the baseline can be GONE and the pristine hash still
+    known, because a fix session is an agent editing this installation and can
+    delete the state dir, and the first write can have failed. This is the same
+    recovery `ensure_baseline` performs, in a form the read paths can share
     rather than each remembering half of it.
+
+    THE POINTER IS THE ONLY SOURCE THAT SURVIVES THE STATE DIR, which is what
+    makes it worth a third read. Both files above live in the tree, so the two
+    ways a tree loses its state dir — a session that deleted it, and a tree
+    replaced wholesale at the same path — arrive here with no pristine digest at
+    all, and `settle` cannot then tell "patched" from "reinstalled": it stamps
+    both. The pointer's copy (`note_session`) is written out of tree as well,
+    so it answers for exactly those cases. Version-matched like the others: a
+    digest from another version describes a tree this one replaced.
     """
     baseline = _read_json(baseline_path()) or {}
     if baseline.get("version") == __version__ and baseline.get("digest"):
         return str(baseline["digest"])
     marker = _read_json(marker_path()) or {}
-    if marker.get("version") == __version__:
-        return str(marker.get("baseline_digest") or "")
+    if marker.get("version") == __version__ and marker.get("baseline_digest"):
+        return str(marker["baseline_digest"])
+    record = session_record()
+    if record.get("version") == __version__ and record.get("baseline"):
+        return str(record["baseline"])
     return ""
 
 

@@ -2099,6 +2099,69 @@ def test_a_finished_session_stops_costing_a_tree_walk_on_every_start(
     assert walks == [], "a later start re-walked the tree for a finished session"
 
 
+def test_a_reinstall_that_took_the_state_dir_with_it_stays_clean(
+        install, monkeypatch):
+    """The other way a tree loses its state dir, and the two must not be
+    confused.
+
+    The pointer now outlives the state dir, which is what lets the case below
+    stamp. That same survival is a hazard here: a tree REPLACED at the same path
+    — an uninstall-reinstall, a rebuilt venv — is byte-identical to the release,
+    and a `before` describing the patched tree it replaced would light an amber
+    badge on a clean copy, pointing at a report whose changes are gone. The
+    veto in `settle` is the answer, and it needs a pristine digest that the
+    replacement has just deleted along with `baseline.json`. So the pointer
+    carries one (`note_session`) and `_pristine_digest` reads it.
+    """
+    release = _pristine()
+    (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
+    patched = selffix.tree_digest()
+    # A session opened on the patched tree and recorded what it found.
+    selffix.note_session("r-before-the-reinstall", before=patched, baseline=release)
+
+    # The reinstall puts the release back and takes the state dir with it.
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    shutil.rmtree(selffix.state_dir())
+    assert selffix.tree_digest() == release
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    REAL_RESUME()
+
+    assert selffix.status() is None, (
+        "a copy byte-identical to the release was stamped as modified, from a "
+        "pointer that outlived the tree it described")
+
+
+def test_a_pointer_left_by_ANOTHER_version_settles_nothing(install, monkeypatch):
+    """The second axis the surviving pointer opened up.
+
+    An upgrade replaces the tree, so a `before` recorded under the version
+    before it names files this installation no longer has. Settling against it
+    stamps the new version for the old one's changes — and unlike the reinstall
+    above there is no digest that could rescue it, because the two trees are
+    different by design. The run id still stands: the guard asks whether that
+    process is alive, which is true whatever version started it.
+    """
+    before = _pristine()
+    monkeypatch.setattr(selffix, "__version__", "0.0.1")
+    selffix.note_session("r-from-the-old-version", before=before)
+    # The upgrade lands: this version's code, the old version's pointer. Set
+    # back by hand rather than with `monkeypatch.undo`, which would take the
+    # install fixture's redirects and the autouse pins down with it.
+    monkeypatch.setattr(selffix, "__version__", __version__)
+    (install / "jobs.py").write_text("a different version's files\n")
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    REAL_RESUME()
+
+    assert selffix.status() is None, (
+        "the new version was stamped for a session that ran on the old one")
+    assert selffix.active_run() == "r-from-the-old-version", (
+        "the guard still needs the run named; only the digest is distrusted")
+
+
 def test_a_session_that_deleted_the_state_dir_is_still_stamped_after_a_restart(
         install, monkeypatch):
     """The pointer must not die with the tree the session is editing.
