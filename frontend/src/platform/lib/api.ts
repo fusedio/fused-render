@@ -2362,10 +2362,13 @@ export interface CurrentAppEntry {
   icon?: string | null;
   icon_mtime?: number | null;
   added_at: number | null;
-  /** Epoch (server clock) of the last `openCurrentApp` — the stamp the
-   *  sidebar's green dot is judged against. Null: never opened since the
-   *  stamp shipped. */
+  /** Epoch (server clock) of the last `openCurrentApp`; 0 for a row a task
+   *  put on the desk that has never been opened. */
   opened_at?: number | null;
+  /** A task under the app finished since `opened_at` — the sidebar's green
+   *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
+   *  and by nothing done to the tasks. */
+  unread?: boolean;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {

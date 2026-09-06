@@ -3,7 +3,7 @@
 ``~/.fused-render/current_apps.json``::
 
     {"apps": [{"path": "/Users/me/Fused/local/foo", "addedAt": "<iso>",
-               "openedAt": <epoch, optional — see mark_opened>}],
+               "openedAt": <epoch>, "unread": <bool>}],
      "seen": ["<task key>", ...]}
 
 The sidebar's "Current apps" section (D487) used to DERIVE this list from the
@@ -132,9 +132,57 @@ def app_dir_for(project: str) -> str | None:
     return None
 
 
+# ---- the unread dot ----------------------------------------------------------
+#
+# Each desk row carries its OWN unread state (owner, 2026-09-07): ``unread`` is
+# true when a task under the folder FINISHED since the user last opened the app,
+# and opening the app — nothing else — clears it. It is decoupled from the
+# tasks' per-message read state on purpose: reading the task in the Tasks page,
+# the chat, anywhere, leaves the app's dot alone, and opening the app leaves the
+# task's messages unread.
+#
+# Two facts per row, both here, both the server's:
+#
+# * ``openedAt`` — epoch of the last open (`mark_opened`, POST
+#   /api/current-apps/open). 0.0 for a row a task put on the desk (`observe`):
+#   never opened, so the completion that put it there lights it. `add` (the
+#   explorer's "Open in project", which navigates there at once) stamps now.
+# * ``unread`` — RECOMPUTED on every `observe` pass, never incremented: any task
+#   row under the folder that is not running or archived and whose
+#   ``happened_at`` (tasks._row: the newest thing that actually ran or was
+#   written, never a due time or a creation stamp) is later than ``openedAt``.
+#   A recomputation rather than a transition detector because `observe` sees
+#   snapshots per poll: a rerun that starts and ends between two polls shows no
+#   transition, and a recurring task goes in_progress → upcoming without ever
+#   touching Done. Comparing clocks catches both, and is idempotent — a missed
+#   poll costs nothing, the next one gets the same answer.
+#
+# Running rows are left out so the flag means "finished", not "active": while a
+# run is in flight the row wears the running dot (yellow outranks green, the
+# Tasks rule), and the moment it ends the next pass lights the green.
+
+# The lanes whose rows do NOT count as finished work. Every other status —
+# `done`, `blocked` (a failed run has happened), `upcoming` (a recurring task
+# whose last run finished and whose next is on the books) — does.
+_NOT_FINISHED = frozenset({"in_progress", "needs_attention", "archived"})
+
+
+def _unread(folder: str, opened_at: float, rows: list[dict]) -> bool:
+    for row in rows:
+        if row.get("status") in _NOT_FINISHED:
+            continue
+        project = str(row.get("project") or "")
+        if not project or not is_under(project, folder):
+            continue
+        if float(row.get("happened_at") or 0.0) > opened_at:
+            return True
+    return False
+
+
 def observe(rows: list[dict]) -> None:
     """Look at every task row once: a key not seen before is a new task, and a
-    new task that is not archived adds its app. Called from the tasks listing,
+    new task that is not archived adds its app. Then recompute every row's
+    ``unread`` (see the section comment above). Called from the tasks listing,
     so the listing's own response already reflects the add. Writes only when
     something changed — an idle poll must not rewrite the file."""
     state = read_state()
@@ -143,6 +191,14 @@ def observe(rows: list[dict]) -> None:
     changed = False
     now = None
     live_keys: set[str] = set()
+    # Rows from before the stamp shipped have no ``openedAt``. Stamp them NOW,
+    # once: the quiet upgrade — nothing already on the desk lights until a task
+    # finishes under it from here on (the alternative, 0.0, would light every
+    # app with any finished task, which is most of them).
+    for a in state["apps"]:
+        if not isinstance(a.get("openedAt"), (int, float)):
+            a["openedAt"] = _now_epoch()
+            changed = True
     # OLDEST activity first: `_task_rows` sorts newest first, and the table is
     # added-order (the sidebar numbers the first entry lowest, so the last
     # added lands on top). Walking the listing as given would seed a first-run
@@ -163,12 +219,22 @@ def observe(rows: list[dict]) -> None:
         if folder is None or folder in known:
             continue
         now = now or datetime.now(timezone.utc).isoformat()
-        state["apps"].append({"path": folder, "addedAt": now})
+        # Never opened: the task that put it here lights it once it finishes.
+        state["apps"].append({"path": folder, "addedAt": now, "openedAt": 0.0})
         known.add(folder)
+    for a in state["apps"]:
+        flag = _unread(a["path"], float(a["openedAt"]), rows)
+        if a.get("unread") is not flag:
+            a["unread"] = flag
+            changed = True
     pruned = seen & live_keys
     if changed or pruned != set(state["seen"]):
         state["seen"] = sorted(pruned)
         write_state(state)
+
+
+def _now_epoch() -> float:
+    return datetime.now(timezone.utc).timestamp()
 
 
 def add(path: str) -> bool:
@@ -184,6 +250,9 @@ def add(path: str) -> bool:
     state["apps"].append({
         "path": folder,
         "addedAt": datetime.now(timezone.utc).isoformat(),
+        # The button navigates to the app at once: it IS an open.
+        "openedAt": _now_epoch(),
+        "unread": False,
     })
     write_state(state)
     return True
@@ -203,20 +272,18 @@ def remove(path: str) -> bool:
 
 
 def mark_opened(path: str, at: float) -> bool:
-    """Stamp `path` as OPENED at `at` (epoch seconds, the server's clock) — the
-    row's ``openedAt``. The sidebar's green dot is the app's own unread state
-    (owner, 2026-09-07): a task finishing under the app lights it, and only
-    opening the app clears it — whatever is done to the task. The client
-    judges a done task's ``last_active`` (the same server clock) against this
-    stamp, so it lives in this table beside the app, not in the browser: it
-    is a fact about the desk, and it should follow the user across windows.
-    True when the row exists and was stamped; False for a path not on the desk
-    (nothing to clear on)."""
+    """The user opened the app: stamp the row's ``openedAt`` with `at` (epoch,
+    the server's clock) and clear its ``unread`` — the one gesture that clears
+    the dot (see the unread section above). The next `observe` pass recomputes
+    the flag against the new stamp, so only a task that finishes AFTER this
+    lights it again. True when the row exists; False for a path not on the
+    desk (nothing to clear on)."""
     folder = canonical_fs_path(os.path.abspath(path)).rstrip("/")
     state = read_state()
     for a in state["apps"]:
         if a["path"] == folder:
             a["openedAt"] = float(at)
+            a["unread"] = False
             write_state(state)
             return True
     return False
@@ -252,10 +319,11 @@ def list_apps() -> list[dict]:
     (folder name), ``kind`` (``linked`` for a registry folder, ``workspace``
     otherwise), ``entry`` (the page to run, or None), ``exists``, ``icon`` /
     ``icon_mtime`` (the optional ``icon.svg``, see `app_icon`), ``added_at``
-    (epoch), ``opened_at`` (epoch of the last `mark_opened`, or None for a row
-    never opened since the stamp shipped). A folder that is gone or unreadable
-    still lists — the row is the user's to remove — with ``exists`` false and
-    no entry."""
+    (epoch), ``opened_at`` (epoch of the last `mark_opened`; 0 for a row a task
+    put here that has never been opened), ``unread`` (a task finished under it
+    since that open — the sidebar's green dot, see the unread section). A
+    folder that is gone or unreadable still lists — the row is the user's to
+    remove — with ``exists`` false and no entry."""
     linked = {
         canonical_fs_path(os.path.abspath(e["path"])).rstrip("/")
         for e in registered_apps.read_entries()
@@ -286,5 +354,6 @@ def list_apps() -> list[dict]:
             "added_at": _added_epoch(a.get("addedAt")),
             "opened_at": (a["openedAt"] if isinstance(a.get("openedAt"), (int, float))
                           else None),
+            "unread": bool(a.get("unread")),
         })
     return out

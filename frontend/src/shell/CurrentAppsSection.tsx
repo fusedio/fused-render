@@ -58,7 +58,6 @@ import {
   reorderTo,
   type AppOrder,
   type CurrentApp,
-  type DoneStamp,
 } from "@shell/current-apps-lib";
 
 // Bumped from `current-apps-order` with the redesign: the saved list was slugs
@@ -171,9 +170,9 @@ try {
 }
 
 /** The desk's table, fetched on mount and again whenever `signal` changes —
- *  the caller passes the pulse's set of task keys, since a task this document
- *  has not seen is the one thing that can add a row. Errors keep the last
- *  answer: a failed read is not an empty desk. */
+ *  the caller passes a digest of the task pulse (`pulseSignal`), since a task
+ *  appearing adds a row and a task finishing flips a row's `unread`, both on
+ *  the server. Errors keep the last answer: a failed read is not an empty desk. */
 function useCurrentApps(signal: string, refreshEpoch: number): CurrentAppEntry[] {
   const [apps, setApps] = useState<CurrentAppEntry[]>(knownApps);
   useEffect(() => {
@@ -232,6 +231,8 @@ function CurrentAppRow({
   // The dot clears on the OPEN gesture, whatever the tasks under the app say
   // (owner, 2026-09-07) — and on the row already active, since a completion
   // landing while the user is on the app's page is one they are looking at.
+  // Safe to key on `app.unread`: onSeen hides the dot at once and a failed
+  // POST leaves it hidden (see onSeen), so this cannot re-fire into a retry loop.
   useEffect(() => {
     if (active && app.unread) onSeen(app.path);
   }, [active, app.unread, app.path, onSeen]);
@@ -367,13 +368,17 @@ function CurrentAppRow({
 
 export default function CurrentAppsSection() {
   const rows = useTasksPulseRows();
-  // The set of task keys, as one string: it changes exactly when a task
-  // appears or leaves, and a new task is the only thing that can add an app.
-  // Order-independent (sorted) so a re-sorted pulse does not refetch.
-  const keySignal = useMemo(
+  // When to refetch the desk: a digest of the pulse — per task its key, lane,
+  // read state and activity — so the table reloads when a task appears or
+  // leaves (the one thing that adds a row) AND when one changes lane or speaks
+  // (the things that flip a row's `unread` on the server, which is computed
+  // inside the same listing the pulse reads). `last_active` is a fine CHANGE
+  // DETECTOR — it moves whenever the task does — it was only ever wrong as a
+  // threshold. Sorted, so a re-ordered pulse does not refetch.
+  const pulseSignal = useMemo(
     () =>
       rows
-        .map((r) => r.key)
+        .map((r) => `${r.key} ${r.status} ${r.unread} ${r.last_active}`)
         .sort()
         .join("\n"),
     [rows],
@@ -382,67 +387,67 @@ export default function CurrentAppsSection() {
     () => rows.filter((r) => inFlight(statusColumn(r.status))).map((r) => r.project || ""),
     [rows],
   );
-  // The Done-lane rows — the completions the per-app dot is judged against
-  // (current-apps-lib.projectUnread): a completion newer than the app's stamp
-  // lights it; opening the app, and only that, stamps it.
-  const doneRows = useMemo<DoneStamp[]>(
-    () =>
-      rows
-        .filter((r) => statusColumn(r.status) === "done")
-        .map((r) => ({ project: r.project, last_active: r.last_active, unread: r.unread })),
-    [rows],
-  );
   const [refreshEpoch, setRefreshEpoch] = useState(0);
-  const entries = useCurrentApps(keySignal, refreshEpoch);
+  const entries = useCurrentApps(pulseSignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
   // turns that mutation into a render.
   const [orderEpoch, setOrderEpoch] = useState(0);
-  // The stamp lives on the server row (`opened_at`); this is the client's
-  // optimistic copy for the row just opened, so the dot goes out on the click
-  // and not on the refetch. Held per path, never dropped: the server's stamp
-  // overtakes it on the next fetch (current-apps-lib.latestOpen), and a stale
-  // override cannot re-light anything since it only ever raises the stamp.
-  const [openedLocal, setOpenedLocal] = useState<ReadonlyMap<string, number>>(
-    () => new Map(),
-  );
+  // The rows the user opened in THIS window and the server has not yet answered
+  // for, so the dot dies on the click rather than on the refetch. A path leaves
+  // the set the moment a fetch shows the server agreeing (`unread: false`) — so
+  // a LATER completion, which sets the flag again, is not masked by a stale
+  // entry from this session.
+  const [clearedHere, setClearedHere] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    setClearedHere((prev) => {
+      if (!prev.size) return prev;
+      const next = new Set(prev);
+      for (const e of entries) if (!e.unread) next.delete(e.path);
+      return next.size === prev.size ? prev : next;
+    });
+  }, [entries]);
   const apps = useMemo(() => {
-    const found = currentApps(entries, runningProjects, doneRows, openedLocal);
+    const found = currentApps(entries, runningProjects, clearedHere);
     // Assigning during render is safe because it is idempotent: an app that
     // already has a sequence keeps it, so a double-invoked render (StrictMode)
     // or a re-run on the same rows cannot renumber anything.
     assignSequences(appOrder, found);
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
-  }, [entries, runningProjects, doneRows, openedLocal, orderEpoch]);
-  // The user opened `path`: stamp the row on the server (POST
-  // /api/current-apps/open) and, ahead of the answer, locally with the client
-  // clock. The server's stamp replaces the guess when the answer lands — the
-  // two clocks are the same machine, and the answer's `opened_at` is the truth
-  // the tasks' `last_active` is measured on.
-  const onSeen = useCallback((path: string) => {
-    const guess = Date.now() / 1000;
-    setOpenedLocal((m) => new Map(m).set(path, guess));
-    openCurrentApp(path).then(
-      (r) => {
-        setOpenedLocal((m) => new Map(m).set(path, r.opened_at));
-        // Tell the OTHER windows the desk changed: `storage` fires only in
-        // other documents (the ORDER_KEY wiring above, the chat's activity
-        // stamp), and their sections refetch on it. Without this a second
-        // window keeps the dot until something else makes it refetch (Bugbot,
-        // 2026-09-07). Value is the stamp so two opens in one second still
-        // differ; a blocked store just means no cross-window nudge.
-        try {
-          localStorage.setItem(DESK_CHANGED_KEY, String(r.opened_at));
-        } catch {
-          /* no store: this window is up to date, the others catch up on their own */
-        }
-      },
-      () => {
-        // A failed stamp leaves the guess: the dot stays out for this page,
-        // and comes back on the next launch if the server never heard.
-      },
-    );
-  }, []);
+  }, [entries, runningProjects, clearedHere, orderEpoch]);
+  // The user opened `path`: clear the dot here at once, and tell the server
+  // (POST /api/current-apps/open — the row's `opened_at` and `unread` are its
+  // to keep). The refetch on the answer brings the row back agreeing.
+  const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
+  const onSeen = useCallback(
+    (path: string) => {
+      setClearedHere((s) => new Set(s).add(path));
+      openCurrentApp(path).then(
+        (r) => {
+          refetch();
+          // Tell the OTHER windows the desk changed: `storage` fires only in
+          // other documents (the ORDER_KEY wiring above, the chat's activity
+          // stamp), and their sections refetch on it. Without this a second
+          // window keeps the dot until something else makes it refetch (Bugbot,
+          // 2026-09-07). Value is the stamp so two opens in one second still
+          // differ; a blocked store just means no cross-window nudge.
+          try {
+            localStorage.setItem(DESK_CHANGED_KEY, String(r.opened_at));
+          } catch {
+            /* no store: this window is up to date, the others catch up on their own */
+          }
+        },
+        () => {
+          // The server never heard. The dot stays hidden for this page — it
+          // comes back on the next load, since the server still says unread.
+          // Deliberately NOT restored: the active-row effect above keys on
+          // `app.unread`, and a restore would re-fire it into a retry loop at
+          // network-error cadence.
+        },
+      );
+    },
+    [refetch],
+  );
   // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
   // those move rows on screen and write nothing to the store; the saved order is
   // an arrangement the user made, and only they can change it.
@@ -520,8 +525,6 @@ export default function CurrentAppsSection() {
       clearDrag();
     },
   });
-
-  const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
 
   // The explorer's "Open in project" button adds a row (POST
   // /api/current-apps/add) and announces it over the window — apps cannot

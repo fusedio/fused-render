@@ -1678,6 +1678,17 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # (see `_entry_at`).
     if newest is not None:
         active = max(active, newest["ran_at"] or 0.0)
+    # The row's `happened_at`: `active` as it stands HERE — the newest thing
+    # that actually ran or was written, 0.0 when nothing has — before the two
+    # fallbacks below let a due time or a creation stamp stand in for it. The
+    # desk (current_apps.observe) reads this and only this to decide whether a
+    # task finished under an app since the app was last opened: a message due
+    # tomorrow has not happened, and a task merely asked for has not either.
+    # `last_active` cannot serve — it keeps the due time so the List sorts a
+    # future message near the top — and two attempts to lean on it anyway (a
+    # wall-clock stamp, then a max over it) each broke on exactly that (Bugbot
+    # ×2, 2026-09-07).
+    happened = active
     if not active and task["entries"]:
         # Nothing has run and there is no transcript to date: what happened is
         # that the message was ASKED for, and `created` is when. Deliberately
@@ -1750,6 +1761,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # way every other absent time on this row reads.
         "started": task.get("started") or 0.0,
         "last_active": surfaced,
+        "happened_at": happened,
         "message_count": total,
         # The next run, and the entry it belongs to — `min(at)` over every
         # pending entry, not over the window below. 0.0 / "" when the task has

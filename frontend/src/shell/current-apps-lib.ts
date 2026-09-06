@@ -13,7 +13,7 @@
 // the drag-ordered sequence layer.
 //
 // EVERY app is rendered — the list is not capped (owner, 2026-08-26).
-import type { CurrentAppEntry, TaskPulseTask } from "@platform/lib/api";
+import type { CurrentAppEntry } from "@platform/lib/api";
 
 // The explorer's fs-path codec (router.ts encodeFsPathSegments / rootedFsPath),
 // restated here rather than imported: router.ts rewrites `location` at import
@@ -53,8 +53,8 @@ export interface CurrentApp {
   running: boolean;
   /** A task under it finished since the user last opened this app — the row
    *  wears the green dot (unless running: yellow outranks green, the Tasks
-   *  row's own rule). The app's OWN unread state (see `projectUnread`), not the
-   *  task's: reading the task elsewhere does not clear it, opening the app does. */
+   *  row's own rule). The server's flag (the unread section below), the app's
+   *  OWN state: reading the task elsewhere does not clear it, opening the app does. */
   unread: boolean;
   /** The app's optional `icon.svg`, as a drawable URL (api.appIconUrl), or
    *  null — the glyph slot falls back to the generic mark. */
@@ -76,61 +76,26 @@ export function isUnderDir(project: string, dir: string): boolean {
 // trigger — a completion under the app lights the dot — but the app clears it
 // on its own gesture, opening the app, and nothing done to the task clears it.
 //
-// So the app row itself carries the stamp — `opened_at` in the desk's own
-// store (current_apps.json, written by POST /api/current-apps/open with the
-// server's clock). A done task under the app whose `last_active` (the same
-// server clock) is later than the stamp is a completion the user has not opened
-// the app for since, and the dot is on. `last_active` moves with every message,
-// so a task that speaks again after the open lights the dot again — the same
-// reasoning as tasks-lib.TasksSeen, per app instead of per task. The desk
-// store rather than localStorage because the stamp is a fact about the desk,
-// like the row's addedAt: it belongs beside the row and follows the user to
-// every window on this machine (owner, 2026-09-07).
-//
-// A row with NO stamp has never been opened since this shipped. For it the old
-// rule holds — a done task with unread output — so the upgrade changes nothing
-// on screen: apps whose tasks were read stay quiet rather than every old
-// completion lighting at once. The first open stamps it and it is on the new
-// rule from then on.
-
-/** The done tasks' fields the rule reads. */
-export type DoneStamp = Pick<TaskPulseTask, "project" | "last_active" | "unread">;
-
-/** Does the app at `path`, opened at `openedAt` (null: never), have a completion
- *  the user has not opened it for? `done` is the pulse's Done-lane rows (any
- *  project — the containment test is here). */
-export function projectUnread(
-  path: string,
-  openedAt: number | null | undefined,
-  done: Iterable<DoneStamp>,
-): boolean {
-  for (const t of done) {
-    if (!isUnderDir(t.project || "", path)) continue;
-    if (openedAt == null ? t.unread > 0 : t.last_active > openedAt) return true;
-  }
-  return false;
-}
-
-/** The later of the server's stamp and the client's optimistic one; null when
- *  neither exists (never opened). */
-function latestOpen(server: number | null | undefined, local: number | undefined): number | null {
-  if (server == null) return local ?? null;
-  return local === undefined ? server : Math.max(server, local);
-}
+// The flag is the SERVER's (fused_render/current_apps.py, the unread section):
+// the desk row carries `unread`, recomputed on every tasks listing from each
+// task's `happened_at` against the row's `opened_at`, and cleared by POST
+// /api/current-apps/open. This file does not compute it — it draws it. Two
+// client-side cuts that derived it here from the pulse's `last_active` both
+// broke on the same fact: `last_active` keeps a scheduled message's DUE time
+// for sorting, so it is not a clock an open can be compared against (Bugbot
+// ×2, 2026-09-07). The only client-side input is `clearedHere`: the rows the
+// user opened in THIS window ahead of the refetch, so the dot dies on the click.
 
 /** The store's rows as sidebar rows, in the store's ADDED order (oldest
  *  first), with the running dot read off the projects of the tasks currently
- *  in progress and the unread dot off `projectUnread` (the Done-lane rows
- *  against each row's `opened_at`). `openedOverride` is the client's optimistic
- *  stamp for a row it just opened, ahead of the refetch. */
+ *  in progress and the unread dot the server's flag, minus the rows opened here
+ *  since the last fetch. */
 export function currentApps(
   entries: CurrentAppEntry[],
   runningProjects: Iterable<string>,
-  done: Iterable<DoneStamp> = [],
-  openedOverride: ReadonlyMap<string, number> = new Map(),
+  clearedHere: ReadonlySet<string> = new Set(),
 ): CurrentApp[] {
   const live = [...runningProjects];
-  const finished = [...done];
   return entries.map((e) => ({
     path: e.path,
     name: e.name,
@@ -138,7 +103,7 @@ export function currentApps(
     kind: e.kind,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
-    unread: projectUnread(e.path, latestOpen(e.opened_at, openedOverride.get(e.path)), finished),
+    unread: Boolean(e.unread) && !clearedHere.has(e.path),
     iconUrl: e.icon ? iconUrlFor(e.icon, e.icon_mtime) : null,
   }));
 }
