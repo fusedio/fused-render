@@ -668,7 +668,7 @@ button.sidebar-prefs-trigger {
   border-right: 1.5px solid currentColor;
   border-bottom: 1.5px solid currentColor;
   transform: rotate(45deg);
-  transition: transform var(--dur-fast) ease;
+  transition: transform var(--dur-instant) ease;
   opacity: 0.8;
 }
 
@@ -838,7 +838,7 @@ button.sidebar-prefs-trigger {
      handover the sharpest pop in the sidebar. pointer-events go with the fade so
      the invisible chip can't eat clicks meant for the buttons. */
   opacity: 1;
-  transition: opacity var(--dur-fast) var(--ease-out);
+  transition: opacity var(--dur-instant) var(--ease-out);
 }
 
 .folder-row:hover .folder-count {
@@ -903,8 +903,8 @@ a.bookmark-name::after {
   visibility: hidden;
   opacity: 0;
   transition:
-    opacity var(--dur-fast) var(--ease-out),
-    visibility var(--dur-fast) var(--ease-out);
+    opacity var(--dur-instant) var(--ease-out),
+    visibility var(--dur-instant) var(--ease-out);
   gap: var(--space-0-5);
   z-index: 1;
   padding-left: var(--space-7);

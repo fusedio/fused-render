@@ -589,7 +589,7 @@
   text-align: left;
   overflow: hidden;
   cursor: pointer;
-  transition: filter var(--dur-fast) ease;
+  transition: filter var(--dur-instant) ease;
 }
 
 /* The 4-day range exists for WIDTH — four columns are wide enough to read a
@@ -810,7 +810,7 @@
   /* One short settle from where the click happened — opened often enough that
      anything slower than ~120ms would start to feel like waiting. */
   transform-origin: top left;
-  animation: schedule-popover-in var(--dur-fast) ease-out;
+  animation: schedule-popover-in var(--dur-instant) ease-out;
 }
 
 @keyframes schedule-popover-in {
@@ -888,8 +888,8 @@
   color: var(--fg-muted);
   cursor: pointer;
   transition:
-    background-color var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
+    background-color var(--dur-instant) var(--ease-out),
+    color var(--dur-instant) var(--ease-out);
 }
 
 .schedule-cal-pop-tools .schedule-cal-pop-tool:hover:not(:disabled),
@@ -1051,7 +1051,7 @@
   font-size: var(--text-meta);
   text-align: left;
   cursor: pointer;
-  transition: background-color var(--dur-fast) ease;
+  transition: background-color var(--dur-instant) ease;
 }
 
 .schedule-cal-popover .schedule-cal-msg-open:hover:not(:disabled),
@@ -1309,7 +1309,7 @@
   flex: none;
   /* transform alone: the summary's colour transitions on hover, and one rule
      owning both smears the mark. */
-  transition: transform var(--dur-fast) ease-out;
+  transition: transform var(--dur-instant) ease-out;
 }
 
 .schedule-form-more[open] .schedule-form-more-caret {
@@ -1403,7 +1403,7 @@
   border-radius: var(--radius-card);
   box-shadow: 0 8px 24px var(--shadow-sm);
   transform-origin: top;
-  animation: schedule-pop-in var(--dur-fast) ease-out;
+  animation: schedule-pop-in var(--dur-instant) ease-out;
 }
 
 .schedule-recents-path {
@@ -1632,7 +1632,7 @@ input.schedule-when-field {
      committed to, so the motion is only there to say WHERE the panel came
      from — the trigger's own edge. */
   transform-origin: top;
-  animation: schedule-pop-in var(--dur-fast) ease-out;
+  animation: schedule-pop-in var(--dur-instant) ease-out;
 }
 
 @keyframes schedule-pop-in {
@@ -2314,7 +2314,7 @@ input.schedule-when-field {
   display: flex;
   flex-direction: column;
   align-content: flex-start;
-  transition: opacity var(--dur-fast) ease;
+  transition: opacity var(--dur-instant) ease;
 }
 
 /* Mid-navigation: the outgoing listing stays put, dimmed, until the next one
@@ -2767,11 +2767,11 @@ input.schedule-when-field {
   opacity: 0;
   visibility: hidden;
   transition:
-    opacity var(--dur-fast) ease,
-    visibility var(--dur-fast) ease,
-    top 0s var(--dur-fast),
-    left 0s var(--dur-fast),
-    transform 0s var(--dur-fast);
+    opacity var(--dur-instant) ease,
+    visibility var(--dur-instant) ease,
+    top 0s var(--dur-instant),
+    left 0s var(--dur-instant),
+    transform 0s var(--dur-instant);
   pointer-events: none;
 }
 
@@ -3062,7 +3062,7 @@ input.schedule-when-field {
   cursor: pointer;
   /* transform, not `all`: the row's own background is transitioning too, and
      one rule owning both made the caret smear on hover. */
-  transition: transform var(--dur-fast) ease, color var(--dur-instant) ease;
+  transition: transform var(--dur-instant) ease, color var(--dur-instant) ease;
 }
 
 .schedule-tv-caret.is-open {

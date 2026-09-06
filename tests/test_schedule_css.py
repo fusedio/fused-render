@@ -24,6 +24,7 @@ import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CSS = os.path.join(REPO_ROOT, "frontend", "src", "styles", "schedule.css")
+_SCALE = os.path.join(REPO_ROOT, "frontend", "src", "styles", "scale.css")
 _PAGE = os.path.join(REPO_ROOT, "frontend", "src", "shell", "Scheduled.tsx")
 _PREFS_CSS = os.path.join(REPO_ROOT, "frontend", "src", "styles", "preferences.css")
 
@@ -124,10 +125,19 @@ def test_the_popover_title_outranks_the_facts_under_it():
     are one muted `.schedule-pop-meta` line now (repeat · folder), not a stack
     of icon-led rows, but the step in size is the same invariant."""
     css = _read(_CSS)
+    # Sizes are scale steps now (styles/scale.css): the title wears the heading
+    # face, the facts the meta face — read the numbers through the scale.
+    scale = dict(re.findall(r"^\s*(--[a-z0-9-]+):\s*([^;]+);", _read(_SCALE), re.M))
+
+    def px(value: str) -> int:
+        var = re.fullmatch(r"var\((--[a-z0-9-]+)\)", value.strip())
+        raw = scale[var.group(1)] if var else value
+        return int(re.match(r"(\d+)px", raw.strip()).group(1))
+
     size = _decl(css, ".schedule-pop-write .schedule-pop-title", "font-size")
-    assert size and int(re.match(r"(\d+)px", size).group(1)) >= 16
+    assert size and px(size) >= 16
     meta = _decl(css, ".schedule-pop-meta", "font-size")
-    assert meta == "12px"
+    assert meta and px(meta) == 12
     assert _decl(css, ".schedule-pop-desc", "color") == "var(--fg-muted)"
 
 

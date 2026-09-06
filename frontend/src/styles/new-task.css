@@ -335,9 +335,9 @@
   overflow-wrap: anywhere;
   /* Six lines of the 13px face plus the shared padding: the block the reference
      image gives the description, and the slack it takes. */
-  min-height: calc(13px * 1.55 * 6 + 12px);
+  min-height: calc(var(--text-dense) * 1.55 * 6 + var(--space-3));
   /* Ten, then it scrolls. */
-  max-height: calc(13px * 1.55 * 10 + 12px);
+  max-height: calc(var(--text-dense) * 1.55 * 10 + var(--space-3));
   overflow-y: auto;
   flex: 1 1 auto;
 }

@@ -76,8 +76,8 @@
   color: var(--fg-muted);
   cursor: pointer;
   transition:
-    color var(--dur-fast) var(--ease-out),
-    background-color var(--dur-fast) var(--ease-out);
+    color var(--dur-instant) var(--ease-out),
+    background-color var(--dur-instant) var(--ease-out);
 }
 
 /* Optical, not geometric: the star box centres on the crumb row's centre
@@ -828,7 +828,7 @@
      the bar portals into the listing's left column and fades in with the
      content it now belongs to. Replays because App keys this node on the nav
      epoch (an iframe's param write doesn't bump it). */
-  animation: content-in var(--dur-fast) var(--ease-out);
+  animation: content-in var(--dur-instant) var(--ease-out);
 }
 
 @keyframes content-in {
@@ -1486,7 +1486,7 @@ table.listing-table tr.skel-row:hover {
      `flex-grow` is the animated property because grow, not `width`, is what
      spans the strip; the row's own grow above is instant, so the field opens
      leftward from the bar's right edge (`justify-content: flex-end`). */
-  transition: flex-grow var(--dur-fast) ease-out;
+  transition: flex-grow var(--dur-instant) ease-out;
 }
 
 /* Terse now ("1.2K · 45.1K…" rather than the full sentence — Listing.tsx keeps
@@ -1639,7 +1639,7 @@ table.listing-table tr.skel-row:hover {
    value) is catching up to the latest keystroke on a large search. */
 .listing-stale {
   opacity: 0.6;
-  transition: opacity var(--dur-fast) ease-out;
+  transition: opacity var(--dur-instant) ease-out;
 }
 
 /* Results a generation behind, with nothing on its way to replace them: the
@@ -1826,8 +1826,8 @@ table.listing-table .sort-arrow {
   display: inline-block;
   margin-left: var(--space-1-5);
   font-size: var(--text-micro);
-  transition: transform var(--dur-fast) var(--ease-out);
-  animation: sort-arrow-in var(--dur-fast) var(--ease-out);
+  transition: transform var(--dur-instant) var(--ease-out);
+  animation: sort-arrow-in var(--dur-instant) var(--ease-out);
 }
 
 table.listing-table .sort-arrow.desc {

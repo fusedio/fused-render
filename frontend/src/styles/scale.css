@@ -95,6 +95,9 @@
   --dur-fast: 120ms; /* reveal/hide a control, swap an icon */
   --dur-base: 160ms; /* fade a panel in/out */
   --dur-glide: 240ms; /* move layout (rail fold, grid tracks) */
-  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  /* Older rules still say --dur-med / --dur-slow: they are the base / glide steps. */
+  --dur-med: var(--dur-base);
+  --dur-slow: var(--dur-glide);
+  --ease-out: ease-out; /* the CSS keyword the app has always used; shadcn's own curve is restated on [data-slot] in tailwind.css */
   --ease-glide: cubic-bezier(0.2, 0.7, 0.3, 1);
 }

@@ -9,12 +9,8 @@
    theme contract (tests/test_theme.py) requires every token in the dark
    palette to have a light counterpart, and a duration has no light value.
    prefers-reduced-motion (bottom of this file) collapses all of them. */
-:root {
-  --dur-fast: 80ms;
-  --dur-med: 150ms;
-  --dur-slow: 200ms;
-  --ease-out: ease-out;
-}
+/* Motion tokens live in styles/scale.css (--dur-instant/fast/base/glide,
+   --ease-out/--ease-glide, plus --dur-med/--dur-slow aliases for older rules). */
 
 /* ---- Shared hover/press easing ------------------------------------------- */
 /* One rule for every interactive surface in the shell, grouped here rather than
