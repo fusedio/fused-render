@@ -2636,14 +2636,14 @@ def test_the_strip_carries_the_one_button_between_comment_and_record(html):
     and Record, so it sits with them — first of the three: Screenshot, Comment, Record.
     The strip is the one row the home card and the chat both keep, so one copy
     serves both composers, and the chip still lands above whichever is showing.
-    Hidden while a mode is armed, like the mic."""
+    Stays while a mode is armed (2026-09-06), like its two neighbours."""
     assert 'id="hviewshot"' not in html
     assert 'class="pill viewshot"' not in html
     strip = _between(html, '<div id="anncta">', "\n      </div>")
     assert 'id="viewshot"' in strip
     # Screenshot · Comment · Annotate (Akshil, 2026-09-04)
     assert strip.index('id="viewshot"') < strip.index('id="annbtn"') < strip.index('id="annrec"')
-    assert "#anncta:has(#annbtn.on) #viewshot { display: none; }" in html
+    assert "#anncta:has(#annbtn.on) #viewshot { display: none; }" not in html
     btns = _between(html, "function shotBtns()", "\n}\n")
     assert '"viewshot"' in btns and "hviewshot" not in btns
     # the spoken strings are the pane-noun writer's, not two hardcoded literals
