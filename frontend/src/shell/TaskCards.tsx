@@ -32,6 +32,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { archiveTask, statPath, unarchiveTask } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { pushToast } from "@platform/lib/toast";
 import { ChatFrame, ChatFramePlaceholder } from "@platform/ui/ChatFrame";
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
@@ -393,9 +394,12 @@ function TaskCard({
       else await unarchiveTask(task.key);
       onReload?.();
     } catch (e) {
-      // No footer on a card: the server's sentence rides the door's own hint
-      // until the next attempt.
-      setNote((e as Error).message);
+      // No footer on a card: the server's sentence goes up as a toast — the
+      // pointer may have left the door by the time the refusal lands — and
+      // stays on the door's hint for the next attempt.
+      const said = (e as Error).message;
+      setNote(said);
+      pushToast({ msg: said, tone: "error" });
     } finally {
       setActing(false);
     }

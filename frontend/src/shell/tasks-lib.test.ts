@@ -6953,6 +6953,11 @@ describe("the Cards view's frame", () => {
     expect(filterTasks([blocked, parked, running], byBlocked).map((t) => t.key)).toEqual(["s1", "s2"]);
     const byParked = { ...EMPTY_FILTERS, statuses: ["needs_attention" as const] };
     expect(filterTasks([blocked, parked, running], byParked).map((t) => t.key)).toEqual(["s1", "s2"]);
+    // ...and the menu's tick and toggle read and clear by lane too, so a stored
+    // needs_attention lights Blocked and Blocked-off removes it (review).
+    expect(VIEWS).toContain("const laneOn = (key: BoardColumn) => filters.statuses.some((s) => laneOf(s) === laneOf(key));");
+    expect(VIEWS).toContain("const on = laneOn(col.key);");
+    expect(VIEWS).toContain("? filters.statuses.filter((s) => laneOf(s) !== laneOf(key))");
   });
 
   it("opens the task's popup from the head, and the popup frames the chat with its composer", () => {

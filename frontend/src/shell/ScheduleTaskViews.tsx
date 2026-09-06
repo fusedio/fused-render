@@ -752,11 +752,16 @@ export function TaskFilterControls({
    */
   hideArchiveStatus?: boolean;
 }) {
+  // By LANE, like taskMatches: a tick is on when any stored status draws in
+  // this lane, and turning it off removes every status of that lane — so a
+  // stray `needs_attention` can never leave a filter applied that no checkbox
+  // shows (review, #1018).
+  const laneOn = (key: BoardColumn) => filters.statuses.some((s) => laneOf(s) === laneOf(key));
   const toggleStatus = (key: BoardColumn) =>
     onChange({
       ...filters,
-      statuses: filters.statuses.includes(key)
-        ? filters.statuses.filter((s) => s !== key)
+      statuses: laneOn(key)
+        ? filters.statuses.filter((s) => laneOf(s) !== laneOf(key))
         : [...filters.statuses, key],
     });
 
@@ -807,7 +812,7 @@ export function TaskFilterControls({
       >
         {() =>
           statusColumns.map((col) => {
-            const on = filters.statuses.includes(col.key);
+            const on = laneOn(col.key);
             return (
               <button
                 type="button"
