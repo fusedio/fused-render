@@ -7888,6 +7888,7 @@ async function annRecEnd() {
   const handle = annRecHandle;
   const ids = annRecIds;
   const armed = annArmEpoch;
+  const left = annLeaveGen;   // the conversation this walkthrough belongs to
   clearInterval(annRecTimerId);
   annRecTimerId = null;
   annRecIds = [];
@@ -8005,6 +8006,17 @@ async function annRecEnd() {
     // that swallowed the framing. A walkthrough with NO clicks is the
     // degenerate case of the same rule — everything came before the first
     // click, so the whole transcript is the prompt.
+    // The user LEFT the conversation while the words were on their way
+    // (annLeave bumped the generation): the marks are deleted like a discard's
+    // and nothing is assigned or sent — see annLeave.
+    if (annLeaveGen !== left) {
+      if (ids.length) {
+        annotations = annotations.filter((a) => !ids.includes(a.id));
+        annSave();
+        renderAnn();
+      }
+      return;
+    }
     const intro = ids.length
       ? annRecAssign(ids, rec.segments)
       : (rec.segments || []).map((s) => s.text).join(" ")
@@ -8155,6 +8167,29 @@ function annNotesDiscard() {
 }
 // One dispatcher for the bar's trash, whichever mode is on.
 function annDiscard() { return annRecOn ? annRecDiscard() : annNotesDiscard(); }
+// Leaving the conversation — ← Chats, or a chat opened from the landing —
+// CLOSES AND DISCARDS whatever annotation work is unsent (Akshil,
+// 2026-09-06): the notes pointed at this conversation's screen and are not
+// the next chat's to send. A live walkthrough is discarded (annRecDiscard:
+// mic released, marks deleted, nothing transcribed); an armed Comment mode
+// drops every unsent note — all rounds, not only the current one — and
+// disarms; a transcription already in flight (Stopping…/Transcribing…) lands
+// after the generation bump, and annRecEnd then deletes its marks and keeps
+// the words to itself instead of assigning and auto-sending them (Bugbot,
+// PR #1022). Unsent notes left behind by an already-closed mode go too:
+// pending chips are part of the same payload.
+let annLeaveGen = 0;
+function annLeave() {
+  annLeaveGen += 1;
+  if (annRecOn) { annRecDiscard(); return; }
+  annCloseComposer();
+  const keep = annotations.filter((a) => a.sent);
+  if (keep.length !== annotations.length) {
+    annotations = keep;
+    annSave();
+  }
+  if (annOn) annSetMode(false);
+}
 // The Annotate seat's resting name, restored when a settle (stop, transcribe,
 // discard) ends — the settle named the seat for its status (2026-09-06).
 function annRecIdleName() {
@@ -12703,6 +12738,9 @@ function consumeAnchor() {
 // Clear the session param so a reload lands on the landing page,
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
+  // Leaving the chat closes and discards unsent annotation work (Akshil,
+  // 2026-09-06) — see annLeave.
+  annLeave();
   // Live even mid-turn (Akshil, 2026-08-19 — "when it is working I can't
   // click back"). The old `if (sending) return` guarded against orphaning the
   // streaming run's UI, but the architecture already survives leaving: the
@@ -12797,6 +12835,10 @@ document.getElementById("back").onclick = () => {
 };
 
 function enterChat() {
+  // Entering a chat from the landing closes and discards unsent annotation
+  // work, exactly as ← Chats does (Akshil, 2026-09-06) — see annLeave.
+  // Nothing is armed or pending at boot, so the resume path is a no-op here.
+  annLeave();
   chatEl.classList.remove("home");
   stopWatchRecent();
   // The strip belongs to ONE conversation. Chips from the previous chat are

@@ -478,9 +478,28 @@ def test_the_three_seats_stay_and_the_armed_one_reads_active(html):
     assert 'id="annreclbl"' in rec
     cmt = _block(html, '<button id="annbtn"', "</button>")
     assert 'id="annreclbl"' not in cmt
-    # a mode SURVIVES switching chats for now (Akshil, 2026-09-06) — the
-    # discard-on-leave lands in its own PR
-    assert "annLeave" not in html
+    # leaving the conversation CLOSES AND DISCARDS unsent annotation work
+    # (Akshil, 2026-09-06): ← Chats and entering a chat both go through annLeave
+    back = _block(html, 'document.getElementById("back").onclick = () => {', "\n};")
+    assert "annLeave();" in back
+    enter = _block(html, "function enterChat() {", "\n}\n")
+    assert "annLeave();" in enter
+    leave = _block(html, "function annLeave() {", "\n}\n")
+    assert "annLeaveGen += 1;" in leave
+    # a live walkthrough is discarded, never ended — ending would transcribe
+    # and auto-send into whatever chat the page is on by then (Bugbot, PR #1022)
+    assert "if (annRecOn) { annRecDiscard(); return; }" in leave
+    # every unsent note goes, all rounds, and an open draft with them
+    assert "annCloseComposer();" in leave
+    assert "const keep = annotations.filter((a) => a.sent);" in leave
+    assert "if (annOn) annSetMode(false);" in leave
+    # a transcription already in flight deletes its marks and sends nothing
+    end = _block(html, "async function annRecEnd()", "\n}\n")
+    assert "const left = annLeaveGen;" in end
+    stale = _block(end, "if (annLeaveGen !== left) {", "\n    }\n")
+    assert "annotations = annotations.filter((a) => !ids.includes(a.id));" in stale
+    assert "return;" in stale
+    assert end.index("if (annLeaveGen !== left) {") < end.index("annRecAssign(ids, rec.segments)")
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert 'annCta.classList.add("busy");' in end
     assert 'annCta.classList.remove("busy");' in end
