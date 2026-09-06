@@ -40,6 +40,7 @@ import {
   basename,
   cardKey,
   cardsForTasks,
+  emptyPaneText,
   filingIntent,
   firstLine,
   opensElsewhere,
@@ -106,14 +107,6 @@ function useChatTemplates(dirs: string[]): Record<string, string | null> {
     };
   }, [key]);
   return paths;
-}
-
-/** What the empty pane says when there is no frame to draw. `template === null`
- *  is a folder the server could not stat: nothing will ever be framed for it,
- *  and "Starting…" would be a promise the card cannot keep. */
-export function emptyPaneText(task: Task, template: string | null | undefined): string {
-  if (template === null) return "Folder no longer exists";
-  return taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…";
 }
 
 export function TaskCards({

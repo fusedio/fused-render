@@ -108,8 +108,8 @@ import {
   viewFromSearch,
   viewUrl,
   mergeTaskChanges,
+  emptyPaneText,
 } from "./tasks-lib";
-import { emptyPaneText } from "./TaskCards";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
 const NOW = Date.parse("2026-08-16T12:00:00");
@@ -6775,7 +6775,7 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain('"Nothing to show here."');
     // A task with no session yet: "Starting…" for a run in flight, and the
     // honest phrase for a scheduled one that is simply not due.
-    expect(CARDS).toContain('taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"');
+    expect(LIB).toContain('taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"');
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
 
@@ -6942,6 +6942,7 @@ describe("the Cards view's frame", () => {
     expect(fade).toContain("linear-gradient(");
     expect(fade).toContain("pointer-events: none");
     expect(CARDS).toContain("setPaths((m) => ({ ...m, [dir]: null }));");
+    expect(CARDS).not.toContain("export function emptyPaneText");
     expect(emptyPaneText(task({ status: "done" }), null)).toBe("Folder no longer exists");
     expect(emptyPaneText(task({ status: "done" }), undefined)).toBe("Starting…");
     expect(emptyPaneText(task({ status: "upcoming" }), undefined)).toBe("Not started yet");
