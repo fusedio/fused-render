@@ -494,6 +494,13 @@ def test_the_three_seats_stay_and_the_armed_one_reads_active(html):
     # and auto-send into whatever chat the page is on by then (Bugbot, PR #1022)
     assert "if (annRecOn) annRecDiscard();" in leave
     assert "return" not in leave   # the sweep below runs in every case
+    # a settle in flight ends its status now, not when the dropped transcription
+    # lands (Bugbot, PR #1025): the mic is free for a new walkthrough at once
+    assert 'if (!annRecOn && annCta.classList.contains("busy")) {' in leave
+    settle = _block(leave, 'if (!annRecOn && annCta.classList.contains("busy")) {', "\n  }\n")
+    assert 'annCta.classList.remove("busy");' in settle
+    assert "annRecIdleName();" in settle
+    assert "annRecBtn.disabled = false;" in settle
     # every unsent note goes, all rounds, and an open draft with them
     assert "annCloseComposer();" in leave
     assert "const keep = annotations.filter((a) => a.sent);" in leave

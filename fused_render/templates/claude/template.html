@@ -8186,6 +8186,20 @@ function annLeave() {
   // round left behind (Bugbot, PR #1025). annRecDiscard's own disarm is
   // epoch-guarded, so the one below does not echo.
   if (annRecOn) annRecDiscard();
+  // A settle already in flight (Stopping…/Transcribing…) belongs to the
+  // conversation being left: its words will be dropped on landing (the stale
+  // generation above), so its STATUS ends now too — otherwise the Annotate
+  // seat reads Transcribing… and annRecBegin refuses a new walkthrough until
+  // work nobody wants any more finishes (Bugbot, PR #1025). annRecEnd's own
+  // finally repeats this harmlessly, and its `!annRecOn` guard steps aside
+  // for a walkthrough started in the new chat meanwhile.
+  if (!annRecOn && annCta.classList.contains("busy")) {
+    annCta.classList.remove("busy");
+    annRecLbl.textContent = "";
+    annRecIdleName();
+    annRecBtn.disabled = false;
+    annBtn.disabled = false;
+  }
   annCloseComposer();
   const keep = annotations.filter((a) => a.sent);
   if (keep.length !== annotations.length) {
