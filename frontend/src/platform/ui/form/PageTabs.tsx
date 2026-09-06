@@ -22,7 +22,10 @@ export function PageTab({
     <button
       type="button"
       className={cn(
-        "mr-5 border-b-2 border-transparent px-1 py-2.5 text-dense text-muted-foreground transition-colors hover:text-foreground",
+        // No preflight in this app: a bare <button> keeps the UA grey plate and border,
+        // so the reset is stated here once for every page that uses these tabs.
+        "m-0 cursor-pointer appearance-none border-0 border-b-2 border-solid border-transparent bg-transparent",
+        "mr-5 px-1 py-2.5 text-dense text-muted-foreground transition-colors hover:text-foreground",
         active && "border-[var(--accent)] text-foreground",
         className,
       )}

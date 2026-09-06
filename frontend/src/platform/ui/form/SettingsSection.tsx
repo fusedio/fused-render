@@ -11,9 +11,9 @@ export function SettingsSection({
   ...props
 }: ComponentProps<"section"> & { title?: ReactNode }) {
   return (
-    <section className={cn("flex flex-col gap-2.5", className)} {...props}>
+    <section className={cn("flex flex-col gap-2.5 [&_p]:m-0", className)} {...props}>
       {title != null && (
-        <h2 className="border-b border-border pb-1.5 text-body font-semibold">{title}</h2>
+        <h2 className="m-0 border-b border-border pb-1.5 text-body font-semibold">{title}</h2>
       )}
       {children}
     </section>

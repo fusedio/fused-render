@@ -358,7 +358,7 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
           appears right after, and every five minutes. A paired phone then opens{" "}
           <a href={url} target="_blank" rel="noreferrer">{url}</a>.
         </p>
-        <Button type="button" variant="secondary" onClick={() => setNonce((n) => n + 1)}>
+        <Button type="button" variant="outline" onClick={() => setNonce((n) => n + 1)}>
           New code
         </Button>
         {ipUrl && (
@@ -388,7 +388,7 @@ function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id
     <div className="mt-5">
       <div className="flex items-center justify-between">
         <b>Paired devices</b>
-        <Button type="button" variant="secondary" onClick={() => onRevoke(null)}>
+        <Button type="button" variant="outline" onClick={() => onRevoke(null)}>
           Forget all
         </Button>
       </div>
@@ -399,7 +399,7 @@ function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id
             <MutedText as="span" className="flex-1 text-meta">
               paired {agoLabel(d.paired_at)} · seen {agoLabel(d.last_seen)}
             </MutedText>
-            <Button type="button" variant="secondary" onClick={() => onRevoke(d.id)}>
+            <Button type="button" variant="outline" onClick={() => onRevoke(d.id)}>
               Revoke
             </Button>
           </li>
@@ -556,7 +556,7 @@ function HuggingFaceSection() {
               <ActionRow>
                 <Button
                   type="button"
-                  variant="secondary"
+                  variant="outline"
                   disabled={busy}
                   onClick={() => void act(cancelHfLogin)}
                 >
@@ -745,7 +745,7 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
           which is also the answer to "why has no page got a Calls mode?". */}
       <Button
         type="button"
-        variant="secondary"
+        variant="outline"
         className="self-start"
         disabled={!calls.dir_exists}
         title={calls.dir_exists ? undefined : "No calls have been recorded yet"}

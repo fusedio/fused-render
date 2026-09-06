@@ -13,7 +13,9 @@ export function SettingsPage({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "flex flex-col gap-6 overflow-y-auto p-5 px-6 pb-8 text-dense [&>*]:mx-auto [&>*]:w-full [&>*]:max-w-[760px]",
+        // [&_p]:m-0: no preflight, so paragraphs would otherwise bring their 1em UA
+        // margins and double the section rhythm the gap already states.
+        "flex flex-col gap-6 overflow-y-auto p-5 px-6 pb-8 text-dense [&_p]:m-0 [&>*]:mx-auto [&>*]:w-full [&>*]:max-w-[760px]",
         className,
       )}
       {...props}
@@ -26,7 +28,7 @@ export function SettingsPage({ className, ...props }: ComponentProps<"div">) {
 export function SettingsTitle({ className, ...props }: ComponentProps<"h1">) {
   return (
     <h1
-      className={cn("mb-3.5 text-heading tracking-[-0.01em]", className)}
+      className={cn("m-0 mb-3.5 text-heading tracking-[-0.01em]", className)}
       {...props}
     />
   );

@@ -226,7 +226,7 @@ export function IndexingPanel({
         <ActionRow>
           <Button
             type="button"
-            variant="secondary"
+            variant="outline"
             disabled={busy || scanning || indexingOff}
             title={
               indexingOff
@@ -244,7 +244,7 @@ export function IndexingPanel({
           </Button>
           <Button
             type="button"
-            variant="secondary"
+            variant="outline"
             disabled={busy || scanning || indexingOff}
             title={
               indexingOff
@@ -308,12 +308,12 @@ export function IndexingPanel({
               aria-label="Skipped folders, one rule per line"
             />
             <ActionRow>
-              <Button type="button" variant="secondary" disabled={busy || !dirty} onClick={save}>
+              <Button type="button" variant="outline" disabled={busy || !dirty} onClick={save}>
                 Save
               </Button>
               <Button
                 type="button"
-                variant="secondary"
+                variant="outline"
                 disabled={busy || unionWithDefaults(text, config.defaults) === text}
                 onClick={restoreDefaults}
               >
@@ -414,7 +414,7 @@ function QuerySection() {
         aria-label={ask ? "Question about the index" : "SQL to run against the index"}
       />
       <ActionRow>
-        <Button type="button" variant="secondary" disabled={busy || !text.trim()} onClick={() => void run()}>
+        <Button type="button" variant="outline" disabled={busy || !text.trim()} onClick={() => void run()}>
           {busy ? "Running…" : ask ? "Ask" : "Run"}
         </Button>
         <MutedText as="span">⌘↵</MutedText>
