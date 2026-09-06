@@ -116,16 +116,19 @@ test("an unready frame is mounted invisible under the cover, with the caller's c
   expect(String(cover?.props.className).split(" ")).not.toContain("is-out");
 });
 
-test("a document already carrying the stamp at mount is revealed without waiting for load", () => {
-  // The warm case: the frame finished (and painted) before this component's
-  // effect ran. Nothing will fire a `load` for it any more, so the mount-time
-  // read is the only thing that can uncover it.
+test("a stamp on the document at mount is NOT trusted — only this src's own load is", () => {
+  // Whatever `contentDocument` holds before `load` is not this src's document:
+  // `about:blank` on a fresh mount, the previous conversation on a src change.
+  // A stamp read there would uncover a document that is still navigating.
   const node = frameNode(doc({ chatReady: "1" }));
   const r = mount(<ChatFrame src="/render?a=1" title="Chat" />, node);
-  const tree = r.toJSON() as ReactTestRendererJSON;
+  let tree = r.toJSON() as ReactTestRendererJSON;
+  expect(String(find(tree, "chat-frame-iframe")?.props.className)).not.toContain("is-ready");
+  expect(find(tree, "chat-frame-placeholder")).toBeDefined();
+  // The load lands and the (stamped) document is read: revealed, cover fading.
+  act(() => node.fire("load"));
+  tree = r.toJSON() as ReactTestRendererJSON;
   expect(String(find(tree, "chat-frame-iframe")?.props.className).split(" ")).toContain("is-ready");
-  // Still mounted, now fading: the cover leaves in two beats so the crossfade
-  // has something to cross with.
   expect(String(find(tree, "chat-frame-placeholder")?.props.className).split(" ")).toContain(
     "is-out",
   );
@@ -159,20 +162,31 @@ test("load with no readable document reveals at once — a cross-origin frame ne
 
 test("a new src starts a new wait — the previous document's answer does not uncover it", () => {
   // One iframe element, as React keeps it across a src change, navigated to a
-  // second conversation: the element is the same, the document is not.
+  // second conversation: the element is the same, the document is not — and
+  // until the new one loads, `contentDocument` is STILL the old, stamped one.
   const node = frameNode(doc({ chatReady: "1" }));
   const r = mount(<ChatFrame src="/render?s=1" title="Chat" />, node);
+  act(() => node.fire("load"));
   expect(
     String(find(r.toJSON() as ReactTestRendererJSON, "chat-frame-iframe")?.props.className),
   ).toContain("is-ready");
-  node.contentDocument = doc({});
   act(() => {
     r.update(<ChatFrame src="/render?s=2" title="Chat" />);
   });
-  const tree = r.toJSON() as ReactTestRendererJSON;
+  let tree = r.toJSON() as ReactTestRendererJSON;
   expect(String(find(tree, "chat-frame-iframe")?.props.className)).not.toContain("is-ready");
   // And the cover is back over it, not left behind by the previous reveal.
   expect(find(tree, "chat-frame-placeholder")).toBeDefined();
+  // The new document arrives unready: still covered. Then it stamps: revealed.
+  const next = doc({}) as Document & { documentElement: { dataset: Record<string, string> } };
+  node.contentDocument = next;
+  act(() => node.fire("load"));
+  tree = r.toJSON() as ReactTestRendererJSON;
+  expect(String(find(tree, "chat-frame-iframe")?.props.className)).not.toContain("is-ready");
+  next.documentElement.dataset.chatReady = "1";
+  act(() => node.fire("load"));
+  tree = r.toJSON() as ReactTestRendererJSON;
+  expect(String(find(tree, "chat-frame-iframe")?.props.className).split(" ")).toContain("is-ready");
 });
 
 test("frameRef reaches the iframe element itself, not the box around it", () => {

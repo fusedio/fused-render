@@ -42,16 +42,24 @@
   height: 100%;
   border: 0;
   opacity: 0;
+  /* Invisible AND unreachable: an opacity-0 frame still takes the wheel and
+     the click, so a wall scrolled over a loading card lost the scroll to a
+     document nobody could see, and a pane could be focused before it was
+     shown (Bugbot, #1024). */
+  pointer-events: none;
   transition: opacity 160ms ease;
 }
 
 .chat-frame-iframe.is-ready {
   opacity: 1;
+  pointer-events: auto;
 }
 
 /* The cover. On top of the frame, the page's own background under it so the
-   iframe's cold document never shows through, and inert — nothing here is
-   clickable, and the frame beneath it is not meant to be reached yet either. */
+   iframe's cold document never shows through. It TAKES pointer input (the
+   default) rather than passing it through: nothing here is clickable, and a
+   wheel over it bubbles to the host — the wall scrolls — instead of being
+   eaten by the hidden frame underneath. */
 .chat-frame-placeholder {
   position: absolute;
   top: 0;
@@ -61,12 +69,14 @@
   z-index: 1;
   overflow: hidden;
   background: var(--bg);
-  pointer-events: none;
   transition: opacity 160ms ease;
 }
 
+/* Fading out over a frame that is now live: step aside so the first click
+   lands in the chat, not on a ghost. */
 .chat-frame-placeholder.is-out {
   opacity: 0;
+  pointer-events: none;
 }
 
 /* The transcript column, in the template's own measurements (#log: 720px max,

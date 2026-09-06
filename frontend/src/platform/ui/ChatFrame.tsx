@@ -155,9 +155,12 @@ export function ChatFrame({
     const reveal = () => setReadyFor(src);
 
     // Read the attribute if it is already there; otherwise watch for it. Called
-    // both at mount (the document may have loaded — even finished painting —
-    // before this effect ran, e.g. a warm frame or a synchronous re-key) and on
-    // every `load`.
+    // on `load` ONLY — never at mount. Until this src's own document has loaded,
+    // `contentDocument` is whatever the element held before: `about:blank` on
+    // a fresh mount, and on a src CHANGE the previous conversation, which is
+    // already stamped and would uncover the new src over a stale, still
+    // navigating document (Bugbot, #1024). A frame that somehow loaded before
+    // this effect attached is what the fallback timer is for.
     const inspect = () => {
       const el = ownRef.current;
       if (!el) return;
@@ -206,7 +209,6 @@ export function ChatFrame({
       inspect();
     };
 
-    inspect();
     frame?.addEventListener("load", onFrameLoad);
     // The backstop. Cleared on unmount and restarted per src, so a wall of
     // cards carries one timer each and none outlive their frame.
