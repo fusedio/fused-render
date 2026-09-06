@@ -152,7 +152,7 @@ export function ConfigPanel({
           (styles/tailwind.css, next to the keyframes) keep landing on it. */}
       <Card className={configCardClass + " flex-none"}>
         <CardHeader>
-          <CardTitle className="text-[10.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase">
+          <CardTitle className="text-micro font-semibold tracking-[0.06em] text-muted-foreground uppercase">
             Settings
           </CardTitle>
         </CardHeader>
@@ -301,7 +301,7 @@ export function RailReset({
   return (
     <button
       type="button"
-      className="cursor-pointer appearance-none border-0 bg-transparent p-0 text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground"
+      className="cursor-pointer appearance-none border-0 bg-transparent p-0 text-caption text-muted-foreground underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground"
       title={title}
       onClick={onClick}
     >

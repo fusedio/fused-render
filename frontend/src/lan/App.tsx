@@ -161,7 +161,7 @@ export function LanApp() {
             keeps only the search and filters. */}
         {!IN_APP && (
           <div className="flex items-baseline justify-between gap-3 pb-3">
-            <h1 className="text-[22px] font-semibold tracking-[-0.01em]">Apps</h1>
+            <h1 className="text-display tracking-[-0.01em]">Apps</h1>
             <span className="lan-mono text-xs text-[var(--fg-muted)]">
               {apps ? `${shown.length}/${apps.length}` : ""}
             </span>
@@ -210,7 +210,7 @@ export function LanApp() {
               {tags.map((t) => (
                 <ToggleGroupItem key={t.value} value={t.value} className="rounded-full px-3">
                   {t.label}
-                  <span className="lan-mono ml-1.5 text-[11px] opacity-60">{t.count}</span>
+                  <span className="lan-mono ml-1.5 text-caption opacity-60">{t.count}</span>
                 </ToggleGroupItem>
               ))}
             </ToggleGroup>
@@ -268,7 +268,7 @@ export function LanApp() {
 
       {groups.map((g) => (
         <section key={g.label} className="pt-4">
-          <h2 className="lan-mono mb-2 text-[11px] font-medium tracking-[0.08em] text-[var(--fg-muted)] uppercase">
+          <h2 className="lan-mono mb-2 text-caption tracking-[0.08em] text-[var(--fg-muted)] uppercase">
             {g.label}
           </h2>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -307,16 +307,16 @@ function AppCard({ app, now }: { app: LanAppRow; now: number }) {
         )}
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
-        <div className="line-clamp-2 text-[15px] leading-snug font-medium">{label}</div>
+        <div className="line-clamp-2 text-title leading-snug font-medium">{label}</div>
         <div className="mt-auto flex items-center justify-between gap-2">
           {app.tag ? (
-            <Badge variant="secondary" className="max-w-[70%] truncate rounded-full px-2 text-[11px]">
+            <Badge variant="secondary" className="max-w-[70%] truncate rounded-full px-2 text-caption">
               {app.linked ? "linked" : app.tag}
             </Badge>
           ) : (
             <span />
           )}
-          <span className="lan-mono text-[11px] text-[var(--fg-muted)]">{ago(app.recency, now)}</span>
+          <span className="lan-mono text-caption text-[var(--fg-muted)]">{ago(app.recency, now)}</span>
         </div>
       </div>
     </a>

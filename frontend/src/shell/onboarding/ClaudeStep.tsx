@@ -163,7 +163,7 @@ export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: st
                       {row.label}
                     </span>
                     {row.optional && (
-                      <span className="rounded-full border border-border px-1.5 py-px text-[11px] font-normal text-muted-foreground">
+                      <span className="rounded-full border border-border px-1.5 py-px text-caption font-normal text-muted-foreground">
                         optional
                       </span>
                     )}

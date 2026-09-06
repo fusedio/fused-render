@@ -5,9 +5,10 @@
 // `font: 400 13.333px Arial` — which is why nearly every hand-written control
 // in ai-playground.css opens with `font: inherit`. The composites need the same
 // reset, and they cannot spell it as the `font` SHORTHAND: a shorthand and a
-// `text-[13px]` beside it are two declarations in one Tailwind layer, and which
-// of them wins is a question about utility sort order rather than about the
-// design. Longhands only, split so a control that sets its OWN size or leading
+// size utility (e.g. `text-dense`) beside it are two declarations in one
+// Tailwind layer, and which of them wins is a question about utility sort
+// order rather than about the design. Longhands only, split so a control that
+// sets its OWN size or leading
 // takes just the part it needs and `text-*` / `leading-*` stays the one thing
 // setting it.
 

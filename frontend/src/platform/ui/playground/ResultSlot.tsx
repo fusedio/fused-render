@@ -31,7 +31,7 @@ export function ResultSlot({
   return (
     <Empty
       className={cn(
-        "min-h-[200px] flex-none gap-2.5 rounded-[12px] border border-[var(--border)] p-6 text-wrap",
+        "min-h-[200px] flex-none gap-2.5 rounded-panel border border-[var(--border)] p-6 text-wrap",
         className,
       )}
       {...props}
@@ -46,7 +46,7 @@ export function ResultSlot({
       >
         {icon}
       </span>
-      <p className="m-0 max-w-[34ch] text-[12.5px] leading-[1.5] text-[var(--fg-muted)]">{note}</p>
+      <p className="m-0 max-w-[34ch] text-dense leading-[1.5] text-[var(--fg-muted)]">{note}</p>
     </Empty>
   );
 }

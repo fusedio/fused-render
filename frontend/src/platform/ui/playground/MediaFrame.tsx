@@ -28,14 +28,14 @@ export function MediaFrame({ className, ...props }: ComponentProps<"div">) {
  *  `<video controls>` left unstyled sizes to its own intrinsic pixels rather
  *  than to the aspect-ratio box the frame just set. */
 export const mediaClass =
-  "block h-full w-full rounded-[12px] border border-solid border-[var(--border)] bg-[var(--bg-alt)] object-contain";
+  "block h-full w-full rounded-panel border border-solid border-[var(--border)] bg-[var(--bg-alt)] object-contain";
 
 /** The "gone means done" fallback failing its own artefact check — the same
  *  muted-note treatment the transcript stage's empty result gets. */
 export function MediaReadFailed({ className, ...props }: ComponentProps<"p">) {
   return (
     <p
-      className={cn("m-0 px-4 py-6 text-[13px] leading-[1.5] text-[var(--fg-muted)]", className)}
+      className={cn("m-0 px-4 py-6 text-dense leading-[1.5] text-[var(--fg-muted)]", className)}
       {...props}
     />
   );
@@ -48,7 +48,7 @@ export function MediaWait({ className, ...props }: ComponentProps<"div">) {
   return (
     <Skeleton
       className={cn(
-        "h-full w-full rounded-[12px] border border-solid border-[var(--border)]",
+        "h-full w-full rounded-panel border border-solid border-[var(--border)]",
         "bg-[linear-gradient(100deg,var(--bg-alt)_40%,var(--bg)_50%,var(--bg-alt)_60%)] [background-size:200%_100%]",
         "animate-pg-shimmer motion-reduce:animate-none",
         className,
@@ -63,7 +63,7 @@ export function MediaWait({ className, ...props }: ComponentProps<"div">) {
 export function MediaCaption({ className, ...props }: ComponentProps<"figcaption">) {
   return (
     <figcaption
-      className={cn("flex flex-col gap-1.5 text-[12px] text-[var(--fg-muted)] tabular-nums", className)}
+      className={cn("flex flex-col gap-1.5 text-meta text-[var(--fg-muted)] tabular-nums", className)}
       {...props}
     />
   );

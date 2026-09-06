@@ -22,7 +22,7 @@ import { cn } from "@platform/lib/utils";
 import { INHERIT_FONT } from "./classes";
 
 export const chipVariants = cva(
-  "flex-none cursor-pointer rounded-[999px] border border-solid bg-transparent px-2.5 py-1 text-xs tabular-nums transition-none " +
+  "flex-none cursor-pointer rounded-pill border border-solid bg-transparent px-2.5 py-1 text-xs tabular-nums transition-none " +
     INHERIT_FONT + " " +
     "hover:border-[var(--ctl-quiet-border-hover)] hover:bg-transparent hover:text-[var(--fg)]",
   {

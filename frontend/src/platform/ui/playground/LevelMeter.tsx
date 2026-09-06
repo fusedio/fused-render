@@ -8,7 +8,7 @@ import { cn } from "@platform/lib/utils";
 export function LevelMeter({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
-      className={cn("inline-flex h-5 items-center gap-[3px]", className)}
+      className={cn("inline-flex h-5 items-center gap-1", className)}
       aria-hidden="true"
       {...props}
     />
@@ -17,7 +17,7 @@ export function LevelMeter({ className, ...props }: ComponentProps<"span">) {
 
 export function levelMeterBarClass(lit: boolean, className?: string): string {
   return cn(
-    "w-1 rounded-[2px]",
+    "w-1 rounded-hairline",
     lit ? "h-4 bg-[var(--success-bright)]" : "h-2 bg-[rgba(var(--tint),0.15)]",
     className,
   );

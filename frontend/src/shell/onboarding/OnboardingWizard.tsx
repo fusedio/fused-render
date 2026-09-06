@@ -211,7 +211,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
           the ✕). In flow, so a squeeze shrinks the side tracks instead of
           painting the pills over the wordmark. */}
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 border-b border-border px-5 py-3">
-        <div className="flex min-w-0 items-center gap-2 text-[13.5px] font-semibold tracking-[0.01em]">
+        <div className="flex min-w-0 items-center gap-2 text-body font-semibold tracking-[0.01em]">
           <span className="flex shrink-0 items-center text-[var(--accent)]">
             <FusedMark size={20} />
           </span>
@@ -249,7 +249,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
                 >
                   <span
                     className={cn(
-                      "grid size-4 place-items-center rounded-full text-[10px] font-semibold tabular-nums",
+                      "grid size-4 place-items-center rounded-full text-micro font-semibold tabular-nums",
                       current && "bg-foreground text-background",
                       done && "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
                       !current && !done && "bg-muted-foreground/15 text-muted-foreground",

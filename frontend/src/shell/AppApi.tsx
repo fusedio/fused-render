@@ -120,7 +120,7 @@ function KindGlyph({ kind }: { kind: EndpointKind }) {
   );
 }
 
-const MONO = "font-mono text-[12.5px]";
+const MONO = "font-mono text-dense";
 
 export default function AppApi({
   dir,
@@ -251,7 +251,7 @@ export default function AppApi({
               apart on the right — what the folder needs installed. The engine
               is not named: nobody chooses it on this page. */}
           {endpoints.length > 0 && (
-            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-1 text-[13px] text-muted-foreground">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-1 text-dense text-muted-foreground">
               <p className="m-0">
                 {callable === 0
                   ? "Nothing to run yet"
@@ -285,7 +285,7 @@ export default function AppApi({
           )}
 
           {endpoints.length === 0 && (
-            <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-border py-16 text-[13px] text-muted-foreground">
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-border py-16 text-dense text-muted-foreground">
               <FileCode2 className="size-7 opacity-60" aria-hidden />
               <p className="m-0">No Python files in this app yet.</p>
               <p className="m-0">
@@ -316,7 +316,7 @@ export default function AppApi({
                 ))}
               </ul>
               {data.truncated && (
-                <p className="m-0 px-4 py-3 text-[12px] text-muted-foreground">
+                <p className="m-0 px-4 py-3 text-meta text-muted-foreground">
                   Showing the first {endpoints.length} files.{" "}
                   <a href={folderHref} className="text-inherit underline">
                     Open the folder
@@ -421,11 +421,11 @@ function EndpointRow({
               {name}
             </span>
             {kindNote && (
-              <span className="flex-none text-[11px] tracking-[0.04em] text-muted-foreground uppercase">
+              <span className="flex-none text-caption tracking-[0.04em] text-muted-foreground uppercase">
                 {kindNote}
               </span>
             )}
-            <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate text-dense text-muted-foreground">
               {summary || paramHint}
             </span>
           </span>
@@ -446,7 +446,7 @@ function EndpointRow({
             onClick={copyCurl}
             title="Copy this call as a curl command"
             className={cn(
-              "absolute inset-y-0 right-[42px] my-auto rounded-md border-border bg-transparent px-1.5 font-normal text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent transition-opacity",
+              "absolute inset-y-0 right-10 my-auto rounded-md border-border bg-transparent px-1.5 font-normal text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent transition-opacity",
               "group-hover/row:pointer-events-auto group-hover/row:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 motion-reduce:transition-none",
               // Hidden means hidden: no hit-testing, so a tap in the gap on a
               // collapsed row (touch has no hover) reaches the toggle beneath.
@@ -489,7 +489,7 @@ function EndpointRow({
           )}
 
           {(ep.module_docstring || fn?.docstring) && (
-            <div className="flex flex-col gap-2 text-[13px] leading-relaxed text-foreground/85">
+            <div className="flex flex-col gap-2 text-dense leading-relaxed text-foreground/85">
               {ep.module_docstring && (
                 <p className="m-0 whitespace-pre-wrap">
                   {ep.module_docstring.trim()}
@@ -502,7 +502,7 @@ function EndpointRow({
           )}
 
           {kind === "none" && (
-            <p className="m-0 text-[12.5px] text-muted-foreground">
+            <p className="m-0 text-dense text-muted-foreground">
               No <code className={MONO}>main()</code> here — a helper module,
               imported by the others rather than called on its own. Define{" "}
               <code className={MONO}>main()</code> to make it an endpoint.
@@ -510,7 +510,7 @@ function EndpointRow({
           )}
 
           {kind === "result" && (
-            <p className="m-0 text-[12.5px] text-muted-foreground">
+            <p className="m-0 text-dense text-muted-foreground">
               Static script — assigns <code className={MONO}>result</code> at
               the top level, no parameters.
             </p>
@@ -520,7 +520,7 @@ function EndpointRow({
             <section className="flex flex-col gap-2">
               <Eyebrow>Parameters</Eyebrow>
               {params.length === 0 && (
-                <p className="m-0 text-[12.5px] text-muted-foreground">None.</p>
+                <p className="m-0 text-dense text-muted-foreground">None.</p>
               )}
               {params.length > 0 && (
                 <div className="grid grid-cols-[minmax(120px,max-content)_minmax(80px,max-content)_1fr] items-start gap-x-5 gap-y-2.5">
@@ -551,12 +551,12 @@ function EndpointRow({
                 {run?.kind === "running" ? "Running…" : "Execute"}
               </Button>
               {run?.kind === "failed" && (
-                <span className="text-[12.5px] text-destructive">
+                <span className="text-dense text-destructive">
                   {run.message}
                 </span>
               )}
               {run?.kind === "done" && (
-                <span className="text-[12px] text-muted-foreground tabular-nums">
+                <span className="text-meta text-muted-foreground tabular-nums">
                   {run.result.ok ? "Returned" : "Failed"} in{" "}
                   {formatMs(run.result.duration_ms ?? run.ms)}
                 </span>
@@ -629,7 +629,7 @@ function ParamRow({
       <div
         className={cn(
           MONO,
-          "flex flex-col gap-0.5 pt-1.5 text-[11.5px] leading-snug",
+          "flex flex-col gap-0.5 pt-1.5 text-meta leading-snug",
         )}
       >
         <span className="text-primary">{p.annotation ?? "any"}</span>
@@ -704,7 +704,7 @@ function Response({
             variant="outline"
             className={cn(
               MONO,
-              "h-[18px] rounded-md border-transparent px-1.5 text-[10.5px] font-semibold tracking-[0.06em]",
+              "h-[18px] rounded-md border-transparent px-1.5 text-micro font-semibold tracking-[0.06em]",
               result.ok
                 ? "bg-primary/10 text-primary"
                 : "bg-destructive/10 text-destructive",
@@ -717,7 +717,7 @@ function Response({
               {result.error.type}
             </span>
           )}
-          <span className="ml-auto text-[11.5px] text-muted-foreground tabular-nums">
+          <span className="ml-auto text-meta text-muted-foreground tabular-nums">
             {formatMs(result.duration_ms ?? run.ms)}
           </span>
         </div>
@@ -755,7 +755,7 @@ function Fold({
 }) {
   return (
     <details className="border-t border-border" open={open}>
-      <summary className="cursor-pointer select-none px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground">
+      <summary className="cursor-pointer select-none px-3 py-1.5 text-meta text-muted-foreground hover:text-foreground">
         {label}
       </summary>
       <pre
@@ -772,7 +772,7 @@ function Fold({
 
 function Eyebrow({ children }: { children: string }) {
   return (
-    <h3 className="m-0 text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">
+    <h3 className="m-0 text-caption font-semibold tracking-[0.08em] text-muted-foreground uppercase">
       {children}
     </h3>
   );

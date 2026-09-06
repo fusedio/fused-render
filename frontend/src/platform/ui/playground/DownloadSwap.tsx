@@ -22,7 +22,7 @@ export function DownloadSwapRoot({ className, ...props }: ComponentProps<"div">)
   return (
     <div
       className={cn(
-        "group flex items-center gap-2 self-center text-[12px] text-[var(--fg-muted)]",
+        "group flex items-center gap-2 self-center text-meta text-[var(--fg-muted)]",
         className,
       )}
       {...props}
@@ -55,7 +55,7 @@ export function DownloadSwapLive({ className, ...props }: ComponentProps<"span">
   return (
     <span
       className={cn(
-        "flex items-center gap-2 transition-opacity duration-[120ms] ease-[ease]",
+        "flex items-center gap-2 transition-opacity duration-(--dur-fast) ease-[ease]",
         "group-hover:pointer-events-none group-hover:opacity-0",
         "group-focus-within:pointer-events-none group-focus-within:opacity-0",
         className,
@@ -78,7 +78,7 @@ export function DownloadSwapStop({ className, ...props }: ComponentProps<"button
         "pointer-events-none cursor-pointer border-none bg-transparent p-0 opacity-0",
         INHERIT_FONT_ALL,
         "text-[rgba(var(--error-rgb),0.85)] underline underline-offset-2 hover:text-[var(--error)]",
-        "transition-opacity duration-[120ms] ease-[ease]",
+        "transition-opacity duration-(--dur-fast) ease-[ease]",
         "group-hover:pointer-events-auto group-hover:opacity-100",
         "group-focus-within:pointer-events-auto group-focus-within:opacity-100",
         className,

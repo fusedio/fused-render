@@ -14,7 +14,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@platform/lib/utils";
 
 export const modelRowVariants = cva(
-  "flex flex-col gap-0.5 rounded-[10px] border border-solid p-[15px] text-left text-[13px]",
+  "flex flex-col gap-0.5 rounded-card border border-solid p-4 text-left text-dense",
   {
     variants: {
       /** `off` is a downloaded model nothing here runs: no pointer (there is
@@ -80,7 +80,7 @@ export function ModelLive({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
       className={cn(
-        "mr-1.5 inline-block h-[7px] w-[7px] rounded-[50%] bg-[var(--success-bright)] [vertical-align:1px]",
+        "mr-1.5 inline-block h-[7px] w-[7px] rounded-full bg-[var(--success-bright)] [vertical-align:1px]",
         className,
       )}
       {...props}
@@ -93,7 +93,7 @@ export function ModelLive({ className, ...props }: ComponentProps<"span">) {
 export function ModelSize({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
-      className={cn("flex-none text-[11.5px] text-[var(--fg-muted)] tabular-nums", className)}
+      className={cn("flex-none text-meta text-[var(--fg-muted)] tabular-nums", className)}
       {...props}
     />
   );
@@ -102,7 +102,7 @@ export function ModelSize({ className, ...props }: ComponentProps<"span">) {
 /** The full repo id, quiet under the nickname. */
 export function ModelFull({ className, ...props }: ComponentProps<"span">) {
   return (
-    <span className={cn("truncate text-[11.5px] text-[var(--fg-muted)]", className)} {...props} />
+    <span className={cn("truncate text-meta text-[var(--fg-muted)]", className)} {...props} />
   );
 }
 
@@ -110,7 +110,7 @@ export function ModelFull({ className, ...props }: ComponentProps<"span">) {
 export function ModelFoot({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
-      className={cn("mt-1.5 flex items-center gap-2 text-[11.5px] text-[var(--fg-muted)]", className)}
+      className={cn("mt-1.5 flex items-center gap-2 text-meta text-[var(--fg-muted)]", className)}
       {...props}
     />
   );
@@ -127,7 +127,7 @@ export function ModelTask({ className, ...props }: ComponentProps<"span">) {
 export function ModelWhy({ className, ...props }: ComponentProps<"p">) {
   return (
     <p
-      className={cn("mt-1.5 mr-0 mb-0 ml-0 text-[11.5px] leading-[1.45] text-[var(--fg-muted)]", className)}
+      className={cn("mt-1.5 mr-0 mb-0 ml-0 text-meta leading-[1.45] text-[var(--fg-muted)]", className)}
       {...props}
     />
   );
@@ -148,7 +148,7 @@ export function ModelDownloadButton({
   return (
     <button
       className={cn(
-        "inline-flex flex-none cursor-pointer items-center justify-center rounded-[999px] border-none bg-transparent p-[3px] text-[var(--fg-muted)]",
+        "inline-flex flex-none cursor-pointer items-center justify-center rounded-pill border-none bg-transparent p-1 text-[var(--fg-muted)]",
         // 14px, not MenuIcons' own 16: the glyph sits beside 13px text, and at
         // 16 it was the biggest thing on the row.
         "[&_svg]:h-3.5 [&_svg]:w-3.5",

@@ -12,7 +12,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@platform/lib/utils";
 
 export const copyButtonVariants = cva(
-  "absolute top-2.5 right-2.5 grid h-[26px] w-[26px] cursor-pointer place-items-center rounded-[6px] border border-solid p-0 " +
+  "absolute top-2.5 right-2.5 grid h-[26px] w-[26px] cursor-pointer place-items-center rounded-control border border-solid p-0 " +
     "[&_svg]:h-3.5 [&_svg]:w-3.5",
   {
     variants: {

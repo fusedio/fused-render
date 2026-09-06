@@ -9,7 +9,7 @@ import { cn } from "@platform/lib/utils";
 
 /** The embed stage's own column gap — wider than the other four, because its
  *  result is a LIST and a list needs air above it. */
-export const embedStageClass = "gap-[14px]";
+export const embedStageClass = "gap-3.5";
 
 export function EmbedResults({ className, ...props }: ComponentProps<"ol">) {
   return (
@@ -27,7 +27,7 @@ export function EmbedRow({
   return (
     <li
       className={cn(
-        "relative flex gap-3 overflow-hidden rounded-[8px] border border-solid border-[var(--border)] px-3 py-2 text-[13px]",
+        "relative flex gap-3 overflow-hidden rounded-md border border-solid border-[var(--border)] px-3 py-2 text-dense",
         media ? "items-center" : "items-baseline",
         className,
       )}
@@ -58,7 +58,7 @@ export function EmbedScore({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
       className={cn(
-        "relative flex-none text-[11.5px] text-[var(--fg-muted)] tabular-nums",
+        "relative flex-none text-meta text-[var(--fg-muted)] tabular-nums",
         className,
       )}
       {...props}
@@ -76,7 +76,7 @@ export function EmbedPictures({ className, ...props }: ComponentProps<"div">) {
 
 export function EmbedPictureRow({ className, ...props }: ComponentProps<"div">) {
   return (
-    <div className={cn("flex w-full items-center gap-2 text-[12px]", className)} {...props} />
+    <div className={cn("flex w-full items-center gap-2 text-meta", className)} {...props} />
   );
 }
 
@@ -87,4 +87,4 @@ export function EmbedPictureName({ className, ...props }: ComponentProps<"span">
 }
 
 export const embedThumbClass =
-  "relative h-10 w-10 flex-none rounded-[5px] bg-[var(--bg-subtle)] object-cover";
+  "relative h-10 w-10 flex-none rounded-control bg-[var(--bg-subtle)] object-cover";

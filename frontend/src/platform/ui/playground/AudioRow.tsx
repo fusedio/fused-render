@@ -9,7 +9,7 @@ export function AudioRow({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center gap-x-4 gap-y-2.5 rounded-[10px] border border-solid border-[var(--border)] bg-[var(--bg-alt)] px-[14px] py-2.5",
+        "flex flex-wrap items-center gap-x-4 gap-y-2.5 rounded-card border border-solid border-[var(--border)] bg-[var(--bg-alt)] px-3.5 py-2.5",
         className,
       )}
       {...props}
@@ -27,7 +27,7 @@ export function AudioLabel({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
       className={cn(
-        "text-[11px] font-semibold tracking-[0.05em] text-[var(--fg-muted)] uppercase",
+        "text-caption font-semibold tracking-[0.05em] text-[var(--fg-muted)] uppercase",
         className,
       )}
       {...props}
@@ -40,7 +40,7 @@ export function AudioLabel({ className, ...props }: ComponentProps<"span">) {
 export function AudioName({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
-      className={cn("max-w-[220px] truncate text-[12px] text-[var(--fg-muted)]", className)}
+      className={cn("max-w-[220px] truncate text-meta text-[var(--fg-muted)]", className)}
       {...props}
     />
   );

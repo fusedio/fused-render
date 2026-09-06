@@ -6,7 +6,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@platform/lib/utils";
 
 export const recordButtonVariants = cva(
-  "inline-flex h-[52px] w-[52px] flex-none cursor-pointer items-center justify-center rounded-[50%] border-2 border-solid bg-[var(--bg-alt)] " +
+  "inline-flex h-[52px] w-[52px] flex-none cursor-pointer items-center justify-center rounded-full border-2 border-solid bg-[var(--bg-alt)] " +
     "disabled:cursor-default disabled:opacity-50",
   {
     variants: {
@@ -30,7 +30,7 @@ export function RecordButton({
 export function RecordDot({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
-      className={cn("h-[18px] w-[18px] rounded-[50%] bg-[var(--error)]", className)}
+      className={cn("h-[18px] w-[18px] rounded-full bg-[var(--error)]", className)}
       {...props}
     />
   );
@@ -38,7 +38,7 @@ export function RecordDot({ className, ...props }: ComponentProps<"span">) {
 
 export function RecordSquare({ className, ...props }: ComponentProps<"span">) {
   return (
-    <span className={cn("h-4 w-4 rounded-[3px] bg-[var(--error)]", className)} {...props} />
+    <span className={cn("h-4 w-4 rounded-xs bg-[var(--error)]", className)} {...props} />
   );
 }
 
@@ -48,7 +48,7 @@ export function RecordingRow({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "flex items-center gap-4 rounded-[12px] border-[1.5px] border-solid border-[var(--error)] bg-[rgba(var(--error-rgb),0.05)] p-[18px]",
+        "flex items-center gap-4 rounded-panel border-[1.5px] border-solid border-[var(--error)] bg-[rgba(var(--error-rgb),0.05)] p-4",
         className,
       )}
       {...props}
@@ -58,18 +58,18 @@ export function RecordingRow({ className, ...props }: ComponentProps<"div">) {
 
 export function RecordInfo({ className, ...props }: ComponentProps<"div">) {
   return (
-    <div className={cn("flex flex-wrap items-center gap-[14px]", className)} {...props} />
+    <div className={cn("flex flex-wrap items-center gap-3.5", className)} {...props} />
   );
 }
 
 export function RecordTime({ className, ...props }: ComponentProps<"span">) {
   return (
-    <span className={cn("text-[16px] font-semibold tabular-nums", className)} {...props} />
+    <span className={cn("text-heading tabular-nums", className)} {...props} />
   );
 }
 
 export function RecordHint({ className, ...props }: ComponentProps<"span">) {
   return (
-    <span className={cn("text-[12.5px] text-[var(--fg-muted)]", className)} {...props} />
+    <span className={cn("text-dense text-[var(--fg-muted)]", className)} {...props} />
   );
 }

@@ -3,3 +3,5 @@
 styles/explorer.css::padding-right: …96px   # listing row reserves the size column width (geometry, not rhythm)
 styles/explorer.css::padding-right: …116px  # listing row reserves size + mtime columns
 styles/explorer.css::padding-right: …210px  # listing row reserves size + mtime + wide mtime
+lan/App.tsx::text-[44px]  # fallback tile initial sized to fill the app-icon tile, not a type-scale label
+platform/ui/playground/ProgressBar.tsx::duration-[.4s]  # eases to match the ~1s poll cadence that moves the bar, not UI rhythm
