@@ -28,6 +28,7 @@
 // shows.
 import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
+import { ChatFrame } from "@platform/ui/ChatFrame";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { ModeMenu } from "@apps/explorer/BarMenu";
@@ -170,24 +171,30 @@ export default function ListingPreviewPane({
     // `_fusedClaudeAskTake`), and this component's `key` (Listing.tsx, folded
     // with `claudeAskInstance` for exactly the claude case) is what makes sure
     // a fresh ask gets a fresh mount to pull it into.
+    // `_noopen=1`, not `_preview=1` (D622): this pane is fully interactive —
+    // you type in it — so it must not carry the display-only stamp
+    // `runtime.js`'s `IS_THUMBNAIL` reads off `_preview`, which would silently
+    // disable `fused.daemon.*` for every app it frames (its own left preview
+    // pane included, two levels down). `_noopen=1` says only the one thing this
+    // call site actually wants: don't record this render as an app open.
+    const src = withNoFocus(
+      `/render?path=${encodeURIComponent(sideEntry.path)}` +
+        `&_file=${encodeURIComponent(folder)}${chatOnly}&_noopen=1`
+    );
+    // The claude companion is the one whose document restores a transcript
+    // before it has anything to show, so it is the one framed behind a cover
+    // that waits for `data-chat-ready` (platform/ui/ChatFrame — same as the
+    // Cards wall and its popup). git and mcp paint their own first frame and
+    // stamp nothing, so they stay plain: a cover revealed only by the 8s
+    // fallback would be a new wait, not a fix.
     return (
       <div className="listing-pane" ref={rootRef} {...guardProps}>
         {strip()}
-        <iframe
-          className="pane-frame"
-          src={withNoFocus(
-            // `_noopen=1`, not `_preview=1` (D622): this pane is fully
-            // interactive — you type in it — so it must not carry the
-            // display-only stamp `runtime.js`'s `IS_THUMBNAIL` reads off
-            // `_preview`, which would silently disable `fused.daemon.*` for
-            // every app it frames (its own left preview pane included, two
-            // levels down). `_noopen=1` says only the one thing this call
-            // site actually wants: don't record this render as an app open.
-            `/render?path=${encodeURIComponent(sideEntry.path)}` +
-              `&_file=${encodeURIComponent(folder)}${chatOnly}&_noopen=1`
-          )}
-          title={modeTitle(side)}
-        />
+        {side === "claude" ? (
+          <ChatFrame className="pane-frame" src={src} title={modeTitle(side)} />
+        ) : (
+          <iframe className="pane-frame" src={src} title={modeTitle(side)} />
+        )}
       </div>
     );
   }

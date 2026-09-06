@@ -9,6 +9,12 @@
 @import "./styles/sidebar.css";
 @import "./styles/explorer.css";
 @import "./styles/preview.css";
+/* After preview.css and before task-cards.css, and the order is load-bearing
+   both ways: the chat frame's iframe rule must beat `.preview-side-frame`'s
+   flex-derived height (the frame is a child of the new box now, not a flex
+   item) and must LOSE to `.task-card-frame`'s scaled fit. Its skeleton bars are
+   explorer.css's `.skel-bar`, imported above. */
+@import "./styles/chat-frame.css";
 @import "./styles/context-menu.css";
 @import "./styles/dialogs.css";
 @import "./styles/notifications.css";

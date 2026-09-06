@@ -356,6 +356,19 @@
   border: 0;
 }
 
+/* The card's placeholder is SCALED WITH the frame it stands in for. The chat
+   inside the frame draws its own skeleton at 4/3 size and the browser paints it
+   at 3/4 (the fit above), so a host skeleton at 1:1 would be a third too big and
+   the crossfade would jump. Same trick, same numbers, on the cover — which is
+   why the two are one geometry rather than two similar pictures.
+   (platform/ui/ChatFrame.tsx, styles/chat-frame.css.) */
+.task-card-body .chat-frame-placeholder {
+  width: 133.3334%;
+  height: 133.3334%;
+  transform: scale(0.75);
+  transform-origin: 0 0;
+}
+
 /* A run that has been claimed but has not reported a session yet (schedule-lib,
    above `folderHref`: the window between "sent" and "we know which chat that
    is"). There is nothing to embed, so the pane says so in the page's own quiet

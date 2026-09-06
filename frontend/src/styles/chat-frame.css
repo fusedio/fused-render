@@ -1,0 +1,146 @@
+/* ---- the chat frame and its one placeholder (platform/ui/ChatFrame.tsx) ----
+   Three surfaces frame the Claude chat template — the Cards wall, that wall's
+   popup, and the explorer's companion sidebar — and all three used to show the
+   iframe's own cold document before the template's first paint. These rules are
+   the cover: a box that fills whatever the consumer gives it, an iframe that is
+   invisible until the framed document says it is painted, and one skeleton laid
+   over it in the meantime, shaped like the skeleton the template itself draws.
+
+   ORDER IS LOAD-BEARING, twice, which is why this file sits exactly here in the
+   barrel (shell.css):
+     * AFTER explorer.css, whose `.skel-bar` and `@keyframes skel-shimmer` the
+       placeholder's bars are;
+     * AFTER preview.css, so `.chat-frame-iframe`'s size wins over
+       `.preview-side-frame`'s `height: auto` — that height was flex-derived
+       and the frame is no longer a flex item, it is a child of this box;
+     * BEFORE task-cards.css, so the card's `.task-card-frame` fit (133% drawn
+       at 0.75) still overrides the plain 100% here. */
+
+/* The box. Fills its parent whether that parent is a block with a resolved
+   height (the card's body) or a flex line (the popup's body, the sidebar
+   column) — hence both the percentages and the flex shorthand. `overflow:
+   hidden` because the card's frame is deliberately larger than this box and
+   scaled back into it. */
+.chat-frame {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* Invisible until ready, then a fade of the same length as the placeholder's —
+   the two cross, they do not queue. No `visibility`/`display` games: the
+   document must be laid out and painting the whole time, or revealing it would
+   be its own reflow. */
+.chat-frame-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  opacity: 0;
+  /* Invisible AND unreachable: an opacity-0 frame still takes the wheel and
+     the click, so a wall scrolled over a loading card lost the scroll to a
+     document nobody could see, and a pane could be focused before it was
+     shown (Bugbot, #1024). */
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.chat-frame-iframe.is-ready {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The cover. On top of the frame, the page's own background under it so the
+   iframe's cold document never shows through. It TAKES pointer input (the
+   default) rather than passing it through: nothing here is clickable, and a
+   wheel over it bubbles to the host — the wall scrolls — instead of being
+   eaten by the hidden frame underneath. */
+.chat-frame-placeholder {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  overflow: hidden;
+  background: var(--bg);
+  transition: opacity 160ms ease;
+}
+
+/* Fading out over a frame that is now live: step aside so the first click
+   lands in the chat, not on a ghost. */
+.chat-frame-placeholder.is-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The transcript column, in the template's own measurements (#log: 720px max,
+   centred, 24/20/12 padding) so the two skeletons sit in the same place and the
+   crossfade moves nothing. */
+.chat-frame-skel {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 20px 12px;
+}
+
+.chat-frame-skel-turn {
+  margin: 0 0 20px;
+}
+
+/* The user turn: one pill, hard right, at the template's `.skel-turn-user`
+   proportions. */
+.chat-frame-skel-user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.chat-frame-skel-user .skel-bar {
+  width: 34%;
+  height: 34px;
+  border-radius: 16px;
+}
+
+/* The assistant turn: the avatar disc and three ragged lines. */
+.chat-frame-skel-assistant {
+  display: flex;
+  gap: 10px;
+}
+
+.chat-frame-skel-dot {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+}
+
+.chat-frame-skel-lines {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+/* The template's line metrics, not the listing's (`.skel-bar` is 10px/3px for a
+   table row) — these stand in for prose. */
+.chat-frame-skel-lines .skel-bar {
+  height: 11px;
+  border-radius: 4px;
+}
+
+/* Reduced motion: the reveal is a state change, not a movement. reduced-motion.css
+   already collapses every transition to nothing, and this states the intent at
+   the rule that has it — the placeholder still unmounts, it just does not fade. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-frame-iframe,
+  .chat-frame-placeholder {
+    transition: none;
+  }
+}

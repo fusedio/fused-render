@@ -35,6 +35,7 @@
 // flex children of the split container.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
+import { ChatFrame } from "@platform/ui/ChatFrame";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideCloseButton } from "@apps/explorer/SideChrome";
 import {
@@ -60,6 +61,12 @@ import { committedWidth, resizeWidth } from "@platform/lib/panel-drag";
 // different components now (StatView owns the container, this owns the handle),
 // and a ref would have to be threaded through the portal to get here.
 const SPLIT_SEL = ".stat-split";
+
+// The one companion whose document is a CHAT, and so the one that reports when
+// its transcript is painted (`data-chat-ready`, platform/ui/ChatFrame). Named
+// here rather than compared inline so the gate below reads as a fact about that
+// mode and not as a string that happened to match.
+const CHAT_MODE = "claude";
 
 // The page-level split's right-hand slot, rendered by StatView beside the left
 // column. `display: contents` (explorer.css) so the portaled divider and column
@@ -334,13 +341,32 @@ export default function PreviewSidebar({
           /* Keyed on the mode, so a switch replaces the document outright. No
              held-frame cross-fade here (unlike the content pane): the sidebar is
              a narrow column of chrome-heavy tools, and the two of them look
-             nothing alike — there is no illusion of continuity to protect. */
-          <iframe
-            key={frameKey}
-            className="preview-side-frame"
-            src={src}
-            title={modeTitle(active)}
-          />
+             nothing alike — there is no illusion of continuity to protect.
+
+             THE CLAUDE COMPANION IS THE ONE MODE THAT COVERS ITS OWN BOOT
+             (platform/ui/ChatFrame): it is the only one of the three that
+             restores a transcript before it has anything to show, so it is the
+             only one whose cold document was a visible black pane. The cover
+             waits on `data-chat-ready`, which only the chat template stamps —
+             the gate is the MODE and not the 8s fallback, because a `git` or
+             `mcp` column revealed by a timeout would be a whole new bug in
+             exchange for a fix nobody asked for there. The key stays on the
+             outer component, so a mode switch still replaces the document. */
+          active === CHAT_MODE ? (
+            <ChatFrame
+              key={frameKey}
+              className="preview-side-frame"
+              src={src}
+              title={modeTitle(active)}
+            />
+          ) : (
+            <iframe
+              key={frameKey}
+              className="preview-side-frame"
+              src={src}
+              title={modeTitle(active)}
+            />
+          )
         )}
       </aside>
     </>
