@@ -307,16 +307,31 @@ def test_a_note_saves_without_any_capture_of_its_own(html):
 
 # ------------------------------------------ two buttons, one mode at a time
 
-def test_the_comment_seat_is_the_modes_one_control(html):
-    """A mode ON takes the strip down to one button (Akshil, 2026-08-19): the
-    mic hides, and the Comment seat's click matches its face — stop a live
-    recording, Done for an armed comment mode, arm from rest. Cancelling
-    without sending is Esc's job now."""
-    assert ("() => (annRecOn ? annRecEnd() :"
-            " annOn ? annDone() : annSetMode(true)));") in html
-    # the mic only ever starts a walkthrough (the recording leg guards a
-    # click racing the hide, it is not a second stop control)
-    assert ("() => (annRecOn ? annRecEnd() : annRecBegin()));") in html
+def test_the_other_two_seats_are_inert_while_a_mode_is_on(html):
+    """One mode at a time (Akshil, 2026-09-06): while Comment is armed the
+    camera and the mic are inert; while a walkthrough records the camera and
+    the Comment seat are. Dimmed and pointer-less by the stylesheet, refused
+    by the handlers so a keyboard press is a no-op too. The Comment seat's
+    click is Done when armed and arm from rest; the mic's is stop when
+    recording and start from rest. ← Chats leaves the mode with the chat."""
+    assert ("() => (annRecOn ? null : annOn ? annDone() : annSetMode(true)));") in html
+    assert ("() => (annRecOn ? annRecEnd() : annOn ? null : annRecBegin()));") in html
+    assert ("#anncta:has(#annbtn.on) #viewshot,\n"
+            "  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec,\n"
+            "  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }") in html
+    shot = _block(html, "async function shotAttachPane()", "\n}\n")
+    assert "if (shotBusy || annOn || !annCapable()) return;" in shot
+    back = _block(html, 'document.getElementById("back").onclick = () => {', "\n};")
+    assert "if (annOn) annSetMode(false);" in back
+    # Bugbot, PR #1022: the mic refuses the settle too, the resting Comment
+    # seat is not named "Stop", and aria-disabled follows the dimming
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert 'if (annRecOn || annCta.classList.contains("busy") || !annCapable()) return;' in begin
+    assert 'annBtn.setAttribute("aria-label", "Stop the recording");' not in html
+    aria = _block(html, "function annSeatsAria()", "\n}\n")
+    assert 'annRecBtn.setAttribute("aria-disabled", annOn && !annRecOn ? "true" : "false");' in aria
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert "annSeatsAria();" in paint
 
 
 def test_done_flushes_pending_notes_before_disarming(html):
@@ -441,7 +456,8 @@ def test_the_three_seats_stay_and_the_armed_one_reads_active(html):
     assert ".cmt-stop { display: block; }" not in html
     assert "#annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none; }" in html
     assert "#annbtn.on { color: var(--accent); background: transparent; border-color: var(--accent); }" in html
-    assert "#annrec.on { color: var(--error); border-color: var(--error);" in html
+    assert "#annrec.on { color: var(--error); border-color: var(--error); }" in html
+    assert "annrecpulse" not in html   # steady, no flashing (2026-09-06)
     assert "#anncta:has(#annrec.on) #annbtn.on { color: var(--dim); border-color: var(--border); }" in html
     # transcribing: annRecEnd stamps .busy and the status stands ALONE on the
     # Comment seat — the clock itself is the bar's, never the strip's

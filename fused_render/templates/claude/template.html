@@ -244,7 +244,9 @@
   /* The recording state borrows --error, the one token already meant for
      "something the user should notice is live" (it colours a failed run) —
      no new token to keep in step across the two palettes. */
-  #annrec.on { color: var(--error); border-color: var(--error); animation: annrecpulse 1.1s infinite; }
+  /* Steady, no pulse (Akshil, 2026-09-06: "don't do fancy flashing") — the
+     live clock on the bar already says the recording is running. */
+  #annrec.on { color: var(--error); border-color: var(--error); }
   /* The icons: stroke glyphs in the button's own ink, so state colours (the
      hover brighten, the recording --error) reach them for free. `.fill` seats
      are the solid parts — the picker's inner square, the stop block. */
@@ -299,6 +301,15 @@
      it stands ALONE on the seat — the word "Comment" yields to it. */
   #anncta:not(.busy) #annreclbl { display: none; }
   #anncta.busy #annbtn .cmt-word { display: none; }
+  /* The OTHER two seats go inert while a mode is on (Akshil, 2026-09-06: "if
+     I click on the other one it shouldn't work"): dimmed like a disabled seat,
+     no hover, no pointer. Their click handlers refuse the same states, so a
+     keyboard press is a no-op too — the way OUT of a mode is the bar's (and
+     Esc, and ← Chats), never a neighbouring seat. Derived from the two state
+     classes like every other face here. */
+  #anncta:has(#annbtn.on) #viewshot,
+  #anncta:has(#annbtn.on):not(:has(#annrec.on)) #annrec,
+  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }
   /* Empty label must not hold a gap seat open beside the icon. */
   #annreclbl:empty { display: none; }
 
@@ -1551,8 +1562,7 @@
   }
   .turn { margin: 0 0 20px; animation: rise .18s ease-out; }
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  @keyframes annrecpulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
-  @media (prefers-reduced-motion: reduce) { .turn, #annrec.on { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .turn { animation: none; } }
 
   /* The turn a `?msg=` link asked for (see MESSAGE_ANCHOR). A HALO that fades,
      not a selection state: the flare answers "this one" and then leaves, where
@@ -6605,7 +6615,16 @@ function annBarPush(doc) {
   annPushedDoc = doc;
   if (doc) doc.documentElement.style.setProperty("margin-top", "43px", "important");
 }
+// The strip's inert seats, spoken: aria-disabled follows the same two state
+// classes the stylesheet dims by (Akshil, 2026-09-06). One writer, here,
+// because every mode transition already ends in annBarPaint.
+function annSeatsAria() {
+  annBtn.setAttribute("aria-disabled", annRecOn ? "true" : "false");
+  annRecBtn.setAttribute("aria-disabled", annOn && !annRecOn ? "true" : "false");
+  for (const b of shotBtns()) b.setAttribute("aria-disabled", annOn ? "true" : "false");
+}
 function annBarPaint() {
+  annSeatsAria();
   // No bar (the hosted target went away, or is showing nothing marked) still
   // hands a pushed document its margin back (Bugbot, PR #1008): the frame the
   // shell keeps mounted must not keep a 43px gap with no bar on it.
@@ -7451,12 +7470,12 @@ function annSetMode(on) {
   }
 }
 
-// The seat's three answers, matching its three faces: stop a live recording
-// (■ plus the clock), finish an armed comment mode (✓ Done — send and
-// leave), or arm the mode from rest. Cancelling without sending is Esc's
-// job now — the seat that used to toggle the mode off IS the Done button.
+// The seat's two answers: finish an armed comment mode (Done — send and
+// leave), or arm the mode from rest. While a walkthrough records the seat is
+// inert (2026-09-06): the stop is the bar's ■, not a neighbouring seat.
+// Cancelling without sending is Esc's job (and ← Chats').
 annBtn.addEventListener("click",
-  () => (annRecOn ? annRecEnd() : annOn ? annDone() : annSetMode(true)));
+  () => (annRecOn ? null : annOn ? annDone() : annSetMode(true)));
 // Done: the typed-comment mode's exit that also delivers — and the ONLY send
 // the typed mode has (annCommit saves, never sends). A composer still open
 // with words in it is committed FIRST — Done means "send what I said", and the
@@ -7567,7 +7586,10 @@ function annWarmTranscriber() {
 })();
 
 async function annRecBegin() {
-  if (annRecOn || !annCapable()) return;
+  // `.busy` too (Bugbot, PR #1022): through Stopping…/Transcribing… the mic
+  // seat is drawn inert, and a keyboard press must not start a second
+  // walkthrough on the epoch the in-flight annRecEnd is about to disarm.
+  if (annRecOn || annCta.classList.contains("busy") || !annCapable()) return;
   annWarmTranscriber();
   // Disabled for the width of the start request too, not just while a
   // recording runs — otherwise a second click before the app answers the
@@ -7626,8 +7648,11 @@ async function annRecBegin() {
   // "Done" reads as finished (Bugbot, PR #664).
   annRecBtn.setAttribute("aria-label", "Stop the recording");
   annRecBtn.title = "Recording — click to stop · Esc also stops it";
-  annBtn.setAttribute("aria-label", "Stop the recording");
-  annBtn.title = "Stop the recording · Esc also stops it";
+  // The Comment seat is INERT while the walkthrough runs (its click handler
+  // returns null on annRecOn; the stylesheet dims it) — so it is not named
+  // "Stop" any more (Bugbot, PR #1022): the stop is the bar's ■ and the mic.
+  annBtn.setAttribute("aria-label", "Comment — unavailable while recording");
+  annBtn.title = "Unavailable while a walkthrough records";
   annRecPaint();
   annRecTimerId = setInterval(annRecPaint, 250);
 }
@@ -8009,11 +8034,11 @@ async function annRecEnd() {
   if (annOn && annArmEpoch === armed) annSetMode(false);
 }
 
-// The mic hides whenever a mode is on (the stylesheet's :has rule), so from
-// where it can be clicked it only ever starts a walkthrough; the recording
-// leg is a guard against a click racing the hide, not a second stop control.
+// From rest the mic starts a walkthrough; while one records it stops it (the
+// pulsing seat IS the live control). While a typed comment mode is armed the
+// mic is inert (2026-09-06) — one mode at a time, leave it first.
 annRecBtn.addEventListener("click",
-  () => (annRecOn ? annRecEnd() : annRecBegin()));
+  () => (annRecOn ? annRecEnd() : annOn ? null : annRecBegin()));
 
 // Discard: the walkthrough thrown away instead of sent (Akshil, 2026-08-19).
 // The recording stops with nothing kept — no upload, no transcription, no
@@ -10926,7 +10951,9 @@ async function shotAttachPane() {
   // hosted, the pane is the host's and this is live fact rather than layout. The
   // button is hidden when it answers false, so this is the belt to that braces —
   // a keyboard user can still reach a control the poll has not caught up with.
-  if (shotBusy || !annCapable()) return;
+  // `annOn`: the camera is inert while a mode is armed (2026-09-06) — the
+  // stylesheet dims it, this refuses the keyboard press.
+  if (shotBusy || annOn || !annCapable()) return;
   shotBusy = true;
   // BEFORE the capture, not after: the whole point is that the click is answered
   // immediately, and the capture can take a second on a large page. It is also
@@ -12642,6 +12669,10 @@ function consumeAnchor() {
 // Clear the session param so a reload lands on the landing page,
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
+  // Leaving the chat leaves the mode too (Akshil, 2026-09-06): an armed
+  // Comment or a live walkthrough has nothing to point at on the landing.
+  // The Esc path — a recording is ended by annSetMode's own branch.
+  if (annOn) annSetMode(false);
   // Live even mid-turn (Akshil, 2026-08-19 — "when it is working I can't
   // click back"). The old `if (sending) return` guarded against orphaning the
   // streaming run's UI, but the architecture already survives leaving: the

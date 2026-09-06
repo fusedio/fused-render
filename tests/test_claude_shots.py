@@ -2534,7 +2534,7 @@ def test_a_second_click_replaces_the_picture_and_releases_the_first(html):
     # ONE pane seat, found by kind — a pasted picture is the other kind and stacks
     assert 'const seat = shotAttached.findIndex((s) => s.kind === "pane");' in click
     # and a double-click cannot start a second capture at all
-    assert "if (shotBusy || !annCapable()) return;" in click
+    assert "if (shotBusy || annOn || !annCapable()) return;" in click
     assert "shotBusy = true;" in click
 
 
