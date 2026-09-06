@@ -263,8 +263,12 @@
 
 /* One door: a 24px square in the app's secondary-button skin (buttons-modal.css
    `.btn-secondary`: transparent, 1px border, the border lifts on hover), icon
-   only, the word on `title`. */
-.task-card-door {
+   only, the word on `title`. Addressed THROUGH the strip, not by its class
+   alone: the page's `.prefs-section button` (padding 5px 12px, the page's
+   ground) outranks a lone class, and under it the Archive button was a blank
+   24px box — 24px of padding left the icon 0px wide (Akshil, 2026-09-06,
+   screenshot). The folder is an <a> and never met that rule. */
+.task-card-doors > .task-card-door {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -281,16 +285,16 @@
   text-decoration: none;
 }
 
-.task-card-door:hover:not(:disabled) {
+.task-card-doors > .task-card-door:hover:not(:disabled) {
   border-color: var(--fg-muted);
 }
 
-.task-card-door:disabled {
+.task-card-doors > .task-card-door:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.task-card-door:focus-visible {
+.task-card-doors > .task-card-door:focus-visible {
   outline: 2px solid var(--focus, var(--fg-muted));
   outline-offset: 1px;
 }

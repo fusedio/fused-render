@@ -760,9 +760,14 @@ export function TaskFilterControls({
         : [...filters.statuses, key],
     });
 
+  // LANES, not statuses (Akshil, 2026-09-06: "blocked should be clubbed and
+  // needs attention"): the Board draws a parked run in the Blocked lane, and
+  // the filter offers the lanes the Board draws, so one Blocked tick brings
+  // both the broken run and the one waiting on you. taskMatches matches by
+  // lane for the same reason.
   const statusColumns = hideArchiveStatus
-    ? BOARD_COLUMNS.filter((c) => c.key !== "archived")
-    : BOARD_COLUMNS;
+    ? BOARD_LANES.filter((c) => c.key !== "archived")
+    : BOARD_LANES;
   // Excludes Archive from the badge for the same reason the row is hidden: a
   // count that includes a facet the popover will not even show would read as
   // a filter this menu cannot explain.

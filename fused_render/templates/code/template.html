@@ -65,13 +65,14 @@
   }
   #bar .grow { flex: 1 1 auto; }
   #status-text { color: var(--fg-muted); }
-  /* The buffer's size rides beside the save state — "12 lines · Saved" — one
+  /* The buffer's size rides beside the save state — "12 lines Saved" — one
      muted phrase, so the bar says what the file is and what has happened to it
-     in the same breath (Akshil, 2026-09-06: "club it in with x lines saved").
-     The dot belongs to the pair: it goes when either half is empty (the
-     conflict banner blanks the status; a file that has not loaded has no count). */
+     in the same breath (Akshil, 2026-09-06: "club it in with x lines saved";
+     no dot between them, same day). One span, so the bar's 12px gap does not
+     split the pair; a word-space between the halves only while both are there
+     (the conflict banner blanks the status; an unloaded file has no count). */
   #state { display: inline-flex; align-items: baseline; white-space: nowrap; color: var(--fg-muted); }
-  #lines:not(:empty) + #status-text:not(:empty)::before { content: "\00b7 "; margin-left: 4px; }
+  #lines:not(:empty) + #status-text:not(:empty) { margin-left: 0.4em; }
   #status-text.error { color: var(--error); }
   #conflict {
     display: none;

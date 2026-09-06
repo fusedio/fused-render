@@ -2190,8 +2190,15 @@ export function projectOptions(tasks: Task[]): string[] {
 }
 
 export function taskMatches(task: Task, filters: TaskFilters): boolean {
-  if (filters.statuses.length && !filters.statuses.includes(taskColumn(task)))
-    return false;
+  // By LANE (schedule-lib.laneOf): the Status menu offers the Board's lanes,
+  // and a Blocked tick means everything the Blocked lane holds — the run that
+  // broke and the run parked on a card (`needs_attention`). Comparing lanes on
+  // both sides also keeps a stored "needs_attention" from an older session
+  // meaning what it meant.
+  if (filters.statuses.length) {
+    const lane = laneOf(taskColumn(task));
+    if (!filters.statuses.some((s) => laneOf(s) === lane)) return false;
+  }
   if (filters.projects.length && !filters.projects.includes(task.project)) return false;
   const q = filters.search.trim().toLowerCase();
   if (!q) return true;

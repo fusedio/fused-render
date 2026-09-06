@@ -6918,6 +6918,29 @@ describe("the Cards view's frame", () => {
     expect(CARDS.split("await unarchiveTask(task.key)").length).toBe(3);
   });
 
+  it("draws each door through the strip, so the page's button rule cannot blank it", () => {
+    // `.prefs-section button` (padding 5px 12px) outranks a lone class; under it
+    // the 24px Archive button was 24px of padding and 0px of icon (Akshil,
+    // 2026-09-06, screenshot). Every door rule goes through the parent.
+    expect(CARDS_CSS).toContain(".task-card-doors > .task-card-door {");
+    expect(CARDS_CSS).not.toMatch(/\n\.task-card-door[:\s{]/);
+    expect(block(CARDS_CSS, ".task-card-doors > .task-card-door")).toContain("padding: 0");
+  });
+
+  it("filters by LANE: one Blocked tick brings the broken run and the parked one", () => {
+    // Akshil, 2026-09-06: "blocked should be clubbed and needs attention". The
+    // Status menu offers the Board's lanes, and a stored needs_attention from an
+    // older session still means the Blocked lane.
+    expect(VIEWS).toContain("? BOARD_LANES.filter((c) => c.key !== \"archived\")\n    : BOARD_LANES;");
+    const blocked = task({ key: "s1", status: "blocked" });
+    const parked = task({ key: "s2", status: "needs_attention" });
+    const running = task({ key: "s3", status: "in_progress" });
+    const byBlocked = { ...EMPTY_FILTERS, statuses: ["blocked" as const] };
+    expect(filterTasks([blocked, parked, running], byBlocked).map((t) => t.key)).toEqual(["s1", "s2"]);
+    const byParked = { ...EMPTY_FILTERS, statuses: ["needs_attention" as const] };
+    expect(filterTasks([blocked, parked, running], byParked).map((t) => t.key)).toEqual(["s1", "s2"]);
+  });
+
   it("opens the task's popup from the head, and the popup frames the chat with its composer", () => {
     // Akshil, 2026-09-05: click the head → a 60%-of-the-window preview you can
     // type into, with buttons for the List, the Explorer and Archive.
