@@ -6882,6 +6882,35 @@ describe("the Cards view's frame", () => {
     expect(SCHEDULED).not.toContain("onShowRunning");
   });
 
+  it("keeps Show more above the fold, and puts the popup's two doors on the head on hover", () => {
+    // Akshil, 2026-09-06: "to see show more button I need to scroll" — when the
+    // strip is there the two rows give up its 36px and one gap; without it the
+    // rows take the pane as before.
+    expect(CARDS_CSS).toContain(
+      ".task-cards-scroll:has(> .task-cards-more) > .task-cards {\n  grid-auto-rows: max(260px, calc((100cqh - 12px * 2 - 36px) / 2));\n}",
+    );
+    expect(block(CARDS_CSS, ".task-cards-more")).toContain("height: 36px");
+    // The doors: Archive (or Unarchive) then the folder, icons only, absolutely
+    // placed over the title's right end — the head's height and the title's
+    // width never move — shown on hover and on keyboard focus, and taking no
+    // clicks while hidden.
+    const head = CARDS.slice(CARDS.indexOf("<header"), CARDS.indexOf("</header>"));
+    expect(head.indexOf('className="task-card-title"')).toBeLessThan(head.indexOf("task-card-doors"));
+    expect(head).toContain('{filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}');
+    expect(head).toContain("{ICON_FOLDER}");
+    expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
+    expect(head).toContain("href={explorer}");
+    expect(head).toContain("if (opensElsewhere(e)) return;");
+    expect(block(CARDS_CSS, ".task-card-head")).toContain("position: relative");
+    const doors = block(CARDS_CSS, ".task-card-doors");
+    expect(doors).toContain("position: absolute");
+    expect(doors).toContain("visibility: hidden");
+    expect(CARDS_CSS).toContain(".task-card-head:hover .task-card-doors,\n.task-card-head:focus-within .task-card-doors {");
+    // Same calls as the popup's doors — one set drawn in two places.
+    expect(CARDS.split("await archiveTask(task.key)").length).toBe(3);
+    expect(CARDS.split("await unarchiveTask(task.key)").length).toBe(3);
+  });
+
   it("opens the task's popup from the head, and the popup frames the chat with its composer", () => {
     // Akshil, 2026-09-05: click the head → a 60%-of-the-window preview you can
     // type into, with buttons for the List, the Explorer and Archive.
@@ -6892,8 +6921,10 @@ describe("the Cards view's frame", () => {
     // ...for keys pressed on the head itself: the folder chip inside it is a
     // button whose Enter/Space bubble up (Bugbot, #1011).
     expect(head).toContain("if (e.target !== e.currentTarget) return;");
-    // The head has no Open of its own any more — the popup carries the doors.
-    expect(head).not.toContain("href");
+    // The head has no Open of its own — the head IS the open. Its only link is
+    // the folder door (below), which stops its own press.
+    expect(head).not.toContain("task-card-open");
+    expect(head).toContain('className="task-card-doors" onClick={(e) => e.stopPropagation()}');
     // The app's one modal chassis, at 60vw, with the matching height in CSS.
     expect(CARDS).toContain('import { Modal } from "@platform/ui/modal/Modal";');
     expect(CARDS).toContain('width="54vw"');

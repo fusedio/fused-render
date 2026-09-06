@@ -270,6 +270,7 @@ export function TaskCards({
           home={home}
           template={templates[task.target || task.project] ?? null}
           onPeek={setPeek}
+          onReload={onReload}
           project={
             showProject
               ? { pinned: pinnedProjects.includes(task.project), onPick: onPickProject }
@@ -297,12 +298,16 @@ function TaskCard({
   home,
   template,
   onPeek,
+  onReload,
   project,
 }: {
   task: Task;
   home: string;
   template: string | null;
   onPeek: (task: Task) => void;
+  /** After a door archives or unarchives: the card's lane changed, so the page
+   * re-reads (the popup's own rule, TaskPeek). */
+  onReload?: () => void;
   /** Draw the folder chip, and how: null hides it (one folder, nothing to tell
    * apart); otherwise whether the page is pinned to it and the tag's handler. */
   project: { pinned: boolean; onPick?: (project: string) => void } | null;
@@ -315,6 +320,31 @@ function TaskCard({
   const src = task.session_id && template
     ? cardFrameSrc(template, task.target || task.project, task.session_id)
     : null;
+  // THE DOORS ON THE HEAD (Akshil, 2026-09-06): the popup's two, Archive (or
+  // Unarchive) and the folder, shown on hover over the title's right end so a
+  // reader can file a card or step into its folder without opening the popup
+  // first. Same intent, same href, same calls as TaskPeek's head — one set of
+  // doors drawn in two places, not two sets.
+  const explorer = taskHref(task) ?? folderHref(task);
+  const filing = filingIntent(task);
+  const [acting, setActing] = useState(false);
+  const [note, setNote] = useState("");
+  const refile = async () => {
+    if (!filing || acting) return;
+    setActing(true);
+    setNote("");
+    try {
+      if (filing.kind === "archive") await archiveTask(task.key);
+      else await unarchiveTask(task.key);
+      onReload?.();
+    } catch (e) {
+      // No footer on a card: the server's sentence rides the door's own hint
+      // until the next attempt.
+      setNote((e as Error).message);
+    } finally {
+      setActing(false);
+    }
+  };
 
   return (
     <section className="task-card" aria-label={`${task.task_id} ${title}`}>
@@ -385,6 +415,43 @@ function TaskCard({
         <span className="task-card-title" data-hint={task.title}>
           {title}
         </span>
+        {/* Inside the head (so hovering them keeps the head hovered) but not OF
+            it: a press here stops before the head's onClick, so a door never
+            also opens the popup. Keys are already the head's concern only when
+            pressed on the head itself (onKeyDown above). */}
+        {(filing || explorer) && (
+          <span className="task-card-doors" onClick={(e) => e.stopPropagation()}>
+            {filing && (
+              <button
+                type="button"
+                className="task-card-door"
+                disabled={acting}
+                title={note || filing.title}
+                aria-label={filing.label}
+                onClick={refile}
+              >
+                {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
+              </button>
+            )}
+            {explorer && (
+              <a
+                // A real link with a real href, so ⌘-click and middle-click open
+                // the folder in a tab — the rule every row on this page follows.
+                className="task-card-door"
+                href={explorer}
+                title={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
+                aria-label="Open in Explorer"
+                onClick={(e) => {
+                  if (opensElsewhere(e)) return;
+                  e.preventDefault();
+                  navigateUrl(explorer);
+                }}
+              >
+                {ICON_FOLDER}
+              </a>
+            )}
+          </span>
+        )}
       </header>
       <div className="task-card-body">
         {src ? (
