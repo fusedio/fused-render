@@ -4360,6 +4360,15 @@ const log = document.getElementById("log");
 const logwrap = document.getElementById("logwrap");
 const box = document.getElementById("box");
 const chatEl = document.getElementById("chat");
+
+// READY, FOR THE HOST. The shell frames this page (TaskCards, TaskPeek, the
+// Explorer's Claude pane) behind a placeholder of its own and needs to know
+// when there is something worth uncovering: the transcript painted, or the
+// landing list drawn. Same-origin attribute, read by the host through
+// contentDocument (D3/D4 — no postMessage). Stamped once; never cleared.
+function markChatReady() {
+  document.documentElement.dataset.chatReady = "1";
+}
 const sessionEl = document.getElementById("session");
 const homebox = document.getElementById("homebox");
 
@@ -17508,6 +17517,8 @@ async function loadHistory(session_id, opts) {
     console.warn("history restore failed:", err.message);
   } finally {
     if (sendSeq === seat) sending = false;
+    // Painted or failed, the host has seen what there is to see.
+    if (!refresh) markChatReady();
   }
 }
 
@@ -18703,11 +18714,13 @@ const ASK_DETECTION_TIMEOUT_MS = 1500;
     } else {
       sendMessage(ask);
     }
+    markChatReady();
   } else if (session_id || run_id) {
     // A bare `run` param (frame died before the first poll saw the session id)
     // still means an in-flight conversation — enter chat and re-attach.
     enterChat();
     if (session_id) await loadHistory(session_id);
+    else markChatReady();  // a bare `run`: nothing to restore, the chat itself is the view
     // The chips this session already earned. The poll loop rebuilds them while a
     // run streams, but a resumed conversation with nothing in flight never
     // reaches that loop — and its pages are no less published for it.
@@ -18722,6 +18735,7 @@ const ASK_DETECTION_TIMEOUT_MS = 1500;
     // No conversation to belong to, so nothing to restore.
     focusBox(homebox);
     await loadRecent();
+    markChatReady();
     // And keep it fresh from here on — this is the landing most people arrive
     // at cold, and the Back handler's own watchRecent() call only covers a
     // landing reached by LEAVING a chat (cmux-ux-tester, PR #892).
