@@ -2375,15 +2375,18 @@ export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
   return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
 }
 
-/** The user opened the app: stamp its row `opened_at` (server clock). Clears
- *  the sidebar's green dot; touches no task. */
-export function openCurrentApp(
-  path: string,
-): Promise<{ ok: boolean; opened: boolean; opened_at: number }> {
-  return postJson<{ ok: boolean; opened: boolean; opened_at: number }>(
-    "/api/current-apps/open",
-    { path },
-  );
+/** The user opened the app: stamp its row `opened_at` (server clock) and clear
+ *  its `unread`. Touches no task. Answers with the whole table as it stands
+ *  after the stamp, so the caller can adopt it without a second read. */
+export interface OpenCurrentAppResult {
+  ok: boolean;
+  opened: boolean;
+  opened_at: number;
+  apps: CurrentAppEntry[];
+}
+
+export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
+  return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself

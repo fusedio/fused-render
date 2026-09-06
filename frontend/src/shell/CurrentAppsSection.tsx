@@ -176,31 +176,33 @@ try {
 function useCurrentApps(
   signal: string,
   refreshEpoch: number,
-): { entries: CurrentAppEntry[]; reload: () => Promise<void> } {
+): { entries: CurrentAppEntry[]; adopt: (apps: CurrentAppEntry[]) => void } {
   const [apps, setApps] = useState<CurrentAppEntry[]>(knownApps);
+  // Every table this hook shows is SEQUENCED: a read applies only if nothing
+  // newer was issued while it was in flight. Without this a slow fetch started
+  // before an open could land after the open's answer and put the pre-stamp
+  // row — dot and all — back on screen (Bugbot, 2026-09-07). Latest issued
+  // wins; a stale answer is dropped, not merged.
+  const seq = useRef(0);
   useEffect(() => {
-    let live = true;
+    const mine = ++seq.current;
     getCurrentApps().then(
       (r) => {
-        if (!live) return;
+        if (mine !== seq.current) return;
         knownApps = r.apps ?? [];
         setApps(knownApps);
       },
       () => {},
     );
-    return () => {
-      live = false;
-    };
   }, [signal, refreshEpoch]);
-  // A fetch the caller can WAIT for — the open gesture needs to know when the
-  // table on screen is one read after its POST, which a counter bump cannot
-  // say. Rejects on a failed read; the caller decides what that means.
-  const reload = useCallback(async () => {
-    const r = await getCurrentApps();
-    knownApps = r.apps ?? [];
-    setApps(knownApps);
+  // A table handed in from elsewhere — the open's answer carries one — takes
+  // the newest sequence, so any read still in flight is stale by definition.
+  const adopt = useCallback((next: CurrentAppEntry[]) => {
+    seq.current++;
+    knownApps = next;
+    setApps(next);
   }, []);
-  return { entries: apps, reload };
+  return { entries: apps, adopt };
 }
 
 interface RowDragProps {
@@ -401,16 +403,17 @@ export default function CurrentAppsSection() {
     [rows],
   );
   const [refreshEpoch, setRefreshEpoch] = useState(0);
-  const { entries, reload } = useCurrentApps(pulseSignal, refreshEpoch);
+  const { entries, adopt } = useCurrentApps(pulseSignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
   // turns that mutation into a render.
   const [orderEpoch, setOrderEpoch] = useState(0);
   // The rows the user opened in THIS window whose open the server has not yet
   // answered — so the dot dies on the click rather than on the refetch. A path
-  // leaves the set once the read AFTER its POST has landed (`onSeen`), whatever
-  // that read says: from then on the server's flag is drawn as is, so a
-  // completion after the stamp — or an `observe` that raced the open — shows
-  // rather than being masked for the page's lifetime (Bugbot, 2026-09-07).
+  // leaves the set the moment the POST's answer (which carries the stamped
+  // table) is adopted (`onSeen`): from then on the server's flag is drawn as
+  // is, so a completion after the stamp — or an `observe` that raced the open
+  // — shows rather than being masked for the page's lifetime (Bugbot,
+  // 2026-09-07).
   const [clearedHere, setClearedHere] = useState<ReadonlySet<string>>(() => new Set());
   const uncover = useCallback(
     (path: string) =>
@@ -451,16 +454,11 @@ export default function CurrentAppsSection() {
           } catch {
             /* no store: this window is up to date, the others catch up on their own */
           }
-          // Awaited, not a counter bump: the cover comes off only once a read
-          // that started AFTER the server stamped the row is on screen. A read
-          // already in flight when the POST landed could still say unread.
-          try {
-            await reload();
-          } catch {
-            // The read failed: ask again through the counter. The cover still
-            // comes off — a cover that outlives its POST is the masking bug.
-            refetch();
-          }
+          // The answer carries the table after the stamp: adopt it and lift the
+          // cover in the same tick. No second read to race, and `adopt` takes
+          // the newest sequence so a fetch still in flight from before the POST
+          // is dropped rather than putting the pre-stamp row back.
+          adopt(r.apps ?? []);
           uncover(path);
         },
         () => {
@@ -472,7 +470,7 @@ export default function CurrentAppsSection() {
         },
       );
     },
-    [reload, refetch, uncover],
+    [adopt, uncover],
   );
   // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
   // those move rows on screen and write nothing to the store; the saved order is

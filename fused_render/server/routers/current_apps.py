@@ -128,7 +128,11 @@ def api_current_apps_open(patch: FolderPatch):
     reads it."""
     folder = _require_folder(patch.path)
     at = time.time()
-    return {"ok": True, "opened": current_apps.mark_opened(folder, at), "opened_at": at}
+    opened = current_apps.mark_opened(folder, at)
+    # The table as it stands after the stamp rides along, so the client can
+    # adopt it in the same tick it lifts its optimistic cover — no second read
+    # that a fetch already in flight could overtake (Bugbot, 2026-09-07).
+    return {"ok": True, "opened": opened, "opened_at": at, "apps": current_apps.list_apps()}
 
 
 @router.post("/api/current-apps/archive")
