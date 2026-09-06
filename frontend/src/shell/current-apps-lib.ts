@@ -13,7 +13,7 @@
 // the drag-ordered sequence layer.
 //
 // EVERY app is rendered — the list is not capped (owner, 2026-08-26).
-import type { CurrentAppEntry } from "@platform/lib/api";
+import type { CurrentAppEntry, TaskPulseTask } from "@platform/lib/api";
 
 // The explorer's fs-path codec (router.ts encodeFsPathSegments / rootedFsPath),
 // restated here rather than imported: router.ts rewrites `location` at import
@@ -51,8 +51,10 @@ export interface CurrentApp {
   /** Something is running under it right now — the row wears the running dot.
    *  Read from the task pulse, which the sidebar already subscribes to. */
   running: boolean;
-  /** A task under it finished with something unread — the row wears the green
-   *  dot (unless running: yellow outranks green, the Tasks row's own rule). */
+  /** A task under it finished since the user last opened this app — the row
+   *  wears the green dot (unless running: yellow outranks green, the Tasks
+   *  row's own rule). The app's OWN unread state (see `projectUnread`), not the
+   *  task's: reading the task elsewhere does not clear it, opening the app does. */
   unread: boolean;
   /** The app's optional `icon.svg`, as a drawable URL (api.appIconUrl), or
    *  null — the glyph slot falls back to the generic mark. */
@@ -66,16 +68,105 @@ export function isUnderDir(project: string, dir: string): boolean {
   return project === dir || project.startsWith(dir + "/");
 }
 
+// ---- the per-app unread dot -------------------------------------------------
+//
+// The dot used to be the tasks' own unread state worn per app: it lit when a
+// task under the app finished with unread output and went out when THAT TASK
+// was read. The owner decoupled the two (2026-09-07): the task is still the
+// trigger — a completion under the app lights the dot — but the app clears it
+// on its own gesture, opening the app, and nothing done to the task clears it.
+//
+// So each app carries a stamp of its own: the highest `last_active` among the
+// done tasks under it AS OF the last time the user opened it. A done task with a
+// later stamp is a completion the user has not opened the app for since, and
+// the dot is on. `last_active` moves with every message, so a task that speaks
+// again after being seen lights the dot again — the same reasoning as
+// tasks-lib.TasksSeen, per app instead of per task.
+//
+// An app with NO stamp has never been opened since this shipped. For it the
+// old rule holds — a done task with unread output — so the upgrade changes
+// nothing on screen: apps whose tasks were read stay quiet rather than every
+// old completion lighting at once. The first open stamps it and it is on the
+// new rule from then on.
+//
+// The store is localStorage, for the reasons `appOrder` gives below, written
+// only by the open gesture (one writer, no poll race).
+
+/** app path -> `last_active` of the newest completion seen under it. */
+export type ProjectsSeen = Record<string, number>;
+
+/** The done tasks' fields the rule reads. */
+export type DoneStamp = Pick<TaskPulseTask, "project" | "last_active" | "unread">;
+
+/** Does `app` have a completion the user has not opened it for? `done` is the
+ *  pulse's Done-lane rows (any project — the containment test is here). */
+export function projectUnread(
+  app: string,
+  done: Iterable<DoneStamp>,
+  seen: ProjectsSeen,
+): boolean {
+  const stamp = seen[app];
+  for (const t of done) {
+    if (!isUnderDir(t.project || "", app)) continue;
+    if (stamp === undefined ? t.unread > 0 : t.last_active > stamp) return true;
+  }
+  return false;
+}
+
+/** `seen` after the user opened `app`: stamped with the newest completion under
+ *  it (0 when none — the stamp still records that the app was opened, so the
+ *  fallback rule no longer applies). Pruned to `live` (the apps on the desk), so
+ *  the store cannot grow past the list it describes; guarded on a non-empty
+ *  list so an unloaded list cannot wipe it. */
+export function seenAfterOpen(
+  seen: ProjectsSeen,
+  app: string,
+  done: Iterable<DoneStamp>,
+  live: Iterable<string>,
+): ProjectsSeen {
+  const keep = new Set(live);
+  const next: ProjectsSeen = {};
+  for (const [k, v] of Object.entries(seen)) {
+    if (!keep.size || keep.has(k)) next[k] = v;
+  }
+  let at = 0;
+  for (const t of done) {
+    if (isUnderDir(t.project || "", app)) at = Math.max(at, t.last_active);
+  }
+  next[app] = at;
+  return next;
+}
+
+/** What came out of localStorage is a string written by SOMEONE ELSE (an older
+ *  build, a hand-edited devtools row): anything unreadable degrades to "no app
+ *  opened yet" — the fallback rule — rather than throwing inside a render. */
+export function parseProjectsSeen(raw: string | null): ProjectsSeen {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: ProjectsSeen = {};
+  for (const [key, at] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof at === "number" && Number.isFinite(at)) out[key] = at;
+  }
+  return out;
+}
+
 /** The store's rows as sidebar rows, in the store's ADDED order (oldest
  *  first), with the running dot read off the projects of the tasks currently
- *  in progress. */
+ *  in progress and the unread dot off `projectUnread` (done rows + stamps). */
 export function currentApps(
   entries: CurrentAppEntry[],
   runningProjects: Iterable<string>,
-  unreadProjects: Iterable<string> = [],
+  done: Iterable<DoneStamp> = [],
+  seen: ProjectsSeen = {},
 ): CurrentApp[] {
   const live = [...runningProjects];
-  const fresh = [...unreadProjects];
+  const finished = [...done];
   return entries.map((e) => ({
     path: e.path,
     name: e.name,
@@ -83,7 +174,7 @@ export function currentApps(
     kind: e.kind,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
-    unread: fresh.some((p) => isUnderDir(p, e.path)),
+    unread: projectUnread(e.path, finished, seen),
     iconUrl: e.icon ? iconUrlFor(e.icon, e.icon_mtime) : null,
   }));
 }

@@ -41,7 +41,7 @@ import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
-import { inFlight, isDoneUnread, opensElsewhere, statusColumn } from "@shell/tasks-lib";
+import { inFlight, opensElsewhere, statusColumn } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import {
@@ -53,15 +53,58 @@ import {
   currentApps,
   moveSlug,
   orderedSlugs,
+  parseProjectsSeen,
   parseSavedOrder,
   reorderTo,
+  seenAfterOpen,
   type AppOrder,
   type CurrentApp,
+  type DoneStamp,
+  type ProjectsSeen,
 } from "@shell/current-apps-lib";
 
 // Bumped from `current-apps-order` with the redesign: the saved list was slugs
 // and is folder paths now, and a slug-shaped order would match nothing.
 export const ORDER_KEY = "fused-render:current-apps-order:v2";
+
+// The per-app unread stamps (current-apps-lib.ProjectsSeen): app path -> the
+// newest completion under it the user has opened the app for. Same store shape
+// and wiring as `appOrder` below — hydrated at import, written by ONE gesture
+// (opening an app), heard cross-tab through `storage`.
+export const PROJECTS_SEEN_KEY = "fused-render:current-apps-seen:v1";
+
+let projectsSeen: ProjectsSeen = {};
+
+function readProjectsSeen(): ProjectsSeen {
+  try {
+    return parseProjectsSeen(localStorage.getItem(PROJECTS_SEEN_KEY));
+  } catch {
+    return {};
+  }
+}
+
+function saveProjectsSeen(next: ProjectsSeen): void {
+  projectsSeen = next;
+  try {
+    localStorage.setItem(PROJECTS_SEEN_KEY, JSON.stringify(next));
+  } catch {
+    // A blocked store just means the dot's memory lasts as long as the page.
+  }
+}
+
+// Mounted sections, so an open in another tab clears the dot in this one.
+const seenListeners = new Set<() => void>();
+
+try {
+  projectsSeen = readProjectsSeen();
+  window.addEventListener("storage", (e: StorageEvent) => {
+    if (e.key !== PROJECTS_SEEN_KEY) return;
+    projectsSeen = parseProjectsSeen(e.newValue);
+    for (const listener of seenListeners) listener();
+  });
+} catch {
+  // No store and no window: the stamps live and die with this page.
+}
 
 /** The picked emoji as a standalone icon.svg document — square viewBox, no
  *  fixed size, transparent ground (a colour emoji carries its own colours, so
@@ -201,6 +244,7 @@ function CurrentAppRow({
   onRemoved,
   onGlyphClick,
   onMenu,
+  onSeen,
 }: {
   app: CurrentApp;
   active: boolean;
@@ -208,6 +252,8 @@ function CurrentAppRow({
   onRemoved: () => void;
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>, path: string) => void;
   onMenu: (e: React.MouseEvent, app: CurrentApp) => void;
+  /** The user opened this app — stamp its completions seen (clears the dot). */
+  onSeen: (path: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   // The destination keeps the TAB the user is on (owner, 2026-08-26): switching
@@ -219,10 +265,17 @@ function CurrentAppRow({
   const onAppPage = appPathFromPath(location.pathname) !== null;
   const tab = onAppPage ? appPageTabFromSearch(location.search) : undefined;
   const href = appPageUrl(app.path, tab);
+  // The dot clears on the OPEN gesture, whatever the tasks under the app say
+  // (owner, 2026-09-07) — and on the row already active, since a completion
+  // landing while the user is on the app's page is one they are looking at.
+  useEffect(() => {
+    if (active && app.unread) onSeen(app.path);
+  }, [active, app.unread, app.path, onSeen]);
   const onOpen = (e: React.MouseEvent<HTMLAnchorElement>) => {
     // Middle/modified clicks keep the browser's own new-tab gesture on the href.
     if (opensElsewhere(e)) return;
     e.preventDefault();
+    onSeen(app.path);
     // The row for the page already on screen, on the tab it already shows, is
     // a no-op; the tab's own params would be the only thing the click cleared.
     if (!active) navigateUrl(href);
@@ -321,12 +374,12 @@ function CurrentAppRow({
           aria-hidden="true"
         />
       )}
-      {/* The unread dot: a task under this app finished and has not been read —
-          the Tasks row's green, worn per app, in the running dot's own slot
-          after the name (owner, 2026-08-31). Yellow outranks green (one dot per
-          row, the Tasks rule), so it hides while anything runs; it clears when
-          the task is read, since it draws the raw doneUnread state, not a
-          visit-stamped one. */}
+      {/* The unread dot: a task under this app finished since the user last
+          opened it — the Tasks row's green, worn per app, in the running dot's
+          own slot after the name (owner, 2026-08-31). Yellow outranks green
+          (one dot per row, the Tasks rule), so it hides while anything runs.
+          It clears when the APP is opened, not when the task is read — the
+          app's own state (owner, 2026-09-07; current-apps-lib.projectUnread). */}
       {app.unread && !app.running && (
         <span
           className="sidebar-rail-dot is-unread current-app-unread"
@@ -365,27 +418,49 @@ export default function CurrentAppsSection() {
     () => rows.filter((r) => inFlight(statusColumn(r.status))).map((r) => r.project || ""),
     [rows],
   );
-  // The projects with a finished-and-unread task — the raw doneUnread state
-  // the Tasks row's count chip reads, not the visit-stamped `unseen`: a dot
-  // per app clears by the task being READ, not by glancing at some page.
-  const unreadProjects = useMemo(
-    () => rows.filter(isDoneUnread).map((r) => r.project || ""),
+  // The Done-lane rows — the completions the per-app dot is judged against
+  // (current-apps-lib.projectUnread): a completion newer than the app's stamp
+  // lights it; opening the app, and only that, stamps it.
+  const doneRows = useMemo<DoneStamp[]>(
+    () =>
+      rows
+        .filter((r) => statusColumn(r.status) === "done")
+        .map((r) => ({ project: r.project, last_active: r.last_active, unread: r.unread })),
     [rows],
   );
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const entries = useCurrentApps(keySignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
-  // turns that mutation into a render.
+  // turns that mutation into a render. `seenEpoch` is the same for the stamps.
   const [orderEpoch, setOrderEpoch] = useState(0);
+  const [seenEpoch, setSeenEpoch] = useState(0);
   const apps = useMemo(() => {
-    const found = currentApps(entries, runningProjects, unreadProjects);
+    const found = currentApps(entries, runningProjects, doneRows, projectsSeen);
     // Assigning during render is safe because it is idempotent: an app that
     // already has a sequence keeps it, so a double-invoked render (StrictMode)
     // or a re-run on the same rows cannot renumber anything.
     assignSequences(appOrder, found);
     return bySequence(found, appOrder);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
-  }, [entries, runningProjects, unreadProjects, orderEpoch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal, seenEpoch the stamp signal
+  }, [entries, runningProjects, doneRows, orderEpoch, seenEpoch]);
+  // The one writer of the stamps: the user opened `path`. Pruned to the apps on
+  // the desk, so a removed app's stamp goes with it.
+  const onSeen = useCallback(
+    (path: string) => {
+      saveProjectsSeen(
+        seenAfterOpen(projectsSeen, path, doneRows, entries.map((e) => e.path)),
+      );
+      setSeenEpoch((n) => n + 1);
+    },
+    [doneRows, entries],
+  );
+  useEffect(() => {
+    const bump = () => setSeenEpoch((n) => n + 1);
+    seenListeners.add(bump);
+    return () => {
+      seenListeners.delete(bump);
+    };
+  }, []);
   // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
   // those move rows on screen and write nothing to the store; the saved order is
   // an arrangement the user made, and only they can change it.
@@ -638,10 +713,11 @@ export default function CurrentAppsSection() {
         onRemoved={refetch}
         onGlyphClick={onGlyphClick}
         onMenu={onRowMenu}
+        onSeen={onSeen}
       />
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps closes over `apps`
-    [onPath, apps, refetch, onGlyphClick, onRowMenu],
+    [onPath, apps, refetch, onGlyphClick, onRowMenu, onSeen],
   );
   // The "+ New app" row at the foot of the list opens the /apps composer in a
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
