@@ -86,6 +86,7 @@ import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
 import { TASK_VIEWS, mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
+import { useMissingFolders } from "./useMissingFolders";
 import { isUnderDir } from "./current-apps-lib";
 
 /** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
@@ -454,6 +455,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     () => filterTasks(inScope, filtersForView(filters, view)),
     [inScope, filters, view],
   );
+  // Which of the shown tasks' folders the disk no longer has — asked once per
+  // folder, so a row can say "Folder missing" instead of opening an Explorer
+  // that can only answer with a stat error (useMissingFolders).
+  const missing = useMissingFolders(shown);
 
   // Editing is addressed by ENTRY id, not by task: a task is a thread, and a
   // thread has nothing to edit — only a message that has not gone out yet does.
@@ -627,7 +632,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               onEditEntry={editEntry}
             />
           ) : view === "board" ? (
-            <TaskBoard tasks={shown} home={home} onReload={reload} />
+            <TaskBoard tasks={shown} home={home} onReload={reload} missing={missing} />
           ) : view === "cards" ? (
             <TaskCards
               // The FILTERED set, like every other view: Cards only ORDERS it
@@ -642,11 +647,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // (Akshil, 2026-09-05): same handler, same pinned state.
               onPickProject={pickProject}
               pinnedProjects={filters.projects}
+              missing={missing}
             />
           ) : (
             <TaskList
               tasks={shown}
               home={home}
+              missing={missing}
               // A failed poll empties `tasks` too, and the List cannot tell that
               // apart from a filter that matched nothing — but it must, because
               // one is a reason to forget where the reader was and the other is

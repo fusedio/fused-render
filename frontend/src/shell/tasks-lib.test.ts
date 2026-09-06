@@ -108,6 +108,7 @@ import {
   viewFromSearch,
   viewUrl,
   mergeTaskChanges,
+  emptyPaneText,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -3184,7 +3185,7 @@ describe("the one-message row's missing chevron", () => {
     // DRAWN — see "the hidden row actions" — not about what it is.)
     expect(ROW).toContain("{SHOW_ROW_ACTIONS && chat && (");
     expect(ROW).toContain("openChat(chat)");
-    expect(VIEWS).toContain("const chat = openThreadIntent(task, unread);");
+    expect(VIEWS).toContain("const chat = folderMissing ? null : openThreadIntent(task, unread);");
     expect(VIEWS).toMatch(/const openChat = \(intent: OpenThreadIntent\) => \{[\s\S]*?performOpen\(/);
     // Its own presence is decided by openThreadIntent — a session, not a message
     // count — so shortening the thread cannot take the button away.
@@ -3225,7 +3226,7 @@ describe("a one-message row's click", () => {
     // row and the Board card all open a conversation the same way, with the same
     // mark, through the same performer.
     expect(VIEWS).toMatch(
-      /const activate = \(\) => \{\s*if \(chat\) openChat\(chat\);\s*else if \(edit\) onEditEntry\?\.\(edit\);\s*\};/,
+      /const activate = \(\) => \{\s*if \(chat\) openChat\(chat\);\s*else if \(edit\) onEditEntry\?\.\(edit\);[\s\S]*?else if \(folderMissing\) toastMissingFolder\(\)/,
     );
     expect(VIEWS).not.toContain("openMessage(sole)");
     // No per-turn anchor from a TASK row: `msg=` is a message row's business, and
@@ -3270,7 +3271,7 @@ describe("a row with no message at all", () => {
     expect(ACTIVATE).toContain("if (chat) openChat(chat);");
     // Not a second url and not a second performer: `chat` is the row's existing
     // openThreadIntent value and openChat is the row's existing performOpen call.
-    expect(VIEWS).toContain("const chat = openThreadIntent(task, unread);");
+    expect(VIEWS).toContain("const chat = folderMissing ? null : openThreadIntent(task, unread);");
     expect(VIEWS).toMatch(
       /const openChat = \(intent: OpenThreadIntent\) => \{[\s\S]*?performOpen\(/,
     );
@@ -3309,7 +3310,7 @@ describe("a row with no message at all", () => {
     // affordance cannot drift from the behaviour. `expandable` is deliberately not
     // one of them any more — a disclosure is the CHEVRON's affordance, and it is a
     // button with a tab stop of its own.
-    expect(VIEWS).toContain("const pressable = href !== null || edit !== null;");
+    expect(VIEWS).toContain("const pressable = href !== null || edit !== null || folderMissing;");
     // The row then claims no role and takes no tab stop...
     expect(ROW).toContain('role={pressable && !href ? "button" : undefined}');
     expect(ROW).toContain("tabIndex={pressable && !href ? 0 : undefined}");
@@ -4323,7 +4324,7 @@ describe("the folder chip on a row and a card", () => {
     // the id, where marks about the task live — in the foot it read as part of
     // the folder's name (Akshil, 2026-08-21).
     expect(CARD).toMatch(
-      /\{\(showProject \|\| soon\) && \(\s*<span className="schedule-tv-card-foot">/,
+      /\{\(showProject \|\| soon \|\| folderMissing\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
     // The task's own name is still captioned — on the TITLE now, not the row
     // (Akshil: "the tooltip of title should only show up if I am on title
@@ -4797,7 +4798,7 @@ describe("opening a thread, from either view", () => {
     // One rule, two levels: the task row links the thread, the message row links
     // the turn — `msg=` and all — so ⌘-click stacks up a turn in a tab exactly as
     // it stacks up a conversation.
-    expect(THREAD).toContain("const to = fix ? null : openMessageHref(task, m);");
+    expect(THREAD).toContain("const to = fix || folderMissing ? null : openMessageHref(task, m);");
     const linkAt = THREAD.indexOf('className="tasks-rowlink"');
     expect(linkAt).toBeGreaterThan(-1);
     const link = THREAD.slice(linkAt, THREAD.indexOf("/>", linkAt));
@@ -6774,7 +6775,7 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain('"Nothing to show here."');
     // A task with no session yet: "Starting…" for a run in flight, and the
     // honest phrase for a scheduled one that is simply not due.
-    expect(CARDS).toContain('taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"');
+    expect(LIB).toContain('taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…"');
     expect(CARDS).toContain('className="schedule-tv-empty"');
   });
 
@@ -6927,9 +6928,10 @@ describe("the Cards view's frame", () => {
     expect(block(CARDS_CSS, ".task-card-doors > .task-card-door")).toContain("padding: 0");
   });
 
-  it("wears the List's archive glyphs, hovers both doors alike, and fades in at the left", () => {
+  it("wears the List's archive glyphs, hovers both doors alike, fades in at the left, and names a folder that is gone", () => {
     // Akshil, 2026-09-06: same icon as the List row; same hover for the button
-    // and the <a>; a gradient on the strip's left edge.
+    // and the <a>; a gradient on the strip's left edge; and a card whose folder
+    // the server cannot stat says so instead of "Starting…" for ever.
     expect(CARDS).toContain('import { ICON_ARCHIVE, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";');
     expect(CARDS).not.toContain("const ICON_ARCHIVE =");
     expect(VIEWS).toContain("export const ICON_ARCHIVE = icon(");
@@ -6939,6 +6941,78 @@ describe("the Cards view's frame", () => {
     expect(fade).toContain("right: 100%");
     expect(fade).toContain("linear-gradient(");
     expect(fade).toContain("pointer-events: none");
+    expect(CARDS).not.toContain("export function emptyPaneText");
+    expect(emptyPaneText(task({ status: "done" }), true)).toBe("Folder no longer exists");
+    expect(emptyPaneText(task({ status: "done" }), false)).toBe("Starting…");
+    expect(emptyPaneText(task({ status: "upcoming" }), false)).toBe("Not started yet");
+    expect(CARDS.split("{emptyPaneText(task, gone)}").length).toBe(3);
+    // ...in the error colour every other view gives the same fact.
+    expect(CARDS.split('className={"task-card-starting" + (gone ? " is-missing" : "")}').length).toBe(3);
+    expect(block(CARDS_CSS, ".task-card-starting.is-missing")).toContain("color: var(--error)");
+    // ...on the card's own ground, not the page's darker one (screenshot).
+    expect(CARDS_CSS).toContain(".task-card-body:has(> .task-card-starting),\n.task-peek > .modal-body:has(> .task-card-starting) {\n  background: var(--tasks-card-bg);");
+  });
+
+  it("says 'Folder missing' on the List row and the Board card, and its press prints the sentence instead of leaving", () => {
+    // Akshil, 2026-09-06: "we have entries for them, but we don't have content …
+    // let's show clear error message in that case". One hook asks the disk once
+    // per distinct folder (404 only — a blip is not an answer), the page hands
+    // the set to both views, and a row in a gone folder has no chat arm: its
+    // press prints the note, and its ⌘-click has no href to open.
+    const HOOK = readFileSync(join(SHELL, "useMissingFolders.ts"), "utf8");
+    expect(HOOK).toContain("if (e?.status === 404) {");
+    expect(HOOK).toContain("settled.current.delete(dir);");
+    expect(HOOK).toContain("This task's folder was deleted, so its chat can't be opened. Archive the task to remove it.");
+    expect(HOOK).toContain('pushToast({ msg: MISSING_FOLDER_TOAST, tone: "error" });');
+    expect(SCHEDULED).toContain("const missing = useMissingFolders(shown);");
+    expect(SCHEDULED).toContain("<TaskBoard tasks={shown} home={home} onReload={reload} missing={missing} />");
+    expect(SCHEDULED).toContain("home={home}\n              missing={missing}");
+    expect(VIEWS).toContain("folderMissing={missing?.has(taskFolder(task)) ?? false}");
+    // A TOAST, not a line under the row (Akshil, 2026-09-06, screenshot).
+    expect(VIEWS).not.toContain("missingFolderNote");
+    expect(VIEWS).toContain("else if (folderMissing) toastMissingFolder();");
+    expect(VIEWS).toContain("onMissing={toastMissingFolder}");
+    expect(VIEWS).toContain("if (folderMissing) onMissing();");
+    // Bugbot, #1023: the EDIT arm still works (the form needs no folder); the
+    // message rows meet the same wall as the task row; a non-404 is re-asked in
+    // both hooks rather than flagged (or, in Cards, painted as gone) for good.
+    expect(VIEWS).toMatch(/if \(chat\) openChat\(chat\);\s*else if \(edit\) onEditEntry\?\.\(edit\);[\s\S]*?else if \(folderMissing\) toastMissingFolder\(\)/);
+    expect(VIEWS).toContain("const to = fix || folderMissing ? null : openMessageHref(task, m);");
+    expect(VIEWS).toMatch(/const openMessage = \(m: TaskMessage\) => \{[\s\S]*?if \(folderMissing\) \{\s*toastMissingFolder\(\)/);
+    expect(HOOK).toContain("}, [key, retry]);");
+    // ONE detection path for three views: Cards read the page's `missing` set
+    // (review, #1023) and keep no folder-gone state of their own.
+    expect(CARDS).not.toContain("chatFolderMissing");
+    expect(SCHEDULED).toContain("pinnedProjects={filters.projects}\n              missing={missing}");
+    expect(CARDS.split("folderMissing={missing?.has(taskFolder(peekLive)) ?? false}").length).toBe(2);
+    expect(CARDS.split("folderMissing={missing?.has(taskFolder(task)) ?? false}").length).toBe(2);
+    expect(HOOK).toContain("if (getToasts().some((t) => t.msg === MISSING_FOLDER_TOAST && !t.leaving)) return;");
+    // ...and the in-flight stats survive a retry tick: an unmount-only flag, not
+    // a per-run `cancelled` (Bugbot, round two).
+    // ...and a gone folder frames nothing even when the module-level template
+    // cache still holds its path (Bugbot: deleted between two visits).
+    expect(CARDS.split("const gone = folderMissing;").length).toBe(3);
+    // ...and a gone folder never wears the resolving skeleton while its template
+    // stat is still out (Bugbot): the sentence wins the moment the page knows.
+    expect(CARDS.split("const resolving = !src && !folderMissing && !!task.session_id && template === undefined;").length).toBe(3);
+    expect(CARDS).toContain("task.session_id && template && !folderMissing\n    ? cardFrameSrc(");
+    expect(CARDS).toContain("task.session_id && template && !folderMissing\n    ? peekFrameSrc(");
+    // ...and the folder door goes DISABLED, saying why on hover and on press, on
+    // the card and in the popup — never a live href into the dead folder (Bugbot).
+    expect(CARDS.split("const explorer = gone ? null : (taskHref(task) ?? folderHref(task));").length).toBe(3);
+    expect(CARDS.split("data-hint={MISSING_FOLDER_TOAST}").length).toBe(3);
+    // The strip opts out of the title's hint underneath it, and no door uses a
+    // native `title` (the app's panel is instant; a title is not).
+    expect(CARDS).toContain('<span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>');
+    const doorsBlock = CARDS.slice(CARDS.indexOf('className="task-card-doors"'), CARDS.indexOf("</header>"));
+    expect(doorsBlock).not.toContain("title=");
+    expect(CARDS.split("onClick={toastMissingFolder}").length).toBe(3);
+    expect(CARDS).toContain('className="task-card-door is-disabled"');
+    expect(CARDS_CSS).toContain(".task-card-doors > .task-card-door.is-disabled");
+    expect(CARDS_CSS).toContain('.task-peek .modal-head-act[aria-disabled="true"]');
+    expect(VIEWS.split('className="tasks-row-missing"').length).toBe(3);
+    expect(TASKS_CSS).toContain(".tasks-row-missing {");
+    expect(block(TASKS_CSS, ".tasks-row-missing")).toContain("color: var(--error)");
   });
 
   it("filters by LANE: one Blocked tick brings the broken run and the parked one", () => {
@@ -6973,7 +7047,7 @@ describe("the Cards view's frame", () => {
     // The head has no Open of its own — the head IS the open. Its only link is
     // the folder door (below), which stops its own press.
     expect(head).not.toContain("task-card-open");
-    expect(head).toContain('className="task-card-doors" onClick={(e) => e.stopPropagation()}');
+    expect(head).toContain('className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}');
     // The app's one modal chassis, at 60vw, with the matching height in CSS.
     expect(CARDS).toContain('import { Modal } from "@platform/ui/modal/Modal";');
     expect(CARDS).toContain('width="54vw"');
@@ -6996,7 +7070,9 @@ describe("the Cards view's frame", () => {
     expect(acts.indexOf("Open in Explorer")).toBeGreaterThan(-1);
     // Archive first, the folder last, beside the close button (Akshil, 2026-09-05).
     expect(acts.indexOf("{filing.label}")).toBeLessThan(acts.indexOf("Open in Explorer"));
-    expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(2);
+    // Three: Archive, the live folder door, and its disabled twin for a folder
+    // that is gone — the last two never drawn together (`explorer` / `gone`).
+    expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(3);
     // The folder chip, the List row's own, at the right before the time — and
     // the List's TAG: pressed, it filters the page (Akshil, 2026-09-05), through
     // the one handler Scheduled hands both views, wearing the pinned state.
