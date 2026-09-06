@@ -32,10 +32,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { archiveTask, statPath, unarchiveTask } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { pushToast } from "@platform/lib/toast";
 import { ChatFrame, ChatFramePlaceholder } from "@platform/ui/ChatFrame";
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
-import { IdentityChip, StatusIcon } from "./ScheduleTaskViews";
+import { ICON_ARCHIVE, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";
 import {
   CARD_PAGE,
   basename,
@@ -322,6 +323,7 @@ export function TaskCards({
           // template — the card draws a different body for each.
           template={templates[task.target || task.project]}
           onPeek={setPeek}
+          onReload={onReload}
           project={
             showProject
               ? { pinned: pinnedProjects.includes(task.project), onPick: onPickProject }
@@ -349,6 +351,7 @@ function TaskCard({
   home,
   template,
   onPeek,
+  onReload,
   project,
 }: {
   task: Task;
@@ -358,6 +361,9 @@ function TaskCard({
    * because the body says something different for each (below). */
   template: string | null | undefined;
   onPeek: (task: Task) => void;
+  /** After a door archives or unarchives: the card's lane changed, so the page
+   * re-reads (the popup's own rule, TaskPeek). */
+  onReload?: () => void;
   /** Draw the folder chip, and how: null hides it (one folder, nothing to tell
    * apart); otherwise whether the page is pinned to it and the tag's handler. */
   project: { pinned: boolean; onPick?: (project: string) => void } | null;
@@ -370,6 +376,34 @@ function TaskCard({
   const src = task.session_id && template
     ? cardFrameSrc(template, task.target || task.project, task.session_id)
     : null;
+  // THE DOORS ON THE HEAD (Akshil, 2026-09-06): the popup's two, Archive (or
+  // Unarchive) and the folder, shown on hover over the title's right end so a
+  // reader can file a card or step into its folder without opening the popup
+  // first. Same intent, same href, same calls as TaskPeek's head — one set of
+  // doors drawn in two places, not two sets.
+  const explorer = taskHref(task) ?? folderHref(task);
+  const filing = filingIntent(task);
+  const [acting, setActing] = useState(false);
+  const [note, setNote] = useState("");
+  const refile = async () => {
+    if (!filing || acting) return;
+    setActing(true);
+    setNote("");
+    try {
+      if (filing.kind === "archive") await archiveTask(task.key);
+      else await unarchiveTask(task.key);
+      onReload?.();
+    } catch (e) {
+      // No footer on a card: the server's sentence goes up as a toast — the
+      // pointer may have left the door by the time the refusal lands — and
+      // stays on the door's hint for the next attempt.
+      const said = (e as Error).message;
+      setNote(said);
+      pushToast({ msg: said, tone: "error" });
+    } finally {
+      setActing(false);
+    }
+  };
   // THE THIRD STATE, and the reason `template` is not just a path-or-null: the
   // task HAS a session, so there is a conversation to show, and the only thing
   // missing is which template shows it — a fact this card is a few hundred
@@ -447,6 +481,43 @@ function TaskCard({
         <span className="task-card-title" data-hint={task.title}>
           {title}
         </span>
+        {/* Inside the head (so hovering them keeps the head hovered) but not OF
+            it: a press here stops before the head's onClick, so a door never
+            also opens the popup. Keys are already the head's concern only when
+            pressed on the head itself (onKeyDown above). */}
+        {(filing || explorer) && (
+          <span className="task-card-doors" onClick={(e) => e.stopPropagation()}>
+            {filing && (
+              <button
+                type="button"
+                className="task-card-door"
+                disabled={acting}
+                title={note || filing.label}
+                aria-label={filing.label}
+                onClick={refile}
+              >
+                {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
+              </button>
+            )}
+            {explorer && (
+              <a
+                // A real link with a real href, so ⌘-click and middle-click open
+                // the folder in a tab — the rule every row on this page follows.
+                className="task-card-door"
+                href={explorer}
+                title={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
+                aria-label="Open in Explorer"
+                onClick={(e) => {
+                  if (opensElsewhere(e)) return;
+                  e.preventDefault();
+                  navigateUrl(explorer);
+                }}
+              >
+                {ICON_FOLDER}
+              </a>
+            )}
+          </span>
+        )}
       </header>
       <div className="task-card-body">
         {src ? (
@@ -661,7 +732,7 @@ function TaskPeek({
 // The head's icons, in MenuIcons' own stroke (platform/ui/MenuIcons: 16px,
 // 24-grid, 1.5 stroke, round joins) so they sit in the app's buttons at the
 // weight its menus draw. Inline rather than added to that record because they
-// are this popup's and nothing else's — a folder, an archive box.
+// are this popup's and nothing else's — the folder.
 const ICON_PROPS = {
   width: 16,
   height: 16,
@@ -681,20 +752,7 @@ const ICON_FOLDER = (
   </svg>
 );
 
-/** Archive — the box with its lid. */
-const ICON_ARCHIVE = (
-  <svg {...ICON_PROPS}>
-    <path d="M3.5 5.5h17v3.5h-17z" />
-    <path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9" />
-    <path d="M10 13h4" />
-  </svg>
-);
-
-/** Unarchive — the same box, the lid open and an arrow out of it. */
-const ICON_UNARCHIVE = (
-  <svg {...ICON_PROPS}>
-    <path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9" />
-    <path d="M3.5 9h17" />
-    <path d="M12 16v-6M9.5 12.5 12 10l2.5 2.5" />
-  </svg>
-);
+// Archive and Unarchive are the List row's own glyphs (ScheduleTaskViews:
+// lucide `archive` / `archive-restore`), imported, not redrawn: the same box a
+// reader learned on the row is the box on the card and in the popup (Akshil,
+// 2026-09-06: "why is it different from the list unarchive icon").

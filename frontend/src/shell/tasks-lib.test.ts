@@ -6882,6 +6882,84 @@ describe("the Cards view's frame", () => {
     expect(SCHEDULED).not.toContain("onShowRunning");
   });
 
+  it("keeps Show more above the fold, and puts the popup's two doors on the head on hover", () => {
+    // Akshil, 2026-09-06: "to see show more button I need to scroll" — when the
+    // strip is there the two rows give up its 36px and one gap; without it the
+    // rows take the pane as before.
+    expect(CARDS_CSS).toContain(
+      ".task-cards-scroll:has(> .task-cards-more) > .task-cards {\n  grid-auto-rows: max(260px, calc((100cqh - 12px * 2 - 36px) / 2));\n}",
+    );
+    expect(block(CARDS_CSS, ".task-cards-more")).toContain("height: 36px");
+    // The doors: Archive (or Unarchive) then the folder, icons only, absolutely
+    // placed over the title's right end — the head's height and the title's
+    // width never move — shown on hover and on keyboard focus, and taking no
+    // clicks while hidden.
+    const head = CARDS.slice(CARDS.indexOf("<header"), CARDS.indexOf("</header>"));
+    expect(head.indexOf('className="task-card-title"')).toBeLessThan(head.indexOf("task-card-doors"));
+    expect(head).toContain('{filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}');
+    expect(head).toContain("{ICON_FOLDER}");
+    expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
+    expect(head).toContain("href={explorer}");
+    expect(head).toContain("if (opensElsewhere(e)) return;");
+    expect(block(CARDS_CSS, ".task-card-head")).toContain("position: relative");
+    const doors = block(CARDS_CSS, ".task-card-doors");
+    expect(doors).toContain("position: absolute");
+    expect(doors).toContain("visibility: hidden");
+    // Keyboard focus, not any focus: a click leaves focus in the head too, and
+    // `:focus-within` would pin the doors up after the pointer left (Bugbot).
+    // ...and the head's OWN keyboard focus, since `:has()` sees descendants
+    // only and a hidden strip is out of the tab order (Bugbot, round two).
+    expect(CARDS_CSS).toContain(
+      ".task-card-head:hover .task-card-doors,\n.task-card-head:focus-visible .task-card-doors,\n.task-card-head:has(:focus-visible) .task-card-doors {",
+    );
+    expect(CARDS_CSS).not.toContain(":focus-within .task-card-doors");
+    // Same calls as the popup's doors — one set drawn in two places.
+    expect(CARDS.split("await archiveTask(task.key)").length).toBe(3);
+    expect(CARDS.split("await unarchiveTask(task.key)").length).toBe(3);
+  });
+
+  it("draws each door through the strip, so the page's button rule cannot blank it", () => {
+    // `.prefs-section button` (padding 5px 12px) outranks a lone class; under it
+    // the 24px Archive button was 24px of padding and 0px of icon (Akshil,
+    // 2026-09-06, screenshot). Every door rule goes through the parent.
+    expect(CARDS_CSS).toContain(".task-card-doors > .task-card-door {");
+    expect(CARDS_CSS).not.toMatch(/\n\.task-card-door[:\s{]/);
+    expect(block(CARDS_CSS, ".task-card-doors > .task-card-door")).toContain("padding: 0");
+  });
+
+  it("wears the List's archive glyphs, hovers both doors alike, and fades in at the left", () => {
+    // Akshil, 2026-09-06: same icon as the List row; same hover for the button
+    // and the <a>; a gradient on the strip's left edge.
+    expect(CARDS).toContain('import { ICON_ARCHIVE, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";');
+    expect(CARDS).not.toContain("const ICON_ARCHIVE =");
+    expect(VIEWS).toContain("export const ICON_ARCHIVE = icon(");
+    expect(VIEWS).toContain("export const ICON_UNARCHIVE = icon(");
+    expect(block(CARDS_CSS, ".task-card-doors > .task-card-door:hover:not(:disabled)")).toContain("background: transparent");
+    const fade = block(CARDS_CSS, ".task-card-doors::before");
+    expect(fade).toContain("right: 100%");
+    expect(fade).toContain("linear-gradient(");
+    expect(fade).toContain("pointer-events: none");
+  });
+
+  it("filters by LANE: one Blocked tick brings the broken run and the parked one", () => {
+    // Akshil, 2026-09-06: "blocked should be clubbed and needs attention". The
+    // Status menu offers the Board's lanes, and a stored needs_attention from an
+    // older session still means the Blocked lane.
+    expect(VIEWS).toContain("? BOARD_LANES.filter((c) => c.key !== \"archived\")\n    : BOARD_LANES;");
+    const blocked = task({ key: "s1", status: "blocked" });
+    const parked = task({ key: "s2", status: "needs_attention" });
+    const running = task({ key: "s3", status: "in_progress" });
+    const byBlocked = { ...EMPTY_FILTERS, statuses: ["blocked" as const] };
+    expect(filterTasks([blocked, parked, running], byBlocked).map((t) => t.key)).toEqual(["s1", "s2"]);
+    const byParked = { ...EMPTY_FILTERS, statuses: ["needs_attention" as const] };
+    expect(filterTasks([blocked, parked, running], byParked).map((t) => t.key)).toEqual(["s1", "s2"]);
+    // ...and the menu's tick and toggle read and clear by lane too, so a stored
+    // needs_attention lights Blocked and Blocked-off removes it (review).
+    expect(VIEWS).toContain("const laneOn = (key: BoardColumn) => filters.statuses.some((s) => laneOf(s) === laneOf(key));");
+    expect(VIEWS).toContain("const on = laneOn(col.key);");
+    expect(VIEWS).toContain("? filters.statuses.filter((s) => laneOf(s) !== laneOf(key))");
+  });
+
   it("opens the task's popup from the head, and the popup frames the chat with its composer", () => {
     // Akshil, 2026-09-05: click the head → a 60%-of-the-window preview you can
     // type into, with buttons for the List, the Explorer and Archive.
@@ -6892,8 +6970,10 @@ describe("the Cards view's frame", () => {
     // ...for keys pressed on the head itself: the folder chip inside it is a
     // button whose Enter/Space bubble up (Bugbot, #1011).
     expect(head).toContain("if (e.target !== e.currentTarget) return;");
-    // The head has no Open of its own any more — the popup carries the doors.
-    expect(head).not.toContain("href");
+    // The head has no Open of its own — the head IS the open. Its only link is
+    // the folder door (below), which stops its own press.
+    expect(head).not.toContain("task-card-open");
+    expect(head).toContain('className="task-card-doors" onClick={(e) => e.stopPropagation()}');
     // The app's one modal chassis, at 60vw, with the matching height in CSS.
     expect(CARDS).toContain('import { Modal } from "@platform/ui/modal/Modal";');
     expect(CARDS).toContain('width="54vw"');
