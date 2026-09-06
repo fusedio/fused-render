@@ -2190,8 +2190,15 @@ export function projectOptions(tasks: Task[]): string[] {
 }
 
 export function taskMatches(task: Task, filters: TaskFilters): boolean {
-  if (filters.statuses.length && !filters.statuses.includes(taskColumn(task)))
-    return false;
+  // By LANE (schedule-lib.laneOf): the Status menu offers the Board's lanes,
+  // and a Blocked tick means everything the Blocked lane holds — the run that
+  // broke and the run parked on a card (`needs_attention`). Lanes on BOTH
+  // sides, so a `needs_attention` in `statuses` — nothing writes one today, the
+  // type still admits it — means the same lane the menu would have ticked.
+  if (filters.statuses.length) {
+    const lane = laneOf(taskColumn(task));
+    if (!filters.statuses.some((s) => laneOf(s) === lane)) return false;
+  }
   if (filters.projects.length && !filters.projects.includes(task.project)) return false;
   const q = filters.search.trim().toLowerCase();
   if (!q) return true;
@@ -2887,6 +2894,15 @@ export const CARD_PAGE = 6;
 export interface TaskCardSet {
   cards: Task[];
   hidden: number;
+}
+
+/** What a Cards-view pane says when there is no frame to draw (TaskCards).
+ *  `folderMissing` is a folder the server answered 404 for: nothing will ever
+ *  be framed for it, and "Starting…" would be a promise the card cannot keep
+ *  (Akshil, 2026-09-06: "some cards are stuck at starting"). */
+export function emptyPaneText(task: Pick<Task, "status">, folderMissing: boolean): string {
+  if (folderMissing) return "Folder no longer exists";
+  return taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…";
 }
 
 /**

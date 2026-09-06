@@ -115,6 +115,7 @@ import type {
   TaskFilters,
   TaskRunIntent,
 } from "./tasks-lib";
+import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingFolders";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
@@ -254,7 +255,7 @@ const ICON_MSG = icon(
 const ICON_MARK_READ = icon(
   <><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></>, 13);
 // Filing away. lucide `archive`: a lidded box with a pull-slot in the front.
-const ICON_ARCHIVE = icon(
+export const ICON_ARCHIVE = icon(
   <><rect x="2" y="3" width="20" height="5" rx="1" />
     <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
     <path d="M10 12h4" /></>, 13);
@@ -268,7 +269,7 @@ const ICON_ARCHIVE = icon(
 // The box's walls are two short paths rather than one closed body, which is what
 // leaves the gap the arrow comes through. Same 13px, same stroke, same lid as
 // above, so the two glyphs sit on each other exactly.
-const ICON_UNARCHIVE = icon(
+export const ICON_UNARCHIVE = icon(
   <><rect x="2" y="3" width="20" height="5" rx="1" />
     <path d="M4 8v11a2 2 0 0 0 2 2h2" />
     <path d="M20 8v11a2 2 0 0 1-2 2h-2" />
@@ -752,17 +753,27 @@ export function TaskFilterControls({
    */
   hideArchiveStatus?: boolean;
 }) {
+  // By LANE, like taskMatches: a tick is on when any stored status draws in
+  // this lane, and turning it off removes every status of that lane — so a
+  // stray `needs_attention` can never leave a filter applied that no checkbox
+  // shows (review, #1018).
+  const laneOn = (key: BoardColumn) => filters.statuses.some((s) => laneOf(s) === laneOf(key));
   const toggleStatus = (key: BoardColumn) =>
     onChange({
       ...filters,
-      statuses: filters.statuses.includes(key)
-        ? filters.statuses.filter((s) => s !== key)
+      statuses: laneOn(key)
+        ? filters.statuses.filter((s) => laneOf(s) !== laneOf(key))
         : [...filters.statuses, key],
     });
 
+  // LANES, not statuses (Akshil, 2026-09-06: "blocked should be clubbed and
+  // needs attention"): the Board draws a parked run in the Blocked lane, and
+  // the filter offers the lanes the Board draws, so one Blocked tick brings
+  // both the broken run and the one waiting on you. taskMatches matches by
+  // lane for the same reason.
   const statusColumns = hideArchiveStatus
-    ? BOARD_COLUMNS.filter((c) => c.key !== "archived")
-    : BOARD_COLUMNS;
+    ? BOARD_LANES.filter((c) => c.key !== "archived")
+    : BOARD_LANES;
   // Excludes Archive from the badge for the same reason the row is hidden: a
   // count that includes a facet the popover will not even show would read as
   // a filter this menu cannot explain.
@@ -802,7 +813,7 @@ export function TaskFilterControls({
       >
         {() =>
           statusColumns.map((col) => {
-            const on = filters.statuses.includes(col.key);
+            const on = laneOn(col.key);
             return (
               <button
                 type="button"
@@ -1072,6 +1083,7 @@ export function TaskList({
   tasks,
   home = "",
   stale = false,
+  missing,
   onEditEntry,
   onReload,
   onPickProject,
@@ -1082,6 +1094,9 @@ export function TaskList({
   tasks: Task[];
   /** $HOME, only so a folder tooltip can say "~/Desktop/fused". */
   home?: string;
+  /** Folders the disk no longer has (Scheduled → useMissingFolders). A row in one
+   * says so and stays on the page instead of opening an Explorer error. */
+  missing?: ReadonlySet<string>;
   /** Is this empty list a FAILURE rather than an answer? A failed poll sets
    * `tasks` to `[]` exactly like a filter that matched nothing does (Scheduled
    * `tasksFailed`), and the scroll memory below has to tell them apart: a list
@@ -1483,6 +1498,7 @@ export function TaskList({
           task={task}
           home={home}
           showProject={showProject}
+          folderMissing={missing?.has(taskFolder(task)) ?? false}
           open={expanded.has(task.key)}
           selected={selected === task.key}
           onSelect={() => select(task.key)}
@@ -1513,6 +1529,7 @@ function TaskNode({
   task,
   home,
   showProject,
+  folderMissing,
   open: requested,
   selected,
   onSelect,
@@ -1537,6 +1554,10 @@ function TaskNode({
   /** Whether the folder chip is worth drawing. The LIST's answer, not this row's:
    * a chip that every visible row repeats distinguishes nothing (spansProjects). */
   showProject: boolean;
+  /** The task's folder is gone from the disk (useMissingFolders). The row then
+   * has nowhere to go: its press raises a toast instead of leaving for an
+   * Explorer that can only answer with a stat error. */
+  folderMissing: boolean;
   /** What the List's expanded set says about this row. Whether it is honoured is
    * this component's decision — see `expandable` below. */
   open: boolean;
@@ -1619,7 +1640,10 @@ function TaskNode({
   // same badge. Null means no session yet (§5): no button at all, so nothing is
   // offered and nothing is marked. Asked with the count this row is DRAWING, so
   // a second press on an already-cleared task posts nothing.
-  const chat = openThreadIntent(task, unread);
+  // No chat arm for a folder that is gone: the thread's URL is the Explorer at
+  // that folder with the Claude pane, and the Explorer would answer with a raw
+  // stat error and no pane. The row's press says so instead (see `activate`).
+  const chat = folderMissing ? null : openThreadIntent(task, unread);
   const label = firstLine(task.title) || "(untitled)";
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
@@ -1810,6 +1834,13 @@ function TaskNode({
   };
 
   const openMessage = (m: TaskMessage) => {
+    // The same wall the task row's chat arm meets: a turn's URL is the Explorer
+    // at a folder that is gone (Bugbot, #1023 — the message rows still opened
+    // it). Say so, and mark nothing: nothing was shown.
+    if (folderMissing) {
+      toastMissingFolder();
+      return;
+    }
     onRead(task.key, m);
     const to = messageHref(task, m);
     if (!to) return;
@@ -1920,6 +1951,10 @@ function TaskNode({
   const activate = () => {
     if (chat) openChat(chat);
     else if (edit) onEditEntry?.(edit);
+    // A folder that is gone: the chat arm is off (above), the EDIT arm is not —
+    // the schedule form needs no folder (Bugbot, #1023) — so this is the row
+    // with neither, and its press says why (a toast) rather than doing nothing.
+    else if (folderMissing) toastMissingFolder();
   };
 
   /**
@@ -1949,7 +1984,7 @@ function TaskNode({
    * with its own tab stop — the row itself stays inert, and pointing at it would
    * be a promise the row's own press no longer keeps.
    */
-  const pressable = href !== null || edit !== null;
+  const pressable = href !== null || edit !== null || folderMissing;
 
   const cancel = async (m: TaskMessage, entryId: string) => {
     setCancelling(m.message_id);
@@ -2365,6 +2400,19 @@ function TaskNode({
             Folder FIRST, time last (Akshil, 2026-08-18). The two were the other way
             round when the time arrived; at the end of a row the last thing before
             the edge is the one a reader lands on, and the time is what changes. */}
+        {/* THE FOLDER IS GONE, said up front (Akshil, 2026-09-06: "we have
+            entries for them, but we don't have content … show clear error
+            message"). In the error colour, because it is the one row-level fact
+            here that means "this cannot be opened"; the path rides the hint and
+            the row's press (activate) raises a toast. */}
+        {folderMissing && (
+          <span
+            className="tasks-row-missing"
+            data-hint={missingFolderHint(tildePath(taskFolder(task), home))}
+          >
+            Folder missing
+          </span>
+        )}
         {showProject && (
           <IdentityChip
             name={basename(task.project)}
@@ -2505,7 +2553,7 @@ function TaskNode({
             // occurrence is cron arithmetic and addresses no turn
             // (tasks-lib.openMessageHref). Non-null is what turns the row into a
             // real link, and therefore what makes ⌘-click open it in a tab.
-            const to = fix ? null : openMessageHref(task, m);
+            const to = fix || folderMissing ? null : openMessageHref(task, m);
             const busy = cancelling === m.message_id;
             const why = cancelErrors[m.message_id];
             return (
@@ -2733,6 +2781,7 @@ export function TaskBoard({
   tasks,
   home = "",
   onReload,
+  missing,
 }: {
   /** Already filtered, in the SERVER's order — the LANES re-order it
    * (tasks-lib.groupByColumn), which is the one thing this view does to the
@@ -2741,6 +2790,10 @@ export function TaskBoard({
   home?: string;
   /** Re-read the list after a drop lands (or fails). */
   onReload: () => void;
+  /** Folders the disk no longer has (Scheduled → useMissingFolders): a card in
+   * one says so, and its click raises a toast instead of leaving for an
+   * Explorer error. */
+  missing?: ReadonlySet<string>;
 }) {
   const [choices, setChoices] = useState<LaneChoices>(readLaneChoices);
   // Lanes the reader has opened WHILE EMPTY. Deliberately component state and
@@ -3062,6 +3115,8 @@ export function TaskBoard({
                     task={task}
                     home={home}
                     showProject={showProject}
+                    folderMissing={missing?.has(taskFolder(task)) ?? false}
+                    onMissing={toastMissingFolder}
                     // The DISPLAYED count, so a card cleared by its own click
                     // stays cleared until the poll agrees — the same merge the
                     // List's rows make over the same set.
@@ -3109,6 +3164,8 @@ function TaskCard({
   task,
   home,
   showProject,
+  folderMissing,
+  onMissing,
   unread,
   isDragging,
   onDragStart,
@@ -3122,6 +3179,10 @@ function TaskCard({
   /** Whether the folder chip is worth drawing — the BOARD's answer, for the same
    * reason the List row takes it as a prop (spansProjects). */
   showProject: boolean;
+  /** The task's folder is gone (useMissingFolders): the card says so, and its
+   * click goes to `onMissing` — a toast — rather than `onOpen`. */
+  folderMissing: boolean;
+  onMissing: () => void;
   /** What the mark stands for: the server's count less anything cleared here since,
    * which the board merges (taskUnread) rather than the card re-deriving. */
   unread: number;
@@ -3247,7 +3308,8 @@ function TaskCard({
         }}
         onDragEnd={onDragEnd}
         onClick={() => {
-          if (open) onOpen(open);
+          if (folderMissing) onMissing();
+          else if (open) onOpen(open);
         }}
       >
         {/* The head is the card's marks — the id, the live ping, and a status ring
@@ -3362,8 +3424,17 @@ function TaskCard({
             anything (spansProjects — every card in a board filtered to one
             project repeats it — and a card with no run coming) the whole line
             goes rather than leaving an empty row of padding. */}
-        {(showProject || soon) && (
+        {(showProject || soon || folderMissing) && (
           <span className="schedule-tv-card-foot">
+            {/* The List row's own mark, same words, same colour (see the row). */}
+            {folderMissing && (
+              <span
+                className="tasks-row-missing"
+                data-hint={missingFolderHint(tildePath(taskFolder(task), home))}
+              >
+                Folder missing
+              </span>
+            )}
             {showProject && (
               <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
             )}
