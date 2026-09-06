@@ -307,16 +307,29 @@ def test_a_note_saves_without_any_capture_of_its_own(html):
 
 # ------------------------------------------ two buttons, one mode at a time
 
-def test_the_comment_seat_is_the_modes_one_control(html):
-    """A mode ON takes the strip down to one button (Akshil, 2026-08-19): the
-    mic hides, and the Comment seat's click matches its face — stop a live
-    recording, Done for an armed comment mode, arm from rest. Cancelling
-    without sending is Esc's job now."""
-    assert ("() => (annRecOn ? annRecEnd() :"
-            " annOn ? annDone() : annSetMode(true)));") in html
-    # the mic only ever starts a walkthrough (the recording leg guards a
-    # click racing the hide, it is not a second stop control)
-    assert ("() => (annRecOn ? annRecEnd() : annRecBegin()));") in html
+def test_the_other_two_seats_are_inert_while_a_mode_is_on(html):
+    """One mode at a time (Akshil, 2026-09-06): while Comment is armed the
+    camera and the mic are inert; while a walkthrough records the camera and
+    the Comment seat are. Dimmed and pointer-less by the stylesheet, refused
+    by the handlers so a keyboard press is a no-op too. The Comment seat's
+    click is Done when armed and arm from rest; the mic's is stop when
+    recording and start from rest. ← Chats leaves the mode with the chat."""
+    assert ("() => (annRecOn ? null : annOn ? annDone() : annSetMode(true)));") in html
+    assert ("() => (annRecOn ? annRecEnd() : annOn ? null : annRecBegin()));") in html
+    assert ("#anncta:has(#annbtn.on) #viewshot,\n"
+            "  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annrec,\n"
+            "  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }") in html
+    shot = _block(html, "async function shotAttachPane()", "\n}\n")
+    assert "if (shotBusy || annOn || !annCapable()) return;" in shot
+    # Bugbot, PR #1022: the mic refuses the settle too, the resting Comment
+    # seat is not named "Stop", and aria-disabled follows the dimming
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert 'if (annRecOn || annCta.classList.contains("busy") || !annCapable()) return;' in begin
+    assert 'annBtn.setAttribute("aria-label", "Stop the recording");' not in html
+    aria = _block(html, "function annSeatsAria()", "\n}\n")
+    assert 'annRecBtn.setAttribute("aria-disabled", annOn && !annRecOn ? "true" : "false");' in aria
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert "annSeatsAria();" in paint
 
 
 def test_done_flushes_pending_notes_before_disarming(html):
@@ -355,19 +368,18 @@ def test_a_mousedown_on_the_strip_does_not_drop_the_open_draft(html):
 
 
 def test_discard_throws_the_walkthrough_away(html):
-    """An outline trash seat, recording only, LEFT of the ■/clock (Akshil,
-    2026-08-19): the recording stops with nothing kept — no transcription, no
-    auto-send — and the clicks' empty marks are deleted with it. annRecEnd
-    no-ops after it, so a stop click racing the discard cannot resurrect the
-    walkthrough."""
-    assert "#anncta:not(.busy):has(#annbtn.on) #anndiscard { display: inline-flex;" in html
-    # two ids on the hide: a bare #anndiscard loses to the base
-    # `#anncta button` display rule on specificity, and the trash sat on the
-    # strip in every state
-    assert "#anncta #anndiscard { display: none; }" in html
-    assert "\n  #anndiscard { display: none; }" not in html
-    view = _block(html, '<div id="anncta">', "</div>")
-    assert view.index('id="anndiscard"') < view.index('id="annbtn"')
+    """An outline trash on the annotation bar, LEFT of ✓ Done / ■ (Akshil,
+    2026-09-06; it was a strip seat from 2026-08-19): the recording stops with
+    nothing kept — no transcription, no auto-send — and the clicks' empty
+    marks are deleted with it. annRecEnd no-ops after it, so a stop click
+    racing the discard cannot resurrect the walkthrough. The strip has no
+    trash of its own any more."""
+    assert 'id="anndiscard"' not in html
+    assert "annDiscardBtn" not in html
+    node = _block(html, "function annBarNode(doc)", "\n}\n")
+    assert 'discard.className = "discard";' in node
+    assert "bar.append(lead, slot, discard, done, stop);" in node
+    assert 'discard.addEventListener("click", () => annDiscard());' in node
     body = _block(html, "async function annRecDiscard()", "\n}\n")
     # cancel(), not stop(): the capture handle's cancel is the ending that
     # DELETES the file (SPEC CP-4), which is what a discard means — a stop
@@ -388,14 +400,15 @@ def test_discard_throws_the_walkthrough_away(html):
         assert fn.index("const armed = annArmEpoch;") < stop
         assert fn.index("annRecIds = [];") < stop
         assert fn.index("annRecHandle = null;") < stop
-    assert body.index('annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");') \
-        < body.index("await handle.cancel()")
+    # the mic is named for the settle BEFORE the cancel, idle again after it
+    assert body.index('annRecBtn.setAttribute("aria-label", "Discarding the recording");') \
+        < body.index("await handle.cancel()") < body.index("annRecIdleName();")
     assert "annotations = annotations.filter((a) => !ids.has(a.id));" in body
     assert "renderAnn();" in body, "discarded pins leave the screen even if Esc already disarmed"
     assert "fused.ai.transcribe" not in body and "annAutoSubmit" not in body
     assert "if (annOn && annArmEpoch === armed) annSetMode(false);" in body, \
         "a new arming that slipped into the settle is not this discard's to close"
-    assert 'annDiscardBtn.addEventListener("click", () => (annRecOn ? annRecDiscard() : annNotesDiscard()));' in html
+    assert "function annDiscard() { return annRecOn ? annRecDiscard() : annNotesDiscard(); }" in html
 
 
 def test_the_busy_seat_is_a_status_not_a_button(html):
@@ -404,7 +417,17 @@ def test_the_busy_seat_is_a_status_not_a_button(html):
     finally re-enables it and the disarm renames it."""
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert "annBtn.disabled = true;" in end
-    assert 'annBtn.setAttribute("aria-label", "Transcribing the walkthrough");' in end
+    # the status is the ANNOTATE seat's (2026-09-06, Bugbot PR #1022): it is
+    # the seat that shows #annreclbl, so it is the seat named for it; the
+    # Comment seat is merely unavailable, and the settle's end idle-names the mic
+    assert 'annRecBtn.setAttribute("aria-label", "Transcribing the walkthrough");' in end
+    assert 'annRecBtn.setAttribute("aria-label", "Stopping the recording");' in end
+    assert 'annBtn.setAttribute("aria-label", "Comment — unavailable while the recording settles");' in end
+    assert 'annBtn.setAttribute("aria-label", "Transcribing the walkthrough");' not in html
+    assert "annRecIdleName();" in end
+    disc = _block(html, "async function annRecDiscard()", "\n}\n")
+    assert 'annRecBtn.setAttribute("aria-label", "Discarding the recording");' in disc
+    assert "annRecIdleName();" in disc
     assert "annBtn.disabled = false;" in end
     # ...and any mode TRANSITION ends the status's claim early: Esc during a
     # transcription disarms through annSetMode, which must not leave the seat
@@ -427,29 +450,37 @@ def test_the_live_recording_is_never_announced_as_done(html):
     begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert 'annRecBtn.setAttribute("aria-label", "Stop the recording");' in begin
     end = _block(html, "async function annRecEnd()", "\n}\n")
-    assert 'annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");' in end
+    assert "annRecIdleName();" in end   # the idle name comes back when the settle ends
 
 
-def test_the_seat_swaps_faces_off_the_two_state_classes(html):
-    """Every glyph and word is baked into the markup; the stylesheet derives
-    the seat's face from #annbtn.on / #annrec.on via :has on the wrapper —
-    no third writer to fall out of step. The mic hides whenever a mode is on,
-    so the strip is ONE control while armed or recording."""
-    assert "#anncta:has(#annbtn.on) #annrec { display: none; }" in html
-    # comment armed (and only then, and not while transcribing): ✓ Done
-    assert ("#anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on))"
-            " #annbtn .cmt-done { display: block; }") in html
-    # recording: the seat wears ■ plus the clock, in --error ink
-    assert "#anncta:has(#annrec.on) #annbtn .cmt-stop { display: block; }" in html
-    stop = _block(html, "#anncta:has(#annrec.on) #annbtn.on {", "}")
-    assert "var(--error)" in stop
-    # transcribing: annRecEnd stamps .busy and the status stands ALONE — the
-    # Done face is gated off busy at its own (higher-specificity) show rules,
-    # not fought with a weaker hide ("✓ Done Transcribing…", 2026-08-19)
-    assert ("#anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on))"
-            " #annbtn .cmt-done { display: block; }") in html
-    assert ("#anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on))"
-            " #annbtn .done-word { display: var(--annlbl, inline); }") in html
+def test_the_three_seats_stay_and_the_armed_one_reads_active(html):
+    """Screenshot · Comment · Annotate stay on the strip in every state
+    (Akshil, 2026-09-06); arming only draws the armed seat active. No face
+    swap: the ✓ Done / ■ exits are the bar's (annBarNode). Recording is the
+    mic's state, so the Comment seat underneath rests while it runs — one
+    active seat at a time."""
+    assert "#anncta:has(#annbtn.on) #annrec { display: none; }" not in html
+    assert "#anncta:has(#annbtn.on) #viewshot { display: none; }" not in html
+    assert ".cmt-done { display: block; }" not in html
+    assert ".cmt-stop { display: block; }" not in html
+    assert "#annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none; }" in html
+    assert "#annbtn.on { color: var(--accent); background: transparent; border-color: var(--accent); }" in html
+    assert "#annrec.on { color: var(--accent); border-color: var(--accent); }" in html
+    assert "annrecpulse" not in html   # steady, no flashing (2026-09-06)
+    assert ("#anncta:has(#annrec.on) #annbtn.on,\n"
+            "  #anncta.busy #annbtn.on { color: var(--dim); border-color: var(--border); }") in html
+    # transcribing: annRecEnd stamps .busy and the status stands ALONE on the
+    # ANNOTATE seat (2026-09-06) — the clock itself is the bar's, never the strip's
+    assert "#anncta:not(.busy) #annreclbl { display: none; }" in html
+    assert "#anncta.busy #annrec .rec-word { display: none; }" in html
+    assert "#anncta.busy #annrec { color: var(--accent); border-color: var(--accent); }" in html
+    rec = _block(html, '<button id="annrec"', "</button>")
+    assert 'id="annreclbl"' in rec
+    cmt = _block(html, '<button id="annbtn"', "</button>")
+    assert 'id="annreclbl"' not in cmt
+    # a mode SURVIVES switching chats for now (Akshil, 2026-09-06) — the
+    # discard-on-leave lands in its own PR
+    assert "annLeave" not in html
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert 'annCta.classList.add("busy");' in end
     assert 'annCta.classList.remove("busy");' in end
@@ -958,10 +989,15 @@ def test_the_bar_folds_by_measure_not_breakpoint(html):
 
 
 def test_discard_covers_the_typed_round_too(html):
-    """The strip keeps BOTH exits in both modes (Akshil, 2026-09-04): the
-    trash beside ✓ Done throws this round's unsent notes away — an open draft
-    with them — and leaves the mode; earlier rounds' and sent notes stay."""
-    assert "#anncta:not(.busy):has(#annbtn.on) #anndiscard { display: inline-flex;" in html
+    """The bar keeps BOTH exits in both modes (Akshil, 2026-09-04; onto the
+    bar 2026-09-06): the trash beside ✓ Done throws this round's unsent notes
+    away — an open draft with them — and leaves the mode; earlier rounds' and
+    sent notes stay. The label names what it throws, written by annBarPaint."""
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert 'annRecOn ? "Discard the recording" : "Discard the notes"' in paint
+    assert ".annbar .discard {\n    border: 1px solid var(--border);" in html
+    assert ".annbar .discard:hover { color: var(--error); border-color: var(--error); }" in html
+    assert '".annbar .discard { border: 1px solid var(--border, #34363e);' in html
     body = _block(html, "function annNotesDiscard(", "\n}\n")
     # not through Stopping…/Transcribing… either: annRecOn is already down and
     # the marks are the recording's, waiting for words (Bugbot, PR #1008)
@@ -969,4 +1005,4 @@ def test_discard_covers_the_typed_round_too(html):
     assert "annCloseComposer();" in body
     assert "a.sent || (a.createdAt || 0) < annRoundStart" in body
     assert "annSetMode(false);" in body
-    assert "(annRecOn ? annRecDiscard() : annNotesDiscard())" in html
+    assert "return annRecOn ? annRecDiscard() : annNotesDiscard();" in html
