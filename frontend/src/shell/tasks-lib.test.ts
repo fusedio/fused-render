@@ -19,6 +19,8 @@ import {
   PREVIEW_MESSAGES,
   UNREAD_LABEL,
   filingIntent,
+  ERASE_BLOCKED_HINT,
+  eraseBlocked,
   basename,
   canCancel,
   CARD_PAGE,
@@ -3991,6 +3993,134 @@ describe("the archive action", () => {
   });
 });
 
+// ---- the delete affordance ---------------------------------------------------
+// The page's one IRREVERSIBLE verb (design.md §2). Three claims worth holding in
+// code rather than in a screenshot: that the guard is the server's guard, that
+// every surface goes through ONE dialog whose words say what is destroyed, and
+// that nothing about it is red until it is pointed at.
+
+describe("the delete affordance", () => {
+  it("refuses exactly the lanes the server refuses, in the server's words", () => {
+    // in_progress AND the needs_attention turn parked on a permission card: a
+    // guard that read only `in_progress` would offer to erase a transcript a
+    // waiting `claude --resume` still has open.
+    expect(eraseBlocked(task({ status: "in_progress" }))).toBe(true);
+    expect(eraseBlocked(task({ status: "needs_attention" }))).toBe(true);
+    for (const status of ["upcoming", "blocked", "done", "archived"] as const) {
+      expect(eraseBlocked(task({ status }))).toBe(false);
+    }
+    // The same lanes `inFlight` names, spelled once — not a second list that
+    // could drift from it.
+    expect(LIB).toContain("return inFlight(taskColumn(task));");
+    // And the hint is the refusal's own first clause, so the caption and the
+    // 409 cannot promise different reasons.
+    expect(ERASE_BLOCKED_HINT).toBe("Stop the run first");
+  });
+
+  it("has a glyph of its own, sharing nothing with the archive pair", () => {
+    expect(VIEWS).toContain("export const ICON_TRASH = icon(");
+    // 12px — the row's mark size, since it prefixes an 11px sentence.
+    const at = VIEWS.indexOf("export const ICON_TRASH = icon(");
+    const glyph = VIEWS.slice(at, VIEWS.indexOf(");", at));
+    expect(glyph).toContain(", 12");
+    // NOT the archive box: the reversible pair share a silhouette on purpose,
+    // so the irreversible verb must not join it.
+    expect(glyph).not.toContain('<rect x="2" y="3"');
+  });
+
+  it("prefixes the List row's Folder missing sentence, and stops the row's press", () => {
+    // A row whose folder is gone has nothing else left to do, which is why the
+    // trash is on that row and beside those words rather than in the action
+    // group at the row's other end (one flick from Run now).
+    expect(ROW).toContain('className="tasks-act tasks-act--delete"');
+    expect(ROW.indexOf("{ICON_TRASH}")).toBeLessThan(ROW.indexOf('className="tasks-row-missing"'));
+    // Both are the same row's answer to the same fact.
+    expect((ROW.match(/\{folderMissing && \(/g) ?? []).length).toBe(2);
+    expect(ROW).toContain("aria-label={`Delete ${task.task_id} forever`}");
+    expect(ROW).toContain('data-hint="Delete task forever"');
+    // Without this the row's own activate raises the missing-folder toast over
+    // the dialog the press just opened.
+    const at = ROW.indexOf('className="tasks-act tasks-act--delete"');
+    expect(ROW.slice(at, ROW.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
+  });
+
+  it("is a door on EVERY card, before the folder and greyed while the run is live", () => {
+    const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
+    const head = CARDS_SRC.slice(CARDS_SRC.indexOf("<header"), CARDS_SRC.indexOf("</header>"));
+    // Unconditional: no `{... && (` in front of it, unlike Archive and the
+    // folder — every card can be deleted, which is what the chat's kebab says
+    // too (design.md §2's open question, answered "all cards").
+    expect(head).toContain('className="task-card-door task-card-door--danger"');
+    expect(head).toMatch(/\{\/\* Delete for good[\s\S]*?\*\/\}\s*<button/);
+    // Archive, then trash, then the folder: the reversible doors keep the
+    // places a reader already learned.
+    expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_TRASH"));
+    expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_FOLDER"));
+    // The strip itself no longer depends on what it holds.
+    expect(CARDS_SRC).not.toContain("{(filing || explorer || gone) && (");
+    // The guard is the shared one, and a blocked door says why instead of
+    // opening a dialog whose refusal a reader would meet for the first time
+    // after confirming.
+    expect(CARDS_SRC).toContain("const blocked = eraseBlocked(task);");
+    expect(head).toContain("disabled={blocked || acting}");
+    expect(head).toContain("data-hint={blocked ? ERASE_BLOCKED_HINT :");
+    // A press on a door never also opens the popup.
+    const at = head.indexOf('className="task-card-door task-card-door--danger"');
+    expect(head.slice(at, head.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
+  });
+
+  it("goes through ONE dialog, which names what it destroys and cannot be undone", () => {
+    const MODAL = readFileSync(join(SHELL, "EraseTaskModal.tsx"), "utf8");
+    // One endpoint, called in one place on the client.
+    expect(API_TYPES).toContain('"/api/tasks/erase"');
+    expect(MODAL).toContain("await eraseTask(task.key);");
+    for (const src of [VIEWS, readFileSync(join(SHELL, "TaskCards.tsx"), "utf8")]) {
+      expect(src).toContain("<EraseTaskModal");
+      expect(src).not.toContain("eraseTask(");
+    }
+    // The words: the target in the title, the consequence in the body, the
+    // permanence in bold, the verb on the button.
+    expect(MODAL).toContain("title={`Delete ${task.task_id}?`}");
+    expect(MODAL).toContain(
+      "This deletes the Claude session behind this task — its transcript, history and any",
+    );
+    expect(MODAL).toContain("<b>This is permanent and cannot be undone.</b>");
+    expect(MODAL).toContain('className="btn btn-danger"');
+    expect(MODAL).toContain('{busy ? "Deleting…" : "Delete forever"}');
+    expect(MODAL).toContain('className="btn btn-secondary"');
+    // The refusal is shown INSIDE the dialog, verbatim — the button that earned
+    // it is still under the pointer.
+    expect(MODAL).toContain("setErr((e as Error).message);");
+    expect(MODAL).toContain('className="deploy-error"');
+    // The receipt is the PAGE's, because the row it is about has just gone.
+    for (const src of [VIEWS, readFileSync(join(SHELL, "TaskCards.tsx"), "utf8")]) {
+      expect(src).toContain("pushToast({ msg: `Deleted ${task.task_id}`, tone: \"info\" });");
+    }
+  });
+
+  it("is muted at rest on both surfaces and red only under the pointer", () => {
+    const CARDS_CSS_SRC = readFileSync(join(SHELL, "../styles/task-cards.css"), "utf8");
+    // The row's trash is an ordinary `.tasks-act` — silent until the row is
+    // pointed at, still reachable by keyboard — with the hue only on hover.
+    expect(TASKS_CSS).toContain(".tasks-act--delete:hover:not(:disabled)");
+    expect(TASKS_CSS).toContain(".tasks-act--delete:focus-visible:not(:disabled)");
+    expect(block(TASKS_CSS, ".tasks-act--delete:hover:not(:disabled)")).toContain(
+      "color: var(--error)",
+    );
+    // `--error` is the token the sentence it prefixes already uses, so the two
+    // light up in one colour.
+    expect(block(TASKS_CSS, ".tasks-row-missing")).toContain("color: var(--error)");
+    // The card's door: through the strip like every other door rule, or the
+    // page's `.prefs-section button` blanks it.
+    expect(CARDS_CSS_SRC).toContain(
+      ".task-card-doors > .task-card-door--danger:hover:not(:disabled)",
+    );
+    expect(CARDS_CSS_SRC).not.toMatch(/\n\.task-card-door--danger[:\s{]/);
+    // Nothing anywhere paints it red at rest.
+    expect(block(CARDS_CSS_SRC, ".task-card-doors > .task-card-door")).not.toContain("--error");
+  });
+});
+
 // ---- where Run now and Mark read are drawn -------------------------------------
 // The Board had no run action at all: it was on the List row and in the calendar
 // popover and simply missing from the kanban card (Akshil, 2026-08-17: "I have a
@@ -4787,10 +4917,12 @@ describe("opening a thread, from either view", () => {
     // own stopPropagation, so it cannot double-fire with the link beneath it.
     const openBtn = ROW.indexOf('openChat(chat);');
     expect(openBtn).toBeGreaterThan(-1);
-    const btn = ROW.slice(openBtn);
-    expect(btn.indexOf("e.stopPropagation();")).toBeLessThan(
-      btn.indexOf("openChat(chat);"),
-    );
+    // Read BACKWARDS from the call, over the handler that makes it — the row
+    // holds a LATER button of its own now (the trash, on a folder-missing row)
+    // which stops its own press too, so "no stopPropagation after this point"
+    // stopped being a way to say "this button stops its own".
+    const btn = ROW.slice(ROW.lastIndexOf("onClick={(e) => {", openBtn), openBtn);
+    expect(btn).toContain("e.stopPropagation();");
     expect(ROW).not.toContain("navigateUrl(href)");
   });
 
@@ -6932,7 +7064,15 @@ describe("the Cards view's frame", () => {
     // Akshil, 2026-09-06: same icon as the List row; same hover for the button
     // and the <a>; a gradient on the strip's left edge; and a card whose folder
     // the server cannot stat says so instead of "Starting…" for ever.
-    expect(CARDS).toContain('import { ICON_ARCHIVE, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";');
+    // The glyphs come from the List's own file — one definition per mark, wherever
+    // it is drawn. (A multi-line import since the trash joined them.)
+    const glyphImport = CARDS.slice(
+      CARDS.indexOf("import {\n  ICON_ARCHIVE,"),
+      CARDS.indexOf('} from "./ScheduleTaskViews";'),
+    );
+    for (const name of ["ICON_ARCHIVE", "ICON_TRASH", "ICON_UNARCHIVE", "IdentityChip", "StatusIcon"]) {
+      expect(glyphImport).toContain(name);
+    }
     expect(CARDS).not.toContain("const ICON_ARCHIVE =");
     expect(VIEWS).toContain("export const ICON_ARCHIVE = icon(");
     expect(VIEWS).toContain("export const ICON_UNARCHIVE = icon(");

@@ -36,13 +36,22 @@ import { pushToast } from "@platform/lib/toast";
 import { ChatFrame, ChatFramePlaceholder } from "@platform/ui/ChatFrame";
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
-import { ICON_ARCHIVE, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";
+import {
+  ICON_ARCHIVE,
+  ICON_TRASH,
+  ICON_UNARCHIVE,
+  IdentityChip,
+  StatusIcon,
+} from "./ScheduleTaskViews";
+import { EraseTaskModal } from "./EraseTaskModal";
 import {
   CARD_PAGE,
   basename,
   cardKey,
   cardsForTasks,
+  ERASE_BLOCKED_HINT,
   emptyPaneText,
+  eraseBlocked,
   filingIntent,
   firstLine,
   opensElsewhere,
@@ -415,6 +424,18 @@ function TaskCard({
   const filing = filingIntent(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
+  // THE DELETE DOOR, on EVERY card (design.md §2's open question, answered:
+  // "all cards", matching the chat's kebab rather than the List's row — the
+  // List's trash is on a folder-missing row because that row has nothing else
+  // left, which is a fact about that row and not about the verb).
+  //
+  // Its guard is the server's own (tasks-lib.eraseBlocked): a run in flight —
+  // in_progress OR a needs_attention turn parked on a permission card — cannot
+  // have its transcript pulled out from under it, so the door greys and its
+  // hint says the only thing that would help. Disabled means the dialog never
+  // opens, so nobody reads the refusal for the first time inside a confirmation.
+  const [erasing, setErasing] = useState(false);
+  const blocked = eraseBlocked(task);
   const refile = async () => {
     if (!filing || acting) return;
     setActing(true);
@@ -515,57 +536,77 @@ function TaskCard({
             it: a press here stops before the head's onClick, so a door never
             also opens the popup. Keys are already the head's concern only when
             pressed on the head itself (onKeyDown above). */}
-        {(filing || explorer || gone) && (
-          // `data-hint=""` is the OPT-OUT (hints.ts): the strip sits over the
-          // title, and the hint panel resolves by piercing the stack under the
-          // pointer, so without it a door answered with the task's name (Akshil,
-          // 2026-09-06). Each door carries its own hint instead of a native
-          // `title` — the app's panel shows on pointerover, a title after the
-          // browser's second, which read as no caption at all.
-          <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
-            {filing && (
-              <button
-                type="button"
-                className="task-card-door"
-                disabled={acting}
-                data-hint={note || filing.label}
-                aria-label={filing.label}
-                onClick={refile}
-              >
-                {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
-              </button>
-            )}
-            {explorer && (
-              <a
-                // A real link with a real href, so ⌘-click and middle-click open
-                // the folder in a tab — the rule every row on this page follows.
-                className="task-card-door"
-                href={explorer}
-                data-hint={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
-                aria-label="Open in Explorer"
-                onClick={(e) => {
-                  if (opensElsewhere(e)) return;
-                  e.preventDefault();
-                  navigateUrl(explorer);
-                }}
-              >
-                {ICON_FOLDER}
-              </a>
-            )}
-            {gone && (
-              <button
-                type="button"
-                className="task-card-door is-disabled"
-                aria-disabled="true"
-                data-hint={MISSING_FOLDER_TOAST}
-                aria-label="Open in Explorer — folder deleted"
-                onClick={toastMissingFolder}
-              >
-                {ICON_FOLDER}
-              </button>
-            )}
-          </span>
-        )}
+        {/* `data-hint=""` is the OPT-OUT (hints.ts): the strip sits over the
+            title, and the hint panel resolves by piercing the stack under the
+            pointer, so without it a door answered with the task's name (Akshil,
+            2026-09-06). Each door carries its own hint instead of a native
+            `title` — the app's panel shows on pointerover, a title after the
+            browser's second, which read as no caption at all.
+
+            THE STRIP IS UNCONDITIONAL NOW (2026-09-07): the trash door is on
+            every card, whatever its filing and whatever became of its folder,
+            so there is no card left whose head has no doors to hold. */}
+        <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
+          {filing && (
+            <button
+              type="button"
+              className="task-card-door"
+              disabled={acting}
+              data-hint={note || filing.label}
+              aria-label={filing.label}
+              onClick={refile}
+            >
+              {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
+            </button>
+          )}
+          {/* Delete for good, BEFORE the folder door and after Archive: the
+              two reversible doors keep the places a reader already learned,
+              and the irreversible one is not the door nearest the card's
+              edge — where a pointer travelling to the next card passes. */}
+          <button
+            type="button"
+            className="task-card-door task-card-door--danger"
+            disabled={blocked || acting}
+            data-hint={blocked ? ERASE_BLOCKED_HINT : "Delete task forever"}
+            aria-label={`Delete ${task.task_id} forever`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (blocked || acting) return;
+              setErasing(true);
+            }}
+          >
+            {ICON_TRASH}
+          </button>
+          {explorer && (
+            <a
+              // A real link with a real href, so ⌘-click and middle-click open
+              // the folder in a tab — the rule every row on this page follows.
+              className="task-card-door"
+              href={explorer}
+              data-hint={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
+              aria-label="Open in Explorer"
+              onClick={(e) => {
+                if (opensElsewhere(e)) return;
+                e.preventDefault();
+                navigateUrl(explorer);
+              }}
+            >
+              {ICON_FOLDER}
+            </a>
+          )}
+          {gone && (
+            <button
+              type="button"
+              className="task-card-door is-disabled"
+              aria-disabled="true"
+              data-hint={MISSING_FOLDER_TOAST}
+              aria-label="Open in Explorer — folder deleted"
+              onClick={toastMissingFolder}
+            >
+              {ICON_FOLDER}
+            </button>
+          )}
+        </span>
       </header>
       <div className="task-card-body">
         {src ? (
@@ -591,6 +632,19 @@ function TaskCard({
           </p>
         )}
       </div>
+      {erasing && (
+        <EraseTaskModal
+          task={task}
+          onClose={() => setErasing(false)}
+          onDone={() => {
+            setErasing(false);
+            // The card is about to leave the wall, so the receipt goes to the
+            // page's toast rather than onto the card's own note line.
+            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            onReload?.();
+          }}
+        />
+      )}
     </section>
   );
 }

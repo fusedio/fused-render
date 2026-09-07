@@ -588,6 +588,16 @@
      "New session in terminal" — a menu that reads as still loading something
      (Akshil, 2026-08-23). */
   .kebab-opt[hidden] { display: none; }
+  /* The one destructive item in this menu, in the token this template already
+     means "this went wrong / this is dangerous" by (--error, worn by the
+     recording state, failed rings and every error note). Coloured at REST and
+     not only on hover: the item's whole job is to be told apart from the
+     reversible one directly above it before it is pressed. */
+  .kebab-opt.is-danger { color: var(--error); }
+  .kebab-opt.is-danger:hover, .kebab-opt.is-danger:focus-visible {
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+  }
+  .kebab-opt.is-danger[disabled] { color: var(--dim); }
 
   /* "Comment on preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
      (see the 800px block at the end of this stylesheet): while both columns are on
@@ -1140,6 +1150,49 @@
     font-size: 11px; line-height: 1.45; white-space: pre-wrap;
     word-break: break-word; max-height: 40vh; overflow: auto;
   }
+
+  /* ── "Delete this task?": same overlay family again ────────────────────── */
+  /* Above the "what was sent" popup and the viewer (80/90): it is opened from
+     the kebab, nothing can open over it, and a confirm that anything could
+     cover would be a confirm that could be answered blind. */
+  .erasedlg { position: fixed; inset: 0; z-index: 100;
+              display: flex; align-items: center; justify-content: center; }
+  .erasedlg[hidden] { display: none; }
+  .erasedlg-scrim { position: absolute; inset: 0; background: var(--scrim); }
+  .erasedlg-box {
+    position: relative; display: flex; flex-direction: column;
+    width: min(420px, calc(100vw - 48px));
+    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 12px 40px var(--shadow); overflow: hidden;
+  }
+  .erasedlg-title {
+    margin: 0; padding: 14px 16px 0; font-size: 14px; font-weight: 600;
+    color: var(--fg);
+  }
+  .erasedlg-body {
+    padding: 8px 16px 4px; font-size: 12.5px; line-height: 1.5; color: var(--dim);
+  }
+  .erasedlg-body p { margin: 6px 0; }
+  .erasedlg-body strong { color: var(--fg); }
+  .erasedlg-err { color: var(--error); }
+  .erasedlg-err[hidden] { display: none; }
+  .erasedlg-bar {
+    display: flex; align-items: center; gap: 8px; padding: 12px 16px 14px;
+  }
+  .erasedlg-bar .spacer { flex: 1; }
+  /* The destructive button carries the colour as a BORDER at rest and fills on
+     hover — the same escalation the annotate bar's Stop uses, so this template
+     has one way of drawing "this ends something". */
+  .erasedlg-danger {
+    border-color: var(--error);
+    color: var(--error);
+    background-color: color-mix(in srgb, var(--error) 10%, transparent);
+  }
+  .erasedlg-danger:hover:not([disabled]) {
+    background-color: color-mix(in srgb, var(--error) 20%, transparent);
+  }
+  .erasedlg-danger[disabled] { color: var(--dim); border-color: var(--border);
+                               background-color: transparent; cursor: default; }
   /* A comment row in a receipt IS the door into the "what was sent" popup —
      no separate button, the row itself is clickable. */
   .annsum-note { cursor: pointer; border-radius: 4px; }
@@ -3904,6 +3957,16 @@
                Tasks page while this menu sits closed. -->
           <button id="archiveopt" type="button" role="menuitem" class="kebab-opt"
                   hidden></button>
+          <!-- ERASE the Claude session this chat is: transcript, history and any
+               pending runs, for good (Akshil, 2026-09-07). Directly below the
+               archive item because they are the same pair of verbs the Tasks
+               page offers — "file it away, reversible" then "it is gone" — and
+               it appears under exactly the same rule (a task behind this chat),
+               painted in the same frame by applyArchiveOpt so the menu never
+               grows a row under the pointer. Danger colour, and the only
+               control in this template that opens a confirm of its own. -->
+          <button id="deleteopt" type="button" role="menuitem"
+                  class="kebab-opt is-danger" hidden>Delete this task</button>
         </div>
       </div>
       <!-- Which view the LEFT pane frames. The popup ships EMPTY and the whole
@@ -4283,6 +4346,33 @@
         <button id="sentpop-close" type="button" class="pill">Close</button>
       </div>
       <div id="sentpop-body"></div>
+    </div>
+  </div>
+
+  <!-- "Delete this task", confirmed. Same overlay family as #sentpop and the
+       screenshot viewer (fixed layer, --scrim, one panel box) rather than a
+       second visual language for the one modal this template owns; a plain
+       <div> and not <dialog> for the same reason #schedpop is one — this script
+       already owns Escape and the scrim click for two layers, and ::backdrop
+       would be a third dismissal contract.
+       Aria-modal here, unlike #schedpop: this one is a real decision and the
+       page behind it must not be reachable while it stands. -->
+  <div id="erasedlg" class="erasedlg" hidden role="dialog" aria-modal="true"
+       aria-labelledby="erasedlg-title">
+    <div class="erasedlg-scrim"></div>
+    <div class="erasedlg-box">
+      <h3 class="erasedlg-title" id="erasedlg-title">Delete this task?</h3>
+      <div class="erasedlg-body">
+        <p>This deletes the Claude session behind this task — its transcript,
+           history and any pending runs.
+           <strong>This is permanent and cannot be undone.</strong></p>
+        <p class="erasedlg-err" id="erasedlg-err" hidden></p>
+      </div>
+      <div class="erasedlg-bar">
+        <span class="spacer"></span>
+        <button id="erasedlg-cancel" type="button" class="pill">Cancel</button>
+        <button id="erasedlg-go" type="button" class="pill erasedlg-danger">Delete forever</button>
+      </div>
     </div>
   </div>
 
@@ -12827,6 +12917,14 @@ const terminalOpt = document.getElementById("terminalopt");
 // answer here ("this conversation has never been listed as a task") is not
 // something they can act on from this menu.
 const archiveOpt = document.getElementById("archiveopt");
+// ── delete this task, for good ─────────────────────────────────────────
+// The SAME two facts decide this item as decide the archive one above — there
+// is a task behind this chat, and which session it is — so it is drawn by
+// `applyArchiveOpt` rather than by a paint of its own: two functions writing
+// two rows into one menu is how a menu grows a row under the pointer, which is
+// the exact flicker the archive item was split apart to fix.
+const deleteOpt = document.getElementById("deleteopt");
+let eraseKey = "";
 let archiveKey = "";
 /** A press is in flight, or its confirmation is still on screen. Guards
  *  `applyArchiveOpt` — see the note there. */
@@ -12860,6 +12958,8 @@ function applyArchiveOpt() {
   if (!id || filed === undefined || filed === null) {
     archiveKey = "";
     archiveOpt.hidden = true;
+    eraseKey = "";
+    deleteOpt.hidden = true;
     return;
   }
   archiveKey = id;
@@ -12867,6 +12967,9 @@ function applyArchiveOpt() {
   archiveOpt.dataset.filed = filed ? "1" : "";
   archiveOpt.disabled = false;
   archiveOpt.hidden = false;
+  eraseKey = id;
+  deleteOpt.disabled = false;
+  deleteOpt.hidden = false;
 }
 
 /** Re-read the listing and correct the item. Never HIDES what is already shown
@@ -12949,6 +13052,123 @@ archiveOpt.addEventListener("click", async () => {
     setTimeout(() => { archiveBusy = false; void refreshArchiveOpt(); }, 2500);
   }
 });
+// ── the confirm behind "Delete this task" ──────────────────────────────
+// The kebab item opens this and NOTHING else; only "Delete forever" calls the
+// endpoint. Archiving is one click because it is reversible — this is not, and
+// the two items sit 30px apart in the same menu, so the second one has to ask.
+//
+// A dialog of this template's own rather than `confirm()`: a native confirm
+// cannot say WHICH task in the app's own vocabulary (TASK-0042), cannot carry
+// the 409 back onto the button the reader pressed, and in a page that is one
+// pane of a split reads as the browser talking, not the app.
+const eraseDlg = document.getElementById("erasedlg");
+const eraseTitle = document.getElementById("erasedlg-title");
+const eraseErr = document.getElementById("erasedlg-err");
+const eraseGo = document.getElementById("erasedlg-go");
+const eraseCancel = document.getElementById("erasedlg-cancel");
+/** The session the open dialog is ABOUT, captured at open time: `eraseKey`
+ *  tracks the URL and the reader can walk away (Back, a recent chat) with the
+ *  confirm still up — a POST must never be aimed at whatever the page moved on
+ *  to. */
+let eraseAsked = "";
+let eraseBusy = false;
+
+function eraseOpen() {
+  if (!eraseKey) return;
+  eraseAsked = eraseKey;
+  // The number is the name every other surface uses for this thing (the header
+  // corner, the List row, the calendar chip), and it is already fetched — so the
+  // question is asked in the reader's vocabulary when it is known. It FALLS BACK
+  // to the generic wording rather than to the session hash: a uuid in a delete
+  // confirm is a fact the reader cannot check anything against.
+  const num = taskIds.get(eraseAsked) || "";
+  eraseTitle.textContent = num ? "Delete " + num + "?" : "Delete this task?";
+  eraseErr.hidden = true;
+  eraseErr.textContent = "";
+  eraseGo.textContent = "Delete forever";
+  eraseGo.disabled = false;
+  eraseCancel.disabled = false;
+  eraseBusy = false;
+  eraseDlg.hidden = false;
+  // CANCEL takes the focus, not the destructive button: Enter on a freshly
+  // opened confirm must not be the answer "yes".
+  eraseCancel.focus({ preventScroll: true });
+}
+
+function eraseClose() {
+  // Never closes from under a request in flight: the reply is about to write
+  // either a navigation or an error into this box.
+  if (eraseBusy) return;
+  eraseDlg.hidden = true;
+  eraseAsked = "";
+  kebabBtn.focus({ preventScroll: true });
+}
+
+deleteOpt.addEventListener("click", () => {
+  if (!eraseKey) return;
+  kebabClose();
+  eraseOpen();
+});
+eraseCancel.onclick = eraseClose;
+eraseDlg.querySelector(".erasedlg-scrim").onclick = eraseClose;
+// Capture, and it stops the press, for the same reason the "what was sent"
+// popup's does: this template's other Escape handlers (the kebab, the annotate
+// modes, the composer) would otherwise all answer the same keystroke.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || eraseDlg.hidden) return;
+  e.stopPropagation();
+  eraseClose();
+}, true);
+
+eraseGo.addEventListener("click", async () => {
+  if (!eraseAsked || eraseBusy) return;
+  const key = eraseAsked;
+  eraseBusy = true;
+  eraseGo.disabled = true;
+  eraseCancel.disabled = true;
+  eraseGo.textContent = "Deleting\u2026";
+  eraseErr.hidden = true;
+  eraseErr.textContent = "";
+  try {
+    const res = await fetch("/api/tasks/erase", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({ key }),
+    });
+    if (!res.ok) {
+      // The 409 is a SENTENCE the server wrote ("that task is running — stop the
+      // run first, then delete") and it is the one thing the reader can act on,
+      // so it is shown verbatim rather than translated into a status code.
+      const body = await res.json().catch(() => ({}));
+      throw new Error((body && body.detail) || ("Could not delete \u2014 " + res.status));
+    }
+    // The session is GONE, so every cache this page keys by it is now a lie —
+    // and `archiveStates` is the one that decides whether the kebab offers these
+    // two items at all. Dropped before the navigation, because goHome's own
+    // showSession/applyArchiveOpt read them on the way out.
+    archiveStates.delete(key);
+    taskIds.delete(key);
+    eraseBusy = false;
+    eraseDlg.hidden = true;
+    eraseAsked = "";
+    // Back-to-chats IS the way out of a conversation — clears `session_id`,
+    // wipes the transcript, drops the run, re-reads the recent list (which no
+    // longer holds this session, because the transcript it was listed from is
+    // deleted) and lands on the landing composer. Its handler is CALLED rather
+    // than reimplemented here: a second teardown written beside it would be the
+    // half of it that drifts. No toast either — this page has none, and the
+    // receipt is a landing page the reader cannot come back from.
+    document.getElementById("back").onclick();
+  } catch (err) {
+    eraseBusy = false;
+    eraseGo.disabled = false;
+    eraseCancel.disabled = false;
+    eraseGo.textContent = "Delete forever";
+    eraseErr.textContent = (err && err.message) || String(err);
+    eraseErr.hidden = false;
+  }
+});
+
 function kebabClose() {
   kebabPop.hidden = true;
   kebabBtn.setAttribute("aria-expanded", "false");

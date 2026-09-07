@@ -40,6 +40,10 @@ this file is written around:
   work exactly as archive does, then tombstone the key so no listing shows it.
   The transcript is not touched (D306) and new activity in the conversation
   revives the row rather than running invisibly. Same section.
+* ``POST /api/tasks/erase`` — the same, and then the SESSION itself: the
+  transcript, its subagent sidecars, and every record this app keeps about it.
+  Nothing survives to revive, which is the whole difference from delete (D307).
+  Same section.
 
 **What a message is.** A user prompt in the transcript, or a scheduled entry.
 Those two overlap: a scheduled message that fired IS a prompt in the transcript
@@ -83,9 +87,11 @@ wider object) — the same weight of change as `POST /api/claude-sessions/triage
 next door, which carries no guard either: it moves a badge, it does not run
 code.
 """
+import glob
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 
@@ -2453,6 +2459,150 @@ def api_task_delete(patch: DeletePatch):
     tasks_watch.notify({key})
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": False}
+
+
+class ErasePatch(BaseModel):
+    key: str
+
+
+@router.post("/api/tasks/erase")
+def api_task_erase(patch: ErasePatch):
+    """Delete the task AND the Claude session behind it — through and through.
+
+    THIS DELIBERATELY GOES FURTHER THAN `/api/tasks/delete`, whose whole promise
+    is the opposite one: that verb cancels the work and tombstones the key while
+    the TRANSCRIPT IS NOT TOUCHED (D306), so the conversation is still there to
+    open and later activity in it revives the row. That is right for the
+    Calendar's soft delete and wrong for what the user asked for (Akshil,
+    2026-09-07): deleting a task "through and through: deleting the claude
+    session itself". Both verbs therefore exist, the softer one unchanged, and
+    this one is D307 — the new decision that a task's delete may destroy the
+    session, because the user said so about this task, once, in a modal that
+    says it cannot be undone.
+
+    THE SAME FIRST HALVES AS DELETE, for the reasons documented there and not
+    repeated here: the 409 while a run is in flight (a live turn cannot be
+    cancelled, and erasing the transcript under a writing process is worse than
+    hiding it), then `_every_rule_behind` before the task's own pending entries
+    so a rule cannot mint one back.
+
+    WHAT COMES OFF THE DISK, and why each is plural. `<session_id>.jsonl` is
+    globbed across EVERY project dir rather than read off the row's own path,
+    because copy-on-resume can leave the same session id under two encoded cwds
+    and erasing one of them would leave the conversation readable — and the row
+    revivable — from the other. Beside each transcript, the sibling DIRECTORY
+    `<session_id>/` holds the subagent sidecars Claude Code writes for that
+    session; it is the same conversation and goes with it (`shutil.rmtree`).
+    Everything is realpath-checked against PROJECTS_DIR and anything landing
+    outside is SKIPPED, not raised on: this is the one endpoint that removes
+    trees, so a symlinked project dir must not be able to aim it at ~.
+
+    WHAT COMES OUT OF STATE: the triage record WHOLE (`forget_triage`, not
+    `clear_triage` — there is no session left for a note or a tag to be about),
+    and the read marks (`tasks_store.forget_session`). The task's NUMBER is the
+    one thing kept: allocation is "max seen plus one" read straight off
+    task_ids.json, so the mapping stays as a reservation and a reused TASK-007
+    can never point at somebody else's work. See `forget_session`.
+
+    AND THE TOMBSTONE ANYWAY (`mark_deleted`). Nothing should be left to
+    revive, but a straggler — a scheduled entry that lands between the cancel
+    and the erase, a watcher mid-lap holding the file it just read — must not
+    be able to put the row back for a poll. The tombstone costs a few bytes and
+    closes that window; the same reasoning delete's docstring gives for it.
+    """
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+
+    _place(task)
+    row = _row(task, "", sessions._load_state("triage.json"),
+               tasks_store.read_state(), time.time(),
+               schedule.busy_sessions(schedule.list_entries()), [])
+    # Both running words, for the reason api_task_delete's guard documents —
+    # and one more here: what is refused is not a hidden row but a deleted
+    # file, under a process still writing to it.
+    if row["status"] in ("in_progress", "needs_attention"):
+        raise HTTPException(
+            status_code=409,
+            detail="that task is running — stop the run first, then delete")
+
+    cancelled = 0
+    for template_id in _every_rule_behind(key):
+        if schedule.cancel(template_id) is not None:
+            cancelled += 1
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        entry_id = str(entry.get("id") or "")
+        if entry_id and schedule.cancel(entry_id) is not None:
+            cancelled += 1
+
+    removed, erased = 0, False
+    session_id = task["session_id"]
+    if session_id:
+        removed, erased = _erase_session_files(session_id, task["path"])
+        sessions.forget_triage(session_id)
+        tasks_store.forget_session(session_id)
+
+    tasks_store.mark_deleted(key)
+    tasks_watch.notify({key})
+    return {"ok": True, "key": key, "cancelled": cancelled,
+            "erased_transcript": erased, "removed": removed}
+
+
+def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool]:
+    """Take one session off the disk: (how many things went, did a transcript).
+
+    Every copy of `<session_id>.jsonl` under any project dir, the sibling
+    `<session_id>/` sidecar dir beside each, and the row's own path when it
+    names something the glob did not reach. `glob.escape` because a session id
+    is not guaranteed to be free of glob metacharacters, and one that was would
+    otherwise match — or miss — the wrong file.
+
+    NOTHING OUTSIDE PROJECTS_DIR IS TOUCHED: each candidate is realpathed and
+    silently skipped unless it is under the realpathed root. A skip is not an
+    error and never raises — a project dir that is a symlink out of the tree is
+    somebody's real setup, and the answer there is "erase what is genuinely
+    Claude's", not a 500 or, far worse, an rmtree in the wrong place. OSError
+    is logged and counted as not-removed for the same reason.
+    """
+    root = os.path.realpath(sessions.PROJECTS_DIR)
+    pattern = glob.escape(session_id)
+    targets = glob.glob(os.path.join(sessions.PROJECTS_DIR, "*",
+                                     pattern + ".jsonl"))
+    # The bare-name glob is for the SIDECAR DIR only: a plain file that happens
+    # to carry a session id as its whole name is not Claude's and stays.
+    targets += [d for d in glob.glob(os.path.join(sessions.PROJECTS_DIR, "*", pattern))
+                if os.path.isdir(d)]
+    if path:
+        targets.append(path)
+
+    removed, erased = 0, False
+    seen: set[str] = set()
+    for target in targets:
+        resolved = os.path.realpath(target)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved != root and not resolved.startswith(root + os.sep):
+            logger.warning("erase: refusing %s — outside %s", resolved, root)
+            continue
+        try:
+            if os.path.isdir(resolved):
+                shutil.rmtree(resolved)
+            elif os.path.exists(resolved):
+                os.remove(resolved)
+                erased = erased or resolved.endswith(".jsonl")
+            else:
+                continue
+        except OSError:
+            logger.warning("erase: could not remove %s", resolved, exc_info=True)
+            continue
+        removed += 1
+    return removed, erased
 
 
 def _every_rule_behind(key: str) -> list[str]:

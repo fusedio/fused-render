@@ -2931,6 +2931,38 @@ export function deleteTask(
   }>("/api/tasks/delete", { key });
 }
 
+// Taking the SESSION away for good (Akshil, 2026-09-07). Delete's older
+// sibling and the one verb on this page that is not undoable: `/api/tasks/delete`
+// writes a tombstone and leaves the conversation on disk (D306), this one
+// removes the transcript itself — `~/.claude/projects/<slug>/<session_id>.jsonl`
+// and the sidecar directory beside it — along with the triage/read/task-id
+// bookkeeping that points at it, then tombstones the row like delete does.
+//
+// `erased_transcript` is therefore TRUE here where delete always answers false,
+// and `removed` counts the files that actually went. The task's NUMBER is still
+// never reallocated: the max-seen rule survives the session it was minted for.
+//
+// Refused with a 409 while the task is running, in delete's own words ("that
+// task is running — stop the run first, then delete"): erasing a transcript out
+// from under a live `claude --resume` is the one thing this verb must never do.
+export function eraseTask(
+  key: string,
+): Promise<{
+  ok: boolean;
+  key: string;
+  cancelled: number;
+  erased_transcript: boolean;
+  removed: number;
+}> {
+  return postJson<{
+    ok: boolean;
+    key: string;
+    cancelled: number;
+    erased_transcript: boolean;
+    removed: number;
+  }>("/api/tasks/erase", { key });
+}
+
 // Every scheduled message in a time window, which is the one question the
 // listing above cannot answer: `Task.messages` holds only the three most recent,
 // and a calendar draws a week. Without this the grid under-draws — a task whose

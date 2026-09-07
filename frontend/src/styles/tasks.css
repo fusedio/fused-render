@@ -973,6 +973,22 @@ button.tasks-caret,
   border-color: color-mix(in srgb, var(--error) 32%, transparent);
 }
 
+/* Delete for good. The row's ONE irreversible control, and the only other one
+   here that goes red — Cancel's exact hover skin, deliberately, because the two
+   are the page's only destructive verbs and a second red would say there are
+   two kinds of danger. MUTED AT REST like every sibling: it prefixes the
+   "Folder missing" sentence, and a bin that arrived already red would out-shout
+   the words it belongs to and read as the row's headline. `--error` is the token
+   `.tasks-row-missing` itself uses, so the glyph and the sentence it sits in
+   front of light up in one colour. */
+.tasks-act--delete:hover:not(:disabled),
+.tasks-act--delete:focus-visible:not(:disabled),
+.prefs-section .tasks-act--delete:hover:not(:disabled) {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 32%, transparent);
+}
+
 /* Run now / Re-run. Same group, same size, same silence at rest as Edit and
    Cancel — the hue only arrives under the pointer, and it is the page's
    `--activity` blue rather than Cancel's red: this one STARTS something. */

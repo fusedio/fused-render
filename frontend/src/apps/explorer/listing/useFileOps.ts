@@ -18,11 +18,13 @@ import {
   gitRepoInfo,
   statPath,
   revealPath,
+  getConfig,
 } from "@platform/lib/api";
 import type { ArchiveFormat } from "@platform/lib/api";
 import {
   normDir,
   join,
+  dirname,
   freeArchivePath,
   freeDuplicatePath,
   freePastePath,
@@ -38,7 +40,7 @@ import {
   claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
-import { crumbMenu, folderBarMenu } from "@apps/explorer/lib/bar-menus";
+import { crumbMenu, folderBarMenu, withFolderRename, type RenameBaseGuard } from "@apps/explorer/lib/bar-menus";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import {
@@ -89,6 +91,25 @@ export function useFileOps({
   // this folder view.
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
+
+  // Home + mounts-root, for backgroundMenu's "may THIS folder be renamed?"
+  // guard (bar-menus.canRenameBase). Fetched once and starts empty, which the
+  // guard reads as "fail closed" — no Rename item flashes on before /api/config
+  // answers, well before a user's first right-click in practice.
+  const [renameGuard, setRenameGuard] = useState<RenameBaseGuard>({});
+  useEffect(() => {
+    let live = true;
+    getConfig().then((c) => {
+      if (!live) return;
+      setRenameGuard({
+        home: c.home.replace(/\\/g, "/"),
+        mountsRoot: c.mounts_root.replace(/\\/g, "/"),
+      });
+    }, () => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   // Run a mutating fs call, then refetch on success or surface its error as a
   // toast. The dir-watch socket also refetches, but that lags 300 ms and only
@@ -494,6 +515,32 @@ export function useFileOps({
       },
     });
 
+  // Rename the CURRENT folder itself — the crumb bar / folder background
+  // menu's "Rename…" (gated by canRenameBase, see backgroundMenu below), not
+  // a row inside it. No `selectStem`: a folder name has no extension to
+  // spare, so the whole name is selected, unlike startRename's file case.
+  // Navigates to the new path on success (rather than pendingSelectRef, which
+  // only re-anchors a ROW in a listing that stays mounted) so the crumb bar —
+  // and everything else keyed on this URL — picks up the new name.
+  const startRenameFolder = (dir: string) =>
+    setDialog({
+      kind: "prompt",
+      title: "Rename",
+      initial: basename(dir),
+      confirmLabel: "Rename",
+      onConfirm: (name) => {
+        if (name === basename(dir)) return;
+        if (rejectName(name)) return;
+        const dst = join(dirname(dir), name);
+        run(async () => {
+          await renameEntry(dir, dst);
+          recordFsOp({ kind: "rename", pairs: [{ from: dir, to: dst }] });
+          remapClipboardPath(dir, dst);
+          navigateUrl(urlForFsPath(dst, location.search));
+        }, { verb: "rename", name: basename(dir) });
+      },
+    });
+
   // Hard delete, confirmed. Plural-aware: one row still names it (and says
   // whether it's a folder), several are counted.
   const startDelete = (allRows: RowCtx[]) => {
@@ -708,29 +755,38 @@ export function useFileOps({
   };
 
   // Menu for the empty listing background — operates on the current folder.
-  // Finder order: New Folder before New File.
-  const backgroundMenu = (): MenuEntry[] => [
-    { label: "New Folder…", icon: MenuIcons.newFolder, onClick: () => startNewFolder(base) },
-    { label: "New File…", icon: MenuIcons.newFile, onClick: () => startNewFile(base) },
-    "separator",
-    { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(base) },
-    "separator",
-    { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
-    { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
-    // Beside Reveal: both are "this folder, but elsewhere". Here the folder is
-    // the one being listed, so the new tab opens on the current directory.
-    {
-      label: "Open in New Tab",
-      icon: MenuIcons.newTab,
-      onClick: () => doOpenInNewTab(normDir(base)),
-    },
-    { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(normDir(base)) },
-    {
-      label: "Copy Claude session command",
-      icon: MenuIcons.openWith,
-      onClick: () => doOpenInClaude(normDir(base), true, normDir(base)),
-    },
-  ];
+  // Finder order: New Folder before New File. "Rename…" leads the list
+  // (mirroring fileBarMenu's own item-then-separator opener) whenever
+  // canRenameBase allows renaming THIS folder — root, home and mount roots
+  // never get it (withFolderRename, bar-menus.ts).
+  const backgroundMenu = (): MenuEntry[] =>
+    withFolderRename(
+      [
+        { label: "New Folder…", icon: MenuIcons.newFolder, onClick: () => startNewFolder(base) },
+        { label: "New File…", icon: MenuIcons.newFile, onClick: () => startNewFile(base) },
+        "separator",
+        { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(base) },
+        "separator",
+        { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
+        { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
+        // Beside Reveal: both are "this folder, but elsewhere". Here the folder is
+        // the one being listed, so the new tab opens on the current directory.
+        {
+          label: "Open in New Tab",
+          icon: MenuIcons.newTab,
+          onClick: () => doOpenInNewTab(normDir(base)),
+        },
+        { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(normDir(base)) },
+        {
+          label: "Copy Claude session command",
+          icon: MenuIcons.openWith,
+          onClick: () => doOpenInClaude(normDir(base), true, normDir(base)),
+        },
+      ],
+      normDir(base),
+      renameGuard,
+      () => startRenameFolder(normDir(base))
+    );
 
   // The folder's menu as the CRUMB BAR offers it: this folder's own actions plus
   // the splits — item for item what the middle panel's header `⋮` shows, because
@@ -779,6 +835,7 @@ export function useFileOps({
     doDuplicate,
     doTrash,
     startRename,
+    startRenameFolder,
     startNewFolder,
     rowMenu,
     backgroundMenu,

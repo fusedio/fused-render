@@ -42,6 +42,8 @@ import {
   archiveTask,
   unarchiveTask,
 } from "@platform/lib/api";
+import { pushToast } from "@platform/lib/toast";
+import { EraseTaskModal } from "./EraseTaskModal";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useMarginWheel } from "./useMarginWheel";
@@ -275,6 +277,25 @@ export const ICON_UNARCHIVE = icon(
     <path d="M20 8v11a2 2 0 0 1-2 2h-2" />
     <path d="m9 15 3-3 3 3" />
     <path d="M12 12v9" /></>, 13);
+// Taking it away for good. lucide `trash-2`: a lidded bin with a handle and two
+// bars in the body.
+//
+// A BIN, NOT AN ✕, and deliberately not a variation on the archive box above:
+// Archive and Delete sit within a few pixels of each other on the Cards wall's
+// door strip, and the whole reason the archive pair share a shape is so a reader
+// can tell the two DIRECTIONS of one reversible verb apart at a glance. The
+// irreversible verb must therefore share nothing with them — different
+// silhouette, and (tasks.css / task-cards.css) the only glyph on this page that
+// goes red under the pointer besides Cancel.
+//
+// 12px, the row's mark size, so it sits on the "Folder missing" line it prefixes
+// rather than out-weighing the words it belongs to.
+export const ICON_TRASH = icon(
+  <><path d="M3 6h18" />
+    <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+    <path d="M6 6v14a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6" />
+    <path d="M10 11v6" />
+    <path d="M14 11v6" /></>, 12);
 
 // ---- leaf components ---------------------------------------------------------
 
@@ -1718,6 +1739,11 @@ function TaskNode({
   // the confirmation — instead of the reveal. Leave and return, and the hover
   // offers the (now opposite) action again, exactly like any other row.
   const [refiled, setRefiled] = useState(false);
+  // The delete target, or null. LOCAL to the row (design.md §2: "each surface
+  // owns its own dialog"): the modal is one task's question, the row already
+  // holds that task, and lifting the state to the List would hand every row a
+  // prop it spends once.
+  const [erasing, setErasing] = useState(false);
 
   const runNow = async (intent: TaskRunIntent) => {
     setActing(true);
@@ -2405,6 +2431,32 @@ function TaskNode({
             message"). In the error colour, because it is the one row-level fact
             here that means "this cannot be opened"; the path rides the hint and
             the row's press (activate) raises a toast. */}
+        {/* DELETE FOR GOOD, and only here (design.md §2). A row whose folder is
+            gone is the one row on this page with nothing left to do: it cannot
+            be opened, its Explorer door is dead and the toast its press raises
+            only says so again. So the trash sits as the PREFIX of the sentence
+            that says why — inside the same red family, immediately before the
+            words — rather than in the hover-revealed action group at the row's
+            other end, where it would be one flick from Run now.
+
+            `.tasks-act` all the same, so it is silent until the row is pointed
+            at and reachable by keyboard (tasks.css), and `--delete` is the only
+            thing that reddens it. The press stops here: the row's own activate
+            would raise the missing-folder toast over the dialog. */}
+        {folderMissing && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--delete"
+            aria-label={`Delete ${task.task_id} forever`}
+            data-hint="Delete task forever"
+            onClick={(e) => {
+              e.stopPropagation();
+              setErasing(true);
+            }}
+          >
+            {ICON_TRASH}
+          </button>
+        )}
         {folderMissing && (
           <span
             className="tasks-row-missing"
@@ -2749,6 +2801,20 @@ function TaskNode({
             </p>
           )}
         </div>
+      )}
+      {erasing && (
+        <EraseTaskModal
+          task={task}
+          onClose={() => setErasing(false)}
+          onDone={() => {
+            setErasing(false);
+            // The page, not the row: the row this was pressed on is the thing
+            // that just went, so the receipt cannot live on it (the same reason
+            // Unarchive's sentence goes to the page).
+            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            onReload?.();
+          }}
+        />
       )}
     </div>
   );
