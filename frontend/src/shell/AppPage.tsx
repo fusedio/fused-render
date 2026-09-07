@@ -76,7 +76,10 @@ import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { pushToast } from "@platform/lib/toast";
-import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import {
+  announceTasksChanged,
+  CURRENT_APPS_CHANGED_EVENT,
+} from "@platform/lib/tasksChanged";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { Button } from "@platform/shadcn/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
@@ -260,6 +263,16 @@ export default function AppPage({
   useEffect(() => {
     setIconHref(null);
     loadIcon();
+  }, [loadIcon]);
+  // The icon can also be changed from the OTHER end of the same app — the
+  // sidebar's Projects glyph, whose picker writes the same file while this
+  // page is the one on screen. It pokes the desk on a successful write
+  // (applyIconPick), so the poke is the signal to re-read: without this the
+  // header's mark and the tab favicon both kept the old glyph until the next
+  // navigation, and only a pick made HERE ever looked refreshed.
+  useEffect(() => {
+    window.addEventListener(CURRENT_APPS_CHANGED_EVENT, loadIcon);
+    return () => window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, loadIcon);
   }, [loadIcon]);
   useFavicon(iconHref);
 
