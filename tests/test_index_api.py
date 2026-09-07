@@ -222,6 +222,68 @@ def test_stats_on_a_never_built_index(home, tmp_path):
     assert body["rows"] == 0
 
 
+# -- the read-concurrency semaphore ---------------------------------------------
+#
+# `_READ_CONCURRENCY` (routers/index.py) bounds how many of the four
+# expensive read routes may be running their duckdb call at once — without it,
+# `asyncio.to_thread`'s default executor (min(32, cpu+4) workers) would let up
+# to 32 `search_threads()`-capped pools run simultaneously, most of the
+# whole-machine exposure `search_threads` exists to remove.
+
+def test_read_routes_bound_how_many_run_their_duckdb_call_at_once(home, tmp_path,
+                                                                   monkeypatch):
+    """Six concurrent `/api/index/stats` requests, each blocked on a real
+    `threading.Event` inside the (monkeypatched) duckdb call: peak concurrency
+    must never exceed the semaphore's width, and every request must still
+    eventually complete rather than deadlock behind it.
+
+    Driven through `httpx.AsyncClient` + `ASGITransport` on ONE event loop
+    (`asyncio.run`, `asyncio.gather`) rather than a thread pool of sync
+    `TestClient` calls: `asyncio.Semaphore` binds to whichever loop first
+    awaits it, and a thread pool of separately-looped sync clients trips that
+    the moment two of them touch the same module-level semaphore."""
+    import threading
+
+    import httpx
+
+    lock = threading.Lock()
+    state = {"concurrent": 0, "peak": 0}
+    release = threading.Event()
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        with lock:
+            state["concurrent"] += 1
+            state["peak"] = max(state["peak"], state["concurrent"])
+        release.wait(timeout=5)
+        with lock:
+            state["concurrent"] -= 1
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            tasks = [asyncio.create_task(client.get("/api/index/stats"))
+                     for _ in range(6)]
+            # Give the pile-up a moment to reach its ceiling before releasing —
+            # long enough on any CI box, short enough not to matter if it isn't.
+            for _ in range(50):
+                with lock:
+                    if state["concurrent"] >= 2:
+                        break
+                await asyncio.sleep(0.02)
+            assert state["peak"] <= 2
+            release.set()
+            return await asyncio.gather(*tasks)
+
+    responses = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses)
+    assert state["peak"] == 2  # the ceiling was actually reached, not just respected
+
+
 # -- config --------------------------------------------------------------------
 
 def test_config_round_trips_roots_and_ignore(home, tmp_path):

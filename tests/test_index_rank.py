@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from fused_render.index.cancel import Cancelled
 from fused_render.index.rank import fuzzy_match, max_span, rank_entries
 
 FIXTURE = json.loads(
@@ -117,3 +118,63 @@ def test_a_deep_exact_name_match_still_wins_over_a_shallow_fuzzy_one():
     deep = "a/b/c/d/e/f/g/h/exact-match.txt"
     shallow = "s/fuzzy-only.txt"
     assert _rels("exact-match.txt", [shallow, deep])[0] == deep
+
+
+# -- cancellation: `token` hears the scoring loop, not just the boundaries ---
+#
+# `search_ranked` (query.py) already checked its token immediately BEFORE
+# calling `rank_entries`; the gap this closes is INSIDE the loop, which is
+# pure Python holding the GIL — no duckdb call is in flight for
+# `con.interrupt()` to reach once scoring starts. `Cancelled` is Python-only
+# plumbing and must never touch scoring/ordering (rank-parity.json stays the
+# authority), so these tests only assert on *whether* and *when* it raises,
+# never on the ranking itself.
+
+class _CountingToken:
+    """A fake CancelToken: raises `Cancelled` once `check()` has been called
+    more than `raise_after` times, so a test can pin exactly which check call
+    trips it."""
+
+    def __init__(self, raise_after):
+        self.raise_after = raise_after
+        self.calls = 0
+
+    def check(self):
+        self.calls += 1
+        if self.calls > self.raise_after:
+            raise Cancelled()
+
+
+def test_rank_entries_ignores_a_token_that_never_cancels():
+    token = _CountingToken(raise_after=10_000)
+    entries = [{"rel": f"dir/file{i}.txt"} for i in range(600)]
+    ranked = rank_entries("file", entries, token=token)
+    assert len(ranked) == 600
+    # Checked periodically (every 256) AND once before the final sort — for
+    # 600 entries that's checks at i=0, 256, 512, plus the pre-sort one.
+    assert token.calls == 4
+
+
+def test_rank_entries_raises_cancelled_mid_loop_not_only_at_the_end():
+    """The check the search box actually needs: entries far past 256 are
+    never scored once the token trips, proving this is a genuine mid-loop
+    stop and not equivalent to a single check before/after the whole pass."""
+    token = _CountingToken(raise_after=1)  # survives the i=0 check, not i=256
+    entries = [{"rel": f"dir/file{i}.txt"} for i in range(600)]
+    with pytest.raises(Cancelled):
+        rank_entries("file", entries, token=token)
+    assert token.calls == 2  # i=0, then i=256 — no third (pre-sort) check
+
+
+def test_rank_entries_cancelled_before_the_first_entry_scores_nothing():
+    token = _CountingToken(raise_after=0)
+    entries = [{"rel": "file.txt"}]
+    with pytest.raises(Cancelled):
+        rank_entries("file", entries, token=token)
+
+
+def test_rank_entries_with_no_token_behaves_exactly_as_before():
+    """`token=None` is the default every EXISTING caller still uses — this
+    pins that adding the parameter changed nothing for them."""
+    entries = [{"rel": f"dir/file{i}.txt"} for i in range(600)]
+    assert rank_entries("file", entries) == rank_entries("file", entries, token=None)

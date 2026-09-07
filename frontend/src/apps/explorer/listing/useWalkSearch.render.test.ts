@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { IndexRankResult } from "@platform/lib/api";
 import { Clock, Deferred, flush, renderHook } from "@apps/explorer/listing/hook-harness";
+import { INSTANT_DEBOUNCE_MS } from "@platform/lib/instant-search";
 
 // --- the module boundary ------------------------------------------------------
 const rankCalls: { root: string; q: string; reply: Deferred<IndexRankResult> }[] = [];
@@ -64,10 +65,17 @@ beforeEach(() => {
 });
 afterEach(() => clock.restore());
 
-/** Mount the hook and type `q` into it. */
+/** Mount the hook and type `q` into it.
+ *
+ * `useWalkSearch` debounces every query — including the first, now that
+ * instant-search dropped its leading-edge throttle for a plain trailing
+ * debounce — so this helper advances the fake clock past that wait itself.
+ * A test driving a SECOND query goes through `setQuery` directly and
+ * advances the clock on its own, same as before. */
 async function search(q: string, fsPath = "/d") {
   const box = renderHook((p: string, r: number) => useWalkSearch(p, r, false), fsPath, 0);
   await flush(() => box.current().setQuery(q));
+  await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
   return box;
 }
 
@@ -96,7 +104,16 @@ describe("an uncovered folder: scan, poll, rows", () => {
     expect(scanCalls).toHaveLength(1); // asked ONCE, however many polls
 
     // 3. rows land and the polling stops
+    //
+    // Unlike step 2 (where the re-ask fired ON THIS SAME advance, because a
+    // debounce timer from the polling flip a moment earlier was ALREADY
+    // pending and got swept up with the poll tick), nothing was pending
+    // going into this tick: the previous reply's `setPolling(true)` was a
+    // same-value no-op (already true), so the poll timer here only bumps
+    // `pollTick` — the fetch effect it triggers still owes its own trailing
+    // debounce before it actually asks.
     await flush(() => clock.advance(SCAN_POLL_MS));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     await flush(() => rankCalls[2].reply.resolve(
       answer({ hits: [hit("a/widget.md")], total: 1 })));
     expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["a/widget.md"]);
@@ -147,7 +164,7 @@ describe("what the rows are allowed to arm", () => {
     expect(box.current().rowsAnswerQuery).toBe(true);
 
     await flush(() => box.current().setQuery("readme"));
-    await flush(() => clock.advance(200)); // past the trailing debounce
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // past the trailing debounce
     // the previous query's rows are still on screen — deliberately, the list
     // is never blanked — and they must not arm Enter or auto-selection.
     expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["README.md"]);
@@ -219,7 +236,7 @@ describe("running out of patience with a scan", () => {
 
     // A new query, and the scan is still running.
     await flush(() => box.current().setQuery("gadget"));
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     const fresh = rankCalls[rankCalls.length - 1];
     expect(fresh.q).toBe("gadget");
     await flush(() => fresh.reply.resolve(
@@ -252,7 +269,7 @@ describe("closing the box mid-scan", () => {
 
     await flush(() => box.current().setQuery(""));   // Escape
     await flush(() => box.current().setQuery("widget")); // and back
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
 
     // A fresh episode: 35 more ticks is nowhere near a ceiling of 80, but it
     // was past one that started at 50.
@@ -285,7 +302,7 @@ describe("an answer served from the memo", () => {
 
     // a different query is asked and answered at the NEW generation
     await flush(() => box.current().setQuery("zeta"));
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     await flush(() => rankCalls[rankCalls.length - 1].reply.resolve(
       answer({ hits: [hit("zeta.md")], total: 1 })));
     expect(box.current().behind).toBe(false);
@@ -293,7 +310,7 @@ describe("an answer served from the memo", () => {
     // ...and now back to the memoised one, whose rows are the OLD generation
     const asked = rankCalls.length;
     await flush(() => box.current().setQuery("alpha"));
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls.length).toBe(asked); // answered from memory, as intended
     expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["alpha.md"]);
     expect(box.current().behind).toBe(true);
@@ -311,7 +328,7 @@ describe("a completed scan", () => {
     // a scan completes: lib/index-status turns that into a lifecycle bump
     await flush(() => freshness.noteIndexLifecycle());
     // ...which re-asks, after the same trailing coalesce any other query pays.
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
     await flush(() => rankCalls[1].reply.resolve(
       answer({ hits: [hit("a/widget.md")], total: 1 })));

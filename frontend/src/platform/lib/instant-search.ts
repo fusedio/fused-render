@@ -12,17 +12,29 @@
 //
 // The rules, which are the reason this file exists at all:
 //
-//   * the FIRST keystroke after a pause fires immediately (`searchDelay`
-//     returns 0 on the leading edge). The debounce coalesces a burst; it does
-//     not delay the first request, which answers in ~40-50 ms.
+//   * every keystroke waits `INSTANT_DEBOUNCE_MS` — a normal TRAILING
+//     debounce. This file used to fire the first keystroke after a pause
+//     immediately (a leading-edge throttle keyed on when the last request was
+//     ISSUED), which sounds responsive but is backwards: the first keystroke
+//     after any gap is always the shortest query of the run, which is the
+//     broadest and most expensive one to answer — so the request most worth
+//     delaying was the one guaranteed to fire with zero delay.
 //   * a pending indicator waits `PENDING_INDICATOR_MS`, so the common fast
 //     answer never flashes one.
 //   * a backspace is answered from memory (`QueryMemo`), because deleting a
 //     character walks back through queries that were answered seconds ago.
 
-// How long a burst of keystrokes coalesces into one request. A TRAILING window
-// only — see `searchDelay`.
-export const INSTANT_DEBOUNCE_MS = 120;
+// How long a burst of keystrokes coalesces into one request, and how long
+// EVERY request — including the first after a pause — now waits before
+// firing. A plain trailing debounce: each call site's effect already re-runs
+// on every query change and its cleanup already clears the pending timer, so
+// an unconditional wait of this many ms IS a correct debounce with no
+// separate leading-edge case to track. 300, not a shorter value tuned to a
+// single selective query's ~40-50ms round trip: with the leading edge gone,
+// EVERY keystroke now pays this wait before its request even fires, so it is
+// chosen for what a sustained typist feels while holding a key down, not for
+// the fastest possible single answer.
+export const INSTANT_DEBOUNCE_MS = 300;
 
 // How long a request may run before the box admits to being busy. Under this,
 // the answer arrives before a spinner would have been readable, and painting
@@ -47,26 +59,6 @@ export const QUERY_MEMO_LIMIT = 20;
 // glance: this is a decision to throw away information, not just to admit a
 // wait is happening.
 export const STALE_CLEAR_MS = 600;
-
-/**
- * Milliseconds to wait before issuing the request for a freshly typed query.
- *
- * ZERO on the leading edge, and that is the point. The debounce exists to
- * coalesce fast typing, not to delay the first request: a selective query
- * answers in ~40 ms, and parking that behind a timer is exactly how a box that
- * does less total work ends up feeling more hesitant. So the first keystroke
- * after any pause fires now, and only a burst waits — for the REMAINDER of the
- * window, so a fast typist's requests land one debounce apart rather than one
- * per letter.
- */
-export function searchDelay(
-  now: number,
-  lastIssuedAt: number,
-  debounceMs: number = INSTANT_DEBOUNCE_MS,
-): number {
-  const since = now - lastIssuedAt;
-  return since >= debounceMs ? 0 : debounceMs - since;
-}
 
 /**
  * The last few `query -> answer` pairs, so backspacing is instant.

@@ -36,6 +36,20 @@ def compaction_threads() -> int:
     return max(1, min(MAX_COMPACTION_THREADS, (os.cpu_count() or 4) // 4))
 
 
+# Cores an interactive index read (stats/search/rank/guarded query) may use.
+# These are the mirror image of `compaction_threads` above: a bare
+# `duckdb.connect()` defaults to one thread per core, so an un-capped
+# per-keystroke query is allowed the whole machine — the polite background
+# job was throttled and the impatient interactive one was not. Half rather
+# than a quarter, because a user IS waiting on these; still capped so a burst
+# of typing cannot saturate the box.
+MAX_SEARCH_THREADS = 4
+
+
+def search_threads() -> int:
+    return max(1, min(MAX_SEARCH_THREADS, (os.cpu_count() or 4) // 2))
+
+
 def background_connect():
     """An in-memory DuckDB for the scan side, capped to `compaction_threads`."""
     import duckdb

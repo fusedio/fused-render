@@ -202,6 +202,70 @@ def test_the_compaction_connection_caps_its_threads():
     assert 1 <= got <= store.MAX_COMPACTION_THREADS
 
 
+def test_search_threads_is_half_the_machine_capped():
+    """The interactive counterpart to `compaction_threads` — see its
+    docstring in store.py. Half rather than a quarter (a user IS waiting on
+    these), still capped so a burst of typing cannot saturate the box."""
+    got = store.search_threads()
+    assert 1 <= got <= store.MAX_SEARCH_THREADS
+    cpu = os.cpu_count() or 4
+    assert got == max(1, min(store.MAX_SEARCH_THREADS, cpu // 2))
+    # The whole point: half the machine is allowed at least as much as a
+    # quarter, on any core count, so the interactive path is never MORE
+    # throttled than the background one.
+    assert got >= store.compaction_threads()
+
+
+def test_every_interactive_read_connection_caps_its_threads(home, tmp_path, monkeypatch):
+    """`stats`, `search_under`, `search_ranked` (query.py) and guarded_query's
+    `_connect` each open a bare `duckdb.connect()` — this pins that all four
+    apply `search_threads()` rather than defaulting to one thread per core."""
+    from fused_render.index import guarded_query
+    from fused_render.index.query import search_ranked, search_under, stats
+
+    root = str(home / "r")
+    cfg = _prime_index(tmp_path, root, n=100)
+
+    # Every caller here closes its connection in a `finally` before this test
+    # ever gets to inspect it, so the setting is read the moment the
+    # connection is opened — immediately after `duckdb.connect()`, which is
+    # also the ONLY point `guarded_query._connect` allows it (its `SET
+    # threads` has to run before the lockdown, same as production code).
+    seen_threads = []
+    import duckdb as real_duckdb
+    real_connect = real_duckdb.connect
+
+    class _SpyingConnection:
+        """Delegates everything to the real connection — `DuckDBPyConnection`
+        methods are native and read-only, so this is a thin Python-level
+        proxy rather than a monkeypatched instance method."""
+
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *ea, **ekw):
+            if "SET threads" in sql:
+                seen_threads.append(sql)
+            return self._con.execute(sql, *ea, **ekw)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def spying_connect(*a, **kw):
+        return _SpyingConnection(real_connect(*a, **kw))
+
+    monkeypatch.setattr(real_duckdb, "connect", spying_connect)
+
+    stats(cfg, root=root)
+    search_under(cfg, root)
+    search_ranked(cfg, root, q="alpha")
+    guarded_query._connect(cfg)
+
+    assert len(seen_threads) == 4
+    for sql in seen_threads:
+        assert sql == f"SET threads TO {store.search_threads()}"
+
+
 # -- the regression ----------------------------------------------------------
 
 def _tree(root, n_dirs=400, per_dir=100):

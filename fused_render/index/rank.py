@@ -194,20 +194,34 @@ def _sort_key(hit: dict):
             hit["rel"].lower())
 
 
-def rank_entries(query: str, entries) -> list:
+def rank_entries(query: str, entries, token=None) -> list:
     """Score and order `entries` (dicts with `rel`, and whatever else they
     carry) against `query`, best first.
 
     Each returned hit is the entry's own keys plus `positions`, `score`,
     `longest_run`, `tier` and `depth`. An empty (or all-whitespace) query ranks
     nothing — a search box with nothing typed in it has no results, not all of
-    them."""
+    them.
+
+    `token` (index/cancel.CancelToken), when given, is polled periodically
+    inside the loop rather than once per entry — up to RANK_CANDIDATE_CAP
+    (2000) entries times a `threading.Lock` acquisition per `check()` would
+    itself become a cost worth avoiding, and this loop is pure Python holding
+    the GIL, so it is the one place in the rank path `con.interrupt()` cannot
+    reach: no database call is in flight once scoring starts, so without this
+    an abandoned keystroke paid for its ranking in full AND starved the event
+    loop that runs the disconnect watcher, delaying cancellation of every
+    OTHER in-flight request too. This is Python-only plumbing — it must never
+    influence scoring, comparison, or ordering, which stay pinned byte-for-byte
+    to the browser ranker by tests/fixtures/rank-parity.json."""
     if not query.strip():
         return []
     q = query.lower()
     show_hidden = query_wants_hidden(query)
     hits = []
-    for entry in entries:
+    for i, entry in enumerate(entries):
+        if token is not None and i % 256 == 0:
+            token.check()
         rel = entry["rel"]
         if not show_hidden and is_hidden_rel(rel):
             continue
@@ -227,5 +241,7 @@ def rank_entries(query: str, entries) -> list:
                      "longest_run": m["longest_run"],
                      "tier": _name_tier(name, name_start, q, m["positions"]),
                      "depth": depth})
+    if token is not None:
+        token.check()
     hits.sort(key=_sort_key)
     return hits

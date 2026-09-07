@@ -26,8 +26,8 @@
 //     keeps the corpus hold and the query-tagged result hold it always had.
 //   * the INDEX answers per query, so a keystroke costs a round trip. Every
 //     rule phase 1 established for the home page's box applies here for the
-//     same reason (platform/lib/instant-search): fire on the leading edge,
-//     coalesce a burst, abort rather than queue, answer a backspace from
+//     same reason (platform/lib/instant-search): a trailing debounce,
+//     abort rather than queue, answer a backspace from
 //     memory — and NEVER blank the list. The previous query's rows stay on
 //     screen, dimmed and captioned, until the next answer lands. That is the
 //     one place this box deliberately departs from lib/search-hold's rule of
@@ -56,7 +56,7 @@ import {
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
 import { replaceSearch } from "@platform/lib/router";
-import { PENDING_INDICATOR_MS, QueryMemo, searchDelay } from "@platform/lib/instant-search";
+import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
 import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "@platform/lib/search-hold";
 import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
 import { shouldReconcile } from "@apps/explorer/listing/revalidate";
@@ -234,7 +234,6 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // Identity of the request in flight (folder, generation, attempt, query), or
   // null. See the guard in the fetch effect.
   const inflightKey = useRef<string | null>(null);
-  const issuedAt = useRef(0);
   const answerSeq = useRef(0);
   // The generation the ranked answer on screen was fetched under.
   //
@@ -396,7 +395,6 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       // reply instead of here would read the value the reset had already
       // moved, which is no tag at all.
       const epoch = sourceEpoch.current;
-      issuedAt.current = Date.now();
       setPending(true);
       // The previous failure is not this request's verdict.
       setFailure("");
@@ -435,14 +433,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
         },
       );
     };
-    // Zero on the leading edge — the first keystroke after a pause must not
-    // sit behind a timer (lib/instant-search, `searchDelay`).
-    const delay = searchDelay(Date.now(), issuedAt.current);
-    if (delay === 0) {
-      run();
-      return;
-    }
-    const timer = window.setTimeout(run, delay);
+    // Trailing debounce: this effect re-runs on every dep change below and
+    // its cleanup clears the pending timer, so an unconditional wait resets
+    // on each keystroke and only a pause fires the request.
+    const timer = window.setTimeout(run, INSTANT_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- applyStep is
     // recreated each render; everything it reads is a ref or listed here.

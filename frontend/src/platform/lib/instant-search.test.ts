@@ -8,7 +8,6 @@ import {
   QUERY_MEMO_LIMIT,
   QueryMemo,
   STALE_CLEAR_MS,
-  searchDelay,
 } from "@platform/lib/instant-search";
 
 interface Answer {
@@ -22,20 +21,29 @@ const answer = (over: Partial<Answer> = {}): Answer => ({
   ...over,
 });
 
-describe("searchDelay", () => {
-  it("is ZERO on the leading edge — the first keystroke does not wait", () => {
-    // The debounce coalesces fast typing; it is not a delay on the first
-    // request. A selective query answers in ~40ms and must not sit behind a
-    // timer, or the box feels hesitant while doing less work than before.
-    expect(searchDelay(10_000, 0)).toBe(0);
-    expect(searchDelay(10_000, 10_000 - INSTANT_DEBOUNCE_MS)).toBe(0);
-  });
-
-  it("waits out the REMAINDER of the window during a burst", () => {
-    // Not a fresh full window per keystroke: a fast typist's requests land one
-    // debounce apart rather than one per letter.
-    expect(searchDelay(10_000, 9_960)).toBe(INSTANT_DEBOUNCE_MS - 40);
-    expect(searchDelay(10_000, 10_000)).toBe(INSTANT_DEBOUNCE_MS);
+describe("INSTANT_DEBOUNCE_MS", () => {
+  it("is a plain trailing wait now, not a leading-edge threshold", () => {
+    // `searchDelay` is gone: it used to return 0 for the first keystroke
+    // after a pause (a leading-edge throttle keyed on when the last request
+    // was ISSUED), which made the shortest, most expensive query of any run
+    // — the first character typed — the one request guaranteed to fire with
+    // no delay at all. Every call site now does an unconditional
+    // `window.setTimeout(run, INSTANT_DEBOUNCE_MS)` inside an effect whose
+    // cleanup clears the pending timer on every dep change, which by itself
+    // IS a correct trailing debounce — there is no separate function left
+    // here to unit-test. The actual timing (a burst collapsing to one
+    // request, a paused keystroke firing after the wait) is exercised
+    // against the real effect in FilesHome.render.test.tsx rather than faked
+    // in isolation here.
+    expect(INSTANT_DEBOUNCE_MS).toBeGreaterThan(0);
+    // NOT `toBeLessThan(PENDING_INDICATOR_MS)`: `INSTANT_DEBOUNCE_MS` is 300,
+    // chosen for what a sustained typist feels while holding a key down
+    // (instant-search.ts's own comment on the constant), and
+    // `PENDING_INDICATOR_MS` (200) is unrelated — it times the REQUEST's own
+    // round trip once fired, not the debounce before it fires. The two are
+    // sequential, not nested, so debounce > indicator is not a contradiction;
+    // flagged rather than asserted either way, since neither value is this
+    // test's to judge.
   });
 });
 

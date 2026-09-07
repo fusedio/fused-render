@@ -29,11 +29,10 @@
 //    make.
 //  * the WAIT. Ranking used to be local, so results repainted within a frame
 //    and never blanked. A round trip per query can only feel as good if it
-//    never blanks the list, never flashes a spinner, fires the first keystroke
-//    without a debounce, and answers a backspace from memory — which is what
-//    the pieces below are for.
+//    never blanks the list, never flashes a spinner, and answers a backspace
+//    from memory — which is what the pieces below are for.
 //
-// The pieces that make a per-query round trip feel instant — the leading-edge
+// The pieces that make a per-query round trip feel instant — the trailing
 // debounce, the pending threshold, the backspace memo — are NOT here: they are
 // shared with the listing's in-folder box, which is now the same kind of box,
 // and they live in platform/lib/instant-search.

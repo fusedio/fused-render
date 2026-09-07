@@ -37,10 +37,10 @@ import {
 } from "@apps/explorer/lib/repos";
 import { useIndexStatus } from "@platform/lib/index-status";
 import {
+  INSTANT_DEBOUNCE_MS,
   PENDING_INDICATOR_MS,
   QueryMemo,
   STALE_CLEAR_MS,
-  searchDelay,
 } from "@platform/lib/instant-search";
 import {
   MIN_QUERY_CHARS,
@@ -111,7 +111,15 @@ const AI_OFF: AiPhase = { status: "off" };
 // server escalates from a cheap substring pass to a subsequence regex only when
 // the cheap pass cannot fill the limit, so a query WITH hits leaves the
 // expensive plan cold. This one runs both passes and comes back empty.
-const WARM_QUERY = "zqxjv";
+// Exported so a test can identify (and filter out) this call rather than
+// hardcoding the literal — see FilesHome.render.test.tsx's `type()` helper,
+// which now has to strip it: the fake clock's `requestIdleCallback` is
+// stubbed out (Clock.install, listing/hook-harness.ts), so this fires
+// through the `window.setTimeout(cb, 300)` fallback below, which now lands
+// at the exact same tick as `INSTANT_DEBOUNCE_MS` (300) — a coincidence real
+// browsers do not have (`requestIdleCallback` fires independently of any
+// debounce timer there).
+export const WARM_QUERY = "zqxjv";
 
 function MagnifierIcon() {
   return (
@@ -383,7 +391,7 @@ export function FilesSearch({
   //
   // `address` is pure and cheap (a regex), computed fresh every render. What
   // it resolves TO takes a stat, so that part is debounced/abortable exactly
-  // like the rank request below (leading-edge `searchDelay`, one
+  // like the rank request below (a trailing `INSTANT_DEBOUNCE_MS` wait, one
   // AbortController) — a query that merely LOOKS like a path is typed one
   // character at a time same as any other.
   const address = pathShortcut(q, home);
@@ -393,7 +401,6 @@ export function FilesSearch({
     | { status: "missing" }
   >({ status: "unknown" });
   const addrCtl = useRef<AbortController | null>(null);
-  const addrIssuedAt = useRef(0);
   useEffect(() => {
     addrCtl.current?.abort();
     if (address === null) {
@@ -405,7 +412,6 @@ export function FilesSearch({
       addrCtl.current?.abort();
       const ctl = new AbortController();
       addrCtl.current = ctl;
-      addrIssuedAt.current = Date.now();
       statPath(address, ctl.signal).then(
         (st) => {
           if (ctl.signal.aborted) return;
@@ -420,12 +426,10 @@ export function FilesSearch({
         },
       );
     };
-    const delay = searchDelay(Date.now(), addrIssuedAt.current);
-    if (delay === 0) {
-      run();
-      return;
-    }
-    const timer = window.setTimeout(run, delay);
+    // Trailing debounce: this effect re-runs on every `address` change and
+    // its cleanup below clears the pending timer, so an unconditional wait
+    // resets on each keystroke and only a pause actually fires the stat.
+    const timer = window.setTimeout(run, INSTANT_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [address]);
   useEffect(() => () => addrCtl.current?.abort(), []);
@@ -478,10 +482,9 @@ export function FilesSearch({
   // and answers a few KB from the WHOLE index.
   //
   // A round trip per keystroke can only be an improvement if it never feels
-  // like one, and every piece below is that and nothing else: fire on the
-  // leading edge, coalesce a burst, abort rather than queue, keep the previous
-  // rows on screen while the next answer is in flight, and answer a backspace
-  // from memory.
+  // like one, and every piece below is that and nothing else: a trailing
+  // debounce, abort rather than queue, keep the previous rows on screen while
+  // the next answer is in flight, and answer a backspace from memory.
   const [answer, setAnswer] = useState<HomeAnswer | null>(null);
   const [failure, setFailure] = useState("");
   const [pending, setPending] = useState(false);
@@ -592,14 +595,11 @@ export function FilesSearch({
         },
       );
     };
-    // Zero on the leading edge — the first keystroke after a pause must not sit
-    // behind a timer (lib/instant-search, `searchDelay`).
-    const delay = searchDelay(Date.now(), issuedAt.current);
-    if (delay === 0) {
-      run();
-      return;
-    }
-    const timer = window.setTimeout(run, delay);
+    // Trailing debounce: this effect re-runs on every dep change (`q` above
+    // all) and its cleanup below clears the pending timer, so an
+    // unconditional wait resets on each keystroke and only a pause fires the
+    // request.
+    const timer = window.setTimeout(run, INSTANT_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [home, q, active, searchable, suppressRank, lifecycle, mutations, retryNonce]);
 

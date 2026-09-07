@@ -58,6 +58,17 @@ from fused_render.shell.prefs import indexing_enabled
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Bounds how many index reads (stats/search/rank/query) run their duckdb call
+# at once. `asyncio.to_thread` alone dispatches onto the default executor
+# (min(32, cpu+4) workers) with no ceiling of its own, and each of those
+# threads opens a DuckDB connection capped to `search_threads()`
+# (index/store.py) — so without this, up to 32 of those capped pools could
+# still run concurrently, which adds back most of the whole-machine exposure
+# the per-connection cap exists to remove. 2 is deliberately tight: these are
+# interactive, so a third request should wait milliseconds behind two running
+# ones rather than the app inventing a fourth simultaneous full-width scan.
+_READ_CONCURRENCY = asyncio.Semaphore(2)
+
 # How recently a root must have been scanned for the startup scheduler to skip
 # it. Short enough that a machine left on for a day rescans when the app is
 # reopened, long enough that a dev-server reload loop (or three windows opening
@@ -873,13 +884,20 @@ async def api_index_stats(request: Request, root: str = Query(default=""),
                           breakdown: bool = Query(default=False)):
     cfg = load_config()
     async with cancellable(request) as token:
-        try:
-            out = await asyncio.to_thread(
-                index_stats, cfg, root=root, breakdown=breakdown, token=token)
-        except Cancelled:
-            logger.debug("index stats: root=%r breakdown=%s abandoned by the client",
-                        root, breakdown)
-            return Response(status_code=499)
+        # Acquired INSIDE `cancellable`, not before it, so the disconnect
+        # watcher is already running while this request waits its turn —
+        # otherwise a client that gave up while queued would sit uncancellable
+        # until it reached the front, wasting its slot on nobody.
+        async with _READ_CONCURRENCY:
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(
+                    index_stats, cfg, root=root, breakdown=breakdown, token=token)
+            except Cancelled:
+                logger.debug("index stats: root=%r breakdown=%s abandoned by the client",
+                            root, breakdown)
+                return Response(status_code=499)
     return {"ok": True, **out}
 
 
@@ -913,12 +931,17 @@ async def api_index_search(request: Request, root: str = Query(default=""),
         return _error("'root' is required")
     cfg = load_config()
     async with cancellable(request) as token:
-        try:
-            out = await asyncio.to_thread(
-                index_search, cfg, root, q=q, limit=limit, token=token)
-        except Cancelled:
-            logger.debug("index search: %r under %s abandoned by the client", q, root)
-            return Response(status_code=499)
+        # See api_index_stats above for why the semaphore is acquired inside
+        # `cancellable` rather than around it.
+        async with _READ_CONCURRENCY:
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(
+                    index_search, cfg, root, q=q, limit=limit, token=token)
+            except Cancelled:
+                logger.debug("index search: %r under %s abandoned by the client", q, root)
+                return Response(status_code=499)
     if fmt != COLUMNS_FMT:
         return {"ok": True, **out}
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
@@ -988,12 +1011,17 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     t0 = time.monotonic()
     cfg = load_config()
     async with cancellable(request) as token:
-        try:
-            out = await asyncio.to_thread(_rank_body, cfg, root, q, limit, token)
-        except Cancelled:
-            logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
-                        q, root, (time.monotonic() - t0) * 1000)
-            return Response(status_code=499)
+        # See api_index_stats above for why the semaphore is acquired inside
+        # `cancellable` rather than around it.
+        async with _READ_CONCURRENCY:
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(_rank_body, cfg, root, q, limit, token)
+            except Cancelled:
+                logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
+                            q, root, (time.monotonic() - t0) * 1000)
+                return Response(status_code=499)
     out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
                    for h in out["hits"]]
     out["reason"] = _rank_reason(cfg, root, out)
@@ -1140,12 +1168,17 @@ async def api_index_query(request: Request, body: dict = Body(default={}),
     if not isinstance(sql, str) or not sql.strip():
         return _error("'sql' must be a non-empty string")
     async with cancellable(request) as token:
-        try:
-            out = await asyncio.to_thread(
-                _guarded, load_config(), sql, body.get("limit"), token)
-        except Cancelled:
-            logger.debug("index query: abandoned by the client")
-            return Response(status_code=499)
+        # See api_index_stats above for why the semaphore is acquired inside
+        # `cancellable` rather than around it.
+        async with _READ_CONCURRENCY:
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(
+                    _guarded, load_config(), sql, body.get("limit"), token)
+            except Cancelled:
+                logger.debug("index query: abandoned by the client")
+                return Response(status_code=499)
     if not isinstance(out, dict):
         return out
     return {"ok": True, **out}

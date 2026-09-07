@@ -27,6 +27,7 @@ from fused_render.index.store import (
     like_literal,
     parquet_src,
     read_manifest,
+    search_threads,
 )
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,26 @@ def files_src(cfg: IndexConfig, parts) -> str:
     return "read_parquet([" + ",".join(f"'{f}'" for f in files) + "])"
 
 
+def _name_col(con, src: str) -> str:
+    """`lower(name)` when the parquet behind `src` carries a `name` column,
+    else the regex extracted from `path`.
+
+    Same pattern as `_depth_col` just below, and for the same reason: without
+    this, `search_ranked`'s candidate subquery ran a regex per row over every
+    indexed file (~571k) on every keystroke, purely to recover a value the
+    files parquet already stores (store.py's schema — `name` is denormalised
+    out of `path` at scan time, scan.py:147's `e.name`, unlowered and
+    including the extension). `lower(name)` is therefore byte-for-byte the
+    same string `regexp_extract(lower(path), '[^/]*$')` computes, just without
+    paying for the regex. Only the files table HAS a `name` column — dirs has
+    none (store.py's dir schema) — so this is for the files branch only; an
+    index predating the column keeps answering via the fallback."""
+    cols = {r[0] for r in con.execute(
+        f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
+    return ("lower(name)" if "name" in cols
+            else "regexp_extract(lower(path), '[^/]*$')")
+
+
 def _depth_col(con, src: str, path_col: str) -> str:
     """`depth` when the parquet behind `src` carries it, else the slash-count
     expression over `path_col`.
@@ -163,6 +184,10 @@ def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False,
     import duckdb
 
     con = duckdb.connect()
+    # Capped like every other interactive index read (search_threads' docstring
+    # in store.py): a bare connect() defaults to one thread per core, and this
+    # is a keystroke away, not a background job.
+    con.execute(f"SET threads TO {search_threads()}")
     if token is not None:
         token.bind(con)
     try:
@@ -308,6 +333,10 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     age = (time.time() - updated) if isinstance(updated, (int, float)) else None
     fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
+    # Capped like every other interactive index read (search_threads' docstring
+    # in store.py): a bare connect() defaults to one thread per core, and this
+    # is a keystroke away, not a background job.
+    con.execute(f"SET threads TO {search_threads()}")
     if token is not None:
         token.bind(con)
     try:
@@ -517,6 +546,10 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     age = (time.time() - updated) if isinstance(updated, (int, float)) else None
     fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
+    # Capped like every other interactive index read (search_threads' docstring
+    # in store.py): a bare connect() defaults to one thread per core, and this
+    # is the query a single keystroke pays for.
+    con.execute(f"SET threads TO {search_threads()}")
     # Bound the instant the connection exists: a token cancelled before this
     # point still has to stop it (CancelToken.bind's own docstring), and every
     # `return`/`raise` from here on must close it — hence the try/finally
@@ -554,14 +587,20 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             fsrc = files_src(cfg, hit)
             branches.append(
                 f"SELECT substr(path, {rel_from}) AS rel, size, mtime, "
-                f"false AS is_dir, {_depth_col(con, fsrc, 'path')} AS depth "
+                f"false AS is_dir, {_depth_col(con, fsrc, 'path')} AS depth, "
+                f"{_name_col(con, fsrc)} AS nm "
                 f"FROM {fsrc} WHERE path LIKE '{prefix_like}%' ESCAPE '\\'")
         if include_dirs:
             dsrc = dirs_src(cfg)
+            # No stored `name` column here to reuse — the dirs schema has none
+            # (store.py:165-171) — so the dirs branch keeps deriving its
+            # basename by regex. Far fewer directories than files, so this is
+            # still the bulk of the win over regexing every row.
             branches.append(
                 f"SELECT substr(dir, {rel_from}) AS rel, CAST(NULL AS BIGINT) AS size, "
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-                f"{_depth_col(con, dsrc, 'dir')} AS depth "
+                f"{_depth_col(con, dsrc, 'dir')} AS depth, "
+                f"regexp_extract(lower(substr(dir, {rel_from})), '[^/]*$') AS nm "
                 f"FROM {dsrc} WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'")
         if not branches:
             return {**base, "hits": [], "truncated": False, "total": 0,
@@ -582,8 +621,10 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # query_wants_hidden / is_hidden_rel are the definitions; this mirrors them).
         hidden = ("" if _wants_hidden(qs)
                   else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
-        inner = (f"SELECT *, lower(rel) AS lrel, "
-                 f"regexp_extract(lower(rel), '[^/]*$') AS nm FROM ("
+        # `nm` now comes from each branch (the files branch reuses the stored
+        # `name` column instead of a regex — see `_name_col`), so this only
+        # adds `lrel`.
+        inner = (f"SELECT *, lower(rel) AS lrel FROM ("
                  + " UNION ALL ".join(branches) + ")")
 
         def pass_over(predicate: str, name: str):
@@ -628,7 +669,11 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                        for rel, size, mtime, is_dir in rows[:cap]]
             if token is not None:
                 token.check()
-            ranked = rank_entries(qs, entries)
+            # `token` flows into the scoring loop itself, not just this
+            # boundary check: rank.py's docstring on `rank_entries` explains
+            # why a check only here is not enough (pure Python holding the
+            # GIL, no duckdb call in flight for `con.interrupt()` to reach).
+            ranked = rank_entries(qs, entries, token=token)
             return ranked, len(rows) > cap
 
         # The LADDER (see the docstring): the cheap substring pass first, and the

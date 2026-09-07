@@ -18,7 +18,7 @@ from fused_render.index.config import IndexConfig, load_config
 from fused_render.index.query import search_ranked, search_under
 from fused_render.index.runner import canonical_root
 from fused_render.shell import prefs
-from fused_render.index.store import Sink, compact, partition_files
+from fused_render.index.store import Sink, compact, partition_files, read_manifest
 from fused_render.server import create_app
 
 
@@ -503,6 +503,45 @@ def test_search_ranked_is_a_quiet_miss_on_an_uncovered_root(tmp_path):
     cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
     out = search_ranked(cfg, "/elsewhere", "alpha")
     assert out["covered"] is False and out["hits"] == []
+
+
+# -- the stored `name` column, reused instead of a regex on every row --------
+#
+# `_name_col` (query.py) reuses the files parquet's own `name` column instead
+# of `regexp_extract(lower(path), '[^/]*$')` when the column is there, the
+# same additive-schema-evolution pattern `depth` already established
+# (store.py's `_depth_col`, and test_index_store.py's
+# `test_compact_backfills_depth_onto_a_pre_depth_index`). `name` is scan.py's
+# raw `e.name` — unlowered, WITH the extension — so `lower(name)` has to be
+# byte-for-byte the same string the regex fallback computes.
+
+def test_search_ranked_agrees_whether_or_not_the_name_column_is_there(tmp_path):
+    """Drop `name` from the files parquet (an index predating the column) and
+    confirm the ranked answer for a name-tier query is unchanged — pins the
+    invariant `_name_col`'s fallback depends on."""
+    files = ["/r/Readme.MD", "/r/docs/readme-draft.md", "/r/readme/other.txt",
+             "/r/unrelated.bin"]
+    cfg = _index(tmp_path, "/r", files, dirs=["/r/docs", "/r/readme"])
+    with_name = search_ranked(cfg, "/r", "readme.md")
+
+    for p in [os.path.join(cfg.files_dir, part["file"])
+              for part in read_manifest(cfg)["partitions"]]:
+        pq.write_table(pq.read_table(p).drop(["name"]), p)
+    without_name = search_ranked(cfg, "/r", "readme.md")
+
+    assert with_name["hits"] == without_name["hits"]
+    assert with_name["hits"][0]["rel"] == "Readme.MD"
+
+
+def test_search_ranked_still_reads_a_files_partition_with_no_name_column(tmp_path):
+    """The fallback itself must actually answer, not just agree once removed —
+    an index predating `name` has to keep working, not hard-fail."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"])
+    for p in [os.path.join(cfg.files_dir, part["file"])
+              for part in read_manifest(cfg)["partitions"]]:
+        pq.write_table(pq.read_table(p).drop(["name"]), p)
+    out = search_ranked(cfg, "/r", "alpha")
+    assert [h["rel"] for h in out["hits"]] == ["alpha.txt"]
 
 
 # -- cancellation: a `token` handed to search_ranked -------------------------
