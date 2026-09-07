@@ -470,3 +470,35 @@ def test_the_endpoint_returns_an_empty_ok_for_a_miss(client, tmp_path, monkeypat
     res = client.post("/api/search/files", json={"name_terms": ["zzzz"]})
     assert res.status_code == 200
     assert res.json() == {"ok": True, "entries": [], "truncated": False}
+
+
+def test_index_engine_caps_its_connection_threads(tmp_path, monkeypatch):
+    """Review finding (D701 correction / D706): `_index_entries`'s bare
+    `duckdb.connect()` used to default to one thread per core. This is the AI
+    search's execution engine — squarely interactive — so it must apply
+    `search_threads()` like every other interactive read."""
+    from fused_render.index.store import search_threads
+
+    cfg = _index(tmp_path, "/r", [("/r/quarterly.csv", 10, 100.0)])
+    seen_threads = []
+    import duckdb as real_duckdb
+    real_connect = real_duckdb.connect
+
+    class _SpyingConnection:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *a, **kw):
+            if "SET threads" in sql:
+                seen_threads.append(sql)
+            return self._con.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def spying_connect(*a, **kw):
+        return _SpyingConnection(real_connect(*a, **kw))
+
+    monkeypatch.setattr(real_duckdb, "connect", spying_connect)
+    _search_index(spec(name_terms=["quarterly"]), cfg)
+    assert seen_threads == [f"SET threads TO {search_threads()}"]

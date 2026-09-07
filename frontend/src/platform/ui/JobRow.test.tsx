@@ -25,6 +25,7 @@ const BASE: Job = {
   done: 45,
   total: 100,
   total_scope: "phase",
+  total_estimated: false,
   unit: "",
   message: "",
   page: "",

@@ -18,7 +18,7 @@ from fused_render.index.config import IndexConfig, load_config
 from fused_render.index.query import search_ranked, search_under
 from fused_render.index.runner import canonical_root
 from fused_render.shell import prefs
-from fused_render.index.store import Sink, compact, partition_files
+from fused_render.index.store import Sink, compact, partition_files, read_manifest
 from fused_render.server import create_app
 
 
@@ -286,6 +286,52 @@ def test_rank_route_does_not_return_positions(home, tmp_path):
     assert "positions" not in body["hits"][0]
 
 
+def test_rank_route_does_not_return_the_scoring_fields(home, tmp_path):
+    """`score`/`tier`/`depth`/`longest_run` drove `_rank_sql`'s ORDER BY
+    server-side and are still on `search_ranked`'s own return (that module's
+    tests pin scoring correctness off them), but no client re-sorts a
+    server-answered row, so `api_index_rank` strips them the same way it
+    already strips `positions`."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root,
+                            [root + "/alpha.txt", root + "/beta.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "a"}).json()
+    assert len(body["hits"]) >= 1
+    for h in body["hits"]:
+        for k in ("score", "tier", "depth", "longest_run"):
+            assert k not in h
+
+
+def test_rank_route_preserves_search_ranked_s_order_exactly(
+    home, tmp_path, monkeypatch,
+):
+    """The invariant that makes dropping the scoring fields off the wire
+    safe: nothing between `search_ranked` and the rendered listing re-sorts —
+    `hitsFromRank` (frontend) hands hits back "in the order it returned
+    them", and this pins that the SAME order survives the route layer, byte
+    for byte, rather than merely trusting the comment."""
+    from fused_render.server.routers import index as index_router
+
+    order = ["zzz.txt", "aaa.txt", "mmm.txt"]
+
+    def fake_rank_body(cfg, root, q, limit=None, token=None, ranked=True):
+        return {"covered": True, "reason": "", "scanned_partitions": 0,
+                "of_partitions": 0,
+                "hits": [{"rel": r, "is_dir": False, "size": 1, "mtime": 1.0,
+                          "score": 0, "longest_run": 0, "tier": 1, "depth": 1}
+                         for r in order],
+                "truncated": False, "total": len(order)}
+
+    monkeypatch.setattr(index_router, "_rank_body", fake_rank_body)
+    root = str(tmp_path / "proj")
+    os.makedirs(root, exist_ok=True)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "x"}).json()
+    assert [h["rel"] for h in body["hits"]] == order
+
+
 def test_rank_route_on_a_missing_index_is_a_quiet_miss(home, tmp_path):
     client = TestClient(create_app(start_dir=str(tmp_path)))
     body = client.get("/api/index/rank",
@@ -317,14 +363,14 @@ def test_rank_route_answers_a_disconnected_client_with_a_quiet_499(
     from fused_render.index.cancel import Cancelled
     from fused_render.server.routers import index as index_router
 
-    def slow_cancellable_rank(cfg, root, q, limit, token=None):
+    def slow_cancellable_rank(cfg, root, q, limit, token=None, ranked=True):
         import time as _time
 
         _time.sleep(0.05)
         if token is not None and token.cancelled:
             raise Cancelled()
         return {"covered": True, "hits": [], "truncated": False, "total": 0,
-                "escalated": False, "reason": ""}
+                "reason": ""}
 
     monkeypatch.setattr(index_router, "_rank_body", slow_cancellable_rank)
 
@@ -364,6 +410,57 @@ def test_rank_route_honours_the_limit(home, tmp_path):
     body = client.get("/api/index/rank",
                       params={"root": root, "q": "alpha", "limit": 3}).json()
     assert len(body["hits"]) == 3 and body["truncated"] is True
+
+
+def test_rank_route_defaults_to_ranked(home, tmp_path, monkeypatch):
+    """No `ranked` param at all — every existing caller and test — must still
+    reach `search_ranked` with `ranked=True`, so behavior is unaffected."""
+    from fused_render.server.routers import index as index_router
+
+    seen = {}
+
+    def fake_rank_body(cfg, root, q, limit=None, token=None, ranked=True):
+        seen["ranked"] = ranked
+        return {"covered": True, "reason": "", "scanned_partitions": 0,
+                "of_partitions": 0, "hits": [], "truncated": False, "total": 0}
+
+    monkeypatch.setattr(index_router, "_rank_body", fake_rank_body)
+    root = str(tmp_path / "proj")
+    os.makedirs(root, exist_ok=True)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    client.get("/api/index/rank", params={"root": root, "q": "x"})
+    assert seen["ranked"] is True
+
+
+def test_rank_route_ranked_false_is_threaded_through_and_answers_unranked_order(
+    home, tmp_path,
+):
+    """`ranked=false` on the wire reaches `search_ranked` and actually
+    changes the order — `depth ASC, rel ASC` instead of scored — and the
+    response still omits the stripped wire fields exactly as ranked mode
+    does."""
+    root = str(tmp_path / "proj")
+    # A deep, high-scoring name match and a shallow, lower-scoring one: ranked
+    # mode would put the deep exact-name match first (name bonus dominates
+    # the depth penalty here); unranked mode must put the shallow one first
+    # purely on depth.
+    client = _ranked_client(
+        tmp_path, root,
+        [root + "/a/b/c/d/alpha.txt", root + "/z-alpha-ish.txt"])
+    ranked_body = client.get(
+        "/api/index/rank", params={"root": root, "q": "alpha"}).json()
+    assert ranked_body["hits"][0]["rel"] == "a/b/c/d/alpha.txt"
+
+    unranked_body = client.get(
+        "/api/index/rank",
+        params={"root": root, "q": "alpha", "ranked": "false"}).json()
+    assert unranked_body["ok"] is True
+    rels = [h["rel"] for h in unranked_body["hits"]]
+    assert rels == sorted(rels, key=lambda r: (r.count("/"), r))
+    assert rels[0] == "z-alpha-ish.txt"
+    for h in unranked_body["hits"]:
+        for k in ("score", "tier", "depth", "longest_run"):
+            assert k not in h
 
 
 def test_search_under_ignores_a_lookalike_underscore_sibling(tmp_path):
@@ -466,12 +563,14 @@ def test_search_ranked_returns_the_best_match_first(tmp_path):
     assert out["hits"][0]["rel"] == "readme.md"
 
 
-def test_search_ranked_finds_a_subsequence_the_like_filter_would_miss(tmp_path):
-    """Stage A's coarse filter must admit fuzzy hits, not just substrings —
-    that is the whole reason it is a subsequence regex and not an ILIKE."""
+def test_search_ranked_is_substring_only_not_fuzzy(tmp_path):
+    """Index-backed search dropped the fuzzy subsequence escalation — an
+    owner-accepted feature loss (search_ranked's docstring): a query that is
+    a subsequence but not a substring of any rel now finds nothing, where the
+    old two-pass ladder would have found it on the second (regex) pass."""
     cfg = _index(tmp_path, "/r", ["/r/alpha-beta.txt"])
     out = search_ranked(cfg, "/r", "albe")
-    assert [h["rel"] for h in out["hits"]] == ["alpha-beta.txt"]
+    assert out["hits"] == []
 
 
 def test_search_ranked_hits_are_walk_shaped_and_carry_the_ranking(tmp_path):
@@ -505,11 +604,93 @@ def test_search_ranked_is_a_quiet_miss_on_an_uncovered_root(tmp_path):
     assert out["covered"] is False and out["hits"] == []
 
 
+# -- the stored `name` column, reused instead of a regex on every row --------
+#
+# `_name_col` (query.py) reuses the files parquet's own `name` column instead
+# of `regexp_extract(lower(path), '[^/]*$')` when the column is there, the
+# same additive-schema-evolution pattern `depth` already established
+# (store.py's `_depth_col`, and test_index_store.py's
+# `test_compact_backfills_depth_onto_a_pre_depth_index`). `name` is scan.py's
+# raw `e.name` — unlowered, WITH the extension — so `lower(name)` has to be
+# byte-for-byte the same string the regex fallback computes.
+
+def test_search_ranked_agrees_whether_or_not_the_name_column_is_there(tmp_path):
+    """Drop `name` from the files parquet (an index predating the column) and
+    confirm the ranked answer for a name-tier query is unchanged — pins the
+    invariant `_name_col`'s fallback depends on."""
+    files = ["/r/Readme.MD", "/r/docs/readme-draft.md", "/r/readme/other.txt",
+             "/r/unrelated.bin"]
+    cfg = _index(tmp_path, "/r", files, dirs=["/r/docs", "/r/readme"])
+    with_name = search_ranked(cfg, "/r", "readme.md")
+
+    for p in [os.path.join(cfg.files_dir, part["file"])
+              for part in read_manifest(cfg)["partitions"]]:
+        pq.write_table(pq.read_table(p).drop(["name"]), p)
+    without_name = search_ranked(cfg, "/r", "readme.md")
+
+    assert with_name["hits"] == without_name["hits"]
+    assert with_name["hits"][0]["rel"] == "Readme.MD"
+
+
+def test_search_ranked_still_reads_a_files_partition_with_no_name_column(tmp_path):
+    """The fallback itself must actually answer, not just agree once removed —
+    an index predating `name` has to keep working, not hard-fail."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"])
+    for p in [os.path.join(cfg.files_dir, part["file"])
+              for part in read_manifest(cfg)["partitions"]]:
+        pq.write_table(pq.read_table(p).drop(["name"]), p)
+    out = search_ranked(cfg, "/r", "alpha")
+    assert [h["rel"] for h in out["hits"]] == ["alpha.txt"]
+
+
+def test_search_ranked_describes_the_files_source_only_once(tmp_path, monkeypatch):
+    """D707: `_name_col` and `_depth_col` each used to run their own `DESCRIBE
+    SELECT * FROM {src} LIMIT 0` against the files source, so a single ranked
+    request paid for that footer read twice. `_src_cols` caches per source
+    within one call, so `_name_col`'s own lookup lands on the same dict entry
+    `_depth_col` (used elsewhere, not by `search_ranked` any more — see the
+    CORRECTION on D707 in DECISIONS.md) would have populated.
+
+    **CORRECTS D707's exact count for `search_ranked`**: this used to assert
+    2 DESCRIBEs (files, dirs). Since the depth `search_ranked` scores against
+    is now root-RELATIVE (computed straight from `rel`, not the stored
+    absolute `depth` column — see `search_ranked`'s `rel_depth` comment), the
+    dirs branch has no reason left to call `_src_cols`/`_depth_col` at all: it
+    has no `name` column to reuse either, so nothing about it is ever
+    DESCRIBEd. Only the files branch (for `_name_col`) still pays for one."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"],
+                 dirs=["/r/sub"])
+    describes = []
+    import duckdb as real_duckdb
+    real_connect = real_duckdb.connect
+
+    class _SpyingConnection:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *a, **kw):
+            if sql.strip().startswith("DESCRIBE"):
+                describes.append(sql)
+            return self._con.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def spying_connect(*a, **kw):
+        return _SpyingConnection(real_connect(*a, **kw))
+
+    monkeypatch.setattr(real_duckdb, "connect", spying_connect)
+    out = search_ranked(cfg, "/r", "alpha")
+    assert out["hits"], out
+    assert len(describes) == 1, describes
+
+
 # -- cancellation: a `token` handed to search_ranked -------------------------
 #
 # `asyncio.to_thread` (server/routers/index.py) cannot kill the thread it
 # dispatches search_ranked onto, so cancelling has to make the QUERY itself
-# return — CancelToken.check() at the phase boundaries in `pass_over`.
+# return — CancelToken.check() immediately before and after the one SQL
+# statement that filters, scores and orders.
 # CancelToken's own bind/cancel/check mechanics (the interrupt() plumbing) are
 # unit-tested in isolation in tests/test_index_cancel.py; these are about
 # search_ranked actually consulting the token it is handed.
@@ -521,11 +702,9 @@ def test_an_uncancelled_token_changes_nothing(tmp_path):
     token = CancelToken()
     with_token = search_ranked(cfg, "/r", "readme.md", token=token)
     without_token = search_ranked(cfg, "/r", "readme.md")
-    # `age_s` is a wall-clock measurement taken independently by each call, so
-    # it is the one field expected to differ between two otherwise-identical
-    # calls made microseconds apart.
-    with_token.pop("age_s")
-    without_token.pop("age_s")
+    # No `age_s` to pop any more (search_ranked no longer computes or returns
+    # it — that field is search_under's; see DECISIONS.md) — the two calls'
+    # results are now byte-identical outright.
     assert with_token == without_token
 
 
@@ -603,7 +782,7 @@ def test_an_interrupt_attributed_to_the_token_becomes_cancelled(tmp_path, monkey
             # its own tests below (test_a_coverage_check_interrupt_*); this
             # one is scoped to pass_over's SELECT specifically so a change to
             # the earlier query cannot accidentally satisfy it.
-            if "SELECT rel, size, mtime, is_dir FROM" in sql:
+            if "SELECT rel, size, mtime, is_dir, depth," in sql:
                 # The real cross-thread sequence: `cancel()` flips the flag
                 # AND calls interrupt(), which is what makes THIS raise.
                 token.cancel()
@@ -643,7 +822,7 @@ def test_an_interrupt_with_no_token_is_not_swallowed_as_cancellation(tmp_path, m
             self._real = real
 
         def execute(self, sql, *a, **kw):
-            if "SELECT rel, size, mtime, is_dir FROM" in sql:
+            if "SELECT rel, size, mtime, is_dir, depth," in sql:
                 raise duckdb_module.InterruptException("simulated, not this token's doing")
             return self._real.execute(sql, *a, **kw)
 
@@ -720,79 +899,56 @@ def test_search_ranked_flags_nothing_when_every_hit_fits(tmp_path):
     assert out["truncated"] is False and out["total"] == 1
 
 
-def test_the_substring_pass_alone_answers_when_it_fills_the_cut(tmp_path):
-    """The cheap pass is the whole query when it is enough.
+def test_search_ranked_honours_the_limit_in_sql_not_just_in_python(tmp_path):
+    """No candidate rows should cross into Python at all any more — the whole
+    filter/score/order/cut lives in one SQL statement. Pinned from the
+    database side: patch `con.execute` to see the actual SQL LIMIT rather than
+    trusting `len(out["hits"]) <= limit`, which a Python-side slice could
+    satisfy even if the query itself asked duckdb for everything."""
+    import duckdb as duckdb_module
 
-    ILIKE over 571k rows costs ~51 ms where the subsequence regex costs ~143 ms,
-    and the regex can only ever APPEND rows below every substring hit (see
-    search_ranked's docstring on longest_run), so a filled cut means the second
-    pass is pure spend."""
-    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/a-l-p-h-a.txt"])
-    out = search_ranked(cfg, "/r", "alpha", limit=1)
-    assert [h["rel"] for h in out["hits"]] == ["alpha.txt"]
-    assert out["escalated"] is False
+    files = [f"/r/noise/a{i}-l-p-h-a.txt" for i in range(50)]
+    files.append("/r/alpha.txt")
+    cfg = _index(tmp_path, "/r", files, dirs=["/r/noise"])
+    seen_limits = []
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "ORDER BY tier ASC" in sql:
+                seen_limits.append(int(sql.rsplit("LIMIT", 1)[1].strip()))
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    import unittest.mock as mock
+    with mock.patch.object(
+        duckdb_module, "connect",
+        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)),
+    ):
+        out = search_ranked(cfg, "/r", "alpha", limit=3)
+    assert out["hits"][0]["rel"] == "alpha.txt"
+    assert len(out["hits"]) <= 3
+    # One row past `limit`, same trick `search_under` uses, so "there was
+    # more" is known without a separate count.
+    assert seen_limits == [4]
 
 
-def test_it_escalates_to_the_subsequence_pass_when_substring_hits_run_short(tmp_path):
-    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/a-l-p-h-a.txt"])
-    out = search_ranked(cfg, "/r", "alpha", limit=5)
-    assert [h["rel"] for h in out["hits"]] == ["alpha.txt", "a-l-p-h-a.txt"]
-    assert out["escalated"] is True
-
-
-def test_stage_a_logs_a_debug_line_per_pass(tmp_path, caplog):
+def test_search_ranked_logs_one_debug_line_per_request(tmp_path, caplog):
     """No server-side timing on the rank path used to mean a slow report could
-    only be diagnosed by inference. Both passes get their own DEBUG line
-    (never louder — this fires on every keystroke)."""
+    only be diagnosed by inference. One DEBUG line per request (never louder —
+    this fires on every keystroke), now that there is only one SQL pass."""
     import logging as _logging
     cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/a-l-p-h-a.txt"])
     with caplog.at_level(_logging.DEBUG, logger="fused_render.index.query"):
         search_ranked(cfg, "/r", "alpha", limit=5)
-    stage_a = [r for r in caplog.records if "stage A" in r.message]
-    assert all(r.levelno == _logging.DEBUG for r in stage_a)
-    kinds = {r.message.split("(")[1].split(")")[0] for r in stage_a}
-    assert kinds == {"substring", "subsequence"}
-
-
-def test_the_escalation_ladder_is_lossless(tmp_path):
-    """Skipping the regex pass must not change ONE row of the answer.
-
-    The substring pass answering alone and the full two-pass answer have to
-    agree on the rows they both cover — otherwise the optimisation is a
-    behaviour change wearing a performance costume."""
-    files = ["/r/alpha.txt", "/r/docs/alpha-notes.md", "/r/a-l-p-h-a.txt",
-             "/r/away/lower/place/hat/area.txt"]
-    cfg = _index(tmp_path, "/r", files, dirs=["/r/docs", "/r/away",
-                                              "/r/away/lower",
-                                              "/r/away/lower/place",
-                                              "/r/away/lower/place/hat"])
-    full = search_ranked(cfg, "/r", "alpha", limit=50)
-    assert full["escalated"] is True
-    for n in (1, 2):
-        short = search_ranked(cfg, "/r", "alpha", limit=n)
-        assert short["escalated"] is False
-        assert [h["rel"] for h in short["hits"]] == \
-            [h["rel"] for h in full["hits"]][:n]
-
-
-def test_a_query_the_substring_pass_cannot_answer_still_answers(tmp_path):
-    """Zero substring hits is the escalation case, not an empty result."""
-    cfg = _index(tmp_path, "/r", ["/r/alpha-beta.txt"])
-    out = search_ranked(cfg, "/r", "albe", limit=1)
-    assert [h["rel"] for h in out["hits"]] == ["alpha-beta.txt"]
-    assert out["escalated"] is True
-
-
-def test_the_stage_a_cap_keeps_the_name_matches_over_the_fuzzy_ones(tmp_path):
-    """Stage A can in principle drop a row stage B would rank top. Its coarse
-    tier ordering is what makes that unlikely, and this is the property: with a
-    cap far below the candidate count, the rows that survive are the ones the
-    real ranker also puts first."""
-    files = [f"/r/noise/a{i}-l-p-h-a.txt" for i in range(50)]
-    files.append("/r/alpha.txt")
-    cfg = _index(tmp_path, "/r", files, dirs=["/r/noise"])
-    out = search_ranked(cfg, "/r", "alpha", cap=3)
-    assert out["hits"][0]["rel"] == "alpha.txt"
+    lines = [r for r in caplog.records if "index rank:" in r.message]
+    assert len(lines) == 1
+    assert lines[0].levelno == _logging.DEBUG
 
 
 # ---------------------------------------------------------------- the reason

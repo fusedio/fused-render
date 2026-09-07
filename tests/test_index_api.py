@@ -222,6 +222,288 @@ def test_stats_on_a_never_built_index(home, tmp_path):
     assert body["rows"] == 0
 
 
+# -- the read-concurrency semaphores ---------------------------------------------
+#
+# `_interactive_read_concurrency()` and `_query_read_concurrency()`
+# (routers/index.py) bound how many of the five expensive read routes may be
+# running their duckdb call at once — without it, `asyncio.to_thread`'s
+# default executor (min(32, cpu+4) workers) would let up to 32
+# `search_threads()`-capped pools run simultaneously, most of the
+# whole-machine exposure `search_threads` exists to remove.
+#
+# Two lanes (D701 correction / D706), not one shared semaphore: `stats`,
+# `search`, and `rank` are per-keystroke and share the tight, width-2
+# interactive lane; `query` and `ask` run a caller-authored statement bounded
+# only by `guarded_query.TIMEOUT_S` (10s) and share their own narrower,
+# width-1 lane, so a slow SQL-panel query can no longer block the home search
+# box behind it.
+
+def test_read_routes_bound_how_many_run_their_duckdb_call_at_once(home, tmp_path,
+                                                                   monkeypatch):
+    """Six concurrent `/api/index/stats` requests, each blocked on a real
+    `threading.Event` inside the (monkeypatched) duckdb call: peak concurrency
+    must never exceed the semaphore's width, and every request must still
+    eventually complete rather than deadlock behind it.
+
+    Driven through `httpx.AsyncClient` + `ASGITransport` on ONE event loop
+    (`asyncio.run`, `asyncio.gather`) rather than a thread pool of sync
+    `TestClient` calls: `asyncio.Semaphore` binds to whichever loop first
+    awaits it, and a thread pool of separately-looped sync clients trips that
+    the moment two of them touch the same module-level semaphore."""
+    import threading
+
+    import httpx
+
+    lock = threading.Lock()
+    state = {"concurrent": 0, "peak": 0}
+    release = threading.Event()
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        with lock:
+            state["concurrent"] += 1
+            state["peak"] = max(state["peak"], state["concurrent"])
+        release.wait(timeout=5)
+        with lock:
+            state["concurrent"] -= 1
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            tasks = [asyncio.create_task(client.get("/api/index/stats"))
+                     for _ in range(6)]
+            # Give the pile-up a moment to reach its ceiling before releasing —
+            # long enough on any CI box, short enough not to matter if it isn't.
+            for _ in range(50):
+                with lock:
+                    if state["concurrent"] >= 2:
+                        break
+                await asyncio.sleep(0.02)
+            assert state["peak"] <= 2
+            release.set()
+            return await asyncio.gather(*tasks)
+
+    responses = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses)
+    assert state["peak"] == 2  # the ceiling was actually reached, not just respected
+
+
+def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkeypatch):
+    """The regression the two-lane split fixes: with one shared semaphore, a
+    slow `/api/index/query` could hold both of its slots for up to 10s, and
+    every keystroke in the home search box queued behind it. `/api/index/stats`
+    (the interactive lane) must answer immediately while a query is still
+    running."""
+    import threading
+
+    import httpx
+
+    query_started = threading.Event()
+    query_release = threading.Event()
+
+    def fake_guarded(cfg, sql, limit, token=None):
+        query_started.set()
+        query_release.wait(timeout=5)
+        return {"columns": [], "rows": []}
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "_guarded", fake_guarded)
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            query_task = asyncio.create_task(
+                client.post("/api/index/query", json={"sql": "select 1"},
+                           headers={"X-Fused": "1"}))
+            for _ in range(50):
+                if query_started.is_set():
+                    break
+                await asyncio.sleep(0.02)
+            assert query_started.is_set()
+            t0 = time.monotonic()
+            stats_resp = await client.get("/api/index/stats")
+            elapsed = time.monotonic() - t0
+            query_release.set()
+            query_resp = await query_task
+            return stats_resp, elapsed, query_resp
+
+    stats_resp, elapsed, query_resp = asyncio.run(run())
+    assert stats_resp.status_code == 200
+    # Would be seconds if `stats` shared the query's slot; this only bounds
+    # generously to stay fast on a loaded CI box.
+    assert elapsed < 2.0, elapsed
+    assert query_resp.status_code == 200
+
+
+def test_a_breakdown_request_does_not_consume_an_interactive_slot(home, tmp_path, monkeypatch):
+    """Code review finding: `stats`/`search`/`rank` share the interactive
+    lane on the premise that every member is "bounded, cheap, and
+    known-shaped" -- true of a plain `/api/index/stats`, but not of
+    `?breakdown=true`, an unbounded `GROUP BY ext` over every partition under
+    the root that can take seconds on a large index. Two PLAIN stats calls
+    filling the whole width-2 interactive lane must not delay a breakdown
+    request -- if breakdown still shared that lane, it would queue behind
+    them for as long as they run, the exact head-of-line blocking the
+    two-lane split (D706) was introduced to eliminate, reintroduced inside
+    the lane meant to be safe from it."""
+    import threading
+
+    import httpx
+
+    lock = threading.Lock()
+    plain_concurrent = 0
+    plain_started = threading.Event()
+    plain_release = threading.Event()
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        nonlocal plain_concurrent
+        if not breakdown:
+            with lock:
+                plain_concurrent += 1
+                if plain_concurrent >= 2:
+                    plain_started.set()
+            plain_release.wait(timeout=5)
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            plain_tasks = [
+                asyncio.create_task(client.get("/api/index/stats"))
+                for _ in range(2)
+            ]
+            for _ in range(50):
+                if plain_started.is_set():
+                    break
+                await asyncio.sleep(0.02)
+            assert plain_started.is_set()  # both interactive-lane slots taken
+            t0 = time.monotonic()
+            breakdown_resp = await client.get(
+                "/api/index/stats", params={"breakdown": "true"})
+            elapsed = time.monotonic() - t0
+            plain_release.set()
+            plain_resps = await asyncio.gather(*plain_tasks)
+            return breakdown_resp, elapsed, plain_resps
+
+    breakdown_resp, elapsed, plain_resps = asyncio.run(run())
+    assert breakdown_resp.status_code == 200
+    # Would be seconds if breakdown queued behind the two plain calls filling
+    # the interactive lane.
+    assert elapsed < 2.0, elapsed
+    assert all(r.status_code == 200 for r in plain_resps)
+
+
+def test_ask_shares_the_query_lane_with_query(home, tmp_path, monkeypatch):
+    """Review finding: `/api/index/ask` ran the same guarded DuckDB call
+    `/api/index/query` does, over model-generated SQL, on a worker thread, and
+    was not bounded by any semaphore at all. It must now share the
+    authored-SQL lane with `query` — concurrent `query` + `ask` calls must
+    never both be running their duckdb call at once."""
+    import threading
+
+    import httpx
+    from fastapi.responses import JSONResponse
+
+    lock = threading.Lock()
+    state = {"concurrent": 0, "peak": 0}
+    release = threading.Event()
+
+    def fake_guarded(cfg, sql, limit, token=None):
+        with lock:
+            state["concurrent"] += 1
+            state["peak"] = max(state["peak"], state["concurrent"])
+        release.wait(timeout=5)
+        with lock:
+            state["concurrent"] -= 1
+        return {"columns": [], "rows": []}
+
+    async def fake_relay(body, session=None):
+        return JSONResponse({"ok": True, "result": {"text": "select 1"}})
+
+    monkeypatch.setattr(index_router, "_guarded", fake_guarded)
+    monkeypatch.setattr(index_router._server_ai, "_ai_relay", fake_relay)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            tasks = [
+                asyncio.create_task(client.post(
+                    "/api/index/query", json={"sql": "select 1"},
+                    headers={"X-Fused": "1"})),
+                asyncio.create_task(client.post(
+                    "/api/index/ask", json={"prompt": "how many files"},
+                    headers={"X-Fused": "1"})),
+            ]
+            for _ in range(50):
+                with lock:
+                    if state["concurrent"] >= 1:
+                        break
+                await asyncio.sleep(0.02)
+            assert state["peak"] <= 1
+            release.set()
+            return await asyncio.gather(*tasks)
+
+    responses = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses)
+    assert state["peak"] == 1  # the ceiling was actually reached
+
+
+def test_a_lane_survives_a_second_contending_event_loop(home, tmp_path, monkeypatch):
+    """The bug the lazy per-loop semaphore fixes (review finding, D701
+    correction / D706): a bare module-level `asyncio.Semaphore()` binds to
+    whichever event loop first CONTENDS on it, and a second event loop that
+    later contends on it raises `RuntimeError: ... is bound to a different
+    event loop` — surfacing as a 500 instead of a queued request. Two separate
+    `asyncio.run` calls (two separate loops), each with MORE concurrent
+    requests than the lane's width so each one genuinely contends, must both
+    succeed."""
+    import threading
+
+    import httpx
+
+    release = threading.Event()
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        release.wait(timeout=5)
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run_three_concurrent():
+        # 3 requests against a width-2 lane: the third genuinely contends,
+        # rather than merely acquiring an uncontended semaphore (which never
+        # exercised the binding bug in the first place).
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            tasks = [asyncio.create_task(client.get("/api/index/stats"))
+                     for _ in range(3)]
+            await asyncio.sleep(0.2)
+            release.set()
+            return await asyncio.gather(*tasks)
+
+    first = asyncio.run(run_three_concurrent())
+    release.clear()
+    second = asyncio.run(run_three_concurrent())  # a brand-new event loop
+    for resp in first + second:
+        assert resp.status_code == 200
+
+
 # -- config --------------------------------------------------------------------
 
 def test_config_round_trips_roots_and_ignore(home, tmp_path):

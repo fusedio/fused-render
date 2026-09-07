@@ -2350,7 +2350,7 @@ def test_deleting_without_a_key_is_a_400(client):
 
 # ------------------------------------------------------------- erasing it
 # `POST /api/tasks/erase` — delete's cancel-and-tombstone, and then the
-# session itself: transcript, sidecars, triage, read marks (D701). The softer
+# session itself: transcript, sidecars, triage, read marks (D740). The softer
 # verb above is unchanged and still keeps the transcript (D306).
 
 

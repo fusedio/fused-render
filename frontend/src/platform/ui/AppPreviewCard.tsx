@@ -35,6 +35,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
+import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { AppStar } from "@platform/ui/AppStar";
@@ -85,6 +86,11 @@ export function AppPreviewCard({
   // the browser gestures use the same href, so the two still can't disagree.
   href?: string;
 }) {
+  // The icon.svg recoloured for the live theme when it names a colour
+  // (picker-written), the raw file otherwise.
+  const iconSrc = useThemedIconSrc(
+    app.icon ? appIconUrl(app.icon, app.icon_mtime) : null,
+  );
   const title = app.title || app.name;
   // The same timestamp the grid SORTS by (last opened, modified standing in) —
   // a card ranked first for being opened just now must not label itself with a
@@ -237,10 +243,10 @@ export function AppPreviewCard({
             `draggable={false}` for the reason the still's shield exists — an
             <img> carries the browser's native drag-the-image gesture, which
             starts a drag instead of the click that opens the card. */}
-        {app.icon ? (
+        {iconSrc ? (
           <img
             className="app-pcard-icon"
-            src={appIconUrl(app.icon, app.icon_mtime)}
+            src={iconSrc}
             alt=""
             draggable={false}
           />

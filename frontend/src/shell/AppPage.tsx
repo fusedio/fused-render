@@ -60,6 +60,7 @@ import {
   type TemplateEntry,
 } from "@platform/lib/api";
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
+import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { embedUrlForFsPath, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import {
@@ -274,7 +275,11 @@ export default function AppPage({
     window.addEventListener(CURRENT_APPS_CHANGED_EVENT, loadIcon);
     return () => window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, loadIcon);
   }, [loadIcon]);
-  useFavicon(iconHref);
+  // Both the header mark and the favicon draw the theme-resolved src: a
+  // picker-written glyph names its colour, and neither an <img> nor a
+  // <link rel="icon"> can read a token on its own (app-icon-src.ts).
+  const iconSrc = useThemedIconSrc(iconHref);
+  useFavicon(iconSrc);
 
   // ---- the header mark's icon picker -----------------------------------------
   // The same picker the sidebar's Projects row opens from its glyph (the emoji
@@ -507,8 +512,8 @@ export default function AppPage({
               );
             }}
           >
-            {iconHref ? (
-              <img src={iconHref} alt="" draggable={false} />
+            {iconSrc ? (
+              <img src={iconSrc} alt="" draggable={false} />
             ) : (
               <AppStar />
             )}

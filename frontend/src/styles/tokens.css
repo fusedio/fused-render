@@ -252,6 +252,21 @@
   --icon-db: #82abbf;
   --icon-file: #868c93;
 
+  /* App-icon palette — the icon picker's ten colours (Notion's set), the
+     swatches and the tinted grid. icon-color.ts carries the SAME hex as
+     literals for the icon.svg file itself, which cannot read a token: keep
+     the two in step. `default` is the --fg-muted pair. */
+  --app-icon-default: #9aa0a6;
+  --app-icon-gray: #9b9b9b;
+  --app-icon-brown: #ba856f;
+  --app-icon-yellow: #ca9849;
+  --app-icon-orange: #c77d48;
+  --app-icon-green: #529e72;
+  --app-icon-blue: #5e87c9;
+  --app-icon-purple: #9d68d3;
+  --app-icon-pink: #d15796;
+  --app-icon-red: #df5452;
+
   /* Task chip hues — the Calendar's per-PROJECT colour (shell/ScheduleCalendar.tsx,
      indexed by schedule-lib.taskColour, which hashes the task's folder). Eight,
      hand-picked and evenly spread around the wheel, because the calendar's whole
@@ -428,6 +443,17 @@
   --icon-archive: #806341;
   --icon-db: #3d7b93;
   --icon-file: #6b7178;
+
+  --app-icon-default: #61656c;
+  --app-icon-gray: #787774;
+  --app-icon-brown: #9f6b53;
+  --app-icon-yellow: #cb912f;
+  --app-icon-orange: #d9730d;
+  --app-icon-green: #448361;
+  --app-icon-blue: #337ea9;
+  --app-icon-purple: #9065b0;
+  --app-icon-pink: #c14c8a;
+  --app-icon-red: #d44c47;
 
   --task-c0: #2563eb;
   --task-c1: #0d9488;

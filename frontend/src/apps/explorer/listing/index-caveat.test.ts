@@ -14,6 +14,7 @@ function status(over: Partial<IndexStatus> = {}): IndexStatus {
     phase: "scanning (incremental)",
     dirs: 10,
     files: 4321,
+    reused: 0,
     error: null,
     ...over,
   };
