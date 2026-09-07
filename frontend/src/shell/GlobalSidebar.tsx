@@ -24,7 +24,6 @@ import {
   updateRelevant,
   useUpdateStatus,
 } from "@platform/lib/update-status";
-import { pushToast } from "@platform/lib/toast";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
@@ -454,12 +453,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // path was reached (bugbot, PR #1058).
     if (updateStatus.state === "installed") {
       window.location.assign("fused-render://relaunch");
-      return;
-    }
-    if (updateStatus.method === "brew") {
-      if (!updateStatus.manual_command) return;
-      navigator.clipboard.writeText(updateStatus.manual_command);
-      pushToast({ msg: "Copied", tone: "info" });
       return;
     }
     // ONLY AN UPDATE THAT IS WAITING GETS INSTALLED (bugbot, PR #1049): the

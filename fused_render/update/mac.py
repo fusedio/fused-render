@@ -280,9 +280,10 @@ class UpdateManager:
         return self.status()
 
     def _sync_manual_command(self) -> None:
-        """Brew-managed installs are never updated by the app: "available"
-        carries the terminal command for the user to run instead. Called with
-        the lock held after every check() state transition."""
+        """A brew-managed install's "available" carries the terminal command
+        as well — the secondary way to update, beside the in-app button, and
+        the one that keeps Homebrew's own receipt in step. Called with the
+        lock held after every check() state transition."""
         if self._state == "available" and self.method() == "brew":
             self._manual_command = BREW_COMMAND
         else:
@@ -311,10 +312,11 @@ class UpdateManager:
                 return self.status()
             if self._latest is None or self._state not in ("available", "error"):
                 return self.status()
-            if self.method() == "brew":
-                # Brew-managed: the user runs manual_command themselves; a
-                # stray POST must not put the manager into "installing".
-                return self.status()
+            # A brew-managed install takes the same DMG path now (Akshil,
+            # 2026-09-08: "just show the download button regardless"): the
+            # bundle is the bundle whichever tool put it there, and the swap
+            # is version-verified either way. The brew command stays on the
+            # status as a SECONDARY way — see `_sync_manual_command`.
             manifest = self._latest
             self._state = "installing"
             self._error = None
@@ -352,7 +354,7 @@ class UpdateManager:
 
     def _install(self, manifest: dict) -> None:
         try:
-            if self.method() == "dmg":
+            if self.method() in ("dmg", "brew"):
                 self._install_dmg(manifest)
             else:
                 raise RuntimeError("not running from an installed bundle")

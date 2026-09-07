@@ -1078,6 +1078,19 @@ a.bookmark-name::after {
   color: var(--fg);
 }
 
+.update-badge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.update-badge-action--secondary,
+.update-badge-action--secondary:hover {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--border);
+}
+
 .update-badge-action {
   /* A <button> or an <a> (the installed state's Restart is a link to
      fused-render://relaunch) — same box either way. */

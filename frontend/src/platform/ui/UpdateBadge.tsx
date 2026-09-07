@@ -95,29 +95,30 @@ export default function UpdateBadge() {
       </button>
       {open && (
         <div className="update-badge-panel">
-          {status.state === "available" && status.method === "brew" && (
-            <>
-              <div className="update-badge-text">
-                Installed with Homebrew — run this in your terminal:
-              </div>
-              {status.manual_command && (
-                <div className="update-badge-command">
-                  <code>{status.manual_command}</code>
-                  <button type="button" className="update-badge-copy" onClick={copyCommand}>
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-          {status.state === "available" && status.method !== "brew" && (
+          {status.state === "available" && (
             <>
               <div className="update-badge-text">
                 Downloads and installs the new version.
               </div>
-              <button type="button" className="update-badge-action" onClick={install}>
-                Update to v{status.latest_version}
-              </button>
+              <div className="update-badge-actions">
+                <button type="button" className="update-badge-action" onClick={install}>
+                  Update to v{status.latest_version}
+                </button>
+                {/* Homebrew-managed installs get the brew command as a SECONDARY
+                    way (Akshil, 2026-09-08): the in-app update swaps the same
+                    bundle, and running brew instead keeps Homebrew's own receipt
+                    in step. */}
+                {status.manual_command && (
+                  <button
+                    type="button"
+                    className="update-badge-action update-badge-action--secondary"
+                    title={status.manual_command}
+                    onClick={copyCommand}
+                  >
+                    {copied ? "Copied" : "Copy brew command"}
+                  </button>
+                )}
+              </div>
             </>
           )}
           {status.state === "installing" && (

@@ -187,12 +187,22 @@ def test_dmg_available_has_no_manual_command(monkeypatch):
     assert status["manual_command"] is None
 
 
-def test_brew_install_is_a_noop(monkeypatch):
-    manager = _manager(monkeypatch, method="brew", available="9.9.9")
+def test_brew_install_takes_the_dmg_path_and_keeps_the_command(monkeypatch, tmp_path):
+    """A brew-managed install used to be a no-op on POST /install (the user ran
+    the brew command). It now installs like a DMG one (Akshil, 2026-09-08:
+    "show the download button regardless") — and "available" still carries
+    the brew command as the secondary way."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(manager, "method", lambda: "brew")
     manager.check()
+    assert manager.status()["manual_command"] == mac.BREW_COMMAND
     status = manager.install()
-    assert status["state"] == "available"
-    assert manager._install_thread is None
+    assert status["state"] == "installing"
+    assert manager._install_thread is not None
+    manager._install_thread.join(timeout=5)
+    # The stub bundle cannot complete a swap; what matters is that the DMG path
+    # RAN for a brew install rather than being refused.
+    assert manager.status()["state"] in ("installed", "error")
 
 
 def test_status_notices_external_upgrade_without_a_check(monkeypatch):
