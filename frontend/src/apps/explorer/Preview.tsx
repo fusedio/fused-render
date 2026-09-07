@@ -22,6 +22,7 @@ import {
   getRegistryEntryForPath,
   resetRegistryBinding,
   repairTemplateRegistry,
+  getGitSnapshot,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
@@ -79,10 +80,10 @@ import {
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import {
   activeRev,
-  revFromHook,
   revSrc,
   type RevSelection,
 } from "@apps/explorer/lib/preview-rev";
+import { isSha, setSnapshotAppDir } from "@apps/explorer/lib/snapshot-param";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
@@ -94,10 +95,15 @@ import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs
 import Listing from "@apps/explorer/Listing";
 
 // The window global the injected runtime calls to hand this shell the commit the
-// git sidebar just selected (static/runtime.js `noteRevSelected`, reached from the
-// template as `window._fusedSelectRev`). Declared here, beside the assignment that
-// installs it, exactly as main.tsx declares `_fusedFsChanged` beside its own — the
-// other half of the same ancestor-global contract with that runtime.
+// git sidebar just selected (static/runtime.js `noteSnapshotSelected`, reached
+// from the template as `window._fusedSelectSnapshot`). Declared here, beside the
+// assignment that installs it, exactly as main.tsx declares `_fusedFsChanged`
+// beside its own — the other half of the same ancestor-global contract with
+// that runtime. The handler resolves `/api/git/snapshot` and writes
+// `_snapshot=<sha>` onto the shell's own URL (see the effect below) — a URL
+// write, unlike the in-memory selection the predecessor `_fusedRevSelected`
+// held, because every frame under this shell (not only the content pane) has
+// to see the same commit.
 //
 // `_fusedClaudeAsk`/`_fusedClaudeAskTake` are the git sidebar's "Fix with AI"
 // hop (static/runtime.js `noteAskClaude`/`pullClaudeAsk`, reached from the git
@@ -110,7 +116,7 @@ import Listing from "@apps/explorer/Listing";
 // into that iframe's `src`).
 declare global {
   interface Window {
-    _fusedRevSelected?: (sha: unknown) => void;
+    _fusedSnapshotSelected?: (sha: unknown) => void;
     _fusedClaudeAsk?: (text: unknown) => void;
     _fusedClaudeAskTake?: () => string | null;
   }
@@ -1104,41 +1110,61 @@ function TemplatePreview({
   const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide);
   const sideTargetEntry = sideTargets.find((e) => e.mode === sideTarget) ?? null;
 
-  // --- the CONTENT pane's revision (`_rev`) ---------------------------------
-  // A commit clicked in the git sidebar makes the content pane render this file as
-  // of that commit. The sha arrives from the sidebar's frame through the runtime's
-  // ancestor-window hop — a global on this window, the same idiom
-  // `_fusedFsChanged` uses (static/runtime.js), and deliberately NOT a param: see
-  // lib/preview-rev for the three places a `_rev` in the address bar would leak to.
+  // --- the shell's git snapshot (`_snapshot`) --------------------------------
+  // A commit clicked in the git sidebar puts the WHOLE SHELL into
+  // `_snapshot=<sha>`, not merely this content pane: the sha arrives from the
+  // sidebar's frame through the runtime's ancestor-window hop — a global on
+  // this window, the same idiom `_fusedFsChanged` uses (static/runtime.js) —
+  // and the RESPONSE to it is a URL write, deliberately, unlike the deleted
+  // `_rev` design's in-memory selection: every frame under this shell (the
+  // file explorer's own listing included) has to see the same commit, which
+  // component state cannot reach.
   //
-  // State, held as {sha, path}, and read ONLY through `activeRev` — which is what
-  // makes the clearing rules invariants rather than effects. Nothing here clears
-  // anything: a revision chosen for another file, or one left over from a sidebar
-  // that has since closed or switched companion, simply does not resolve. See the
-  // header of lib/preview-rev.
-  const [revSel, setRevSel] = useState<RevSelection | null>(null);
+  // `revSel`/`activeRev` below still hold the retired single-file mechanism —
+  // nothing sets `revSel` any more (this effect no longer does), so `rev`
+  // resolves to null from here on. Left in place rather than pulled now:
+  // `rev`/`revSrc` still feed the content frame's src further down, and this
+  // task's own scope is the hop and the URL state, not that forwarding —
+  // the next task replaces those call sites with `_snapshot` and removes this
+  // block outright.
+  const [revSel] = useState<RevSelection | null>(null);
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
     // git sidebar to select in, and two instances racing for one window global
     // (a panel of panes) would have the last mount win the callback for all of
-    // them. Re-installed per file so the report is stamped with the file that was
-    // open when it arrived.
+    // them. Re-installed per file so a resolve in flight from a PREVIOUS file
+    // can never land after this effect's own cleanup has already fired.
     if (!splitCapable) return;
-    window._fusedRevSelected = (sha: unknown) => setRevSel(revFromHook(sha, fsPath));
+    let alive = true;
+    window._fusedSnapshotSelected = (sha: unknown) => {
+      const current = location.search.replace(/^\?/, "");
+      if (!isSha(sha)) {
+        // Back to live: drop both the app-dir the carry rule checks and the
+        // shell's own `_snapshot` param.
+        setSnapshotAppDir(null);
+        const search = writeQueryParam(current, "_snapshot", null);
+        replaceSearch(location.pathname + (search ? "?" + search : ""));
+        return;
+      }
+      getGitSnapshot(fsPath, sha)
+        .then((r) => {
+          if (!alive) return; // a later selection, or this file closed, already won
+          setSnapshotAppDir(r.app_dir);
+          const search = writeQueryParam(current, "_snapshot", sha);
+          replaceSearch(location.pathname + (search ? "?" + search : ""));
+        })
+        .catch(() => {
+          // No app folder encloses this path, a mount-backed path, git trouble:
+          // the same posture the deleted `_rev` design took toward a junk
+          // value — the pane stays live rather than surfacing a broken param.
+        });
+    };
     return () => {
-      delete window._fusedRevSelected;
+      alive = false;
+      delete window._fusedSnapshotSelected;
     };
   }, [splitCapable, fsPath]);
   const rev = activeRev(revSel, activeSide, fsPath);
-  // HOUSEKEEPING, not the guarantee. `activeRev` above already refuses a stale
-  // selection on the paint that makes it stale, so nothing depends on this effect
-  // running — but a selection kept in memory after its sidebar closed would come
-  // BACK the moment the same sidebar reopened, for the few milliseconds before the
-  // template's own frame loads and announces "live". Dropping it here means the
-  // reopened pane starts live and stays live until a row is clicked again.
-  useEffect(() => {
-    if (revSel && (activeSide !== "git" || revSel.path !== fsPath)) setRevSel(null);
-  }, [revSel, activeSide, fsPath]);
 
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
@@ -1178,7 +1204,7 @@ function TemplatePreview({
   // The git sidebar's "Fix with AI" button has no chat of its own — it hands the
   // prompt it built to whichever ancestor owns a Claude sidebar, through the
   // runtime's ancestor-window hop (static/runtime.js `noteAskClaude`), the same
-  // idiom `_fusedRevSelected` above uses for `_rev`.
+  // idiom `_fusedSnapshotSelected` above uses for `_snapshot`.
   //
   // THIS IS A PULL, NOT A PARAM ON THE SRC (review #804 round 2). It used to be
   // the latter — a `_fused_ask` query baked into the claude iframe's URL, kept

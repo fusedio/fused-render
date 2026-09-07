@@ -4079,6 +4079,26 @@ export function getGitRepos(): Promise<GitRepos> {
   return getJson<GitRepos>("/api/git-repos");
 }
 
+// -- Git snapshot (GET /api/git/snapshot) -------------------------------------
+// The app folder enclosing `path`, materialised at `sha` (fused_render/server/
+// routers/git_snapshot.py). Backs the shell's `_snapshot=<sha>` URL state: the
+// explorer resolves this once per selection (and once per fresh load that
+// already carries the param) to learn `app_dir` — the live folder the carry
+// rule (platform/lib/snapshot-param.ts) is scoped to — and `entry`/`dir` for
+// whatever needs to open the extracted tree directly.
+export interface GitSnapshot {
+  ok: boolean;
+  dir: string;
+  entry: string | null;
+  app_dir: string;
+}
+
+export function getGitSnapshot(path: string, sha: string): Promise<GitSnapshot> {
+  return getJson<GitSnapshot>(
+    `/api/git/snapshot?path=${encodeURIComponent(path)}&sha=${encodeURIComponent(sha)}`,
+  );
+}
+
 // -- AI completion (POST /api/ai) ---------------------------------------------
 // The fused.ai relay: one non-streaming completion through the server's warm
 // Claude Code CLI instance (server/ai.py). The shell uses this for small

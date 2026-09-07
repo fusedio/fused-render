@@ -12,6 +12,7 @@ import { installDomShim } from "./testDomShim";
 installDomShim();
 
 const { navigate, rewriteLegacyUrl, withPreviewFlag } = await import("./router");
+const { setSnapshotAppDir } = await import("./snapshot-param");
 
 // The url navigate() pushed, with the page sitting on `search` when it ran.
 // navigate reads location.search live (the framing flag is carried FORWARD, not
@@ -138,6 +139,61 @@ describe("navigate carries the frozen-tree framing", () => {
     expect(pushedFrom("?snapshot=0", () => navigate("/w/docs", { isDir: true }))).toBe(
       "/explorer/view/w/docs",
     );
+  });
+});
+
+// `_snapshot=<sha>` is the SECOND exception to the fresh-query rule, and unlike
+// `snapshot=1` it is bounded: it names a commit, checked against the live app
+// folder that commit was resolved against (getSnapshotAppDir(), set by
+// whichever code last resolved /api/git/snapshot for this document — task 4).
+describe("navigate carries a git snapshot only within its app folder", () => {
+  test("an in-app hop keeps _snapshot", () => {
+    setSnapshotAppDir("/w/myapp");
+    try {
+      const url = pushedFrom(
+        "?_snapshot=abc1234",
+        () => navigate("/w/myapp/sub/reader.py", { isDir: false }),
+      );
+      expect(url).toBe("/explorer/view/w/myapp/sub/reader.py?_snapshot=abc1234");
+    } finally {
+      setSnapshotAppDir(null);
+    }
+  });
+
+  test("a hop out of the app folder drops it", () => {
+    setSnapshotAppDir("/w/myapp");
+    try {
+      const url = pushedFrom(
+        "?_snapshot=abc1234",
+        () => navigate("/w", { isDir: true }),
+      );
+      expect(url).toBe("/explorer/view/w");
+    } finally {
+      setSnapshotAppDir(null);
+    }
+  });
+
+  test("a hop to a different app folder drops it", () => {
+    setSnapshotAppDir("/w/myapp");
+    try {
+      const url = pushedFrom(
+        "?_snapshot=abc1234",
+        () => navigate("/w/otherapp", { isDir: true }),
+      );
+      expect(url).toBe("/explorer/view/w/otherapp");
+    } finally {
+      setSnapshotAppDir(null);
+    }
+  });
+
+  test("never invented where nothing has resolved an app folder yet", () => {
+    // getSnapshotAppDir() defaults to null (nothing has resolved it in this
+    // test run) — the param must not be invented off the URL alone.
+    const url = pushedFrom(
+      "?_snapshot=abc1234",
+      () => navigate("/w/myapp/sub/reader.py", { isDir: false }),
+    );
+    expect(url).toBe("/explorer/view/w/myapp/sub/reader.py");
   });
 });
 

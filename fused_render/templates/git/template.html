@@ -1253,20 +1253,25 @@
  *   to remember and becomes something they cannot get wrong. Precedent in this
  *   same file: `branchQuery` is module-level and deliberately not a param.
  *
- *   A SHA MUST NOT REACH THE SHELL'S ADDRESS BAR. A param written here mirrors up
- *   into the explorer's URL (that is what makes `?_side=git&panel=branch` a
- *   working deep link), and up there a revision is actively harmful: a path change
- *   preserves the query verbatim, so a sha picked from THIS file's commit list
- *   would be carried onto the next file; bookmarks store the whole query
- *   string and replays it on the next bare open, so it would outlive a restart;
- *   and bookmarks store the search too. So `previewed` travels to the shell as an
- *   ancestor-window call instead (`window._fusedSelectRev`, see `hopRev`), the
- *   same idiom `_fusedFsChanged` uses, and leaves nothing behind.
+ *   THIS FRAME CANNOT WRITE THE SHELL'S ADDRESS BAR ITSELF. `previewed` is a
+ *   fact about what THIS sidebar is showing, and the shell's `_snapshot=<sha>`
+ *   is a fact about what the WHOLE PAGE is showing — they usually agree, but
+ *   only the shell may write its own URL, so `previewed` still travels there
+ *   as an ancestor-window call (`window._fusedSelectSnapshot`, see
+ *   `hopSnapshot`), the same idiom `_fusedFsChanged` uses. What changed is
+ *   what the shell DOES with the call: it used to hold the sha as component
+ *   state, scoped to one content pane and gone the moment the open file
+ *   changed; it now writes `_snapshot=<sha>` onto its own URL, which is what
+ *   lets every frame under it — not only this sidebar's neighbour — read the
+ *   same commit (see the plan's decisions log for why leaking onto the shell's
+ *   URL, once refused, is now the point).
  *
- * The cost, accepted: neither survives a refresh any more. That is the right trade
- * for both — they are READING surfaces, reconstructed in one click, and every
- * piece of state that is expensive to retype (`msg`) or unsafe to lose (`ask`) is
- * still a param.
+ * The cost, accepted: neither survives a refresh of THIS FRAME any more —
+ * `previewed` itself does not persist here, though the shell's own
+ * `_snapshot=<sha>` does (it is a URL, unlike this variable). That is the
+ * right trade for both: they are READING surfaces, reconstructed in one
+ * click, and every piece of state that is expensive to retype (`msg`) or
+ * unsafe to lose (`ask`) is still a param on THIS frame.
  */
 /* One click of "load more" widens the window by this much. It is the reader's
    own DEFAULT_LOG_LIMIT — the page grows `limit`, it does not page. */
@@ -1420,18 +1425,24 @@ function select(kind, value) {
  *
  *   `selection`  what THIS column's right-hand pane shows — a diff.
  *   `previewed`  which commit the EXPLORER's content pane, on the other side of
- *                this sidebar, is rendering the open file as of. Read-only,
- *                resolved out of the object database on read; nothing is written
- *                to disk for it.
+ *                this sidebar, is rendering the open file as of. Read-only: the
+ *                enclosing app folder is materialised at that commit
+ *                (`/api/git/snapshot`) and every read the pane's own template
+ *                makes resolves against that extracted tree instead of today's
+ *                files.
  *
  * They are deliberately not one piece of state. Reading a commit's diff and
  * putting that commit's version of a file in the pane next door are different
  * requests, and collapsing them would mean a click meant for one always performs
  * the other — including on surfaces where the second is not even possible.
  *
- * The sha travels through the runtime's ancestor-window hop (`_fusedSelectRev` —
- * the `_fusedFsChanged` idiom), never through a param, so it cannot reach the
- * shell's address bar or a bookmark. See the state header.
+ * The sha travels through the runtime's ancestor-window hop
+ * (`_fusedSelectSnapshot` — the `_fusedFsChanged` idiom) rather than through a
+ * param on THIS frame — this frame still cannot write the shell's own address
+ * bar directly. The shell's RESPONSE to that hop, unlike the deleted `_rev`
+ * design, IS a param: `_snapshot=<sha>` on the shell's own URL, deliberately,
+ * so every frame under it and a bookmark of the page both see the same
+ * commit. See the state header.
  */
 let previewed = null;
 
@@ -1477,15 +1488,15 @@ function preview(sha) {
   const next = (canPreview && sha) ? sha : null;
   if (previewed === next) return;
   previewed = next;
-  hopRev();
+  hopSnapshot();
   void draw(true);
 }
 
 /* Guarded: a page opened outside the app's shell — or under the hosted runtime,
-   which has no revision route — simply has no hop, and no pane it would drive. */
-function hopRev() {
-  if (typeof window._fusedSelectRev === "function") {
-    window._fusedSelectRev(previewed);
+   which has no snapshot route — simply has no hop, and no pane it would drive. */
+function hopSnapshot() {
+  if (typeof window._fusedSelectSnapshot === "function") {
+    window._fusedSelectSnapshot(previewed);
   }
 }
 
@@ -1499,7 +1510,7 @@ function pollRevTarget() {
      hop still fires, because the shell may yet be holding the sha. */
   if (!has && previewed !== null) {
     previewed = null;
-    hopRev();
+    hopSnapshot();
   }
   /* Repaint either way: the rows gain or lose their preview control. */
   void draw(true);
@@ -3496,11 +3507,11 @@ function commitLine(entry, selected, isLatest) {
     el("span", { className: "when", textContent: entry.relative }));
   if (selected) line.setAttribute("aria-current", "true");
   /* The FULL object name, never the abbreviation the row displays: this value is
-     what the shell resolves the content pane's bytes with (`_fusedSelectRev` ->
-     /api/git/show), and an abbreviation is a display form that would have to be
-     re-resolved to be used. Nothing here clears a working-tree selection — one
-     variable holds the pane's subject, so writing a commit into it IS clearing
-     the other kind. */
+     what the shell resolves the content pane's bytes with (`_fusedSelectSnapshot`
+     -> /api/git/snapshot), and an abbreviation is a display form that would have
+     to be re-resolved to be used. Nothing here clears a working-tree selection —
+     one variable holds the pane's subject, so writing a commit into it IS
+     clearing the other kind. */
   row.addEventListener("click",
     () => select("rev", selected ? null : entry.sha));
   line.append(row);
@@ -4466,7 +4477,7 @@ document.addEventListener("keydown", (event) => {
    holding the previous sha would leave the content pane on a revision no row here
    claims. Saying "live" on the way in is what keeps the two ends from disagreeing,
    and it is a no-op when the shell holds nothing. */
-hopRev();
+hopSnapshot();
 
 /* The capability, read once BEFORE the first paint — as a plain assignment and
    not through `pollRevTarget`, which would ask for a repaint of a view that has

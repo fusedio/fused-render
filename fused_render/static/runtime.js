@@ -1528,7 +1528,7 @@
   // inside that slice is a ReferenceError under node (the same trap noteFsChanged
   // fell into — see that file's prelude comment). The git sidebar puts a page into
   // this state by telling the shell which commit was clicked (window
-  // ._fusedSelectRev, below); the shell rebuilds the content frame's src with the
+  // ._fusedSelectSnapshot, below); the shell rebuilds the content frame's src with the
   // param on it. Reading it HERE is what makes the whole feature cost templates
   // zero lines: a template still calls fused.readFile(fused.params.get("_file")),
   // and which bytes that means is decided by the frame's url.
@@ -1591,17 +1591,20 @@
   // it is plumbing between the built-in git template
   // and the shell that ships with it, NOT a documented `fused.*` contract.
   //
-  // Deliberately not a param. `fused.params.set` writes the ancestor's URL, and
-  // the shell's address bar is the one place this value must never appear: a path
-  // change preserves the query verbatim (so a sha picked from file A's commit list
-  // would be carried onto file B), and bookmarks store the search too. `_file` and `chat_only=1` already live on an
-  // iframe src alone for the same reason; `_rev` is the third param of that kind.
-  function noteRevSelected(sha) {
+  // Deliberately not a param ON THIS FRAME's OWN url — a template cannot write
+  // the shell's top-level address bar from inside an iframe, so the hop stays;
+  // what it carries changed. It used to be answered with in-memory component
+  // state (a sha the content pane held only as long as the same file stayed
+  // open); the shell's response is now a URL WRITE — `_snapshot=<sha>` on the
+  // shell's own address bar, which is what lets every OTHER frame under it (the
+  // file explorer's listing included, not only one content pane) see the same
+  // commit.
+  function noteSnapshotSelected(sha) {
     const value = typeof sha === "string" && sha ? sha : null;
     let t = window;
     try {
       for (;;) {
-        if (typeof t._fusedRevSelected === "function") t._fusedRevSelected(value);
+        if (typeof t._fusedSnapshotSelected === "function") t._fusedSnapshotSelected(value);
         if (!t.parent || t.parent === t) break;
         void t.parent.location.href; // throws when cross-origin — chain ends
         t = t.parent;
@@ -1613,11 +1616,11 @@
 
   // Tell the NEAREST same-origin ancestor that owns a Claude sidebar that a
   // prompt is waiting for it, and switch it to Claude. The climbing/try-catch
-  // discipline is noteRevSelected's (D3/D4: a global on the ancestor, not a
+  // discipline is noteSnapshotSelected's (D3/D4: a global on the ancestor, not a
   // postMessage) — underscore-prefixed for the same reason too, plumbing
   // between the built-in git template and the shell that ships with it, NOT a
   // documented `fused.*` contract — but the DELIVERY is deliberately NOT the
-  // same: noteRevSelected calls the hook on EVERY same-origin ancestor that has
+  // same: noteSnapshotSelected calls the hook on EVERY same-origin ancestor that has
   // it, because "which commit is previewed" is idempotent to repeat — two
   // listeners agreeing is harmless. Sending a prompt is not that: each
   // delivery STARTS A REAL AGENT RUN with write access to the repository, so
@@ -5545,21 +5548,22 @@
     params: { get, getAll, set, onChange },
   };
 
-  // The git sidebar's revision hop, internal plumbing — deliberately not on
-  // `window.fused` (see the file header). Not present in the hosted runtime (see
-  // noteRevSelected): the built-in git template calls this with the sha of the
-  // commit the user clicked, or null to go back to live content, and the shell
-  // rebuilds the CONTENT frame's src with `_rev` on it. A window with no
-  // `_fusedRevSelected` hook is simply not a shell that can show one, and the call
-  // does nothing.
-  window._fusedSelectRev = noteRevSelected;
+  // The git sidebar's snapshot hop, internal plumbing — deliberately not on
+  // `window.fused` (see the file header). Not present in the hosted runtime
+  // (see noteSnapshotSelected): the built-in git template calls this with the
+  // sha of the commit the user clicked, or null to go back to live content,
+  // and the shell writes `_snapshot=<sha>` onto its own address bar — every
+  // frame under it inherits the param from there (Preview.tsx forwards it
+  // onto each frame's src). A window with no `_fusedSnapshotSelected` hook is
+  // simply not a shell that can show one, and the call does nothing.
+  window._fusedSelectSnapshot = noteSnapshotSelected;
 
   // The git sidebar's "fix this error" hop, the same internal plumbing as
-  // `_fusedSelectRev` just above and for the same reason it is not on
+  // `_fusedSelectSnapshot` just above and for the same reason it is not on
   // `window.fused`: the built-in git template calls this with the prompt it
   // built for a failed operation, and the shell (if it has a Claude sidebar to
   // drive) switches to it and remembers the text. Not present in the hosted
-  // runtime, same as `_fusedSelectRev` — a window with no `_fusedClaudeAsk`
+  // runtime, same as `_fusedSelectSnapshot` — a window with no `_fusedClaudeAsk`
   // hook is simply not a shell that can open one, and the call returns `false`
   // rather than doing nothing quietly: the git template uses that to show a
   // real failure instead of a button that looked like it worked.
