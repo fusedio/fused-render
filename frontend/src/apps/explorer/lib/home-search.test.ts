@@ -34,10 +34,6 @@ function rankHit(rel: string, over: Partial<IndexRankHit> = {}): IndexRankHit {
     is_dir: false,
     size: 10,
     mtime: 1_800_000_000,
-    score: 1,
-    longest_run: 1,
-    tier: 1,
-    depth: 1,
     ...over,
   };
 }
@@ -45,14 +41,10 @@ function rankHit(rel: string, over: Partial<IndexRankHit> = {}): IndexRankHit {
 function rankResult(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
     covered: true,
-    fresh: true,
     reason: "",
-    root: HOME,
     hits: [rankHit("Downloads/a.csv")],
     truncated: false,
     total: 1,
-    updated: null,
-    age_s: null,
     ...over,
   };
 }

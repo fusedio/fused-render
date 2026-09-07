@@ -1,11 +1,16 @@
 // A ranked answer from the server, as the rows the listing already renders.
 //
-// `/api/index/rank` returns the ORDER and the scoring fields, and deliberately
-// not the match positions: the client re-runs `fuzzyMatch` over the ~200 rows
-// it got back, so platform/lib/fuzzy.ts stays the single source of truth for
-// what highlights, and the server stays free to carry positions internally
-// (or not at all — `fused_render/index/query.py`'s `_rank_sql` scores in SQL
-// and never materializes them) without that becoming a wire contract.
+// `/api/index/rank` returns the ORDER, not the scoring fields: `score`/
+// `tier`/`depth`/`longest_run` drove `_rank_sql`'s ORDER BY server-side, but
+// nothing downstream re-sorts a server-answered row — this file hands back
+// hits "in the order it returned them", full stop — so the server stops at
+// computing them and the wire (`IndexRankHit`) never carried them. `SearchHit`
+// still declares those fields (the live-walk path's `rankCompare` genuinely
+// needs them), so this function fills them with placeholders rather than
+// dropping them from the shared type; nothing reads a placeholder because
+// nothing re-sorts this path. Match positions are the same story: the client
+// re-runs `fuzzyMatch` over the ~200 rows it got back, so platform/lib/
+// fuzzy.ts stays the single source of truth for what highlights.
 //
 // The two rankers agree on substring hits (index-backed search is substring-
 // only; tests/fixtures/rank-parity.json, restricted to substring rows, pins
@@ -20,20 +25,17 @@ import { fuzzyMatch } from "@platform/lib/fuzzy";
 import type { IndexRankHit } from "@platform/lib/api";
 import type { SearchHit } from "@apps/explorer/listing/types";
 
-function tierOf(tier: number): 1 | 2 | 3 {
-  // The wire is not the type system, and everything downstream orders on this.
-  return (tier <= 1 ? 1 : tier >= 3 ? 3 : 2) as 1 | 2 | 3;
-}
-
-/** The server's ranked hits as `SearchHit`s, in the order it returned them. */
+/** The server's ranked hits as `SearchHit`s, in the order it returned them.
+ * `score`/`longestRun`/`tier`/`depth` are placeholders — not on the wire, and
+ * not read on this path (see module comment). */
 export function hitsFromRank(hits: IndexRankHit[], q: string): SearchHit[] {
   if (!q) return [];
   return hits.map((h) => ({
     entry: { rel: h.rel, is_dir: h.is_dir, size: h.size, mtime: h.mtime },
     positions: fuzzyMatch(q, h.rel)?.positions ?? [],
-    score: h.score,
-    longestRun: h.longest_run,
-    tier: tierOf(h.tier),
-    depth: h.depth,
+    score: 0,
+    longestRun: q.length,
+    tier: 1,
+    depth: 0,
   }));
 }

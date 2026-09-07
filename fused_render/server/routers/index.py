@@ -1052,6 +1052,12 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     — and the ranker here stays free to carry positions internally without
     them becoming a wire contract.
 
+    `score`/`tier`/`depth`/`longest_run` are dropped from each hit the same
+    way: `search_ranked` still computes and returns them (its own tests pin
+    `_rank_sql`'s scoring correctness off them), but no client re-sorts a
+    server-answered row — `listing/ranked-hits.ts` hands back hits "in the
+    order it returned them" — so they never reach the wire.
+
     ASYNC, and doing real cancellation, not merely handling a request that
     happens to be a coroutine — a fast typist fires and abandons this route
     on every keystroke, and the abandoned ones used to run to completion:
@@ -1097,7 +1103,8 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
                 logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
                             q, root, (time.monotonic() - t0) * 1000)
                 return Response(status_code=499)
-    out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
+    _WIRE_DROP = ("positions", "score", "tier", "depth", "longest_run")
+    out["hits"] = [{k: v for k, v in h.items() if k not in _WIRE_DROP}
                    for h in out["hits"]]
     out["reason"] = _rank_reason(cfg, root, out)
     # DEBUG: the request total, to set against the per-phase DEBUG lines

@@ -286,6 +286,52 @@ def test_rank_route_does_not_return_positions(home, tmp_path):
     assert "positions" not in body["hits"][0]
 
 
+def test_rank_route_does_not_return_the_scoring_fields(home, tmp_path):
+    """`score`/`tier`/`depth`/`longest_run` drove `_rank_sql`'s ORDER BY
+    server-side and are still on `search_ranked`'s own return (that module's
+    tests pin scoring correctness off them), but no client re-sorts a
+    server-answered row, so `api_index_rank` strips them the same way it
+    already strips `positions`."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root,
+                            [root + "/alpha.txt", root + "/beta.txt"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "a"}).json()
+    assert len(body["hits"]) >= 1
+    for h in body["hits"]:
+        for k in ("score", "tier", "depth", "longest_run"):
+            assert k not in h
+
+
+def test_rank_route_preserves_search_ranked_s_order_exactly(
+    home, tmp_path, monkeypatch,
+):
+    """The invariant that makes dropping the scoring fields off the wire
+    safe: nothing between `search_ranked` and the rendered listing re-sorts —
+    `hitsFromRank` (frontend) hands hits back "in the order it returned
+    them", and this pins that the SAME order survives the route layer, byte
+    for byte, rather than merely trusting the comment."""
+    from fused_render.server.routers import index as index_router
+
+    order = ["zzz.txt", "aaa.txt", "mmm.txt"]
+
+    def fake_rank_body(cfg, root, q, limit=None, token=None):
+        return {"covered": True, "reason": "", "scanned_partitions": 0,
+                "of_partitions": 0,
+                "hits": [{"rel": r, "is_dir": False, "size": 1, "mtime": 1.0,
+                          "score": 0, "longest_run": 0, "tier": 1, "depth": 1}
+                         for r in order],
+                "truncated": False, "total": len(order)}
+
+    monkeypatch.setattr(index_router, "_rank_body", fake_rank_body)
+    root = str(tmp_path / "proj")
+    os.makedirs(root, exist_ok=True)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "x"}).json()
+    assert [h["rel"] for h in body["hits"]] == order
+
+
 def test_rank_route_on_a_missing_index_is_a_quiet_miss(home, tmp_path):
     client = TestClient(create_app(start_dir=str(tmp_path)))
     body = client.get("/api/index/rank",
@@ -605,11 +651,9 @@ def test_an_uncancelled_token_changes_nothing(tmp_path):
     token = CancelToken()
     with_token = search_ranked(cfg, "/r", "readme.md", token=token)
     without_token = search_ranked(cfg, "/r", "readme.md")
-    # `age_s` is a wall-clock measurement taken independently by each call, so
-    # it is the one field expected to differ between two otherwise-identical
-    # calls made microseconds apart.
-    with_token.pop("age_s")
-    without_token.pop("age_s")
+    # No `age_s` to pop any more (search_ranked no longer computes or returns
+    # it — that field is search_under's; see DECISIONS.md) — the two calls'
+    # results are now byte-identical outright.
     assert with_token == without_token
 
 

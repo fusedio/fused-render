@@ -586,20 +586,18 @@ export async function walkDirStream(
 //
 // `positions` are NOT on the wire: the caller re-runs `fuzzyMatch(q, rel)`
 // over the rows it got back, so platform/lib/fuzzy.ts stays the single source
-// of truth for what highlights (and the server's port of it, index/rank.py,
-// stays free to change its internals). A miss is a normal 200 with
-// covered:false, same as the corpus.
+// of truth for what highlights. A miss is a normal 200 with covered:false,
+// same as the corpus.
+//
+// `score`/`tier`/`depth`/`longest_run` are also NOT on the wire: they drove
+// `_rank_sql`'s ORDER BY server-side, but nothing here re-sorts an already-
+// ranked row (`listing/ranked-hits.ts` returns hits in the order the server
+// sent them), so the server stops at computing them and never returns them.
 export interface IndexRankHit {
   rel: string;
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  // The ranking that produced this order. Carried for debugging and for
-  // callers that want to group by tier; the ORDER is the contract.
-  score: number;
-  longest_run: number;
-  tier: number;
-  depth: number;
 }
 
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
@@ -629,14 +627,12 @@ export type RankReason =
 
 export interface IndexRankResult {
   covered: boolean;
-  fresh: boolean;
   // WHY this answer is what it is — "" when the index answered outright, else
   // "mount" | "package" | "ignored" | "disabled" | "uncovered" | "scanning".
   // The in-folder search picks its source from this (listing/index-source);
   // the client deliberately holds no copy of the rules behind it, because the
   // mount policy is MountGuard's and the ignore list is the scan config's.
   reason: RankReason;
-  root: string;
   hits: IndexRankHit[];
   // More matched than were returned: more than `limit` survived ranking.
   // (Was ALSO true when the server's candidate cap bit before D708 — that
@@ -644,8 +640,13 @@ export interface IndexRankResult {
   // matched row in one SQL statement with no candidate cap to hit.)
   truncated: boolean;
   total: number;
-  updated: number | null;
-  age_s: number | null;
+  // No `fresh`/`age_s`/`updated`/`root`: those are `search_under`'s wire
+  // fields (`IndexCorpus`/the walk-search path), load-bearing there for the
+  // in-folder corpus box's "indexing…" caveat. `search_ranked` used to
+  // compute and return the same three by copy-paste from `search_under`
+  // directly above it, but nothing here ever read them — no caller
+  // destructured `fresh`/`age_s`/`updated`/`root` off an `indexRank()`
+  // response. See DECISIONS.md.
 }
 
 export function indexRank(

@@ -37,21 +37,15 @@ const freshness = await import("@platform/lib/index-freshness");
 function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
     covered: true,
-    fresh: true,
     reason: "",
-    root: "/d",
     hits: [],
     truncated: false,
     total: 0,
-    updated: 1,
-    age_s: 1,
     ...over,
   };
 }
 
-const hit = (rel: string) => ({
-  rel, is_dir: false, size: 1, mtime: 1, score: 10, longest_run: 3, tier: 1, depth: 1,
-});
+const hit = (rel: string) => ({ rel, is_dir: false, size: 1, mtime: 1 });
 
 const clock = new Clock();
 

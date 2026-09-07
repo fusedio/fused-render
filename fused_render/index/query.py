@@ -631,10 +631,13 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
 
     `longest_run` does not appear in `_rank_sql`'s ORDER BY: every surviving
     row is a substring hit, so `longest_run = len(q)` for every one of them,
-    and a sort key that is constant across every row drops out. It is still
-    reported on each hit (`longest_run = len(q)`, computed in Python once) —
-    the wire contract (`IndexRankHit`) still carries it, and
-    `listing/ranked-hits.ts` still reads it.
+    and a sort key that is constant across every row drops out. It, and
+    `score`/`tier`/`depth`, are still on every hit THIS function returns (this
+    module's own tests pin `_rank_sql`'s scoring correctness off them) but no
+    longer reach the wire: nothing downstream re-sorts a server-answered row —
+    `listing/ranked-hits.ts` returns hits "in the order [the server] returned
+    them" — so `server/routers/index.py`'s `api_index_rank` strips them before
+    responding, the same way it already strips `positions`. See DECISIONS.md.
 
     Coverage semantics are `search_under`'s exactly: an uncovered root, a
     missing index or a package directory answers `covered: false` with no hits
@@ -668,8 +671,16 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     # uncovered one is scanned on demand. Decided here rather than in the
     # client, so there is one copy of the rule. The mount half is the server
     # layer's to add (MountGuard); this package/uncovered half is the index's.
-    empty = {"covered": False, "fresh": False, "updated": None, "age_s": None,
-             "root": root, "hits": [], "truncated": False, "total": 0,
+    #
+    # `fresh`/`age_s`/`updated`/`root` are `search_under`'s fields, not this
+    # function's: `search_under`'s copy is load-bearing (FRESH_MAX_AGE_S drives
+    # the in-folder corpus box's "indexing…" caveat), but nothing reads them on
+    # this path — the frontend's `IndexRankResult` never declared `fresh`/
+    # `age_s`/`updated`, and `_rank_reason` (server/routers/index.py) only ever
+    # reads `covered`/`reason` off this function's return. Carrying them here
+    # was copy-paste from `search_under` directly above. Removed, not just
+    # left unread — see DECISIONS.md.
+    empty = {"covered": False, "hits": [], "truncated": False, "total": 0,
              "scanned_partitions": 0,
              "reason": "package" if (is_leaf_dir(root)
                                      or is_inside_leaf_dir(root)) else "uncovered",
@@ -680,9 +691,6 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
 
     import duckdb
 
-    updated = m.get("updated")
-    age = (time.time() - updated) if isinstance(updated, (int, float)) else None
-    fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
     # Capped like every other interactive index read (search_threads' docstring
     # in store.py): a bare connect() defaults to one thread per core, and this
@@ -698,15 +706,14 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     try:
         miss = _coverage_reason(con, cfg, root)
         if miss:
-            return {**empty, "reason": miss, "updated": updated, "age_s": age}
+            return {**empty, "reason": miss}
         # See stats()'s identical fix above: root already ends in "/" for
         # any bare root (POSIX or a Windows drive), not only "/" itself.
         prefix = root if root.endswith("/") else root + "/"
         prefix_like = like_literal(prefix)
         limit = max(0, min(int(limit), MAX_RANK_LIMIT))
         hit = prune(m["partitions"], prefix)
-        base = {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
-                "root": root, "reason": "", "scanned_partitions": len(hit),
+        base = {"covered": True, "reason": "", "scanned_partitions": len(hit),
                 "of_partitions": len(m["partitions"])}
         qs = (q or "").strip()
         if not qs:
@@ -785,6 +792,16 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         logger.debug("index rank: %r under %s: %d row(s) in %.1fms",
                     qs, root, len(rows), (time.monotonic() - t0) * 1000)
         truncated = len(rows) > limit
+        # `score`/`tier`/`depth`/`longest_run` stay on EVERY hit dict this
+        # function returns, even though nothing on the client's index-answered
+        # path reads them any more (see this docstring above, and DECISIONS.md)
+        # — this function's own test suite (test_index_rank.py) pins
+        # `_rank_sql`'s scoring correctness (the depth penalty, both name
+        # bonuses, the tier boundaries, the camelCase segment-start case)
+        # directly off these fields, and that is the only place they still
+        # earn their keep. The HTTP layer (server/routers/index.py's
+        # `api_index_rank`) is where they actually stop reaching the wire —
+        # same pattern already used there to drop `positions`.
         hits = [{"rel": rel, "is_dir": bool(is_dir),
                  "size": int(size) if size is not None else None,
                  "mtime": float(mtime) if mtime is not None else None,
