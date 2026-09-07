@@ -24,7 +24,7 @@
 // (a future one) hard to get wrong the same way again — there is nothing
 // left to duplicate.
 import { replaceSearch } from "@platform/lib/router";
-import { setResolvedSnapshot } from "@platform/lib/snapshot-param";
+import { getResolvedSnapshot, setResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { writeQueryParam } from "./preview-side";
 
 // The DOM idiom this hop already uses elsewhere in this shell
@@ -81,4 +81,29 @@ export function clearShellSnapshot(): void {
   );
   replaceSearch(location.pathname + (search ? "?" + search : ""));
   notifySidebarSnapshotCleared();
+}
+
+/** Disarm the sidebar's OPTIMISTIC "previewing" state after a failed
+ *  attempt to select a NEW snapshot (round 4, item 3). `preview()` in the
+ *  git template's sidebar arms its own banner and DESTRUCTIVE Checkout
+ *  button SYNCHRONOUSLY, before the shell's own resolve (`getGitSnapshot`,
+ *  in Preview.tsx's `window._fusedSnapshotSelected`) ever confirms
+ *  anything — a transient failure there (no app folder encloses this
+ *  path, a mount-backed path, git trouble) used to be swallowed silently,
+ *  leaving the sidebar armed against a sha the shell never actually
+ *  adopted while the pane itself quietly stayed live.
+ *
+ *  Calls `clearShellSnapshot` — the same hop every other "nothing is
+ *  previewed" case already uses, rather than a fifth bespoke one — but
+ *  ONLY when there is genuinely nothing else already confirmed for the
+ *  shell to describe instead: reads the singleton FRESH, so a DIFFERENT,
+ *  already-confirmed snapshot (this pane, or a companion one) survives a
+ *  failed attempt to preview some OTHER commit rather than being clobbered
+ *  by it. That one case (already confirmed A, a click at B fails) is left
+ *  exactly as swallowing it always was — the sidebar may still show B as
+ *  "previewing" until another click corrects it — because correcting it
+ *  fully would need the sidebar to accept "sync to sha X", a new hop
+ *  beyond this function's own "disarm" contract. */
+export function disarmSidebarOnFailedSelect(): void {
+  if (!getResolvedSnapshot()) clearShellSnapshot();
 }

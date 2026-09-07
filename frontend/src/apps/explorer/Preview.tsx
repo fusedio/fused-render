@@ -85,6 +85,7 @@ import {
   shortSha,
   snapshotFrameSrc,
 } from "@platform/lib/snapshot-param";
+import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
@@ -1222,9 +1223,21 @@ function TemplatePreview({
           replaceSearch(location.pathname + (search ? "?" + search : ""));
         })
         .catch(() => {
-          // No app folder encloses this path, a mount-backed path, git trouble:
-          // the same posture the deleted `_rev` design took toward a junk
-          // value — the pane stays live rather than surfacing a broken param.
+          if (!alive) return; // a later selection, or this file closed, already won
+          // No app folder encloses this path, a mount-backed path, git
+          // trouble: the same posture the deleted `_rev` design took toward
+          // a junk value — the pane stays live rather than surfacing a
+          // broken param. But `preview()` in template.html arms the
+          // sidebar's "previewing" banner and Checkout button
+          // SYNCHRONOUSLY, before this resolve ever confirms anything — a
+          // swallowed failure here used to leave the sidebar armed against
+          // a sha this pane never actually adopted, DESTRUCTIVE Checkout
+          // included, while the pane quietly stayed live (round 4, item 3;
+          // the review filed this as a bare `.catch(() => {})`, but the
+          // sidebar's own optimism is the root cause). See
+          // `disarmSidebarOnFailedSelect`'s own comment for exactly what it
+          // does and does not fix.
+          disarmSidebarOnFailedSelect();
         });
     };
     return () => {

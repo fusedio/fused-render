@@ -19,7 +19,9 @@ installDomShim();
 const { setResolvedSnapshot, getResolvedSnapshot } = await import(
   "@platform/lib/snapshot-param"
 );
-const { clearShellSnapshot } = await import("./snapshot-clear");
+const { clearShellSnapshot, disarmSidebarOnFailedSelect } = await import(
+  "./snapshot-clear"
+);
 
 type FakeLocation = { search: string; pathname: string };
 const curLoc = () => (globalThis as unknown as { location: FakeLocation }).location;
@@ -122,6 +124,78 @@ describe("clearShellSnapshot", () => {
       // a thrown hop must not abort the clear itself.
       expect(getResolvedSnapshot()).toBe(null);
       expect(curLoc().search).toBe("?foo=bar");
+    }
+  );
+});
+
+describe("disarmSidebarOnFailedSelect", () => {
+  const originalLocation = (globalThis as Record<string, unknown>).location;
+  const originalHistory = (globalThis as Record<string, unknown>).history;
+  const originalDocument = (globalThis as Record<string, unknown>).document;
+
+  beforeEach(() => {
+    setResolvedSnapshot(null);
+    (globalThis as Record<string, unknown>).location = {
+      search: "?foo=bar",
+      pathname: "/w/myapp/x.py",
+    };
+    (globalThis as Record<string, unknown>).history = {
+      state: null,
+      replaceState: (_state: unknown, _title: string, url: string) => {
+        const target = curLoc();
+        const qIndex = url.indexOf("?");
+        target.pathname = qIndex === -1 ? url : url.slice(0, qIndex);
+        target.search = qIndex === -1 ? "" : url.slice(qIndex);
+      },
+    };
+  });
+
+  afterEach(() => {
+    (globalThis as Record<string, unknown>).location = originalLocation;
+    (globalThis as Record<string, unknown>).history = originalHistory;
+    (globalThis as Record<string, unknown>).document = originalDocument;
+  });
+
+  it(
+    "ITEM 3 (round 4): with nothing already confirmed, disarms the " +
+      "sidebar via the shared clear rather than swallowing the failure",
+    () => {
+      let notified = false;
+      (globalThis as Record<string, unknown>).document = {
+        querySelector: (sel: string) =>
+          sel === ".preview-side-frame"
+            ? { contentWindow: { _fusedSnapshotCleared: () => (notified = true) } }
+            : null,
+      };
+
+      disarmSidebarOnFailedSelect();
+
+      expect(notified).toBe(true);
+      expect(getResolvedSnapshot()).toBe(null);
+    }
+  );
+
+  it(
+    "does not clobber a DIFFERENT snapshot some other pane already " +
+      "confirmed just because THIS attempt failed",
+    () => {
+      setResolvedSnapshot({ sha: "abc1234", dir: "/x", app_dir: "/w/myapp" });
+      let notified = false;
+      (globalThis as Record<string, unknown>).document = {
+        querySelector: (sel: string) =>
+          sel === ".preview-side-frame"
+            ? { contentWindow: { _fusedSnapshotCleared: () => (notified = true) } }
+            : null,
+      };
+
+      disarmSidebarOnFailedSelect();
+
+      expect(notified).toBe(false);
+      expect(getResolvedSnapshot()).toEqual({
+        sha: "abc1234",
+        dir: "/x",
+        app_dir: "/w/myapp",
+      });
     }
   );
 });
