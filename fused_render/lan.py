@@ -866,6 +866,8 @@ class _Controller:
         self._ip: str | None = None
         self.port: int | None = None
         self.error: str | None = None
+        # The stored preference as last applied — see apply().
+        self._want = False
         # The https listener (lan_tls.py) beside the http one.
         self._tls_server = None
         self._tls_thread: threading.Thread | None = None
@@ -902,9 +904,9 @@ class _Controller:
         # ahead of it). `apply()` only runs when the preference changes, so
         # this read is the one place that notices, and a stale `port` here is
         # what let a pairing code advertise a dead listener.
-        if self._thread is not None and not self._thread.is_alive():
+        if self._want and self._thread is not None and not self._thread.is_alive():
             with self._lock:
-                if self._thread is not None and not self._thread.is_alive():
+                if self._want and self._thread is not None and not self._thread.is_alive():
                     logger.warning("lan: http listener stopped on its own; restarting")
                     self._server = self._thread = None
                     self.port = None
@@ -954,10 +956,22 @@ class _Controller:
     # -- start/stop
     def apply(self, enabled: bool) -> None:
         with self._lock:
+            # What the preference asks for, so status()'s restart of a dead
+            # listener cannot resurrect sharing the user switched off.
+            self._want = enabled
             if enabled and not self.running:
                 self._start()
-            elif not enabled and self.running:
+            elif not enabled and self._anything_up:
                 self._stop()
+
+    @property
+    def _anything_up(self) -> bool:
+        """Some piece of sharing is still live. NOT `running`: with the http
+        thread dead, that reads False while the https listener and the mDNS
+        records are still up, and switching sharing off has to take those
+        down too."""
+        return (self._thread is not None or self._tls_thread is not None
+                or self._zeroconf is not None)
 
     def _start(self) -> None:
         import uvicorn
@@ -1008,10 +1022,13 @@ class _Controller:
 
         # Already listening — a restart of the http half (status()) must not
         # start a second one, which would find 443 taken by us, land on 8443,
-        # and leave the first thread orphaned. For a different address the
-        # certificate has to be reissued, so that one stops first.
+        # and leave the first thread orphaned. For a DIFFERENT address the
+        # certificate has to be reissued, so that one stops first; for no
+        # address at all the live listener and its certificate are still the
+        # best we have, and tearing them down to reissue a certificate naming
+        # nothing would only lose the address it does name.
         if self.tls_running:
-            if ip == self._tls_ip:
+            if ip is None or ip == self._tls_ip:
                 return
             self._stop_tls()
         self.tls_error = None
