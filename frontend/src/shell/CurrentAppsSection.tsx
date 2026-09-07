@@ -35,7 +35,7 @@ import {
   type CurrentAppEntry,
 } from "@platform/lib/api";
 import IconPicker from "@platform/ui/IconPicker";
-import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -578,13 +578,14 @@ export default function CurrentAppsSection() {
 
   const menuItems = (app: CurrentApp): MenuEntry[] => [
     {
-      // The app page header's own "Open app": the entry page full-size in the
-      // explorer, in a new tab so the current page stays put.
+      // The app page header's own "Open app": the entry page full-size AS AN
+      // APP — embed mode, chrome-free — in a new tab so the current page stays
+      // put. Same URL as AppPage's button; the two must not diverge.
       label: "Open app",
       icon: MenuIcons.open,
       disabled: !app.exists || !app.entry,
       onClick: () => {
-        if (app.entry) window.open(urlForFsPath(app.entry), "_blank", "noopener");
+        if (app.entry) window.open(embedUrlForFsPath(app.entry), "_blank", "noopener");
       },
     },
     {
