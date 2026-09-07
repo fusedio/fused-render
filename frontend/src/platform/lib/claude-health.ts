@@ -30,6 +30,13 @@ export interface ClaudeIssue {
   helpKind: TroubleKind;
   /** A terminal command that fixes it, when one does. */
   command?: string;
+  /** Nothing in the APP is worse off while this is unfixed — it is a
+      convenience the user may take or leave. Set on `not-on-path` and nothing
+      else, and it costs the row the accent fill everywhere it renders: an
+      always-optional extra must never look like the thing standing between the
+      user and a working app, and must never be the one yellow button on a
+      screen (see the wizard's Next). */
+  optional?: boolean;
   /** What the APP can do about it, when it can do anything.
    *
    *  This is the field that turns the strip from a notice into a repair. It is
@@ -228,6 +235,9 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
       action: health.path_fix_command
         ? { kind: "link-path", label: "Add to PATH for me" }
         : undefined,
+      // The app already works. Typing `claude` in a terminal yourself is the
+      // only thing this buys, so it never takes the accent and never gates.
+      optional: true,
     });
   }
 
