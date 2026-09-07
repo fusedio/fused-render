@@ -25,7 +25,7 @@ export function emojiIconSvg(emoji: string): string {
 
 /** Apply an icon picker's answer to the app folder at `path`: `null` removes
  *  the file (back to the generic mark), an icon pick is stored as the finished
- *  branded svg it arrives as, and an emoji gets the standalone wrapper above.
+ *  grey-glyph svg it arrives as, and an emoji gets the standalone wrapper above.
  *
  *  Announces the desk change on success, and that is the reason this is shared
  *  rather than two call sites: the sidebar's Projects row for this app is on

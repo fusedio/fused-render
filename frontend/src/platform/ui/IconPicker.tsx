@@ -1,6 +1,6 @@
 // Notion-style icon picker popover: an Emoji tab (the whole Unicode set, from
-// emojibase), an Icons tab (the whole lucide set, branded on pick as a black
-// rounded square with the glyph in fused yellow), a filter box, a shuffle
+// emojibase), an Icons tab (the whole lucide set, written on pick as the bare
+// glyph in grey, like the generic fallback mark), a filter box, a shuffle
 // button that picks at random from the active tab, a Recent row per tab, and
 // a Remove action that restores the caller's default glyph.
 //
@@ -31,7 +31,7 @@ import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 
 export type IconPickerTab = "emoji" | "icon";
 
-/** What a pick hands back. An icon pick carries the finished branded svg so a
+/** What a pick hands back. An icon pick carries the finished svg document so a
  *  caller that stores files (the Projects rows' icon.svg) writes it as is. */
 export type IconPick =
   | { kind: "emoji"; emoji: string }
@@ -57,13 +57,13 @@ interface IconPickerProps {
   tabs?: IconPickerTab[];
 }
 
-// ---- brand -----------------------------------------------------------------
+// ---- icon svg--------------------------------------------------------------
 
-/** fused yellow, baked in: icon.svg is a static file with no theme context, and
- *  the light theme's `--accent` is a darker olive (tokens.css) that would read
- *  wrong on the black plate anyway. */
-const BRAND_YELLOW = "#E5FF44";
-const BRAND_BLACK = "#000000";
+/** The glyph's grey, baked in: icon.svg is a static file with no theme
+ *  context, so it cannot read `--fg-muted` — the tint the generic AppStar
+ *  fallback wears. This sits between that token's two values (#9aa0a6 dark,
+ *  #61656c light) so the file reads as the same quiet mark in either theme. */
+const GLYPH_GREY = "#7e838a";
 
 type IconNode = [tag: string, attrs: Record<string, string | number>][];
 
@@ -71,10 +71,10 @@ function escapeAttr(v: string | number): string {
   return String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
-/** A lucide icon on the brand plate as a standalone icon.svg document: a
- *  64-unit square, black rounded rect, the 24-unit glyph scaled 1.75× and
- *  centred with 11 units of margin, stroked in fused yellow. */
-export function brandedIconSvg(node: IconNode): string {
+/** A lucide icon as a standalone icon.svg document: a 64-unit square with no
+ *  plate — the bare glyph in grey, like the generic AppStar fallback — the
+ *  24-unit glyph scaled 1.75× and centred with 11 units of margin. */
+export function glyphIconSvg(node: IconNode): string {
   const inner = node
     .map(([tag, attrs]) => {
       const a = Object.entries(attrs)
@@ -86,14 +86,12 @@ export function brandedIconSvg(node: IconNode): string {
     .join("");
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
-    `<rect width="64" height="64" rx="14" fill="${BRAND_BLACK}"/>` +
-    // 1.75: a 42-unit glyph with 11 of margin — at favicon size the plate
-    // vanishes into a dark tab strip and only the glyph shows, so it has to
-    // carry the icon on its own.
+    // 1.75: a 42-unit glyph with 11 of margin — the glyph carries the icon
+    // on its own, at favicon size as much as in the row.
     '<g transform="translate(11 11) scale(1.75)" fill="none" ' +
     // 2.5 not lucide's 2: the row draws the file at 14px, where a 2-unit
     // stroke lands under a pixel and reads faint beside the emoji rows.
-    `stroke="${BRAND_YELLOW}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">` +
+    `stroke="${GLYPH_GREY}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">` +
     inner +
     "</g></svg>"
   );
@@ -387,7 +385,7 @@ export default function IconPicker({
   const pick = useCallback(
     (cell: Cell) => {
       pushRecent(tab, cell.id);
-      if (cell.node) onPick({ kind: "icon", name: cell.id, svg: brandedIconSvg(cell.node) });
+      if (cell.node) onPick({ kind: "icon", name: cell.id, svg: glyphIconSvg(cell.node) });
       else onPick({ kind: "emoji", emoji: cell.id });
     },
     [tab, onPick],
