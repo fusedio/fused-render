@@ -1516,67 +1516,125 @@
     }
   }
 
-  // ---- revision reads (`_rev`) ---------------------------------------------
+  // ---- git snapshot reads (`_snapshot`) -------------------------------------
   //
-  // A frame whose OWN url carries `_rev=<sha>` is showing the target file AS OF
-  // that commit: every read helper further down (rawUrl, and readFile/stat
-  // through it) resolves through /api/git/show instead of the live filesystem,
-  // and every write is refused. Declared up HERE, beside the other ancestor-hop
-  // plumbing and above the install loader, rather than next to the helpers it
-  // serves: the loader block down there is lifted verbatim into a node harness by
+  // A frame whose OWN url carries `_snapshot=<sha>` sits inside an app folder
+  // materialised at that commit (`/api/git/snapshot`, `git archive` to
+  // ~/.fused-render/app-versions/<key>/<sha>/). Rather than routing reads
+  // through a special endpoint (the deleted `_rev` design's `/api/git/show`),
+  // every read helper below REWRITES a path at or under the live app folder to
+  // the same relative path under the EXTRACTED tree, so the plain, ordinary
+  // filesystem read that follows is reading a real file that happens to be a
+  // past commit's — which is what makes `runPython` no exception any more
+  // (the removed KNOWN GAP: a `.py` reader now opens the commit's own file,
+  // because its path argument was rewritten before the request left this
+  // script). Writes need no special client-side refusal beyond a friendlier
+  // message: the extracted tree already lives under
+  // ~/.fused-render/app-versions/, which `mount.py::_is_under_snapshot_root`
+  // makes unconditionally read-only server-side (`_writable` and every
+  // /api/fs mutation handler).
+  //
+  // Declared up HERE, beside the other ancestor-hop plumbing and above the
+  // install loader, rather than next to the helpers it serves: the loader
+  // block down there is lifted verbatim into a node harness by
   // tests/test_server_env_install.py, and a module-level read of `ownQuery`
-  // inside that slice is a ReferenceError under node (the same trap noteFsChanged
-  // fell into — see that file's prelude comment). The git sidebar puts a page into
-  // this state by telling the shell which commit was clicked (window
-  // ._fusedSelectSnapshot, below); the shell rebuilds the content frame's src with the
-  // param on it. Reading it HERE is what makes the whole feature cost templates
-  // zero lines: a template still calls fused.readFile(fused.params.get("_file")),
+  // inside that slice is a ReferenceError under node (the same trap
+  // noteFsChanged fell into — see that file's prelude comment). The git
+  // sidebar puts a page into this state by telling the shell which commit was
+  // clicked (window._fusedSelectSnapshot); the shell writes `_snapshot=<sha>`
+  // onto its own URL and forwards it onto every frame's src (Preview.tsx).
+  // Reading it HERE is what makes the whole feature cost templates zero
+  // lines: a template still calls fused.readFile(fused.params.get("_file")),
   // and which bytes that means is decided by the frame's url.
   //
-  // Read once, not per call: `_rev` rides the frame's own URL, and a change to
-  // that url is a navigation — a new document with a fresh copy of this script.
-  // (`_file` is read per call because it can also come from an ANCESTOR's query;
-  // a revision deliberately never does. It must not be inheritable — a sha chosen
-  // for one file's pane leaking into another frame is exactly the bug that keeps
-  // this param off the shell's address bar in the first place.)
+  // Read once, not per call: `_snapshot` rides the frame's own URL, and a
+  // change to that url is a navigation — a new document with a fresh copy of
+  // this script.
   //
   // Hex only, and validated here as well as server-side: the value goes into a
-  // query string this script builds, and a junk `_rev` must read as "no revision"
-  // rather than produce a broken read on every file the page touches.
-  const rev = (function () {
-    const raw = ownQuery("_rev");
+  // query string this script builds, and a junk `_snapshot` must read as "no
+  // snapshot" rather than produce a broken read on every file the page
+  // touches.
+  const snapshotSha = (function () {
+    const raw = ownQuery("_snapshot");
     return raw && /^[0-9a-fA-F]{4,64}$/.test(raw) ? raw : null;
   })();
 
-  function revUrl(path) {
-    return "/api/git/show?path=" + encodeURIComponent(path) +
-      "&sha=" + encodeURIComponent(rev);
+  // Resolved ONCE, kicked off eagerly (right here, at module init) rather than
+  // lazily on the first read: rawUrl() is SYNCHRONOUS (an <img>/<embed> src is
+  // built from its return value, with no chance to await anything), so the
+  // rewrite it and its siblings apply has to consult whatever this resolution
+  // has ALREADY produced by the time they are called — there is no way to
+  // block a synchronous call on a network response. Firing the fetch as early
+  // as this script runs, rather than on first use, is what makes that window
+  // narrow in practice: the shell already resolved this exact (repo, app
+  // folder, sha) before ever forwarding `_snapshot` onto this frame's src
+  // (task 3's `_fusedSnapshotSelected`), so this call is ordinarily a cache
+  // hit — a stat, not a fork of git.
+  //
+  // `null` covers three states this module does not need to tell apart: no
+  // `_snapshot` on this frame, the resolve is still in flight, and the resolve
+  // failed (no app folder here, a mount-backed path, git trouble). All three
+  // read the same way — rewritePath is a no-op — which is the same posture
+  // the deleted `_rev` design took toward a junk value: a page that cannot
+  // safely show history shows the live file rather than a half-rewritten one.
+  let resolvedSnapshot = null;
+  const snapshotReady = (function () {
+    if (snapshotSha === null) return Promise.resolve(null);
+    // The anchor this frame resolves the enclosing app folder from: the
+    // target file when this page is previewing one (`_file`, set on content
+    // templates), else this page's own location (`path` — an app rendering
+    // itself under a snapshot, with no wrapping template in between).
+    const anchor = ownQuery("_file") || ownQuery("path");
+    if (!anchor) return Promise.resolve(null);
+    return fetch("/api/git/snapshot?path=" + encodeURIComponent(anchor) +
+                 "&sha=" + encodeURIComponent(snapshotSha), { headers: callHeaders() })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (!data || !data.ok) return null;
+        const snap = { sha: snapshotSha, dir: data.dir, app_dir: data.app_dir };
+        resolvedSnapshot = snap;
+        return snap;
+      })
+      .catch(() => null);
+  })();
+
+  // The one rewrite rule, applied identically by readFile (through rawUrl),
+  // rawUrl, stat and runPython's params: a path at or under the live app
+  // folder maps to the same relative path under the extracted tree; anything
+  // else — a relative path (resolved against the PAGE's own directory, SPEC
+  // RH-1 — the template's own install-tree assets, never the target repo) or
+  // an absolute path outside the app folder — is left alone.
+  function rewritePath(path) {
+    if (!resolvedSnapshot || typeof path !== "string" || path[0] !== "/") return path;
+    const appDir = resolvedSnapshot.app_dir;
+    if (path === appDir) return resolvedSnapshot.dir;
+    if (path.indexOf(appDir + "/") === 0) {
+      return resolvedSnapshot.dir + path.slice(appDir.length);
+    }
+    return path;
   }
 
-  // Whether a path read by this page resolves through git rather than the disk.
-  // ABSOLUTE paths only, deliberately: a relative path is resolved against the
-  // PAGE's own directory (SPEC RH-1) — the template's own assets, which live in
-  // the app's install tree and have nothing to do with the target file's
-  // repository. Those stay live.
-  function revResolves(path) {
-    return rev !== null && typeof path === "string" && path[0] === "/";
+  function snapshotWritable(path) {
+    return !(resolvedSnapshot && typeof path === "string" &&
+             (path === resolvedSnapshot.app_dir ||
+              path.indexOf(resolvedSnapshot.app_dir + "/") === 0));
   }
 
   // THE WRITE GATE, AND WHAT IT IS NOT.
   //
-  // This is a RUNTIME-LEVEL refusal, not a server-enforced one. /api/fs/write and
-  // friends have no idea a caller is looking at a past revision — the path a
-  // revision pane holds is the LIVE path — so nothing stops a page that builds its
-  // own fetch() from writing today's file while showing yesterday's bytes. The
-  // guarantee here is exactly: a template that reaches the filesystem through the
-  // documented `fused.*` helpers cannot silently do that. Making it a server
-  // property would mean teaching every mutating route about a UI mode, which is
-  // the wrong place for it; making it a lie would be worse than either.
-  function revRefusal(what) {
+  // This is a RUNTIME-LEVEL refusal, giving a friendlier message than the
+  // server's own — /api/fs/write and friends refuse a path under
+  // ~/.fused-render/app-versions/ unconditionally already
+  // (`mount.py::_is_under_snapshot_root`), because the rewrite above sends a
+  // write there the same as a read. Checked here too so a template's error
+  // handling sees the sha and the word "snapshot" rather than a bare
+  // `readonly` with no context.
+  function snapshotRefusal(what) {
     const err = new Error(
-      what + " is not possible here: this pane is showing the file as of commit " +
-      rev.slice(0, 7) + ", which is read-only. Close the revision to edit the "
-      + "current file.");
+      what + " is not possible here: this pane is showing the app as of commit " +
+      resolvedSnapshot.sha.slice(0, 7) + ", which is read-only. Close the " +
+      "snapshot to edit the current files.");
     // `readonly` is the type the helpers already reject with for a file the
     // filesystem refuses (see writeFile), and a template's existing
     // `err.type === "readonly"` branch is the right handler for this too.
@@ -1639,7 +1697,7 @@
   // template gets it, whether or not any ancestor is around to act on it, or
   // able to).
   //
-  // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_rev`.
+  // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_snapshot`.
   // A `_fused_ask` query param baked into the claude iframe's URL, one-shot by
   // construction, has a hole no amount of caching fixes: ANY remount of that
   // iframe for ANY reason — toggling the sidebar away and back, closing and
@@ -2514,31 +2572,22 @@
     );
   }
 
-  // KNOWN GAP — `_rev` DOES NOT REACH A PYTHON READER. Deliberate, deferred, not
-  // an oversight; the seam is here because here is where it would have to be
-  // closed.
+  // A `.py` READER IS NO LONGER THE EXCEPTION. This used to be a KNOWN GAP:
+  // the read helpers above resolved a revision (readFile/rawUrl/stat) while a
+  // reader script's `main()` still received the LIVE absolute path and
+  // `open()`d today's file, so a parquet/xlsx/notebook pane showed CURRENT
+  // content under a heading that said otherwise. Closing it needed a change to
+  // the `main()` contract under the deleted `_rev` design (bytes or a
+  // file-like shim over `/api/git/show`), which is why it was deferred rather
+  // than patched.
   //
-  // The read helpers above resolve a revision (fused.readFile / rawUrl / stat all
-  // route through /api/git/show while this frame carries `_rev`), so every
-  // template whose bytes come from those — code, markdown, json, images, media —
-  // renders the past revision truthfully with no change of its own. A template
-  // whose bytes come from a READER `.py` is different: `main()` receives the real
-  // absolute path and `open()`s the LIVE file, so a parquet/xlsx/notebook pane
-  // would show CURRENT content under a heading that says otherwise.
-  //
-  // Closing it means the reader can no longer be handed a path: it needs the bytes
-  // (a temp materialization) or a file-like object over the revision route (a
-  // Python-side shim every reader would have to accept). That is phase 2b, and
-  // it is a change to the `main()` contract rather than a patch here — hence
-  // the deferral.
-  //
-  // WHAT KEEPS IT HONEST MEANWHILE: nothing here silently lies. The shell's
-  // revision indicator names the limitation next to the sha (Preview.tsx —
-  // RevisionPill), so a pane is never labelled as a past revision with no warning
-  // that a Python-backed view may not be one. Reads are not blocked here: refusing
-  // runPython under `_rev` would leave those modes with a broken pane instead of a
-  // qualified one, and the same reader also serves modes that legitimately do not
-  // read the target's bytes at all.
+  // The snapshot design needs no such change: a snapshot is `git archive`d to
+  // a REAL directory, so rewriting `params`' absolute-path values here — the
+  // same `rewritePath` rawUrl/stat apply — is enough. Every value, not a named
+  // key or two: a reader's own param shape is whatever it chose (`file`,
+  // `dir`, `path`, one per template), and `rewritePath` is a no-op on anything
+  // that is not an absolute string under the app folder, so applying it
+  // uniformly costs nothing on a value it does not apply to.
   function runPython(pyPath, params, opts) {
     opts = opts || {};
     // Default channel = the .py path; opts.key === null opts out, a string regroups.
@@ -2573,6 +2622,14 @@
       if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
     };
     const ownPath = new URLSearchParams(window.location.search).get("path");
+    // `pyPath` (the reader SCRIPT) is never rewritten — it is always the
+    // template's own install-tree file, addressed relative to `ownPath`
+    // (SPEC RH-1), and never a path under the target app folder. Only the
+    // DATA it is asked to read, carried in `params`' values, can be.
+    const rewrittenParams = {};
+    if (params) {
+      for (const key of Object.keys(params)) rewrittenParams[key] = rewritePath(params[key]);
+    }
     const attempt = () =>
       fetch("/api/run", {
         method: "POST",
@@ -2580,7 +2637,7 @@
         // execute endpoint blind (see server.py _require_fused).
         headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
                              controller._callId),
-        body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
+        body: JSON.stringify({ py: pyPath, html: ownPath, params: rewrittenParams }),
         signal: controller.signal,
       })
         .then((res) => res.json())
@@ -3042,10 +3099,10 @@
   // against the bundle's _asset route by the same key. An absolute path needs no
   // base and is sent unchanged.
   function rawUrl(path) {
-    // A revision pane's <img>/<embed>/download URL points at the object database,
-    // not the working tree (see revResolves for why only absolute paths).
-    if (revResolves(path)) return revUrl(path);
-    let url = "/api/fs/raw?path=" + encodeURIComponent(path);
+    // A snapshot's <img>/<embed>/download URL points at the extracted tree,
+    // not the live working copy — see rewritePath.
+    const target = rewritePath(path);
+    let url = "/api/fs/raw?path=" + encodeURIComponent(target);
     if (path && path[0] !== "/") {
       const ownPath = new URLSearchParams(window.location.search).get("path");
       if (ownPath) url += "&base=" + encodeURIComponent(ownPath);
@@ -3056,47 +3113,20 @@
   // Fetch file metadata (same shape as /api/fs/stat). Rejects with an Error
   // carrying the server's message, mirroring runPython's rejection style.
   function stat(path) {
-    return fetch("/api/fs/stat?path=" + encodeURIComponent(path), { headers: callHeaders() })
+    const target = rewritePath(path);
+    return fetch("/api/fs/stat?path=" + encodeURIComponent(target), { headers: callHeaders() })
       .then((res) => res.json().then((data) => ({ res, data })))
       .then(({ res, data }) => {
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
-        if (!revResolves(path)) return data;
-        return revStat(path, data);
-      });
-  }
-
-  // A stat under `_rev`. The live stat is still the source of everything that is
-  // about the PATH rather than about the bytes (name, is_dir, remote, the mode
-  // list a template may consult) — but two fields would otherwise describe the
-  // wrong file:
-  //
-  //   writable   FALSE, always. This is the field every template checks before it
-  //              offers an edit UI (the code editor's whole save path hangs off
-  //              it), so a revision pane must answer no here or the editor
-  //              renders enabled over bytes it cannot write back.
-  //   size       the blob's size AT THIS REVISION, from a HEAD on the revision
-  //              route. Templates use it as a read guard ("too big to render"),
-  //              and today's size is the wrong number to guard a past read with.
-  //
-  // A failing HEAD is propagated rather than swallowed: "this path did not exist
-  // at that commit" is the honest answer to stat, and a size guard that silently
-  // fell back to the live file's size would be the lying pane again.
-  function revStat(path, live) {
-    return fetch(revUrl(path), { method: "HEAD", headers: callHeaders() })
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error("failed to stat " + path + " at " + rev.slice(0, 7) +
-                          " (HTTP " + res.status + ")");
-        }
-        const length = parseInt(res.headers.get("content-length") || "", 10);
-        return Object.assign({}, live, {
-          writable: false,
-          size: Number.isFinite(length) ? length : live.size,
-          // The sha the numbers above describe. Not part of the documented stat
-          // shape — a template needs no knowledge of revisions — but it is what
-          // makes a logged stat payload readable when one goes wrong.
-          rev: rev,
-        });
+        // `writable`/`size`/`mtime`/`templates` all correctly describe the
+        // EXTRACTED file already (a real stat of a real file — no client-side
+        // patching needed, unlike the deleted `_rev` design's revStat, which
+        // had to fake these fields over a live stat because there was no real
+        // file on disk to ask). Only `path` is an implementation detail of the
+        // snapshot cache: a caller asked about the LIVE path and every other
+        // stat echoes back exactly what it was asked about.
+        if (target !== path) data.path = path;
+        return data;
       });
   }
 
@@ -3131,7 +3161,7 @@
   // things (this one is "it is already there", the lock's is "it changed"), and
   // a caller that offers overwrite-anyway on a conflict must not offer it here.
   function writeFile(path, content, opts) {
-    if (rev !== null) return revRefusal("Saving");
+    if (!snapshotWritable(path)) return snapshotRefusal("Saving");
     const payload = { path: path, content: content };
     if (opts && opts.expectedMtime !== undefined && opts.expectedMtime !== null) {
       payload.expected_mtime = opts.expectedMtime;
@@ -3183,7 +3213,7 @@
   // no optimistic lock and no `create`: a freshly pasted blob has no prior
   // version to conflict with.
   function uploadFile(path, blob) {
-    if (rev !== null) return revRefusal("Uploading");
+    if (!snapshotWritable(path)) return snapshotRefusal("Uploading");
     const form = new FormData();
     form.append("path", path);
     form.append("file", blob);
@@ -3212,7 +3242,7 @@
   // for the same reason: "it is already there" is a different fact from "it
   // changed", and an ensure-this-directory caller wants to treat it as success.
   function mkdir(path) {
-    if (rev !== null) return revRefusal("Creating a directory");
+    if (!snapshotWritable(path)) return snapshotRefusal("Creating a directory");
     return fetch("/api/fs/mkdir", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
@@ -5545,6 +5575,17 @@
     trackJob,
     watchJob,
     autoReload,
+    // Whether THIS frame is inside a git snapshot, and what it resolved to —
+    // `null` when there is none (no `_snapshot` on this frame's url, or the
+    // resolve failed: no app folder here, a mount-backed path, git trouble),
+    // else `{sha, dir, app_dir}`. A function returning the one resolve this
+    // module already kicked off at init (`snapshotReady`), not a bare value:
+    // the resolve is a network round trip, so there is no synchronous answer
+    // to hand back the first time a template asks. Most templates never need
+    // this at all — `readFile`/`rawUrl`/`stat`/`runPython` already read the
+    // right bytes with no template-side change — it exists for the rare one
+    // that wants to say out loud that it is showing history.
+    snapshot: () => snapshotReady,
     params: { get, getAll, set, onChange },
   };
 

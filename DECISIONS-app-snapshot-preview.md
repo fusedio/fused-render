@@ -1,7 +1,7 @@
 # Build log — app-folder snapshot preview
 
-Resume point: tasks 1-3 committed. Next up: task 4 (every frame inherits
-`_snapshot`; the runtime resolves it).
+Resume point: tasks 1-4 committed. Next up: task 5 (the file explorer
+browses the snapshot).
 
 ## Task 1 — `enclosing_app_dir`
 
@@ -85,14 +85,12 @@ written by whichever code resolves `/api/git/snapshot` for this document —
 today that's only Preview.tsx's `_fusedSnapshotSelected` handler (task 3); a
 fresh load that already carries `_snapshot` in its URL (reload, a pasted
 link) does NOT yet re-resolve it anywhere, so `getSnapshotAppDir()` is null
-until the user reselects a commit in that fresh session. This is a real,
-narrow gap: `carries()` will drop `_snapshot` on the FIRST hop after such a
-load, even though the destination is genuinely still inside the app. **Left
-for whoever does task 4 to close** — task 4 already needs to resolve
-`/api/git/snapshot` from the runtime's own boot (to build `fused.snapshot`),
-and Preview.tsx (which owns the shell-level state) should call
-`setSnapshotAppDir` there too, on mount, whenever the URL already carries
-`_snapshot`. Noted here rather than silently left broken.
+until the user reselects a commit in that fresh session. **Closed in task
+4**, not left open: the effect that re-syncs `snapshotSha` from the URL on
+every `fsPath` change (Preview.tsx) now also calls `getGitSnapshot` and
+populates `setSnapshotAppDir` whenever the URL already carries a valid
+`_snapshot` — covering first mount, a reload, and a pasted link alike, not
+only a fresh in-session selection.
 
 **The hop rename kept two distinct property names, not one.** The plan says
 "rename the hop `_fusedSelectRev` → `_fusedSelectSnapshot`" and separately
@@ -137,3 +135,113 @@ references, so this is left red on purpose rather than fixed early; a
 resuming builder should not be surprised by it before task 6 lands. Not part
 of task 3's own verify command (`bun test frontend/src/platform
 frontend/src/apps/explorer`), which is green.
+
+## Task 4 — every frame inherits `_snapshot`; the runtime resolves it
+
+**`rawUrl`'s documented SYNCHRONOUS contract forced an eager-resolve design,
+not a lazy one.** `rawUrl(path)` returns a URL string immediately (it lands in
+`<img>`/`<embed>` src attributes with no chance to await anything) — the
+file's own comment says so. But resolving `/api/git/snapshot` to learn
+`{dir, app_dir}` is unavoidably a network round trip. Resolution: the fetch
+fires EAGERLY at module init (as soon as `_snapshot` is read off the URL),
+not lazily on first read, into a plain synchronous variable
+(`resolvedSnapshot`, `null` until a successful resolve lands). Every read
+helper (`rewritePath`) just consults whatever that variable already holds at
+call time — no rewrite happens for anything called before the eager fetch
+resolves. This is a real, narrow race (a read issued in the first
+milliseconds of the frame's life sees live content even under an active
+`_snapshot`), accepted because by construction the resolve is normally
+already a warm cache hit: the shell (Preview.tsx's `_fusedSnapshotSelected`,
+task 3) resolves the SAME `/api/git/snapshot` call before ever forwarding
+`_snapshot` onto this frame's src, so the extraction is already on disk and
+this frame's own resolve is a stat, not a fork of git. Not covered by any
+test in `tests/test_runtime_snapshot.py` (those pin `rewritePath` given an
+already-resolved `resolvedSnapshot`, not the timing race) — worth a note for
+whoever eventually wants to close it, e.g. by having Preview.tsx delay
+rebuilding the frame src until ITS OWN resolve settles rather than only
+gating the URL write on it.
+
+**`stat()`'s rewritten-path leak, patched by resetting `data.path` after the
+fetch.** `/api/fs/stat`'s response payload echoes back whatever `path` it was
+asked about (`mount.py::_stat_payload`). Naively fetching stat on the
+REWRITTEN (extracted) path would leak
+`~/.fused-render/app-versions/<key>/<sha>/...` into every field a template
+reads off `stat().path` (a "reveal in Finder" affordance, a header title).
+Fixed by resetting `data.path` back to the caller's original (live) path
+whenever a rewrite happened — every OTHER field (`writable`, `size`, `mtime`,
+`templates`) is correctly the extracted file's own, no special-casing needed,
+since it actually is a real stat of a real file (unlike the deleted `_rev`
+design's `revStat`, which had to fake `writable`/`size` over a live stat
+because there was no real file to ask).
+
+**The deleted `_rev` design's own comment claimed `/render` (the "_render"
+frame, an app previewed as itself) was a "KNOWN partial." It still is —
+verified, not assumed.** `fused_render/server/routers/render.py`'s `GET
+/render` reads `path` straight off disk with no `_rev`/`_snapshot` handling
+of its own (grepped the whole `server/` tree for both param names — zero
+hits outside comments and the new git_snapshot.py). So an app's own entry
+`.html` viewed as itself under a `_snapshot` still shows its LIVE document
+body and script; only the `fused.*` calls THAT document's own script makes
+resolve against the commit. My first draft of the Preview.tsx comment
+claimed this was fixed by the snapshot design ("this is NOT a partial fix
+there") — WRONG, caught before committing by actually reading render.py
+rather than assuming the bigger extraction mechanism implied it. Corrected
+to state the gap honestly. **This is unaddressed scope**: teaching
+`/render` to resolve `path`+`_snapshot` the same way the runtime does (or
+having Preview.tsx build the `_render` frame's src FROM the pre-rewritten
+path when one is known) is a real follow-up, not covered by any task in this
+plan. Worth flagging to the plan owner — it may matter a lot in practice,
+since many apps in this codebase's own showcase are single-`.html`-file
+apps with the "app" logic embedded directly in the page rather than behind
+a wrapping template.
+
+**`runPython` rewrites every `params` value uniformly, no named-key
+allowlist.** Readers pass their target path under whatever key they chose
+(`file`, `dir`, `path`, `folder` — surveyed every `fused.runPython(...)` call
+site across `templates/*/template.html` to confirm there is no single
+convention). `rewritePath` is applied to every value in the params object;
+it is a no-op on anything that is not an absolute string under the app
+folder, so this costs nothing on values it doesn't apply to (numbers,
+`action` enums, unrelated absolute paths). `pyPath` itself (the reader
+SCRIPT) is never rewritten — verified every call site passes either a
+constant/relative reader path (the template's own install-tree file) or a
+per-template constant like `AGENT`/`READER`/`PY`, never the app's own target
+file.
+
+**Preview.tsx's `_snapshot` needs its own REACT STATE, not just a URL
+write, and needs to re-sync from the URL on every file change.** A
+`history.replaceState` alone (what `_fusedSnapshotSelected`'s handler does,
+same idiom `setSide` already uses for `_side`) does not re-render anything —
+confirmed by reading `setSide`'s own comment, which pairs every
+`replaceSearch` call with a state setter for exactly this reason. Added
+`snapshotSha` state, set by the selection handler AND re-derived from
+`location.search` in an effect keyed on `[fsPath]` (a navigation may have
+carried or dropped `_snapshot` per the task-3 carry rule). **Known,
+accepted rough edge**: the re-derivation effect runs one tick after the
+render that used the STALE value, so a file-to-file hop that carries
+`_snapshot` can build the frame src twice (once without the carried param,
+once with) — a possible extra iframe reload rather than a single clean one.
+Did not chase a same-render fix (React's "adjust state during render"
+pattern) given this task's time budget; the mechanism converges to the
+correct src, just not always in one paint.
+
+**Known red, deferred to task 6 (worse than task 3 left it):**
+`tests/test_git_scope.py` is now at **9** failing tests (up from the 3 after
+task 3) — the task-4 runtime.js rewrite deleted `revUrl`/`revResolves`/
+`revRefusal`/`revStat`/the KNOWN GAP block wholesale, and 6 more tests in
+that file assert those exact identifiers/strings by name
+(`test_the_runtime_reads_rev_off_the_frames_own_query`,
+`test_the_runtime_resolves_reads_through_git_not_the_filesystem`,
+`test_the_mutators_refuse_under_a_revision`,
+`test_a_revision_stat_is_never_writable`,
+`test_the_python_reader_gap_is_recorded_at_its_seam`,
+`test_only_the_content_frame_carries_rev`). All nine are within task 6's
+explicit scope ("tests/test_git_scope.py ... 28 `_rev` references... move
+what still applies onto `_snapshot`, delete what asserted per-file byte
+resolution") — not fixed now, on purpose, per the same reasoning task 3's
+log entry gives. Confirmed task 4's OWN verify command
+(`.venv/bin/pytest tests/test_runtime_snapshot.py -q && bun test
+frontend/src/apps/explorer`) is green; `test_server_env_install.py`,
+`test_git_snapshot.py`, `test_snapshot_readonly.py` and `test_app_listing.py`
+were also re-run as a sanity check on the shared runtime.js/app_listing.py
+changes and are green.

@@ -42,3 +42,15 @@ export { carries, getSnapshotAppDir, setSnapshotAppDir };
 
 // The same hex-object-name shape `/api/git/snapshot` accepts.
 export const isSha = _isSha;
+
+// `_snapshot` onto a content frame's src — the mechanism that makes it reach
+// templates at all. The runtime reads params off its OWN frame src
+// (`ownQuery`, static/runtime.js), so a param that is not forwarded here is
+// invisible in there; this is the direct successor of preview-rev.ts's
+// `revSrc`, same shape, carrying the shell's URL state instead of in-memory
+// component state. Null src (the `_listing` sentinel, an unresolved mode)
+// stays null — there is no frame.
+export function snapshotSrc(src: string | null, sha: string | null): string | null {
+  if (src === null || sha === null) return src;
+  return src + "&_snapshot=" + encodeURIComponent(sha);
+}

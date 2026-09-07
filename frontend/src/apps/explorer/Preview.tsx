@@ -78,12 +78,7 @@ import {
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
-import {
-  activeRev,
-  revSrc,
-  type RevSelection,
-} from "@apps/explorer/lib/preview-rev";
-import { isSha, setSnapshotAppDir } from "@apps/explorer/lib/snapshot-param";
+import { isSha, setSnapshotAppDir, snapshotSrc } from "@apps/explorer/lib/snapshot-param";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
@@ -1120,14 +1115,44 @@ function TemplatePreview({
   // file explorer's own listing included) has to see the same commit, which
   // component state cannot reach.
   //
-  // `revSel`/`activeRev` below still hold the retired single-file mechanism —
-  // nothing sets `revSel` any more (this effect no longer does), so `rev`
-  // resolves to null from here on. Left in place rather than pulled now:
-  // `rev`/`revSrc` still feed the content frame's src further down, and this
-  // task's own scope is the hop and the URL state, not that forwarding —
-  // the next task replaces those call sites with `_snapshot` and removes this
-  // block outright.
-  const [revSel] = useState<RevSelection | null>(null);
+  // `snapshotSha` mirrors that URL write in REACT STATE, the same reason
+  // `sideReq` sits beside `setSide`'s own `replaceSearch` a little further
+  // down: a `history.replaceState` alone does not re-render anything, so
+  // whatever the frame src is built from has to be state this component
+  // actually holds. Re-synced from the URL whenever the open file changes
+  // (a navigation may have carried or dropped `_snapshot` per the carry rule,
+  // platform/lib/snapshot-param.ts) rather than only read once at mount.
+  const [snapshotSha, setSnapshotSha] = useState<string | null>(() => {
+    const raw = new URLSearchParams(location.search).get("_snapshot");
+    return isSha(raw) ? raw : null;
+  });
+  useEffect(() => {
+    const raw = new URLSearchParams(location.search).get("_snapshot");
+    if (!isSha(raw)) {
+      setSnapshotSha(null);
+      return;
+    }
+    setSnapshotSha(raw);
+    // The app dir the carry rule checks is NOT part of the URL (only the sha
+    // is — see platform/lib/snapshot-param.ts), so a fresh load that already
+    // carries `_snapshot` (a reload, a pasted link, or simply arriving here
+    // with the param already on the query) has to re-resolve it exactly like
+    // the selection handler below does, or `carries()` would drop the param
+    // on this session's very first hop even though the destination is
+    // genuinely still inside the app.
+    let alive = true;
+    getGitSnapshot(fsPath, raw)
+      .then((r) => {
+        if (alive) setSnapshotAppDir(r.app_dir);
+      })
+      .catch(() => {
+        /* same posture as the selection handler: stay live rather than
+           surface a broken param */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
     // git sidebar to select in, and two instances racing for one window global
@@ -1142,6 +1167,7 @@ function TemplatePreview({
         // Back to live: drop both the app-dir the carry rule checks and the
         // shell's own `_snapshot` param.
         setSnapshotAppDir(null);
+        setSnapshotSha(null);
         const search = writeQueryParam(current, "_snapshot", null);
         replaceSearch(location.pathname + (search ? "?" + search : ""));
         return;
@@ -1150,6 +1176,7 @@ function TemplatePreview({
         .then((r) => {
           if (!alive) return; // a later selection, or this file closed, already won
           setSnapshotAppDir(r.app_dir);
+          setSnapshotSha(sha);
           const search = writeQueryParam(current, "_snapshot", sha);
           replaceSearch(location.pathname + (search ? "?" + search : ""));
         })
@@ -1164,7 +1191,6 @@ function TemplatePreview({
       delete window._fusedSnapshotSelected;
     };
   }, [splitCapable, fsPath]);
-  const rev = activeRev(revSel, activeSide, fsPath);
 
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
@@ -1583,20 +1609,26 @@ function TemplatePreview({
   // page can prefer ranged HTTP reads (/api/fs/raw) over local file I/O.
   // `_listing` builds no src — it renders a shell component, not an iframe.
   //
-  // `_rev` rides here and NOWHERE ELSE (lib/preview-rev): a revision is a property
-  // of what this frame is showing, not of where the user is, so it lives on the
-  // iframe src exactly as `_file` and `chat_only=1` do. The runtime reads it off
-  // the frame's own query and resolves readFile/rawUrl/stat through
-  // /api/git/show instead of the live filesystem — which is why no template
-  // changes a line for this.
+  // `_snapshot` rides here and on the shell's OWN url, unlike the deleted
+  // `_rev` design (lib/preview-rev, gone in this task): a snapshot is a
+  // property of the whole page, not just what this one frame is showing, but
+  // this frame still needs it on ITS OWN src — the runtime reads params off
+  // its own frame's query (`ownQuery`, static/runtime.js), so a param that
+  // rides only on the shell's address bar is invisible inside the iframe. The
+  // runtime rewrites readFile/rawUrl/stat/runPython paths under the app
+  // folder to the extracted tree instead of fetching through a special
+  // endpoint — which is why no template changes a line for this.
   //
-  // It goes onto the "_render" frame too, and that one is a KNOWN partial: /render
-  // serves the file's own bytes from disk, so an .html file previewed as itself
-  // shows the live page under a revision heading. Same family as the runPython gap
-  // (static/runtime.js, above runPython) and deferred with it — the pill below is
-  // what keeps it honest. The param is still worth carrying there: any read the
-  // page makes through `fused.*` does resolve to the revision, and the write gate
-  // applies.
+  // It goes onto the "_render" frame too, and that one is STILL a KNOWN
+  // partial, unchanged from the deleted `_rev` design: GET /render
+  // (server/routers/render.py) reads `path` straight off disk with no
+  // `_snapshot` of its own, so an .html file previewed as itself shows its
+  // LIVE document body and script — only the `fused.*` calls that document's
+  // OWN script makes resolve against the commit. Carrying the param here is
+  // still worth it for exactly that reason: any read the page makes through
+  // `fused.*` does resolve to the snapshot, and the write gate applies.
+  // Teaching /render itself to serve the extracted body is unaddressed scope,
+  // not an oversight — see the decisions log.
   const remote = stat.remote ? "&_remote=1" : "";
   // A shell loaded as a card thumbnail (IS_PREVIEW) forwards the flag onto
   // every render it triggers, so peeking at an app's entry page is not
@@ -1614,12 +1646,12 @@ function TemplatePreview({
   const srcFor = (m: string): string | null => {
     if (m === "_listing") return null;
     if (m === "_render")
-      return revSrc(`/render?path=${encodeURIComponent(fsPath)}${thumbFlags}`, rev);
+      return snapshotSrc(`/render?path=${encodeURIComponent(fsPath)}${thumbFlags}`, snapshotSha);
     const t = templates.find((x) => x.mode === m);
     return t
-      ? revSrc(
+      ? snapshotSrc(
           `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}${thumbFlags}`,
-          rev
+          snapshotSha
         )
       : null;
   };
