@@ -238,7 +238,7 @@ def test_the_identity_moves_into_the_selected_state(source):
     # a commit selection shows can change without touching how a diff renders.
     assert "function commitMeta(" in source
     assert "function diffPane(title, sub, payload, meta)" in source
-    assert "commitMeta(meta, rev)" in source
+    assert "commitMeta(meta, rev, revertBtn)" in source
     # The placeholder pane is built from the row the user clicked, so the
     # heading does not swap under them when the read lands.
     assert "commitMeta(known, rev)" in source

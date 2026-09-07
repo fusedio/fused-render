@@ -267,6 +267,49 @@ def test_identity_step_focuses_only_once_per_session():
         f"ghIdentityFocusDone flag:\n{branch}")
 
 
+def test_checkout_lives_in_the_previewing_banner_and_sends_app_restore():
+    """D703: Checkout is only ever reachable through an active preview — the
+    banner (`if (previewed) { ... }`) is the one place it lives, so a
+    rollback can never be committed against a version nobody looked at."""
+    body = _function_body(_source(), "if (previewed) ")
+    assert '"app_restore"' in body, body
+    assert "sha: previewed" in body, body
+    assert "Checkout" in body, body
+
+
+def test_revert_appears_on_the_expanded_commit_and_sends_its_own_sha():
+    """The Revert control is built where the selected commit's diff is
+    (`loadDiff`'s `rev` branch), and sends the SELECTED commit's sha, not
+    whatever happens to be previewed elsewhere."""
+    body = _function_body(_source(), "async function loadDiff(data)")
+    assert '"revert"' in body, body
+    assert "sha: rev" in body, body
+    assert "Revert" in body, body
+
+
+def test_app_restore_and_revert_are_destructive_in_the_views_own_mirror():
+    """`DESTRUCTIVE` (JS) mirrors `DESTRUCTIVE_OPS` (ops.py) — both new write
+    ops belong in it or `pendingConfirm` silently drops their `ask=` key."""
+    source = _source()
+    match = re.search(r"const DESTRUCTIVE = new Set\(\[([^\]]*)\]\);", source)
+    assert match, "the DESTRUCTIVE set is missing or changed shape"
+    ops = [o.strip().strip('"') for o in match.group(1).split(",")]
+    assert "app_restore" in ops, ops
+    assert "revert" in ops, ops
+
+
+def test_checkout_confirmation_names_its_narrower_scope():
+    """Checkout only ever touches the app folder — its confirmation text has
+    to say so, in the user's own terms, unlike Revert's (repo-wide)."""
+    body = _function_body(_source(), "if (previewed) ")
+    assert "not touched" in body, body
+
+
+def test_revert_confirmation_says_it_is_repo_wide():
+    body = _function_body(_source(), "async function loadDiff(data)")
+    assert "repository" in body, body
+
+
 def test_the_preview_control_is_never_hover_gated_in_css():
     """D703: the eye used to be `opacity: 0` at rest and only `opacity: 1`
     under `.line:hover` / `:focus-visible`. Now it must be visible with no

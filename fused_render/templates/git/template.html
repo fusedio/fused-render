@@ -1109,6 +1109,11 @@
   }
   .pane-meta .sha { color: var(--accent-dim); font-variant-numeric: tabular-nums; }
   .pane-meta .who { color: var(--ink-2); }
+  /* Revert (D703) sits opposite the sha on this same identity line — the one
+     control this pane offers for a selected COMMIT, so it rides the line
+     that already answers "which commit exactly?" rather than opening a new
+     row for one button. */
+  .pane-meta .meta-action { margin-left: auto; }
 
   /* The one place wide content lives: its OWN scroll container, so the page
      body never gains a horizontal scrollbar (a diff line is arbitrarily long). */
@@ -1287,7 +1292,8 @@ const OPS = "./ops.py";
 /* The ops that can lose uncommitted work. Mirrors ops.py's DESTRUCTIVE_OPS, and
  * the mirroring is the safety property: an op named here gets the inline
  * confirmation step, and one that is not gets called on the first click. */
-const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve"]);
+const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve",
+                             "app_restore", "revert"]);
 
 const file = fused.params.get("_file") || "";
 const skeleton = document.getElementById("skeleton");
@@ -1638,6 +1644,12 @@ const FETCH_GLYPH = ["M21 4v6h-6", "M3 20v-6h6",
                      "M18.5 9A8 8 0 0 0 6 6.3L3 9", "M5.5 15A8 8 0 0 0 18 17.7l3-2.7"];
 const PULL_GLYPH = ["M12 3v12", "M7 10l5 5 5-5", "M4 20h16"];
 const PUSH_GLYPH = ["M12 21V9", "M7 14l5-5 5 5", "M4 4h16"];
+
+/* Checkout (D703) shares Pull's own shape on purpose: both are "bring a
+   version down and commit it here", just from a different source — a
+   remote for Pull, an earlier commit for Checkout — and that is the same
+   gesture wearing two different labels rather than two unrelated ideas. */
+const CHECKOUT_GLYPH = PULL_GLYPH;
 
 /* The caret that separates "this opens a panel" from "this does a thing". Only
    the panel toggles carry one; an action button with a caret would be promising
@@ -3705,7 +3717,7 @@ function diffBody(text) {
  * names every file it touches a few pixels below this line — a second list
  * would be a second git fork to repeat what is already on screen.
  */
-function commitMeta(entry, sha) {
+function commitMeta(entry, sha, trailingAction) {
   const short = entry && entry.short ? entry.short : (sha || "").slice(0, 7);
   const bits = [el("span", { className: "sha", textContent: short })];
   if (entry && entry.author) bits.push(el("span", { className: "who", textContent: entry.author }));
@@ -3726,7 +3738,15 @@ function commitMeta(entry, sha) {
     if (dotted.length) dotted.push(el("span", { className: "dot", textContent: "·" }));
     dotted.push(bit);
   }
-  return el("div", { className: "pane-meta" }, dotted);
+  const row = el("div", { className: "pane-meta" }, dotted);
+  /* `trailingAction` is the caller's own control (Revert, task 6) — this
+     function renders an identity line and knows nothing about what a commit
+     selection can DO, matching `diffPane`'s own `meta` parameter below. */
+  if (trailingAction) {
+    trailingAction.classList.add("meta-action");
+    row.append(trailingAction);
+  }
+  return row;
 }
 
 /* The right-hand pane, for BOTH kinds of selection. `meta` is an optional node
@@ -3912,6 +3932,14 @@ function pendingConfirm(data) {
        about is the proposed text, which is in the panel and nowhere else. A
        conflicted file is also listed in BOTH the staged and the changes section,
        so there is no single row to attach it to. */
+    return null;
+  }
+  if (op === "app_restore" || op === "revert") {
+    /* Answered INLINE, not in a list section, for the same reason `resolve`
+       is: the thing each question is about (the previewed version; the
+       expanded commit) is not a row in any list here — it is the banner, or
+       the pane under the selected row — so that is where the confirm bar
+       renders. See the banner block and `loadDiff`'s `rev` branch. */
     return null;
   }
   if (op === "stash_drop") {
@@ -4179,18 +4207,38 @@ function render(data, stashes, diff) {
     page.append(el("div", { className: "toast-host" }, note));
   }
   /* The previewed commit's banner: the eye toggle's state, said where it cannot
-     be missed, with the way back. */
+     be missed, with the way back — and, beside it, Checkout (D703). Checkout
+     lives HERE and nowhere else: it can only ever be reached through an
+     active preview, so there is no way to commit a rollback to a version
+     nobody looked at, and the banner already names which version it means —
+     the button needs no label of its own for that. */
   if (previewed) {
     const known = (data.commits || []).find((c) => c.sha === previewed);
+    const checkoutQuestion = "Commit the app folder back to this version? "
+      + "Other folders in the repository are not touched, and this makes a "
+      + "new commit you can revert.";
     page.append(el("div", { className: "rev-banner" },
       el("span", { className: "what" },
         "Files are shown as of ",
         el("span", { className: "sha", textContent: known ? known.short : previewed.slice(0, 7) }),
         known && known.subject ? " — " + known.subject : ""),
+      confirmable("app_restore", [icon(CHECKOUT_GLYPH, 14), btnLabel("Checkout")],
+        checkoutQuestion,
+        { label: "Commit the app folder back to this version" }),
       action("preview-off", "Back to now", {
         label: "Stop previewing and show the current files",
         onClick: () => preview(null),
       })));
+    if (param("ask") === "app_restore") {
+      /* Success leaves the app folder matching HEAD already, so the preview
+         it was showing is now stale — clearing it (`preview(null)`) is what
+         moves the view from "previewing a version" back to "now", rather
+         than continuing to claim a preview of what is already current. */
+      page.append(confirmBar(checkoutQuestion,
+        () => run("app_restore", { op: "app_restore", sha: previewed },
+                  () => { preview(null); return true; }),
+        "Checkout"));
+    }
   }
   /* The proposal (or the call that will become one) sits above the toolbar: it
      is the thing the user is being asked to read. */
@@ -4345,14 +4393,33 @@ async function loadDiff(data) {
        answer than a pane titled with a 40-character sha. */
     const known = (data.commits || []).find((c) => c.sha === rev);
     const meta = payload.ok ? payload.commit : known;
+    const revertQuestion = "Revert this commit? This adds a new commit "
+      + "undoing it across the whole repository — not just this scope. "
+      + "This cannot be merged away.";
+    /* Hidden, not disabled, where `canPreview` is false — matching the eye's
+       own rule (D701) and reasoning: a control that cannot do anything is
+       not a promise worth keeping on screen. Revert has no `canPreview`
+       requirement of its OWN (it does not drive a pane); it inherits the
+       gate anyway so a scope with no enclosing app folder — where a preview
+       could never have landed in the first place — does not offer a second,
+       unrelated write action either. */
+    const revertBtn = canPreview
+      ? confirmable("revert", [icon(REVERT_GLYPH, 14), btnLabel("Revert")],
+          revertQuestion, { label: "Revert " + (meta && meta.short ? meta.short : rev.slice(0, 7)) })
+      : null;
     /* No title: the diff renders inline under the selected row, which already
        says the subject. The identity line (commitMeta) still answers "which
-       commit exactly?". */
-    return diffPane(
+       commit exactly?", and now carries Revert opposite the sha. */
+    const pane = diffPane(
       null,
       data.repo.rel ? "scoped to " + data.repo.rel : null,
       payload,
-      commitMeta(meta, rev));
+      commitMeta(meta, rev, revertBtn));
+    if (param("ask") === "revert") {
+      pane.append(confirmBar(revertQuestion,
+        () => run("revert", { op: "revert", sha: rev }), "Revert"));
+    }
+    return pane;
   }
   if (wt) {
     const payload = await fused.runPython(READER, { file, op: "worktree", entry: wt },
