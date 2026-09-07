@@ -906,6 +906,67 @@ def test_set_identity_and_remote_add_refused_on_a_mount_backed_repo(
     assert git(repo, "remote").strip() == ""
 
 
+# --------------------------------------------------- dirty-tree guard / app dir
+
+
+def test_require_clean_passes_on_a_clean_repo(ops, repo):
+    assert ops._require_clean(repo) is None
+
+
+def test_require_clean_refuses_an_unstaged_edit(ops, repo):
+    write(repo, "top.txt", "changed\n")
+    with pytest.raises(ops._Refused) as exc:
+        ops._require_clean(repo)
+    assert exc.value.payload["reason"] == "dirty"
+
+
+def test_require_clean_refuses_a_staged_uncommitted_change(ops, repo):
+    write(repo, "top.txt", "changed\n")
+    git(repo, "add", "top.txt")
+    with pytest.raises(ops._Refused) as exc:
+        ops._require_clean(repo)
+    assert exc.value.payload["reason"] == "dirty"
+
+
+def test_require_clean_refuses_an_untracked_file(ops, repo):
+    write(repo, "fresh.txt", "new\n")
+    with pytest.raises(ops._Refused) as exc:
+        ops._require_clean(repo)
+    assert exc.value.payload["reason"] == "dirty"
+
+
+def test_require_app_dir_resolves_a_file_inside_an_app_folder(ops, repo):
+    write(repo, "app/index.html", '<meta name="fused-app">\n')
+    write(repo, "app/main.py", "x = 1\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "add app")
+    rel = ops._require_app_dir(repo, os.path.join(repo, "app", "main.py"))
+    assert rel == "app"
+
+
+def test_require_app_dir_resolves_the_folder_itself(ops, repo):
+    write(repo, "app/index.html", '<meta name="fused-app">\n')
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "add app")
+    rel = ops._require_app_dir(repo, os.path.join(repo, "app"))
+    assert rel == "app"
+
+
+def test_require_app_dir_refuses_a_plain_repo_file(ops, repo):
+    with pytest.raises(ops._Refused) as exc:
+        ops._require_app_dir(repo, os.path.join(repo, "top.txt"))
+    assert exc.value.payload["reason"] == "no-app-dir"
+
+
+def test_require_app_dir_refuses_an_html_with_no_fused_app_meta(ops, repo):
+    write(repo, "plain/index.html", "<html></html>\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "add plain html")
+    with pytest.raises(ops._Refused) as exc:
+        ops._require_app_dir(repo, os.path.join(repo, "plain", "index.html"))
+    assert exc.value.payload["reason"] == "no-app-dir"
+
+
 # ------------------------------------------------------------------ refusals
 
 

@@ -778,6 +778,66 @@ def _has_staged(root):
     return code == 1
 
 
+def _require_clean(root):
+    """Refuse when the working tree carries ANY change — staged, unstaged or
+    untracked (D703). Repo-wide, not scoped to a file or folder: see
+    decisions for why the two new write ops below share this one rule rather
+    than each getting a narrower version of it.
+
+    `git status --porcelain` is what git itself calls "is there anything to
+    tell you about" — any output line at all means the tree is not clean,
+    regardless of which of the three states produced it.
+    """
+    out = _git_ok(root, "status", "--porcelain")
+    if out.strip():
+        raise _Refused(
+            "dirty",
+            "You have uncommitted changes. Commit or stash them first — "
+            "nothing was changed.")
+
+
+def _require_app_dir(root, file):
+    """Resolve the app folder enclosing `file`, walking up to `root`.
+
+    Returns the folder's path relative to `root` (POSIX, `""` if the app
+    folder IS the repository root). Refuses when no enclosing folder carries
+    the `fused-app` marker — `app_restore` may only ever touch a real app
+    folder, never an arbitrary path a hand-written request happens to name.
+
+    Reaches `shared/app_entry.py` via the module's own `sys.path` hop (see the
+    top of this file) rather than `fused_render.app_listing.enclosing_app_dir`
+    — the server-side twin of the same rule — because a template must not
+    import `fused_render` (SPEC PY-15 / D166). An unreachable `app_entry` is
+    "cannot tell", which reads as a refusal, exactly like `_refuse_mounts`.
+    """
+    try:
+        from app_entry import entry_html
+    except Exception as exc:  # noqa: BLE001 — cannot tell -> refuse
+        raise _Refused(
+            "no-app-dir",
+            f"App folder detection unavailable ({exc}).") from exc
+
+    root_real = os.path.realpath(root)
+    path = os.path.abspath(file)
+    current = path if os.path.isdir(path) else os.path.dirname(path)
+    while True:
+        if entry_html(current) is not None:
+            real = os.path.realpath(current)
+            if real == root_real:
+                return ""
+            return os.path.relpath(real, root_real).replace(os.sep, "/")
+        if os.path.realpath(current) == root_real:
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    raise _Refused(
+        "no-app-dir",
+        "This is not inside an app folder — a folder with an entry page "
+        "carrying the fused-app marker.")
+
+
 def _tracked(root, rels):
     """Split `rels` into `(tracked, untracked)` as git sees them.
 
