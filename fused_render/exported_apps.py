@@ -215,6 +215,12 @@ def _row(path: str, mtime: float | None, opened: float | None) -> dict:
         "entry_html": None,
         "preview_image": None,
         "category": None,
+        # No icon either: an `icon.svg` inside the payload would have to be
+        # streamed out of the zip (the preview's own endpoint shape), and a
+        # `.fused` is a FILE — there is no folder root to read one from. The
+        # card draws its name with no mark, which is what it did before icons.
+        "icon": None,
+        "icon_mtime": None,
         "title": None,
         "updated_at": mtime,
         "opened_at": opened,

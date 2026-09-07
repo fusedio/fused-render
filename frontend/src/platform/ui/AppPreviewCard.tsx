@@ -34,7 +34,7 @@
 // live preview (D365).
 import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
-import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
+import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -225,7 +225,29 @@ export function AppPreviewCard({
       title={openTargetFor(app).path}
     >
       <span className="app-pcard-body">
-        <span className="app-pcard-title">{title}</span>
+        {/* The app's own `icon.svg` to the left of its name — the same mark
+            the sidebar's Projects row and the app's tab favicon draw, so an
+            app reads as itself wherever it is listed. Drawn AS IS: the
+            author's colours, no mask or tint (owner, 2026-08-27).
+            Absent when the app has no icon.svg, with no generic mark in its
+            place: the monogram the card used to fall back to is exactly what
+            D365 deleted from this card, and a stand-in star would put it
+            back. The sidebar keeps a slot because its glyph is the icon
+            picker's toggle; a card has nothing to toggle.
+            `draggable={false}` for the reason the still's shield exists — an
+            <img> carries the browser's native drag-the-image gesture, which
+            starts a drag instead of the click that opens the card. */}
+        <span className="app-pcard-head">
+          {app.icon && (
+            <img
+              className="app-pcard-icon"
+              src={appIconUrl(app.icon, app.icon_mtime)}
+              alt=""
+              draggable={false}
+            />
+          )}
+          <span className="app-pcard-title">{title}</span>
+        </span>
         <span className="app-pcard-meta">
           <span className="app-pcard-tag">{app.tag}</span>
           {title !== app.name && <span className="app-pcard-name">{app.name}</span>}

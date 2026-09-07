@@ -152,7 +152,9 @@ function Section({
 // shared shape would be wrong for one of them:
 //   - "app"    mirrors AppPreviewCard/`.app-pcard` (apps.css) — title + a meta
 //     row (tag pill, timestamp) OVER a full-bleed thumb. No icon: the real
-//     card has none.
+//     card draws one only for an app that HAS an `icon.svg`, which is a fact
+//     of the fetch that hasn't landed — a slot here would claim an icon is
+//     coming for the apps that will never show one.
 //   - "folder" mirrors FolderPreviewCard/`.fhb-card` (preferences.css) — a
 //     head row over an inset thumb well. The real card's head DOES carry an
 //     icon, but it's a static decorative folder glyph, identical on every

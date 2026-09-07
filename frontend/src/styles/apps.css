@@ -332,12 +332,36 @@ body[data-capture-shooting] .app-pcard-export {
   min-width: 0;
 }
 
+/* The name row: the app's icon.svg (when it has one) then the name. The icon
+   is capped BELOW the title's own line box, so a card with an icon is exactly
+   as tall as one without — Home's skeleton card reuses these classes and its
+   promise is that its height tracks the real card's (Home.tsx SkeletonCard). */
+.app-pcard-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.app-pcard-icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  /* An author's svg can declare any intrinsic size; contain keeps a wide or
+     tall one inside the square instead of stretching it. */
+  object-fit: contain;
+}
+
 .app-pcard-title {
   font-size: 13.5px;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* A flex child's min-width is auto, which refuses to shrink below its text
+     — without this the ellipsis never engages and a long name pushes the
+     icon out of the card. */
+  min-width: 0;
 }
 
 .app-pcard-meta {
