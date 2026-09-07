@@ -45,6 +45,7 @@ import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 
 import { comfortableIds, modelPicks, selectedTotal, type ModelPick } from "./modelPicks";
+import { reportStage } from "./progress";
 import { StepHeader } from "./StepHeader";
 
 /** `null` while the catalog is still answering — the wizard reads that as
@@ -289,6 +290,22 @@ export function ModelsStep({
   // Download is the yellow button while something is selected and not yet
   // fetched; once started (or nothing to do) Next takes the colour.
   useEffect(() => onWork(pending.length > 0), [onWork, pending.length]);
+  // THE STAGE (progress.ts): every offered model here = complete; some here
+  // or any download in flight = partial; nothing = pending. Nothing until the
+  // catalog has answered (an empty catalog is the wizard's `n/a`, not ours).
+  // Keyed on the counts, so the jobs poll does not re-send the same verdict.
+  const hereCount = rows.filter((r) => r.here).length;
+  const rowCount = rows.length;
+  useEffect(() => {
+    if (picks === null || rowCount === 0) return;
+    const status = hereCount === rowCount ? "complete" : hereCount > 0 || busyCount > 0 ? "partial" : "pending";
+    reportStage("models", status, {
+      offered: rows.map((r) => r.pick.model.id),
+      here: rows.filter((r) => r.here).map((r) => r.pick.model.id),
+      downloading: rows.filter((r) => r.busy).map((r) => r.pick.model.id),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `rows` is a per-render array; the counts are its signal
+  }, [picks, rowCount, hereCount, busyCount]);
 
   // Driven by the checkbox's own reported value, not by flipping what this
   // render happened to see: the primitive owns the state transition.

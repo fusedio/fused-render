@@ -18,6 +18,7 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { IssueRow } from "@platform/ui/ClaudeHealthStrip";
 
+import { reportStage, type StageStatus } from "./progress";
 import { StepHeader } from "./StepHeader";
 
 type RowState = "done" | "open" | "unknown";
@@ -133,6 +134,22 @@ export function ClaudeStep({
     (r) => r.state === "open" && issues.some((i) => r.issueIds.includes(i.id)),
   );
   useEffect(() => onWork(anyActionable === true), [onWork, anyActionable]);
+  // THE STAGE (progress.ts): complete when every required row is done;
+  // partial when the CLI runs but a required row is open or unknown (an
+  // unknown is never a green check — same rule the PATH row states);
+  // pending when it does not run at all. Nothing until health has answered.
+  const runnable = health ? health.found && !health.broken : false;
+  const stage: StageStatus | null = !health ? null : allDone ? "complete" : runnable ? "partial" : "pending";
+  useEffect(() => {
+    if (!health || !stage) return;
+    reportStage("claude", stage, {
+      version: health.version,
+      outdated: health.outdated,
+      signed_in: health.signed_in,
+      account: health.account?.email ?? health.account?.method ?? null,
+      on_shell_path: health.on_shell_path,
+    });
+  }, [stage, health]);
 
   return (
     <div className="flex flex-col gap-6">

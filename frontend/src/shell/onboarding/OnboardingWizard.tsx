@@ -34,6 +34,7 @@ import { cn } from "@platform/lib/utils";
 import { FusedMark } from "@platform/ui/FusedMark";
 
 import { recallStep, rememberStep } from "./state";
+import { reportStage, seedProgress, stageStatus, useOnboardingState } from "./progress";
 import { AboutStep } from "./AboutStep";
 import { ClaudeStep } from "./ClaudeStep";
 import { FdaStep } from "./FdaStep";
@@ -108,6 +109,20 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // whether it exists at all come from it (a machine no local engine serves has
   // nothing to offer, so it gets no step).
   const picks = useModelPicks();
+  // PROGRESS (progress.ts): seeded from the config we hold, then live. The
+  // pills read a step's STATUS from it, not its position — a skipped Claude
+  // step is not a green tick because the user walked past it.
+  seedProgress(config);
+  const progress = useOnboardingState();
+  const stages = progress?.stages;
+  // Stages this machine does not have leave the meter: `n/a` once the answer
+  // is KNOWN (health said the platform; the catalog said "nothing to offer").
+  useEffect(() => {
+    if (health?.platform && health.platform !== "darwin") reportStage("fda", "n/a", { platform: health.platform });
+  }, [health?.platform]);
+  useEffect(() => {
+    if (picks !== null && picks.length === 0) reportStage("models", "n/a", { offered: 0 });
+  }, [picks]);
   const steps = STEPS.filter((s) => {
     if (s.id === "fda") return isMac(health?.platform);
     // Kept while the answer is UNKNOWN (`null`), unlike the FDA step's
@@ -126,6 +141,10 @@ export function OnboardingWizard({ config }: { config: Config }) {
   const step = steps[index];
   const last = index >= steps.length - 1;
   const setIndex = (i: number) => setStepId(steps[Math.max(0, Math.min(i, steps.length - 1))].id);
+  // About has nothing to check: opening it is completing it.
+  useEffect(() => {
+    if (step.id === "about") reportStage("about", "complete", { viewed_at: Date.now() / 1000 });
+  }, [step.id]);
   // Counted over the steps this machine actually has (no FDA off macOS).
   const eyebrowText = `Step ${index + 1} of ${steps.length}`;
   // One yellow button per screen. A step with its own work to do (install,
@@ -145,7 +164,12 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // to the NEXT launch, and a failed write must not hold the page over the
   // app the user is trying to reach. (`settled` is declared above, by the
   // step effect that reads it.)
-  const markComplete = useCallback(() => {
+  // `via` names the ACTION that finished it — the composer made an app, or a
+  // showcase card was opened — and is what marks the First-app STAGE
+  // complete. "I'll explore on my own" passes none: it ends the wizard but
+  // builds nothing, and the meter must say so.
+  const markComplete = useCallback((via?: "composer" | "showcase") => {
+    if (via) reportStage("app", "complete", { via });
     if (settled.current) return;
     settled.current = true;
     // The server clears its resume step on complete; mirror that in this
@@ -182,7 +206,9 @@ export function OnboardingWizard({ config }: { config: Config }) {
   lastRef.current = last;
   useEffect(
     () => () => {
-      if (lastRef.current) markComplete();
+      // Not already settled: a dismiss or "explore on my own" from the last
+      // step settled first, so what is left here is a card's navigation.
+      if (lastRef.current && !settled.current) markComplete("showcase");
     },
     [markComplete],
   );
@@ -273,15 +299,22 @@ export function OnboardingWizard({ config }: { config: Config }) {
           className="my-0 hidden list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
           aria-label="Setup steps"
         >
+          {/* The mark is the stage's STATUS (progress.ts), not its position:
+              green check = complete, half-filled amber = partial, the number
+              = pending. Walking past a step earns it nothing. */}
           {steps.map((s, i) => {
-            const done = i < index;
+            const status = stageStatus(stages, s.id);
+            const done = status === "complete";
+            const partial = status === "partial";
             const current = i === index;
+            const statusWord = done ? "complete" : partial ? "partly done" : "not done";
             return (
               <li key={s.id} className="flex items-center">
                 <button
                   type="button"
                   onClick={() => setStepId(s.id)}
                   aria-current={current ? "step" : undefined}
+                  title={`${s.label} — ${statusWord}`}
                   className={cn(
                     "flex cursor-pointer appearance-none items-center gap-1.5 rounded-md border-0 bg-transparent px-3 py-1.5 text-xs leading-none [font-family:inherit] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     current
@@ -292,13 +325,20 @@ export function OnboardingWizard({ config }: { config: Config }) {
                   <span
                     className={cn(
                       "grid size-4 place-items-center rounded-full text-[10px] font-semibold tabular-nums",
-                      current && "bg-foreground text-background",
                       done && "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-                      !current && !done && "bg-muted-foreground/15 text-muted-foreground",
+                      partial && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+                      !done && !partial && current && "bg-foreground text-background",
+                      !done && !partial && !current && "bg-muted-foreground/15 text-muted-foreground",
                     )}
                     aria-hidden
                   >
-                    {done ? <Check className="size-2.5" strokeWidth={3} /> : i + 1}
+                    {done ? (
+                      <Check className="size-2.5" strokeWidth={3} />
+                    ) : partial ? (
+                      <span className="size-2 rounded-full border-[1.5px] border-current [background:linear-gradient(90deg,currentColor_50%,transparent_50%)]" />
+                    ) : (
+                      i + 1
+                    )}
                   </span>
                   {s.label}
                 </button>
@@ -325,7 +365,9 @@ export function OnboardingWizard({ config }: { config: Config }) {
           {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} onWork={onWork} />}
-          {step.id === "app" && <FirstAppStep health={health} eyebrow={eyebrow} onComplete={markComplete} />}
+          {step.id === "app" && (
+            <FirstAppStep health={health} eyebrow={eyebrow} onComplete={() => markComplete("composer")} />
+          )}
         </div>
       </div>
 
