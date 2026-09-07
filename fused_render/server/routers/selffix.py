@@ -285,10 +285,17 @@ def resume() -> None:
         incident = str(record.get("incident") or "")
         report = str(record.get("report") or "")
         title = str(record.get("title") or "")
+        stamped = True
         try:
             selffix.settle(before=before, run_id=run_id, report=report,
                            incident=incident, title=title)
         except Exception:  # noqa: BLE001 — bookkeeping, never fatal
+            # NOT FATAL, BUT NOT FINISHED EITHER. A `settle` that raised got as
+            # far as it got: a marker it could not write (a full disk, a
+            # permission it lost) leaves the installation patched and unbadged,
+            # and `before` is the only thing a later start could retry from.
+            # Retiring it here would throw that away to save a tree walk.
+            stamped = False
             logger.debug("self-fix resume stamp failed", exc_info=True)
         if not _run_is_live(run_id):
             # Its stamp has now been made and its process is gone, so retire the
@@ -302,7 +309,12 @@ def resume() -> None:
             # tree and a fix started in that window owns the pointer now —
             # writing this run's name back would drop that session's `before`
             # and stop the guard seeing it (`selffix.retire_session_digest`).
-            selffix.retire_session_digest(run_id)
+            #
+            # ONLY WHEN THE STAMP LANDED. A `settle` that raised has not
+            # recorded anything, and a dead run's digest is the only thing a
+            # later start could retry from.
+            if stamped:
+                selffix.retire_session_digest(run_id)
             return
         threading.Thread(target=_watch_fix,
                          args=(run_id, incident, report, title, before),

@@ -2222,6 +2222,66 @@ def test_a_session_that_deleted_the_state_dir_is_still_stamped_after_a_restart(
     assert selffix.status()["fixes"][0]["run_id"] == "r-wiper"
 
 
+def test_a_stamp_that_FAILED_keeps_the_digest_for_the_next_start(
+        install, monkeypatch):
+    """A `settle` that raised has recorded nothing, so its `before` is still
+    the only thing a later start could retry from.
+
+    `resume` swallows the exception on purpose — a badge that is late is not a
+    reason to fail a boot — but swallowing it is not the same as finishing.
+    A marker that could not be written (a full disk, a permission the install
+    lost) leaves the tree patched and unbadged, and retiring the digest to save
+    a tree walk would make that permanent.
+    """
+    before = _pristine()
+    selffix.note_session("r-unstampable", before=before)
+
+    def settle_that_cannot_write(**kwargs):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(selffix, "settle", settle_that_cannot_write)
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    REAL_RESUME()
+
+    record = selffix.session_record()
+    assert record.get("before") == before, (
+        "the digest was retired after a stamp that never landed — the next "
+        "start has nothing to measure against and the patch stays unbadged")
+    assert record.get("run_id") == "r-unstampable"
+
+
+def test_the_pointer_write_and_the_retire_s_CHECK_are_not_splittable(
+        install, monkeypatch):
+    """The retire decides by reading the pointer, so it is only as atomic as
+    the writes it races.
+
+    `note_session` is the other writer. Left lock-free, a start landing between
+    the retire's read and its write would be overwritten with a finished run
+    and an empty `before` — the same clobber the check exists to prevent,
+    through a window one file write wide instead of one tree walk. Probed from
+    inside the write rather than by racing threads: a test that has to lose a
+    race to fail is a test that passes by luck.
+    """
+    seen = {}
+    real_write = selffix._write_json
+
+    def probe(path, data):
+        free = selffix._lock.acquire(blocking=False)
+        seen["held"] = not free
+        if free:
+            selffix._lock.release()
+        return real_write(path, data)
+
+    monkeypatch.setattr(selffix, "_write_json", probe)
+    selffix.note_session("r-probe", before="x")
+
+    assert seen["held"], (
+        "note_session wrote the pointer outside the lock, so the retire's "
+        "compare-and-set can be split by a start")
+
+
 def test_a_resume_does_not_retire_a_pointer_a_NEW_session_has_taken(
         install, monkeypatch):
     """The retire write is stale by the time it happens, so it has to check.

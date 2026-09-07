@@ -717,20 +717,24 @@ def note_session(run_id: str, *, before: str = "", baseline: str = "",
     of the guard, and the scan still covers the ordinary case; refusing to start
     a fix over it would be the wrong trade.
     """
-    _write_session_pointer({"schema": 3, "version": __version__,
-                            "run_id": str(run_id), "before": str(before),
-                            "baseline": str(baseline), "report": str(report),
-                            "incident": str(incident), "title": str(title)})
+    with _lock:
+        _write_session_pointer({"schema": 3, "version": __version__,
+                                "run_id": str(run_id), "before": str(before),
+                                "baseline": str(baseline), "report": str(report),
+                                "incident": str(incident), "title": str(title)})
 
 
 def _write_session_pointer(payload: dict) -> None:
-    """The write itself, shared by the two callers, and lock-free on purpose.
+    """The write itself, shared by the two writers. CALL IT UNDER `_lock`.
 
-    A session STARTING may always overwrite what it finds — the next start
-    overwriting the last is the documented behaviour of this pointer, and a
-    mutex around it would only decide which of two starts wins a race they are
-    both entitled to. `retire_session_digest` is the one write that is NOT
-    entitled to that, and it takes the lock itself.
+    Not because two STARTS need ordering — the next start overwriting the last
+    is this pointer's documented behaviour, and a mutex would only pick a
+    winner between two writes both entitled to land. It is because
+    `retire_session_digest` decides whether to write by reading this same
+    pointer, and a compare-and-set is only as atomic as the writes it races.
+    A start landing between that read and that write would be overwritten with
+    a finished run and an empty `before` — the very clobber the check exists to
+    prevent, through a window one file write wide instead of one tree walk.
     """
     wrote = False
     for home in record_homes():
