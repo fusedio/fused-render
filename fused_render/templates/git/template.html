@@ -1044,9 +1044,12 @@
   .none { padding: 12px; color: var(--ink-3); font-size: 12px; }
   .hint { color: var(--ink-3); font-size: 11px; }
 
-  /* The "files shown as of <commit>" banner. The eye toggle's state used to
-     live only on a 14px icon somewhere in the commit list; this names the
-     active commit where it cannot be missed and carries the way back. */
+  /* The "Previewing" banner. The eye toggle's state used to live only on a
+     14px icon somewhere in the commit list; this names the active state
+     where it cannot be missed and carries the way back. The exact commit
+     is already named by the row's own "previewing" pill, so this banner
+     no longer repeats it — the sha/subject live in the span's title
+     instead (see the `rev-banner` block in template.html). */
   .rev-banner {
     display: flex;
     align-items: center;
@@ -1060,7 +1063,6 @@
     font-size: 12px;
   }
   .rev-banner .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rev-banner .sha { color: var(--accent-dim); font-variant-numeric: tabular-nums; }
 
   /* A stash entry is ONE line again: message, time, actions. The actions
      hover-reveal (see `.acts` above), so at rest nothing competes with the
@@ -1569,7 +1571,7 @@ function hopSnapshot() {
  * `previewed` here directly — this stays the state's ONE writer, so a
  * future assignment cannot forget the hop (or forget to skip it here) as
  * one more scattered site to keep in sync. Fails safe on its own: if
- * `previewed` is already null (this frame's own "Back to now" beat the
+ * `previewed` is already null (this frame's own "Back to live" beat the
  * shell here, or there was never anything previewed) `preview()`'s own
  * early return makes this a no-op rather than a redundant repaint. */
 window._fusedSnapshotCleared = function () {
@@ -4281,18 +4283,26 @@ function render(data, stashes, diff) {
      the button needs no label of its own for that. */
   if (previewed) {
     const known = (data.commits || []).find((c) => c.sha === previewed);
+    const shortSha = known ? known.short : previewed.slice(0, 7);
+    /* The previewed row already carries a green "previewing" pill naming the
+       exact commit (see the row marker above) — repeating "Files are shown
+       as of <sha>" here was pure noise competing for width with the two
+       buttons that actually do something, and at real sidebar width the sha
+       truncated to nothing anyway. The full identity (sha + subject) is
+       still one hover away, in this span's title, matching the row's own
+       title convention (`entry.short + "  " + entry.subject + ...`). */
+    const bannerTitle = known && known.subject
+      ? shortSha + "  " + known.subject
+      : shortSha;
     const checkoutQuestion = "Commit the app folder back to this version? "
       + "Other folders in the repository are not touched, and this makes a "
       + "new commit you can revert.";
     page.append(el("div", { className: "rev-banner" },
-      el("span", { className: "what" },
-        "Files are shown as of ",
-        el("span", { className: "sha", textContent: known ? known.short : previewed.slice(0, 7) }),
-        known && known.subject ? " — " + known.subject : ""),
+      el("span", { className: "what", title: bannerTitle }, "Previewing"),
       confirmable("app_restore:" + previewed, [icon(CHECKOUT_GLYPH, 14), btnLabel("Checkout")],
         checkoutQuestion,
         { label: "Commit the app folder back to this version" }),
-      action("preview-off", "Back to now", {
+      action("preview-off", "Back to live", {
         label: "Stop previewing and show the current files",
         onClick: () => preview(null),
       })));

@@ -4739,8 +4739,8 @@ changes make the showcase an ordinary git work tree with an ordinary
   pathspec, not a checkout of a revision — so nothing outside the app
   folder is touched, and a restore that would produce an empty commit
   (already at that version) refuses rather than committing nothing. It
-  lives in the previewing banner (the "Files are shown as of…" bar), beside
-  "Back to now", and nowhere
+  lives in the previewing banner (the "Previewing" bar), beside
+  "Back to live", and nowhere
   else: Checkout is reachable only through an active preview, so there is
   no way to commit a rollback to a version nobody looked at, and the button
   needs no label of its own for which version it means — the banner already

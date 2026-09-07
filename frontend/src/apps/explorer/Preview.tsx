@@ -2099,7 +2099,7 @@ function TemplatePreview({
       {/* No snapshot indicator sits here, deliberately: which commit the pane
           shows (and the way back to live) is stated in the git sidebar's own
           commit list — the dot, the `previewing` pill, and its banner's
-          "Back to now". One surface owns the state it controls; the file
+          "Back to live". One surface owns the state it controls; the file
           explorer's OWN indicator, for browsing the app's subfolders, is
           Listing.tsx's banner instead. */}
       {/* A `.fused` app file: Clone unpacks it into Fused/local as an editable
