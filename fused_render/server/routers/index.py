@@ -601,6 +601,15 @@ def _display_root(root: str) -> str:
 _mirrored_terminal: set = set()
 
 
+# Phases in which `files + reused` has nothing to do with `prev_total` yet:
+# derive_state's own seeded default (index/runner.py), shown before the first
+# `type="phase"` event lands, and scan.py's "checking for changes" phase
+# (the fsevents.hint / load_dir_cache race that default covers up until now).
+# Kept as a set, not a single string, so a future phase can join it without
+# restructuring the check below.
+_UNCOUNTABLE_PHASES = frozenset({"starting", "checking for changes"})
+
+
 def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -> bool:
     """Mirror one run into its job. Returns whether the run was live
     (`running`) on this tick, so `mirror_index_jobs_once` can answer the
@@ -626,6 +635,25 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
         return False
     running = bool(run.get("running"))
     if not running:
+        prev_total = None
+    phase = str(run.get("phase") or "")
+    if phase in _UNCOUNTABLE_PHASES:
+        # `done` (files+reused) is still 0 here — derive_state's seeded
+        # "starting" default, or scan.py's own "checking for changes" phase
+        # that names it (the fsevents.hint/load_dir_cache race, before either
+        # has anything countable to report) — so a `total` alongside it would
+        # render "0 / 673,655", which reads as broken rather than as "not
+        # started counting yet". jobFraction (jobs.ts) already turns a `None`
+        # total into an indeterminate sweep, so withholding it here is enough;
+        # no frontend special-casing of the phase string is needed. Every
+        # phase reached AFTER this one keeps its estimate: the plain
+        # full/incremental pool path increments steadily throughout its own
+        # "scanning (...)" phase already, the fsevents path's bulk-reuse tail
+        # now emits mid-loop too (index/scan.py's beat-gated credit, this same
+        # branch), and "writing index"/"writing signatures" (store.py) show a
+        # stable, accurate `done` frozen at the walk's final count — none of
+        # those are "meaningless", just possibly an estimate, which
+        # `total_estimated` below already communicates honestly.
         prev_total = None
     root_display = _display_root(str(root))
     fields = {

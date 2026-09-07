@@ -391,6 +391,41 @@ def test_a_grown_tree_does_not_stop_the_estimate_from_being_offered(
     assert row["done"] == 150.0
 
 
+def test_an_uncountable_phase_withholds_the_estimated_total(monkeypatch, tmp_path):
+    """`derive_state`'s seeded "starting" default, and scan.py's own "checking
+    for changes" phase that names the fsevents.hint/load_dir_cache race
+    (index/scan.py) — both happen before `files`/`reused` have anything
+    countable to report, so a `total` alongside them would render "0 /
+    672,424", which reads as broken rather than as "hasn't started counting
+    yet". The bridge must withhold `total` (not just leave `done` at 0) for
+    exactly these two phases, and restore it the moment a real phase lands —
+    this must be a backend decision (jobs.ts's `jobFraction` already turns a
+    `None` total into an indeterminate sweep with no phase-string
+    special-casing needed on the frontend)."""
+    cfg = IndexConfig(dir=str(tmp_path))
+    os.makedirs(cfg.dir, exist_ok=True)
+    with open(cfg.partitions_json, "w") as f:
+        json.dump({"rows": 672424, "updated": 0}, f)
+
+    _tick(monkeypatch, [_run("r1", phase="starting", files=0, reused=0)], cfg=cfg)
+    row = jobs.list_jobs()[0]
+    assert row["total"] is None
+    assert row["total_estimated"] is False
+
+    _tick(monkeypatch,
+          [_run("r1", phase="checking for changes", files=0, reused=0)], cfg=cfg)
+    row = jobs.list_jobs()[0]
+    assert row["total"] is None
+    assert row["total_estimated"] is False
+
+    _tick(monkeypatch,
+          [_run("r1", phase="scanning (fsevents journal)", files=10, reused=90)],
+          cfg=cfg)
+    row = jobs.list_jobs()[0]
+    assert row["total"] == 672424.0
+    assert row["total_estimated"] is True
+
+
 def test_display_root_shortening_is_separator_agnostic(monkeypatch):
     """`_display_root` shortens against home the same way regardless of which
     platform produced the spellings. `root` always arrives already run
