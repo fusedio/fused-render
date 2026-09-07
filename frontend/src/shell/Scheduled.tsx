@@ -65,6 +65,7 @@ import type {
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Button } from "@platform/shadcn/ui/button";
 import ScheduleCalendar, {
   ICON_VIEW_BOARD,
   ICON_VIEW_CALENDAR,
@@ -87,6 +88,7 @@ import { TASK_VIEWS, mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-l
 import type { TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { isUnderDir } from "./current-apps-lib";
+import { SegmentedControl, SegmentButton } from "@platform/ui/list";
 
 /** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
  *  narrowed to one folder: every task whose project is `project` or sits inside
@@ -534,44 +536,44 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 controls in the app wear `.schedule-form-seg` (the calendar's
                 range, the modal's Ends), so the shared class cannot name this
                 one. Styling still hangs off `.schedule-form-seg`. */}
-            <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
-              <button type="button"
+            <SegmentedControl className="schedule-view-seg" role="radiogroup" aria-label="View">
+              <SegmentButton
                       data-view="list"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
+                      className={"schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
                 {ICON_VIEW_LIST}
                 List
-              </button>
-              <button type="button"
+              </SegmentButton>
+              <SegmentButton
                       data-view="board"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
+                      className={"schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
                 {ICON_VIEW_BOARD}
                 Board
-              </button>
+              </SegmentButton>
               {/* Before the calendar (Akshil, 2026-09-03): the first three
                   answer "what is there" and "what is happening right now",
                   and the calendar is the drill-down for the scheduled subset —
                   the same argument that made List the default. */}
-              <button type="button"
+              <SegmentButton
                       data-view="cards"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "cards" ? " is-active" : "")}
+                      className={"schedule-view-btn" + (view === "cards" ? " is-active" : "")}
                       aria-pressed={view === "cards"}
                       onClick={() => pickView("cards")}>
                 {ICON_VIEW_CARDS}
                 Cards
-              </button>
-              <button type="button"
+              </SegmentButton>
+              <SegmentButton
                       data-view="calendar"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
+                      className={"schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
                 {ICON_VIEW_CALENDAR}
                 Calendar
-              </button>
-            </div>
+              </SegmentButton>
+            </SegmentedControl>
             {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
                 used to be hidden on the calendar, on the argument that it
                 answers "when" and a week with tasks filtered out of it is a week
@@ -593,10 +595,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               onChange={setFilters}
               hideArchiveStatus={view === "calendar"}
             />
-            <button type="button" className="btn btn-primary schedule-new"
-                    onClick={() => openForm("blank", null)}>
+            <Button
+              type="button"
+              className="schedule-new h-8 gap-2 rounded-[var(--radius-control)] px-3.5 py-0 text-dense font-semibold hover:bg-[var(--on-fg)]"
+              onClick={() => openForm("blank", null)}
+            >
               + New task
-            </button>
+            </Button>
           </div>
 
           {/* No chip row under the toolbar: each filter menu already carries its
