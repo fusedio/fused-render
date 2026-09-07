@@ -220,7 +220,12 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
 // listener is up it shows the QR code a phone scans to pair (the ONLY way in —
 // no PIN, no approval dialog), and the devices that have, with revoke.
 function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
+  // What the click asked for, held until the PUT answers. Turning sharing on
+  // binds the listener, issues a certificate and announces two mDNS names
+  // before the response comes back — a couple of seconds in which the old
+  // code left the checkbox sitting unchecked, which read as a dead page.
+  const [pending, setPending] = useState<boolean | null>(null);
+  const busy = pending !== null;
   const [error, setError] = useState<string | null>(null);
   const lan = prefs.lan;
   const enabled = lan?.enabled ?? false;
@@ -232,16 +237,17 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
 
   const toggle = async () => {
     if (busy) return;
-    setBusy(true);
+    const want = !enabled;
+    setPending(want);
     setError(null);
     try {
-      const next = await putLanEnabled(!enabled);
+      const next = await putLanEnabled(want);
       onChange(next);
       setDevices(next.lan?.devices ?? []);
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   };
 
@@ -286,12 +292,28 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
         computer is reachable. Plain http: on iPhone the live microphone and clipboard paste stay off,
         and on an open (password-less) network the pairing cookie travels in the clear.
       </p>
+      {/* The box follows the click, not the round trip — `pending` is what was
+          asked for and the line below says the work is still going. */}
       <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <input
+          type="checkbox"
+          checked={pending ?? enabled}
+          disabled={busy}
+          aria-busy={busy}
+          onChange={toggle}
+        />
         <span>
           <b>Share my apps</b> on this network.
         </span>
       </label>
+      {busy && (
+        <p className="lan-working" role="status">
+          <span className="lan-spinner" aria-hidden="true" />
+          {pending
+            ? "Starting the listener and announcing this computer on the Wi-Fi…"
+            : "Stopping and taking this computer off the Wi-Fi…"}
+        </p>
+      )}
       {/* A code as long as SOMETHING is listening: with the http listener down
           but https up, a browser cannot get in but the iPhone app still pairs
           (the code names https then — /api/lan/pair-token decides). */}
@@ -330,6 +352,10 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
 function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [ipUrl, setIpUrl] = useState<string | null>(null);
+  // Why there is no code, when there is none. An empty paper square said the
+  // same thing as one still being minted — and the mint can now answer 503
+  // (nothing is listening), which is worth reading.
+  const [problem, setProblem] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -339,6 +365,7 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
   useEffect(() => {
     let alive = true;
     let timer: number | null = null;
+    setProblem(null);
     getLanPairToken()
       .then((t) => {
         if (!alive) return;
@@ -350,7 +377,11 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
         // Rotate just before the server forgets this one.
         timer = window.setTimeout(() => alive && setNonce((n) => n + 1), Math.max(5, t.ttl_s - 5) * 1000);
       })
-      .catch(() => alive && setSvg(null));
+      .catch((e) => {
+        if (!alive) return;
+        setSvg(null);
+        setProblem((e as Error).message || "No pairing code — the listener did not answer.");
+      });
     return () => {
       alive = false;
       if (timer !== null) window.clearTimeout(timer);
@@ -359,12 +390,15 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
 
   return (
     <div className="lan-pair">
-      <div
-        className="lan-pair-qr"
-        aria-label="Pairing QR code"
-        dangerouslySetInnerHTML={{ __html: svg ?? "" }}
-      />
+      <div className="lan-pair-qr" aria-label="Pairing QR code" aria-busy={!svg && !problem}>
+        {svg ? (
+          <span dangerouslySetInnerHTML={{ __html: svg }} />
+        ) : problem ? null : (
+          <span className="lan-spinner lan-spinner-qr" aria-hidden="true" />
+        )}
+      </div>
       <div className="lan-pair-text">
+        {problem && <ErrorBanner>{problem}</ErrorBanner>}
         <p>
           <b>Scan from the Fused Render app</b> (or the iPhone's Camera app — not the Control Center
           scanner, whose in-app browser can't pair Safari). Each code pairs one device; a new code
