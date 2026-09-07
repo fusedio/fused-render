@@ -579,8 +579,10 @@
     cursor: pointer;
     text-align: left;
   }
-  .kebab-opt:hover, .kebab-opt:focus-visible { background: var(--surface-2); }
-  .kebab-opt[disabled] { color: var(--dim); cursor: default; }
+  .kebab-opt:hover:not([disabled]), .kebab-opt:focus-visible:not([disabled]) { background: var(--surface-2); }
+  /* Disabled is INERT to the pointer too (Akshil, 2026-09-07: "both options are
+     disabled but bg color is still same"): no hover wash, no danger tint. */
+  .kebab-opt[disabled], .kebab-opt[disabled]:hover { color: var(--dim); cursor: default; background: transparent; }
   /* The SAME story as `#kebabpop[hidden]` above, one level down: `display:
      block` on the rule beats the UA sheet's `[hidden] { display: none }`, so an
      item hidden in the markup still took its full height. The archive item is
@@ -594,10 +596,10 @@
      not only on hover: the item's whole job is to be told apart from the
      reversible one directly above it before it is pressed. */
   .kebab-opt.is-danger { color: var(--error); }
-  .kebab-opt.is-danger:hover, .kebab-opt.is-danger:focus-visible {
+  .kebab-opt.is-danger:hover:not([disabled]), .kebab-opt.is-danger:focus-visible:not([disabled]) {
     background: color-mix(in srgb, var(--error) 12%, transparent);
   }
-  .kebab-opt.is-danger[disabled] { color: var(--dim); }
+  .kebab-opt.is-danger[disabled], .kebab-opt.is-danger[disabled]:hover { color: var(--dim); background: transparent; }
 
   /* "Comment on preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
      (see the 800px block at the end of this stylesheet): while both columns are on
