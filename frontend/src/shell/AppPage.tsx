@@ -60,7 +60,7 @@ import {
 } from "@platform/lib/api";
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { embedUrlForFsPath, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import {
   AppWindow,
   Files,
@@ -472,13 +472,16 @@ export default function AppPage({
                       : "Migrate to new version"}
               </Button>
             )}
-            {/* The app full-size in the explorer (its entry page), in a new tab
-                so this page and its live frame stay put. */}
+            {/* The app full-size AS AN APP — its entry page in embed mode,
+                chrome-free — in a new tab so this page and its live frame stay
+                put. The top-level embed's strip (EmbedStrip) is the way back
+                into the explorer from there; the folder link opposite is the
+                explorer route from here. */}
             <Button
               size="sm"
               variant="outline"
               className="app-page-open"
-              onClick={() => window.open(urlForFsPath(entry), "_blank", "noopener")}
+              onClick={() => window.open(embedUrlForFsPath(entry), "_blank", "noopener")}
             >
               Open app
               <ExternalLink data-icon="inline-end" />

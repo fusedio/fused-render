@@ -24,10 +24,10 @@
 // CloneAppFileButton (one control, one label rule: "Clone" / "Go to local
 // version") told to land on the view URL, since `navigate` would keep the
 // embed prefix and drop the clone folder into a chrome-free listing with no
-// way out (D282's dead end). "Reveal in Finder" for a file, because a
-// double-clicked artifact's location is the next thing one asks. Export and
-// Migrate are deliberately absent: they act on an app's entry FOLDER, not on
-// a read-only artifact, and the view-mode header already has them.
+// way out (D282's dead end). Export, Migrate and Reveal in Finder are
+// deliberately absent (owner): the first two they act on an app's entry FOLDER, not on
+// a read-only artifact, and the view-mode header already has them; Reveal
+// belongs to the explorer's own menus once you are there.
 //
 // DISMISS is per page load — component state, nothing persisted. The strip is
 // the only route to Clone from an opened `.fused`; a remembered "✕" would
@@ -35,9 +35,8 @@
 // posture as FdaStrip.
 import { useState } from "react";
 
-import { getAppEntry, revealPath } from "@platform/lib/api";
+import { getAppEntry } from "@platform/lib/api";
 import { IS_TOP_EMBED, viewUrlForFsPath } from "@platform/lib/router";
-import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 
 import { CloneAppFileButton } from "@apps/explorer/Preview";
@@ -79,21 +78,6 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
           Open in explorer
         </button>
         {isFused && <CloneAppFileButton fsPath={fsPath} toView />}
-        {isDir === false && (
-          <button
-            type="button"
-            className="bar-ctl"
-            title="Reveal in Finder"
-            aria-label="Reveal in Finder"
-            onClick={() =>
-              revealPath(fsPath).catch((e) =>
-                pushToast({ msg: (e as Error).message || "could not reveal", tone: "error" }),
-              )
-            }
-          >
-            {MenuIcons.reveal}
-          </button>
-        )}
         <button
           type="button"
           className="bar-ctl embed-strip-close"
