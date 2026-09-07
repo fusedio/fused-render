@@ -1151,6 +1151,129 @@ def test_app_restore_undoes_the_checkout_when_the_commit_itself_fails(
         assert fh.read() == before_main == "VERSION = 2\n"
 
 
+def _app_repo_with_gap(root):
+    """A history where the app folder EXISTS, then is DELETED, then is
+    RE-ADDED — so a scoped `git log` on the app folder shows all three
+    commits (the folder "has history" there) while the MIDDLE one's own
+    tree has nothing under it. FINDING 1: `probeAppFolder` is sha-less, so
+    Checkout/`app_restore` is armed for this middle commit exactly as it
+    would be for any other row, and `git checkout <sha> -- ':(literal)app'`
+    against it exits 1 with "did not match any file(s) known to git".
+    """
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q")
+    git(root, "config", "user.name", "Fixture Author")
+    git(root, "config", "user.email", "fixture@example.com")
+    git(root, "config", "commit.gpgsign", "false")
+    write(root, "app/index.html", '<meta name="fused-app">\n')
+    write(root, "app/main.py", "VERSION = 1\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "v1 has app/", when="2026-10-01T10:00:00+00:00")
+
+    git(root, "rm", "-r", "-q", "app")
+    git(root, "commit", "-q", "-m", "v2 deletes app/", when="2026-10-02T10:00:00+00:00")
+    gap_sha = git(root, "rev-parse", "HEAD").strip()
+
+    write(root, "app/index.html", '<meta name="fused-app">\n')
+    write(root, "app/main.py", "VERSION = 3\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "v3 re-adds app/", when="2026-10-03T10:00:00+00:00")
+    return root, gap_sha
+
+
+@pytest.fixture()
+def app_repo_with_gap(tmp_path):
+    return _app_repo_with_gap(str(tmp_path / "app-repo-gap"))
+
+
+def test_app_restore_refuses_when_the_app_folder_is_absent_at_that_sha(
+        ops, app_repo_with_gap):
+    """FINDING 1 (a): the reviewer's repro. `gap_sha` is a real commit that
+    shows up in the app folder's own scoped log, yet its OWN tree has
+    nothing under `app/` — `_restore_scope_from` must probe and refuse
+    BEFORE it deletes, not delete-then-discover the checkout has nothing to
+    bring back."""
+    root, gap_sha = app_repo_with_gap
+    head_sha = git(root, "rev-parse", "HEAD").strip()
+    before_status = git(root, "status", "--porcelain").strip()
+    with open(_app_file(root), encoding="utf-8") as fh:
+        before_main = fh.read()
+
+    got = ops.main(_app_file(root), op="app_restore", sha=gap_sha)
+
+    assert got["ok"] is False, got
+    assert got["reason"] not in ("git-failed",), (
+        "a raw git failure, not a clean refusal", got)
+    # Nothing was touched: no commit, no staged deletion, no missing file.
+    assert git(root, "rev-parse", "HEAD").strip() == head_sha
+    assert git(root, "status", "--porcelain").strip() == before_status == ""
+    with open(_app_file(root), encoding="utf-8") as fh:
+        assert fh.read() == before_main == "VERSION = 3\n"
+    assert os.path.exists(_app_file(root))
+
+
+def test_app_restore_recovers_when_the_checkout_itself_fails_after_the_rm(
+        ops, app_repo, monkeypatch):
+    """FINDING 1 (b): a checkout that fails AFTER the `rm` has already
+    succeeded (a TIMEOUT_S expiry mid-checkout, a permission error, a
+    collision with an existing ignored directory) must not leave the app
+    folder wiped — `_restore_scope_from` has to restore from HEAD before
+    propagating the checkout's own failure."""
+    root, old_sha = app_repo
+    head_sha = git(root, "rev-parse", "HEAD").strip()
+    before_status = git(root, "status", "--porcelain").strip()
+    with open(_app_file(root), encoding="utf-8") as fh:
+        before_main = fh.read()
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "checkout" in argv and old_sha in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, b"", b"fatal: fake checkout failure\n")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+
+    assert got["ok"] is False, got
+    assert git(root, "rev-parse", "HEAD").strip() == head_sha
+    # THE non-skippable assertion: the working tree and index are back to
+    # what they were before this op touched anything, not left wiped.
+    assert git(root, "status", "--porcelain").strip() == before_status == ""
+    with open(_app_file(root), encoding="utf-8") as fh:
+        assert fh.read() == before_main == "VERSION = 2\n"
+
+
+def test_app_restore_names_the_original_cause_when_recovery_ALSO_fails(
+        ops, app_repo, monkeypatch):
+    """FINDING 2: `_restore_scope_from(root, spec, "HEAD")` runs inside
+    `except _Refused:` to undo a failed commit. If IT raises too, the
+    surfaced message must still name the ORIGINAL refusal (the rejecting
+    hook here), not the recovery's own git-failed/timeout — with a note
+    that the undo also failed."""
+    root, old_sha = app_repo
+    _install_rejecting_hook(root, "pre-commit")
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "checkout" in argv and "HEAD" in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, b"", b"fatal: fake recovery failure\n")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+
+    assert got["ok"] is False, got
+    assert "refused by hook" in got["message"], (
+        "the ORIGINAL cause (the hook) must still be named", got)
+    assert "also failed" in got["message"].lower() or \
+        "manual" in got["message"].lower(), (
+        "must say the undo also failed", got)
+
+
 # ---------------------------------------------------------------------- revert
 
 
@@ -1256,6 +1379,39 @@ def test_a_timed_out_revert_still_aborts_cleanly(ops, revert_repo, monkeypatch):
     # conflict does — git must never be left mid-operation.
     assert not os.path.exists(os.path.join(root, ".git", "REVERT_HEAD"))
     assert git(root, "status", "--porcelain").strip() == ""
+
+
+def test_a_conflicting_revert_whose_abort_ALSO_fails_warns_the_user(
+        ops, revert_repo, monkeypatch):
+    """FINDING 3: on a real timeout, `subprocess.run` SIGKILLs the child
+    git, which typically leaves `.git/index.lock`; `revert --abort` then
+    fails ("Unable to create index.lock"), and `_safe_abort` silently
+    swallowed that — the user was told only "conflicts" with no hint the
+    repository is ALSO still mid-revert. `_safe_abort` must report whether
+    it actually succeeded, and the refusal must say so and name what to
+    run.
+    """
+    root, target_sha = revert_repo
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "revert" in argv and "--abort" in argv:
+            return subprocess.CompletedProcess(
+                argv, 128, b"",
+                b"fatal: Unable to create '.git/index.lock': File exists.\n")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    got = ops.main(root, op="revert", sha=target_sha)
+
+    assert got["ok"] is False, got
+    # THE non-skippable assertion: the abort was never actually run (it was
+    # faked to fail), so the repository is genuinely still mid-revert.
+    assert os.path.exists(os.path.join(root, ".git", "REVERT_HEAD"))
+    assert "abort" in got["message"].lower(), got
+    assert "revert --abort" in got["message"] or \
+        "mid-revert" in got["message"].lower(), got
 
 
 # ------------------------------------------------------------------ refusals

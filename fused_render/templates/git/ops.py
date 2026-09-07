@@ -867,6 +867,29 @@ def _tracked(root, rels):
     return tracked, [rel for rel in rels if rel not in tracked]
 
 
+def _knows_anything_at(root, sha, spec):
+    """`_knows_anything`'s twin for a historical tree rather than the index.
+
+    `_restore_scope_from` must refuse BEFORE it deletes anything if `sha`'s
+    own tree has nothing under `spec` (finding 1) — a commit that deleted
+    the app folder (with a LATER commit re-adding it, so the folder's own
+    scoped log still shows history there and `probeAppFolder`, which is
+    sha-less, arms Checkout regardless) is exactly the case where
+    `checkout <sha> -- <spec>` exits 1 with "did not match any file(s)
+    known to git" — but only AFTER `rm -rf` has already wiped the working
+    tree, with nothing left to bring back.
+
+    `git ls-tree`, not `git ls-files --with-tree`: the pathspec here can be
+    `:/` (the whole tree, `_scope_spec`'s root case), which `ls-tree`
+    accepts as an ordinary pathspec argument the same way `ls-files` does
+    for the index — and unlike `checkout`, `ls-tree` exits 0 whether or not
+    anything matched, so this is a genuine probe rather than another
+    command whose own error has to be worked around.
+    """
+    out = _git_ok(root, "ls-tree", "-r", "--name-only", "-z", sha, *spec)
+    return bool(out.strip(b"\0"))
+
+
 def _knows_anything(root, spec):
     """Whether git tracks any file under this pathspec.
 
@@ -1055,9 +1078,46 @@ def _restore_scope_from(root, spec, sha):
     index"). Forcing is safe here specifically because every caller already
     holds `_require_clean`'s guarantee that nothing OUTSIDE this function's
     own writes is being discarded.
+
+    Two more failure modes, both from the second review round:
+
+    * **`sha` might not hold this scope at all** (finding 1). `checkout <sha>
+      -- <spec>` alone would exit 1 with "did not match any file(s) known to
+      git" — but only AFTER the `rm` above has already wiped the working
+      tree, with nothing left to bring back. `_knows_anything_at` probes
+      `sha`'s own tree FIRST, so this refuses cleanly with nothing touched
+      rather than deleting first and discovering there is nothing to
+      restore.
+    * **the checkout can still fail for an unrelated reason** after the `rm`
+      has already succeeded — a `TIMEOUT_S` expiry mid-checkout, a
+      permission error, a collision with an existing ignored directory. Left
+      alone that is a real, on-disk deletion with no way back, so this
+      restores from HEAD before propagating the failure. `sha != "HEAD"`
+      guards the one caller that already IS "restore from HEAD" (finding
+      2's own recovery, below) — retrying the identical call would just
+      fail the same way again.
     """
+    if not _knows_anything_at(root, sha, spec):
+        raise _Refused(
+            "no-such-version",
+            "This does not exist in that version of the repository — "
+            "nothing was changed.")
     _git_ok(root, "rm", "-r", "-f", "-q", "--ignore-unmatch", *spec)
-    _git_ok(root, "checkout", sha, *spec)
+    try:
+        _git_ok(root, "checkout", sha, *spec)
+    except _Refused as exc:
+        if sha == "HEAD":
+            raise
+        try:
+            _git_ok(root, "checkout", "HEAD", *spec)
+        except _Refused as recovery_exc:
+            raise _Refused(
+                exc.payload["reason"],
+                exc.payload["message"] + " The automatic recovery back to "
+                "HEAD also failed (" + recovery_exc.payload["message"] +
+                "); this scope may be left partially restored and need "
+                "manual attention.") from exc
+        raise
 
 
 def _app_restore(root, file, sha):
@@ -1089,7 +1149,7 @@ def _app_restore(root, file, sha):
     label = app_rel or "the app folder"
     try:
         _git_ok(root, "commit", "-m", f"Restore {label} to {short}")
-    except _Refused:
+    except _Refused as commit_exc:
         # FINDING 2: the checkout above updated the index AND the working
         # tree for this scope; if the commit that was meant to follow it then
         # fails (no `user.email`, a rejecting `pre-commit` hook, a gpg
@@ -1099,7 +1159,23 @@ def _app_restore(root, file, sha):
         # what this function did, the same way: wipe the scope and restore
         # it from HEAD instead of `sha` — HEAD is what `_require_clean`
         # already proved this scope matched before this call started.
-        _restore_scope_from(root, spec, "HEAD")
+        #
+        # This recovery call can itself raise (git-failed, timeout, a second
+        # hook rejection on the recovery commit-less checkout — no, this is a
+        # checkout, but the same class of failure applies). A bare `raise`
+        # after an unguarded call would let THAT exception replace this one,
+        # so the user would be told "git-failed"/"timeout" instead of the
+        # actual cause (their pre-commit hook), while the folder is left
+        # fully deleted rather than half-restored. Catch it and re-raise the
+        # ORIGINAL refusal, its message extended to say the undo also failed.
+        try:
+            _restore_scope_from(root, spec, "HEAD")
+        except _Refused as recovery_exc:
+            raise _Refused(
+                commit_exc.payload["reason"],
+                commit_exc.payload["message"] + " The automatic undo also "
+                "failed (" + recovery_exc.payload["message"] + "); the "
+                "repository may need manual attention.") from commit_exc
         raise
     out = _git_ok(root, "log", "-1", "--no-color", f"--format={_COMMIT_FORMAT}")
     parts = out.decode("utf-8", "replace").strip().split("\0")
@@ -1114,11 +1190,21 @@ def _safe_abort(root):
     here (there is nothing in progress to abort; git itself is unavailable)
     must not replace, or hide behind an unrelated traceback, the original
     refusal the caller is already raising.
+
+    Returns whether the abort actually succeeded (FINDING 3). On a real
+    timeout, `subprocess.run` SIGKILLs the child git, which typically leaves
+    `.git/index.lock` behind; `revert --abort` then fails ("Unable to create
+    index.lock") with a non-zero exit code — NOT an exception — and the
+    previous version of this function looked at neither the exit code nor
+    the exception, so that failure was invisible: the user was told only
+    "conflicts" while the repository was ALSO still mid-revert. The caller
+    uses the return value to say so.
     """
     try:
-        _run(root, "revert", "--abort")
+        code, _, _ = _run(root, "revert", "--abort")
     except _Refused:
-        pass
+        return False
+    return code == 0
 
 
 def _revert(root, sha):
@@ -1148,8 +1234,13 @@ def _revert(root, sha):
     _require_clean(root)
     try:
         code, out, err = _run(root, "revert", "--no-edit", sha)
-    except _Refused:
-        _safe_abort(root)
+    except _Refused as exc:
+        if not _safe_abort(root):
+            raise _Refused(
+                exc.payload["reason"],
+                exc.payload["message"] + " The automatic abort afterwards "
+                "also failed — this repository may still be mid-revert; "
+                "run `git revert --abort` in a terminal.") from exc
         raise
     if code == 0:
         log_out = _git_ok(root, "log", "-1", "--no-color",
@@ -1158,11 +1249,14 @@ def _revert(root, sha):
         short, subject = (parts + ["", ""])[:2]
         return _ok("revert", f"Reverted as {short}.", short=short,
                    subject=subject)
-    _safe_abort(root)
-    raise _Refused(
-        "revert-conflict",
-        _brief(err) or "That revert conflicts and needs manual resolution "
-        "— nothing was changed here. Finish it in a terminal.")
+    conflict_message = (_brief(err) or "That revert conflicts and needs "
+                        "manual resolution — nothing was changed here. "
+                        "Finish it in a terminal.")
+    if not _safe_abort(root):
+        conflict_message += (" The automatic abort afterwards also failed "
+                             "— this repository may still be mid-revert; "
+                             "run `git revert --abort` in a terminal.")
+    raise _Refused("revert-conflict", conflict_message)
 
 
 def _branch_create(root, name, checkout):
