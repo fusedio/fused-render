@@ -127,7 +127,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
   const last = index >= steps.length - 1;
   const setIndex = (i: number) => setStepId(steps[Math.max(0, Math.min(i, steps.length - 1))].id);
   // Counted over the steps this machine actually has (no FDA off macOS).
-  const eyebrow = `Step ${index + 1} of ${steps.length}`;
+  const eyebrowText = `Step ${index + 1} of ${steps.length}`;
 
   // Fire-and-forget, and at most one flag per visit: the flag is a courtesy
   // to the NEXT launch, and a failed write must not hold the page over the
@@ -198,6 +198,30 @@ export function OnboardingWizard({ config }: { config: Config }) {
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `next` is a per-render closure over index
   }, [finish, last, index, steps.length]);
+
+  // Step counter on the left, Back/Next hugging the right edge of the content
+  // column: the pair reads as one control, so they sit together.
+  const eyebrow = (
+    <>
+      <span>{eyebrowText}</span>
+      <div className="flex items-center gap-2 normal-case tracking-normal">
+        <Button variant="ghost" size="sm" onClick={back} disabled={index === 0}>
+          <ArrowLeft data-icon="inline-start" />
+          Back
+        </Button>
+        {last ? (
+          <Button key="explore" variant="outline" size="sm" onClick={() => finish("complete")}>
+            I'll explore on my own
+          </Button>
+        ) : (
+          <Button key="next" size="sm" onClick={next} title="⌘/Ctrl + Enter">
+            Next
+            <ArrowRight data-icon="inline-end" />
+          </Button>
+        )}
+      </div>
+    </>
+  );
 
   return (
     <div
@@ -287,26 +311,6 @@ export function OnboardingWizard({ config }: { config: Config }) {
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="flex items-center justify-between border-t border-border px-5 py-3">
-        <Button variant="ghost" size="sm" onClick={back} disabled={index === 0}>
-          <ArrowLeft data-icon="inline-start" />
-          Back
-        </Button>
-        <div className="text-xs text-muted-foreground sm:hidden">
-          {index + 1} / {steps.length}
-        </div>
-        {last ? (
-          <Button key="explore" variant="outline" size="sm" onClick={() => finish("complete")}>
-            I'll explore on my own
-          </Button>
-        ) : (
-          <Button key="next" size="sm" onClick={next} title="⌘/Ctrl + Enter">
-            Next
-            <ArrowRight data-icon="inline-end" />
-          </Button>
-        )}
-      </div>
     </div>
   );
 }

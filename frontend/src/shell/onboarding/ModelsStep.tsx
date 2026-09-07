@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 // Step 4 — local models, and a head start on downloading them.
 //
 // The step exists because of a timing problem, not a capability one: a model
@@ -203,7 +204,7 @@ function useJobs(): { jobs: Job[]; refresh: () => void } {
   return { jobs, refresh: () => refresh.current() };
 }
 
-export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: string }) {
+export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: ReactNode }) {
   // Each of the three is React state for THIS mount and module memory across
   // mounts — the setters below write both, so a remount seeds from what the
   // last one left rather than from scratch.

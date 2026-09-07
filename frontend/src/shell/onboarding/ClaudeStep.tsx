@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 // Step 2 — Claude Code. A CHECKLIST, not the strip: the strip renders only
 // what is wrong and nothing when all is well, which is right for a page
 // header and wrong for a setup step, where "installed ✓, signed in ✓" is the
@@ -104,7 +105,7 @@ function StateIcon({ state, optional }: { state: RowState; optional?: boolean })
 
 // `setup` is the wizard's single machine (OnboardingWizard owns it, so what
 // gets fixed here is what step 4 reads).
-export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: string }) {
+export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: ReactNode }) {
   const { health, loaded, busy, load } = setup;
   const issues = claudeIssues(health);
   const rows = health ? rowsFor(health) : null;

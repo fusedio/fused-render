@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 // Step 4 — the first app. The Home composer as-is (it names, scaffolds, starts
 // the Claude run and navigates), or one of the showcase's local-AI apps.
 // Either path is the wizard's "complete": this is the only step whose action
@@ -69,7 +70,7 @@ export function FirstAppStep({
   onComplete,
 }: {
   health: ClaudeHealth | null;
-  eyebrow: string;
+  eyebrow: ReactNode;
   /** The composer created a folder — real progress, flag it. Showcase cards
       need no hook: the navigation they perform is what the wizard reads. */
   onComplete: () => void;

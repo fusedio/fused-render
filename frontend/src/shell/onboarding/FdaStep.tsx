@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 // Step 3 — Full Disk Access (macOS).
 //
 // This deliberately REVERSES FdaStrip's "not at launch" rule (FdaStrip.tsx):
@@ -29,7 +30,7 @@ import { Button } from "@platform/shadcn/ui/button";
 
 import { StepHeader } from "./StepHeader";
 
-export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: string }) {
+export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: ReactNode }) {
   // The wizard already holds a config: seed so the first paint is right,
   // then the shared store takes over.
   useEffect(() => seedFda(config.fda), [config.fda]);
