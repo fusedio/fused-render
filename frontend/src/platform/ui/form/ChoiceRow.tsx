@@ -16,8 +16,8 @@ export function ChoiceRow({
   ...props
 }: ComponentProps<"label"> & { control: ReactNode }) {
   return (
-    <label className={cn("flex cursor-pointer items-start gap-2.5", className)} {...props}>
-      <span className="mt-1 flex-none">{control}</span>
+    <label className={cn("flex cursor-pointer items-center gap-2.5", className)} {...props}>
+      <span className="flex flex-none items-center">{control}</span>
       <span>{children}</span>
     </label>
   );

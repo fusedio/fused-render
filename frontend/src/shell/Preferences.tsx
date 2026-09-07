@@ -67,7 +67,6 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
-import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { Button } from "@platform/shadcn/ui/button";
 import {
   SettingsPage,
@@ -81,6 +80,8 @@ import {
   MutedText,
   CodeChip,
   ActionRow,
+  FieldSelect,
+  FieldSelectOption,
 } from "@platform/ui/form";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
@@ -435,7 +436,7 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
       <div className="flex flex-col gap-1.5">
         <label className="flex items-center gap-2">
           Model{" "}
-          <NativeSelect
+          <FieldSelect
             value={prefs.model.default}
             disabled={busy}
             onChange={async (e) => {
@@ -452,11 +453,11 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
             }}
           >
             {prefs.model.choices.map((m) => (
-              <NativeSelectOption key={m} value={m}>
+              <FieldSelectOption key={m} value={m}>
                 {MODEL_LABELS[m] ?? m}
-              </NativeSelectOption>
+              </FieldSelectOption>
             ))}
-          </NativeSelect>
+          </FieldSelect>
         </label>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -573,8 +574,7 @@ function HuggingFaceSection() {
                   </span>
                   <Button
                     type="button"
-                    variant="ghost"
-                    className="text-[var(--error)] hover:bg-[rgba(var(--error-rgb),0.12)] hover:text-[var(--error)]"
+                    variant="destructive"
                     disabled={busy || locked}
                     onClick={() => void act(hfLogout)}
                   >
@@ -692,15 +692,15 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
           {/* Gated on what is actually recording, not on the stored pref —
               otherwise an env-forced off state leaves these live, and an
               env-forced on state greys them out while calls are landing. */}
-          <NativeSelect
+          <FieldSelect
             value={calls.params}
             disabled={busy || !calls.effective_enabled}
             onChange={(e) => apply(() => putCallsParamsMode(e.target.value as CallsParamsMode))}
           >
-            <NativeSelectOption value="full">Record values</NativeSelectOption>
-            <NativeSelectOption value="keys">Record names only</NativeSelectOption>
-            <NativeSelectOption value="off">Record nothing</NativeSelectOption>
-          </NativeSelect>
+            <FieldSelectOption value="full">Record values</FieldSelectOption>
+            <FieldSelectOption value="keys">Record names only</FieldSelectOption>
+            <FieldSelectOption value="off">Record nothing</FieldSelectOption>
+          </FieldSelect>
         </label>
         <MutedText>
           A run's parameters are usually the whole repro, so they are recorded by default — they
@@ -711,17 +711,17 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
       <div className="flex flex-col gap-1.5">
         <label className="flex items-center gap-2">
           Keep for{" "}
-          <NativeSelect
+          <FieldSelect
             value={String(calls.retention_days)}
             disabled={busy || !calls.effective_enabled || retentionLocked}
             onChange={(e) => apply(() => putCallsRetentionDays(Number(e.target.value)))}
           >
-            <NativeSelectOption value="1">1 day</NativeSelectOption>
-            <NativeSelectOption value="7">7 days</NativeSelectOption>
-            <NativeSelectOption value="14">14 days</NativeSelectOption>
-            <NativeSelectOption value="90">90 days</NativeSelectOption>
-            <NativeSelectOption value="0">Until the size cap</NativeSelectOption>
-          </NativeSelect>
+            <FieldSelectOption value="1">1 day</FieldSelectOption>
+            <FieldSelectOption value="7">7 days</FieldSelectOption>
+            <FieldSelectOption value="14">14 days</FieldSelectOption>
+            <FieldSelectOption value="90">90 days</FieldSelectOption>
+            <FieldSelectOption value="0">Until the size cap</FieldSelectOption>
+          </FieldSelect>
         </label>
         {retentionLocked && (
           <LockedNote>
