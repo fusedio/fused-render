@@ -37,6 +37,7 @@ import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
 import { rewritePathAgainst } from "@platform/lib/snapshot-param";
 import type { AppPageSnapshotState } from "./useAppPageSnapshot";
+import SnapshotError from "./SnapshotError";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -164,8 +165,8 @@ export default function AppApi({
   const effectiveDir = snapshot.pending ? null : rewritePathAgainst(snapshot.snap, dir);
   useEffect(() => {
     // Pending: nothing honest to list yet (see this component's own prop
-    // comment) — stay on the loading skeleton rather than list, and let
-    // Execute run, the LIVE tree's code under a URL claiming a past commit.
+    // comment) — stay on the loading skeleton rather than list live and let
+    // Execute run the LIVE tree's code under a URL claiming a past commit.
     if (!effectiveDir) {
       setLoad({ kind: "loading" });
       return;
@@ -260,7 +261,12 @@ export default function AppApi({
   // scrolls here. The list inside hugs its rows (flex-none).
   return (
     <div className="app-api flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
-      {load.kind === "loading" && (
+      {/* `error` (finding 1, second round): a transient resolve failure
+          leaves `effectiveDir` null forever (the same as an ordinary
+          in-flight resolve, so `load` never leaves "loading" either way) —
+          this must not be an indefinite skeleton with no way out. */}
+      {snapshot.error && <SnapshotError onRetry={snapshot.retry} />}
+      {!snapshot.error && load.kind === "loading" && (
         <SkeletonLines rows={3} label="Reading Python files" />
       )}
       {load.kind === "error" && (

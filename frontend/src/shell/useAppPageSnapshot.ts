@@ -54,6 +54,25 @@ export interface AppPageSnapshotState {
    *  header comment for why a caller must treat this differently from
    *  "live" rather than folding it into `snap === null`. */
   pending: boolean;
+  /** true when the most recent resolve attempt for the URL's CURRENT `sha`
+   *  failed with something other than a confirmed 404 (a dropped connection,
+   *  a 500) — code review finding 1, second round. `pending` alone cannot
+   *  tell a caller this: it stays true for the entire time `snap` is
+   *  unresolved, which is also true of the ordinary in-flight case a
+   *  skeleton is the right thing to show for. Unlike a 404 (which this hook
+   *  resolves on its own by falling back to Live), nothing about a transient
+   *  failure resolves itself — the request simply never gets retried (the
+   *  effect only re-runs on `dir`/`urlVersion`), so a caller must surface
+   *  this as an error the user can act on rather than leave an indefinite
+   *  skeleton up forever. Reset to false the moment `sha` changes, `sha`
+   *  goes live, or a later attempt succeeds. */
+  error: boolean;
+  /** Ask the hook to re-attempt resolving the URL's current `sha`. A no-op
+   *  while `sha` is null (nothing to retry). This is the user's actual
+   *  escape from `error` besides picking a different commit in the version
+   *  picker — which nothing about the pending skeleton alone told them they
+   *  needed to do. */
+  retry: () => void;
 }
 
 /** `dir`'s own resolution of the URL's `_snapshot` sha, re-derived whenever
@@ -67,6 +86,11 @@ export function useAppPageSnapshot(
 ): AppPageSnapshotState {
   const [resolvedSnapshot, setResolvedSnapshot] =
     useState<ResolvedSnapshot | null>(null);
+  const [error, setError] = useState(false);
+  // Bumped by `retry()` — the effect's own extra re-run signal for "try the
+  // SAME sha again", since neither `dir` nor `urlVersion` changes just
+  // because a fetch failed transiently.
+  const [retryToken, setRetryToken] = useState(0);
   // The URL's raw claim, read fresh on every render rather than held as its
   // own piece of state: `urlVersion` (bumped on every `fused:urlchange`,
   // including this hook's own `replaceSearch` calls below and a sibling
@@ -86,6 +110,7 @@ export function useAppPageSnapshot(
       // a fresh object identity into state on every unrelated URL write this
       // effect also wakes for.
       setResolvedSnapshot((prev) => (prev === null ? prev : null));
+      setError((prev) => (prev ? false : prev));
       return;
     }
     // Already resolved THIS sha against an app folder that actually ENCLOSES
@@ -103,6 +128,11 @@ export function useAppPageSnapshot(
       return;
     }
     let alive = true;
+    // A fresh attempt (a new sha, or a re-run this hook's own `retry()`
+    // triggered) starts clean — a stale `error` from a PREVIOUS sha's
+    // failure must not keep painting an error banner over a request that
+    // has not even settled yet.
+    setError(false);
     getGitSnapshot(dir, sha)
       .then((r) => {
         if (!alive) return;
@@ -127,7 +157,21 @@ export function useAppPageSnapshot(
         // long as `resolvedSnapshot` does not match the URL's current `sha`,
         // which a transient failure leaves untouched either way).
         const status = (err as { status?: number } | null | undefined)?.status;
-        if (status !== 404) return;
+        if (status !== 404) {
+          // Finding 1 (round 2): this used to just `return`, leaving
+          // `resolvedSnapshot` (and so `pending`) exactly as they were —
+          // forever, since nothing re-runs this effect on its own. A caller
+          // gating a frame/fetch on `pending` alone (every one of Overview,
+          // Files, API does, per the earlier pending-window findings) then
+          // has no way to distinguish "still resolving" from "will never
+          // resolve without help" and is stuck showing a skeleton
+          // indefinitely. `error` is the caller-visible escape hatch: it
+          // does not clear `pending` (there is genuinely still no `snap` to
+          // rewrite reads against) — it is a caller's cue to swap the
+          // skeleton for an error + retry affordance instead.
+          setError(true);
+          return;
+        }
         // The URL write runs BEFORE the state write, deliberately: `sha`
         // above is read fresh from `location.search` on every render, so a
         // re-render this `setResolvedSnapshot` triggers must not fire while
@@ -146,8 +190,9 @@ export function useAppPageSnapshot(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- urlVersion is a
     // re-run signal (a fresh `_snapshot` on the URL), not a value read here;
-    // `sha`/`resolvedSnapshot` are read fresh from the closure on every run
-  }, [dir, urlVersion]);
+    // `sha`/`resolvedSnapshot` are read fresh from the closure on every run.
+    // `retryToken` is the same kind of re-run signal, for `retry()` below.
+  }, [dir, urlVersion, retryToken]);
 
   // The one place both halves of "resolved" are checked together — the same
   // guard the effect's own skip-check applies, restated here because a
@@ -161,5 +206,13 @@ export function useAppPageSnapshot(
     carries(resolvedSnapshot.app_dir, dir)
       ? resolvedSnapshot
       : null;
-  return { sha, snap: resolved, pending: sha !== null && resolved === null };
+  return {
+    sha,
+    snap: resolved,
+    pending: sha !== null && resolved === null,
+    error,
+    retry: () => {
+      if (sha) setRetryToken((t) => t + 1);
+    },
+  };
 }

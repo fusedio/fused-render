@@ -91,6 +91,7 @@ import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
 import AppApi from "./AppApi";
 import AppVersionPicker from "./AppVersionPicker";
+import SnapshotError from "./SnapshotError";
 import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnapshot";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
@@ -152,23 +153,41 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // was renamed since that commit.
     render: ({ slug, entry, folderHref, snapshot }) => {
       if (snapshot.pending) {
+        // `error` (finding 1, second round): a transient resolve failure
+        // stays `pending` forever — nothing re-runs the resolve on its own —
+        // so this must not be an indefinite skeleton. `SnapshotError` gives
+        // the user a real way out (retry, or back to Live) instead.
+        if (snapshot.error) {
+          return <SnapshotError onRetry={snapshot.retry} />;
+        }
         return <SkeletonLines rows={2} label="Loading app" />;
       }
       const entryPath = snapshot.snap ? snapshot.snap.entry ?? null : entry;
-      return entryPath ? (
+      // `snapshotFrameSrc` returns `null` exactly when `sha` is claimed but
+      // `snap` is not yet resolved — a case the `snapshot.pending` return
+      // above already rules out here. Checked explicitly rather than
+      // asserted away with `as string` (code review finding 5, second
+      // round): that cast was only ever correct BECAUSE of the early
+      // `pending` return above it, and gave up the null contract
+      // `snapshotFrameSrc` was extracted to enforce — a future edit that
+      // moves or loosens that gate would silently produce `src="null"` on
+      // the iframe instead of a type error surfacing the mistake.
+      const frameSrc = entryPath
+        ? snapshotFrameSrc({ snap: snapshot.snap, sha: snapshot.sha, path: entryPath })
+        : null;
+      return frameSrc ? (
         <div className="app-page-frame-wrap">
           <iframe
             className="app-page-frame"
-            src={
-              snapshotFrameSrc({
-                snap: snapshot.snap,
-                sha: snapshot.sha,
-                path: entryPath,
-              }) as string
-            }
+            src={frameSrc}
             title={`App: ${slug}`}
           />
         </div>
+      ) : entryPath ? (
+        // `entryPath` is set but `snapshotFrameSrc` still returned null — the
+        // pending gate above should make this unreachable; fall back to the
+        // loading state rather than an iframe with no src.
+        <SkeletonLines rows={2} label="Loading app" />
       ) : (
         <p className="app-page-empty">
           This folder has no entry page yet.{" "}

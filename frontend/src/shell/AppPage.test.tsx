@@ -49,7 +49,13 @@ function renderHook(dir: string, urlVersion: number): {
   rerender: (dir: string, urlVersion: number) => void;
   unmount: () => void;
 } {
-  let latest: AppPageSnapshotState = { sha: null, snap: null, pending: false };
+  let latest: AppPageSnapshotState = {
+    sha: null,
+    snap: null,
+    pending: false,
+    error: false,
+    retry: () => {},
+  };
   let renderer: ReactTestRenderer;
   function Probe(props: { dir: string; urlVersion: number }): ReactElement | null {
     latest = useAppPageSnapshot(props.dir, props.urlVersion);
@@ -71,6 +77,14 @@ function renderHook(dir: string, urlVersion: number): {
       });
     },
   };
+}
+
+// `retry` is a fresh closure every render — asserting the whole state object
+// with `toEqual` needs it left out (its own presence/callability is checked
+// separately, where a test cares).
+function withoutRetry(s: AppPageSnapshotState): Omit<AppPageSnapshotState, "retry"> {
+  const { retry: _retry, ...rest } = s;
+  return rest;
 }
 
 async function flush(): Promise<void> {
@@ -138,7 +152,12 @@ function setSearch(search: string) {
 test("no _snapshot on the URL resolves to live (sha/snap null, not pending), no fetch at all", async () => {
   const box = renderHook(APP, 0);
   await flush();
-  expect(box.current()).toEqual({ sha: null, snap: null, pending: false });
+  expect(withoutRetry(box.current())).toEqual({
+    sha: null,
+    snap: null,
+    pending: false,
+    error: false,
+  });
   expect(calls).toEqual([]);
   box.unmount();
 });
@@ -170,7 +189,7 @@ test("a valid sha resolves via GET /api/git/snapshot for THIS page's own dir, ca
   };
   const box = renderHook(APP, 0);
   await flush();
-  expect(box.current()).toEqual({
+  expect(withoutRetry(box.current())).toEqual({
     sha: SHA,
     snap: {
       sha: SHA,
@@ -179,6 +198,7 @@ test("a valid sha resolves via GET /api/git/snapshot for THIS page's own dir, ca
       entry: "/cache/key/" + SHA + "/main.html",
     },
     pending: false,
+    error: false,
   });
   expect(calls).toEqual([APP + "@" + SHA]);
   box.unmount();
@@ -239,7 +259,12 @@ test("a confirmed 404 falls back to Live and clears _snapshot from the URL", asy
   // already null — the URL write is the only thing that actually changed).
   box.rerender(APP, 1);
   await flush();
-  expect(box.current()).toEqual({ sha: null, snap: null, pending: false });
+  expect(withoutRetry(box.current())).toEqual({
+    sha: null,
+    snap: null,
+    pending: false,
+    error: false,
+  });
   box.unmount();
 });
 
@@ -264,5 +289,59 @@ test("a transient failure (not a confirmed 404) leaves the prior resolution's ca
   expect(box.current().snap).toBeNull();
   expect(box.current().pending).toBe(true);
   expect(replaced.length).toBe(0);
+  box.unmount();
+});
+
+// -------------------------------------------------- finding 1 (second round)
+
+test("finding 1: a non-404 failure sets `error` — pending stays true (no false 'live'), but the failure is now visible to a caller, not silent", async () => {
+  setSearch("?_snapshot=" + SHA);
+  plan[APP + "@" + SHA] = { kind: "error" };
+  const box = renderHook(APP, 0);
+  await flush();
+  // Before this fix, the hook's catch just returned on a non-404 status,
+  // leaving `pending: true` with NOTHING to tell a caller this will never
+  // resolve on its own — the exact "presents as an eternal skeleton" defect
+  // the finding names. Asserting `pending` alone (as the pre-fix test for
+  // this hook did) is not enough: the whole point is that a caller must be
+  // able to tell "still in flight" apart from "stuck, and the user needs to
+  // do something" — `error` is that signal.
+  expect(box.current().pending).toBe(true);
+  expect(box.current().error).toBe(true);
+  expect(box.current().snap).toBeNull();
+  // The URL is untouched — a transient failure must not silently clear the
+  // still-selected sha the way a confirmed 404 does.
+  expect(replaced.length).toBe(0);
+  box.unmount();
+});
+
+test("finding 1: retry() re-attempts the SAME sha, and a fetch that then succeeds clears `error` and resolves normally", async () => {
+  setSearch("?_snapshot=" + SHA);
+  plan[APP + "@" + SHA] = { kind: "error" };
+  const box = renderHook(APP, 0);
+  await flush();
+  expect(box.current().error).toBe(true);
+  expect(calls).toEqual([APP + "@" + SHA]);
+
+  // The underlying condition clears (a dropped connection recovers) and the
+  // user clicks Retry — the ONLY way this hook itself would ever re-attempt,
+  // since its own effect never reruns on a timer or on its own.
+  plan[APP + "@" + SHA] = { kind: "ok", dir: "/cache/key/" + SHA, app_dir: APP };
+  act(() => box.current().retry());
+  await flush();
+  expect(calls).toEqual([APP + "@" + SHA, APP + "@" + SHA]);
+  expect(box.current().error).toBe(false);
+  expect(box.current().pending).toBe(false);
+  expect(box.current().snap?.sha).toBe(SHA);
+  box.unmount();
+});
+
+test("finding 1: retry() is a no-op while there is no sha on the URL (nothing to retry)", async () => {
+  const box = renderHook(APP, 0);
+  await flush();
+  act(() => box.current().retry());
+  await flush();
+  expect(calls).toEqual([]);
+  expect(box.current().error).toBe(false);
   box.unmount();
 });

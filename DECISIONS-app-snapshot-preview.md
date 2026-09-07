@@ -1,5 +1,112 @@
 # Build log — app-folder snapshot preview
 
+## Second (final) review round — findings 1-5
+
+Five findings from a second review pass, all on top of the previous round's
+commit (`ac7917061`, "App page: honour `_snapshot`'s entry and its own
+pending window"). The theme, restated because it is the actual lesson across
+every round of this feature: unresolved snapshot state keeps finding a new way
+to PRESENT as something definite instead of visibly unresolved. This round's
+own instance (finding 1) is that the previous round's fix for "a resolve race
+shows the wrong era" (refuse to render while pending) created a NEW failure
+mode one step later — pending-forever now presents as an eternal skeleton
+with no way out, on a plain 500 or dropped connection.
+
+**Finding 1 — `useAppPageSnapshot.ts`'s non-404 catch branch used to just
+`return`, leaving `pending` true forever with nothing to tell a caller "this
+will never resolve without help."** Fixed by adding `error: boolean` (true
+exactly when the most recent attempt for the URL's current sha failed
+non-404) and `retry(): void` (bumps a private `retryToken` that is the
+resolve effect's own extra dependency — the effect otherwise only reruns on
+`dir`/`urlVersion`, neither of which changes just because a fetch failed) to
+`AppPageSnapshotState`. `error` does NOT clear `pending` — there is genuinely
+still no `snap` to rewrite reads against — it is the signal a caller uses to
+swap its skeleton for an error+retry affordance instead. All three tabs
+(Overview inline in `AppPage.tsx`, `AppFiles.tsx`, `AppApi.tsx`) now check
+`snapshot.error` before `snapshot.pending`'s ordinary skeleton branch and
+render the new shared `SnapshotError` component (`shell/SnapshotError.tsx`) —
+one banner offering "Retry" (`snapshot.retry()`) and "Back to Live" (clears
+`_snapshot` from the URL directly, the same write `AppVersionPicker`'s own
+"Live" option makes) — so the user has a visible, actionable escape instead
+of the version picker being the only way out, undiscoverably.
+
+Test: `AppPage.test.tsx` gained three cases driving the REAL hook
+(`useAppPageSnapshot`) through a fake non-404 fetch failure — asserting
+`error: true` alongside `pending: true` (not merely `pending`, which the
+pre-fix code already had and is not what this finding is about), that the URL
+is left untouched (unlike a 404), that `retry()` re-issues the same-sha
+request and a subsequent success clears `error` and resolves normally, and
+that `retry()` is a no-op with no sha on the URL. Every pre-existing
+`toEqual(box.current())` full-state assertion in that file was updated for
+the two new fields (a `withoutRetry()` helper strips the per-render `retry`
+closure before the equality check, since a fresh closure identity would
+otherwise fail `toEqual` for no meaningful reason).
+
+**Finding 2 — `AppFiles.tsx` forced `file` to `null` during the pending
+window, so the right pane fell through to `!file`'s "nothing selected" blank
+state even though a file WAS selected** (a bookmarked
+`?tab=files&file=main.py&_snapshot=<sha>`, or finding 1's error state before
+this round, showed "Pick a file to see it here." forever instead of a loading
+state). Fixed with a new pure predicate, `isAwaitingFile(rel, file)`
+(`app-files-lib.ts`) — true when a `?file=` IS selected but the effective
+target has not resolved yet — that the right pane checks before falling back
+to the blank state, rendering a loading skeleton instead. Extracted as a pure
+function (not left as an inline expression in `AppFiles.tsx`, which has no
+render-test precedent in this codebase — same reasoning every previous round
+gives) so this exact gate has its own direct test in `app-files-lib.test.ts`,
+separate from the component wiring.
+
+**Finding 3 — a doubled "rather than" in `AppApi.tsx`'s pending-branch
+comment inverted its meaning**, describing the bug ("let Execute run […] the
+LIVE tree's code under a URL claiming a past commit") as the code's own
+intent rather than the failure mode being avoided. Fixed by rewording to
+"stay on the loading skeleton rather than list live and let Execute run the
+LIVE tree's code under a URL claiming a past commit" — matches the correct
+phrasing already present in the prop doc a few lines above it.
+
+**Finding 4 — `Preview.tsx`'s and `AppFiles.tsx`'s (`app-files-lib.ts`'s
+`renderSrc`) non-`_render` branches both pass a content TEMPLATE's own path
+(`t.path`) into `snapshotFrameSrc`, which rewrites `path` against the
+snapshot UNCONDITIONALLY** — before the shared helper was extracted
+(`c6e5f6559`), only the subject file was ever rewritten; a template's own
+path was passed through as-is. Harmless today only because no real template
+happens to resolve to a path under any app's `app_dir` — nothing enforces
+that. Per this round's own instruction ("prefer making the bad state
+unrepresentable over asserting it cannot happen"), `snapshotFrameSrc` gained
+an explicit `rewritePath?: boolean` option (default `true`, the ordinary
+"path is the subject" case); both template-branch call sites now pass
+`rewritePath: false`, so a template path is never candidate for rewriting
+regardless of where it happens to resolve to — not merely documented as
+"should never collide." Regression tests in both `snapshot-param.test.ts`
+(the helper itself) and `app-files-lib.test.ts` (`renderSrc`) construct a
+contrived template path UNDER the app folder and assert it comes back
+unrewritten while the three snapshot params and the real subject's `_file`
+still ride along correctly.
+
+**Finding 5 — `AppPage.tsx`'s Overview branch cast `snapshotFrameSrc(...) as
+string`, discarding the null contract the helper exists to enforce.** Correct
+today only because the `snapshot.pending` early return above it already
+rules out the one case the helper returns `null` for. Fixed per the same
+"make it unrepresentable" instruction: the call result is now bound to a
+checked `const frameSrc`, and the JSX branches on it directly (three-way:
+`frameSrc` truthy → the iframe; `entryPath` set but `frameSrc` null →
+defensive fallback to the loading skeleton, unreachable today but explicit
+rather than silently producing `src="null"` if some future edit loosens the
+pending gate; neither → the "no entry page" empty state). No cast anywhere in
+this path any more.
+
+Verify commands run, this round, with their actual results:
+- `bunx tsc --noEmit` (from `frontend/`) — clean, no errors.
+- `bun test src/shell src/apps/explorer src/platform` (from `frontend/`) —
+  2518 pass, 0 fail (up from 2513 before this round's new tests), no bare
+  `act()` warnings (the two new `retry()` calls in `AppPage.test.tsx` are
+  wrapped in `act(...)`).
+
+Nothing in this round was left unclosed: all five findings have both a fix
+and a regression test that fails against the pre-fix code (verified by
+reading each test against the diff it covers, not merely running it green
+once the fix already existed).
+
 ## App page version dropdown (new plan, docs/app-page-version-dropdown-plan.html)
 
 Resume point: ALL FIVE TASKS COMPLETE AND COMMITTED (five commits, one per

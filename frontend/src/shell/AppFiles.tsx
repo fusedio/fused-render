@@ -37,6 +37,7 @@ import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
 import { rewritePathAgainst } from "@platform/lib/snapshot-param";
 import type { AppPageSnapshotState } from "./useAppPageSnapshot";
+import SnapshotError from "./SnapshotError";
 import {
   defaultMode,
   effectiveActive,
@@ -56,6 +57,7 @@ import {
   buildTree,
   contentTemplates,
   fileCount,
+  isAwaitingFile,
   renderSrc,
   safeRel,
   type TreeNode,
@@ -257,6 +259,29 @@ export default function AppFiles({
   const selectedNode = rel ? findNode(nodes, rel) : null;
   const name = rel ? basename(rel) : "";
 
+  // `error` (finding 1, second round): a transient resolve failure leaves
+  // `effectiveDir`/`file` null forever (the same as an ordinary in-flight
+  // resolve, so the walk/stat effects above never fire an honest request
+  // either way) — this must not read as an indefinite pair of skeletons with
+  // no way out. One banner for the whole tab, rather than a separate one per
+  // column: there is nothing useful to show in either half while the commit
+  // itself never resolved.
+  if (snapshot.error) {
+    return (
+      <div className="app-files">
+        <SnapshotError onRetry={snapshot.retry} />
+      </div>
+    );
+  }
+
+  // A file IS selected (`rel`) but the effective read target isn't resolved
+  // yet (`effectiveDir` null while `snapshot.pending`) — finding 2: the right
+  // pane used to fall through to `!file`'s "nothing selected" blank state,
+  // which is a different, wrong claim from "still loading the selected
+  // file". Only reachable while pending, since `snapshot.error` already
+  // returned above.
+  const awaitingFile = isAwaitingFile(rel, file);
+
   return (
     <div className="app-files">
       {/* The tree column: a quieter plate than the view, one rule between. */}
@@ -284,7 +309,8 @@ export default function AppFiles({
       </nav>
 
       <section className="app-files-view">
-        {!file && (
+        {awaitingFile && <SkeletonLines rows={2} label="Loading file" />}
+        {!file && !awaitingFile && (
           <div className="app-files-blank">
             <FileSearch aria-hidden />
             <p>Pick a file to see it here.</p>

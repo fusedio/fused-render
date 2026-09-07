@@ -108,6 +108,22 @@ export function contentTemplates(templates: TemplateEntry[]): TemplateEntry[] {
   ).content.filter((t) => t.mode !== "_listing");
 }
 
+/** Whether the Files tab's right pane should show a loading skeleton rather
+ *  than "Pick a file to see it here." — a file IS selected (`rel`, the
+ *  `?file=` value) but the effective read target has not resolved yet
+ *  (`file` is null while a snapshot is pending — see AppFiles.tsx's own
+ *  `effectiveDir`/`file` comments). Code review finding 2, second round:
+ *  before this existed, AppFiles.tsx used `!file` alone to decide between
+ *  the file view and the blank "nothing selected" state, so a pending
+ *  resolve read identically to no selection at all even with a real
+ *  `?file=` on the URL — and stayed that way forever if the resolve then
+ *  failed (finding 1). Extracted as its own pure function (rather than left
+ *  as an inline expression in AppFiles.tsx, which has no render-test
+ *  precedent) so this exact gate has a direct regression test. */
+export function isAwaitingFile(rel: string | null, file: string | null): boolean {
+  return rel !== null && file === null;
+}
+
 /** The iframe URL for a file in a template — Preview.tsx's shape (No
  *  `_preview`, a real open (D301), and no `_remote`, the workspace is local),
  *  routed through the shared `snapshotFrameSrc` (platform/lib/snapshot-param.ts)
@@ -140,6 +156,11 @@ export function renderSrc(
     snap,
     sha,
     path: t.path as string,
+    // `t.path` is the TEMPLATE's own file, never the subject (`file`, already
+    // resolved by the caller and carried instead via `_file` below) — same
+    // reasoning as Preview.tsx's own non-`_render` branch (code review
+    // finding 4, second round).
+    rewritePath: false,
     extra: `&_file=${encodeURIComponent(file)}`,
   });
 }
