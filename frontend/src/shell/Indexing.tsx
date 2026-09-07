@@ -24,6 +24,7 @@ import { formatMtimeFull } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import {
+  isFdaRefusal,
   missingDefaults,
   patternsToText,
   scanErrorLine,
@@ -280,10 +281,12 @@ export function IndexingPanel({
             land in the error banner below — a wall with no door. The card is
             the same one the home search shows for this gate (explorer/
             IndexFdaCta): open Settings, or Relaunch once the grant landed.
-            While it is up, a scan error is a restatement, so the card wins. */}
+            Only THAT refusal is kept out of the banner — matched by its text,
+            not by the gate — so a Save or Delete that fails for its own
+            reason while the card is up still says so. */}
         {fdaBlocked && !indexingOff && <IndexFdaCta copy={INDEXING_FDA_COPY} />}
         {note && <p className="deploy-muted">{note}</p>}
-        {error && !fdaBlocked && <ErrorBanner>{error}</ErrorBanner>}
+        {error && !(fdaBlocked && isFdaRefusal(error)) && <ErrorBanner>{error}</ErrorBanner>}
       </section>
 
       <section className="prefs-section">
