@@ -91,8 +91,15 @@ def test_a_restored_user_turn_carries_its_transcript_uuid(code, agent):
 def test_a_missing_or_foreign_anchor_still_lands_at_the_bottom(code):
     """`consumeAnchor` reports whether it found anything, and the restore falls
     through to its own scroll when it did not — a uuid from another transcript,
-    or none at all, must leave the chat exactly as it would have been."""
-    assert "if (!consumeAnchor()) scrollBottom();" in code
+    or none at all, must leave the chat exactly as it would have been.
+
+    Only reachable when the transcript ends CLOSED: a load that reserved a
+    still-open exchange (see the turn-ownership split) has nothing on screen
+    yet for the anchor to find, and defers the try to whatever renders that
+    exchange instead (renderReservedOpenTurns) rather than spend it early."""
+    body = code[code.index("} else if (!consumeAnchor())"):]
+    body = body[:body.index("\n  }", body.index("scrollBottom();"))]
+    assert "scrollBottom();" in body
 
 
 def test_the_uuid_is_compared_never_interpolated_into_a_selector(code):
@@ -176,17 +183,24 @@ def test_only_the_history_restore_can_render_an_anchorable_turn(code):
     assert calls, "addUser call sites not found"
     with_uuid = [c for c in calls if "," in c]
     assert with_uuid == ["stripBlocks(t.text), t.uuid"], with_uuid
-    # And that one restore renders every turn synchronously before it looks, so
-    # there is no moment where the turn exists but has not been looked for.
-    # The restore also destructures the transcript watermark the follower reads
-    # (D415), so this anchors on the call rather than on the shape of what it
-    # unpacks — the next key added there is not this test's business.
+    # And that the restore renders every CLOSED turn synchronously before it
+    # looks, so there is no moment where an on-screen turn exists but has not
+    # been looked for. `renderHistoryTurns` is the render loop itself — pulled
+    # out of `loadHistory` so `renderReservedOpenTurns` can draw the same
+    # shapes for a still-open exchange once ITS attach settles (see the
+    # turn-ownership split) — but the call below is still made with nothing
+    # awaited first. The restore also destructures the transcript watermark
+    # the follower reads (D415), so this anchors on the call rather than on
+    # the shape of what it unpacks — the next key added there is not this
+    # test's business.
     load = code[code.index('await fused.runPython(AGENT, { action: "history"'):]
     load = load[:load.index("} catch (err) {")]
-    assert "for (const t of turns) {" in load
-    assert "await" not in load.split("for (const t of turns) {")[1], \
-        "the render loop must not yield before consumeAnchor runs"
-    assert "if (!consumeAnchor()) scrollBottom();" in load
+    assert "renderHistoryTurns(closed)" in load
+    assert "await" not in load.split("renderHistoryTurns(closed)")[1], \
+        "the render loop must not yield before consumeAnchor (or its deferral) runs"
+    # A transcript that ends CLOSED (no reserved open exchange) still spends
+    # the anchor right here, in the same synchronous stretch.
+    assert "} else if (!consumeAnchor()) {\n      scrollBottom();\n    }" in load
 
 
 def test_the_anchor_holds_its_place_while_the_transcript_settles(code):

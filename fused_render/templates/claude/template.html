@@ -15960,6 +15960,16 @@ async function pollLoop(run_id, gen = logGen) {
       const data = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
       if (logGen !== gen) break;  // the reader left; the run continues without this page
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
+      // One owner per region: anything of the user's still queued belongs to
+      // THIS open exchange (agent.py's `_pending_messages`), and this loop is
+      // the only thing polling it. `resumeRun`'s own `onScreen` is a local
+      // const pinned by test to that function (D742) — this is its own,
+      // identical dedup, so a message this tick sees already up (drawn by
+      // `resumeRun`'s own probe, or a previous tick) is never drawn twice.
+      for (const text of data.pending || []) {
+        const already = [...log.querySelectorAll(".user .bubble")].some((b) => b.textContent === text);
+        if (!already) addUser(text);
+      }
       // Not awaited, for the same reason the app-state answer below is not: a
       // strip of chips may never hold up the streaming reply by a single frame.
       if (tick++ % 8 === 0) pollArtifacts();
@@ -17514,6 +17524,26 @@ async function resumeRun(run_id, opts) {
     }
     const probeMsg = stripBlocks(probe.message || "");
     const users = log.querySelectorAll(".user .bubble");
+    // Every render branch from here on either draws this run's open exchange
+    // itself or has a considered reason not to (see each branch) — either
+    // way, `loadHistory`'s reserved turns for it are no longer history's to
+    // fall back on: this probe is the live, authoritative answer for the
+    // SAME exchange, and drawing both would be the double-print one owner
+    // per region exists to end. The caller's own fallback (renderReservedOpenTurns)
+    // runs only where this never got called at all — a stale run_id, no
+    // run_id to try, adoptLiveRun's watch finding nothing.
+    pendingOpenTurns = null;
+    // Anything of the user's still queued when this attaches — a follow-up
+    // sent (from this tab or another) before the CLI echoed it back —
+    // belongs to this exchange too (agent.py's `_pending_messages`).
+    // Rendered as ordinary user bubbles, in queue order, deduped the same
+    // way `onScreen` already dedupes the exchange's own message: an
+    // identical bubble already up reads as already-shown, never twice.
+    const renderPending = (list) => {
+      for (const text of list || []) {
+        if (!onScreen(text)) addUser(text);
+      }
+    };
     if (probe.done) {
       // Run finished with no frame attached: only repair what the restored
       // transcript can provably be missing (see the claude template).
@@ -17546,6 +17576,7 @@ async function resumeRun(run_id, opts) {
         // turn — user line plus the assistant rows and their tool timeline from
         // the poll payload.
         addUser(probeMsg);
+        renderPending(probe.pending);
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
         }
@@ -17556,6 +17587,7 @@ async function resumeRun(run_id, opts) {
     if (probeMsg && !(quiet && onScreen(probeMsg))) {
       addUser(probeMsg);
     }
+    renderPending(probe.pending);
     await pollLoop(run_id, gen);
   } catch (err) {
     console.warn("run re-attach failed:", err.message);
@@ -17683,6 +17715,84 @@ function renderLogSkeleton() {
 //
 // Everything else is the reload path unchanged — one renderer, which is what
 // made a manual reload correct in the first place and is why this reuses it.
+
+// The still-open exchange `loadHistory` read but did not draw (see its
+// `open_from` handling below) — held here between that read and whatever
+// attach follows it (resumeRun, adoptLiveRun, pollLoop), because that attach
+// is the live path this same design gives sole ownership of the open
+// exchange to. Cleared the instant any of them draws something for it
+// (see resumeRun); `renderReservedOpenTurns` is the fallback for when none
+// of them do — no attach at all, or one that finds nothing of its own to
+// show — so the exchange this reload was mid-way through is never simply
+// dropped on the floor.
+let pendingOpenTurns = null;
+
+// The body of `loadHistory`'s own render loop, pulled out so
+// `renderReservedOpenTurns` below can draw the SAME shapes the initial
+// restore does — one renderer for a turn, however it ends up on screen.
+function renderHistoryTurns(rows) {
+  for (const t of rows) {
+    // Assistant turns carry `segments`; USER turns have no such key at all,
+    // which addAssistantTurn's Array.isArray tolerates (a truthiness test on
+    // a missing key would too, but this says out loud that the key is
+    // optional). A restored turn renders through the same renderSegments the
+    // live stream uses — no typer, because nothing is arriving.
+    if (t.role === "user") {
+      // `t.uuid` is the transcript record's own id — the same value the Tasks
+      // list carries as a message's `anchor`, which is what makes `?msg=`
+      // resolvable here. Optional: a payload without it renders exactly as
+      // before and simply cannot be anchored to.
+      addUser(stripBlocks(t.text), t.uuid);
+      // ...and the picture it carried, if it carried one. addUser appends the
+      // turn, so the last `.turn.user` in the log is the one just made — the
+      // same way sendMessage finds the turn to hang its own receipt on.
+      const bubbles = log.querySelectorAll(".turn.user");
+      shotRestoreReceipt(bubbles[bubbles.length - 1], t.text);
+    } else {
+      addAssistantTurn(t.text, t.segments);
+      // ...and, on the turn it belongs to, that the user ENDED it. A killed
+      // run writes no result row, so the reply above simply stops
+      // mid-thought — and a reopened chat showed exactly that, with nothing
+      // anywhere to say why (Akshil, 2026-08-21). agent.py `_stopped_last`
+      // reads the run's own cancel marker; this is the same ⏹ note a live
+      // stop leaves behind, so the conversation reads identically whether you
+      // watched the stop happen or came back to it afterwards.
+      if (t.stopped) addNote("Stopped.", null, "⏹");
+    }
+  }
+}
+
+// The fallback half of the race `loadHistory` sets up: called once an
+// attach attempt (resumeRun / adoptLiveRun, called right after loadHistory
+// at every site that needs one) has had its chance. A no-op wherever that
+// attach actually drew this exchange's own content — it clears
+// `pendingOpenTurns` itself the moment it does (see resumeRun) — so this is
+// safe to call unconditionally after any such attempt, attached or not.
+// Scrolling is the CALLER'S call, not this function's: a boot/open-row attach
+// that comes up empty wants the reader carried down to what just appeared,
+// while a background refresh (followTranscript) is already mid-restore of its
+// own scroll position and would have that fought over it.
+//
+// `opts.anchor`: try the `?msg=` flare now that this exchange is finally on
+// screen. Only the boot-path caller passes it — a link naming a turn INSIDE
+// the still-open exchange cannot be resolved the instant loadHistory returns
+// (see loadHistory's own deferral, below), and consumeAnchor disarms on its
+// first try whether or not it landed, so it must wait for the one render
+// that might actually contain the turn. A background refresh never carries
+// a fresh `?msg=` of its own and does not pass this. Left unresolved: a link
+// into a turn a live attach draws itself (pollLoop never retries the anchor)
+// stays unflared — narrower than the general case, and not this fix's to
+// close.
+function renderReservedOpenTurns(opts) {
+  if (!pendingOpenTurns || !pendingOpenTurns.length) { pendingOpenTurns = null; return false; }
+  const rows = pendingOpenTurns;
+  pendingOpenTurns = null;
+  renderHistoryTurns(rows);
+  attachCodeCopy(log);
+  if (opts && opts.anchor) consumeAnchor();
+  return true;
+}
+
 async function loadHistory(session_id, opts) {
   const refresh = !!(opts && opts.refresh);
   // Reuse the `sending` gate: a message sent during the await would be
@@ -17702,56 +17812,47 @@ async function loadHistory(session_id, opts) {
     renderLogSkeleton();  // replace the visible conversation, don't append to it
   }
   try {
-    const { turns, transcript } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
+    const { turns, transcript, open_from } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
     // The watermark this render is good up to. Stat'd BEFORE the rows were read
     // (see `_transcript_stat`), so it can only ever be too OLD — a write that
     // landed mid-read costs one redundant re-render on the next lap, where a
     // watermark that was too new would cost the turn.
     noteTranscript(transcript);
     log.innerHTML = "";  // drop the skeleton now that real turns are ready
-    for (const t of turns) {
-      // Assistant turns carry `segments`; USER turns have no such key at all,
-      // which addAssistantTurn's Array.isArray tolerates (a truthiness test on
-      // a missing key would too, but this says out loud that the key is
-      // optional). A restored turn renders through the same renderSegments the
-      // live stream uses — no typer, because nothing is arriving.
-      if (t.role === "user") {
-        // `t.uuid` is the transcript record's own id — the same value the Tasks
-        // list carries as a message's `anchor`, which is what makes `?msg=`
-        // resolvable here. Optional: a payload without it renders exactly as
-        // before and simply cannot be anchored to.
-        addUser(stripBlocks(t.text), t.uuid);
-        // ...and the picture it carried, if it carried one. addUser appends the
-        // turn, so the last `.turn.user` in the log is the one just made — the
-        // same way sendMessage finds the turn to hang its own receipt on.
-        const turns = log.querySelectorAll(".turn.user");
-        shotRestoreReceipt(turns[turns.length - 1], t.text);
-      } else {
-        addAssistantTurn(t.text, t.segments);
-        // ...and, on the turn it belongs to, that the user ENDED it. A killed
-        // run writes no result row, so the reply above simply stops
-        // mid-thought — and a reopened chat showed exactly that, with nothing
-        // anywhere to say why (Akshil, 2026-08-21). agent.py `_stopped_last`
-        // reads the run's own cancel marker; this is the same ⏹ note a live
-        // stop leaves behind, so the conversation reads identically whether you
-        // watched the stop happen or came back to it afterwards.
-        if (t.stopped) addNote("Stopped.", null, "⏹");
-      }
-    }
-    attachCodeCopy(log);  // one pass over the whole restored transcript
-    // The transcript is now on screen, so this is both the first moment a
-    // `?msg=` link can be honoured and the last one worth trying: the loop
-    // above rendered every turn there will be, synchronously. Falls through to
-    // the bottom when there is no anchor, or when the anchor names a turn this
-    // transcript does not contain.
+    // One owner per region: everything before `open_from` is a CLOSED
+    // exchange and renders unconditionally, straight off the saved
+    // transcript. `open_from` itself and everything after it is the
+    // still-open exchange, which belongs to whatever attach this load is
+    // about to be followed by — drawing it here too is the double-print this
+    // split exists to end. `null` means the transcript ends closed: nothing
+    // to reserve, and `turns` is drawn in full.
+    const closed = open_from == null ? turns : turns.slice(0, open_from);
+    renderHistoryTurns(closed);
+    pendingOpenTurns = open_from == null ? null : turns.slice(open_from);
+    attachCodeCopy(log);  // one pass over the closed transcript rendered so far
+    // A background refresh (followTranscript) is not followed by an attach —
+    // nothing else is ever going to draw the reserved open turns for it, so
+    // this is the one caller of loadHistory that renders them itself, right
+    // away, rather than leaving them for a fallback that will never come.
+    if (refresh) renderReservedOpenTurns();
     // A refresh is not a navigation: a reader parked mid-conversation stays
     // where they were reading, and only one who was already at the bottom is
-    // carried down to the turn that just landed. `?msg=` is a link the reader
-    // followed once and is not re-honoured on every lap.
+    // carried down to the turn that just landed.
     if (refresh) {
       if (keepTop !== null) logwrap.scrollTop = keepTop;
       else scrollBottom();
-    } else if (!consumeAnchor()) scrollBottom();
+    } else if (pendingOpenTurns && pendingOpenTurns.length) {
+      // The anchor may name a turn inside the exchange just reserved, which
+      // is not on screen yet — consumeAnchor disarms on one try whether or
+      // not it lands, so trying it now against a transcript that stops at
+      // `open_from` would burn the reader's only shot before the turn it
+      // names ever exists. Left for renderReservedOpenTurns, whose caller
+      // tries it once the attach this load is about to be followed by has
+      // had its chance.
+      scrollBottom();
+    } else if (!consumeAnchor()) {
+      scrollBottom();
+    }
   } catch (err) {
     if (!refresh) log.innerHTML = "";   // a failed REFRESH keeps the turns it has
     console.warn("history restore failed:", err.message);
@@ -17892,6 +17993,14 @@ function addChatRow(list, s) {
     // adoptLiveRun), and without this the transcript stops at the user's
     // message as though the turn had never been sent.
     await adoptLiveRun(s.id);
+    // `loadHistory` reserved the still-open exchange rather than draw it,
+    // banking on this very attach to draw it live instead — but the watch
+    // above may have found nothing (the exchange finished in the gap, or
+    // never had a run to find). Whichever happened, `renderReservedOpenTurns`
+    // is a no-op the moment `adoptLiveRun` already drew something (it clears
+    // `pendingOpenTurns` itself via resumeRun), so this is free to call
+    // unconditionally rather than thread that outcome back up here.
+    if (renderReservedOpenTurns({ anchor: true })) scrollBottom();
   };
   row.onclick = open;
   row.onkeydown = (e) => { if (e.key === "Enter") open(); };
@@ -18975,6 +19084,13 @@ const ASK_DETECTION_TIMEOUT_MS = 1500;
     // land here with a live turn still streaming server-side. Ask before
     // settling for the transcript (see adoptLiveRun).
     else if (session_id) await adoptLiveRun(session_id);
+    // `loadHistory` (above) reserved the still-open exchange rather than draw
+    // it, banking on the re-attach just above to draw it live instead — but
+    // that attach may have found nothing (a stale `run` id, or adoptLiveRun's
+    // watch exhausting its laps with no run to find). Whichever happened,
+    // `renderReservedOpenTurns` is a no-op the moment resumeRun already drew
+    // something for it, so this is free to call unconditionally.
+    if (renderReservedOpenTurns({ anchor: true })) scrollBottom();
   } else {
     // No conversation to belong to, so nothing to restore.
     focusBox(homebox);
