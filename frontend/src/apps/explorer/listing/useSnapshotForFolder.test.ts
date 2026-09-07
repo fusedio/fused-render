@@ -308,6 +308,49 @@ describe("useSnapshotForFolder", () => {
   );
 
   it(
+    "ROUND 4: a URL that drops _snapshot outright (back/forward) clears " +
+      "the shared singleton AND tells the git sidebar, not just this " +
+      "hook's own local state",
+    async () => {
+      // Regression for round 4's inventory: the `!isSha(raw)` branch used
+      // to call `setResolvedSnapshot(null)` directly — no URL write (fine,
+      // the URL here already lacks the param) and, critically, no sidebar
+      // hop, leaving Checkout armed in the sidebar for a version this
+      // folder no longer shows on screen. `clearShellSnapshot` is the one
+      // place that hop lives; this branch must go through it like every
+      // other clear path.
+      const { setResolvedSnapshot: setSingleton, getResolvedSnapshot } =
+        await import("@platform/lib/snapshot-param");
+      curLoc().search = "?_snapshot=abc1234";
+      let notified = false;
+      (globalThis as Record<string, unknown>).document = {
+        querySelector: (sel: string) =>
+          sel === ".preview-side-frame"
+            ? { contentWindow: { _fusedSnapshotCleared: () => (notified = true) } }
+            : null,
+      };
+      const box = renderHook(useSnapshotForFolder, "/w/myapp", 0);
+      await flush();
+      expect(box.current().resolvedSnapshot?.sha).toBe("abc1234");
+      expect(getResolvedSnapshot()?.sha).toBe("abc1234");
+
+      // Stand in for browser back/forward: the URL loses `_snapshot`
+      // entirely, with no other component involved to call
+      // `clearShellSnapshot` on this hook's behalf.
+      curLoc().search = "";
+      box.rerender("/w/myapp", 1);
+      await flush();
+
+      expect(box.current().resolvedSnapshot).toBe(null);
+      expect(getResolvedSnapshot()).toBe(null);
+      expect(notified).toBe(true);
+      box.unmount();
+      delete (globalThis as Record<string, unknown>).document;
+      setSingleton(null);
+    }
+  );
+
+  it(
     "a cached resolution for a DIFFERENT app folder is not reused just " +
       "because the sha matches",
     async () => {

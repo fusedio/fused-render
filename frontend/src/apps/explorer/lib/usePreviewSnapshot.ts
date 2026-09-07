@@ -82,7 +82,16 @@ export function usePreviewSnapshot(
   useEffect(() => {
     const raw = new URLSearchParams(location.search).get("_snapshot");
     if (!isSha(raw)) {
+      // Round 4 finding: this used to only clear THIS pane's own
+      // `snapshotSha`, leaving `resolvedSnapshotState` — and the shared
+      // singleton behind it — holding a stale `ResolvedSnapshot` after the
+      // pane has already gone visually live, with the git sidebar none the
+      // wiser. `clearShellSnapshot` clears the singleton and hops the
+      // sidebar too (the URL write itself is a no-op here, since the URL
+      // already lacks the param — that part is fine).
+      clearShellSnapshot();
       setSnapshotSha(null);
+      setResolvedSnapshotState(null);
       setError((prev) => (prev ? false : prev));
       return;
     }

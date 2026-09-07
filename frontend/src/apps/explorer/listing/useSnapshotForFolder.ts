@@ -47,7 +47,13 @@ export function useSnapshotForFolder(
   useEffect(() => {
     const raw = new URLSearchParams(location.search).get("_snapshot");
     if (!isSha(raw)) {
-      setResolvedSnapshot(null);
+      // Fires on browser back/forward, or any navigation that drops
+      // `_snapshot` from the URL outright — a fourth hand-rolled clear
+      // (round 4 finding): this used to poke the singleton directly, with
+      // no URL write (fine, the URL already lacks the param here) and no
+      // sidebar hop, leaving Checkout armed for a version this folder no
+      // longer shows. `clearShellSnapshot` is the one place that hop lives.
+      clearShellSnapshot();
       setLocalResolvedSnapshot(null);
       return;
     }

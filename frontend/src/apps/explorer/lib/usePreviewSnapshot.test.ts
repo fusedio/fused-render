@@ -182,6 +182,43 @@ describe("usePreviewSnapshot", () => {
   );
 
   it(
+    "ROUND 4: a URL that drops _snapshot outright clears the shared " +
+      "singleton AND tells the git sidebar, not just this pane's own sha",
+    async () => {
+      // Regression for round 4's inventory: the `!isSha(raw)` branch used
+      // to only clear THIS pane's own `snapshotSha`, leaving
+      // `resolvedSnapshotState` — and the shared singleton behind it —
+      // holding a stale `ResolvedSnapshot` after the pane had already gone
+      // visually live, with the sidebar's Checkout still armed against it.
+      const { getResolvedSnapshot } = await import("@platform/lib/snapshot-param");
+      curLoc().search = "?_snapshot=abc1234";
+      let notified = false;
+      (globalThis as Record<string, unknown>).document = {
+        querySelector: (sel: string) =>
+          sel === ".preview-side-frame"
+            ? { contentWindow: { _fusedSnapshotCleared: () => (notified = true) } }
+            : null,
+      };
+      const box = renderHook(usePreviewSnapshot, "/w/myapp/x.py", 0);
+      await flush();
+      expect(box.current().snap?.sha).toBe("abc1234");
+      expect(getResolvedSnapshot()?.sha).toBe("abc1234");
+
+      // Stand in for browser back/forward: the URL loses `_snapshot`
+      // entirely, with no `backToLive()` call from this pane involved.
+      curLoc().search = "";
+      box.rerender("/w/myapp/x.py", 1);
+      await flush();
+
+      expect(box.current().snap).toBe(null);
+      expect(box.current().sha).toBe(null);
+      expect(getResolvedSnapshot()).toBe(null);
+      expect(notified).toBe(true);
+      box.unmount();
+    }
+  );
+
+  it(
     "a stale error from a DIFFERENT sha does not survive picking an " +
       "already-resolved one",
     async () => {
