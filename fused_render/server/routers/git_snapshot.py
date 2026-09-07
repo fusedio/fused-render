@@ -77,11 +77,23 @@ same paths the same way). It backs the app page's version picker
 (shell/AppVersionPicker.tsx) — a dropdown needs a label per commit, not a diff,
 so this is a deliberately smaller reader than `templates/git/log.py`, which
 answers pagination, rename detection and working-tree state. Response:
-`{"ok": true, "commits": [{"sha", "short", "subject", "author", "when"}], "has_more"}`,
-oldest fact last: `when` is the commit's author-date unix timestamp, left for
-the caller to format relatively. `has_more` is truthful because the query asks
-for `limit + 1` and reports whether that many actually came back — never a
-guess from whether `limit` was hit exactly.
+`{"ok": true, "commits": [{"sha", "short", "subject", "author", "when"}],
+"has_more", "total"}`, oldest fact last: `when` is the commit's author-date
+unix timestamp, left for the caller to format relatively. `has_more` is
+truthful because the query asks for `limit + 1` and reports whether that many
+actually came back — never a guess from whether `limit` was hit exactly.
+
+`total` is the count of ALL commits reachable from HEAD touching the app
+folder, not just the ones that fit in `limit` — one `git rev-list --count`
+run beside the log (same pathspec). It exists so the picker (basic-user
+facing, so it labels rows `v1`/`v2`/... rather than a sha — see
+DECISIONS-app-snapshot-preview.md) can number its newest row `v<total>`
+correctly even when the list is capped: with only what `limit` returned, a
+capped list's own length silently stands in for the total and mislabels
+every row the moment the cap changes. `total` is presentation data for the
+CLIENT's index arithmetic — this route still hands back shas, never a
+version number; the sha remains the identity, the version number is
+computed client-side from a commit's position in this list plus `total`.
 """
 import hashlib
 import logging
@@ -491,13 +503,12 @@ def extract_snapshot(path: str, sha: str) -> dict:
 _LOG_FORMAT = "%H%x00%h%x00%s%x00%an%x00%at"
 
 
-def _run_log(repo_root: str, app_rel: str, limit: int) -> list[dict]:
-    """The bounded, recent-first log itself, scoped to `app_rel` the same
-    `--` + `:(literal)` pathspec way `_run_archive` scopes its `git archive`.
-    Returns `[]` for a repository with no commits yet (an unborn HEAD) rather
-    than raising — checked FIRST, with its own tiny `rev-parse`, so the
-    `git log` call below never has to tell "no commits" apart from a real
-    failure by parsing its stderr.
+def _head_exists(repo_root: str) -> bool:
+    """False for a repository with no commits yet (an unborn HEAD) — a tiny
+    `rev-parse --verify` checked FIRST and shared by `_run_log` and
+    `_count_commits` below, so neither has to tell "no commits" apart from a
+    real failure by parsing `git log`/`git rev-list`'s own stderr, and the
+    check itself is not duplicated a second time for `total`.
     """
     try:
         head = subprocess.Popen(
@@ -511,12 +522,17 @@ def _run_log(repo_root: str, app_rel: str, limit: int) -> list[dict]:
     except OSError as exc:
         raise _Refused(f"git could not be started: {exc}", status=502) from exc
     try:
-        if head.wait(timeout=TIMEOUT_S) != 0:
-            return []  # no commits yet
+        return head.wait(timeout=TIMEOUT_S) == 0
     except subprocess.TimeoutExpired:
         head.kill()
         raise _Refused(f"git took longer than {TIMEOUT_S:.0f}s", status=502)
 
+
+def _run_log(repo_root: str, app_rel: str, limit: int) -> list[dict]:
+    """The bounded, recent-first log itself, scoped to `app_rel` the same
+    `--` + `:(literal)` pathspec way `_run_archive` scopes its `git archive`.
+    Callers must check `_head_exists` first — this assumes a real HEAD.
+    """
     try:
         proc: "subprocess.Popen[bytes]" = subprocess.Popen(
             [_git_bin(), "--no-pager", "-C", repo_root, "log",
@@ -557,6 +573,40 @@ def _run_log(repo_root: str, app_rel: str, limit: int) -> list[dict]:
     return commits
 
 
+def _count_commits(repo_root: str, app_rel: str) -> int:
+    """`git rev-list --count HEAD -- :(literal)<app_rel>` — the TOTAL number
+    of commits reachable from HEAD touching the app folder, scoped by the
+    same pathspec rule `_run_log`/`_run_archive` use. Callers must check
+    `_head_exists` first, same as `_run_log`.
+    """
+    try:
+        proc: "subprocess.Popen[bytes]" = subprocess.Popen(
+            [_git_bin(), "--no-pager", "-C", repo_root, "rev-list",
+             "--count", "HEAD",
+             *(["--", f":(literal){app_rel}"] if app_rel else [])],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            **_popen_kwargs())
+    except FileNotFoundError as exc:
+        raise _Refused("git is not installed, or not on this app's PATH",
+                       status=502) from exc
+    except OSError as exc:
+        raise _Refused(f"git could not be started: {exc}", status=502) from exc
+    try:
+        out, err = proc.communicate(timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        raise _Refused(f"git rev-list took longer than {TIMEOUT_S:.0f}s",
+                       status=502)
+    if proc.returncode != 0:
+        detail = err.decode("utf-8", "replace").strip().splitlines()
+        raise _Refused(detail[0] if detail else
+                       f"git exited {proc.returncode}", status=502)
+    try:
+        return int(out.decode("utf-8", "replace").strip())
+    except ValueError:
+        return 0
+
+
 def list_commits(path: str, limit: int = 30) -> dict:
     """`GET /api/git/commits`, as a plain function — same reason
     `extract_snapshot` is one: callable from a threadpool and tested with no
@@ -570,9 +620,13 @@ def list_commits(path: str, limit: int = 30) -> dict:
     app_dir_real = os.path.realpath(app_dir)
     app_rel = ("" if app_dir_real == repo_root else
               os.path.relpath(app_dir_real, repo_root).replace(os.sep, "/"))
+    if not _head_exists(repo_root):
+        return {"ok": True, "commits": [], "has_more": False, "total": 0}
     commits = _run_log(repo_root, app_rel, limit + 1)
     has_more = len(commits) > limit
-    return {"ok": True, "commits": commits[:limit], "has_more": has_more}
+    total = _count_commits(repo_root, app_rel)
+    return {"ok": True, "commits": commits[:limit], "has_more": has_more,
+            "total": total}
 
 
 @router.api_route("/api/git/snapshot", methods=["GET"])

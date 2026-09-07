@@ -59,6 +59,7 @@ def test_commits_scoped_to_the_app_folder_not_the_whole_repo(repo):
     subjects = [c["subject"] for c in result["commits"]]
     assert subjects == ["myapp: v2", "myapp: v1"]
     assert result["has_more"] is False
+    assert result["total"] == 2
 
 
 def test_commit_fields(repo):
@@ -100,10 +101,24 @@ def test_limit_honoured_and_has_more_truthful(repo):
     assert len(result["commits"]) == 1
     assert result["commits"][0]["sha"] == repo["app_sha_2"]
     assert result["has_more"] is True
+    # `total` counts ALL commits touching the app folder, not just the one
+    # that fit under `limit` — otherwise a capped list's newest row would be
+    # labelled `v1` (the returned list's own length) instead of the true `v2`.
+    assert result["total"] == 2
 
     exact = gs.list_commits(str(repo["app_dir"]), limit=2)
     assert len(exact["commits"]) == 2
     assert exact["has_more"] is False  # exactly two commits touch myapp/, no more
+    assert exact["total"] == 2
+
+
+def test_total_stays_correct_regardless_of_cap(repo):
+    """The same total for limit=1 and limit=30 proves `total` is not merely
+    echoing `len(commits)` under a different name — it is an independent
+    count that does not move when the cap does."""
+    capped = gs.list_commits(str(repo["app_dir"]), limit=1)
+    uncapped = gs.list_commits(str(repo["app_dir"]), limit=30)
+    assert capped["total"] == uncapped["total"] == 2
 
 
 def test_an_empty_repository_returns_ok_with_an_empty_list(tmp_path, monkeypatch):
@@ -119,4 +134,4 @@ def test_an_empty_repository_returns_ok_with_an_empty_list(tmp_path, monkeypatch
     # app folder on disk (app_entry needs no git history), so this is a real
     # exercise of `_run_log`'s "no commits yet" path, not a 404.
     result = gs.list_commits(str(app_dir))
-    assert result == {"ok": True, "commits": [], "has_more": False}
+    assert result == {"ok": True, "commits": [], "has_more": False, "total": 0}
