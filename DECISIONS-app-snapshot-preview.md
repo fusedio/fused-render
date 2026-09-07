@@ -2,8 +2,143 @@
 
 Resume point: ALL SIX TASKS COMPLETE AND COMMITTED, PLUS a code-review pass
 (below, "Review pass") that closed every finding the orchestrator raised,
-including the `/render`-under-snapshot gap Task 4/5 deferred. Nothing left
-to resume.
+including the `/render`-under-snapshot gap Task 4/5 deferred, PLUS a second,
+final round (below, "Round 2 review pass") closing a real test regression and
+a reopened write-gate hole, plus the round-2 code-review findings 1-7 and the
+pyright errors the previous round's own claim of a clean run did not survive
+scrutiny on. Nothing left to resume.
+
+## Round 2 review pass
+
+Four things to fix, in the priority the orchestrator gave them:
+
+**Priority 1 — `test_the_view_reads_the_reader_on_distinct_channels` (real,
+deterministic regression).** `templates/git/template.html` now calls
+`probeAppFolder()` unconditionally at module init (D701's `hasAppFolder` gate,
+this branch's own Review pass) — a real `fetch` the harness's `fetchStub`
+records into the SAME `calls` array `runPython` calls land in, but shaped
+`{fetch, method}`, no `op` key. The test's `[c["op"] for c in out["calls"]]`
+then raised `KeyError`. **Chose to fix the test, not neuter the probe**: the
+unconditional boot-time probe is the actual, intended fix for finding B4
+(fail closed until an app folder is confirmed) — muting it to make an old
+assertion pass again would just reopen the gap that finding closed. Fixed by
+filtering to `if "op" in c"` before building `ops` (`tests/test_git_view_renders.py`).
+
+**Priority 2 — the write gate, reopened.** `snapshotFallbackPending` was
+reset to `false` unconditionally once the fallback resolve SETTLED, including
+on FAILURE (`resolvedSnapshot` stays `null`) — `snapshotWritable` then read
+`!(null && …)` as writable, so a write reached the LIVE file for the rest of
+that frame's life while the URL still claimed a read-only commit, silently.
+Fixed by deleting the separate flag: `snapshotWritable` now checks
+`snapshotSha !== null && !resolvedSnapshot` directly — "still resolving" and
+"resolved to nothing" collapse onto the same, permanently-refused answer,
+with nothing to fall out of sync. Narrowed to paths that could plausibly BE
+the (not-yet-known) app folder (an `anchor`-based heuristic: the anchor
+itself, any ancestor of it, or a sibling in its own immediate directory) —
+finding [5]'s complaint that the previous blanket refusal blocked EVERY
+absolute path during the pending window, not just ones that mattered. Also
+now checks `resolvedSnapshot.dir`, not only `.app_dir` — finding [7]: a
+`_render` frame's own `path` is already the extracted file by the time this
+runs, so it never matched `.app_dir` at all, and the friendlier refusal
+silently never fired for exactly that frame shape. The fallback `fetch` is
+now bounded by a 25s `AbortController` timeout (finding [4]) so `snapshotReady`
+— and every read helper chained off it — can no longer hang forever on a
+stalled request.
+
+New/changed tests, all in `tests/test_runtime_snapshot.py`: THE regression
+(`test_a_failed_fallback_resolve_permanently_refuses_writes_under_the_anchor`)
+drives the REAL boot path (`snapshot_boot_src`) through a fake 404
+`/api/git/snapshot` and asserts `snapshotWritable` afterward — this is
+exactly what the previous round's own test
+(`test_a_failed_resolve_leaves_reads_live_not_half_rewritten`) did NOT do (it
+only ever asserted on `rewritePath`, never on the write gate). Also added
+`test_the_fallback_fetch_is_bounded_by_a_timeout` (fakes `setTimeout` to fire
+immediately, proving the abort fires for real) and rewrote the hand-assigned
+`snapshot_writable_src` tests for the new `snapshotSha`/`snapshotAnchor`
+free variables the rewritten function reads.
+
+**Priority 3 — code review findings 1-7, one root cause for 1 and 3.** Both
+trace to the module-level `resolvedSnapshot` singleton
+(`platform/lib/snapshot-param.ts`) plus "two apps in one repo share shas,
+multiple panes mount at once." Considered replacing the singleton with
+per-pane state keyed by `(sha, app_dir)` — REJECTED for this pass: `router.ts`'s
+carry rule needs exactly a shell-wide fact (does this hop still carry
+`_snapshot`), which is what the singleton legitimately is, and every concrete
+scenario the review raised is closed by two narrower guards rather than a
+restructure:
+
+1. New `rewritePathAgainst(snap, path)` (platform/lib/snapshot-param.ts) takes
+   a snapshot explicitly; `rewriteSnapshotPath(path)` is now a one-line
+   wrapper reading the singleton for callers with no local resolution.
+   Preview.tsx's `_render` sentinel now calls `rewritePathAgainst(snapshotResolved, fsPath)`
+   — its OWN resolved answer — instead of the singleton, closing finding [1].
+2. The resolve-failure `.catch()` in both Preview.tsx and
+   `useSnapshotForFolder.ts` now only clears the SHARED `_snapshot` URL on a
+   confirmed 404 (`err.status === 404`, per `getGitSnapshot`'s
+   `HttpError`/`getJson`) — a transient failure (network drop, 500) leaves it
+   pending instead of going live, and even a 404 leaves the shared URL and
+   singleton alone when `getResolvedSnapshot()?.sha` already matches (a
+   companion pane resolved the SAME sha against a DIFFERENT app folder
+   successfully) — closing finding [2].
+3. The "already resolved, skip re-fetching" guards (both files) now also
+   require `snapshotCarries(cachedAppDir, fsPath)` /
+   `carries(resolvedSnapshot.app_dir, fsPath)`, not just a matching sha —
+   closing finding [3]. Without this, `snapshotResolved`'s own added
+   app_dir-enclosure check (also landed, so a mismatched cached resolution
+   never leaks into `snapParams`/the render path) would otherwise leave the
+   pane permanently pending instead of actually re-resolving.
+4. `framePending` (Preview.tsx) now includes `snapshotPending` — closing
+   finding [6]: without it, a pending resolve's `src={null}` still mounted
+   the frame, `about:blank` fired `load`, and the frame was recorded as
+   loaded/shown for content that was never there.
+
+Test coverage: `tests/test_runtime_snapshot.py` (findings 4, 5, 7 — the
+runtime side, all through `snapshot_writable_src`/`snapshot_boot_src`,
+real-boot-path style per the orchestrator's instruction).
+`frontend/src/platform/lib/snapshot-param.test.ts` gained a
+`rewritePathAgainst` describe block, including a direct regression proving
+`rewriteSnapshotPath` (singleton) and `rewritePathAgainst` (explicit) DIVERGE
+when the singleton holds a different pane's resolution for the same sha —
+finding [1]'s root cause, pinned directly. `useSnapshotForFolder.test.ts`
+gained three new cases (a transient failure stays pending; a 404 for one
+folder does not clear a sha another pane already resolved; a cached
+resolution for a different app is not reused on sha match alone) — findings
+[2] and [3]'s symmetric half on the listing side.
+
+**NOT covered by an automated test**: findings [1]/[3]'s Preview.tsx-side
+wiring itself (the `snapshotResolved` memo's own app_dir-enclosure check, and
+the `_render` srcFor branch calling `rewritePathAgainst`) has no render test —
+Preview.tsx is a 2570-line component with no render-test precedent anywhere
+in this codebase (same reasoning Task 5's log entry gives for Listing.tsx),
+and building one was judged out of scope for this pass. The underlying LOGIC
+these two call sites depend on (`rewritePathAgainst`'s divergence from the
+singleton; the `carries()`-gated guard) IS covered directly, and
+`useSnapshotForFolder.ts` — which shares the exact same primitives and shape
+of bug — has full hook-level coverage; the Preview.tsx wiring itself is
+reviewed-but-unverified-by-test. Flagging honestly rather than claiming
+closure that isn't backed by a test.
+
+**Priority 4 — pyright, actually run this time.** The previous round claimed
+a clean run; it was not. Fixed the 11 real errors, all Optional-narrowing, by
+adding `assert x is not None` (or capturing into a locally-typed variable)
+immediately after the call that returns `Optional`, never by suppressing:
+`tests/test_app_listing.py` (`app_entry(...)` return narrowed before
+`.endswith`; `enclosing_app_dir(...)` result narrowed before
+`os.path.realpath`) and `tests/test_runtime_snapshot.py` (every `_run(...)`
+call site that subscripts its dict result, including the new tests this pass
+added, which needed the same treatment). `pyright tests/test_app_listing.py
+tests/test_runtime_snapshot.py`: 0 errors (was 11, this pass's own new tests
+added a further 6 which are also fixed).
+
+**Verify commands actually run, and their actual results** (not run: the
+orchestrator's own full-suite gate, per instruction):
+- `.venv/bin/pytest tests/test_git_view_renders.py tests/test_runtime_snapshot.py
+  tests/test_git_snapshot.py tests/test_app_listing.py -q` — 104 passed.
+- `bun test frontend/src/apps/explorer frontend/src/platform` — 1456 pass, 0 fail
+  (up from 1451 at the start of this pass; the new tests this pass added).
+- `bunx tsc --noEmit` (run from `frontend/`) — clean.
+- `pyright tests/test_app_listing.py tests/test_runtime_snapshot.py` — 0 errors.
+- `node --check fused_render/static/runtime.js` — OK.
 
 ## Review pass — findings A1-A3, B1-B8 (resumed after Task 6)
 
