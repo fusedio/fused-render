@@ -184,7 +184,13 @@ _SAFE_OPS = (
 # left me", and once it is replaced the only way back is `git checkout --merge`.
 # So it gets the confirmation step every other work-losing op gets, and the
 # proposed-resolution panel in front of it is a review surface, not the consent.
-DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve")
+#
+# `app_restore` and `revert` (see below) are both here too: neither can lose
+# UNCOMMITTED work once `_require_clean` holds, but both write a commit to
+# history on one click — that deserves the same consent step, not because
+# anything could be lost but because both are one-way once done (D703).
+DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve",
+                   "app_restore")
 _OPS = _SAFE_OPS + DESTRUCTIVE_OPS
 
 # Ops that take an explicit `paths` list, and ops that operate on the whole open
@@ -550,7 +556,8 @@ def _resolve(root, rel, content):
                path=rel)
 
 
-def _check_strings(op, paths, message, name, index, content="", email="", url=""):
+def _check_strings(op, paths, message, name, index, content="", email="",
+                    url="", sha=""):
     """Everything that can be decided WITHOUT touching the filesystem or git.
 
     Ordering, not just validation. `_locate` is itself a git call, so validating
@@ -628,6 +635,12 @@ def _check_strings(op, paths, message, name, index, content="", email="", url=""
             raise _Refused("bad-identity",
                            "That name or email is not something git would "
                            "accept as one.")
+
+    if op in ("app_restore", "revert"):
+        # Format only — whether the sha names a real, reachable commit is a
+        # question only git can answer, at the point the op actually runs it.
+        if not _SHA_RE.match(sha or ""):
+            raise _Refused("bad-sha", "That request did not name a commit.")
 
     if op == "remote_add":
         # `url` is REQUIRED — a remote with no URL is not a remote — and `name`
@@ -1020,6 +1033,38 @@ def _commit(root, message):
     return _ok("commit", f"Committed {short}.", short=short, subject=subject)
 
 
+def _app_restore(root, file, sha):
+    """DESTRUCTIVE (writes history). Commit the app folder back to `sha`.
+
+    `checkout <sha> -- <scope>` updates the index AND the working tree for
+    that pathspec only — HEAD never moves, so this cannot detach it and
+    cannot touch anything outside the app folder. `_scope_spec`, not
+    `_pathspec`: an app folder that happens to BE the repository root must
+    still mean "the whole tree", not the empty pathspec `_pathspec("")`
+    would build there.
+    """
+    _require_clean(root)
+    app_rel = _require_app_dir(root, file)
+    _git_ok(root, "checkout", sha, *_scope_spec(app_rel))
+    if not _has_staged(root):
+        # The checkout ran but recorded nothing — the app folder already
+        # matched `sha`. An empty commit would just be noise in the log, so
+        # this reads as "nothing to do" rather than paying for a commit.
+        raise _Refused(
+            "no-op-restore",
+            "The app folder already matches this version — nothing to "
+            "restore.")
+    short = _git_ok(root, "rev-parse", "--short", sha).decode(
+        "utf-8", "replace").strip()
+    label = app_rel or "the app folder"
+    _git_ok(root, "commit", "-m", f"Restore {label} to {short}")
+    out = _git_ok(root, "log", "-1", "--no-color", f"--format={_COMMIT_FORMAT}")
+    parts = out.decode("utf-8", "replace").strip().split("\0")
+    new_short, subject = (parts + ["", ""])[:2]
+    return _ok("app_restore", f"Restored {label} to {short}.",
+               short=new_short, subject=subject)
+
+
 def _branch_create(root, name, checkout):
     _check_branch_name(root, name)
     if checkout:
@@ -1327,7 +1372,7 @@ def main(
     try:
         # Strings first, always — `_locate` forks git, so nothing malformed may
         # get that far.
-        _check_strings(op, paths, message, name, index, content, email, url)
+        _check_strings(op, paths, message, name, index, content, email, url, sha)
         root, scope, scope_is_dir = _locate(file)
 
         if op in _PATH_OPS:
@@ -1369,6 +1414,8 @@ def main(
 
         if op == "commit":
             return _commit(root, message)
+        if op == "app_restore":
+            return _app_restore(root, file, sha)
         if op == "branch_create":
             return _branch_create(root, name, bool(checkout))
         if op == "branch_checkout":

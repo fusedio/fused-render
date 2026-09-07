@@ -967,6 +967,113 @@ def test_require_app_dir_refuses_an_html_with_no_fused_app_meta(ops, repo):
     assert exc.value.payload["reason"] == "no-app-dir"
 
 
+# ------------------------------------------------------------------ app_restore
+
+
+def _app_repo(root):
+    """A repo with an app folder and a file outside it, two commits apiece —
+    so a restore of the app folder to the OLDER commit has both a real diff
+    inside the app folder to prove, and a real file outside it to prove
+    untouched.
+    """
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q")
+    git(root, "config", "user.name", "Fixture Author")
+    git(root, "config", "user.email", "fixture@example.com")
+    git(root, "config", "commit.gpgsign", "false")
+    write(root, "app/index.html", '<meta name="fused-app">\n')
+    write(root, "app/main.py", "VERSION = 1\n")
+    write(root, "outside.txt", "outside v1\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "v1", when="2026-10-01T10:00:00+00:00")
+    old_sha = git(root, "rev-parse", "HEAD").strip()
+
+    write(root, "app/main.py", "VERSION = 2\n")
+    write(root, "outside.txt", "outside v2\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "v2", when="2026-10-02T10:00:00+00:00")
+    return root, old_sha
+
+
+@pytest.fixture()
+def app_repo(tmp_path):
+    return _app_repo(str(tmp_path / "app-repo"))
+
+
+def _app_file(root):
+    return os.path.join(root, "app", "main.py")
+
+
+def test_app_restore_commits_the_app_folder_back_to_an_older_version(ops, app_repo):
+    root, old_sha = app_repo
+    before_branch = git(root, "symbolic-ref", "--short", "HEAD").strip()
+    before_log = len(git(root, "log", "--oneline").strip().split("\n"))
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+
+    assert got["ok"] is True, got
+    assert got["op"] == "app_restore"
+    assert git(root, "show", "HEAD:app/main.py") == "VERSION = 1\n"
+    # HEAD stays on the branch — not detached.
+    assert git(root, "symbolic-ref", "--short", "HEAD").strip() == before_branch
+    after_log = len(git(root, "log", "--oneline").strip().split("\n"))
+    assert after_log == before_log + 1, "exactly one new commit"
+    # No history rewriting: the original v1 commit is untouched and still
+    # reachable, and the v2 commit this restore is based on is too.
+    assert git(root, "cat-file", "-t", old_sha).strip() == "commit"
+    assert old_sha in git(root, "log", "--format=%H").strip().split("\n")
+
+
+def test_app_restore_leaves_files_outside_the_app_folder_byte_identical(
+        ops, app_repo):
+    # THE non-skippable assertion: a pathspec bug here would make this a
+    # repo-wide rollback wearing an app-scoped label.
+    root, old_sha = app_repo
+    outside_path = os.path.join(root, "outside.txt")
+    with open(outside_path, "rb") as fh:
+        before = fh.read()
+    index_before = git(root, "show", "HEAD:outside.txt")
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+    assert got["ok"] is True, got
+
+    with open(outside_path, "rb") as fh:
+        after = fh.read()
+    assert after == before == b"outside v2\n"
+    assert git(root, "show", "HEAD:outside.txt") == index_before == "outside v2\n"
+
+
+def test_app_restore_refuses_on_a_dirty_repo_and_leaves_no_commit(ops, app_repo):
+    root, old_sha = app_repo
+    write(root, "outside.txt", "dirty\n")
+    before_log = git(root, "log", "--oneline").strip()
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+
+    assert got["ok"] is False and got["reason"] == "dirty", got
+    assert git(root, "log", "--oneline").strip() == before_log
+    with open(os.path.join(root, "outside.txt"), encoding="utf-8") as fh:
+        assert fh.read() == "dirty\n"
+
+
+def test_app_restore_refuses_when_already_at_that_version(ops, app_repo):
+    root, old_sha = app_repo
+    head_sha = git(root, "rev-parse", "HEAD").strip()
+
+    got = ops.main(_app_file(root), op="app_restore", sha=head_sha)
+
+    assert got["ok"] is False and got["reason"] == "no-op-restore", got
+
+
+def test_app_restore_refuses_on_a_mount_backed_repo(ops, app_repo, monkeypatch):
+    root, old_sha = app_repo
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+
+    assert got["ok"] is False and got["reason"] == "mount", got
+
+
 # ------------------------------------------------------------------ refusals
 
 
