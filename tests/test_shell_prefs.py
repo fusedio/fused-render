@@ -277,6 +277,60 @@ def test_a_live_scan_is_cancelled_even_with_the_run_listing_already_cached(
     assert os.path.exists(os.path.join(run_dir, "cancel"))
 
 
+# -- ranked_search_enabled --------------------------------------------------
+
+
+def test_ranked_search_enabled_defaults_on_and_toggles(tmp_path, monkeypatch):
+    """Sibling of `indexing_enabled` (D720): stored alongside it in prefs.json,
+    NOT in IndexConfig/config.json — a query-time display preference must
+    never be able to trigger a reindex the way a config change can."""
+    client, home = _client(tmp_path, monkeypatch)
+    # Default ON (absent key => ranked), same polarity as indexing_enabled.
+    assert client.get("/api/prefs").json()["indexing"]["ranked"] is True
+    body = client.put(
+        "/api/prefs", json={"ranked_search_enabled": False}, headers=FUSED).json()
+    assert body["indexing"]["ranked"] is False
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "ranked_search_enabled"
+    ] is False
+    assert client.get("/api/prefs").json()["indexing"]["ranked"] is False
+    assert client.put(
+        "/api/prefs", json={"ranked_search_enabled": True}, headers=FUSED,
+    ).json()["indexing"]["ranked"] is True
+
+
+def test_put_rejects_bad_ranked_search_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put(
+            "/api/prefs", json={"ranked_search_enabled": "yes"}, headers=FUSED,
+        ).status_code == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
+def test_a_prefs_file_missing_the_key_reads_as_ranked(tmp_path, monkeypatch):
+    """A prefs.json written before this setting existed — every install on
+    upgrade — has no `ranked_search_enabled` key at all; that must read as
+    ranked (on), not as unranked."""
+    client, home = _client(tmp_path, monkeypatch)
+    os.makedirs(home, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"reader_enabled": True}),
+                                     encoding="utf-8")
+    assert client.get("/api/prefs").json()["indexing"]["ranked"] is True
+
+
+def test_ranked_search_enabled_toggle_is_independent_of_other_prefs(
+    tmp_path, monkeypatch,
+):
+    client, _ = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED)
+    body = client.put(
+        "/api/prefs", json={"ranked_search_enabled": False}, headers=FUSED).json()
+    assert body["indexing"]["enabled"] is False
+    assert body["indexing"]["ranked"] is False
+
+
 def test_default_model_defaults_to_unset_and_round_trips(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Unset is its own value — "" means "whatever each consumer's own default
