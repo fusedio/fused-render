@@ -29,12 +29,15 @@
 // firing. A plain trailing debounce: each call site's effect already re-runs
 // on every query change and its cleanup already clears the pending timer, so
 // an unconditional wait of this many ms IS a correct debounce with no
-// separate leading-edge case to track. 300, not a shorter value tuned to a
+// separate leading-edge case to track. 200, not a shorter value tuned to a
 // single selective query's ~40-50ms round trip: with the leading edge gone,
 // EVERY keystroke now pays this wait before its request even fires, so it is
 // chosen for what a sustained typist feels while holding a key down, not for
-// the fastest possible single answer.
-export const INSTANT_DEBOUNCE_MS = 300;
+// the fastest possible single answer. Bumped 120 -> 300 mid-implementation
+// (D705), then brought back down to 200 by direct owner request (D705
+// correction, 2026-09-07) — still well above the round trip, tuned lighter
+// for a sustained typist than 300 was.
+export const INSTANT_DEBOUNCE_MS = 200;
 
 // How long a request may run before the box admits to being busy. Under this,
 // the answer arrives before a spinner would have been readable, and painting
