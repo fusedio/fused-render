@@ -315,7 +315,13 @@ def tree_digest(root: str | None = None) -> str:
     rename is as visible as an edit.
 
     An unreadable file folds `<unreadable>` in rather than raising: a tree we
-    cannot fully read must not hash equal to one we can.
+    cannot fully read must not hash equal to one we can. **A directory whose
+    LISTING fails folds `<unreadable-dir>` the same way, and is retried on the
+    same budget** — `os.walk` drops such a directory silently, contributing
+    nothing at all, so the walk after a lock cleared would fold that subtree's
+    files for the first time and the digest would move for a session that
+    edited nothing. That is the same false stamp the per-file retry below
+    exists to prevent, reached through the directory door instead.
 
     On a SOURCE CHECKOUT the Vite build output is skipped — see
     `_BUILD_OUTPUT_REL` for why, and why only there.
@@ -324,14 +330,52 @@ def tree_digest(root: str | None = None) -> str:
     skip_build = is_source_checkout(root)
     h = hashlib.sha256()
     retries = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+
+    def listing(dirpath: str) -> tuple[list[str], list[str]] | None:
+        """(dirnames, filenames) for one directory, or None if it will not
+        list. Retried once on the shared budget, for the same reason a file
+        read is: an antivirus or an indexer holding a directory for a few
+        milliseconds must not move this hash."""
+        nonlocal retries
+        for attempt in (0, 1):
+            try:
+                with os.scandir(dirpath) as it:
+                    entries = list(it)
+            except OSError:
+                if attempt == 0 and retries < _UNREADABLE_RETRIES:
+                    retries += 1
+                    time.sleep(_UNREADABLE_RETRY_S)
+                    continue
+                return None
+            dirs, files = [], []
+            for entry in entries:
+                try:
+                    is_dir = entry.is_dir()
+                except OSError:  # a race with a removal, or a broken link
+                    is_dir = False
+                (dirs if is_dir else files).append(entry.name)
+            return sorted(dirs), sorted(files)
+        return None
+
+    # Explicit, sorted, in-place recursion rather than `os.walk`, so that a
+    # directory retried after a failure folds WHERE IT SITS. A retry that
+    # folded the recovered subtree somewhere else — at the end, say — would
+    # give a different digest from the walk that read it first time, which is
+    # the instability this is here to remove.
+    def walk(dirpath: str) -> None:
+        nonlocal retries  # the per-file retry below spends the same budget
+        rel_dir = os.path.relpath(dirpath, root).replace(os.sep, "/")
+        found = listing(dirpath)
+        if found is None:
+            h.update((rel_dir if rel_dir != "." else "").encode("utf-8"))
+            h.update(b"\0<unreadable-dir>\0")
+            return
+        dirnames, filenames = found
+        dirnames = [d for d in dirnames if d not in _SKIP_DIRS]
         if skip_build:
-            here = os.path.relpath(dirpath, root).replace(os.sep, "/")
-            prefix = "" if here == "." else here + "/"
-            dirnames[:] = [d for d in dirnames
-                           if prefix + d != _BUILD_OUTPUT_REL]
-        for name in sorted(filenames):
+            prefix = "" if rel_dir == "." else rel_dir + "/"
+            dirnames = [d for d in dirnames if prefix + d != _BUILD_OUTPUT_REL]
+        for name in filenames:
             if name in _SKIP_NAMES or name.endswith(_SKIP_SUFFIXES):
                 continue
             full = os.path.join(dirpath, name)
@@ -368,6 +412,12 @@ def tree_digest(root: str | None = None) -> str:
                 else:
                     h.update(b"<unreadable>")
             h.update(b"\0")
+        for name in dirnames:
+            full = os.path.join(dirpath, name)
+            if not os.path.islink(full):  # `os.walk(followlinks=False)`'s rule
+                walk(full)
+
+    walk(root)
     return h.hexdigest()
 
 

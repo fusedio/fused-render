@@ -186,6 +186,69 @@ def test_a_file_that_stays_unreadable_still_reads_as_a_different_TREE(install):
         assert locked == selffix.tree_digest()
 
 
+def test_a_DIRECTORY_that_will_not_list_is_retried_like_a_file(install):
+    """The same lock, one level up. `os.walk` drops a directory it cannot list
+    and folds nothing at all for it, so the walk after the lock cleared would
+    fold that subtree's files for the first time and the digest would move —
+    `settle` reading that as "this session changed the install" and stamping a
+    badge over a session that edited nothing, which is exactly what the
+    per-file retry exists to prevent."""
+    pkg = install / "sub"
+    pkg.mkdir()
+    (pkg / "thing.py").write_text("VALUE = 1\n")
+    healthy = selffix.tree_digest()
+
+    real = os.scandir
+    calls: list[str] = []
+
+    def locked_once(path=".", *a, **kw):
+        if str(path) == str(pkg) and len(calls) == 0:
+            calls.append(str(path))
+            raise OSError(13, "Permission denied")
+        return real(path, *a, **kw)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(selffix.os, "scandir", locked_once)
+        mp.setattr(selffix, "_UNREADABLE_RETRY_S", 0)
+        assert selffix.tree_digest() == healthy, (
+            "a directory that listed on the retry still moved the digest")
+    assert calls == [str(pkg)], "the directory was never actually locked"
+
+
+def test_a_DIRECTORY_THAT_WILL_NOT_LIST_does_not_hash_like_one_that_is_GONE(
+        install):
+    """What the folded token buys, and the same argument the file token makes.
+
+    Skipping an unreadable directory silently — `os.walk`'s behaviour — makes
+    "we could not look in here" hash identically to "this subtree is not
+    there any more", so a fix session that DELETED a package directory would
+    read as no change at all on a walk where that same directory happened to
+    be locked. The token also has to be stable, or a permanent failure would
+    move the digest by itself.
+    """
+    pkg = install / "sub"
+    pkg.mkdir()
+    (pkg / "thing.py").write_text("VALUE = 1\n")
+
+    real = os.scandir
+
+    def always_locked(path=".", *a, **kw):
+        if str(path) == str(pkg):
+            raise OSError(13, "Permission denied")
+        return real(path, *a, **kw)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(selffix.os, "scandir", always_locked)
+        mp.setattr(selffix, "_UNREADABLE_RETRY_S", 0)
+        locked = selffix.tree_digest()
+        assert locked == selffix.tree_digest(), "the token was not stable"
+
+    shutil.rmtree(pkg)  # the same tree, with that subtree actually gone
+    assert selffix.tree_digest() != locked, (
+        "a locked subtree hashed exactly like a deleted one, so a session that "
+        "removed it would read as having changed nothing")
+
+
 def test_the_retry_is_BUDGETED_so_an_unreadable_subtree_stays_cheap(install):
     """The other half of the retry, and it needs its own test because the
     transient case passes with or without a cap.
