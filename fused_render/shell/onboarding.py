@@ -103,11 +103,18 @@ def _read() -> dict:
 _LOCK = threading.RLock()
 
 
-def _write(patch: dict) -> dict:
+def _write(patch: dict, *, opened: bool = True) -> dict:
+    """Merge `patch` into the stored state. Every write the WIZARD makes (a
+    step, a stage, ✕, the end) is proof it was on screen, so `opened_at` is
+    stamped on the first of them whichever it is — a user who opens the wizard
+    and crosses it straight off has opened it. `opened=False` is for the
+    startup seed, which is not the user doing anything."""
     with _LOCK:
         all_prefs = prefs.read_prefs()
         current = all_prefs.get(_KEY)
         state = dict(current) if isinstance(current, dict) else {}
+        if opened and state.get("opened_at") is None:
+            state["opened_at"] = time.time()
         state.update(patch)
         state["version"] = VERSION
         all_prefs[_KEY] = state
@@ -267,7 +274,7 @@ def seed_for_existing_users(fused_ws: str) -> None:
         with os.scandir(local) as it:
             has_app = any(e.is_dir() and not e.name.startswith(".") for e in it)
         if has_app:
-            _write({"completed_at": time.time(), "seeded": True})
+            _write({"completed_at": time.time(), "seeded": True}, opened=False)
             log.info("onboarding: existing workspace found, wizard marked completed")
     except Exception:  # noqa: BLE001 — startup chore, never fatal
         log.exception("onboarding: seed check failed (continuing)")
@@ -316,11 +323,7 @@ def api_onboarding_step(body: dict, x_fused: str | None = Header(default=None)):
     step = body.get("step") if isinstance(body, dict) else None
     if step not in STEPS:
         return JSONResponse({"error": f"unknown step {step!r}"}, status_code=400)
-    with _LOCK:
-        patch: dict = {"step": step}
-        if _read().get("opened_at") is None:
-            patch["opened_at"] = time.time()
-        _write(patch)
+    _write({"step": step})
     return snapshot()
 
 
