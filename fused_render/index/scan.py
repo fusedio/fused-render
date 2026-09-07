@@ -418,6 +418,13 @@ def run_scan(run_dir: str) -> None:
         box: dict = {}
         hint_thread = None
         if not rescan_all:
+            # Names the window above (fsevents.hint's journal replay racing
+            # load_dir_cache's parquet read) so the Activity card shows this
+            # text instead of derive_state's seeded "starting" placeholder —
+            # neither operation has anything countable to report yet, so this
+            # is the only progress signal available until they join.
+            _emit(ev, type="phase", msg="checking for changes")
+
             def _hint_thread():
                 try:
                     box["hint"] = fsevents.hint(cfg, root)

@@ -503,6 +503,27 @@ def test_changing_the_ignore_rules_forces_a_full_rescan(tmp_path):
     assert pq.read_table(part).column("path").to_pylist() == [_p(src / "a.txt")]
 
 
+def test_a_phase_names_the_hint_and_cache_race_before_it_starts(tmp_path):
+    """`derive_state`'s seeded "starting" placeholder (index/runner.py) is
+    shown until the first real `type="phase"` event lands. An incremental run
+    spends real, sometimes-slow time (fsevents.hint's journal replay racing
+    load_dir_cache's parquet read, scan.py's own comment: 0.1-2.9s typical, up
+    to ~20s worst case) with nothing countable to report before that — so a
+    phase naming that work must be emitted BEFORE either operation starts,
+    not left to the "scanning (...)" phase that only lands once both join."""
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+    run_dir = _run(cfg, str(src), run_name="run2")
+    phase_msgs = [e.get("msg") for e in _events(run_dir) if e.get("type") == "phase"]
+    assert "checking for changes" in phase_msgs
+    scanning_i = next(i for i, m in enumerate(phase_msgs)
+                      if (m or "").startswith("scanning ("))
+    assert phase_msgs.index("checking for changes") < scanning_i
+
+
 def test_a_full_run_does_not_take_the_journal_path(tmp_path, monkeypatch):
     """A run that has already decided to rescan everything asks the journal
     NOTHING — it does not merely discard the answer. The replay is scheduled on a
