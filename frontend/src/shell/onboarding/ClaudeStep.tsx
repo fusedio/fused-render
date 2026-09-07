@@ -117,10 +117,21 @@ export function ClaudeStep({
   const { health, loaded, busy, load } = setup;
   const issues = claudeIssues(health);
   const rows = health ? rowsFor(health) : null;
-  const allDone = rows?.every((r) => r.state === "done" || (r.optional && r.state !== "open"));
-  const anyActionable = rows?.some((r) => r.state === "open" && issues.some((i) => r.issueIds.includes(i.id)));
+  // OPTIONAL ROWS ARE NOT WORK. PATH is a convenience — the app is finished
+  // with Claude Code without it — so "done" here means every REQUIRED row is
+  // done, whatever the optional one says. Counting it made the step look
+  // unfinished forever on the many machines whose shell rc we never edit.
+  const required = rows?.filter((r) => !r.optional);
+  const allDone = required?.every((r) => r.state === "done");
+  const optionalOpen = rows?.some((r) => r.optional && r.state === "open");
   // Tell the wizard whether this step still has a button of its own to press:
   // while it does (the strip's yellow actions), Next is not the yellow one.
+  // Only a REQUIRED row can claim the accent — the optional row's button is
+  // quiet (lib/claude-health `optional`), so Next stays the one yellow button
+  // once the three that matter are green.
+  const anyActionable = required?.some(
+    (r) => r.state === "open" && issues.some((i) => r.issueIds.includes(i.id)),
+  );
   useEffect(() => onWork(anyActionable === true), [onWork, anyActionable]);
 
   return (
@@ -143,10 +154,12 @@ export function ClaudeStep({
         <p className="text-sm text-muted-foreground" role="status">
           {!loaded
             ? "Checking this machine…"
-            : allDone
-              ? "Everything is in place."
-              : anyActionable
-                ? "A few things still need doing — the open rows have buttons."
+            : anyActionable
+              ? "A few things still need doing — the open rows have buttons."
+              : allDone
+                ? optionalOpen
+                  ? "Claude Code is ready. The last row is optional."
+                  : "Everything is in place."
                 : "Nothing here will block you — carry on."}
         </p>
         <Button variant="outline" size="sm" onClick={() => load(true)} disabled={busy}>
