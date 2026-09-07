@@ -2,7 +2,6 @@
 // both search boxes (the home page's and the listing's in-folder one), which
 // is why they are tested away from either of them.
 import { describe, expect, it } from "bun:test";
-import { Clock } from "@apps/explorer/listing/hook-harness";
 import {
   INSTANT_DEBOUNCE_MS,
   PENDING_INDICATOR_MS,
@@ -31,6 +30,62 @@ const answer = (over: Partial<Answer> = {}): Answer => ({
 // into the actual box" coverage (FilesHome.render.test.tsx); this is the
 // "this constant, used the documented way, behaves like a trailing debounce"
 // coverage, which nothing here asserted before.
+// A minimal virtual clock standing in for `window.setTimeout`/`clearTimeout`,
+// local to this file rather than imported from
+// `@apps/explorer/listing/hook-harness` — that harness is an app-local
+// module (it also pulls in react-test-renderer, which this file has no
+// other use for), and the import boundary keeps `platform/` from depending
+// on `apps/*`. Only the timer piece of that harness is needed here; the
+// smallest faithful copy of it lives in this file instead of being shared.
+interface Timer {
+  at: number;
+  fn: () => void;
+}
+
+class Clock {
+  now = 1_000_000;
+  private timers = new Map<number, Timer>();
+  private nextId = 1;
+  private priorWindow: unknown;
+  private hadWindow = false;
+
+  install(): void {
+    const self = this;
+    this.hadWindow = "window" in globalThis;
+    this.priorWindow = (globalThis as Record<string, unknown>).window;
+    (globalThis as Record<string, unknown>).window = {
+      setTimeout: (fn: () => void, ms = 0) => {
+        const id = self.nextId++;
+        self.timers.set(id, { at: self.now + ms, fn });
+        return id;
+      },
+      clearTimeout: (id: number) => void self.timers.delete(id),
+    };
+  }
+
+  restore(): void {
+    if (this.hadWindow) (globalThis as Record<string, unknown>).window = this.priorWindow;
+    else delete (globalThis as Record<string, unknown>).window;
+    this.timers.clear();
+  }
+
+  /** Move the clock, firing every timer that comes due, oldest first. */
+  advance(ms: number): void {
+    const target = this.now + ms;
+    for (;;) {
+      const due = [...this.timers.entries()]
+        .filter(([, t]) => t.at <= target)
+        .sort((a, b) => a[1].at - b[1].at);
+      if (!due.length) break;
+      const [id, timer] = due[0];
+      this.timers.delete(id);
+      this.now = Math.max(this.now, timer.at);
+      timer.fn();
+    }
+    this.now = target;
+  }
+}
+
 function debouncer(fired: string[]): (query: string) => void {
   let timer: number | null = null;
   return (query: string) => {
