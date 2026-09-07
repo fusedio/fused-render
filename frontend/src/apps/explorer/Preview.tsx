@@ -196,8 +196,25 @@ export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?
     };
   }, [fsPath]);
   if (!target) return null;
-  const land = (dir: string) =>
-    toView ? location.assign(viewUrlForFsPath(dir)) : navigate(dir, { isDir: true });
+  // Land on the copy's ENTRY PAGE (owner: "open the index.html, not the
+  // folder") — the same rule the app page and Export use (/api/apps/entry) —
+  // and on the folder only when it has none. Both branches: a fresh clone and
+  // an existing copy are the same destination.
+  const land = async (dir: string) => {
+    let dest = dir;
+    let isDir = true;
+    try {
+      const info = await getAppEntry(dir);
+      if (info.entry) {
+        dest = info.entry;
+        isDir = false;
+      }
+    } catch {
+      /* no entry answer — the folder is still the right place */
+    }
+    if (toView) location.assign(viewUrlForFsPath(dest));
+    else navigate(dest, { isDir });
+  };
   const go = async () => {
     if (busy) return;
     // Already cloned: this is pure navigation, so it never needs the spinner
@@ -206,7 +223,7 @@ export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?
     setBusy(true);
     try {
       const r = await cloneAppFile(fsPath);
-      land(r.path);
+      await land(r.path);
     } catch (e) {
       pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
       setBusy(false);
@@ -225,7 +242,13 @@ export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?
       onClick={go}
       disabled={busy}
     >
-      {busy && <span className="mode-icon-spinner" />}
+      {busy ? (
+        <span className="mode-icon-spinner" />
+      ) : target.cloned ? (
+        MenuIcons.open
+      ) : (
+        MenuIcons.duplicate
+      )}
       {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
     </button>
   );

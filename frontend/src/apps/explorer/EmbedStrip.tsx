@@ -15,14 +15,14 @@
 // never inside the fusedapp template, which frames the entry page as a second
 // embed of its own (only the outer shell is top-level).
 //
-// WHAT: "Open in explorer" for any target — the same path under the VIEW
-// prefix, full shell chrome; for a FOLDER embed (an app dir opened from the
+// WHAT: "Open in explorer" for any target but a `.fused` — the same path
+// under the VIEW prefix, full shell chrome; for a FOLDER embed (an app dir opened from the
 // CLI or a link) it opens the folder's app ENTRY page (`/api/apps/entry`, the
 // one rule in app_listing), not the listing: the user was looking at the app,
 // and the explorer should show them that same page with its chrome, falling
 // back to the folder only when there is no entry — plus, for a `.fused`, the shared
 // CloneAppFileButton (one control, one label rule: "Clone" / "Go to local
-// version") told to land on the view URL, since `navigate` would keep the
+// version", landing on the copy's entry page) told to land on the view URL, since `navigate` would keep the
 // embed prefix and drop the clone folder into a chrome-free listing with no
 // way out (D282's dead end). Export, Migrate and Reveal in Finder are
 // deliberately absent (owner): the first two they act on an app's entry FOLDER, not on
@@ -68,15 +68,20 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
         {isFused && <span className="embed-strip-note">read-only app file</span>}
       </span>
       <div className="embed-strip-actions">
-        <button
-          type="button"
-          className="bar-ctl bar-ctl-bordered"
-          title="Open this page in the explorer, with the sidebar and toolbar"
-          onClick={() => void openInExplorer()}
-        >
-          {MenuIcons.open}
-          Open in explorer
-        </button>
+        {/* Not for a .fused (owner): the explorer view of a read-only
+            artifact is the same app behind a sidebar — Clone is the action
+            that means something there. */}
+        {!isFused && (
+          <button
+            type="button"
+            className="bar-ctl bar-ctl-bordered"
+            title="Open this page in the explorer, with the sidebar and toolbar"
+            onClick={() => void openInExplorer()}
+          >
+            {MenuIcons.open}
+            Open in explorer
+          </button>
+        )}
         {isFused && <CloneAppFileButton fsPath={fsPath} toView />}
         <button
           type="button"
