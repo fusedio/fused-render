@@ -304,11 +304,12 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
         time.sleep(WARM_WAIT_POLL_S)
 
 
-# The query the startup warm ranks with, and it is deliberately one that MATCHES
-# NOTHING. A query with hits stops at the cheap substring pass (the ladder in
-# `search_ranked`), leaving the subsequence-regex plan — the expensive half, and
-# the one a mistyped query lands on — cold for the first user who needs it. A
-# no-match query runs both passes and returns an empty body.
+# The query the startup warm ranks with. Index-backed search is substring-only
+# (search_ranked's docstring), so there is no longer a cold expensive plan to
+# warm separately from a cheap one — this just needs to exercise the one SQL
+# statement's compilation/plan cache before a real user's first keystroke.
+# Deliberately a query that MATCHES NOTHING, so the warm returns an empty body
+# rather than paying to materialise real hits nobody asked for.
 WARM_RANK_QUERY = "zqxjv"
 
 
@@ -1053,9 +1054,10 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
 
     `Cancelled` escaping the worker thread is NOT logged as an error — a
     cancelled rank is a client that stopped waiting, which is normal
-    operation for a per-keystroke request (same reasoning the candidate-cap
-    line above already applies to `logger.debug`) — and the response is a
-    body nobody reads, because nobody is listening by the time it is sent.
+    operation for a per-keystroke request (`Cancelled`'s own docstring in
+    index/cancel.py gives the same reasoning for `logger.debug` over
+    anything louder) — and the response is a body nobody reads, because
+    nobody is listening by the time it is sent.
     """
     if not root.strip():
         return _error("'root' is required")

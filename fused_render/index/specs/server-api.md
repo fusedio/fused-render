@@ -252,7 +252,7 @@ same redundancy for an eighth of the time.
 ## 7. The ranked search — `GET /api/index/rank`
 
 `GET /api/index/rank?root=&q=&limit=` answers `{ok, covered, fresh, reason, updated,
-age_s, root, hits, total, truncated, escalated, scanned_partitions, of_partitions}`, where each
+age_s, root, hits, total, truncated, scanned_partitions, of_partitions}`, where each
 hit is `{rel, is_dir, size, mtime, score, longest_run, tier, depth}` and `limit`
 defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000). Plain JSON, a few KB — no columnar
 encoding and no gzip special-casing, because that machinery (§6) exists for a 20 MB
@@ -266,37 +266,39 @@ that home was unfindable from the home search while the response reported
 `truncated: true` and the client ranked what it got. This route filters and ranks over
 the WHOLE index and returns the part anybody reads.
 
-**Two stages** (`query.md`, `search_ranked`), because neither is affordable alone: SQL
-narrows and coarse-orders over every row under the root; Python's ranker
-(`index/rank.py`) scores a bounded slice of at most `RANK_CANDIDATE_CAP` (2,000) rows.
-Scoring every subsequence candidate in Python is the 186 ms case that shape avoids.
+**One SQL statement** (`query.py`, `search_ranked`/`_rank_sql`) does the filtering, the
+scoring AND the `ORDER BY ... LIMIT` — no candidate cap, no Python-side ranking pass.
+Index-backed search is **substring-only**: the candidate filter is `lower(rel) LIKE
+'%q%'`, and the fuzzy SUBSEQUENCE escalation the route used to fall back to when that
+came up short (a separate `regexp_matches(lower(rel), 'a.*b.*c')` pass, scored by a
+now-deleted Python port of the browser ranker) is gone — an accepted feature loss, not
+an oversight: `indexstore` no longer matches `index/specs/index-store.md` on an indexed
+folder. `frontend/src/platform/lib/fuzzy.ts` is UNCHANGED and keeps its subsequence
+pass; it still ranks the live streamed walk for the folders no scan will ever cover
+(mount-backed, package, ignored), which this route never touches.
 
-Stage A is itself a **ladder**, cheapest pass first:
-
-| pass | filter | `render` over 571k rows | `readme.md` |
-|---|---|---|---|
-| 1 | `lower(rel) LIKE '%q%'` | 30,319 rows / 51 ms | 3,056 / 41 ms |
-| 2 | `regexp_matches(lower(rel), 'a.*b.*c')` | 176,505 / 143 ms | 11,766 / 45 ms |
-
-Pass 2 runs only when pass 1 cannot fill the returned `limit` after ranking, and
-`escalated` says which happened. That is **lossless, not an approximation**:
-`fuzzyMatch`'s substring branch sets `longestRun = len(q)`, the maximum the subsequence
-branch can never reach, and `rankCompare` orders on `longestRun` first, so every
-substring hit outranks every subsequence-only hit and a filled cut leaves pass 2 nothing
-to contribute above it.
+Losing the subsequence pass loses only a TAIL, not a reordering: `fuzzyMatch`'s
+substring branch always set `longestRun = len(q)`, the maximum a subsequence-only hit
+could reach, and `rankCompare` ordered on `longestRun` first — so every substring hit
+already outranked every subsequence-only one. With the subsequence pass gone,
+`longest_run` is constant across every surviving row and drops out of the SQL `ORDER
+BY` entirely (`tier ASC, score DESC, depth ASC, lower(rel) ASC`); it is still reported
+on each hit, since the wire contract and `listing/ranked-hits.ts` still read it.
 
 **`positions` are not returned.** The client re-runs `fuzzyMatch` over the ~200 rows it
 got back to build its highlights, so `platform/lib/fuzzy.ts` stays the single source of
-truth for what highlights, and the server's port of it stays free to carry positions
-internally without them becoming a wire contract.
+truth for what highlights, and the server stays free to change how it scores internally
+without that becoming a wire contract.
 
-**Parity is a test, not an intention.** `index/rank.py` is a port of `fuzzy.ts` +
-`listing/search.ts`, which remain the authority — the in-folder search still ranks a
-live streamed walk in the browser, and only a browser-side ranker can rank a stream. The
-same box is therefore answered by either ranker depending on coverage, so both assert
-against `tests/fixtures/rank-parity.json` (generated from the JS side by `bun
-scripts/gen-rank-fixture.ts`): `tests/test_index_rank.py` and
-`frontend/src/apps/explorer/listing/rank-parity.test.ts`.
+**Parity is a test, not an intention.** The deleted `index/rank.py` used to be a line-
+for-line port of `fuzzy.ts` + `listing/search.ts`; `_rank_sql` is now a SQL port of just
+its substring branch. `fuzzy.ts` remains the authority for the folders it still ranks —
+the in-folder search still ranks a live streamed walk in the browser, and only a
+browser-side ranker can rank a stream. The same box is therefore answered by either
+ranker depending on coverage, so both assert against `tests/fixtures/rank-parity.json`
+(generated from the JS side by `bun scripts/gen-rank-fixture.ts`):
+`tests/test_index_rank.py` (restricted to the fixture's substring-matching rows) and
+`frontend/src/apps/explorer/listing/rank-parity.test.ts` (the full fixture, unchanged).
 
 ### 7.1 `reason` — why an answer is what it is
 
