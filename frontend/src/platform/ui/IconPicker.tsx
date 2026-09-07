@@ -604,7 +604,10 @@ export default function IconPicker({
                 role="listbox"
                 aria-label="Icon colour"
                 data-slot="icon-picker-colors"
-                className="absolute top-full right-0 z-10 mt-1 grid grid-cols-5 gap-1.5 rounded-lg border border-border bg-popover p-2 shadow-md"
+                // Fixed tracks, not grid-cols-5: an absolutely positioned box
+                // shrinks to fit, and 1fr tracks contribute no intrinsic width,
+                // so the five swatches piled onto one another.
+                className="absolute top-full right-0 z-10 mt-1 grid w-max grid-cols-[repeat(5,1.75rem)] gap-1.5 rounded-lg border border-border bg-popover p-2 shadow-md"
               >
                 {ICON_COLORS.map((c) => (
                   <button
