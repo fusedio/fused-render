@@ -3,7 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   addCurrentApp,
@@ -80,14 +80,12 @@ import {
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import {
-  carries as snapshotCarries,
-  getResolvedSnapshot,
   isSha,
   setResolvedSnapshot,
   shortSha,
   snapshotFrameSrc,
-  type ResolvedSnapshot,
 } from "@platform/lib/snapshot-param";
+import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
@@ -95,6 +93,8 @@ import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/previe
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import Listing from "@apps/explorer/Listing";
 
@@ -1154,25 +1154,6 @@ function TemplatePreview({
   // file explorer's own listing included) has to see the same commit, which
   // component state cannot reach.
   //
-  // `snapshotSha` mirrors that URL write in REACT STATE, the same reason
-  // `sideReq` sits beside `setSide`'s own `replaceSearch` a little further
-  // down: a `history.replaceState` alone does not re-render anything, so
-  // whatever the frame src is built from has to be state this component
-  // actually holds. Re-synced from the URL whenever the open file changes
-  // (a navigation may have carried or dropped `_snapshot` per the carry rule,
-  // platform/lib/snapshot-param.ts) rather than only read once at mount.
-  const [snapshotSha, setSnapshotSha] = useState<string | null>(() => {
-    const raw = new URLSearchParams(location.search).get("_snapshot");
-    return isSha(raw) ? raw : null;
-  });
-  // A LOCAL mirror of the platform singleton, for one reason only: `srcFor`
-  // (below) needs to re-render when a resolve lands, and a bare
-  // `setResolvedSnapshot(...)` write to the module-level singleton triggers
-  // no re-render on its own (it is not React state) — the same reason
-  // Listing.tsx keeps its own local mirror of the same singleton. Every
-  // `setResolvedSnapshot` call in this component is paired with this one.
-  const [resolvedSnapshotState, setResolvedSnapshotState] =
-    useState<ResolvedSnapshot | null>(() => getResolvedSnapshot());
   // `useUrlVersion()` in the deps (code review finding B5, the reverse
   // direction): a commit selection or a "back to live" is a `replaceSearch`,
   // which does not dispatch `fused:navigate` — only `fused:urlchange`. Keyed
@@ -1182,132 +1163,26 @@ function TemplatePreview({
   // its stale `snapshotSha` state and kept building every frame's src with
   // it. `useUrlVersion` listens to `fused:urlchange`, which `replaceSearch`
   // always dispatches, so any writer of `_snapshot` — this component's own
-  // handlers below, or a sibling Listing.tsx — reaches this one too.
+  // handler below, or a sibling Listing.tsx — reaches this one too.
+  //
+  // The resolve/error/retry/back-to-live state machine itself lives in
+  // `usePreviewSnapshot` (apps/explorer/lib/), extracted so it can be driven
+  // through a hook-level test (this component has no render-test precedent
+  // anywhere in this codebase) — see that hook's own comment for what each
+  // field means; `backToLive` there is `clearShellSnapshot` (singleton, URL,
+  // AND the git sidebar hop — round 3 findings 2 and 7), and `snapshotError`
+  // is the round 3 finding 8 fix: a non-404 resolve failure used to leave
+  // this pane pending forever with no way out.
   const urlVersion = useUrlVersion();
-  // Shared by the sidebar's own "back to live" click (routed through
-  // `window._fusedSnapshotSelected` below with a non-sha value) and the new
-  // banner's own button (rendered near `.preview-frames`): one implementation
-  // of "drop the resolution and the shell's `_snapshot` param", not two.
-  const backToLive = useCallback(() => {
-    setResolvedSnapshot(null);
-    setResolvedSnapshotState(null);
-    setSnapshotSha(null);
-    const search = writeQueryParam(
-      location.search.replace(/^\?/, ""),
-      "_snapshot",
-      null
-    );
-    replaceSearch(location.pathname + (search ? "?" + search : ""));
-    // FINDING 7 (second review round): the git sidebar's own `previewed`
-    // state — its "Files are shown as of <sha>" banner and Checkout button —
-    // has no way to hear about a clear that starts HERE. Only the sidebar's
-    // OWN click hops to the shell (`window._fusedSnapshotSelected` above);
-    // there was no hop the other way, so a "Back to live" click in the
-    // content pane's own banner (or Listing.tsx's) left the sidebar's
-    // stale claim on screen over a pane that is now live — a destructive
-    // Checkout button attached to a version nobody is looking at any more.
-    // Same idiom as `_fusedSelectSnapshot`/`_fusedFsChanged`, run the other
-    // direction: a plain global called directly on the iframe's own
-    // `contentWindow` (same-origin), exactly how this shell already reaches
-    // `__fusedFlushEdits` on the code template a little further down. Both
-    // ends fail safe: the query can miss (no sidebar mounted, or it is
-    // showing `claude`/`mcp` rather than `git`) and the function can be
-    // absent (the git template rendered outside this shell, or an older
-    // build) — either is simply nothing to tell.
-    const sideFrame = document.querySelector<HTMLIFrameElement>(
-      ".preview-side-frame"
-    );
-    const clear =
-      sideFrame?.contentWindow &&
-      (sideFrame.contentWindow as unknown as {
-        _fusedSnapshotCleared?: () => void;
-      })._fusedSnapshotCleared;
-    if (typeof clear === "function") clear();
-  }, []);
-  useEffect(() => {
-    const raw = new URLSearchParams(location.search).get("_snapshot");
-    if (!isSha(raw)) {
-      setSnapshotSha(null);
-      return;
-    }
-    // Avoid a redundant round trip on every unrelated history write (a sort
-    // param, `_side`, `_mode`) that `useUrlVersion` also wakes this effect
-    // for — a resolution already sitting on this exact sha needs nothing
-    // more, PROVIDED it was resolved against an app folder that actually
-    // encloses THIS file (code review finding [3], round 2). Matching only
-    // on `sha` let a resolution sitting in the singleton for a DIFFERENT
-    // app — two apps in one repo share shas — survive a hop between them:
-    // browsing `/repo/appA/x.py?_snapshot=abc` then opening a bookmarked
-    // `/repo/appB/y.py?_snapshot=abc` matched the sha, skipped re-resolving,
-    // and left `resolvedSnapshotState` holding appA's `dir`/`app_dir`
-    // forever — nothing else ever re-runs this effect for the same sha.
-    if (
-      resolvedSnapshotState &&
-      resolvedSnapshotState.sha === raw &&
-      snapshotCarries(resolvedSnapshotState.app_dir, fsPath)
-    ) {
-      setSnapshotSha(raw);
-      return;
-    }
-    setSnapshotSha(raw);
-    // The app dir the carry rule checks is NOT part of the URL (only the sha
-    // is — see platform/lib/snapshot-param.ts), so a fresh load that already
-    // carries `_snapshot` (a reload, a pasted link, or simply arriving here
-    // with the param already on the query) has to re-resolve it exactly like
-    // the selection handler below does, or `carries()` would drop the param
-    // on this session's very first hop even though the destination is
-    // genuinely still inside the app.
-    let alive = true;
-    getGitSnapshot(fsPath, raw)
-      .then((r) => {
-        if (!alive) return;
-        const snap = { sha: raw, dir: r.dir, app_dir: r.app_dir };
-        setResolvedSnapshot(snap);
-        setResolvedSnapshotState(snap);
-      })
-      .catch((err: unknown) => {
-        if (!alive) return;
-        // Only a DEFINITIVE 404 (no app folder encloses this path — see
-        // git_snapshot.py's own status choice) is grounds to give up here —
-        // a TRANSIENT failure (a dropped connection, a 500, the server
-        // mid-restart) must not read identically to "there is genuinely no
-        // snapshot for this file" (code review finding [2], round 2): stay
-        // pending instead, the same honest "don't know yet" `srcFor` already
-        // holds every frame in while unresolved, rather than a false "live".
-        const status = (err as { status?: number } | null | undefined)?.status;
-        if (status !== 404) return;
-        // A confirmed 404 for THIS component's own path. If the SAME sha has
-        // already resolved successfully somewhere ELSE in this shell — a
-        // companion pane on a DIFFERENT app folder, since two apps in one
-        // repo share shas — the sha itself is still perfectly valid; only
-        // THIS pane has nothing to show for it, so only this pane's own
-        // state gives up, leaving the shared `_snapshot` URL (and the
-        // singleton) alone for whichever pane is legitimately resolving it.
-        // The previous shape cleared the SHELL's own URL unconditionally on
-        // ANY pane's failure, tearing the snapshot down for every other pane
-        // the instant one of them had no app folder to show it in (e.g. a
-        // second `TemplatePreview` on a plain `/repo/README.md` beside an
-        // app that resolves fine).
-        if (getResolvedSnapshot()?.sha === raw) {
-          setSnapshotSha(null);
-          return;
-        }
-        setSnapshotSha(null);
-        setResolvedSnapshot(null);
-        setResolvedSnapshotState(null);
-        const search = writeQueryParam(
-          location.search.replace(/^\?/, ""),
-          "_snapshot",
-          null
-        );
-        replaceSearch(location.pathname + (search ? "?" + search : ""));
-      });
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- urlVersion is a
-    // re-run signal, not a value this effect reads
-  }, [fsPath, urlVersion]);
+  const {
+    sha: snapshotSha,
+    snap: snapshotResolved,
+    pending: snapshotPending,
+    error: snapshotError,
+    retry: retrySnapshot,
+    backToLive,
+    applySelected: applySelectedSnapshot,
+  } = usePreviewSnapshot(fsPath, urlVersion);
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
     // git sidebar to select in, and two instances racing for one window global
@@ -1328,8 +1203,7 @@ function TemplatePreview({
           if (!alive) return; // a later selection, or this file closed, already won
           const snap = { sha, dir: r.dir, app_dir: r.app_dir };
           setResolvedSnapshot(snap);
-          setResolvedSnapshotState(snap);
-          setSnapshotSha(sha);
+          applySelectedSnapshot(snap);
           // Finding B8: `location.search` is snapshotted BEFORE this `await`
           // (the `getGitSnapshot` round trip) if read at the top of the
           // handler — any OTHER `replaceSearch` landing in that window (e.g.
@@ -1357,7 +1231,7 @@ function TemplatePreview({
       alive = false;
       delete window._fusedSnapshotSelected;
     };
-  }, [splitCapable, fsPath, backToLive]);
+  }, [splitCapable, fsPath, backToLive, applySelectedSnapshot]);
 
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
@@ -1816,42 +1690,11 @@ function TemplatePreview({
   // install-tree asset or the previewed FILE, both already resolved by the
   // runtime's rewrite rule once it has `_snapshot_dir`/`_snapshot_app` in
   // hand.
-  // `resolvedSnapshotState`, the local mirror declared above — not
-  // `getResolvedSnapshot()` read directly here — is what makes this
-  // component actually re-render once an in-flight resolve lands (see that
-  // state's own comment).
-  const resolvedSnap = resolvedSnapshotState;
-  // `snapshotSha` is the URL's claim; `resolvedSnap` is only trustworthy once
-  // it actually answers THAT claim (a re-sync effect above can set
-  // `snapshotSha` synchronously off a fresh URL — a reload, a pasted link —
-  // moments before its own `getGitSnapshot` call resolves, or a stale
-  // resolution can still be sitting in the singleton from a PREVIOUS file) —
-  // AND once its `app_dir` actually encloses THIS FILE (code review finding
-  // [3], round 2). Matching the sha alone is not enough: two apps in one
-  // repo share shas, so `resolvedSnap` can hold a perfectly valid resolution
-  // for the SAME sha against a DIFFERENT app folder — a bookmarked/pasted url
-  // for `/repo/appB/y.py?_snapshot=abc` opened right after browsing
-  // `/repo/appA/x.py?_snapshot=abc` would otherwise see the sha match, skip
-  // re-resolving, and ship appA's `dir`/`app_dir` into appB's frame forever
-  // (nothing re-runs the effect once the sha guard above already let it
-  // return early).
-  const snapshotResolved =
-    snapshotSha !== null &&
-    resolvedSnap !== null &&
-    resolvedSnap.sha === snapshotSha &&
-    snapshotCarries(resolvedSnap.app_dir, fsPath)
-      ? resolvedSnap
-      : null;
-  // The URL claims an active snapshot but this component has not (yet, or
-  // not successfully) resolved it for THIS sha — finding B2's pending
-  // window. Held here, not just left to the runtime: a frame built during
-  // this window would either carry no `_snapshot_dir`/`_snapshot_app` at all
-  // (falling back to the runtime's own, slower resolve) or, for `_render`,
-  // point `path` at the still-live file. `null` below reads as "pending",
-  // the same posture a borrowed template's own unresolved gate takes
-  // elsewhere in this file — the column shows its existing loading state
-  // instead of a frame that would need to change out from under itself.
-  const snapshotPending = snapshotSha !== null && snapshotResolved === null;
+  // `snapshotResolved`/`snapshotPending` are `usePreviewSnapshot`'s own
+  // `snap`/`pending` (destructured above) — that hook already applies the
+  // same "sha matches AND app_dir actually encloses THIS file" check this
+  // used to re-derive here by hand (code review finding [3], round 2: two
+  // apps in one repo share shas, so matching the sha alone is not enough).
   const remote = stat.remote ? "&_remote=1" : "";
   // A shell loaded as a card thumbnail (IS_PREVIEW) forwards the flag onto
   // every render it triggers, so peeking at an app's entry page is not
@@ -2251,21 +2094,54 @@ function TemplatePreview({
                 it the banner rendered as a squeezed vertical strip beside
                 the frames instead of a bar above them. */}
             <div className="preview-content-stack">
-            {snapshotResolved && (
-              <div className="listing-snapshot-banner">
-                Showing this file as of commit{" "}
-                <span className="listing-snapshot-sha">
-                  {shortSha(snapshotResolved.sha)}
-                </span>
-                .
-                <button
-                  type="button"
-                  className="listing-snapshot-back"
-                  onClick={backToLive}
-                >
-                  Back to live
-                </button>
-              </div>
+            {/* Round 3, finding 8: a NON-404 resolve failure (a dropped
+                connection, a 500) used to leave this pane on the pending
+                skeleton forever — the sha stays on the URL, nothing
+                re-tries on its own, and reload does not help since the
+                same param fails the same way again. Gated on
+                `snapshotError`, ahead of the ordinary "resolved" banner
+                below (mutually exclusive: `usePreviewSnapshot` never sets
+                both at once) — the same escape shape the app page's own
+                `SnapshotError` gives Overview/Files/API, reused here as
+                plain `ErrorBanner`/`Button` rather than that component
+                itself: `shell/` sits ABOVE `apps/explorer` in this
+                codebase's own import direction (shell imports apps/, never
+                the reverse — see platform/lib/snapshot-param.ts's own
+                comment on the platform/apps half of the same rule), and
+                `SnapshotError`'s built-in "back to live" clears the URL
+                directly with no sidebar hop — reusing it as-is would
+                silently reintroduce finding 2. */}
+            {snapshotError ? (
+              <ErrorBanner>
+                <p className="m-0">
+                  Could not load this commit. This may be a temporary problem.
+                </p>
+                <div className="flex gap-2 pt-2">
+                  <Button size="xs" variant="outline" onClick={retrySnapshot}>
+                    Retry
+                  </Button>
+                  <Button size="xs" variant="ghost" onClick={backToLive}>
+                    Back to Live
+                  </Button>
+                </div>
+              </ErrorBanner>
+            ) : (
+              snapshotResolved && (
+                <div className="listing-snapshot-banner">
+                  Showing this file as of commit{" "}
+                  <span className="listing-snapshot-sha">
+                    {shortSha(snapshotResolved.sha)}
+                  </span>
+                  .
+                  <button
+                    type="button"
+                    className="listing-snapshot-back"
+                    onClick={backToLive}
+                  >
+                    Back to live
+                  </button>
+                </div>
+              )
             )}
             {/* One frame per mounted mode (see the held-frame swap above). Each
              key is its own mode, so a frame is created once and never
