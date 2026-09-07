@@ -1972,6 +1972,33 @@ export function filingIntent(task: Task): FilingIntent | null {
   };
 }
 
+/** The hint a blocked trash wears, and the words the server refuses in
+ *  (`/api/tasks/erase`: "that task is running — stop the run first, then
+ *  delete"). Said in the SHORT form on a 24px door, but it is the same sentence
+ *  — a control whose caption promises one reason and whose refusal gives another
+ *  is the divergence this page's vocabulary is written against. */
+export const ERASE_BLOCKED_HINT = "Stop the run first";
+
+/**
+ * Whether deleting this task for good must be REFUSED — the client half of the
+ * server's 409.
+ *
+ * `inFlight` and nothing else, so the trash and the endpoint cannot disagree
+ * about what "running" means: both lanes count (`in_progress` and the
+ * `needs_attention` run parked on a permission card, which is every bit as
+ * live), and a control that only checked `in_progress` would offer to erase the
+ * transcript a waiting `claude --resume` still has open.
+ *
+ * NOT a version of `filingIntent`: archiving a mid-run task is refused because
+ * filing work that is still happening is dishonest, and it is offered again the
+ * moment the run ends. This is refused because the file is in use. Same lanes
+ * today, two different reasons, and folding them together would tie an
+ * irreversible verb's guard to a reversible one's rules.
+ */
+export function eraseBlocked(task: Pick<Task, "status">): boolean {
+  return inFlight(taskColumn(task));
+}
+
 /**
  * Whether a row draws its ORDINARY actions — run, re-run, mark read.
  *

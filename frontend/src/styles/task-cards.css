@@ -311,6 +311,22 @@
   border-color: var(--fg-muted);
 }
 
+/* The trash door. Neutral at rest, like both of its neighbours — three doors in
+   one 24px strip, and a permanently red one would make the strip look like a
+   warning rather than a set of controls — and the List row's own `--error` on
+   hover and on keyboard focus, which is the page's single colour for "this
+   destroys something" (`.tasks-row-missing`, `.tasks-act--delete`). Through the
+   strip like every other door rule, or `.prefs-section button` blanks it. */
+.task-card-doors > .task-card-door--danger:hover:not(:disabled),
+.task-card-doors > .task-card-door--danger:focus-visible:not(:disabled) {
+  /* The same wash the List row's and Board strip's trash take (tasks.css
+     `.tasks-act--delete:hover`), so one door reads the same on every surface
+     (Akshil, 2026-09-07). */
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 32%, transparent);
+}
+
 .task-card-doors > .task-card-door:disabled,
 .task-card-doors > .task-card-door.is-disabled,
 .task-card-doors > .task-card-door.is-disabled:hover {
@@ -514,4 +530,13 @@
   margin-right: auto;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+/* The popup head's delete door: the head's own .btn skin at rest, Cancel's red
+   under the pointer — the same escalation the card strip's trash door makes. */
+.modal-head-actions > .modal-head-act--danger:hover:not(:disabled),
+.modal-head-actions > .modal-head-act--danger:focus-visible:not(:disabled) {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 32%, transparent);
 }

@@ -36,6 +36,11 @@ def projects_dir(tmp_path, monkeypatch):
     d = tmp_path / "claude-projects"
     d.mkdir()
     monkeypatch.setattr(tasks_store, "PROJECTS_DIR", str(d))
+    # The sessions router keeps its own copy of the same constant (deliberate
+    # local duplication, see its docstring) and `/api/tasks/erase` walks the
+    # tree through that one — both have to point at the tmp dir or an erase
+    # test would glob the real ~/.claude.
+    monkeypatch.setattr(sessions_mod, "PROJECTS_DIR", str(d))
     return d
 
 
@@ -2340,6 +2345,244 @@ def test_deleting_a_task_that_is_not_there_is_a_404(client):
 
 def test_deleting_without_a_key_is_a_400(client):
     assert client.post("/api/tasks/delete",
+                       json={"key": "  "}).status_code == 400
+
+
+# ------------------------------------------------------------- erasing it
+# `POST /api/tasks/erase` — delete's cancel-and-tombstone, and then the
+# session itself: transcript, sidecars, triage, read marks (D740). The softer
+# verb above is unchanged and still keeps the transcript (D306).
+
+
+def test_erasing_takes_the_session_off_the_disk_and_out_of_state(
+        client, projects_dir, state_dir):
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    sidecar = path.parent / "sess-a"
+    sidecar.mkdir()
+    (sidecar / "subagent.jsonl").write_text("{}\n")
+    client.post("/api/tasks/archive", json={"key": "sess-a"})
+    assert json.loads((state_dir / "triage.json").read_text())["sess-a"]
+
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "cancelled": 0,
+                        "erased_transcript": True, "removed": 2}
+    # The conversation is GONE — transcript and the subagent sidecars beside
+    # it — which is the whole difference from delete.
+    assert not path.exists()
+    assert not sidecar.exists()
+    # Nothing left in state to be about it, and the key is tombstoned anyway
+    # so a straggler cannot revive the row for a poll.
+    assert json.loads((state_dir / "triage.json").read_text()) == {}
+    assert json.loads((state_dir / "deleted.json").read_text())["sess-a"]["at"] > 0
+    assert _tasks(client) == []
+    assert _pulse(client) == []
+
+
+def test_erasing_reaches_every_copy_of_the_transcript(client, projects_dir):
+    """Copy-on-resume can leave the same session id under two encoded cwds.
+    One survivor keeps the conversation readable and the row revivable, so the
+    erase globs across every project dir rather than trusting the row's own
+    path."""
+    first = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)],
+                              encoded="-p")
+    second = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)],
+                               encoded="-p-copy")
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] == 2
+    assert not first.exists() and not second.exists()
+
+
+def test_erasing_forgets_the_read_marks_but_keeps_the_number(
+        client, projects_dir, state_dir):
+    """Read marks are per-message on messages that no longer exist. The task
+    NUMBER is the one thing kept: allocation is max-seen-plus-one read off
+    task_ids.json, so dropping the record would hand TASK-001 to the next task
+    somebody starts."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    assert client.post("/api/tasks/read",
+                       json={"key": "sess-a", "message_id": "MSG-001"}
+                       ).status_code == 200
+    assert "sess-a" in json.loads((state_dir / "read.json").read_text())
+    assert _by_key(client)["sess-a"]["task_id"] == "TASK-001"
+    numbers = tasks_store.task_ids()
+    assert numbers["sess-a"]["n"] == 1
+
+    assert client.post("/api/tasks/erase",
+                       json={"key": "sess-a"}).status_code == 200
+    assert "sess-a" not in json.loads((state_dir / "read.json").read_text())
+    assert tasks_store.task_ids()["sess-a"] == numbers["sess-a"], \
+        "the mapping stays as a reservation, so the number is never reused"
+
+    # And the proof of what the reservation is for: the next session in the
+    # same project is TASK-002, not the erased task's name.
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("hi", T12)])
+    assert _by_key(client)["sess-b"]["task_id"] == "TASK-002"
+
+
+def test_erasing_a_running_task_is_refused(client, projects_dir):
+    """Worse than delete's version of the same refusal: this one would remove
+    a file under a process still writing to it."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENDING,
+                           claude_session_id="sess-a")])
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == \
+        "that task is running — stop the run first, then delete"
+    assert path.exists()
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_erasing_cancels_the_rule_behind_the_task(client, projects_dir):
+    """Delete's first half, unchanged: the rule dies before the occurrence it
+    would otherwise mint back."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every day", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        _entry("e2", "every day", T12, template_id="tpl",
+               claude_session_id="sess-a"),
+    ])
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["cancelled"] == 1, \
+        "cancelling the rule already withdrew the occurrence it had minted"
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states == {"tpl": schedule.CANCELLED, "e2": schedule.CANCELLED}
+
+
+def test_erasing_a_task_with_no_session_only_cancels(client, tmp_path):
+    """A message scheduled for tomorrow that never ran has no transcript to
+    erase, so the answer says so instead of pretending."""
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    r = client.post("/api/tasks/erase", json={"key": key})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": key, "cancelled": 1,
+                        "erased_transcript": False, "removed": 0}
+    assert _tasks(client) == []
+
+
+def test_erasing_never_reaches_past_a_session_file(projects_dir):
+    """`..` is not a glob pattern, it is a path: `PROJECTS_DIR/*/..` is the
+    projects root, and an unguarded rmtree there is every Claude project on
+    the machine (bugbot, PR #1049). The helper refuses the id shape outright,
+    and separately refuses any target that is not `<a project dir>/<id>[.jsonl]`
+    — and a refusal COUNTS, so the endpoint cannot call it a delete."""
+    proj = projects_dir / "-p"
+    proj.mkdir()
+    (proj / "other.jsonl").write_text("{}\n")
+    for bad in ("..", ".", "../..", "-p/other", "*"):
+        assert tasks_mod._erase_session_files(bad, None) == (0, False, 0, 1)
+    # A row path that points OUTSIDE the tree (or at a project dir, or the
+    # root) is refused even when the id itself is fine.
+    outside = projects_dir.parent / "elsewhere.jsonl"
+    outside.write_text("{}\n")
+    assert tasks_mod._erase_session_files("sess-x", str(outside)) == (0, False, 0, 1)
+    assert tasks_mod._erase_session_files("sess-x", str(proj)) == (0, False, 0, 1)
+    assert tasks_mod._erase_session_files("sess-x", str(projects_dir)) == (0, False, 0, 1)
+    assert outside.exists() and proj.exists() and (proj / "other.jsonl").exists()
+    # Nothing on disk for this id at all: nothing removed, nothing refused —
+    # a schedule-only task erases cleanly.
+    assert tasks_mod._erase_session_files("sess-none", None) == (0, False, 0, 0)
+
+
+def test_a_refused_file_is_not_a_deleted_task(client, projects_dir, state_dir):
+    """A transcript whose leaf is a symlink out of the tree is refused — and the
+    endpoint answers 500, forgets nothing, tombstones nothing (review, PR
+    #1049: a skip used to come back as a 200 with the row gone)."""
+    real = projects_dir.parent / "kept.jsonl"
+    real.write_text(json.dumps(_user("hi", T9)) + "\n")
+    proj = projects_dir / "-encoded-sess-a"
+    proj.mkdir()
+    (proj / "sess-a.jsonl").symlink_to(real)
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 500, r.text
+    assert real.exists() and (proj / "sess-a.jsonl").exists()
+    assert not (state_dir / "deleted.json").exists() or \
+        "sess-a" not in json.loads((state_dir / "deleted.json").read_text())
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+
+
+def test_a_symlinked_project_dir_is_still_ours(client, projects_dir):
+    """A PROJECT DIR that is a symlink out of the tree is somebody's real setup
+    (the docstring has always said so): its session files are erased, because
+    the parent is compared by the project dir's own realpath, not by depth
+    under the root (review, PR #1049 — these used to be refused)."""
+    real_dir = projects_dir.parent / "real-proj"
+    real_dir.mkdir()
+    (real_dir / "sess-a.jsonl").write_text(json.dumps(_user("hi", T9)) + "\n")
+    (projects_dir / "-encoded-sess-a").symlink_to(real_dir)
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] == 1 and r.json()["erased_transcript"] is True
+    assert not (real_dir / "sess-a.jsonl").exists()
+    assert real_dir.exists()  # the dir itself is not a session file
+
+
+def test_a_file_that_will_not_go_is_not_a_deleted_task(
+        client, projects_dir, state_dir, monkeypatch):
+    """OSError on the remove used to be logged and then reported as a 200 with
+    the key tombstoned — a "permanent" delete that left the transcript on disk
+    to revive the row later (bugbot, PR #1049). Now it is a 500, nothing is
+    forgotten, and the row stays."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+
+    def refuse(_path):
+        raise OSError("busy")
+
+    monkeypatch.setattr(tasks_mod.os, "remove", refuse)
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 500, r.text
+    assert "could not remove 1 file" in r.json()["detail"]
+    assert path.exists()
+    assert not (state_dir / "deleted.json").exists() or \
+        "sess-a" not in json.loads((state_dir / "deleted.json").read_text())
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+
+
+def test_a_sidecar_that_will_not_go_leaves_the_transcript_and_the_row(
+        client, projects_dir, monkeypatch):
+    """The transcript is what makes the row a task, so it goes LAST and nothing
+    goes after a refusal: a stuck sidecar leaves the conversation on disk, the
+    row on the page and the retry possible — not a vanished task with orphaned
+    files beside where it was (bugbot, PR #1049)."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    sidecar = path.parent / "sess-a"
+    sidecar.mkdir()
+    (sidecar / "subagent.jsonl").write_text("{}\n")
+
+    real_rmtree = tasks_mod.shutil.rmtree
+
+    def refuse(_path):
+        raise OSError("busy")
+
+    monkeypatch.setattr(tasks_mod.shutil, "rmtree", refuse)
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 500, r.text
+    assert path.exists() and sidecar.exists()
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+    # With the sidecar removable again, the retry finishes the job. (Only
+    # rmtree is put back — `monkeypatch.undo()` would also drop the fixtures
+    # that point PROJECTS_DIR at the tmp tree.)
+    monkeypatch.setattr(tasks_mod.shutil, "rmtree", real_rmtree)
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert not path.exists() and not sidecar.exists()
+
+
+def test_erasing_a_task_that_is_not_there_is_a_404(client):
+    assert client.post("/api/tasks/erase",
+                       json={"key": "nope"}).status_code == 404
+
+
+def test_erasing_without_a_key_is_a_400(client):
+    assert client.post("/api/tasks/erase",
                        json={"key": "  "}).status_code == 400
 
 
