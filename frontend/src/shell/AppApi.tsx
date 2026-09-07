@@ -35,6 +35,7 @@ import {
 } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
+import { rewritePathAgainst, type ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -125,10 +126,17 @@ const MONO = "font-mono text-[12.5px]";
 export default function AppApi({
   dir,
   folderHref,
+  resolvedSnapshot,
 }: {
   /** The app folder, absolute forward-slash. */
   dir: string;
   folderHref: string;
+  /** AppPage's own snapshot resolution, or null when live — rewritten
+   *  against directly, never a shared singleton. Under a selected commit the
+   *  endpoint list (and so every Execute call, which runs whatever `.py` that
+   *  listing names) comes from the extracted tree instead of the working
+   *  tree: the API tab lists — and runs — that commit's own code. */
+  resolvedSnapshot: ResolvedSnapshot | null;
 }) {
   useUrlVersion();
   // Absent `ep` means "nothing chosen yet" — the first endpoint opens so the
@@ -147,10 +155,11 @@ export default function AppApi({
   const [runs, setRuns] = useState<Record<string, Run>>({});
   const [invalid, setInvalid] = useState<Record<string, string | null>>({});
 
+  const effectiveDir = rewritePathAgainst(resolvedSnapshot, dir);
   useEffect(() => {
     let live = true;
     setLoad({ kind: "loading" });
-    getAppPy(dir)
+    getAppPy(effectiveDir)
       .then((data) => live && setLoad({ kind: "ok", data }))
       .catch(
         (e) =>
@@ -159,7 +168,7 @@ export default function AppApi({
     return () => {
       live = false;
     };
-  }, [dir]);
+  }, [effectiveDir]);
 
   const toggle = (rel: string) => {
     const next = new URLSearchParams(location.search);

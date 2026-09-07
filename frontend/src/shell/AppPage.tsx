@@ -61,6 +61,7 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { rewritePathAgainst, type ResolvedSnapshot } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
   Files,
@@ -88,6 +89,7 @@ import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
 import AppApi from "./AppApi";
 import AppVersionPicker from "./AppVersionPicker";
+import { useAppPageSnapshot } from "./useAppPageSnapshot";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -107,6 +109,13 @@ type TabCtx = {
   folderHref: string;
   /** The folder's `git` template entry, when offered (null = not). */
   gitTpl: TemplateEntry | null;
+  /** This page's OWN resolution of the URL's `_snapshot` sha — null when
+   *  live, or while a resolve is still in flight. Rewrite every read against
+   *  THIS, never a shared singleton (code review finding 1, round 2: two
+   *  apps in one repo share shas, and a singleton written by whichever view
+   *  resolves last can hold another view's resolution by the time a caller
+   *  reads it — there is no such singleton here at all, deliberately). */
+  resolvedSnapshot: ResolvedSnapshot | null;
 };
 
 /** A folder template in a frame — the explorer's folder-peek shape
@@ -136,12 +145,18 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     label: "Overview",
     Icon: AppWindow,
     keepMounted: true,
-    render: ({ slug, entry, folderHref }) =>
+    // Under a snapshot the src must address the EXTRACTED entry, exactly as
+    // Preview.tsx's own `_render` sentinel does for a single-file preview:
+    // `GET /render` itself has no `_snapshot` awareness of its own, so the
+    // src it serves already addressing the extracted file is what actually
+    // puts the app on the selected commit — rewritten against THIS page's own
+    // resolution (`resolvedSnapshot`), never a singleton.
+    render: ({ slug, entry, folderHref, resolvedSnapshot }) =>
       entry ? (
         <div className="app-page-frame-wrap">
           <iframe
             className="app-page-frame"
-            src={`/render?path=${encodeURIComponent(entry)}`}
+            src={`/render?path=${encodeURIComponent(rewritePathAgainst(resolvedSnapshot, entry))}`}
             title={`App: ${slug}`}
           />
         </div>
@@ -162,8 +177,13 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Files,
     // Not keepMounted: the selection is in the URL, so a return costs one walk
     // and one stat — cheaper than a hidden frame that keeps running.
-    render: ({ dir, entry, folderHref }) => (
-      <AppFiles dir={dir} entry={entry} folderHref={folderHref} />
+    render: ({ dir, entry, folderHref, resolvedSnapshot }) => (
+      <AppFiles
+        dir={dir}
+        entry={entry}
+        folderHref={folderHref}
+        resolvedSnapshot={resolvedSnapshot}
+      />
     ),
   },
   api: {
@@ -171,7 +191,9 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Webhook,
     // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
     // one folder inspection — form values and responses are session scratch.
-    render: ({ dir, folderHref }) => <AppApi dir={dir} folderHref={folderHref} />,
+    render: ({ dir, folderHref, resolvedSnapshot }) => (
+      <AppApi dir={dir} folderHref={folderHref} resolvedSnapshot={resolvedSnapshot} />
+    ),
   },
   git: {
     label: "Git",
@@ -224,8 +246,15 @@ export default function AppPage({
   );
   // The tab is the `_tab` query param, re-read on every URL event so
   // back/forward between the two tabs lands on the right one.
-  useUrlVersion();
+  const urlVersion = useUrlVersion();
   const tab = appPageTabFromSearch(location.search);
+
+  // This page's OWN resolution of the URL's `_snapshot` sha — extracted into
+  // useAppPageSnapshot.ts, which has its own header comment for why this is
+  // a hook and not a shared singleton. Rewritten against directly
+  // (rewritePathAgainst below) by Overview's src and passed straight through
+  // to AppFiles/AppApi, which do their own rewriting the same way.
+  const resolvedSnapshot = useAppPageSnapshot(dir, urlVersion);
 
   // The tab favicon is the app's optional icon.svg while its page is open
   // (`/api/apps/icon`; the same file the Projects row draws). Guarded by
@@ -563,7 +592,7 @@ export default function AppPage({
                 role="tabpanel"
                 aria-hidden={!active}
               >
-                {def.render({ slug, dir, entry, folderHref, gitTpl })}
+                {def.render({ slug, dir, entry, folderHref, gitTpl, resolvedSnapshot })}
               </section>
             );
           })}
