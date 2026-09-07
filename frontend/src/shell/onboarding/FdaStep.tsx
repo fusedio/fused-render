@@ -28,6 +28,7 @@ import { openFdaSettings, type Config } from "@platform/lib/api";
 import { FDA_COPY, RELAUNCH_HREF, pokeFda, seedFda, useFda } from "@platform/lib/fda";
 import { Button } from "@platform/shadcn/ui/button";
 
+import { reportStage } from "./progress";
 import { StepHeader } from "./StepHeader";
 
 export function FdaStep({
@@ -55,6 +56,15 @@ export function FdaStep({
   // Open Settings / Relaunch is the yellow button until the grant is in;
   // then Next takes the colour. A dev server (nothing offered) has no button.
   useEffect(() => onWork(offered && !granted), [onWork, offered, granted]);
+  // THE STAGE (progress.ts): granted = complete; granted-but-relaunch-pending
+  // = partial; otherwise pending — including a dev server, where nothing is
+  // offered but this IS a Mac with the pane. The server overrules this from
+  // its own probe on every read, so the two never disagree for long.
+  useEffect(() => {
+    if (live === undefined && config.fda === undefined) return; // first paint, no answer yet
+    const status = granted ? "complete" : pending ? "partial" : "pending";
+    reportStage("fda", status, { granted, pending_relaunch: pending, offered, opened_settings: opened });
+  }, [granted, pending, offered, opened, live, config.fda]);
 
   const open = () => {
     setError(null);

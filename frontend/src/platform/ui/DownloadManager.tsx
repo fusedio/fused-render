@@ -615,7 +615,13 @@ export function JobRow({
   };
   const running = isRunning(job);
   const fraction = jobFraction(job);
-  const amount = jobAmount(job);
+  // "(estimated)" qualifies the COUNT, not the phase/path text `status`
+  // carries — it used to ride inside the server's `detail` field (the root
+  // path), which made it read as "the path is a guess". Appended here,
+  // beside `jobAmount`'s own output, rather than inside `jobAmount` itself,
+  // so no other job kind grows this suffix just by having a `total` (D733).
+  const rawAmount = jobAmount(job);
+  const amount = rawAmount && job.total_estimated ? `${rawAmount} (estimated)` : rawAmount;
   const status = jobStatusLine(job);
   // THE PROGRESS FACTS TOGETHER, dot-joined (D598, user: "why isn't the step
   // count next to denoising?"). `0 / 4` is a progress fact, so it belongs with

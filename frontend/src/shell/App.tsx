@@ -16,6 +16,7 @@
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { Job } from "@platform/lib/jobs";
+import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import {
   IS_EMBED,
   IS_PREVIEW,
@@ -52,7 +53,8 @@ import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
-import { ONBOARDING_PATH, onboardingUrl, shouldAutoShow } from "@shell/onboarding/state";
+import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
+import { onboardingUrl } from "@shell/onboarding/progress";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
@@ -387,7 +389,9 @@ function StatView({
       live = false;
     };
   }, [fsPath]);
-  useFavicon(iconHref);
+  // Theme-resolved: a picker-written icon.svg names its colour and the
+  // favicon cannot read a token itself (app-icon-src.ts).
+  useFavicon(useThemedIconSrc(iconHref));
   // Recents: the explorer's own store, gated on a confirmed FILE, so a
   // directory never lands there. The app
   // builder's parallel (tag, name) store went with its route — nothing displays
@@ -657,7 +661,7 @@ export default function App({ config }: { config: Config }) {
     location.pathname === "/home" &&
     shouldAutoShow(config)
   ) {
-    history.replaceState(null, "", onboardingUrl(config));
+    history.replaceState(null, "", onboardingUrl(config.onboarding?.stages));
   }
   autoShowDecided = true;
   // Legacy: the CLAUDE.md explorer ("MD Files") was deleted from the Config

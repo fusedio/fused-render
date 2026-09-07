@@ -29,6 +29,7 @@ const JOB: Job = {
   done: null,
   total: null,
   total_scope: "phase",
+  total_estimated: false,
   unit: "",
   message: "",
   page: "",

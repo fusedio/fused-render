@@ -9,15 +9,19 @@
 // results (see FilesHome), taken only when the user asks for it.
 //
 // The SERVER now filters and ranks (/api/index/rank, fused_render/index/
-// rank.py). The page used to fetch the whole corpus — 19.8 MB and 164k rows on
-// the first keystroke, capped at 200k entries so ~71% of a 571k-file home
-// could not be found at all — and rank it here. It now asks per query and gets
-// a few KB, over the WHOLE index.
+// query.py's `_rank_sql`, one SQL statement — see D708). The page used to
+// fetch the whole corpus — 19.8 MB and 164k rows on the first keystroke,
+// capped at 200k entries so ~71% of a 571k-file home could not be found at
+// all — and rank it here. It now asks per query and gets a few KB, over the
+// WHOLE index.
 //
-// The ranking is still not reimplemented anywhere: rank.py is a port of
-// listing/search.ts pinned by a cross-language fixture, because two search
-// boxes in the same app that order results differently is a bug the user
-// experiences as "it found it last time".
+// Index-backed search is substring-only (D708 — the deleted `index/rank.py`'s
+// fuzzy subsequence escalation is gone, an owner-accepted trade). `narrowAnswer`
+// below matches that with `platform/lib/fuzzy.ts`'s `substringMatch` rather
+// than `fuzzyMatch`, which still accepts a subsequence and would otherwise
+// keep rows the server no longer returns. `fuzzyMatch` (listing/search.ts)
+// stays subsequence-based and is still correct there — the live walk it ranks
+// has no server to agree with.
 //
 // Two things must not be papered over:
 //
@@ -29,16 +33,15 @@
 //    make.
 //  * the WAIT. Ranking used to be local, so results repainted within a frame
 //    and never blanked. A round trip per query can only feel as good if it
-//    never blanks the list, never flashes a spinner, fires the first keystroke
-//    without a debounce, and answers a backspace from memory — which is what
-//    the pieces below are for.
+//    never blanks the list, never flashes a spinner, and answers a backspace
+//    from memory — which is what the pieces below are for.
 //
-// The pieces that make a per-query round trip feel instant — the leading-edge
+// The pieces that make a per-query round trip feel instant — the trailing
 // debounce, the pending threshold, the backspace memo — are NOT here: they are
 // shared with the listing's in-folder box, which is now the same kind of box,
 // and they live in platform/lib/instant-search.
 import type { IndexRankResult, RankReason } from "@platform/lib/api";
-import { fuzzyMatch } from "@platform/lib/fuzzy";
+import { substringMatch } from "@platform/lib/fuzzy";
 
 // Rows rendered at most. Far smaller than the listing's SEARCH_RESULT_CAP, and
 // the number is set by what has to stay VISIBLE rather than by how many hits are
@@ -145,9 +148,13 @@ export function answerFrom(
       size: h.size,
       mtime: h.mtime,
       // Re-matched HERE rather than sent: fuzzy.ts decides what highlights,
-      // full stop, and the server's ranker is a port of it (index/rank.py),
-      // so this reproduces the alignment that produced the score.
-      positions: fuzzyMatch(query, h.rel)?.positions ?? [],
+      // full stop. `substringMatch`, not `fuzzyMatch`'s looser subsequence
+      // pass: every row in `res` already passed the server's substring
+      // filter, so the guarantee that this always finds something is made
+      // EXPLICIT (the same test the server used, not merely a weaker one
+      // that happens to agree here) rather than incidental to which function
+      // got called.
+      positions: substringMatch(query, h.rel)?.positions ?? [],
     })),
     truncated: res.truncated,
     total: res.total,
@@ -162,27 +169,37 @@ export function answerFrom(
  * trip.
  *
  * The common case while a request is in flight is the new query EXTENDING the
- * old one ("read" -> "readm"): re-running `fuzzyMatch` (the same matcher
- * rank.py mirrors) over the hits already in hand and keeping only the ones
- * that still match — with `positions` recomputed for the new query — narrows
- * the list on screen with no round trip and no blank frame, which is strictly
- * better than dimming rows that cannot possibly be answers to what is now
- * typed.
+ * old one ("read" -> "readm"): re-running `substringMatch` over the hits
+ * already in hand and keeping only the ones that still match — with
+ * `positions` recomputed for the new query — narrows the list on screen with
+ * no round trip and no blank frame, which is strictly better than dimming
+ * rows that cannot possibly be answers to what is now typed.
+ *
+ * `substringMatch` (platform/lib/fuzzy.ts), NOT `fuzzyMatch` (D708 correction
+ * — review finding): the index-backed server is substring-only, so narrowing
+ * with `fuzzyMatch`'s looser subsequence test could KEEP a row the server
+ * would no longer return (`"rdme"` is a subsequence of `"readme.md"` but
+ * never a substring of it) — painting a hit for a query, then watching it
+ * vanish when the real answer lands empty. `substringMatch` is the exact test
+ * `_rank_sql`'s `WHERE lower(rel) LIKE '%q%'` (fused_render/index/query.py)
+ * filters on server-side, reproduced here so this agrees with it with no
+ * round trip. `fuzzyMatch` stays correct for the LIVE-WALK path
+ * (`listing/search.ts`), which has no server-side filter to disagree with.
  *
  * Deliberately does NOT re-rank or add rows: it can only ever REMOVE hits from
  * the held answer, which is what makes the result a provable SUBSET of the
  * true answer for `q` — it can never show something the fresh answer
- * wouldn't. A query that is not an extension of the old one (a paste, a
- * select-all retype) narrows to whichever held hits happen to still
- * fuzzy-match `q` directly, which is usually few or none; that emptiness is
- * exactly the signal the staleness deadline (`STALE_CLEAR_MS`,
- * platform/lib/instant-search) uses to decide there is nothing worth holding
- * onto.
+ * wouldn't, now that both agree on what counts as a match. A query that is
+ * not an extension of the old one (a paste, a select-all retype) narrows to
+ * whichever held hits happen to still contain `q` as a substring, which is
+ * usually few or none; that emptiness is exactly the signal the staleness
+ * deadline (`STALE_CLEAR_MS`, platform/lib/instant-search) uses to decide
+ * there is nothing worth holding onto.
  */
 export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
   const out: HomeHit[] = [];
   for (const hit of answer.hits) {
-    const m = fuzzyMatch(q, hit.rel);
+    const m = substringMatch(q, hit.rel);
     if (!m) continue;
     out.push({ ...hit, positions: m.positions });
   }

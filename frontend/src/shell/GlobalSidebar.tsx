@@ -21,6 +21,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
+import { SetupProgressRing, SetupProgressRow, useSetupMeter } from "@shell/onboarding/SetupProgress";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
@@ -691,6 +692,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     setPrefsPos({ left: r.left, bottom: window.innerHeight - r.top + 4 });
   };
 
+  // THE SETUP METER (shell/onboarding/progress): how far first-run setup has
+  // got, as a row above Settings and a ring on the rail, both leading back into
+  // the wizard. Null = nothing to show (never started, or finished).
+  const setupMeter = useSetupMeter(config);
+
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
     {
@@ -722,12 +728,26 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       active: aiModelsActive,
       badge: residentDot,
     },
+    // Same gate and same place as the expanded row: the rail is the whole
+    // sidebar when collapsed, and a meter that vanished on collapse would read
+    // as setup being done.
+    ...(setupMeter
+      ? [
+          {
+            key: "setup",
+            label: setupMeter.title,
+            icon: <SetupProgressRing percent={setupMeter.percent} />,
+            href: ONBOARDING_PATH,
+            pinBottom: true,
+          },
+        ]
+      : []),
     {
       key: "preferences",
       label: "Preferences",
       icon: PREFERENCES_ICON,
       href: "/preferences",
-      pinBottom: true,
+      pinBottom: !setupMeter,
       active: prefsActive,
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/Mounts/etc.
@@ -788,6 +808,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateBadge />
+          {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
+          {setupMeter && <SetupProgressRow meter={setupMeter} />}
           {/* The version rides the Settings row's trailing edge rather than the
               brand row it used to sit in. Two reasons it moved: the brand row is
               one click target for Home, so a version glued to the title read as
