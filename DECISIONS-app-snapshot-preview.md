@@ -1,7 +1,7 @@
 # Build log — app-folder snapshot preview
 
-Resume point: tasks 1-4 committed. Next up: task 5 (the file explorer
-browses the snapshot).
+Resume point: tasks 1-5 committed. Next up: task 6 (delete the single-file
+path, amend SPEC.md/DECISIONS.md).
 
 ## Task 1 — `enclosing_app_dir`
 
@@ -245,3 +245,78 @@ frontend/src/apps/explorer`) is green; `test_server_env_install.py`,
 `test_git_snapshot.py`, `test_snapshot_readonly.py` and `test_app_listing.py`
 were also re-run as a sanity check on the shared runtime.js/app_listing.py
 changes and are green.
+
+## Task 5 — the file explorer browses the snapshot
+
+**`FsEntry` (api.ts) carries only a `name`, never a path** — verified before
+designing anything: every row's path is built client-side as
+`base + "/" + entry.name` (Listing.tsx greps confirm this at every call
+site). This made the whole task much smaller than it looked: fetching
+`/api/fs/list` against the EXTRACTED directory and joining its bare names
+onto the LIVE `fsPath` produces exactly live-looking rows with no separate
+remapping step — the plan's own requirement ("rows keep the live path in the
+URL") falls out for free rather than needing a translation layer.
+
+**Extended the platform singleton from `app_dir`-only to the full
+`{sha, dir, app_dir}` `ResolvedSnapshot`**, needed because Listing.tsx (unlike
+router.ts) has to know `dir` too, to actually rewrite a listing's fetch
+target — not just decide whether a navigation carries the param.
+`getSnapshotAppDir()` stays as a derived, narrower accessor so `router.ts`
+(which only ever needed the app dir) is unaffected. Added
+`rewriteSnapshotPath` (platform) mirroring `static/runtime.js`'s
+`rewritePath` exactly, and `snapshotListing` (apps/explorer) as the one pure
+function Listing.tsx and its test both call — the plan didn't specify this
+split, but it is what let the actual behavior (inside-app rewrite,
+outside-app pass-through, cleared-on-back-to-live) be pinned directly rather
+than only through a rendered component.
+
+**`useDirListing(fsPath, listPath = fsPath)` gained a second parameter**
+rather than resolving the snapshot rewrite internally: `fsPath` still drives
+the dir-watch socket and stays the row-identity base; only the actual fetch
+target changes. Backward compatible for any other caller (there is only one,
+Listing.tsx) since `listPath` defaults to `fsPath`.
+
+**Listing.tsx resolves the snapshot independently of Preview.tsx, duplicating
+a small effect rather than sharing a hook.** The two components mount for
+different things (a file vs. a directory) and can be simultaneously mounted
+(a folder's own preview pane inside a split), so there is no single parent to
+hoist one resolution into without a larger restructuring this plan didn't
+ask for — the same "one param name on two surfaces, two implementations"
+shape the codebase already uses for `_side` (file sidebar vs. folder pane).
+Both populate the SAME module-level singleton, so whichever resolves first is
+what the other reads too; a redundant `/api/git/snapshot` call when both are
+mounted is a cache hit server-side, never a wrong answer.
+
+**Test file avoided `mock.module` on `@platform/lib/api`, after verifying it
+breaks other files.** First draft of `Listing.test.tsx` mocked the whole
+`@platform/lib/api` module to stub `listDir`/`prefetchListDir`. Running the
+FULL `bun test` (not just this file) surfaced 3 failures in
+`fs-move.test.ts` and `fs-actions.test.ts` — both import real functions from
+that same module, and bun's `mock.module` replaces the module's entire
+export surface for the rest of the process (the project memory's documented
+trap, confirmed here rather than assumed). Fixed by patching
+`globalThis.fetch` directly (restored in `afterEach`) instead of mocking the
+module — narrower, and scoped to this file's own assertions. Re-ran the full
+`bun test` afterward: 3085 pass, 0 fail, no new red anywhere.
+
+**Named the new file `Listing.test.tsx` per the plan, but it contains no
+component render** — following this codebase's established convention for
+the listing's OWN hooks (`useListingSelection.render.test.ts`,
+`useWalkSearch.render.test.ts`): drive the hook through
+`listing/hook-harness.ts` (react-test-renderer, no DOM) rather than render
+the 2100-line `Listing` component itself, which has no existing render-test
+precedent anywhere in this codebase and would need extensive additional
+mocking (ResizeObserver, drag-drop, context menus) unrelated to what this
+task needed to prove.
+
+**CSS added, not specified by the plan**: `.listing-snapshot-banner` and
+friends in `frontend/src/styles/preview.css`, styled to match the existing
+`.listing-truncated` partial-listing banner's slim treatment. The plan only
+said "surface the state"; a completely unstyled `<div>` would have been
+technically compliant but wouldn't read as a real feature.
+
+**Preview.tsx:862-878 and ~1825 (the two tombstone comments) rewritten, not
+deleted** — both still say something true and worth keeping (a content pane
+carries no indicator of its own; the git sidebar's own commit list still
+owns that state), so they were updated to also point at Listing.tsx's new
+banner rather than removed outright.

@@ -1,8 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { carries, getSnapshotAppDir, setSnapshotAppDir } from
-  "@platform/lib/snapshot-param";
+import {
+  carries,
+  getResolvedSnapshot,
+  getSnapshotAppDir,
+  rewriteSnapshotPath,
+  setResolvedSnapshot,
+} from "@platform/lib/snapshot-param";
 
 const APP = "/repo/myapp";
+const DIR = "/cache/key/abc1234";
+const SNAP = { sha: "abc1234", dir: DIR, app_dir: APP };
 
 describe("carries — the app-folder-scoped carry table", () => {
   it("carries a hop to the same app folder", () => {
@@ -34,13 +41,45 @@ describe("carries — the app-folder-scoped carry table", () => {
   });
 });
 
-describe("the app-dir singleton", () => {
+describe("the resolved-snapshot singleton", () => {
   it("round-trips what was last set, defaulting to null", () => {
-    setSnapshotAppDir(null);
+    setResolvedSnapshot(null);
+    expect(getResolvedSnapshot()).toBe(null);
     expect(getSnapshotAppDir()).toBe(null);
-    setSnapshotAppDir(APP);
+    setResolvedSnapshot(SNAP);
+    expect(getResolvedSnapshot()).toEqual(SNAP);
     expect(getSnapshotAppDir()).toBe(APP);
-    setSnapshotAppDir(null);
+    setResolvedSnapshot(null);
+    expect(getResolvedSnapshot()).toBe(null);
     expect(getSnapshotAppDir()).toBe(null);
+  });
+});
+
+describe("rewriteSnapshotPath — mirrors static/runtime.js's rewritePath", () => {
+  it("rewrites a path at or under the app folder", () => {
+    setResolvedSnapshot(SNAP);
+    expect(rewriteSnapshotPath(APP)).toBe(DIR);
+    expect(rewriteSnapshotPath(APP + "/reader.py")).toBe(DIR + "/reader.py");
+    expect(rewriteSnapshotPath(APP + "/sub/data.parquet")).toBe(DIR + "/sub/data.parquet");
+    setResolvedSnapshot(null);
+  });
+
+  it("leaves a path outside the app folder alone", () => {
+    setResolvedSnapshot(SNAP);
+    expect(rewriteSnapshotPath("/repo/otherapp/file.txt")).toBe("/repo/otherapp/file.txt");
+    // Same-prefix sibling, not inside the app.
+    expect(rewriteSnapshotPath("/repo/myapp-notes/file.txt")).toBe("/repo/myapp-notes/file.txt");
+    setResolvedSnapshot(null);
+  });
+
+  it("leaves a relative path alone", () => {
+    setResolvedSnapshot(SNAP);
+    expect(rewriteSnapshotPath("./reader.py")).toBe("./reader.py");
+    setResolvedSnapshot(null);
+  });
+
+  it("rewrites nothing with no active snapshot", () => {
+    setResolvedSnapshot(null);
+    expect(rewriteSnapshotPath(APP + "/reader.py")).toBe(APP + "/reader.py");
   });
 });

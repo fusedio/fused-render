@@ -1,9 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import { carries, getSnapshotAppDir, isSha, setSnapshotAppDir } from
-  "@apps/explorer/lib/snapshot-param";
+import {
+  carries,
+  getResolvedSnapshot,
+  getSnapshotAppDir,
+  isSha,
+  rewriteSnapshotPath,
+  setResolvedSnapshot,
+} from "@apps/explorer/lib/snapshot-param";
 
 const SHA = "1f0c3a9e2b7d4c5f6a8b9c0d1e2f3a4b5c6d7e8f";
 const APP = "/repo/myapp";
+const SNAP = { sha: SHA, dir: "/cache/key/" + SHA, app_dir: APP };
 
 // The carry table itself is pinned in platform/lib/snapshot-param.test.ts,
 // which owns the rule; this file only has to prove the explorer-facing
@@ -27,16 +34,25 @@ describe("isSha", () => {
   });
 });
 
-describe("the re-exported carry rule and app-dir singleton", () => {
+describe("the re-exported carry rule and resolved-snapshot singleton", () => {
   it("carries inside the app folder and drops outside it", () => {
     expect(carries(APP, APP + "/sub/file.py")).toBe(true);
     expect(carries(APP, "/repo/otherapp")).toBe(false);
   });
 
-  it("round-trips the app-dir singleton", () => {
-    setSnapshotAppDir(APP);
+  it("round-trips the resolved-snapshot singleton", () => {
+    setResolvedSnapshot(SNAP);
+    expect(getResolvedSnapshot()).toEqual(SNAP);
     expect(getSnapshotAppDir()).toBe(APP);
-    setSnapshotAppDir(null);
+    setResolvedSnapshot(null);
+    expect(getResolvedSnapshot()).toBe(null);
     expect(getSnapshotAppDir()).toBe(null);
+  });
+
+  it("rewrites a path via the same rule the runtime applies", () => {
+    setResolvedSnapshot(SNAP);
+    expect(rewriteSnapshotPath(APP + "/reader.py")).toBe(SNAP.dir + "/reader.py");
+    expect(rewriteSnapshotPath("/repo/otherapp/x")).toBe("/repo/otherapp/x");
+    setResolvedSnapshot(null);
   });
 });

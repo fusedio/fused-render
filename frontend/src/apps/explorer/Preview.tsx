@@ -78,7 +78,7 @@ import {
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
-import { isSha, setSnapshotAppDir, snapshotSrc } from "@apps/explorer/lib/snapshot-param";
+import { isSha, setResolvedSnapshot, snapshotSrc } from "@apps/explorer/lib/snapshot-param";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
@@ -860,22 +860,18 @@ const FRAME_FADE_MS = 150;
 // previous mode's content forever — past this the swap completes regardless.
 const FRAME_SWAP_TIMEOUT_MS = 4000;
 
-// The shell-level revision indicator: what a content pane wears while it is
-// showing a PAST commit instead of the live file.
-//
-// It exists because the pane itself cannot say so. A revision pane is the ordinary
-// template rendering ordinary bytes — the code editor looks exactly like the code
-// editor — so without this the only difference between "your file" and "your file
-// as it was in March" is a save that quietly refuses. So: which commit, said in the
-// same 7-character form the sidebar's rows and `git log --oneline` use, and one
-// obvious way back.
-//
-// The revision badge that used to sit here is GONE (owner: the state now
-// lives where it is controlled — the git sidebar's commit list wears a dot and
-// a `previewing` pill on the previewed row, and its banner carries the way
-// back). The MECHANISM is untouched: `rev` still swaps the pane's bytes, and
-// the honest caveat about runPython readers now lives on the sidebar's eye
-// toggle tooltip (templates/git/template.html).
+// THIS FILE STILL HOSTS NO SNAPSHOT INDICATOR OF ITS OWN, and that is
+// unchanged by the `_snapshot` design: a content pane is the ordinary
+// template rendering ordinary bytes — the code editor looks exactly like the
+// code editor — with no room to say "these are a past commit's" without
+// every template growing a line for it. The git sidebar's commit list still
+// carries the dot and the `previewing` pill on the previewed row, and its own
+// banner still carries the way back (templates/git/template.html) — nothing
+// here duplicates it. What DID change is that the state now also has a
+// listing-level home: browsing the app's OWN subfolders under a snapshot
+// shows Listing.tsx's own banner (".listing-snapshot-banner"), because a
+// listing has no per-row heading a template could wear instead, and silently
+// showing a frozen tree there would read as a bug rather than a feature.
 function TemplatePreview({
   fsPath,
   stat,
@@ -1143,7 +1139,7 @@ function TemplatePreview({
     let alive = true;
     getGitSnapshot(fsPath, raw)
       .then((r) => {
-        if (alive) setSnapshotAppDir(r.app_dir);
+        if (alive) setResolvedSnapshot({ sha: raw, dir: r.dir, app_dir: r.app_dir });
       })
       .catch(() => {
         /* same posture as the selection handler: stay live rather than
@@ -1164,9 +1160,9 @@ function TemplatePreview({
     window._fusedSnapshotSelected = (sha: unknown) => {
       const current = location.search.replace(/^\?/, "");
       if (!isSha(sha)) {
-        // Back to live: drop both the app-dir the carry rule checks and the
-        // shell's own `_snapshot` param.
-        setSnapshotAppDir(null);
+        // Back to live: drop both the resolution the carry rule and the
+        // listing's own rewrite check, and the shell's own `_snapshot` param.
+        setResolvedSnapshot(null);
         setSnapshotSha(null);
         const search = writeQueryParam(current, "_snapshot", null);
         replaceSearch(location.pathname + (search ? "?" + search : ""));
@@ -1175,7 +1171,7 @@ function TemplatePreview({
       getGitSnapshot(fsPath, sha)
         .then((r) => {
           if (!alive) return; // a later selection, or this file closed, already won
-          setSnapshotAppDir(r.app_dir);
+          setResolvedSnapshot({ sha, dir: r.dir, app_dir: r.app_dir });
           setSnapshotSha(sha);
           const search = writeQueryParam(current, "_snapshot", sha);
           replaceSearch(location.pathname + (search ? "?" + search : ""));
@@ -1826,10 +1822,12 @@ function TemplatePreview({
 
   const headerActions = (
     <>
-      {/* The revision badge that sat FIRST in this bar is gone: which commit the
-          pane shows (and the way back to Live) is stated in the git sidebar's
-          own commit list — the dot, the `previewing` pill, and its banner's
-          "Back to now". One surface owns the state it controls. */}
+      {/* No snapshot indicator sits here, deliberately: which commit the pane
+          shows (and the way back to live) is stated in the git sidebar's own
+          commit list — the dot, the `previewing` pill, and its banner's
+          "Back to now". One surface owns the state it controls; the file
+          explorer's OWN indicator, for browsing the app's subfolders, is
+          Listing.tsx's banner instead. */}
       {/* A `.fused` app file: Clone unpacks it into Fused/local as an editable
           app, or opens the copy that is already there (D397). Keyed off the
           extension, which is what routes this file to the fusedapp template in

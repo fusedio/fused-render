@@ -45,7 +45,16 @@ import {
   replaceSearch,
 } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
-import { addCurrentApp, getAppEntry } from "@platform/lib/api";
+import { addCurrentApp, getAppEntry, getGitSnapshot } from "@platform/lib/api";
+import { writeQueryParam } from "@apps/explorer/lib/preview-side";
+import {
+  getResolvedSnapshot,
+  isSha,
+  setResolvedSnapshot,
+  shortSha,
+  snapshotListing,
+  type ResolvedSnapshot,
+} from "@apps/explorer/lib/snapshot-param";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
@@ -172,8 +181,63 @@ export default function Listing({
   // its own `···`.
   barChrome?: boolean;
 }) {
+  // --- browsing this folder under a git snapshot (`_snapshot`) --------------
+  // Own resolution, independent of Preview.tsx's: this component mounts for a
+  // DIRECTORY, which Preview.tsx never renders (it hosts a template iframe
+  // over a FILE — Listing.tsx IS the folder view). Same shape as Preview's own
+  // effect (re-synced from the URL whenever the open folder changes, so a
+  // navigation that carried or dropped `_snapshot` per the carry rule is
+  // picked up); the two independently populate the SAME module-level
+  // singleton (apps/explorer/lib/snapshot-param.ts), so whichever resolves
+  // first is what the other sees too — a harmless redundant fetch when both
+  // are mounted (a split pane showing this folder's preview), never a wrong
+  // answer.
+  const [resolvedSnapshot, setLocalResolvedSnapshot] =
+    useState<ResolvedSnapshot | null>(() => getResolvedSnapshot());
+  useEffect(() => {
+    const raw = new URLSearchParams(location.search).get("_snapshot");
+    if (!isSha(raw)) {
+      setResolvedSnapshot(null);
+      setLocalResolvedSnapshot(null);
+      return;
+    }
+    let alive = true;
+    getGitSnapshot(fsPath, raw)
+      .then((r) => {
+        if (!alive) return;
+        const snap = { sha: raw, dir: r.dir, app_dir: r.app_dir };
+        setResolvedSnapshot(snap);
+        setLocalResolvedSnapshot(snap);
+      })
+      .catch(() => {
+        // No app folder encloses this path, a mount-backed path, git trouble:
+        // this folder simply lists live, same posture Preview.tsx takes.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
+  // Under an active snapshot whose app folder actually ENCLOSES this folder,
+  // list the extracted tree instead of the live one — the same rewrite rule
+  // static/runtime.js applies to every template read, so the two cannot
+  // disagree about what a snapshotted read means. Elsewhere (this folder is
+  // outside the app, or nothing has resolved) `listPath` is just `fsPath`.
+  // The decision itself is `snapshotListing`, a pure function tested directly
+  // (Listing.test.tsx) rather than only through this component.
+  const { inSnapshot, listPath } = snapshotListing(fsPath);
+
+  // The one way back the banner offers: clear the resolution and drop
+  // `_snapshot` from the URL, same shape Preview.tsx's own "back to live"
+  // (triggered by the git sidebar's own control) uses.
+  const backToLive = () => {
+    setResolvedSnapshot(null);
+    setLocalResolvedSnapshot(null);
+    const search = writeQueryParam(location.search.replace(/^\?/, ""), "_snapshot", null);
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
+  };
+
   const { state, refresh, refetch, loadMore, loadingMore, newNames } =
-    useDirListing(fsPath);
+    useDirListing(fsPath, listPath);
 
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
@@ -1746,6 +1810,27 @@ export default function Listing({
               down. `display: contents`, so the bar is a flex item of
               .listing-main exactly as it was of #main. */}
           {ownsBarChrome && <div className="listing-crumb-slot" ref={crumbSlotRef} />}
+          {/* The one piece of chrome `_snapshot` adds: everywhere else the
+              state is invisible by design (the plan's decisions log), but a
+              listing has no per-row "as of" heading the way a content pane's
+              template does, so silently showing a frozen tree with no
+              explanation would read as a bug, not a feature. */}
+          {inSnapshot && resolvedSnapshot && (
+            <div className="listing-snapshot-banner">
+              Showing this folder as of commit{" "}
+              <span className="listing-snapshot-sha">
+                {shortSha(resolvedSnapshot.sha)}
+              </span>
+              .
+              <button
+                type="button"
+                className="listing-snapshot-back"
+                onClick={backToLive}
+              >
+                Back to live
+              </button>
+            </div>
+          )}
           {inSearchSlot(barSearchSlot,
             /* `searching` (a non-empty query) is what tells the crumb bar to
                stand the crumbs down and give the row its whole width — see

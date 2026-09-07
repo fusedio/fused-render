@@ -468,6 +468,36 @@ html.side-reopening iframe {
   font-size: 12px;
   cursor: pointer;
 }
+
+/* Git-snapshot banner: the one piece of chrome the `_snapshot` param adds —
+   everywhere else the state is invisible by design (see the plan's decisions
+   log). Sits ABOVE the table, same slim treatment as the truncated-listing
+   banner, so a folder browsed under a commit reads as a distinct mode rather
+   than a normal listing with no explanation for why nothing here is editable. */
+.listing-snapshot-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--accent-soft, rgba(127, 127, 127, 0.08));
+  border-bottom: 1px solid var(--border);
+}
+.listing-snapshot-banner .listing-snapshot-sha {
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--fg);
+}
+.listing-snapshot-back {
+  margin-left: auto;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
 .listing-load-more:hover:not(:disabled) {
   border-color: var(--accent);
 }

@@ -12,7 +12,9 @@ import { installDomShim } from "./testDomShim";
 installDomShim();
 
 const { navigate, rewriteLegacyUrl, withPreviewFlag } = await import("./router");
-const { setSnapshotAppDir } = await import("./snapshot-param");
+const { setResolvedSnapshot } = await import("./snapshot-param");
+const setSnapshotAppDir = (appDir: string | null) =>
+  setResolvedSnapshot(appDir ? { sha: "abc1234", dir: "/cache/k/abc1234", app_dir: appDir } : null);
 
 // The url navigate() pushed, with the page sitting on `search` when it ran.
 // navigate reads location.search live (the framing flag is carried FORWARD, not

@@ -26,22 +26,37 @@
 // platform/ never imports from apps/ (no existing platform file does — the
 // same boundary appEntry.ts and dismissOnOutside.ts already lean on). This
 // module is the explorer-facing surface Preview.tsx and Listing.tsx actually
-// call: it re-exports the platform module's rule and state, plus `isSha`,
-// which stays a copy of preview-rev.ts's own (same reason that module gives
-// for not importing its shape from elsewhere: it is a small, stable
-// invariant, cheaper to restate than to couple two otherwise-unrelated
+// call: it re-exports the platform module's rule and state, plus `isSha` and
+// `shortSha`, both copies of preview-rev.ts's own (same reason that module
+// gives for not importing its shapes from elsewhere: they are small, stable
+// invariants, cheaper to restate than to couple two otherwise-unrelated
 // modules over).
-import { isSha as _isSha } from "@apps/explorer/lib/preview-rev";
+import { isSha as _isSha, shortSha as _shortSha } from "@apps/explorer/lib/preview-rev";
 import {
   carries,
+  getResolvedSnapshot,
   getSnapshotAppDir,
-  setSnapshotAppDir,
+  rewriteSnapshotPath,
+  setResolvedSnapshot,
+  type ResolvedSnapshot,
 } from "@platform/lib/snapshot-param";
 
-export { carries, getSnapshotAppDir, setSnapshotAppDir };
+export {
+  carries,
+  getResolvedSnapshot,
+  getSnapshotAppDir,
+  rewriteSnapshotPath,
+  setResolvedSnapshot,
+  type ResolvedSnapshot,
+};
 
 // The same hex-object-name shape `/api/git/snapshot` accepts.
 export const isSha = _isSha;
+
+// The pill's short form — seven characters, the same abbreviation the git
+// template's rows and `git log --oneline` show, so the listing's banner and
+// the sidebar's commit list read as the same commit rather than as two ids.
+export const shortSha = _shortSha;
 
 // `_snapshot` onto a content frame's src — the mechanism that makes it reach
 // templates at all. The runtime reads params off its OWN frame src
@@ -53,4 +68,21 @@ export const isSha = _isSha;
 export function snapshotSrc(src: string | null, sha: string | null): string | null {
   if (src === null || sha === null) return src;
   return src + "&_snapshot=" + encodeURIComponent(sha);
+}
+
+// What Listing.tsx needs to decide for one folder, in one pure call: is it
+// inside the CURRENTLY resolved snapshot's app folder, and if so what should
+// actually be fetched. `listPath` is `fsPath` itself whenever `inSnapshot` is
+// false (no active snapshot, or this folder sits outside its app) — the
+// ordinary, unrewritten case — so a caller need not branch twice on the same
+// fact. Consults the shared singleton rather than taking it as a parameter,
+// same as `rewriteSnapshotPath`: this and static/runtime.js's `rewritePath`
+// are the two places the one rewrite rule is applied, and both read off
+// whatever `/api/git/snapshot` last resolved.
+export function snapshotListing(
+  fsPath: string
+): { inSnapshot: boolean; listPath: string } {
+  const snap = getResolvedSnapshot();
+  const inSnapshot = snap !== null && carries(snap.app_dir, fsPath);
+  return { inSnapshot, listPath: inSnapshot ? rewriteSnapshotPath(fsPath) : fsPath };
 }
