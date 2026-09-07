@@ -128,8 +128,15 @@ export function AppDoctorModal({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
+  useEffect(() => {
+    // Re-arm on every mount: a remount (or React's dev double-invoke under
+    // StrictMode) would otherwise leave this false forever, and every
+    // setReport/setError below would be skipped — the dialog stuck on
+    // SkeletonLines with no error shown.
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
   }, []);
 
   const load = useCallback(async () => {
