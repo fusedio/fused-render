@@ -355,9 +355,12 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     # needs-attention rows (2026-09-03), which have to NAME the waiting task and
     # then open its conversation. Four short strings on a row that is being built
     # anyway; the alternative was a second /api/tasks poll from the status bar.
+    # `happened_at` (2026-09-07) is the Projects section's change detector: the
+    # desk refetches when a task actually ran, which `last_active` cannot say
+    # (it keeps a scheduled due time for sorting).
     pulse_fields = (
         "key", "status", "unread", "last_active", "project",
-        "task_id", "title", "target", "session_id",
+        "task_id", "title", "target", "session_id", "happened_at",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
