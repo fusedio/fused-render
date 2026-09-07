@@ -1587,8 +1587,16 @@ function pollRevTarget() {
      so continuing to claim one would be describing a pane nobody can see. The
      hop still fires, because the shell may yet be holding the sha. */
   if (!has && previewed !== null) {
-    previewed = null;
-    hopSnapshot();
+    /* Routed through `preview()` itself (round 3, finding 6) — this used to
+       clear `previewed` to null directly and call `hopSnapshot()`, which is
+       exactly the "ONE writer of `previewed`" invariant that function's own
+       comment claims for itself, falsified by the next function down. Doing
+       it here the same way keeps that comment true rather than merely
+       asserted: `preview(null, false)` already repaints (`void draw(true)`),
+       so this returns instead of falling through to the unconditional
+       repaint below and drawing twice. */
+    preview(null, false);
+    return;
   }
   /* Repaint either way: the rows gain or lose their preview control. */
   void draw(true);

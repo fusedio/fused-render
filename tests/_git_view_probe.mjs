@@ -338,6 +338,20 @@ for (const step of fixture.actions || []) {
     unhandled.push("probe action found no element for " + JSON.stringify(step));
     continue;
   }
+  // FINDING 5 (round 3): a real DOM dispatches no click at all on a disabled
+  // element — `El.click()` above already mirrors that by no-op'ing rather
+  // than firing any listener — but that guard used to be silent here too,
+  // so a fixture step whose target happened to be disabled looked IDENTICAL
+  // to one that fired and produced no visible change: neither left any
+  // trace in `unhandled`, and a test asserting the absence of some later
+  // effect would pass whether or not the click could ever have reached a
+  // listener. Recorded here, alongside the "no element" case just above,
+  // so the Python side can tell "this gesture could never fire" apart from
+  // "it fired and did nothing".
+  if (target.disabled) {
+    unhandled.push("probe action target is disabled, click blocked: " + JSON.stringify(step));
+    continue;
+  }
   target.click();
   // Every handler here either repaints synchronously (`select`, `preview`)
   // or kicks off an async `draw()` — settle the same way the initial paint

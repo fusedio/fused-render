@@ -325,8 +325,12 @@ def test_the_commit_reaches_the_shell_through_the_ancestor_global(source):
     # would be able to disagree about which commit is driving it.
     assert source.count("window._fusedSelectSnapshot(") == 1
     # And `previewed` has ONE writer, which is what makes that true.
-    # The declaration, `preview()`'s write, and the poll's clear — nothing else.
-    assert source.count("previewed = ") == 3
+    # The declaration and `preview()`'s own write — nothing else (round 3,
+    # finding 6: the poll used to write `previewed` a THIRD time, directly,
+    # bypassing `preview()` and falsifying this very invariant; it now routes
+    # through `preview()` like every other caller — see
+    # test_the_capability_is_polled_like_the_annotate_target).
+    assert source.count("previewed = ") == 2
 
 
 def test_the_pane_subject_and_the_previewed_commit_are_separate_state(source):
@@ -408,7 +412,15 @@ def test_the_capability_is_polled_like_the_annotate_target(source):
     poll = source[source.index("function pollRevTarget()"):]
     poll = poll[:poll.index("\n}")]
     assert "if (!has && previewed !== null)" in poll
-    assert "hopSnapshot();" in poll
+    # Round 3, finding 6: this used to assign `previewed = null` and call
+    # `hopSnapshot()` directly here, bypassing `preview()` — the ONE writer
+    # `test_the_commit_reaches_the_shell_through_the_ancestor_global` checks
+    # for. It now routes through `preview()` itself, which already repaints,
+    # so this returns rather than falling into the unconditional repaint
+    # below and drawing twice.
+    assert "preview(null, false);" in poll
+    assert "previewed = null;" not in poll
+    assert "hopSnapshot();" not in poll
 
 
 def test_the_latest_commit_dot_is_gone_but_the_previewing_pills_stays(source):
