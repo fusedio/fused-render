@@ -178,7 +178,16 @@ def test_the_view_reads_the_reader_on_distinct_channels(reader, tmp_path):
     """Both reads happen, which is what proves the render got real data rather
     than painting an empty state (see test_git_view.py for the channel rule)."""
     out = render(reader, clean_repo(str(tmp_path / "chan")), tmp_path)
-    ops = [c["op"] for c in out["calls"]]
+    # `out["calls"]` is no longer uniformly `{py, op}`: boot now also fires
+    # `probeAppFolder()` unconditionally (D701/B4's app-folder gate), which
+    # goes through the harness's `fetchStub` and lands `{fetch, method}`
+    # entries in the SAME array (see `_git_view_probe.mjs`'s `calls.push`
+    # call sites — one per stub). Filter to the runPython-shaped entries
+    # rather than teaching the probe not to fire at boot: the unconditional
+    # probe is the real, intended fix for B4 (fail-closed until an app
+    # folder is confirmed), so neutering it here would just re-open the gap
+    # this file's sibling test suite (`test_git_scope.py`) exists to guard.
+    ops = [c["op"] for c in out["calls"] if "op" in c]
     assert "overview" in ops and "stashes" in ops, ops
 
 
