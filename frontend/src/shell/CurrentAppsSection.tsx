@@ -567,9 +567,10 @@ export default function CurrentAppsSection() {
     },
     [],
   );
+  // Closing is the picker's own call (it stays open on a shuffle), so this
+  // only writes.
   const onPickIcon = async (pick: IconPick | null) => {
     const target = iconPicker;
-    setIconPicker(null);
     if (!target) return;
     try {
       // The pick → disk rule is shared with the app page's header mark

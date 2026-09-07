@@ -4,6 +4,10 @@
 // button that picks at random from the active tab, a Recent row per tab, and
 // a Remove action that restores the caller's default glyph.
 //
+// The picker owns when it closes, not the caller: a pick from the grid (or
+// Enter, or Remove) applies and closes, while the shuffle button applies and
+// stays open — a random draw is meant to be redrawn until one lands.
+//
 // Pure presentation — the caller owns positioning (anchor rect) and persists
 // the pick. Both data sets load lazily on first open: `emojibase-data` and the
 // vanilla `lucide` package are imported by nothing else in the shell, so they
@@ -36,6 +40,9 @@ export type IconPick =
 interface IconPickerProps {
   /** Viewport rect of the glyph that opened the picker. */
   anchor: { top: number; left: number };
+  /** Called for every applied pick — a grid choice, Enter, or a shuffle. The
+   *  picker calls `onClose` itself for the first two, so a host must NOT close
+   *  from here: shuffle applies without closing. */
   onPick: (pick: IconPick) => void;
   onRemove: () => void;
   onClose: () => void;
@@ -386,11 +393,26 @@ export default function IconPicker({
     [tab, onPick],
   );
 
+  // Choosing from the grid is the deliberate pick: apply it and close.
+  const pickAndClose = useCallback(
+    (cell: Cell) => {
+      pick(cell);
+      onClose();
+    },
+    [pick, onClose],
+  );
+
   // Random draws from the whole tab, not the filtered view: "surprise me"
-  // shouldn't depend on what happens to be typed in the box.
+  // shouldn't depend on what happens to be typed in the box. It applies the
+  // draw and leaves the popover open so it can be pressed again — the one
+  // action here that doesn't close. The Recent row deliberately doesn't grow
+  // under the cursor mid-shuffle (it is re-read on a tab or query change).
   const random = () => {
     if (all.length === 0) return;
     pick(all[Math.floor(Math.random() * all.length)]);
+    // A mouse click puts focus on the button; hand it back to the filter box
+    // so arrow-key navigation and typing keep working after a shuffle.
+    searchInput()?.focus();
   };
 
   const moveActive = (delta: number) => {
@@ -420,7 +442,7 @@ export default function IconPicker({
         break;
       case "Enter":
         e.preventDefault();
-        if (flat[activeIdx]) pick(flat[activeIdx]);
+        if (flat[activeIdx]) pickAndClose(flat[activeIdx]);
         break;
       // Escape is handled by the document-level listener (closes the popover).
     }
@@ -467,7 +489,10 @@ export default function IconPicker({
           size="sm"
           className="text-muted-foreground"
           title="Reset to the default glyph"
-          onClick={onRemove}
+          onClick={() => {
+            onRemove();
+            onClose();
+          }}
         >
           Remove
         </Button>
@@ -548,7 +573,7 @@ export default function IconPicker({
                     tabIndex={-1}
                     data-slot="icon-picker-cell"
                     title={cell.title}
-                    onClick={() => pick(cell)}
+                    onClick={() => pickAndClose(cell)}
                     className={cn(
                       "flex size-8 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-[19px] leading-none text-foreground hover:bg-muted",
                       isActive && "bg-muted ring-2 ring-ring ring-inset",
