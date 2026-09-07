@@ -476,6 +476,15 @@ class UpdateManager:
             manifest, dir=updates, prefix=_DOWNLOAD_PREFIX,
             suffix=_DOWNLOAD_SUFFIX, progress=on_bytes,
             should_abort=self._cancel_requested)
+        # A ✕ learned on the LAST byte tick has no next chunk to be honoured
+        # on (bugbot, PR #1058): `should_abort` runs before each chunk, so a
+        # cancel that arrived with the final one lands here, after the loop.
+        # The download is complete but the bundle is untouched, which is still
+        # the point where cancelling costs nothing — so it is honoured, and the
+        # DMG goes the way a mid-stream partial would.
+        if self._cancel_requested():
+            common.discard(dmg)
+            raise common.UpdateCancelled("cancelled after download")
         # Downloading is over: from here on the bundle is being replaced, and
         # there is no point between the ditto and the two renames where
         # stopping would leave anything better than finishing does — so the

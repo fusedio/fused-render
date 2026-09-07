@@ -498,6 +498,42 @@ def test_cancelling_mid_download_reverts_to_available_and_discards_the_partial(
     assert os.listdir(updates) == []
 
 
+def test_a_cancel_on_the_last_byte_tick_still_stops_before_the_swap(
+        monkeypatch, tmp_path):
+    """`should_abort` runs BEFORE each chunk, so a ✕ that lands with the final
+    chunk's tick has no next chunk to be honoured on (bugbot, PR #1058). The
+    manager re-reads the flag once the download returns — the bundle is still
+    untouched there — and cancels, discarding the finished DMG."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    updates = tmp_path / "updates"
+
+    def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
+        assert not should_abort()
+        progress(4, 8)
+        # The ✕ arrives as the LAST tick is reported: the manager learns it from
+        # this report's reply, but the loop has no further chunk to check.
+        jobs.request_cancel("sys:update:9.9.9")
+        progress(8, 8)
+        os.makedirs(dir, exist_ok=True)
+        path = os.path.join(dir, prefix + "done" + suffix)
+        open(path, "wb").write(b"x" * 8)
+        return path
+
+    monkeypatch.setattr(common, "download_verified", fake_download)
+    monkeypatch.setattr(manager, "_attach",
+                        lambda dmg: pytest.fail("a cancelled update must not mount"))
+    manager.install()
+    manager._install_thread.join(timeout=5)
+
+    status = manager.status()
+    assert status["state"] == "available"
+    assert status["error"] is None
+    row = _row()
+    assert row["state"] == "cancelled"
+    assert row["cancellable"] is False
+    assert os.listdir(updates) == []
+
+
 def test_a_retry_after_a_cancel_starts_from_a_clean_flag(monkeypatch, tmp_path):
     """The row id is per-version, so a retry reuses the row the previous ✕ was
     pressed on — and the manager's own abort flag survives in memory. Both have
