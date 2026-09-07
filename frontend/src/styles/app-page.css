@@ -90,6 +90,20 @@
   gap: 14px;
   padding: 16px 0 16px;
 }
+/* The tab strip and the version picker (shell/AppVersionPicker.tsx) share one
+   row and one bottom rule — the picker is page-wide state (it puts all three
+   visible tabs on the selected commit), so it reads as part of the strip
+   rather than belonging to any one panel. The strip itself lost its own
+   border-b (app-page.css above used to put it on .app-page-tabs) so the rule
+   spans the whole row instead of stopping at the strip's own width. */
+.app-page-tabbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
 /* The tab strip is shadcn's Tabs (line variant, AppPage.tsx) — the anchors
    under the triggers only need to lose the underline. NOT the colour: this
    rule is unlayered and would beat the trigger's own layered state colours
@@ -98,6 +112,33 @@
    the utilities already win over the UA default. */
 .app-page-tabs a {
   text-decoration: none;
+}
+
+.app-version-picker {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 7px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.app-version-picker-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.app-version-picker select {
+  max-width: 260px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font: inherit;
 }
 
 /* The panels (one per APP_PAGE_TABS entry, class `app-page-<id>` beside this).

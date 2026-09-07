@@ -1,0 +1,244 @@
+// AppVersionPicker: renders only once GET /api/git/app-folder confirms an
+// enclosing app folder, lists the app folder's own recent commits, and
+// writes `_snapshot` onto the page URL on selection ("Live" clears it).
+//
+// Driven through the REAL component (react-test-renderer, no DOM) rather than
+// asserted on source text — this branch's earlier snapshot work was twice
+// caught shipping a defect that a test hand-assigning "resolved" state let
+// through (see DECISIONS-app-snapshot-preview.md, round 2): the actual
+// resolve/gate code path has to run for a test to mean anything.
+//
+// `window`/`location`/`history` are the minimal globals this component's own
+// hooks touch (`useUrlVersion`'s `window.addEventListener`, `replaceSearch`'s
+// `history.replaceState`) — installed once at file load, mirroring
+// RepoUpdatesDock.test.tsx's own router.ts precedent (a real, unmocked
+// router.ts import needs exactly these), then left in place only for this
+// file's own tests, which reset them per-test instead of tearing them down —
+// unlike that file, this one's tests actually exercise `window`/`history`
+// rather than only needing the module-init pass through.
+import { beforeEach, expect, test } from "bun:test";
+import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
+
+let currentUrl = { pathname: "/apps/repo/myapp", search: "" };
+let replaced: string[] = [];
+const listeners = new Map<string, Set<() => void>>();
+
+(globalThis as Record<string, unknown>).location = currentUrl;
+(globalThis as Record<string, unknown>).window = {
+  addEventListener: (ev: string, fn: () => void) => {
+    if (!listeners.has(ev)) listeners.set(ev, new Set());
+    listeners.get(ev)!.add(fn);
+  },
+  removeEventListener: (ev: string, fn: () => void) => {
+    listeners.get(ev)?.delete(fn);
+  },
+};
+(globalThis as Record<string, unknown>).history = {
+  state: null,
+  replaceState: (_state: unknown, _title: string, url: string) => {
+    replaced.push(url);
+    const [pathname, search] = url.split("?");
+    currentUrl = { pathname, search: search ? "?" + search : "" };
+    (globalThis as Record<string, unknown>).location = currentUrl;
+    // main.tsx wraps the real history.replaceState to also dispatch
+    // "fused:urlchange" (useUrlVersion's own signal) — replicated here, since
+    // this fake stands in for that wrapper, not for the bare browser API.
+    for (const fn of listeners.get("fused:urlchange") ?? []) fn();
+  },
+};
+
+const { default: AppVersionPicker } = await import("@shell/AppVersionPicker");
+
+// ---- fixtures ----------------------------------------------------------------
+
+const APP_DIR = "/repo/myapp";
+const COMMITS = [
+  { sha: "a".repeat(40), short: "aaaaaaa", subject: "v2", author: "T", when: 200 },
+  { sha: "b".repeat(40), short: "bbbbbbb", subject: "v1", author: "T", when: 100 },
+];
+
+type FetchPlan = {
+  appFolder: "ok" | "404" | "error";
+  commits: "ok" | "error";
+};
+
+function installFetch(plan: FetchPlan) {
+  (globalThis as Record<string, unknown>).fetch = (async (url: string) => {
+    const u = new URL(url, "http://x");
+    if (u.pathname === "/api/git/app-folder") {
+      if (plan.appFolder === "ok") {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, app_dir: APP_DIR }),
+        };
+      }
+      if (plan.appFolder === "404") {
+        return { ok: false, status: 404, json: async () => ({ error: "no app folder" }) };
+      }
+      throw new Error("network down");
+    }
+    if (u.pathname === "/api/git/commits") {
+      if (plan.commits === "ok") {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, commits: COMMITS, has_more: false }),
+        };
+      }
+      return { ok: false, status: 502, json: async () => ({ error: "git exploded" }) };
+    }
+    throw new Error("unexpected fetch: " + url);
+  }) as typeof fetch;
+}
+
+async function flush(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+function findSelect(
+  node: ReactTestRendererJSON | ReactTestRendererJSON[] | null,
+): ReactTestRendererJSON | null {
+  if (node === null) return null;
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const hit = findSelect(n);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof node === "string") return null;
+  if (node.type === "select") return node;
+  for (const child of node.children ?? []) {
+    const hit = findSelect(child as ReactTestRendererJSON);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function options(select: ReactTestRendererJSON): string[] {
+  return (select.children ?? [])
+    .filter((c): c is ReactTestRendererJSON => typeof c !== "string")
+    .map((o) => String(o.props.value));
+}
+
+let renderer: ReactTestRenderer | null = null;
+
+beforeEach(() => {
+  currentUrl = { pathname: "/apps/repo/myapp", search: "" };
+  (globalThis as Record<string, unknown>).location = currentUrl;
+  replaced = [];
+  listeners.clear();
+  renderer?.unmount();
+  renderer = null;
+});
+
+// -------------------------------------------------------------------- the gate
+
+test("the probe saying no app folder renders nothing", async () => {
+  installFetch({ appFolder: "404", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  expect(renderer!.toJSON()).toBeNull();
+});
+
+test("a probe failure (network trouble, not a confirmed 404) also renders nothing", async () => {
+  installFetch({ appFolder: "error", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  expect(renderer!.toJSON()).toBeNull();
+});
+
+test("an app folder that resolves renders the picker with Live selected", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON());
+  expect(select).not.toBeNull();
+  expect(select!.props.value).toBe("");
+});
+
+// ----------------------------------------------------------------- the commits
+
+test("the app folder's commits render as options, newest first, as the server sent them", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  expect(options(select)).toEqual(["", COMMITS[0].sha, COMMITS[1].sha]);
+});
+
+test("a failed commits fetch leaves the page live and pickable, not stuck loading", async () => {
+  installFetch({ appFolder: "ok", commits: "error" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  expect(select).not.toBeNull();
+  // Only "Live" — no commit rows, and no perpetual "Loading commits" hang.
+  expect(options(select)).toEqual([""]);
+  expect(select.props.value).toBe("");
+});
+
+// --------------------------------------------------------------------- select
+
+test("selecting a commit writes it onto the URL as _snapshot", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  await act(async () => {
+    select.props.onChange({ target: { value: COMMITS[0].sha } });
+  });
+  expect(replaced.length).toBe(1);
+  expect(replaced[0]).toContain("_snapshot=" + COMMITS[0].sha);
+});
+
+test('picking "Live" after a selection clears _snapshot from the URL', async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  currentUrl = { pathname: "/apps/repo/myapp", search: "?_snapshot=" + COMMITS[0].sha };
+  (globalThis as Record<string, unknown>).location = currentUrl;
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  let select = findSelect(renderer!.toJSON())!;
+  expect(select.props.value).toBe(COMMITS[0].sha);
+
+  await act(async () => {
+    select.props.onChange({ target: { value: "" } });
+  });
+  expect(replaced.length).toBe(1);
+  expect(replaced[0]).not.toContain("_snapshot");
+
+  await flush();
+  select = findSelect(renderer!.toJSON())!;
+  expect(select.props.value).toBe("");
+});
+
+test("a sha already on the URL that is not among the loaded commits still gets its own option, not a silent snap back to Live", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  const deepSha = "c".repeat(40);
+  currentUrl = { pathname: "/apps/repo/myapp", search: "?_snapshot=" + deepSha };
+  (globalThis as Record<string, unknown>).location = currentUrl;
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  expect(select.props.value).toBe(deepSha);
+  expect(options(select)).toContain(deepSha);
+});

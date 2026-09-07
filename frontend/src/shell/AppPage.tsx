@@ -87,6 +87,7 @@ import {
 import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
 import AppApi from "./AppApi";
+import AppVersionPicker from "./AppVersionPicker";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -491,41 +492,48 @@ export default function AppPage({
       )}
 
       <div className="app-page-body">
-        {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
-            ctrl/middle-click on a trigger opens the address elsewhere without
-            also switching this page. Real anchors under the triggers (base-ui's
-            `render`), same reason as before — a tab is an address (D420). */}
-        <Tabs value={tab} className="app-page-tabs flex-none">
-          <TabsList
-            variant="line"
-            aria-label="App page"
-            className="h-auto w-full justify-start rounded-none border-b border-border p-0 pb-1"
-          >
-            {visibleTabs.map((id) => {
-              const { label, Icon } = TAB_DEFS[id];
-              return (
-                <TabsTrigger
-                  key={id}
-                  value={id}
-                  className="flex-none px-4 py-2.5"
-                  // Base UI assumes a native <button> unless told otherwise:
-                  // without this the anchor gets type="button" and Space
-                  // does not activate it (Bugbot on #851).
-                  nativeButton={false}
-                  render={
-                    <a
-                      href={appPageUrl(dir, id, location.search)}
-                      onClick={(e) => pickTab(e, id)}
-                    />
-                  }
-                >
-                  <Icon data-icon="inline-start" />
-                  {label}
-                </TabsTrigger>
-              );
-            })}
-          </TabsList>
-        </Tabs>
+        {/* The tab strip and the version picker share one row: the picker is
+            page-wide state (task 3 puts all three visible tabs on the
+            selected commit), so it sits beside the strip rather than inside
+            any one panel. */}
+        <div className="app-page-tabbar flex-none">
+          {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
+              ctrl/middle-click on a trigger opens the address elsewhere without
+              also switching this page. Real anchors under the triggers (base-ui's
+              `render`), same reason as before — a tab is an address (D420). */}
+          <Tabs value={tab} className="app-page-tabs flex-none">
+            <TabsList
+              variant="line"
+              aria-label="App page"
+              className="h-auto w-full justify-start rounded-none border-b-0 p-0 pb-1"
+            >
+              {visibleTabs.map((id) => {
+                const { label, Icon } = TAB_DEFS[id];
+                return (
+                  <TabsTrigger
+                    key={id}
+                    value={id}
+                    className="flex-none px-4 py-2.5"
+                    // Base UI assumes a native <button> unless told otherwise:
+                    // without this the anchor gets type="button" and Space
+                    // does not activate it (Bugbot on #851).
+                    nativeButton={false}
+                    render={
+                      <a
+                        href={appPageUrl(dir, id, location.search)}
+                        onClick={(e) => pickTab(e, id)}
+                      />
+                    }
+                  >
+                    <Icon data-icon="inline-start" />
+                    {label}
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+          </Tabs>
+          <AppVersionPicker dir={dir} />
+        </div>
 
         {resolved === undefined && (
           <SkeletonLines rows={2} label="Loading app" />
