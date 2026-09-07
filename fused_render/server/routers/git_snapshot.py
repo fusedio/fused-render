@@ -46,6 +46,29 @@ null>, "app_dir": <the LIVE app folder the rewrite rule is keyed on>}`. `entry`
 is resolved from the EXTRACTED tree, deliberately: an app whose entry page was
 renamed since the commit must open at the entry that commit had, not at a
 filename that did not exist yet.
+
+`app_dir` IS `path`'S OWN COORDINATE SYSTEM, NOT REALPATH'D (code review
+finding B3's second half). `enclosing_app_dir` itself realpaths only for the
+internal `stop_at` comparison and hands back the walk's answer in whatever
+form `path` was given — see its own docstring. That matters here because the
+frontend (Preview.tsx, Listing.tsx, static/runtime.js) holds the LIVE,
+non-realpath'd path the shell's own address bar and every template's `_file`
+param carry, and compares it against `app_dir` by plain string prefix
+(`carries()`, `rewritePath()`). Handing back a realpath'd `app_dir` when the
+live path traverses a symlink (macOS's own `/tmp` -> `/private/tmp`, a
+symlinked projects directory) would make every one of those comparisons
+silently fail — the route would report success while the rewrite it exists to
+drive never fires. A REALPATH'D copy is still computed, once, purely to
+express `app_rel` relative to `repo_root` (also realpath'd) for the cache key
+and the `git archive` pathspec — that copy never leaves this function.
+
+`GET /api/git/app-folder?path=<...>` is the cheap, sha-less sibling: "does an
+app folder enclose this path at all" — the same two filesystem walks
+(`_repo_root`, `enclosing_app_dir`), no `git archive`/`tar` fork. It exists so
+the git sidebar's preview affordance (templates/git/template.html) can gate
+itself on this fact BEFORE a commit is even selected (D701) — the eye offered
+on a file with no enclosing app folder can never resolve into anything, per
+review finding B4.
 """
 import hashlib
 import logging
@@ -55,6 +78,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+from typing import IO, TypedDict
 
 from fastapi import APIRouter
 from starlette.concurrency import run_in_threadpool
@@ -134,7 +159,21 @@ class _Refused(Exception):
         self.status = status
 
 
-def _popen_kwargs(stdin=subprocess.DEVNULL):
+class _PopenKwargs(TypedDict):
+    """The exact shape `_popen_kwargs` returns, spread with `**` into every
+    `Popen(...)` call here — a plain `dict[str, object]` return type makes
+    every one of Popen's many overloads reject the spread (each keyword needs
+    its own specific type, not `object`), so this pins the real ones."""
+
+    env: dict[str, str]
+    stdin: "int | IO[bytes] | None"
+    close_fds: bool
+    creationflags: int
+
+
+def _popen_kwargs(
+    stdin: "int | IO[bytes] | None" = subprocess.DEVNULL,
+) -> _PopenKwargs:
     """The posix_spawn-safe kwargs every Popen here shares. `stdin` is the one
     knob a caller may override (the tar leg of `_run_archive` pipes from
     git's stdout instead of DEVNULL) — a parameter rather than a second
@@ -238,7 +277,7 @@ def _run_archive(repo_root: str, sha: str, app_rel: str, dest_tmp: str) -> None:
     # variable holding "the argv" invites a later edit that swaps it for
     # something not-quite-inline again.
     try:
-        archive = subprocess.Popen(
+        archive: "subprocess.Popen[bytes]" = subprocess.Popen(
             [_git_bin(), "--no-pager", "-C", repo_root, "archive", sha,
              *(["--", f":(literal){app_rel}"] if app_rel else [])],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -249,6 +288,27 @@ def _run_archive(repo_root: str, sha: str, app_rel: str, dest_tmp: str) -> None:
     except OSError as exc:
         raise _Refused(f"git could not be started: {exc}", status=502) from exc
 
+    # DRAINED ON A THREAD, STARTED IMMEDIATELY — code review finding B6. The
+    # previous shape read `archive.stderr` only after `extract.communicate()`
+    # returned, which deadlocks the moment `git archive` writes more than one
+    # pipe buffer (~64 KB) of stderr (LFS/filter warnings, one per file,
+    # `.gitattributes` errors): `git` blocks writing stderr while `tar` blocks
+    # reading `git`'s stdout, and the request stalls for the full
+    # `TIMEOUT_S` before reporting a bogus "extraction took longer than Ns" —
+    # the pipe was never the slow part. Starting the drain before `tar` is
+    # even spawned means neither pipe can ever back up.
+    archive_err_chunks: list[bytes] = []
+
+    def _drain_archive_stderr() -> None:
+        try:
+            if archive.stderr is not None:
+                archive_err_chunks.append(archive.stderr.read() or b"")
+        except OSError:
+            pass
+
+    stderr_thread = threading.Thread(target=_drain_archive_stderr, daemon=True)
+    stderr_thread.start()
+
     try:
         # `_popen_kwargs()` here too: the posix_spawn hazard is not
         # git-specific (see `_tar_bin`'s own comment) — this child forks
@@ -256,17 +316,20 @@ def _run_archive(repo_root: str, sha: str, app_rel: str, dest_tmp: str) -> None:
         # override `_popen_kwargs` takes a parameter for, rather than passed
         # as a second keyword alongside the `**` spread — that would be two
         # values for one keyword (its default is DEVNULL) and Python raises.
-        extract = subprocess.Popen(
+        extract: "subprocess.Popen[bytes]" = subprocess.Popen(
             [_tar_bin(), "-x", f"--strip-components={strip}", "-C", dest_tmp],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             **_popen_kwargs(stdin=archive.stdout))
     except OSError as exc:
         archive.kill()
+        stderr_thread.join(timeout=TIMEOUT_S)
         raise _Refused(f"tar could not be started: {exc}", status=502) from exc
 
     # Closed in the PARENT so `extract` sees EOF once `archive` finishes
     # writing — the standard "connect two Popens" idiom; otherwise this
     # process's own held reference keeps the pipe's read end open forever.
+    # `archive.stdout` is never None: PIPE was requested above.
+    assert archive.stdout is not None
     archive.stdout.close()
 
     try:
@@ -274,6 +337,7 @@ def _run_archive(repo_root: str, sha: str, app_rel: str, dest_tmp: str) -> None:
     except subprocess.TimeoutExpired:
         extract.kill()
         archive.kill()
+        stderr_thread.join(timeout=1.0)
         raise _Refused(f"extraction took longer than {TIMEOUT_S:.0f}s",
                        status=502)
 
@@ -282,12 +346,11 @@ def _run_archive(repo_root: str, sha: str, app_rel: str, dest_tmp: str) -> None:
     except subprocess.TimeoutExpired:
         archive.kill()
 
-    archive_err = b""
-    if archive.stderr is not None:
-        try:
-            archive_err = archive.stderr.read() or b""
-        except OSError:
-            pass
+    # The drain thread finishes the instant `archive` itself exits (EOF on its
+    # stderr) — by now that has already happened above, so this join is
+    # immediate, not an extra wait.
+    stderr_thread.join(timeout=TIMEOUT_S)
+    archive_err = b"".join(archive_err_chunks)
 
     if archive.returncode != 0:
         # An unknown sha, or a path that did not exist at that revision, is
@@ -302,14 +365,18 @@ def _run_archive(repo_root: str, sha: str, app_rel: str, dest_tmp: str) -> None:
                        f"tar exited {extract.returncode}", status=502)
 
 
-def extract_snapshot(path: str, sha: str) -> dict:
-    """The whole route, as a plain function so it can be called from a
-    threadpool and tested with no `TestClient`.
+def _resolve_app_dir(path: str) -> tuple[str, str]:
+    """Validate `path`, locate its repo root, and resolve the app folder
+    enclosing it. Shared by `extract_snapshot` (which additionally needs a
+    `sha`) and the sha-less `/api/git/app-folder` probe below — both raise the
+    same `_Refused` shapes for the same failure modes, so a caller cannot see
+    one route accept a `path` the other refuses.
 
-    Returns `{"ok": True, "dir", "entry", "app_dir"}` or raises `_Refused`.
+    Returns `(repo_root, app_dir)`. `repo_root` is realpath'd (`_repo_root`'s
+    own contract). `app_dir` is in `path`'s OWN coordinate system, NOT
+    realpath'd — see this module's docstring and `enclosing_app_dir`'s own for
+    why that matters (code review finding B3).
     """
-    if not _SHA_RE.match(sha or ""):
-        raise _Refused("'sha' must be a hex object name (4-64 hex digits)")
     if not path or not os.path.isabs(path):
         raise _Refused("'path' must be an absolute filesystem path")
     if shell_mounts.is_mount_backed(path):
@@ -334,15 +401,44 @@ def extract_snapshot(path: str, sha: str) -> dict:
     app_dir = enclosing_app_dir(path, repo_root)
     if app_dir is None:
         raise _Refused(f"no app folder encloses {path}", status=404)
-    app_dir = os.path.realpath(app_dir)
-    app_rel = ("" if app_dir == repo_root else
-              os.path.relpath(app_dir, repo_root).replace(os.sep, "/"))
+    return repo_root, app_dir
+
+
+def extract_snapshot(path: str, sha: str) -> dict:
+    """The whole route, as a plain function so it can be called from a
+    threadpool and tested with no `TestClient`.
+
+    Returns `{"ok": True, "dir", "entry", "app_dir"}` or raises `_Refused`.
+    """
+    if not _SHA_RE.match(sha or ""):
+        raise _Refused("'sha' must be a hex object name (4-64 hex digits)")
+    repo_root, app_dir = _resolve_app_dir(path)
+    # Realpath'd ONLY for the (repo, app-relative-folder) cache key and the
+    # `git archive` pathspec — `app_dir` itself, returned to the caller below,
+    # stays in `path`'s own coordinate system (see `_resolve_app_dir`'s own
+    # comment).
+    app_dir_real = os.path.realpath(app_dir)
+    app_rel = ("" if app_dir_real == repo_root else
+              os.path.relpath(app_dir_real, repo_root).replace(os.sep, "/"))
 
     key = snapshot_key(repo_root, app_rel)
     cache_root = _cache_root()
     dest = os.path.join(cache_root, key, sha)
 
-    if not os.path.isdir(dest):
+    if os.path.isdir(dest):
+        # A cache HIT: bump its mtime so `_gc`'s oldest-mtime reap is an
+        # actual LRU rather than a first-extracted-first-reaped queue (code
+        # review finding B7) — without this, a tree a user is actively
+        # browsing ages identically to one nobody has touched since, and can
+        # be the very first thing a long session's `_gc` deletes out from
+        # under an open pane's still-in-flight reads. Best-effort: a failure
+        # here (e.g. a concurrent GC already removed it) is not this
+        # request's problem — it already has its answer.
+        try:
+            os.utime(dest)
+        except OSError:
+            pass
+    else:
         key_dir = os.path.join(cache_root, key)
         os.makedirs(key_dir, exist_ok=True)
         dest_tmp = tempfile.mkdtemp(prefix=f".{sha}-", dir=key_dir)
@@ -377,5 +473,24 @@ def extract_snapshot(path: str, sha: str) -> dict:
 async def api_git_snapshot(path: str, sha: str):
     try:
         return await run_in_threadpool(extract_snapshot, path, sha)
+    except _Refused as e:
+        return _error(e.message, status=e.status)
+
+
+@router.api_route("/api/git/app-folder", methods=["GET"])
+async def api_git_app_folder(path: str):
+    """`GET /api/git/app-folder?path=<...>` — does an app folder enclose
+    `path` at all, with no `sha` and no extraction. Two filesystem walks
+    (`_repo_root`, `enclosing_app_dir`), never a `git`/`tar` fork.
+
+    Backs the git sidebar's preview affordance (templates/git/template.html,
+    D701 / code review finding B4): the eye that lets a user pick a commit to
+    preview must not be offered on a file with no enclosing app folder, since
+    `/api/git/snapshot` can never resolve for it regardless of which commit
+    gets picked. Response: `{"ok": true, "app_dir": <path's own form>}`.
+    """
+    try:
+        _repo_root, app_dir = await run_in_threadpool(_resolve_app_dir, path)
+        return {"ok": True, "app_dir": app_dir}
     except _Refused as e:
         return _error(e.message, status=e.status)

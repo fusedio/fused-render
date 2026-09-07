@@ -920,3 +920,81 @@ def test_enclosing_app_dir_never_climbs_past_stop_at(tmp_path):
     f.write_text("x", encoding="utf-8")
 
     assert app_listing.enclosing_app_dir(str(f), str(inner_root)) is None
+
+
+def test_enclosing_app_dir_never_climbs_past_a_symlinked_stop_at(tmp_path):
+    """Regression for the abspath/realpath mismatch (code review finding B3).
+
+    `stop_at` is realpath'd (the shape git_snapshot.py's `_repo_root` always
+    produces), but `path` reaches it only THROUGH a symlinked ancestor — the
+    same shape macOS's own /tmp -> /private/tmp gives any repo living under
+    /tmp. The old code compared `os.path.abspath(current)` against the
+    realpath'd `stop_at` by plain string equality, which never matches at the
+    symlinked level, so the walk climbed straight PAST the intended repo
+    boundary — and an app folder that happens to sit further up (outside the
+    repo entirely) was wrongly returned as if it enclosed `path`, instead of
+    the walk correctly stopping with `None` at the repo root.
+    """
+    # An app OUTSIDE the repo, at a level the walk must never reach.
+    outer = _app(tmp_path, "outer_app")
+    # The repo itself, living (unsymlinked) as a real directory, with no app
+    # anywhere in it.
+    real_root = outer / "real_root"
+    real_root.mkdir()
+    plain_dir = real_root / "notes"
+    plain_dir.mkdir()
+    plain = plain_dir / "todo.txt"
+    plain.write_text("x", encoding="utf-8")
+    # The symlink lives INSIDE the outer app's own folder — the shape that
+    # exposes the bug: climbing past the symlinked repo root lands right back
+    # on an app.
+    link = outer / "link"
+    link.symlink_to(real_root)
+
+    stop_at = os.path.realpath(str(real_root))  # what _repo_root would produce
+    result = app_listing.enclosing_app_dir(str(link / "notes" / "todo.txt"), stop_at)
+    assert result is None
+    # Sanity: the walk really would have found `outer` had it kept climbing.
+    assert app_listing.enclosing_app_dir(str(link / "notes" / "todo.txt"),
+                                         os.path.realpath(str(tmp_path))) == str(outer)
+
+
+def test_enclosing_app_dir_finds_an_app_beyond_a_symlinked_segment(tmp_path):
+    """The positive case paired with the test above: an app that DOES sit
+    between `path` and a symlinked `stop_at` must still be found, and handed
+    back in path's own (symlinked) coordinate system — not realpath'd — since
+    a caller holding a live, non-realpath'd UI path needs the answer back in
+    that same form, or a later string-prefix comparison against that path
+    (carries()/rewritePath() on the frontend) silently no-ops."""
+    real_root = tmp_path / "real_root"
+    real_root.mkdir()
+    app = _app(real_root, "local")
+    (app / "sub").mkdir()
+    deep = app / "sub" / "reader.py"
+    deep.write_text("x", encoding="utf-8")
+
+    link_root = tmp_path / "link_root"
+    link_root.symlink_to(real_root)
+    symlinked_deep = link_root / "local" / "sub" / "reader.py"
+
+    stop_at = os.path.realpath(str(real_root))
+    result = app_listing.enclosing_app_dir(str(symlinked_deep), stop_at)
+    assert result == str(link_root / "local")  # symlinked form, not realpath'd
+    assert os.path.realpath(result) == str(app)
+
+
+def test_enclosing_app_dir_stop_at_is_realpathed_even_if_caller_did_not(tmp_path):
+    """A caller-supplied `stop_at` that is itself NOT realpath'd must still
+    work — the function realpaths it internally rather than trusting the
+    caller to have done so."""
+    outer = _app(tmp_path, "outer_app")
+    real_root = outer / "real_root"
+    real_root.mkdir()
+    plain = real_root / "todo.txt"
+    plain.write_text("x", encoding="utf-8")
+    link = outer / "link"
+    link.symlink_to(real_root)
+
+    # stop_at passed as the SYMLINKED form, not realpath'd.
+    result = app_listing.enclosing_app_dir(str(link / "todo.txt"), str(link))
+    assert result is None
