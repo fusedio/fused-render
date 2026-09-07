@@ -895,3 +895,17 @@ needing to check out `main` itself (avoided per the "never touch a sibling
 worktree/checkout" constraint; an empty diff against the merge-base is
 sufficient proof for an unmodified file). `bun test` (frontend, full run):
 3072 pass, 0 fail.
+
+**Amendment — version numbers, not shas (owner, after approval).** The app
+page is for basic users, so `AppVersionPicker` labels rows `v1`, `v2`, ...
+(the commit's ordinal among commits touching the app folder, oldest = `v1`)
+rather than a short sha. This is presentation only: the numbering is plain
+client-side index arithmetic over the list the picker already holds, and
+`GET /api/git/commits` gained exactly one integer, `total` (one
+`git rev-list --count` beside the log it already runs), so a capped list's
+newest row still reads `v<total>` correctly rather than mislabelling itself
+the moment the row limit changes. `_snapshot` on the URL, and every row's own
+`<option value>`, remain a hex sha — never a version number: a v-number
+counts commits reachable from HEAD, so it renumbers on a rebase or branch
+switch, and a link keyed on one would silently come to mean a different
+commit later. The sha stays reachable as each row's own `title`.

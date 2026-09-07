@@ -5,6 +5,18 @@
 // (appPageUrl's own `search` carry, no second carry rule needed here) — and
 // "Live" clears it.
 //
+// Rows read `v1`, `v2`, ... rather than a sha — the app page is for basic
+// users (DECISIONS-app-snapshot-preview.md). `v<n>` is PURE client-side index
+// arithmetic over the list this component already holds: the newest fetched
+// commit is `v<total>` (the server's own count of ALL commits touching the
+// app folder, not just what fit under the fetch's limit — see
+// `GET /api/git/commits`'s own docstring), and each row after it counts down
+// by one. The label is presentation only: `_snapshot` on the URL, and every
+// `<option>`'s own `value`, stays the commit's hex sha — a v-number
+// renumbers on a rebase or branch switch, so a link keyed on one would
+// silently come to mean a different commit later. The short sha stays
+// reachable as each row's own `title`.
+//
 // Offered ONLY when `GET /api/git/app-folder` confirms an app folder actually
 // encloses `dir`: the same fail-closed probe templates/git/template.html's own
 // preview eye uses (D701 / review finding B4), so this control never appears
@@ -53,15 +65,28 @@ export default function AppVersionPicker({ dir }: { dir: string }) {
   // `null` = still loading (the select shows only "Live" meanwhile, never a
   // half-built list); `[]` once a fetch settles either with truly zero
   // commits or a failed request — a failed commits fetch must leave the page
-  // live and pickable, not stuck in a permanent loading state.
+  // live and pickable, not stuck in a permanent loading state. `total` is the
+  // server's own count of ALL commits touching the app folder (not just this
+  // fetch's `commits.length`, which a `limit` can cap) — it is what lets the
+  // newest row read `v<total>` correctly regardless of the cap.
   const [commits, setCommits] = useState<GitCommit[] | null>(null);
+  const [total, setTotal] = useState(0);
   useEffect(() => {
     if (probe !== "ok") return;
     let live = true;
     setCommits(null);
     getGitCommits(dir)
-      .then((r) => live && setCommits(r.commits))
-      .catch(() => live && setCommits([]));
+      .then((r) => {
+        if (!live) return;
+        setCommits(r.commits);
+        setTotal(r.total);
+      })
+      .catch(() => {
+        if (live) {
+          setCommits([]);
+          setTotal(0);
+        }
+      });
     return () => {
       live = false;
     };
@@ -108,11 +133,16 @@ export default function AppVersionPicker({ dir }: { dir: string }) {
             gets its own option, so the select never silently snaps back to
             "Live" out from under a real selection. */}
         {sha && !active && (
-          <option value={sha}>{shortSha(sha)}</option>
+          // A deep link older than the fetched window: this component has no
+          // idea of its ordinal (that would need a second, unbounded fetch,
+          // which this component deliberately never makes — see the plan's
+          // "keep it cosmetic" amendment), so it falls back to the sha rather
+          // than guessing a version number.
+          <option value={sha} title={sha}>{shortSha(sha)}</option>
         )}
-        {commits?.map((c) => (
-          <option key={c.sha} value={c.sha}>
-            {shortSha(c.sha)} — {c.subject}
+        {commits?.map((c, i) => (
+          <option key={c.sha} value={c.sha} title={c.sha}>
+            v{total - i} — {c.subject}
           </option>
         ))}
       </select>

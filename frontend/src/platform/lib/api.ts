@@ -4129,6 +4129,10 @@ export interface GitCommits {
   ok: boolean;
   commits: GitCommit[];
   has_more: boolean;
+  // ALL commits reachable from HEAD touching the app folder, not just the
+  // ones `limit` let through — the version picker needs this to label its
+  // newest row `v<total>` correctly even when the list is capped.
+  total: number;
 }
 
 export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {

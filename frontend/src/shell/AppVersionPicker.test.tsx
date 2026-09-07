@@ -60,6 +60,9 @@ const COMMITS = [
 type FetchPlan = {
   appFolder: "ok" | "404" | "error";
   commits: "ok" | "error";
+  // Defaults to COMMITS.length (2) when omitted — pass a bigger number to
+  // exercise a capped list (fewer commits returned than actually exist).
+  total?: number;
 };
 
 function installFetch(plan: FetchPlan) {
@@ -81,7 +84,12 @@ function installFetch(plan: FetchPlan) {
       if (plan.commits === "ok") {
         return {
           ok: true,
-          json: async () => ({ ok: true, commits: COMMITS, has_more: false }),
+          json: async () => ({
+            ok: true,
+            commits: COMMITS,
+            has_more: false,
+            total: plan.total ?? COMMITS.length,
+          }),
         };
       }
       return { ok: false, status: 502, json: async () => ({ error: "git exploded" }) };
@@ -122,6 +130,16 @@ function options(select: ReactTestRendererJSON): string[] {
   return (select.children ?? [])
     .filter((c): c is ReactTestRendererJSON => typeof c !== "string")
     .map((o) => String(o.props.value));
+}
+
+// The option's rendered text ("v2 — subject") rather than its `value` (a
+// sha) — a plain join of its children, all of which are strings/numbers for
+// this component's option JSX.
+function optionLabel(select: ReactTestRendererJSON, value: string): string {
+  const opt = (select.children ?? [])
+    .filter((c): c is ReactTestRendererJSON => typeof c !== "string")
+    .find((o) => String(o.props.value) === value)!;
+  return (opt.children ?? []).map((c) => String(c)).join("");
 }
 
 let renderer: ReactTestRenderer | null = null;
@@ -178,6 +196,58 @@ test("the app folder's commits render as options, newest first, as the server se
   expect(options(select)).toEqual(["", COMMITS[0].sha, COMMITS[1].sha]);
 });
 
+test("the newest row is labelled v<total>, not a sha", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" }); // total defaults to COMMITS.length (2)
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  expect(optionLabel(select, COMMITS[0].sha)).toBe("v2 — " + COMMITS[0].subject);
+  expect(optionLabel(select, COMMITS[1].sha)).toBe("v1 — " + COMMITS[1].subject);
+  // The sha is not gone from the row — just not the label.
+  expect(select.children!.find(
+    (c): c is ReactTestRendererJSON =>
+      typeof c !== "string" && String(c.props.value) === COMMITS[0].sha,
+  )!.props.title).toBe(COMMITS[0].sha);
+});
+
+test("numbering stays right when the list is capped: the total, not the returned count, sets v<n>", async () => {
+  // The server has 7 commits total; the picker only fetched (was capped to)
+  // these 2 rows. Without a truthful `total`, the newest visible row would
+  // wrongly read v2 (== the returned list's own length) instead of v7.
+  installFetch({ appFolder: "ok", commits: "ok", total: 7 });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  expect(optionLabel(select, COMMITS[0].sha)).toBe("v7 — " + COMMITS[0].subject);
+  expect(optionLabel(select, COMMITS[1].sha)).toBe("v6 — " + COMMITS[1].subject);
+});
+
+test("an empty repository (ok, zero commits, total 0) renders just Live", async () => {
+  (globalThis as Record<string, unknown>).fetch = (async (url: string) => {
+    const u = new URL(url, "http://x");
+    if (u.pathname === "/api/git/app-folder") {
+      return { ok: true, json: async () => ({ ok: true, app_dir: APP_DIR }) };
+    }
+    if (u.pathname === "/api/git/commits") {
+      return {
+        ok: true,
+        json: async () => ({ ok: true, commits: [], has_more: false, total: 0 }),
+      };
+    }
+    throw new Error("unexpected fetch: " + url);
+  }) as typeof fetch;
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  expect(options(select)).toEqual([""]);
+});
+
 test("a failed commits fetch leaves the page live and pickable, not stuck loading", async () => {
   installFetch({ appFolder: "ok", commits: "error" });
   await act(async () => {
@@ -205,6 +275,23 @@ test("selecting a commit writes it onto the URL as _snapshot", async () => {
   });
   expect(replaced.length).toBe(1);
   expect(replaced[0]).toContain("_snapshot=" + COMMITS[0].sha);
+});
+
+test("the URL identity stays a sha even though the row reads v<n> — never a version number", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  // The option's own value (what a selection writes) is the 40-char sha, no
+  // matter what its visible label says.
+  expect(optionLabel(select, COMMITS[0].sha)).toBe("v2 — " + COMMITS[0].subject);
+  await act(async () => {
+    select.props.onChange({ target: { value: COMMITS[0].sha } });
+  });
+  expect(replaced[0]).toContain("_snapshot=" + COMMITS[0].sha);
+  expect(replaced[0]).not.toContain("_snapshot=v2");
 });
 
 test('picking "Live" after a selection clears _snapshot from the URL', async () => {
