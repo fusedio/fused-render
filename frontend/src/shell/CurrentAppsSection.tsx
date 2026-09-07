@@ -45,6 +45,7 @@ import { HeroComposer } from "@apps/builder/HomeHero";
 import { inFlight, opensElsewhere, statusColumn } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import {
   appPageTabFromSearch,
   appPageUrl,
@@ -216,6 +217,7 @@ function CurrentAppRow({
   onSeen: (path: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const iconSrc = useThemedIconSrc(app.iconUrl);
   // The destination keeps the TAB the user is on (owner, 2026-08-26): switching
   // apps from the Files tab lands on the next app's Files tab, so the sidebar
   // reads as "same view, other app". Only `_tab` rides along — a tab's own
@@ -291,14 +293,16 @@ function CurrentAppRow({
         title="Change icon"
         onClick={(e) => onGlyphClick(e, app.path)}
       >
-        {app.iconUrl ? (
+        {iconSrc ? (
           // The app's own icon.svg in the generic mark's slot, drawn as is —
-          // the author's colours, no mask or tint (owner, 2026-08-27). Not
-          // draggable: an <img> drags natively, and the glyph is the natural
-          // handle for the row reorder (same as the name's draggable={false}).
+          // the author's colours, no mask or tint (owner, 2026-08-27); a
+          // picker-written glyph names its colour and useThemedIconSrc
+          // resolves it for the live theme. Not draggable: an <img> drags
+          // natively, and the glyph is the natural handle for the row reorder
+          // (same as the name's draggable={false}).
           <img
             className="current-app-icon"
-            src={app.iconUrl}
+            src={iconSrc}
             alt=""
             draggable={false}
           />

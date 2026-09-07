@@ -16,6 +16,7 @@
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { Job } from "@platform/lib/jobs";
+import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import {
   IS_EMBED,
   IS_PREVIEW,
@@ -387,7 +388,9 @@ function StatView({
       live = false;
     };
   }, [fsPath]);
-  useFavicon(iconHref);
+  // Theme-resolved: a picker-written icon.svg names its colour and the
+  // favicon cannot read a token itself (app-icon-src.ts).
+  useFavicon(useThemedIconSrc(iconHref));
   // Recents: the explorer's own store, gated on a confirmed FILE, so a
   // directory never lands there. The app
   // builder's parallel (tag, name) store went with its route — nothing displays
