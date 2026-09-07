@@ -191,8 +191,26 @@ const GH_DEFAULTS = {
                            started_at: null, finished_at: null },
 };
 const ghTable = Object.assign({}, GH_DEFAULTS, fixture.github || {});
+
+// `previewCapable` opts a fixture into BOTH halves of the preview gate
+// (D701/B4): a marked ancestor frame (`revMarkedFrame()`) and a confirmed
+// app folder (`probeAppFolder()`'s `/api/git/app-folder` read). Off by
+// default — `window.parent` stays `null` and the app-folder probe reads
+// `false` — so every pre-existing fixture keeps rendering exactly the
+// capability-off DOM it always has; a test that needs the eye/Checkout/
+// Revert controls on screen opts in explicitly rather than every fixture
+// gaining them for free. `fixture.gitAppFolder` overrides the app-folder
+// half alone, for a test that wants a marked pane but NO app folder (the
+// gate's other, independent failure mode).
+const PREVIEW_CAPABLE = fixture.previewCapable === true;
 function fetchStub(path, init) {
   calls.push({ fetch: path, method: (init && init.method) || "GET" });
+  const url = String(path).split("?")[0];
+  if (url === "/api/git/app-folder") {
+    const body = fixture.gitAppFolder !== undefined
+      ? fixture.gitAppFolder : { ok: PREVIEW_CAPABLE };
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  }
   const body = Object.prototype.hasOwnProperty.call(ghTable, path)
     ? ghTable[path] : { error: "no fixture for " + path };
   return Promise.resolve({ ok: !body.error, status: body.error ? 400 : 200,
@@ -209,10 +227,19 @@ process.on("unhandledRejection", (err) => {
 
 const location = { href: "http://127.0.0.1/probe", search: "", pathname: "/probe" };
 const history = { replaceState() {}, pushState() {} };
+// The host's mark (`revMarkedFrame()`, Preview.tsx's real `data-fused-rev-target`
+// attribute) — an ancestor `window.parent` whose document has ONE element the
+// query can find. Only built when `previewCapable` asks for it; otherwise
+// `window.parent` stays `null`, exactly as every pre-existing fixture already
+// exercises (a page opened outside the shell has no such ancestor at all).
+const markedFrame = PREVIEW_CAPABLE ? new El("iframe") : null;
+const previewHost = PREVIEW_CAPABLE ? {
+  document: { querySelector: (sel) => (sel === "[data-fused-rev-target]" ? markedFrame : null) },
+} : null;
 const window = {
   fused, document, location, history,
   addEventListener: () => {}, removeEventListener: () => {},
-  parent: null, frameElement: null, top: null,
+  parent: previewHost, frameElement: null, top: null,
   requestAnimationFrame: (fn) => setTimeout(fn, 0),
   setInterval: () => 0, setTimeout, clearInterval: () => {}, clearTimeout,
   matchMedia: () => ({ matches: false, addEventListener() {} }),

@@ -215,7 +215,8 @@
      unlike the old toolbar query it measures the right box. */
   @media (max-width: 480px) {
     .sect-acts .btn .btn-label,
-    .line .acts .btn .btn-label { display: none; }
+    .line .acts .btn .btn-label,
+    .row .inline-eye .btn-label { display: none; }
   }
 
   /* ================= toast ================= */
@@ -913,28 +914,30 @@
      sits after the title (the eye, the previewing marker, the selected sha)
      lands where the title ENDS rather than at the far edge. */
   .row .when { margin-left: auto; }
-  /* The inline eye: revealed by the row's hover exactly like the action
-     cluster's buttons, and standing where the title ends. */
+  /* The inline Preview control: drawn AT REST, not revealed by the row's
+     hover (D703) — hover-only meant nothing on screen ever said a commit
+     could be previewed at all until the pointer happened to land on its
+     row. A labelled pill, the same visual family as the previewing marker
+     below (`.where.is-preview.marker`) it swaps places with, so going from
+     "can preview" to "previewing" reads as one control changing state
+     rather than two different things trading places. Hover/focus stays the
+     EMPHASIS step — a border/background/color change — never the presence
+     step. */
   .row .inline-eye {
     flex: none;
     align-self: center;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 6px;
+    gap: 4px;
+    padding: 2px 7px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
     color: var(--ink-3);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+    font-size: 11px;
+    white-space: nowrap;
+    transition: background-color 0.08s ease, color 0.08s ease, border-color 0.08s ease;
   }
-  .line:hover .row .inline-eye,
-  .row .inline-eye:focus-visible {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .row .inline-eye:hover { color: var(--ink); background: var(--surface-2); }
+  .row .inline-eye:hover { color: var(--ink); background: var(--surface-2); border-color: var(--accent-dim); }
   .row .inline-eye:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   /* The previewing marker is the eye's on-state and stays put: dot + word,
      clickable to come back to now. */
@@ -3477,8 +3480,9 @@ function commitLine(entry, selected, isLatest) {
   /* THE MARKER SLOT, right where the title ends. Three states:
        previewing this commit -> a green dot + "previewing", clickable to go
                                  back to now (it stands where the eye was);
-       hover (canPreview)     -> the eye, revealed by the row hover exactly
-                                 like the action cluster's buttons;
+       canPreview             -> the eye, drawn AT REST (D703) — not
+                                 revealed by the row's hover, so a resting
+                                 row still says a preview is possible;
        otherwise              -> nothing.
      A SPAN with role=button, not a <button>: the row itself is one, and
      buttons cannot nest — the click stops propagating so the row does not
@@ -3505,7 +3509,7 @@ function commitLine(entry, selected, isLatest) {
       tabIndex: 0,
       title: "Show the files as of " + entry.short + " (read-only). Views that "
              + "read the file through a Python reader may still show current content.",
-    }, icon(PREVIEW_GLYPH, 14));
+    }, icon(PREVIEW_GLYPH, 14), btnLabel("Preview"));
     marker.setAttribute("aria-label", "Preview the files as of " + entry.short);
     const on = (ev) => { ev.stopPropagation(); ev.preventDefault(); preview(entry.sha); };
     marker.addEventListener("click", on);

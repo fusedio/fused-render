@@ -112,7 +112,8 @@ def conflicted_repo(root):
     return root
 
 
-def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None):
+def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None,
+           preview_capable=False, git_app_folder=None):
     """Run the template's script against `repo`'s real reader payloads.
 
     `repo_patch` overrides fields on the `overview` payload's `repo` dict
@@ -123,6 +124,13 @@ def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None):
     what `git commit` would really use). `github` overrides one entry at a
     time in the probe's `/api/github/*` fixture table, the same convention
     `_git_view_probe.mjs` already documents for it.
+
+    `preview_capable` opts into the probe's marked ancestor frame AND a
+    confirmed app folder — both halves of `canPreview` (D701) — so the
+    Preview/Checkout/Revert controls actually render; every other test leaves
+    it `False` and gets today's capability-off DOM, unchanged.
+    `git_app_folder` overrides the app-folder half alone (e.g. a marked pane
+    with NO app folder), the probe's other documented override.
     """
     node = shutil.which("node")
     if not node:  # pragma: no cover - node is present on CI runners
@@ -136,11 +144,15 @@ def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None):
     if repo_patch:
         payloads["overview"]["repo"].update(repo_patch)
     fixture = tmp_path / "fixture.json"
-    fixture.write_text(json.dumps({
+    fixture_obj = {
         "params": dict({"_file": repo}, **(params or {})),
         "payloads": payloads,
         "github": github or {},
-    }))
+        "previewCapable": preview_capable,
+    }
+    if git_app_folder is not None:
+        fixture_obj["gitAppFolder"] = git_app_folder
+    fixture.write_text(json.dumps(fixture_obj))
     proc = subprocess.run([node, PROBE, TEMPLATE, str(fixture)],
                           capture_output=True, text=True, timeout=90)
     assert proc.returncode == 0, f"probe crashed:\n{proc.stderr[-3000:]}"
@@ -155,6 +167,20 @@ def _assert_painted(out, what):
     assert out["painted"], (
         f"{what}: the script ran without error and left #view EMPTY — a blank "
         f"page. calls={out['calls']}")
+
+
+def test_the_preview_control_is_a_labelled_button_drawn_at_rest(reader, tmp_path):
+    """D703: the eye is drawn AT REST, not revealed only by the row's hover —
+    the probe applies no CSS at all, so this can only assert on what the DOM
+    ITSELF is: a labelled control present in the markup, always, whenever
+    `canPreview` is true — never conditioned on a synthetic ":hover" the
+    probe has no way to simulate anyway."""
+    out = render(reader, clean_repo(str(tmp_path / "preview-rest")), tmp_path,
+                 preview_capable=True)
+    _assert_painted(out, "preview-capable clean repo")
+    assert "Preview" in out["viewText"], out["viewText"]
+    assert re.search(r'aria-label="Preview the files as of \w+"', out["viewHTML"]), \
+        out["viewHTML"]
 
 
 def test_a_clean_repo_paints(reader, tmp_path):

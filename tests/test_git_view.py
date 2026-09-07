@@ -267,6 +267,24 @@ def test_identity_step_focuses_only_once_per_session():
         f"ghIdentityFocusDone flag:\n{branch}")
 
 
+def test_the_preview_control_is_never_hover_gated_in_css():
+    """D703: the eye used to be `opacity: 0` at rest and only `opacity: 1`
+    under `.line:hover` / `:focus-visible`. Now it must be visible with no
+    hover qualifier on its base rule at all — hover/focus may still change
+    its COLOR, but never its presence.
+    """
+    source = _source()
+    rule = re.search(r"\.row \.inline-eye \{([^}]*)\}", source)
+    assert rule, "the .row .inline-eye rule is gone"
+    body = rule.group(1)
+    assert "opacity" not in body, (
+        f"the base .inline-eye rule still gates visibility with opacity: {body}")
+    assert "pointer-events: none" not in body, (
+        f"the base .inline-eye rule still disables pointer events: {body}")
+    assert ".line:hover .row .inline-eye" not in source, (
+        "a hover-qualified rule still exists for .inline-eye's visibility")
+
+
 def test_chan_derives_the_key_from_the_module_and_the_op():
     """`chan` must not collapse to a constant.
 
