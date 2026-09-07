@@ -71,10 +71,12 @@ import {
   AppWindow,
   Files,
   ExternalLink,
+  Download,
   ListTodo,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
+import { exportAppFile } from "@platform/lib/appShot";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -100,6 +102,7 @@ import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
 import AppApi from "./AppApi";
 import AppVersionPicker from "./AppVersionPicker";
+import { useAppVersionLabel } from "./appVersionLabel";
 import SnapshotError from "./SnapshotError";
 import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnapshot";
 
@@ -489,6 +492,60 @@ export default function AppPage({
     }
   };
 
+  // ---- export "at the selected version" -------------------------------------
+  //
+  // The picker only ever writes/reads `_snapshot`; this is the one place that
+  // turns "which version is selected" into "which folder to export" — a
+  // resolved snapshot's OWN extracted tree (`snap.dir`, never `snap.app_dir`:
+  // that is the LIVE folder the sha resolved FROM, and exporting it would
+  // silently ship the live app labelled as the picked commit) when one is
+  // picked, the live app folder otherwise.
+  //
+  // Gated on `snapshot.pending`/`snapshot.error` (not just disabled — the
+  // click handler also refuses) for the same reason every frame/fetch on this
+  // page already gates on them (useAppPageSnapshot's own header comment): a
+  // click that lands mid-resolve, before `snap.dir` exists, must not fall
+  // through to exporting the LIVE folder while the picker still shows the
+  // version being resolved — that is exactly the class of bug this branch
+  // has already had several of.
+  const versionLabel = useAppVersionLabel(dir, snapshot.sha);
+  const [exporting, setExporting] = useState(false);
+  const exportDisabled = exporting || snapshot.pending || snapshot.error;
+  const handleExport = async () => {
+    if (exportDisabled) return;
+    setExporting(true);
+    try {
+      const isLive = snapshot.sha === null;
+      const exportPath = snapshot.snap ? snapshot.snap.dir : dir;
+      // The filename carries the version so an exported v7 sitting beside a
+      // live export in Downloads is never ambiguous about which is which.
+      const exportName = isLive ? slug : `${slug}-${versionLabel}`;
+      await exportAppFile(
+        {
+          path: exportPath,
+          name: exportName,
+          // A preview capture is only attempted for a LIVE export. For a
+          // snapshot, `exportAppFile`'s stage fallback (no on-screen capture
+          // element is threaded to this page) would reload the ENTRY PAGE'S
+          // LIVE copy to shoot it — a screenshot of the wrong era baked into
+          // a file labelled as the old commit. Omitting `entry_html` here
+          // skips preview capture entirely rather than risk that; the
+          // snapshot export ships with no preview.png, which
+          // `downloadAppFile` already handles.
+          entry_html: isLive ? entry ?? undefined : undefined,
+        },
+        null,
+      );
+    } catch (e) {
+      pushToast({
+        msg: "Could not export " + slug + ": " + (e as Error).message,
+        tone: "error",
+      });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="app-page">
       <header className="app-page-head">
@@ -575,6 +632,31 @@ export default function AppPage({
             >
               Open app
               <ExternalLink data-icon="inline-end" />
+            </Button>
+            {/* Exports the folder AT THE PICKER'S SELECTED VERSION — the live
+                folder for "Live", the resolved snapshot's own extracted tree
+                for a commit (see the `handleExport` comment above). Disabled
+                through the same pending/error window every other read on
+                this page already gates on, so a click mid-resolve can never
+                silently export the wrong era. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="app-page-export"
+              disabled={exportDisabled}
+              title={
+                snapshot.pending
+                  ? "Waiting for this version to finish loading"
+                  : snapshot.error
+                    ? "This version failed to load; retry it from the version picker"
+                    : versionLabel === "Live"
+                      ? "Export the live app as a .fused file"
+                      : `Export the app as of ${versionLabel} as a .fused file`
+              }
+              onClick={handleExport}
+            >
+              {exporting ? "Exporting…" : "Export"}
+              <Download data-icon="inline-end" />
             </Button>
           </div>
         )}

@@ -38,6 +38,7 @@ import { getGitAppFolder, getGitCommits, type GitCommit } from "@platform/lib/ap
 import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
 import { isSha, shortSha } from "@platform/lib/snapshot-param";
+import { versionLabel } from "./appVersionLabel";
 
 /** The shell URL param a selection writes — shared with AppPage's own resolve
  *  effect (task 3), which reads exactly this param off the same URL. */
@@ -105,8 +106,7 @@ export default function AppVersionPicker({ dir }: { dir: string }) {
   // a deep link older than the fetched window — the same fallback the
   // option list already uses one line below, just read here for the FACE
   // rather than the row.
-  const activeIndex = sha ? (commits?.findIndex((c) => c.sha === sha) ?? -1) : -1;
-  const closedLabel = !sha ? "Live" : activeIndex >= 0 ? `v${total - activeIndex}` : shortSha(sha);
+  const closedLabel = versionLabel(sha, commits, total);
 
   const select = (next: string) => {
     const params = new URLSearchParams(location.search);
