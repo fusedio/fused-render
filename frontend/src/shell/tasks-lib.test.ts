@@ -1121,26 +1121,29 @@ describe("dropLanes", () => {
     expect(dropLanes(t)).toEqual([]);
   });
 
-  it("locks Archive as a SOURCE — the Unarchive button is the only door", () => {
-    // (Akshil, 2026-08-19.) A drop target implies the reader picks the landing
-    // lane, and the lane is derived server-side, never picked. The button says
-    // what it does; a drag would lie about where the card goes.
+  it("lets Archive drag onto Done, and only Done — the drop is an unarchive", () => {
+    // (Akshil, 2026-09-07.) The landing lane is still derived server-side —
+    // the drop carries no status — so Done is the one target that cannot
+    // over-claim: it is where a finished, filed task comes back to anyway.
     const t = task({ status: "archived" });
-    expect(dropLanes(t)).toEqual([]);
-    expect(isDraggable(t)).toBe(false);
-    for (const lane of ["upcoming", "in_progress", "done", "blocked"] as const) {
+    expect(dropLanes(t)).toEqual(["done"]);
+    expect(isDraggable(t)).toBe(true);
+    expect(dropAction(t, "done")).toEqual({ kind: "unarchive" });
+    for (const lane of ["upcoming", "in_progress", "blocked"] as const) {
       expect(dropAction(t, lane)).toBeNull();
     }
   });
 
-  it("refuses the drag even when a run would have been possible", () => {
-    // Locked means locked: neither a pending message nor a missing session
-    // re-opens the gesture. The button (filingIntent) is the way out.
+  it("never turns the drag out of Archive into a run", () => {
+    // A pending message does not re-open In Progress as a target, and the drop
+    // on Done stays an unarchive whether or not the task has a session: the
+    // filing is dropped, nothing is sent.
     const pending = upcoming([T9], { status: "archived" });
     expect(canRunNow(pending)).toBe(true);
-    expect(dropLanes(pending)).toEqual([]);
+    expect(dropLanes(pending)).toEqual(["done"]);
+    expect(dropAction(pending, "in_progress")).toBeNull();
     const fresh = task({ key: "pending:e1", session_id: "", status: "archived" });
-    expect(dropAction(fresh, "done")).toBeNull();
+    expect(dropAction(fresh, "done")).toEqual({ kind: "unarchive" });
   });
 
   it("locks In Progress, and locks Archive only as a DESTINATION", () => {
@@ -1369,11 +1372,11 @@ describe("dropAction", () => {
 describe("the unarchive drag", () => {
   const LANES = ["upcoming", "in_progress", "done", "blocked"] as const;
 
-  it("is not a drag at all any more — the group pins the lock", () => {
-    // (Akshil, 2026-08-19.) The two things the move is NOT became three: not a
-    // choice of lane, not a run, and not a gesture. dropLanes is empty and the
-    // button carries the verb.
-    expect(dropLanes(task({ status: "archived" }))).toEqual([]);
+  it("is a drag onto Done and nothing else — the group pins the lock", () => {
+    // (Akshil, 2026-09-07.) The two things the move is NOT: not a choice of
+    // lane (Done is the one target, and the server still derives the landing),
+    // and not a run. The button carries the same verb.
+    expect(dropLanes(task({ status: "archived" }))).toEqual(["done"]);
     expect(filingIntent(task({ status: "archived" }))?.kind).toBe("unarchive");
   });
 
@@ -1718,11 +1721,11 @@ describe("filingIntent", () => {
         expect(dropLanes(t)).toContain("archived");
         continue;
       }
-      // UNARCHIVE names no lane AND has no drag: the button is the only door
-      // out of Archive (Akshil, 2026-08-19), so the agreement to check is that
-      // the drag offers nothing while the button offers the verb.
+      // UNARCHIVE names no lane; the drag offers Done alone and the button
+      // offers the same verb, so the two doors out of Archive agree.
       expect(a.lane).toBe(null);
-      expect(dropLanes(t)).toEqual([]);
+      expect(dropLanes(t)).toEqual(["done"]);
+      expect(dropAction(t, "done")).toEqual({ kind: "unarchive" });
     }
   });
 });
@@ -3691,8 +3694,8 @@ describe("the archive action", () => {
     // And the old, wrong version of this button stays gone: its move named a
     // lane (Archive → In Progress), and nothing here names one.
     expect(filingIntent(task({ status: "archived" }))!.lane).toBe(null);
-    // And the DRAG stays locked: the button is the only door out of Archive.
-    expect(dropAction(task({ status: "archived" }), "done")).toBeNull();
+    // And the DRAG onto Done is the same verb, not a lane choice.
+    expect(dropAction(task({ status: "archived" }), "done")).toEqual({ kind: "unarchive" });
     // Both directions are one server verb over the task key, composed nowhere on
     // the client. Lookbehind so `unarchiveTask` is not counted as an archive.
     expect((VIEWS.match(/(?<!un)archiveTask\(task\.key\)/g) ?? []).length).toBe(3);

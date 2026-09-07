@@ -1452,11 +1452,15 @@ const LANE_EXITS: Record<BoardColumn, BoardLane[]> = {
   needs_attention: [],
   // Retry, or file it away.
   blocked: ["in_progress", "archived"],
-  // Locked (Akshil, 2026-08-19): the way out of Archive is the Unarchive
-  // BUTTON, not a gesture. The landing lane is derived server-side, never
-  // picked — a drop target would imply the reader picks it, which is exactly
-  // the lie the button avoids by not asking.
-  archived: [],
+  // Done only (Akshil, 2026-09-07 — "we don't allow dragging from archive to
+  // done, enable that"). The drop is the Unarchive button as a gesture: it
+  // un-files the task and nothing more, and the landing lane is still derived
+  // server-side (`api.unarchiveTask` takes no status), so a card dropped on
+  // Done lands wherever its thread puts it — Done for finished work, which is
+  // what an archived card almost always was. The other lanes stay shut: a drop
+  // on Upcoming or In Progress would read as a claim about a run, and
+  // unarchiving starts nothing.
+  archived: ["done"],
 };
 
 /**
