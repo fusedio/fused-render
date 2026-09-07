@@ -449,9 +449,45 @@ def test_the_latest_commit_dot_is_gone_but_the_previewing_pills_stays(source):
 def test_a_reload_of_this_frame_returns_the_pane_to_live(source):
     # `previewed` is memory, so a reload starts with nothing previewed; a shell
     # still holding the previous sha would leave the content pane on a revision no
-    # row here claims.
+    # row here claims. (Round 4 narrows this: see the next test for the ONE
+    # reload cause — this borrowed companion's own re-key — where announcing
+    # "nothing is previewed" would be wrong, and is now skipped instead.)
     boot = source[source.index("/* Announce the empty preview"):]
     assert boot.index("hopSnapshot();") < boot.index("draw(true);")
+
+
+def test_reload_seeds_from_a_carried_snapshot_instead_of_clobbering_it(source):
+    """ITEM 4 (round 4 inventory): a reload of THIS FRAME used to always
+    announce "nothing is previewed" via an UNCONDITIONAL `hopSnapshot()` at
+    boot — right for an actual fresh document, but ALSO firing every time
+    the borrowed git companion's own `_file` target changed
+    (Preview.tsx's `dirname(fsPath)` re-key), which happens on perfectly
+    ORDINARY subfolder navigation the shell's carry rule
+    (platform/lib/router.ts) means to survive. Preview.tsx's `sideSrcFor`
+    now forwards the shell's own already-confirmed sha as `_snapshot` on
+    THIS frame's own src whenever it carries into this companion's target
+    folder; boot reads it and skips the unconditional announcement,
+    falling back to it only when nothing is actually carried.
+    """
+    assert "let carriedPreview = null;" in source
+    boot = source[source.index("/* Announce the empty preview"):]
+    boot = boot[:boot.index("canPreview = !!revMarkedFrame()")]
+    assert 'const raw = param("_snapshot");' in boot
+    assert "if (carriedPreview === null) hopSnapshot();" in boot
+    # The seed itself happens once the capability CONFIRMS there is a pane
+    # to drive (`hasAppFolder` resolves asynchronously, so it is never true
+    # yet at the synchronous boot point above) — `pollRevTarget`'s own
+    # "capability just arrived" branch, not a second boot-time hop.
+    poll = source[source.index("function pollRevTarget()"):]
+    poll = poll[:poll.index("\n}")]
+    assert "const justArrived = has && !canPreview;" in poll
+    assert "justArrived && carriedPreview !== null && previewed === null" in poll
+    # Silent — the shell already holds this sha, so hopping it back would
+    # just echo a write it already made.
+    assert "preview(seed, true);" in poll
+    # Consumed exactly once: a stale carried value must never re-apply
+    # after the user has since clicked something else in this same frame.
+    assert "carriedPreview = null;" in poll
 
 
 def test_a_selection_change_still_repaints(source):

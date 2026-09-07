@@ -1581,6 +1581,7 @@ window._fusedSnapshotCleared = function () {
 function pollRevTarget() {
   const has = !!revMarkedFrame() && hasAppFolder;
   if (has === canPreview) return;
+  const justArrived = has && !canPreview;
   canPreview = has;
   /* A capability that has GONE takes the preview with it: the frame that was
      showing the revision is not there any more (a mode switch, a navigation),
@@ -1596,6 +1597,21 @@ function pollRevTarget() {
        so this returns instead of falling through to the unconditional
        repaint below and drawing twice. */
     preview(null, false);
+    return;
+  }
+  if (justArrived && carriedPreview !== null && previewed === null) {
+    /* ITEM 4 (round 4): the capability just confirmed there IS a pane to
+       drive, for the first time since this document loaded — seed straight
+       from what the shell's own src already told us (see the boot comment
+       above) rather than leaving `previewed` null and drawing every row with
+       no marker even though the shell, correctly, is still showing this
+       exact commit next door. Silent (`true`): the shell already holds this
+       sha, so hopping it back would just echo a write it already made.
+       Consumed once — a stale carried value must never re-apply after the
+       user has since clicked something else in this same frame. */
+    const seed = carriedPreview;
+    carriedPreview = null;
+    preview(seed, true);
     return;
   }
   /* Repaint either way: the rows gain or lose their preview control. */
@@ -4676,13 +4692,32 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-/* Announce the empty preview once at load. `previewed` is memory, so a reload of
-   this frame — the runtime's auto-reload after a file change, the user's own
-   refresh, a re-mount by the shell — starts with nothing previewed; a shell still
-   holding the previous sha would leave the content pane on a revision no row here
-   claims. Saying "live" on the way in is what keeps the two ends from disagreeing,
-   and it is a no-op when the shell holds nothing. */
-hopSnapshot();
+/* Announce the empty preview once at load, UNLESS the shell already told us
+   otherwise. `previewed` is memory, so a reload of this frame — the runtime's
+   auto-reload after a file change, the user's own refresh, a re-mount by the
+   shell, OR (round 4) this BORROWED companion's own `_file` target changing
+   on perfectly ORDINARY subfolder navigation (Preview.tsx's `dirname(fsPath)`
+   re-key) — starts with nothing previewed; a shell still holding the
+   previous sha would leave the content pane on a revision no row here
+   claims. Saying "live" on the way in is what keeps the two ends from
+   disagreeing in the genuine case, and it is a no-op when the shell holds
+   nothing — but the LAST of those reload causes is not a genuine "nothing is
+   previewed" moment at all: the shell's own carry rule
+   (platform/lib/router.ts) means `_snapshot` to SURVIVE exactly that
+   navigation, and Preview.tsx's `sideSrcFor` forwards the already-confirmed
+   sha as `_snapshot` on THIS frame's own src whenever it carries into this
+   companion's own target folder. Reading it here, and seeding `previewed`
+   from it once the capability confirms there is even a pane to drive
+   (`pollRevTarget`'s own branch below — `hasAppFolder` resolves
+   asynchronously and is never true yet at this synchronous point), means
+   this frame agrees with what the shell is ALREADY showing instead of
+   overwriting it. */
+let carriedPreview = null;
+{
+  const raw = param("_snapshot");
+  if (/^[0-9a-fA-F]{4,64}$/.test(raw)) carriedPreview = raw;
+}
+if (carriedPreview === null) hopSnapshot();
 
 /* The capability, read once BEFORE the first paint — as a plain assignment and
    not through `pollRevTarget`, which would ask for a repaint of a view that has

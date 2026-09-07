@@ -80,6 +80,7 @@ import {
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import {
+  carriedSnapshotParam,
   isSha,
   setResolvedSnapshot,
   shortSha,
@@ -1810,9 +1811,21 @@ function TemplatePreview({
     const target = borrowed ? parentDir : fsPath;
     const rem = borrowed ? "" : remote;
     const chatOnly = m === "claude" ? "&chat_only=1" : "";
+    // ITEM 4 (round 4): a sha the shell has ALREADY confirmed, forwarded
+    // only when it carries into THIS companion's own target folder — the
+    // git template has no other way to learn the shell holds one. Boot
+    // there used to always announce "nothing is previewed"
+    // (`hopSnapshot()`), which was right for an actual fresh document but
+    // ALSO fired every time this borrowed companion's own `_file` target
+    // changed on perfectly ORDINARY subfolder navigation (`parentDir`
+    // tracks `dirname(fsPath)`) — navigation the shell's own carry rule
+    // (platform/lib/router.ts) means `_snapshot` to survive. See
+    // `carriedSnapshotParam`'s own comment, and template.html's own boot
+    // comment, for the other two thirds of this.
+    const carried = carriedSnapshotParam(m, snapshotResolved, target);
     return (
       `/render?path=${encodeURIComponent(t.path)}` +
-      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`
+      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}${carried}`
     );
   };
   // The claude iframe's REMOUNT key, distinct from the mode name `active`
