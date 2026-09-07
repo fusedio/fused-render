@@ -59,6 +59,7 @@ from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers.git_show import router as git_show_router
+from fused_render.server.routers.git_snapshot import router as git_snapshot_router
 from fused_render.server.routers.git_upstream import router as git_upstream_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
@@ -739,6 +740,12 @@ def create_app(start_dir: str) -> FastAPI:
     # here while a frame carries `_rev`. Read-only, no guard; it refuses a
     # mount-backed path outright, like every other git call in the app.
     app.include_router(git_show_router)
+    # GET /api/git/snapshot (routers/git_snapshot.py): the app folder enclosing
+    # a path, `git archive`d to ~/.fused-render/app-versions/<key>/<sha>/ so
+    # every read under it — runPython included — can be rewritten against a
+    # real file on disk. Backs the shell's `_snapshot=<sha>` URL state. Cached
+    # by (repo root, app-relative folder, sha); read-only, no guard.
+    app.include_router(git_snapshot_router)
     # /api/git-upstream (routers/git_upstream.py): repos with a known
     # upstream update, for the activity card's repo-update rows. GET is
     # unguarded (the check that populates it runs off GET /render, D301,
