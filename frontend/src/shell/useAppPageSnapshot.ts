@@ -65,7 +65,11 @@ export interface AppPageSnapshotState {
    *  effect only re-runs on `dir`/`urlVersion`), so a caller must surface
    *  this as an error the user can act on rather than leave an indefinite
    *  skeleton up forever. Reset to false the moment `sha` changes, `sha`
-   *  goes live, or a later attempt succeeds. */
+   *  goes live, a later attempt succeeds, or the URL lands back on a sha
+   *  this hook had already resolved before the error (code review finding 1,
+   *  third round — the skip-check that short-circuits an already-resolved
+   *  sha must not leave a stale error from a DIFFERENT sha's failure
+   *  standing). */
   error: boolean;
   /** Ask the hook to re-attempt resolving the URL's current `sha`. A no-op
    *  while `sha` is null (nothing to retry). This is the user's actual
@@ -125,6 +129,13 @@ export function useAppPageSnapshot(
       resolvedSnapshot.sha === sha &&
       carries(resolvedSnapshot.app_dir, dir)
     ) {
+      // A stale `error` from a DIFFERENT sha selected in between (picked,
+      // failed non-404, then the user picked THIS already-resolved sha
+      // again) must not keep painting the tab as errored — this sha is
+      // genuinely resolved and usable. Guarded so a render that already had
+      // no error does not churn a fresh boolean into state for no reason
+      // (same idiom as the "live" branch above).
+      setError((prev) => (prev ? false : prev));
       return;
     }
     let alive = true;

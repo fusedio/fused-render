@@ -345,3 +345,42 @@ test("finding 1: retry() is a no-op while there is no sha on the URL (nothing to
   expect(box.current().error).toBe(false);
   box.unmount();
 });
+
+test("finding 1 (third round): re-selecting an already-resolved sha clears a stale `error` picked up from a DIFFERENT sha selected in between", async () => {
+  // 1. Resolve A.
+  setSearch("?_snapshot=" + SHA);
+  plan[APP + "@" + SHA] = { kind: "ok", dir: "/cache/key/" + SHA, app_dir: APP };
+  const box = renderHook(APP, 0);
+  await flush();
+  expect(box.current().snap?.sha).toBe(SHA);
+  expect(box.current().error).toBe(false);
+
+  // 2. User picks B; it fails non-404 (a 500, a dropped connection) —
+  // `error` goes true. `resolvedSnapshot` internally is still A's.
+  setSearch("?_snapshot=" + SHA2);
+  plan[APP + "@" + SHA2] = { kind: "error" };
+  box.rerender(APP, 1);
+  await flush();
+  expect(box.current().error).toBe(true);
+  expect(box.current().pending).toBe(true);
+
+  // 3. User picks A again. The effect's own skip-guard (both sha AND app_dir
+  // already match A's stale resolution) fires and used to `return` BEFORE
+  // the `setError(false)` a few lines below it — so the error picked up in
+  // step 2, for a DIFFERENT sha, kept painting the whole tab as errored even
+  // though A is fully resolved and usable. Unrecoverable pre-fix: every
+  // future re-render hits the same early return.
+  setSearch("?_snapshot=" + SHA);
+  box.rerender(APP, 2);
+  await flush();
+  expect(box.current().snap?.sha).toBe(SHA);
+  expect(box.current().pending).toBe(false);
+  expect(box.current().error).toBe(false);
+
+  // retry() must not resurrect the stale error either.
+  act(() => box.current().retry());
+  await flush();
+  expect(box.current().error).toBe(false);
+  expect(box.current().snap?.sha).toBe(SHA);
+  box.unmount();
+});
