@@ -14234,6 +14234,37 @@ function showPermissionCard(card, working) {
   scrollBottom();
 }
 
+// OPEN cards are the things the run is blocked on, so together they are the
+// LAST thing before the working line — whatever else got mounted after them.
+// Anything that inserts before `working.el` after a card did (the reply bubble
+// on a re-attach, a follow-up's fresh bubble, a note) would otherwise sit
+// between the two and, with a long enough reply, push the card above the fold
+// while the status line below says "Waiting for your approval".
+//
+// Takes the WHOLE set of open cards, in request order, and pins them as one
+// contiguous block ending at the working line: card[n-1] directly before the
+// working line, card[n-2] directly before card[n-1], and so on. Checking each
+// card against its own successor (not all of them against the working line) is
+// what makes this idempotent with two or more cards pending — a sub-agent's
+// card beside the main one — so the 400 ms poll never reorders anything
+// already in place, and scrolls only when a card actually moved.
+function pinOpenCards(cards, working) {
+  const anchorEl = working && working.el;
+  if (!anchorEl || !anchorEl.isConnected) return;
+  let anchor = anchorEl;
+  let moved = false;
+  for (let i = cards.length - 1; i >= 0; i--) {
+    const el = cards[i].el;
+    if (!el || !el.isConnected || el.parentNode !== anchor.parentNode) continue;
+    if (el.nextElementSibling !== anchor) {
+      anchor.parentNode.insertBefore(el, anchor);
+      moved = true;
+    }
+    anchor = el;
+  }
+  if (moved) scrollBottom();
+}
+
 // An ANSWERED card belongs where it was answered. While a card is open it lives
 // at the bottom of the log, right above the working line, because that is where
 // a control the run is blocked on has to be — but the turn's prose and tool
@@ -14282,6 +14313,7 @@ function parkResolvedCard(card) {
 // Reconcile the poll's request list with what is on screen. Idempotent — poll
 // replays the whole list every 400 ms.
 function syncPermissions(list, run_id, working, liveMode) {
+  const open = [];   // still-unanswered cards, in request order — see pinOpenCards
   for (const p of list || []) {
     if (!p || !p.id) continue;
     let card = permCards.get(p.id);
@@ -14292,6 +14324,7 @@ function syncPermissions(list, run_id, working, liveMode) {
     if (!card.el.isConnected) {
       showPermissionCard(card, working);
     }
+    if (!p.decision) open.push(card);
     // `answers` is only ever set on a question card, and it is why poll carries
     // it: a frame that re-attaches after the click has to be able to show what
     // was chosen, not just that something was.
@@ -14304,6 +14337,7 @@ function syncPermissions(list, run_id, working, liveMode) {
       parkResolvedCard(card);
     }
   }
+  pinOpenCards(open, working);
 }
 
 // What a LIVE api_retry says on the status line. The status code picks the
@@ -15780,7 +15814,11 @@ async function pollLoop(run_id, gen = logGen) {
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
       w.setStats(tokens, data.phase || "thinking", data.retry, data.activity);
-      syncPermissions(data.permissions, run_id, w, data.mode);
+      // syncPermissions runs AFTER the segment render below, not here — see the
+      // call site past it. A card mounted before the reply bubble existed ended
+      // up ABOVE the bubble once `addAssistant` slid in under the working line,
+      // and a long reply then scrolled the one control the run was blocked on
+      // out of view.
       noteSkills(data.skills, w);
       // Not awaited: a snapshot must never hold up the streaming reply, and the
       // answered-set makes a second poll arriving mid-answer a no-op.
@@ -15842,6 +15880,14 @@ async function pollLoop(run_id, gen = logGen) {
           tailText = renderSegments(segBody, segs, { typer });
         } else if (!data.done) typer.update(flatText);
       }
+      // After the reply bubble is guaranteed to exist for anything this poll
+      // carried, so an open card lands BELOW the prose it interrupts — a
+      // re-attach (open from Tasks, reload, follow-up reset) delivers the
+      // card and the reply in the same poll, and the order they are mounted
+      // in is the order the reader sees. syncPermissions also re-pins an
+      // unanswered cards right above the working line every poll, so no later
+      // mount can bury them either.
+      syncPermissions(data.permissions, run_id, w, data.mode);
       if (data.done) {
         // OWNERSHIP-GUARDED, same as the `finally` block below: a respawn
         // (sendFollowUp's attachment/effort-change path) kills this run and
