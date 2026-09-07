@@ -347,17 +347,43 @@ def test_like_metacharacters_in_the_query_match_only_the_literal_filename(tmp_pa
     assert rels("_b") == {"a_b.txt"}
 
 
-def test_a_quote_or_backslash_in_the_query_does_not_break_the_sql(tmp_path):
+def test_a_quote_in_the_query_does_not_break_the_sql(tmp_path):
     """`like_literal`/`_q` (store.py/query.py) double every single quote so
-    the query can never close the SQL string literal it is spliced into, and
-    `like_literal` additionally escapes a literal backslash (`\\` ->
-    `\\\\`) so it isn't misread as the start of an ESCAPE sequence for the
-    character that follows it. Without either, a query containing `'` or `\\`
-    would either break the generated SQL outright or silently match the
-    wrong rows — this pins that both characters still round-trip to an exact,
-    literal match."""
-    cfg = _index(tmp_path, "/r", ["/r/it's.txt", "/r/back\\slash.txt"])
+    the query can never close the SQL string literal it is spliced into.
+    Without it, a query containing `'` would either break the generated SQL
+    outright or silently match the wrong rows — this pins that the quote
+    still round-trips to an exact, literal match. `'` is a legal character
+    in a Windows filename too, so this half runs on every platform."""
+    cfg = _index(tmp_path, "/r", ["/r/it's.txt", "/r/back-slash.txt"])
     assert {h["rel"] for h in search_ranked(cfg, "/r", "it's")["hits"]} == \
         {"it's.txt"}
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a backslash cannot appear in a Windows filename (it's a path "
+           "separator there), so there is no literal `back\\slash.txt` for "
+           "the query to match — this half of the coverage is POSIX-only",
+)
+def test_a_backslash_filename_is_matched_by_the_same_literal_query(tmp_path):
+    """Companion to `test_a_backslash_in_the_query_does_not_break_the_sql`:
+    on POSIX, `\\` is an ordinary filename character, so this additionally
+    pins that `like_literal`'s escaping doesn't just avoid breaking the SQL
+    — the escaped `\\` still round-trips to an exact, literal match against
+    a real `\\`-containing filename."""
+    cfg = _index(tmp_path, "/r", ["/r/it's.txt", "/r/back\\slash.txt"])
     assert {h["rel"] for h in search_ranked(cfg, "/r", "back\\slash")["hits"]} == \
         {"back\\slash.txt"}
+
+
+def test_a_backslash_in_the_query_does_not_break_the_sql(tmp_path):
+    """`like_literal` (store.py) escapes a literal backslash (`\\` ->
+    `\\\\`) so it isn't misread as the start of an ESCAPE sequence for the
+    character that follows it. Without it, a query containing `\\` would
+    either break the generated SQL outright or silently match the wrong
+    rows. `\\` can't appear in a Windows filename, so unlike the POSIX-only
+    companion test above, this pins the platform-independent half: querying
+    with a `\\` must not raise and must not match unrelated files, on every
+    platform including Windows."""
+    cfg = _index(tmp_path, "/r", ["/r/back-slash.txt", "/r/backXslash.txt"])
+    assert {h["rel"] for h in search_ranked(cfg, "/r", "back\\slash")["hits"]} == set()
