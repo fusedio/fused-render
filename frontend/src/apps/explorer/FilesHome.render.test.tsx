@@ -626,6 +626,36 @@ describe("a query that is really an address (section 7)", () => {
     box.unmount();
   });
 
+  test("the stale-clear deadline still fires once the address RESOLVES (code review finding)", async () => {
+    // The `statPending` swap (D706) fixed the hanging-stat case above, but it
+    // lost the case where the stat actually settles to a real path:
+    // `suppressRank` stays true forever once `addr.status` is "exists" (it
+    // only excludes "missing"), so the rank effect keeps early-returning
+    // (`pending` never fires) and `statPending` drops back to false the
+    // moment the stat resolves — a gate reading only `pending || statPending`
+    // never arms again, and the held answer's `is-stale` dimming never
+    // clears.
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
+
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // the stat is issued
+    await flush(() =>
+      statCalls[0].resolve({
+        path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
+      }),
+    );
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .toContain("is-stale");
+
+    await flush(() => clock.advance(STALE_CLEAR_MS + 50));
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .not.toContain("is-stale");
+    box.unmount();
+  });
+
   test("suppresses the AI row even when the address does not resolve", async () => {
     const box = mount();
     await type(box, "/tmp/does-not-exist");

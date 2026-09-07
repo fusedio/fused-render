@@ -634,11 +634,18 @@ export function FilesSearch({
   //
   // While behind, render `narrowAnswer`'s re-filtered subset rather than the
   // held answer's raw hits: the overwhelmingly common case is the query
-  // EXTENDING the held one ("read" -> "readme"), and re-running fuzzyMatch
+  // EXTENDING the held one ("read" -> "readme"), and re-running a matcher
   // over hits already in hand narrows the list with no round trip and no
   // blank frame — strictly better than dimming rows that cannot possibly
   // match. It can only ever remove rows, never add or reorder them, so this
-  // is always a subset of the true (still in-flight) answer.
+  // is always a subset of the rows already on screen — but "a provable subset
+  // of the true (still in-flight) SERVER answer" only holds on THIS page's
+  // index-backed path, where `narrowAnswer` matches with `substringPositions`
+  // (home-search.ts), the same substring test the server filters on (D708).
+  // A subsequence matcher (`fuzzyMatch`) would break that guarantee here — it
+  // can accept a row the server's substring-only filter no longer would —
+  // which is why the live-walk listing box, which narrows against no server
+  // answer to be a subset OF, is the one place that still uses it.
   const behind = answer !== null && answer.query !== q;
   const hits = behind && answer ? narrowAnswer(answer, q) : (answer?.hits ?? []);
 
@@ -673,16 +680,29 @@ export function FilesSearch({
   // review finding): `suppressRank` flips true the instant the keystroke
   // makes `q` look like a path, but the stat itself does not fire until
   // `INSTANT_DEBOUNCE_MS` later (the address effect above debounces exactly
-  // like the rank effect does). Gating this deadline on `suppressRank` meant
-  // the clock started at the KEYSTROKE, so the stat's real budget to answer
-  // before its held rows were thrown away was `STALE_CLEAR_MS` minus the
-  // debounce, not the full `STALE_CLEAR_MS` every other request gets.
+  // like the rank effect does). Gating this deadline on bare `suppressRank`
+  // meant the clock started at the KEYSTROKE, so the stat's real budget to
+  // answer before its held rows were thrown away was `STALE_CLEAR_MS` minus
+  // the debounce, not the full `STALE_CLEAR_MS` every other request gets.
   // `statPending` flips true only once `run()` inside that effect actually
   // fires, so this effect's own dependency change lands at the same moment —
-  // the deadline timer below now starts counting from ISSUANCE, matching how
+  // the deadline timer below starts counting from ISSUANCE, matching how
   // `pending` already behaves for the rank path.
+  //
+  // That swap alone (`pending || statPending`) left a second gap, found in
+  // code review: once the stat RESOLVES, `statPending` drops back to false —
+  // but `suppressRank` (`addr.status !== "missing"`) stays true forever, so
+  // the rank effect keeps early-returning and nothing is ever going to touch
+  // `answer` for this query again. A gate reading only `pending ||
+  // statPending` never re-arms once that happens, so the deadline never
+  // fires and `is-stale` dimming sticks around for as long as the box stays
+  // open. `suppressRank && addr.status === "exists"` covers exactly that
+  // window — the query resolved to a real address and ranking is
+  // permanently suppressed for it — without touching the `unknown` window
+  // above, which `statPending` already owns.
   useEffect(() => {
-    if (!behind || (!pending && !statPending)) return;
+    const addressSettled = suppressRank && addr.status === "exists";
+    if (!behind || (!pending && !statPending && !addressSettled)) return;
     const timer = window.setTimeout(() => {
       setAnswer((prev) => {
         if (prev === null || prev.query === q) return prev;
@@ -690,7 +710,7 @@ export function FilesSearch({
       });
     }, STALE_CLEAR_MS);
     return () => window.clearTimeout(timer);
-  }, [pending, statPending, behind, q]);
+  }, [pending, statPending, suppressRank, addr.status, behind, q]);
 
   // -- the box is where typing goes ------------------------------------------
   //
