@@ -1,6 +1,234 @@
 # Build log — app-folder snapshot preview
 
-Resume point: ALL SIX TASKS COMPLETE AND COMMITTED, PLUS a code-review pass
+## App page version dropdown (new plan, docs/app-page-version-dropdown-plan.html)
+
+Resume point: ALL FIVE TASKS COMPLETE AND COMMITTED (five commits, one per
+task, per the plan). Resuming from 1aaca6cb2. Five tasks: a commits route,
+the picker, wiring the three tabs to the snapshot, deleting the Git tab, docs.
+
+### Task 1 — `GET /api/git/commits`
+
+Implemented as a plain function (`list_commits`, mirroring `extract_snapshot`'s
+own shape) so it is testable with no `TestClient`, matching every other route
+in this module. One deviation from a literal reading of "same mount refusal,
+same `--` + `:(literal)` pathspec rule": the plan doesn't say what an EMPTY
+repository (no commits, an unborn HEAD) should do, only that
+`tests/test_git_commits.py` must cover it returning `ok` with an empty list.
+`git log` on an unborn HEAD exits 128 with a message ("does not have any
+commits yet") that would otherwise have to be pattern-matched out of stderr —
+fragile across git versions/locales. Instead `_run_log` runs a cheap
+`git rev-parse --verify -q HEAD` FIRST; a non-zero exit there means no commits
+exist yet, and the function returns `[]` without ever invoking `git log` — one
+extra fork on this path only, and no stderr-message parsing anywhere.
+
+`has_more` asks for `limit + 1` records and reports whether more than `limit`
+actually came back, matching this module's own `extract_snapshot`-adjacent
+style of preferring an observed fact over an inference. `limit` is bounded
+`[1, 500]` server-side (the plan doesn't specify a ceiling; 500 is generous for
+a dropdown and cheap for `git log --format=...` regardless of repo size).
+
+Verify: `.venv/bin/pytest tests/test_git_commits.py -q` — 7 passed.
+Also re-ran `tests/test_git_snapshot.py tests/test_git_posix_spawn.py -q` (28
+passed) as a sanity check on the shared `_popen_kwargs`/`_resolve_app_dir`
+helpers, and `pyright fused_render/server/routers/git_snapshot.py
+tests/test_git_commits.py` (0 errors). The two new `subprocess.Popen` calls
+(`rev-parse --verify` and `git log`) both inline their argv lists at the call
+site with `**_popen_kwargs()` spread, matching `_run_archive`'s own discipline
+— confirmed against `test_git_posix_spawn.py`'s static sweep (13 passed),
+which would otherwise have flagged either.
+
+### Task 2 — `AppVersionPicker.tsx`
+
+**Deliberately dumb, no singleton, no resolve.** The picker only reads/writes
+the `_snapshot` sha on the URL and lists commits — it never calls
+`getGitSnapshot` itself. Resolving a sha into `{dir, app_dir}` (what actually
+lets Overview/Files/API rewrite their reads) is entirely AppPage's own job
+(task 3). This is a real split from the explorer's earlier design (where
+Preview.tsx's own selection handler both wrote the URL AND resolved), chosen
+because AppVersionPicker and AppPage are the SAME React tree (no iframe
+boundary between them, unlike the git sidebar template and Preview.tsx) — so
+there is no cross-frame `window._fusedSnapshotSelected` hop to design at all,
+and no reason for the picker to duplicate a resolve AppPage needs to do anyway
+for its own rewriting.
+
+**No shared module singleton anywhere in this feature.** The explorer's
+`platform/lib/snapshot-param.ts` singleton exists because MULTIPLE views
+(Preview.tsx, Listing.tsx) need to agree on one shell-wide "what does
+`_snapshot` mean right now" fact, written by whichever resolves last. The app
+page has exactly ONE view that ever needs this fact (AppPage itself, for
+Overview/Files/API) — so this feature keeps the resolution in AppPage's own
+`useAppPageSnapshot` hook state and never touches that singleton, sidestepping
+finding-1/finding-3's whole defect class rather than merely guarding around it
+again.
+
+**UI: a native `<select>`, not a menu component.** This codebase has no
+dropdown-menu primitive (`platform/shadcn/ui/` has no `dropdown-menu.tsx`,
+`popover.tsx`, or similar); `Preferences.tsx`/`NewJobModal.tsx` etc. already
+use a plain `<select>` for exactly this kind of small enumerated choice, so
+this follows the same convention rather than introducing a new one.
+
+**Test file is a genuine, full render test** (react-test-renderer, no DOM),
+unlike this branch's earlier snapshot work which judged Preview.tsx/Listing.tsx
+too large to render-test. `AppVersionPicker` is small enough (no base-ui
+Tabs, no document-dependent effects) that the real component mounts cleanly
+with `window`/`location`/`history` stubs mirroring `RepoUpdatesDock.test.tsx`'s
+own precedent — 8 tests, all through the real fetch/probe/select code path,
+including the fail-closed gate (404 vs. a network error, both render nothing)
+and a regression for "a failed commits fetch leaves the page live" (the
+`<select>` still renders with only "Live", never stuck loading).
+
+Verify: `bun test frontend/src/shell` — 1033 pass, 0 fail. `bunx tsc --noEmit`
+(from `frontend/`) — clean.
+
+### Task 3 — Overview, Files and API honour the snapshot
+
+**The resolve/gate logic was extracted into `useAppPageSnapshot.ts`, not left
+inline in `AppPage.tsx`'s body.** This is the one deliberate structural
+deviation from the plan's literal file list (which only names `AppPage.tsx`
+for this). Reason: `AppPage.tsx` has no render-test precedent (base-ui Tabs, a
+document-dependent keyboard listener, the Tasks page's whole subtree — the
+same reasoning this branch's earlier Preview.tsx/Listing.tsx work gave for
+themselves), and this plan's own risk note says to make a genuine attempt at
+`AppPage.test.tsx` and to cover what a render test cannot reach through
+extracted, testable units instead. Pulling the resolve effect into its own
+hook (mirroring the explorer's `useSnapshotForFolder.ts` exactly) makes the
+part that actually needs a regression test — the sha+app_dir guard (finding
+3), the 404-vs-transient failure branch — driveable through a small local
+hook harness (react-test-renderer, no DOM), with the SAME "drive the real code
+path, not hand-assigned state" property the plan demands. `AppPage.tsx` itself
+now has almost nothing left to get wrong: one hook call, three call sites
+passing its result to `rewritePathAgainst`/`AppFiles`/`AppApi`.
+
+**No singleton, confirmed again here.** `resolvedSnapshot` is `useState`
+inside `useAppPageSnapshot`, never written to `platform/lib/snapshot-param.ts`'s
+module-level singleton. Nothing else in the app page (or anywhere else) reads
+that singleton, so there is genuinely no second writer for it to race
+against — the "own resolution, not the singleton" rule the plan states as a
+must-follow decision holds structurally, not just by convention.
+
+**AppFiles/AppApi: only the FETCH TARGET moves, never `rel`/`?file=`/`?ep=`.**
+Both take the new `resolvedSnapshot` prop and compute one `effectiveDir =
+rewritePathAgainst(resolvedSnapshot, dir)`, used for `walkDir`/`getAppPy` and
+(AppFiles only) to build `file = effectiveDir + "/" + rel`. `rel` itself (the
+`?file=` query value) stays a live-relative path token regardless — mirrors
+the explorer's own `Listing.tsx` insight from the earlier build (row identity
+is a bare relative name, not a full path), so the URL and the "which row is
+open" state are IDENTICAL whether live or on a commit, and nothing about
+either tab's addressing has to change when a selection is made or cleared.
+
+**Overview's rewrite target is `entry` alone, not the whole frame.** Only the
+iframe `src` is rewritten (`rewritePathAgainst(resolvedSnapshot, entry)`); the
+"Open app" button and the default-file-selection logic in AppFiles
+(`entryRel`) still use the LIVE `entry` — deliberately: "Open app" is
+documented (AppPage.tsx's own header comment, and the owner's read-only-about-git
+decision) to always open the live entry in the explorer, never a historical
+one, and a default file selection in Files choosing "whatever the LIVE entry's
+relative path is" is a reasonable default regardless of which commit is
+selected (an entry renamed since the commit just won't have a matching node
+pre-opened, no worse than a stale `?file=` deep link already handles).
+
+**Execute stays live under a snapshot with no extra code**, confirming the
+plan's own decision: `getAppPy(effectiveDir)` already returns endpoints whose
+`.path` sits under the extracted tree, so `runPy(ep.path, ...)` (unchanged)
+runs the commit's own `.py` for free — there is no separate "am I under a
+snapshot" branch needed at the Execute call site.
+
+**No second banner.** The plan explicitly asks for exactly one marker; the
+picker's own `<select>` (task 2) already shows the active sha/subject, so
+nothing else was added.
+
+Verify: `bun test frontend/src/shell` — 1039 pass, 0 fail. `bunx tsc --noEmit`
+— clean.
+
+### Task 4 — delete the Git tab
+
+Straightforward compiler-led deletion, exactly as the plan predicted: dropping
+`"git"` from `APP_PAGE_TABS` (current-apps-lib.ts) narrowed the `AppPageTab`
+type, and `bunx tsc --noEmit` pointed at every call site that had to follow —
+`TAB_DEFS`'s `git` entry (a `Record<AppPageTab, TabDef>` cannot have an extra
+key), the `gitTplRaw`/`gitAllowed`/`gitTpl` plumbing that fed it, the
+`GitBranch` icon import, and the `templateFrame` helper (now fully unused,
+removed rather than left dead). One thing the compiler could NOT catch and had
+to be found by reading the code: `visibleTabs`/`visibleRef` existed ONLY to
+filter out a conditionally-hidden Git tab; with no more conditional tab at
+all, both collapsed away entirely (the strip and the arrow-nav effect now
+walk the static `APP_PAGE_TABS` constant directly) rather than being kept
+around as a no-op filter over a list that never excludes anything. `tpls`/
+`verdicts` state (and the `resolveConditions` call that fed it) existed only
+to compute `gitAllowed` — deleted too, along with `TemplateEntry`'s import,
+once nothing else in the file read them; the `statPath(dir)` call that
+produced `st.templates` is kept (it still answers "is this a folder").
+
+**Regression test for the deep-link fallback, in `current-apps-lib.test.ts`
+rather than a full `AppPage` render**: `appPageTabFromSearch("?_tab=git")` was
+already covered generically by the existing `"?_tab=bogus"` case (unknown tab
+falls back silently) — added a NAMED case anyway
+(`APP_PAGE_TABS).not.toContain("git")` + the git-specific fallback assertion)
+so this specific regression has its own assertion rather than riding
+incidentally on a generic one. "The strip never offers Git even inside a work
+tree" (the plan's own `AppPage.test.tsx` bullet) is covered at the TYPE level
+instead of by a render test: `TAB_DEFS: Record<AppPageTab, TabDef>` cannot
+contain a `git` key any more — the compiler refuses it structurally, which is
+a stronger guarantee than a render assertion would be, and `AppPage.tsx`
+itself still has no render-test precedent (task 3's own log entry gives the
+full reasoning: base-ui Tabs, a document-dependent keyboard effect, the Tasks
+page's whole subtree).
+
+Verify: `bun test frontend/src/shell` — 1040 pass, 0 fail. `bunx tsc --noEmit`
+— clean. `grep -rn "app-page-git\|GitBranch\|templateFrame\|gitTpl\|visibleTabs\|visibleRef"` — zero hits anywhere in `frontend/src/shell/` or `app-page.css`.
+
+### Task 5 — docs
+
+**SPEC.md was NOT amended — verified there was nothing to amend, not assumed.**
+The plan's own bullet says "amend whatever asserts the app page has a Git
+tab"; grepped SPEC.md for `AppPage`, `/apps/<slug>`, `app page`, `Current
+apps` (case-insensitive) and every one came back empty. The app page
+(shell/AppPage.tsx, D488/D487) and its Files/API/Git tabs were never
+documented in SPEC.md at all — only in DECISIONS.md's D488 row (which itself
+only describes the original Overview+Tasks two-tab page and never mentions
+Files/API/Git, meaning those three tabs' addition was ALSO never recorded as
+its own decision until now). Editing SPEC.md with invented prior content
+would misrepresent what was actually there; noting the gap here instead, per
+the build instructions' own "a pattern that does not exist" guidance.
+
+**DECISIONS.md gained D702** (next number after D701, appended — the file's
+last row), recording: the Git tab's deletion and replacement with the
+version picker, the two owner decisions (read-only about git; a selection
+drives all three content tabs), the "no shared singleton" architecture
+(mirroring D701's own consumers' guards even with a single owner), the
+`GET /api/git/commits` route's existence and scope, and that Execute needs no
+special-casing under a snapshot. Cites every file this round touched.
+
+Verify: `grep -rn "_tab=git" --include=*.ts --include=*.tsx --include=*.md .`
+— three hits, all in `current-apps-lib.ts`'s own updated comment and
+`current-apps-lib.test.ts`'s regression test naming the string it asserts
+falls back — no live reference to a Git tab anywhere else.
+
+## Test coverage honesty note (this round)
+
+Per the build instructions' own risk callout: a genuine attempt was made at
+BOTH `AppVersionPicker.test.tsx` and `AppPage.test.tsx`.
+`AppVersionPicker.tsx` is small enough (no base-ui Tabs, no document-dependent
+effects) that it renders cleanly through react-test-renderer with
+`window`/`location`/`history` stubs — that test file is a full, real component
+render, 8 cases, all through the actual fetch/probe/select code path.
+`AppPage.tsx` itself was judged impractical to render for the same reason this
+branch's own earlier Preview.tsx/Listing.tsx work reached that conclusion (no
+render-test precedent anywhere in this codebase for a component this size,
+and this one specifically pulls in base-ui's Tabs, a document-dependent
+keyboard listener, and the Tasks page's entire subtree) — so the
+resolve/gate logic that actually needed a regression test was extracted into
+`useAppPageSnapshot.ts` and driven through a small local hook harness instead
+(`AppPage.test.tsx`, 6 cases, react-test-renderer, no DOM), the same
+"extracted, testable unit" resolution the risk note itself suggests. Nothing
+in `AppPage.tsx`'s own JSX wiring (which prop reaches which child, whether
+`APP_PAGE_TABS.map` actually draws four tabs) is covered by anything beyond
+`bunx tsc --noEmit` and the type system — flagged honestly rather than
+claimed as render-tested.
+
+---
+
+Resume point (PRE-EXISTING, below): ALL SIX TASKS COMPLETE AND COMMITTED, PLUS a code-review pass
 (below, "Review pass") that closed every finding the orchestrator raised,
 including the `/render`-under-snapshot gap Task 4/5 deferred, PLUS a second,
 final round (below, "Round 2 review pass") closing a real test regression and
