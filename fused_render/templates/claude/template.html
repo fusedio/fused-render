@@ -11976,7 +11976,9 @@ document.getElementById("schedpop-go").addEventListener("click", () => {
   // caller of openScheduler — so the last word on whether a task may be made from
   // here is read here, not at open time. The block also closes the confirm
   // (applyComposerBlockState), which makes this the race and not the ordinary path.
-  if (schedBlocked()) return;
+  // The mode's lock too (Bugbot, PR #1046): a confirm opened before Comment was
+  // armed would otherwise still leave for Tasks and strand the notes.
+  if (schedBlocked() || annNavLocked()) return;
   // The box belonging to the composer that was clicked, not "the visible one":
   // only one composer is on screen at a time, but reading the button's own form
   // is what keeps that a fact about the layout rather than an assumption here.
@@ -16929,7 +16931,7 @@ function applyComposerBlockState() {
   // ends up looking at is the banner. Only on the way IN — closing a confirm the
   // user opened the moment the block lifted would be the block reaching past its
   // own end.
-  if (blocked) closeSchedConfirm();
+  if (blocked || locked) closeSchedConfirm();
   // The row's number and name, fetched AFTER the card is on screen and never
   // before the block: what shuts the composer is the schedule, and the listing
   // only decorates the row (see schedLoadTaskRow). Guarded there against refetching

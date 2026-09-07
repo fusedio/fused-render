@@ -388,7 +388,9 @@ def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
     ann = code[code.index("function annSetMode(on) {"):]
     ann = ann[:ann.index("\nannBtn.addEventListener")]
     assert "if (!annCapable()) {\n    annOn = false;" in ann
-    assert ann.index("if (!annCapable())") < ann.index('fused.params.set("annmode"')
+    assert ann.index("if (!annCapable())") < ann.index("annModeSync();")
+    sync = code[code.index("function annModeSync() {"):]
+    assert 'fused.params.set("annmode"' in sync[:sync.index("\n}\n")]
     # …and the predicate is the flag itself wherever there is no host pane.
     assert "const annCapable = () => (CHAT_ONLY ? !!annFrame : !noPane);" in code
     for fn in ("function applySplit() {", "function applyNarrowView() {"):
@@ -626,7 +628,7 @@ def test_a_mark_that_moves_between_two_mounted_frames_repaints_the_pins():
     assert "const moved = annSyncTarget();" in poll, \
         "the poll has to keep the answer to act on it"
     assert "if (moved) renderAnn();" in poll
-    assert poll.index("if (moved) renderAnn();") < poll.index("if (has) annSetMode("), \
+    assert poll.index("if (moved) renderAnn();") < poll.index("if (has) annBootMode();"), \
         "the same-answer branch is where a moved mark lands"
 
 

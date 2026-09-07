@@ -1071,7 +1071,10 @@ def test_a_mode_locks_the_reader_on_this_chat(html):
     assert "annNavLock();" in paint
     back = _block(html, 'document.getElementById("back").onclick = () => {', "\n};\n")
     assert "if (annNavLocked()) return;" in back
-    assert "if (schedBlocked() || annNavLocked()) return;" in html
+    # both the calendar's click and the confirm's Continue (Bugbot, PR #1046),
+    # and an open confirm is taken down when the lock lands
+    assert html.count("if (schedBlocked() || annNavLocked()) return;") == 2
+    assert "if (blocked || locked) closeSchedConfirm();" in html
     block = _block(html, "function applyComposerBlockState()", "\n}\n")
     assert "const locked = !blocked && annNavLocked();" in block
     assert "schedBtn.disabled = blocked || locked;" in block
