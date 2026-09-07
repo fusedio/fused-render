@@ -324,32 +324,48 @@ body[data-capture-shooting] .app-pcard-export {
   transition: none;
 }
 
+/* A ROW: the app's mark as a column of its own, then the two text lines
+   stacked beside it (`.app-pcard-lines`). The head's height is still the
+   lines' — the icon is sized to span them, never to set the height — so a
+   card is as tall as it was before icons and Home's skeleton, which reuses
+   these classes to track that height, stays honest (Home.tsx SkeletonCard). */
 .app-pcard-body {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 10px;
   padding: 11px 14px 12px;
   min-width: 0;
 }
 
-/* The name row: the app's icon.svg (when it has one) then the name. The icon
-   is capped BELOW the title's own line box, so a card with an icon is exactly
-   as tall as one without — Home's skeleton card reuses these classes and its
-   promise is that its height tracks the real card's (Home.tsx SkeletonCard). */
-.app-pcard-head {
+.app-pcard-lines {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
-.app-pcard-icon {
+.app-pcard-icon,
+.app-pcard-star {
   flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
-  /* An author's svg can declare any intrinsic size; contain keeps a wide or
-     tall one inside the square instead of stretching it. */
+  width: 34px;
+  height: 34px;
+}
+
+/* An author's svg can declare any intrinsic size; contain keeps a wide or
+   tall one inside the square instead of stretching it. */
+.app-pcard-icon {
   object-fit: contain;
+}
+
+/* The generic mark for an app with no icon.svg: muted, so it reads as the
+   slot being filled rather than as a badge on the name, and inset inside that
+   slot — an authored icon is a whole tile of artwork, a bare sparkle drawn to
+   the same 34px would shout louder than the name next to it. */
+.app-pcard-star {
+  box-sizing: border-box;
+  padding: 7px;
+  color: var(--fg-muted);
 }
 
 .app-pcard-title {

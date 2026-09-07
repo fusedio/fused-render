@@ -151,10 +151,11 @@ function Section({
 // because Home's two async strips draw two DIFFERENT real cards and a single
 // shared shape would be wrong for one of them:
 //   - "app"    mirrors AppPreviewCard/`.app-pcard` (apps.css) — title + a meta
-//     row (tag pill, timestamp) OVER a full-bleed thumb. No icon: the real
-//     card draws one only for an app that HAS an `icon.svg`, which is a fact
-//     of the fetch that hasn't landed — a slot here would claim an icon is
-//     coming for the apps that will never show one.
+//     row (tag pill, timestamp) OVER a full-bleed thumb. The real card's head
+//     DOES carry an icon now (the app's `icon.svg`, or the generic star), but
+//     it's the folder variant's case below: WHICH mark it is comes with the
+//     fetch, so shimmering the slot — or standing the star in it — would
+//     claim something is loading that isn't.
 //   - "folder" mirrors FolderPreviewCard/`.fhb-card` (preferences.css) — a
 //     head row over an inset thumb well. The real card's head DOES carry an
 //     icon, but it's a static decorative folder glyph, identical on every
@@ -175,10 +176,15 @@ function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
     return (
       <span className="app-pcard home-skel-card" aria-hidden="true">
         <span className="app-pcard-body">
-          <span className="skel-bar" style={{ width: "58%" }} />
-          <span className="app-pcard-meta">
-            <span className="skel-bar" style={{ width: "46px" }} />
-            <span className="skel-bar" style={{ width: "64px" }} />
+          {/* The lines wrapper, not bars straight in the body: the body is a
+              ROW since the icon column landed beside them (apps.css), so bars
+              placed directly in it would sit side by side. */}
+          <span className="app-pcard-lines">
+            <span className="skel-bar" style={{ width: "58%" }} />
+            <span className="app-pcard-meta">
+              <span className="skel-bar" style={{ width: "46px" }} />
+              <span className="skel-bar" style={{ width: "64px" }} />
+            </span>
           </span>
         </span>
         <span className="app-pcard-thumb home-skel-body" />
