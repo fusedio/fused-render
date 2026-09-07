@@ -53,7 +53,11 @@ def rewrite_path_src(runtime_source: str) -> str:
 
 @pytest.fixture(scope="module")
 def snapshot_writable_src(runtime_source: str) -> str:
-    return _extract(runtime_source, "function snapshotWritable(path)")
+    # Starts at `_dirname`, not `snapshotWritable` itself: the write gate's
+    # sibling-in-the-anchor's-own-directory check (finding [5], round 2
+    # review) calls it, so a caller extracting `snapshotWritable` alone would
+    # hit a ReferenceError the moment that branch runs.
+    return _extract_range(runtime_source, "function _dirname(p)", "function snapshotWritable(path)")
 
 
 @pytest.fixture(scope="module")
@@ -201,7 +205,8 @@ console.log(JSON.stringify([
 def test_writes_under_app_dir_are_refused(snapshot_writable_src):
     harness = """
 let resolvedSnapshot = %s;
-let snapshotFallbackPending = false;
+let snapshotSha = "abc1234";
+let snapshotAnchor = null;
 %s
 console.log(JSON.stringify([
   snapshotWritable("/repo/myapp/reader.py"),
@@ -211,10 +216,33 @@ console.log(JSON.stringify([
     assert _run(harness) == [False, False]
 
 
+def test_writes_under_the_extracted_dir_are_also_refused(snapshot_writable_src):
+    """Regression for finding [7], round 2 review: a `_render` frame's OWN
+    `path` is rewritten to the EXTRACTED file before this frame's src is ever
+    built (Preview.tsx), so it never again matches `resolvedSnapshot.app_dir`
+    once resolved. Without also checking `resolvedSnapshot.dir`, the
+    friendlier, sha-naming refusal silently stopped firing for exactly the
+    one frame shape that most needs it — the server still refuses the write
+    regardless (`mount.py::_is_under_snapshot_root`), so nothing was ever
+    actually at risk, but the user saw a bare `readonly` instead."""
+    harness = """
+let resolvedSnapshot = %s;
+let snapshotSha = "abc1234";
+let snapshotAnchor = null;
+%s
+console.log(JSON.stringify([
+  snapshotWritable("/cache/key/abc1234/reader.py"),
+  snapshotWritable("/cache/key/abc1234"),
+]));
+""" % (_SNAP, snapshot_writable_src)
+    assert _run(harness) == [False, False]
+
+
 def test_writes_outside_app_dir_stay_writable(snapshot_writable_src):
     harness = """
 let resolvedSnapshot = %s;
-let snapshotFallbackPending = false;
+let snapshotSha = "abc1234";
+let snapshotAnchor = null;
 %s
 console.log(JSON.stringify(snapshotWritable("/repo/otherapp/file.txt")));
 """ % (_SNAP, snapshot_writable_src)
@@ -224,26 +252,74 @@ console.log(JSON.stringify(snapshotWritable("/repo/otherapp/file.txt")));
 def test_writes_are_unaffected_with_no_active_snapshot(snapshot_writable_src):
     harness = """
 let resolvedSnapshot = null;
-let snapshotFallbackPending = false;
+let snapshotSha = null;
+let snapshotAnchor = null;
 %s
 console.log(JSON.stringify(snapshotWritable("/repo/myapp/reader.py")));
 """ % snapshot_writable_src
     assert _run(harness) is True
 
 
-def test_a_pending_fallback_resolve_refuses_writes(snapshot_writable_src):
+def test_a_pending_resolve_refuses_a_write_that_could_plausibly_be_the_app_folder(
+    snapshot_writable_src,
+):
     """Regression for finding B2: a write must be refused for the length of
-    a pending (or definitively in-flight) fallback resolve, not only once
-    `resolvedSnapshot` has actually landed — the previous shape let
-    `resolvedSnapshot === null` mean "writable" unconditionally, which is
-    also what a resolve still in flight looks like."""
+    a pending (or, per the test below, a definitively FAILED) fallback
+    resolve, not only once `resolvedSnapshot` has actually landed — the
+    previous shape let `resolvedSnapshot === null` mean "writable"
+    unconditionally once the fallback promise settled, which is also what a
+    failed resolve looks like forever after. `snapshotAnchor` (the path this
+    fallback resolve is climbing from) is what makes each of these three
+    targets plausible: the anchor itself, an ancestor of it (every directory
+    the climb could stop at), and a sibling in the anchor's own immediate
+    directory (the innermost candidate app_dir's own contents)."""
     harness = """
 let resolvedSnapshot = null;
-let snapshotFallbackPending = true;
+let snapshotSha = "abc1234";
+let snapshotAnchor = "/repo/myapp/reader.py";
 %s
-console.log(JSON.stringify(snapshotWritable("/repo/otherapp/file.txt")));
+console.log(JSON.stringify([
+  snapshotWritable("/repo/myapp/reader.py"),
+  snapshotWritable("/repo/myapp"),
+  snapshotWritable("/repo/myapp/other.py"),
+]));
 """ % snapshot_writable_src
-    assert _run(harness) is False
+    assert _run(harness) == [False, False, False]
+
+
+def test_a_pending_resolve_permits_a_write_that_could_not_plausibly_be_the_app_folder(
+    snapshot_writable_src,
+):
+    """Regression for finding [5], round 2 review: the pending/failed window
+    used to refuse EVERY absolute path, not just ones that could plausibly be
+    the (not-yet-known) app folder — a template's own unrelated scratch
+    file, or another app's folder entirely, got the "this pane is read-only"
+    refusal for no reason."""
+    harness = """
+let resolvedSnapshot = null;
+let snapshotSha = "abc1234";
+let snapshotAnchor = "/repo/myapp/reader.py";
+%s
+console.log(JSON.stringify(snapshotWritable("/scratch/unrelated.txt")));
+""" % snapshot_writable_src
+    assert _run(harness) is True
+
+
+def test_a_failed_resolve_with_no_anchor_permits_writes(snapshot_writable_src):
+    """An edge case with nothing to reason about at all — this frame's src
+    carried `_snapshot` with neither `_file` nor `path` to climb an app
+    folder from, so nothing is ever going to resolve and there is no anchor
+    to narrow a refusal to. Falls back to the same "live" posture reads
+    already take in this shape (`rewritePath` is a no-op with no
+    `resolvedSnapshot` either)."""
+    harness = """
+let resolvedSnapshot = null;
+let snapshotSha = "abc1234";
+let snapshotAnchor = null;
+%s
+console.log(JSON.stringify(snapshotWritable("/repo/myapp/reader.py")));
+""" % snapshot_writable_src
+    assert _run(harness) is True
 
 
 # ------------------------------------------------- the real boot path (B1/B2)
@@ -289,6 +365,7 @@ readFile("/repo/myapp/reader.py").then((text) => {
 });
 """ % (json.dumps(query), snapshot_boot_src, raw_url_src, read_file_src)
     result = _run(harness)
+    assert result is not None  # narrows for pyright; `_run` prints JSON or nothing
     # Exactly one fetch — the raw read itself — against the REWRITTEN path.
     # No call to /api/git/snapshot: nothing needed resolving over the network.
     assert result["fetchLog"] == ["/api/fs/raw?path=%2Fcache%2Fkey%2Fabc1234%2Freader.py"]
@@ -360,9 +437,116 @@ readPromise.then((text) => {
 });
 """ % (json.dumps(query), snapshot_boot_src, raw_url_src, read_file_src)
     result = _run(harness)
+    assert result is not None
     assert result["resolvedAtCallTime"] is None  # nothing had resolved yet
     assert result["fetchLog"][0].startswith("/api/git/snapshot?")
     # The raw read must have waited for the resolve — it is asked for the
     # REWRITTEN (extracted) path, not the live one.
     assert result["fetchLog"][1] == "/api/fs/raw?path=%2Fcache%2Fkey%2Fabc1234%2Freader.py"
     assert result["text"] == "RAW-CONTENT"
+
+
+# --------------------------------------------------- the write gate (round 2)
+
+
+def test_a_failed_fallback_resolve_permanently_refuses_writes_under_the_anchor(
+    snapshot_boot_src,
+):
+    """THE regression test for finding B2 reopened at round 2 review,
+    exercising the REAL boot path (module-init through the real, async
+    `snapshotReady`/`fetch` chain) rather than a hand-assigned
+    `resolvedSnapshot`/flag — a test built by hand-assigning state can only
+    assert what its author already believes those states settle to, which is
+    exactly how this gap survived a round: the previous round's own test,
+    `test_a_failed_resolve_leaves_reads_live_not_half_rewritten` above, only
+    ever asserted on `rewritePath` (reads), never on `snapshotWritable`
+    (writes) at all.
+
+    A 404 from `/api/git/snapshot` (no app folder here) leaves
+    `resolvedSnapshot` `null` FOREVER — the previous shape's
+    `snapshotFallbackPending` flag reset to `false` the instant this promise
+    settled regardless of why, and `snapshotWritable` read `!(null && …)` as
+    "writable" from that point on: a write went straight through to the LIVE
+    file while this frame's own URL (`_snapshot=abc1234`) still claimed a
+    read-only commit, silently, with no refusal at all.
+    """
+    query = {"_snapshot": "abc1234", "_file": "/repo/myapp/reader.py"}
+    harness = """
+const _query = %s;
+function ownQuery(key) { return Object.prototype.hasOwnProperty.call(_query, key) ? _query[key] : null; }
+function callHeaders() { return {}; }
+global.window = { location: { search: "" } };
+
+global.fetch = function (url) {
+  return Promise.resolve({
+    ok: false, status: 404,
+    json: () => Promise.resolve({ ok: false, error: "no app folder encloses this path" }),
+  });
+};
+
+%s
+
+snapshotReady.then((snap) => {
+  console.log(JSON.stringify({
+    snap,
+    writableUnderAnchor: snapshotWritable("/repo/myapp/reader.py"),
+    writableAncestor: snapshotWritable("/repo/myapp"),
+    writableUnrelated: snapshotWritable("/scratch/other.txt"),
+  }));
+});
+""" % (json.dumps(query), snapshot_boot_src)
+    result = _run(harness)
+    assert result is not None
+    assert result["snap"] is None  # the resolve genuinely, definitively failed
+    # The URL still claims `_snapshot=abc1234` — a write to anything that
+    # could plausibly BE the (never-confirmed) app folder must stay refused
+    # forever, not just for the length of the resolve.
+    assert result["writableUnderAnchor"] is False
+    assert result["writableAncestor"] is False
+    # But an unrelated path is not held hostage by a resolve about a
+    # completely different subtree (finding [5]).
+    assert result["writableUnrelated"] is True
+
+
+def test_the_fallback_fetch_is_bounded_by_a_timeout(snapshot_boot_src):
+    """Regression for finding [4]: an unbounded `fetch` meant `snapshotReady`
+    — and therefore every one of `readFile`/`stat`/`runPython`, which all now
+    chain off it — could hang FOREVER if the request never settled at all (a
+    dropped connection, a server wedged mid-restart). `setTimeout` is faked to
+    fire on the next tick rather than after the real, fixed delay (so this
+    test does not itself hang for the length of that timeout); the real
+    `AbortController`/`signal` plumbing is exercised for real, proving the
+    abort genuinely fires and `snapshotReady` settles rather than hanging."""
+    query = {"_snapshot": "abc1234", "_file": "/repo/myapp/reader.py"}
+    harness = """
+const _query = %s;
+function ownQuery(key) { return Object.prototype.hasOwnProperty.call(_query, key) ? _query[key] : null; }
+function callHeaders() { return {}; }
+global.window = { location: { search: "" } };
+
+const realSetTimeout = setTimeout;
+let capturedDelay = null;
+global.setTimeout = (fn, delay) => { capturedDelay = delay; return realSetTimeout(fn, 0); };
+
+let sawAbort = false;
+global.fetch = function (url, opts) {
+  // Never settles on its own -- only the abort should ever end this.
+  return new Promise((resolve, reject) => {
+    opts.signal.addEventListener("abort", () => {
+      sawAbort = true;
+      reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    });
+  });
+};
+
+%s
+
+snapshotReady.then((snap) => {
+  console.log(JSON.stringify({ snap, sawAbort, capturedDelay }));
+});
+""" % (json.dumps(query), snapshot_boot_src)
+    result = _run(harness)
+    assert result is not None
+    assert result["capturedDelay"] == 25000
+    assert result["sawAbort"] is True
+    assert result["snap"] is None

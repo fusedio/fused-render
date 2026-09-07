@@ -1605,11 +1605,25 @@
   // than reading `resolvedSnapshot` synchronously, so even this fallback path
   // can no longer race a template's boot-time read.
   //
-  // `snapshotFallbackPending` exists only to keep the WRITE GATE (below)
-  // correctly refusing for the length of this fallback resolve — `readFile`/
-  // `stat`/`runPython`, which all await `snapshotReady` directly, need no
-  // separate flag; only the SYNCHRONOUS `snapshotWritable` does.
-  let snapshotFallbackPending = resolvedSnapshot === null && snapshotSha !== null;
+  // `snapshotAnchor` records the path this fallback resolve is climbing from
+  // (`_file`/`path`), for as long as the resolve is unsettled or has settled
+  // to nothing — the ONLY thing `snapshotWritable` (below) has to reason
+  // about a write's plausibility with before `resolvedSnapshot` exists. Left
+  // `null` once a resolve actually lands (`resolvedSnapshot` speaks for
+  // itself then) or never had an anchor to begin with.
+  let snapshotAnchor = null;
+  // Bounded so this promise ALWAYS settles. Previously an unbounded `fetch`
+  // with no timeout: the server's own `git archive` can legitimately run for
+  // the length of ITS OWN `TIMEOUT_S` (20s) on a cold, large app, and a
+  // request that genuinely never answers (a dropped connection, a server
+  // wedged mid-restart) would never even REJECT — every read helper below
+  // chains off this exact promise, so a stuck fetch here hung
+  // `readFile`/`stat`/`runPython` forever for this frame, not just for 20
+  // seconds (finding, round 2 review). `SNAPSHOT_FALLBACK_TIMEOUT_MS` sits
+  // comfortably past the server's own budget so an in-progress extraction is
+  // never aborted out from under itself for no reason; past it, this frame
+  // simply falls back to live the same way any other failed resolve does.
+  const SNAPSHOT_FALLBACK_TIMEOUT_MS = 25000;
   const snapshotReady = (function () {
     if (resolvedSnapshot !== null) return Promise.resolve(resolvedSnapshot);
     if (snapshotSha === null) return Promise.resolve(null);
@@ -1618,22 +1632,24 @@
     // templates), else this page's own location (`path` — an app rendering
     // itself under a snapshot, with no wrapping template in between).
     const anchor = ownQuery("_file") || ownQuery("path");
-    if (!anchor) {
-      snapshotFallbackPending = false;
-      return Promise.resolve(null);
-    }
+    if (!anchor) return Promise.resolve(null);
+    snapshotAnchor = anchor;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SNAPSHOT_FALLBACK_TIMEOUT_MS);
     return fetch("/api/git/snapshot?path=" + encodeURIComponent(anchor) +
-                 "&sha=" + encodeURIComponent(snapshotSha), { headers: callHeaders() })
+                 "&sha=" + encodeURIComponent(snapshotSha),
+                 { headers: callHeaders(), signal: controller.signal })
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
         if (!data || !data.ok) return null;
         const snap = { sha: snapshotSha, dir: data.dir, app_dir: data.app_dir };
         resolvedSnapshot = snap;
+        snapshotAnchor = null;
         return snap;
       })
-      .catch(() => null)
+      .catch(() => null) // includes the timeout's own abort
       .then((snap) => {
-        snapshotFallbackPending = false;
+        clearTimeout(timeoutId);
         return snap;
       });
   })();
@@ -1662,15 +1678,60 @@
     return path;
   }
 
+  function _dirname(p) {
+    const i = p.lastIndexOf("/");
+    return i <= 0 ? "/" : p.slice(0, i);
+  }
+
   function snapshotWritable(path) {
-    // Finding B2: a write must be refused for the length of a fallback
-    // resolve too, not only once it has landed — otherwise a pending (or, in
-    // the previous shape, a merely-in-flight) resolve let a write through to
-    // the live file while the URL still claimed `_snapshot`.
-    if (snapshotFallbackPending) return false;
+    // Finding B2 (reopened at round 2 review): a write must be refused for
+    // the length of an UNRESOLVED fallback window — pending, or settled to
+    // nothing (no app folder here, a 404, git trouble, the timeout above) —
+    // not only before it has been TRIED. The previous shape read a separate
+    // `snapshotFallbackPending` flag that the resolve chain reset to `false`
+    // unconditionally once the fallback promise SETTLED, including on
+    // failure, where `resolvedSnapshot` stays `null` forever; `!(null && …)`
+    // is `true`, so every write after that point went through to the LIVE
+    // file for the rest of this frame's life while its own URL — and the
+    // shell's read-only pill — still claimed `_snapshot=<sha>`, silently, no
+    // refusal, nothing surfaced to the caller. Checking `resolvedSnapshot`
+    // together with `snapshotSha` collapses "still resolving" and
+    // "resolved to nothing" onto the same, permanently-refused answer, with
+    // no separate flag to keep in sync.
+    if (snapshotSha !== null && !resolvedSnapshot) {
+      // Narrowed to paths that could plausibly BE the eventual app folder,
+      // not literally every absolute path (finding, round 2): the server's
+      // own `_resolve_app_dir` only ever answers with an app folder found by
+      // climbing UP from `snapshotAnchor`, so refusing a write anywhere else
+      // — a template's own scratch file, an unrelated app's folder — serves
+      // no purpose beyond a confusing message. This is a narrower, honest
+      // heuristic, not an exact one: it catches the anchor itself, any
+      // ancestor of it (every directory the climb could stop at), and a
+      // sibling living in the anchor's own immediate directory (the
+      // INNERMOST candidate app_dir's own contents) — it does NOT catch a
+      // sibling of the anchor sitting under an OUTER ancestor candidate,
+      // which would need `snapshotAnchor` resolved to rule in or out and so
+      // is refused only once the real answer lands.
+      if (!snapshotAnchor || typeof path !== "string" || path[0] !== "/") return true;
+      if (path === snapshotAnchor) return false;
+      if (snapshotAnchor.indexOf(path + "/") === 0) return false;
+      if (_dirname(path) === _dirname(snapshotAnchor)) return false;
+      return true;
+    }
+    // Finding: once resolved, a `_render` frame's OWN `path` is already the
+    // extracted file (Preview.tsx rewrites it itself before ever building
+    // this frame's src — see that file's own comment on the `_render`
+    // sentinel), so it never again matches `resolvedSnapshot.app_dir` here.
+    // Without also checking `resolvedSnapshot.dir`, the client-side gate
+    // silently stopped applying to exactly the one frame shape (`_render`)
+    // that most needs its friendlier, sha-naming message — the server still
+    // refuses (`mount.py::_is_under_snapshot_root`), so nothing was ever
+    // actually AT RISK, but the user saw a bare `readonly` instead.
     return !(resolvedSnapshot && typeof path === "string" &&
              (path === resolvedSnapshot.app_dir ||
-              path.indexOf(resolvedSnapshot.app_dir + "/") === 0));
+              path.indexOf(resolvedSnapshot.app_dir + "/") === 0 ||
+              path === resolvedSnapshot.dir ||
+              path.indexOf(resolvedSnapshot.dir + "/") === 0));
   }
 
   // THE WRITE GATE, AND WHAT IT IS NOT.
@@ -1685,7 +1746,7 @@
   function snapshotRefusal(what) {
     // `snapshotSha` (off this frame's own query), not `resolvedSnapshot.sha`:
     // this can fire while `resolvedSnapshot` is still null (the fallback's
-    // pending window, `snapshotFallbackPending`), and `resolvedSnapshot.sha`
+    // pending, or permanently-unresolved, window), and `resolvedSnapshot.sha`
     // would throw rather than reject cleanly in exactly that case.
     const err = new Error(
       what + " is not possible here: this pane is showing the app as of commit " +
