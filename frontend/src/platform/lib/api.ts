@@ -2379,13 +2379,14 @@ export interface AppEntryInfo {
   // The fused page API version the entry declares via
   // `<meta name="fused-api-version">` — 0 when undeclared (every app authored
   // before the tag existed), null when there is no entry. Beside the version
-  // the runtime speaks now; the app page offers "Migrate" when it is behind.
-  // Both optional so an older server (entry only) still types.
+  // the runtime speaks now. No button hangs off these any more: the gap is a
+  // ROW of the App Doctor checklist (`getAppDoctor`), which is what replaced
+  // the standalone Migrate button. Both optional so an older server (entry
+  // only) still types.
   api_version?: number | null;
   current_api_version?: number;
   // A migration task on this entry that has not finished (pending, sending,
-  // or running with no verdict yet) — the button reads "in progress" instead
-  // of offering a second one. Null / absent when none.
+  // or running with no verdict yet). Null / absent when none.
   migration_task?: { id: string; state: string; run_id: string | null } | null;
 }
 
@@ -2399,6 +2400,11 @@ export function getAppEntry(path: string): Promise<AppEntryInfo> {
 // shape /api/apps/new creates, its prompt invoking the fused-render-api-migration
 // skill for the jump from the declared version to the current one. 409 when the
 // app is already current, 404 when the folder has no entry.
+//
+// No UI calls this any longer — the App Doctor button took the place of the
+// Migrate button on both surfaces, and its fix session routes a stale version
+// through the migration skill itself. The endpoint stays as the narrow,
+// single-purpose way to ask for exactly that one task.
 export interface MigrateAppResult extends NewAppResult {
   from_version: number;
   to_version: number;
@@ -2410,6 +2416,60 @@ export function migrateApp(
   effort: SessionEffort = "",
 ): Promise<MigrateAppResult> {
   return postJson<MigrateAppResult>("/api/apps/migrate", { path, model, effort });
+}
+
+// ---- App Doctor (fused_render/app_doctor.py) --------------------------------
+//
+// The share-readiness checklist for one app folder: deterministic checks only —
+// a row is `pass`, `fail`, or `skip` (the check could not run: no entry to read,
+// no git repo, an optional file that isn't there), never a judgment. The
+// judgment is the fix TASK's, which is a Claude session running the
+// fused-render-app-doctor skill (`runAppDoctor` below).
+
+export type AppCheckState = "pass" | "fail" | "skip";
+
+export interface AppCheckFinding {
+  rule: string;
+  path: string;
+  /** 0 for a finding about the folder rather than a line. */
+  line: number;
+  /** Already masked server-side when it came off a secret — safe to render. */
+  excerpt: string;
+}
+
+export interface AppCheck {
+  id: string;
+  label: string;
+  state: AppCheckState;
+  detail: string;
+  findings: AppCheckFinding[];
+}
+
+export interface AppDoctorReport {
+  path: string;
+  entry: string | null;
+  /** Nothing failed. A skipped check is not a pass, but it is not a problem. */
+  ok: boolean;
+  checks: AppCheck[];
+  /** A fix task on the entry that has not finished yet, or null. */
+  task?: { id: string; state: string; run_id: string | null } | null;
+}
+
+export function getAppDoctor(path: string): Promise<AppDoctorReport> {
+  return getJson<AppDoctorReport>(
+    `/api/apps/doctor?path=${encodeURIComponent(path)}`,
+  );
+}
+
+// Create the App Doctor FIX task on the app's entry page — one session for the
+// whole report, its prompt invoking the fused-render-app-doctor skill. 409 when
+// one is already running, 404 when the folder has no entry page.
+export function runAppDoctor(
+  path: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/doctor", { path, model, effort });
 }
 
 // ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------
