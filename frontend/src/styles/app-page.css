@@ -181,14 +181,38 @@
   text-transform: uppercase;
 }
 
-.app-version-picker select {
+/* The closed face (task 7): a real `<select>`, transparent and stacked over
+   a visible label span that shows only the v-number. The select stays fully
+   interactive (it is what keyboard/screen-reader/mobile users actually
+   drive) — only its own painted text is hidden, by making it transparent
+   and letting the label sit visually in its place. */
+.app-version-picker-face {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.app-version-picker-face select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.app-version-picker-face-label {
   max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 3px 6px;
   font: inherit;
+  pointer-events: none;
 }
 
 /* The panels (one per APP_PAGE_TABS entry, class `app-page-<id>` beside this).

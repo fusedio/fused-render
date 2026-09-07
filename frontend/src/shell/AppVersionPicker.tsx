@@ -99,6 +99,13 @@ export default function AppVersionPicker({ dir }: { dir: string }) {
   const raw = new URLSearchParams(location.search).get(SNAPSHOT_PARAM);
   const sha = isSha(raw) ? raw : null;
   const active = sha ? (commits?.find((c) => c.sha === sha) ?? null) : null;
+  // The closed face's own text (task 7): "Live" with nothing selected, else
+  // v<n> for a commit the loaded list actually holds, else the short sha for
+  // a deep link older than the fetched window — the same fallback the
+  // option list already uses one line below, just read here for the FACE
+  // rather than the row.
+  const activeIndex = sha ? (commits?.findIndex((c) => c.sha === sha) ?? -1) : -1;
+  const closedLabel = !sha ? "Live" : activeIndex >= 0 ? `v${total - activeIndex}` : shortSha(sha);
 
   const select = (next: string) => {
     const params = new URLSearchParams(location.search);
@@ -122,30 +129,47 @@ export default function AppVersionPicker({ dir }: { dir: string }) {
       }
     >
       <span className="app-version-picker-eyebrow">Version</span>
-      <select
-        aria-label="App version"
-        value={sha ?? LIVE}
-        onChange={(e) => select(e.target.value)}
-      >
-        <option value={LIVE}>Live</option>
-        {/* A selected sha absent from the loaded (or still-loading) list —
-            a deep link, or a commit older than the fetched window — still
-            gets its own option, so the select never silently snaps back to
-            "Live" out from under a real selection. */}
-        {sha && !active && (
-          // A deep link older than the fetched window: this component has no
-          // idea of its ordinal (that would need a second, unbounded fetch,
-          // which this component deliberately never makes — see the plan's
-          // "keep it cosmetic" amendment), so it falls back to the sha rather
-          // than guessing a version number.
-          <option value={sha} title={sha}>{shortSha(sha)}</option>
-        )}
-        {commits?.map((c, i) => (
-          <option key={c.sha} value={c.sha} title={c.sha}>
-            v{total - i} — {c.subject}
-          </option>
-        ))}
-      </select>
+      {/* A native `<select>` is necessarily its own closed face — an
+          `<option>`'s text IS what the closed control shows. So the
+          version-number-only closed face (task 7) is a separate visible
+          `<span>` stacked over the real select, which stays fully
+          interactive (keyboard, screen reader, mobile picker) but
+          transparent. The options keep their full "v<n> — subject" text;
+          this is presentation only, exactly as the module's own comment
+          above already says of the v-number itself. */}
+      <span className="app-version-picker-face">
+        <select
+          aria-label="App version"
+          value={sha ?? LIVE}
+          onChange={(e) => select(e.target.value)}
+        >
+          <option value={LIVE}>Live</option>
+          {/* A selected sha absent from the loaded (or still-loading) list —
+              a deep link, or a commit older than the fetched window — still
+              gets its own option, so the select never silently snaps back to
+              "Live" out from under a real selection. */}
+          {sha && !active && (
+            // A deep link older than the fetched window: this component has no
+            // idea of its ordinal (that would need a second, unbounded fetch,
+            // which this component deliberately never makes — see the plan's
+            // "keep it cosmetic" amendment), so it falls back to the sha rather
+            // than guessing a version number.
+            <option value={sha} title={sha}>{shortSha(sha)}</option>
+          )}
+          {commits?.map((c, i) => (
+            <option key={c.sha} value={c.sha} title={c.sha}>
+              v{total - i} — {c.subject}
+            </option>
+          ))}
+        </select>
+        {/* aria-hidden: the select above already carries the accessible name
+            (`aria-label="App version"`) and its own option text is what a
+            screen reader or keyboard user actually reads/picks — this span
+            is a sighted-mouse-user affordance only. */}
+        <span className="app-version-picker-face-label" aria-hidden="true">
+          {closedLabel}
+        </span>
+      </span>
     </label>
   );
 }

@@ -142,6 +142,35 @@ function optionLabel(select: ReactTestRendererJSON, value: string): string {
   return (opt.children ?? []).map((c) => String(c)).join("");
 }
 
+// Depth-first search by className — the closed-face label (task 7) is a
+// plain `<span>` sitting beside the (now presentation-only) `<select>`, not
+// a `type` any existing helper here already searches for.
+function findByClassName(
+  node: ReactTestRendererJSON | ReactTestRendererJSON[] | null,
+  className: string,
+): ReactTestRendererJSON | null {
+  if (node === null) return null;
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      const hit = findByClassName(n, className);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof node === "string") return null;
+  const classes = String(node.props?.className ?? "").split(/\s+/);
+  if (classes.includes(className)) return node;
+  for (const child of node.children ?? []) {
+    const hit = findByClassName(child as ReactTestRendererJSON, className);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function textOf(node: ReactTestRendererJSON): string {
+  return (node.children ?? []).map((c) => String(c)).join("");
+}
+
 let renderer: ReactTestRenderer | null = null;
 
 beforeEach(() => {
@@ -314,6 +343,82 @@ test('picking "Live" after a selection clears _snapshot from the URL', async () 
   await flush();
   select = findSelect(renderer!.toJSON())!;
   expect(select.props.value).toBe("");
+});
+
+// ---------------------------------------------------------- the closed face
+
+test('the closed face shows "Live" when nothing is selected', async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const face = findByClassName(renderer!.toJSON(), "app-version-picker-face-label")!;
+  expect(face).not.toBeNull();
+  expect(textOf(face)).toBe("Live");
+});
+
+test("the closed face shows only the version number, never the subject", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  await act(async () => {
+    select.props.onChange({ target: { value: COMMITS[0].sha } });
+  });
+  await flush();
+  const face = findByClassName(renderer!.toJSON(), "app-version-picker-face-label")!;
+  expect(textOf(face)).toBe("v2");
+  // The separator the option label wears ("v2 — subject") never appears on
+  // the closed face — this fixture's own subject happens to BE "v2", which
+  // is exactly why an unqualified `.not.toContain(subject)` would prove
+  // nothing here; the separator is the thing that actually distinguishes
+  // "just the number" from "the full option text".
+  expect(textOf(face)).not.toContain(" — ");
+  // The option itself still carries the full text — this is presentation
+  // only, exactly as the module's own top comment says.
+  const optionText = optionLabel(select, COMMITS[0].sha);
+  expect(optionText).toBe("v2 — " + COMMITS[0].subject);
+});
+
+test("a deep-linked sha outside the loaded list shows the short sha on the closed face too", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  const deepSha = "c".repeat(40);
+  currentUrl = { pathname: "/apps/repo/myapp", search: "?_snapshot=" + deepSha };
+  (globalThis as Record<string, unknown>).location = currentUrl;
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const face = findByClassName(renderer!.toJSON(), "app-version-picker-face-label")!;
+  expect(textOf(face)).toBe(deepSha.slice(0, 7));
+});
+
+test("selecting still writes the sha with the new closed face in place", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  await act(async () => {
+    select.props.onChange({ target: { value: COMMITS[0].sha } });
+  });
+  expect(replaced[0]).toContain("_snapshot=" + COMMITS[0].sha);
+});
+
+test("the accessible name is unchanged: aria-label stays on the real select, and the visible face is aria-hidden", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const select = findSelect(renderer!.toJSON())!;
+  expect(select.props["aria-label"]).toBe("App version");
+  const face = findByClassName(renderer!.toJSON(), "app-version-picker-face-label")!;
+  expect(String(face.props["aria-hidden"])).toBe("true");
 });
 
 test("a sha already on the URL that is not among the loaded commits still gets its own option, not a silent snap back to Live", async () => {
