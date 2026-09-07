@@ -815,9 +815,11 @@ def test_the_entry_is_the_first_tagged_page_in_name_order(tmp_path):
     (d / "index.html").write_text(PLAIN, encoding="utf-8")
     (d / "zzz.html").write_text(META, encoding="utf-8")
 
-    assert app_listing.app_entry(str(d)).endswith("zzz.html")
+    entry = app_listing.app_entry(str(d))
+    assert entry is not None and entry.endswith("zzz.html")
     (d / "kk.html").write_text(META, encoding="utf-8")
-    assert app_listing.app_entry(str(d)).endswith("kk.html")
+    entry = app_listing.app_entry(str(d))
+    assert entry is not None and entry.endswith("kk.html")
 
 
 def test_the_marker_is_only_read_from_the_head_bytes(tmp_path):
@@ -979,6 +981,7 @@ def test_enclosing_app_dir_finds_an_app_beyond_a_symlinked_segment(tmp_path):
 
     stop_at = os.path.realpath(str(real_root))
     result = app_listing.enclosing_app_dir(str(symlinked_deep), stop_at)
+    assert result is not None
     assert result == str(link_root / "local")  # symlinked form, not realpath'd
     assert os.path.realpath(result) == str(app)
 
