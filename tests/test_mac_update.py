@@ -9,6 +9,7 @@ guards.
 """
 import os
 import subprocess
+import time
 import types
 
 import pytest
@@ -363,7 +364,13 @@ def test_install_opens_a_cancellable_download_row_for_the_version(monkeypatch, t
     assert row["kind"] == "download"
     assert row["unit"] == "bytes"
     assert row["state"] == "running"
-    assert row["message"] == "Downloading"
+    # The phase word lives in `detail`, not `message`: `jobTypeLabel` (the
+    # dock/StatusBar chip) reads its leading verb off `detail` and the title
+    # ("Update to v9.9.9") has no verb in it, while `jobStatusLine` joins
+    # `message` and `detail` for a running row — the same word in both would
+    # render as "Downloading · Downloading".
+    assert row["detail"] == "Downloading"
+    assert row["message"] == ""
     assert row["cancellable"] is True
     gate.set()
     manager._install_thread.join(timeout=5)
@@ -412,9 +419,13 @@ def test_the_row_mirrors_bytes_then_flips_to_an_uncancellable_installing_phase(
         return os.path.join(dir, "FusedRender.dmg")
 
     monkeypatch.setattr(mac.common, "download_verified", fake_download)
-    # Stops the install right after the phase flip — mounting a DMG that was
-    # never downloaded is not what this test is about.
+    # The installing row has to be read from INSIDE the swap — by the time the
+    # install thread is joinable the row is terminal and says "Cancelled" or an
+    # error, which is not the phase this test is about. `_attach` is the first
+    # thing the swap does, so it is the seam: capture there, then stop (mounting
+    # a DMG that was never downloaded is not what this test is about either).
     def no_mount(dmg):
+        seen["installing"] = _row()
         raise RuntimeError("stop after the phase flip")
 
     monkeypatch.setattr(manager, "_attach", no_mount)
@@ -425,10 +436,19 @@ def test_the_row_mirrors_bytes_then_flips_to_an_uncancellable_installing_phase(
     assert downloading["done"] == float(1024 * 1024)
     assert downloading["total"] == float(4 * 1024 * 1024)
     assert downloading["unit"] == "bytes"
-    assert downloading["message"] == "Downloading"
+    assert downloading["detail"] == mac.PHASE_DOWNLOADING
     assert downloading["cancellable"] is True
-    # The row after the download: no honest total for a copy-and-swap, and no
-    # ✕ either — there is no safe point to stop at once the bundle is moving.
+    # The row during the swap: the phase in `detail` (so the chip reads
+    # "Installing", not the download verb it would infer from `kind`), no
+    # honest total for a copy-and-swap, and no ✕ either — there is no safe
+    # point to stop at once the bundle is moving.
+    installing = seen["installing"]
+    assert installing["state"] == "running"
+    assert installing["detail"] == mac.PHASE_INSTALLING
+    assert installing["message"] == ""
+    assert installing["done"] is None
+    assert installing["total"] is None
+    assert installing["cancellable"] is False
     row = _row()
     assert row["state"] == "error"
     assert row["cancellable"] is False
@@ -498,25 +518,29 @@ def test_cancelling_mid_download_reverts_to_available_and_discards_the_partial(
     assert os.listdir(updates) == []
 
 
-def test_a_cancel_on_the_last_byte_tick_still_stops_before_the_swap(
+def test_a_cancel_after_the_last_byte_tick_still_stops_before_the_swap(
         monkeypatch, tmp_path):
-    """`should_abort` runs BEFORE each chunk, so a ✕ that lands with the final
-    chunk's tick has no next chunk to be honoured on (bugbot, PR #1058). The
-    manager re-reads the flag once the download returns — the bundle is still
-    untouched there — and cancels, discarding the finished DMG."""
+    """`should_abort` runs BEFORE each chunk and a cancel only ever arrives on
+    the reply to a tick — so a ✕ pressed AFTER the final tick (during the
+    sha256 compare, seconds on a large DMG) has neither left to ride on
+    (bugbot, PR #1058). The manager refreshes the flag with an id-only report
+    once the download returns — the bundle is still untouched there — and
+    cancels, discarding the finished DMG."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     updates = tmp_path / "updates"
 
     def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
         assert not should_abort()
         progress(4, 8)
-        # The ✕ arrives as the LAST tick is reported: the manager learns it from
-        # this report's reply, but the loop has no further chunk to check.
-        jobs.request_cancel("sys:update:9.9.9")
         progress(8, 8)
         os.makedirs(dir, exist_ok=True)
         path = os.path.join(dir, prefix + "done" + suffix)
-        open(path, "wb").write(b"x" * 8)
+        with open(path, "wb") as f:
+            f.write(b"x" * 8)
+        # The ✕ lands after the last tick was reported and after the loop's
+        # last `should_abort` — nothing is left to carry it back except the
+        # manager's own re-read.
+        jobs.request_cancel("sys:update:9.9.9")
         return path
 
     monkeypatch.setattr(common, "download_verified", fake_download)
@@ -547,7 +571,7 @@ def test_a_retry_after_a_cancel_starts_from_a_clean_flag(monkeypatch, tmp_path):
         # The ✕, and then the byte tick that carries the flag back — the exact
         # two steps the real download loop takes.
         jobs.request_cancel("sys:update:9.9.9")
-        manager._job_report(done=1.0, total=None, message=mac.PHASE_DOWNLOADING)
+        manager._job_report(done=1.0, total=None, detail=mac.PHASE_DOWNLOADING)
         assert manager._cancel_requested() is True
         raise common.UpdateCancelled("cancelled")
 
@@ -566,3 +590,79 @@ def test_a_retry_after_a_cancel_starts_from_a_clean_flag(monkeypatch, tmp_path):
     assert manager._cancel_requested() is False
     gate.set()
     manager._install_thread.join(timeout=5)
+
+
+def test_the_swap_keeps_reporting_so_the_row_is_never_dropped_as_stale(
+        monkeypatch, tmp_path):
+    """`jobs.is_stalled` shows a running row as "No longer reporting" 30s after
+    its last report and `_forget` drops it entirely after ten minutes — after
+    which the final `done` upsert lands on a dismissed id and the "Installed —
+    restart to finish" line is never drawn at all. The swap has no progress to
+    report, so a watchdog re-sends the phase while it runs."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(mac, "INSTALL_HEARTBEAT_S", 0.02)
+    installing = []
+    real_upsert = jobs.upsert
+
+    def spy(body, **kwargs):
+        if body.get("detail") == mac.PHASE_INSTALLING:
+            installing.append(dict(body))
+        return real_upsert(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", spy)
+
+    def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
+        os.makedirs(dir, exist_ok=True)
+        path = os.path.join(dir, prefix + "done" + suffix)
+        with open(path, "wb") as f:
+            f.write(b"x" * 8)
+        return path
+
+    monkeypatch.setattr(common, "download_verified", fake_download)
+
+    def slow_attach(dmg):
+        time.sleep(0.3)  # a `ditto` of a whole .app bundle, in miniature
+        raise RuntimeError("stop after the phase flip")
+
+    monkeypatch.setattr(manager, "_attach", slow_attach)
+    manager.install()
+    manager._install_thread.join(timeout=10)
+
+    # The flip itself, plus at least one beat from the watchdog while `_attach`
+    # was busy — the row's clock moved without its content changing.
+    assert len(installing) >= 2, installing
+    assert all(body.get("cancellable") is False for body in installing)
+    assert manager.status()["state"] == "error"
+
+
+def test_a_row_that_cannot_be_opened_warns_once_and_the_install_carries_on(
+        monkeypatch, tmp_path, caplog):
+    """Reporting is never load-bearing: an install whose row cannot be drawn
+    still installs. And it says so ONCE — there is a report per megabyte behind
+    the first one, so an unlatched failure would print the same traceback
+    hundreds of times per download."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    calls = []
+
+    def broken_upsert(body, **kwargs):
+        calls.append(dict(body))
+        raise RuntimeError("registry is wedged")
+
+    monkeypatch.setattr(jobs, "upsert", broken_upsert)
+
+    def fake_install(manifest):
+        for done in range(5):
+            manager._job_report(done=float(done), total=4.0,
+                                detail=mac.PHASE_DOWNLOADING, cancellable=True)
+
+    monkeypatch.setattr(manager, "_install_dmg", fake_install)
+    with caplog.at_level("WARNING", logger="fused_render.update"):
+        manager.install()
+        manager._install_thread.join(timeout=5)
+
+    assert manager.status()["state"] == "installed"
+    # Exactly one attempt (the opening report) and exactly one log line: every
+    # later report is a no-op behind the latch.
+    assert len(calls) == 1, calls
+    records = [r for r in caplog.records if "could not report update job" in r.message]
+    assert len(records) == 1, [r.message for r in caplog.records]
