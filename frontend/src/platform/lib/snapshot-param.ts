@@ -243,32 +243,6 @@ export function snapshotListing(
 // (`_file`, `_remote`, the preview thumbnail flags) — appended between the
 // rewritten path and the three snapshot params; order carries no meaning to
 // a query string, so callers need not match `srcFor`'s historical ordering.
-// What the git sidebar's OWN iframe src needs to carry so THIS frame's boot
-// can seed itself instead of unconditionally announcing "nothing is
-// previewed" (round 4, item 4). Preview.tsx's `sideSrcFor` builds that src
-// by hand rather than through `snapshotFrameSrc` above (see that function's
-// own comment for why — different path rewrite, different `_file`
-// semantics), so it never carried ANY of the three snapshot params
-// `snapshotFrameSrc` appends elsewhere. This is the one of those three the
-// git template's own boot actually reads (`_snapshot` — see
-// fused_render/templates/git/template.html's own boot comment); `mode` is
-// checked here rather than left to the caller because only the `git`
-// companion has a "previewed" concept for this to seed at all — a borrowed
-// `mcp` companion has nothing to disagree with the shell about.
-//
-// Returns an EMPTY string, never null, so a caller can always append it
-// directly onto a src under construction the same way `remote`/`chatOnly`/
-// `thumbFlags` already do there — a leading `&` when there is something to
-// carry, nothing otherwise.
-export function carriedSnapshotParam(
-  mode: string,
-  snap: ResolvedSnapshot | null,
-  target: string
-): string {
-  if (mode !== "git" || !snap || !carries(snap.app_dir, target)) return "";
-  return `&_snapshot=${encodeURIComponent(snap.sha)}`;
-}
-
 export function snapshotFrameSrc(opts: {
   snap: ResolvedSnapshot | null;
   sha: string | null;

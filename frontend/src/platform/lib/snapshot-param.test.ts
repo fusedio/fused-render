@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import {
-  carriedSnapshotParam,
   carries,
   getResolvedSnapshot,
   getSnapshotAppDir,
@@ -227,32 +226,6 @@ describe("snapshotFrameSrc — the shared frame-src composer (findings 1/2/4)", 
     });
     const u = new URL(src as string, "http://x");
     expect(u.searchParams.get("_file")).toBe(APP + "/data.csv");
-  });
-});
-
-describe("carriedSnapshotParam — item 4, round 4", () => {
-  it("carries the sha when the git companion's target sits inside the snapshotted app", () => {
-    expect(carriedSnapshotParam("git", SNAP, APP)).toBe("&_snapshot=abc1234");
-    expect(carriedSnapshotParam("git", SNAP, APP + "/sub")).toBe("&_snapshot=abc1234");
-  });
-
-  it("carries nothing once the target leaves the snapshotted app folder", () => {
-    expect(carriedSnapshotParam("git", SNAP, "/repo/otherapp")).toBe("");
-  });
-
-  it("carries nothing with no active resolution", () => {
-    expect(carriedSnapshotParam("git", null, APP)).toBe("");
-  });
-
-  it("carries nothing for a companion other than git (mcp has no previewed concept)", () => {
-    expect(carriedSnapshotParam("mcp", SNAP, APP)).toBe("");
-  });
-
-  it("encodes the sha the same way every other param here does", () => {
-    const snap = { sha: "a b&c", dir: DIR, app_dir: APP };
-    expect(carriedSnapshotParam("git", snap, APP)).toBe(
-      "&_snapshot=" + encodeURIComponent("a b&c")
-    );
   });
 });
 
