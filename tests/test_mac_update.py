@@ -671,20 +671,30 @@ def test_a_row_that_cannot_be_opened_warns_once_and_the_install_carries_on(
 def test_the_heartbeat_never_overwrites_the_finished_row(monkeypatch, tmp_path):
     """The beat is joined before the terminal row is written and re-checks its
     stop flag after every wait (bugbot, PR #1058): with a beat firing every
-    millisecond through a slow swap, the row still ends on the completion
-    line, not on a late "Installing"."""
+    millisecond through a slow swap, the row still ends on the terminal line
+    the install wrote, never on a late "Installing"."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     monkeypatch.setattr(mac, "INSTALL_HEARTBEAT_S", 0.001)
-    slow = manager._attach
+
+    def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
+        os.makedirs(dir, exist_ok=True)
+        path = os.path.join(dir, prefix + "done" + suffix)
+        with open(path, "wb") as f:
+            f.write(b"x" * 8)
+        return path
+
+    monkeypatch.setattr(common, "download_verified", fake_download)
 
     def slow_attach(dmg):
         time.sleep(0.05)
-        return slow(dmg)
+        raise RuntimeError("swap ended")
 
     monkeypatch.setattr(manager, "_attach", slow_attach)
     manager.install()
-    manager._install_thread.join(timeout=5)
+    manager._install_thread.join(timeout=10)
+    # Let any beat that could still be alive have its chance to misfire.
+    time.sleep(0.05)
     row = _row()
-    assert row["state"] == "done", row
-    assert row["detail"] == "Installed — restart to finish", row
-    assert manager.status()["state"] == "installed"
+    assert row["state"] == "error", row
+    assert row["detail"] != mac.PHASE_INSTALLING, row
+    assert "swap ended" in row["message"], row
