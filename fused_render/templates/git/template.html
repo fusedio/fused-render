@@ -212,11 +212,17 @@
   /* Icon buttons grow words when there is room: below this width the label
      hides and the glyph + tooltip + aria-label carry the meaning. The
      breakpoint is the pane's own viewport (this document IS the iframe), so
-     unlike the old toolbar query it measures the right box. */
+     unlike the old toolbar query it measures the right box.
+
+     `.row .inline-eye` is deliberately NOT in this list: it is the one
+     always-visible, deliberately-prominent verb in a commit row (drawn AT
+     REST, not hover-revealed like the rest of `.line .acts`/`.sect-acts`),
+     and the git sidebar itself renders narrower than this breakpoint — so
+     without an exemption its label would never show at the width it
+     actually ships at, defeating the point of giving it one at all. */
   @media (max-width: 480px) {
     .sect-acts .btn .btn-label,
-    .line .acts .btn .btn-label,
-    .row .inline-eye .btn-label { display: none; }
+    .line .acts .btn .btn-label { display: none; }
   }
 
   /* ================= toast ================= */
