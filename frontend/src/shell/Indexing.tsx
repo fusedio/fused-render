@@ -18,6 +18,8 @@ import {
 import type { IndexConfig, Prefs } from "@platform/lib/api";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
 import { useIndexStatus } from "@platform/lib/index-status";
+import { useFda } from "@platform/lib/fda";
+import { INDEXING_FDA_COPY, IndexFdaCta } from "@apps/explorer/IndexFdaCta";
 import { formatMtimeFull } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -89,6 +91,14 @@ export function IndexingPanel({
   const [nonce, setNonce] = useState(0);
   const status = useIndexStatus(true, nonce);
   const scanning = !!status?.scanning;
+  // The server's other reason to refuse a scan (shell/index_gate.py): the
+  // packaged mac app without Full Disk Access. Mirrors that gate — offered
+  // (the `fda` field exists) and not granted to THIS process — so the card
+  // is up before the user presses anything, not only after the 409 comes
+  // back. `pending_relaunch` is still "not granted here": the card's
+  // Relaunch face handles it.
+  const fda = useFda();
+  const fdaBlocked = !!fda && !fda.granted;
 
   useEffect(() => {
     let alive = true;
@@ -147,6 +157,14 @@ export function IndexingPanel({
   const dirty = config !== null && text !== patternsToText(config.ignore);
   const stale = config !== null ? missingDefaults(config.ignore, config.defaults) : [];
   const indexingOff = !prefs.indexing.enabled;
+  // Scan buttons have nothing to do while either gate is shut; the sentence
+  // under them says which. FDA outranks "off": with no access, flipping the
+  // toggle on does not get a scan either.
+  const scanBlockedTitle = indexingOff
+    ? "Indexing is off — turn it back on above to scan"
+    : fdaBlocked
+      ? "Indexing needs Full Disk Access — grant it below first"
+      : null;
 
   return (
     <>
@@ -201,11 +219,10 @@ export function IndexingPanel({
         <div className="prefs-actions">
           <button
             type="button"
-            disabled={busy || scanning || indexingOff}
+            disabled={busy || scanning || indexingOff || fdaBlocked}
             title={
-              indexingOff
-                ? "Indexing is off — turn it back on above to scan"
-                : "Check for changes since the last scan (fast — unchanged folders are skipped)"
+              scanBlockedTitle ??
+              "Check for changes since the last scan (fast — unchanged folders are skipped)"
             }
             onClick={() =>
               act(async () => {
@@ -218,11 +235,10 @@ export function IndexingPanel({
           </button>
           <button
             type="button"
-            disabled={busy || scanning || indexingOff}
+            disabled={busy || scanning || indexingOff || fdaBlocked}
             title={
-              indexingOff
-                ? "Indexing is off — turn it back on above to scan"
-                : "Rebuild from scratch, ignoring what the last scan recorded — use this if results look wrong"
+              scanBlockedTitle ??
+              "Rebuild from scratch, ignoring what the last scan recorded — use this if results look wrong"
             }
             onClick={() =>
               act(async () => {
@@ -254,8 +270,15 @@ export function IndexingPanel({
             above first.
           </p>
         )}
+        {/* No Full Disk Access: the fix, not the refusal. The 409 the scan
+            route answers ("indexing needs Full Disk Access on macOS") used to
+            land in the error banner below — a wall with no door. The card is
+            the same one the home search shows for this gate (explorer/
+            IndexFdaCta): open Settings, or Relaunch once the grant landed.
+            While it is up, a scan error is a restatement, so the card wins. */}
+        {fdaBlocked && !indexingOff && <IndexFdaCta copy={INDEXING_FDA_COPY} />}
         {note && <p className="deploy-muted">{note}</p>}
-        {error && <ErrorBanner>{error}</ErrorBanner>}
+        {error && !fdaBlocked && <ErrorBanner>{error}</ErrorBanner>}
       </section>
 
       <section className="prefs-section">
