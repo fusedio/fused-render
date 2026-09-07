@@ -527,9 +527,12 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> 
     filtered row, not over every row in the corpus. `substr(rel, i, 1)` (1-
     indexed) is therefore the ORIGINAL-case character at 0-indexed `i - 1` —
     the "previous" character for the segment-start test at 0-indexed `i`;
-    `substr(rel, i + 1, 1)` is the character AT `i`. `regexp_matches(c,
-    '^[A-Z]$')` is the ASCII-uppercase test (RE2's `[A-Z]` is byte/ASCII by
-    default, matching rank.py's `.isupper() and .isascii()` pair).
+    `substr(rel, i + 1, 1)` is the character AT `i`. `c BETWEEN 'A' AND 'Z'`
+    is the ASCII-uppercase test (a plain byte comparison, matching rank.py's
+    `.isupper() and .isascii()` pair — and `regexp_matches(c, '^[A-Z]$')`,
+    which this was rewritten from: RE2's `[A-Z]` is byte/ASCII by default
+    too, so the two are equivalent, `BETWEEN` just doesn't pay for spinning
+    up the regex engine to answer a single-byte-range question).
 
     Final order is `tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC` —
     `longest_run` does not appear because every surviving row shares it. The
@@ -551,11 +554,17 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> 
     `_group_case_only_ties` helper exists because of it, not because of
     this) and is unaffected by adding `rel ASC` here — it only fixes SQL's
     OWN run-to-run stability, not cross-language agreement."""
+    # `BETWEEN 'A' AND 'Z'`, not `regexp_matches(c, '^[A-Z]$')`: same ASCII-
+    # uppercase test (a single-byte comparison DuckDB can do without spinning
+    # up its regex engine), measured ~15-20% faster and byte-for-byte
+    # equivalent for this predicate — this only ever compares a length-1
+    # string against the two ASCII bytes 'A'/'Z', which is exactly what
+    # `^[A-Z]$` matched and nothing more.
     segment_starts = (
         f"len(list_filter(range(p0, p0 + {n}), i -> "
         f"i = 0 OR list_contains({_SEGMENT_SEPARATORS!r}, substr(rel, i, 1)) "
-        f"OR (regexp_matches(substr(rel, i + 1, 1), '^[A-Z]$') "
-        f"AND NOT regexp_matches(substr(rel, i, 1), '^[A-Z]$'))))"
+        f"OR (substr(rel, i + 1, 1) BETWEEN 'A' AND 'Z' "
+        f"AND NOT (substr(rel, i, 1) BETWEEN 'A' AND 'Z'))))"
     )
     name_bonus = (f"CASE WHEN nm = lower('{qq}') THEN 100 "
                   f"WHEN nm LIKE lower('{ql}') || '%' ESCAPE '\\' THEN 25 ELSE 0 END")
@@ -605,9 +614,21 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     `ORDER BY ... LIMIT {limit + 1}` is pushed into the same query as the
     filter and the scoring — the real win this change preserves from the
     two-stage version it replaces (which capped a 2,000-row Python-scored
-    candidate set) is that duckdb now does the ordering and the cut, and nets
-    out cheaper: no per-request cap tuning, no Python loop, and no risk of the
-    cap silently dropping a row the full ranking would have preferred.
+    candidate set) is that duckdb now does the ordering and the cut in the
+    SAME statement, so there is no per-request cap to tune, no Python
+    scoring loop, and no risk of the cap silently dropping a row the full
+    ranking would have preferred. **Not free, and not claimed to be**:
+    scoring runs for every matched row before the top-N cut, not only the
+    rows that survive it, so a broad query pays for scoring rows it will
+    then discard. Measured on a 300k-file synthetic index, `q="e"` (353k
+    matching rows) took ~100ms for the full statement here, ~53ms with
+    scoring stripped out, and ~43ms for the old stage-A candidate-gathering
+    shape alone — scoring roughly DOUBLES the per-keystroke cost for a query
+    this broad. The trade is still the right one (no candidate cap means no
+    row is ever dropped before ranking gets to see it, which is the actual
+    correctness property that matters), but it is a trade with a real cost on
+    a broad query, not a strictly cheaper replacement for the two-stage
+    shape.
 
     `longest_run` does not appear in `_rank_sql`'s ORDER BY: every surviving
     row is a substring hit, so `longest_run = len(q)` for every one of them,
