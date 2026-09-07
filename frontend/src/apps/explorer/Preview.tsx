@@ -1198,6 +1198,31 @@ function TemplatePreview({
       null
     );
     replaceSearch(location.pathname + (search ? "?" + search : ""));
+    // FINDING 7 (second review round): the git sidebar's own `previewed`
+    // state — its "Files are shown as of <sha>" banner and Checkout button —
+    // has no way to hear about a clear that starts HERE. Only the sidebar's
+    // OWN click hops to the shell (`window._fusedSnapshotSelected` above);
+    // there was no hop the other way, so a "Back to live" click in the
+    // content pane's own banner (or Listing.tsx's) left the sidebar's
+    // stale claim on screen over a pane that is now live — a destructive
+    // Checkout button attached to a version nobody is looking at any more.
+    // Same idiom as `_fusedSelectSnapshot`/`_fusedFsChanged`, run the other
+    // direction: a plain global called directly on the iframe's own
+    // `contentWindow` (same-origin), exactly how this shell already reaches
+    // `__fusedFlushEdits` on the code template a little further down. Both
+    // ends fail safe: the query can miss (no sidebar mounted, or it is
+    // showing `claude`/`mcp` rather than `git`) and the function can be
+    // absent (the git template rendered outside this shell, or an older
+    // build) — either is simply nothing to tell.
+    const sideFrame = document.querySelector<HTMLIFrameElement>(
+      ".preview-side-frame"
+    );
+    const clear =
+      sideFrame?.contentWindow &&
+      (sideFrame.contentWindow as unknown as {
+        _fusedSnapshotCleared?: () => void;
+      })._fusedSnapshotCleared;
+    if (typeof clear === "function") clear();
   }, []);
   useEffect(() => {
     const raw = new URLSearchParams(location.search).get("_snapshot");
@@ -2220,6 +2245,12 @@ function TemplatePreview({
                 or for a still-pending resolve. See
                 DECISIONS-app-snapshot-preview.md for why this reverses that
                 doc's "invisible outside the listing" rule. */}
+            {/* `.preview-body` is a flex ROW (it also hosts the mode iframe,
+                see preview.css's own note above `.metadata-stack`), so the
+                banner needs its own flex-COLUMN wrapper here too — without
+                it the banner rendered as a squeezed vertical strip beside
+                the frames instead of a bar above them. */}
+            <div className="preview-content-stack">
             {snapshotResolved && (
               <div className="listing-snapshot-banner">
                 Showing this file as of commit{" "}
@@ -2305,6 +2336,7 @@ function TemplatePreview({
                 }}
               />
             ))}
+            </div>
             </div>
           </>
         )}

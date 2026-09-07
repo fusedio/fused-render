@@ -1530,12 +1530,19 @@ async function probeAppFolder() {
 
 /* The ONE writer of `previewed`, and the only thing that speaks to the shell.
  * Refuses while the capability is absent, so the state cannot be set by anything
- * the user cannot see the result of. */
-function preview(sha) {
+ * the user cannot see the result of.
+ *
+ * `silent` (finding 7, second review round) is for exactly one caller,
+ * `_fusedSnapshotCleared` below: the shell calling THIS frame to say its own
+ * `_snapshot` is already gone. Hopping back there would just echo a write
+ * the shell already made — at best redundant, at worst (a shell that has
+ * since moved to a different sha) a stale "and now nothing" landing after a
+ * newer "now THIS commit" and clobbering it. */
+function preview(sha, silent) {
   const next = (canPreview && sha) ? sha : null;
   if (previewed === next) return;
   previewed = next;
-  hopSnapshot();
+  if (!silent) hopSnapshot();
   void draw(true);
 }
 
@@ -1546,6 +1553,28 @@ function hopSnapshot() {
     window._fusedSelectSnapshot(previewed);
   }
 }
+
+/* FINDING 7 (second review round): the reverse of the hop above. The content
+ * pane can drop `_snapshot` on its own — its own "Back to live" banner, or a
+ * sibling Listing.tsx's — with no click ever landing in THIS frame, so
+ * `previewed` (and the banner/Checkout button it draws) would go on
+ * describing a version the pane next door no longer shows. Exposed on this
+ * window for the shell to call directly through the iframe's `contentWindow`
+ * (same-origin), the same idiom `_fusedSelectSnapshot`/`_fusedFsChanged`
+ * already use in the OTHER direction (child frame -> ancestor); this is
+ * ancestor -> child, so it is a plain global the shell reaches into rather
+ * than one this frame calls upward.
+ *
+ * Routed through `preview()`'s own `silent` flag rather than writing
+ * `previewed` here directly — this stays the state's ONE writer, so a
+ * future assignment cannot forget the hop (or forget to skip it here) as
+ * one more scattered site to keep in sync. Fails safe on its own: if
+ * `previewed` is already null (this frame's own "Back to now" beat the
+ * shell here, or there was never anything previewed) `preview()`'s own
+ * early return makes this a no-op rather than a redundant repaint. */
+window._fusedSnapshotCleared = function () {
+  preview(null, true);
+};
 
 function pollRevTarget() {
   const has = !!revMarkedFrame() && hasAppFolder;
@@ -4281,7 +4310,14 @@ function render(data, stashes, diff) {
          moves the view from "previewing a version" back to "now", rather
          than continuing to claim a preview of what is already current. */
       page.append(confirmBar(checkoutQuestion,
-        () => run("app_restore", { op: "app_restore", sha: previewed },
+        /* Keyed the same as the `confirmable` button above (finding 5,
+           second review round): `confirmBar`'s own click handler clears
+           `ask` BEFORE calling `run`, so by the time the redraw shows
+           `busy` set, this confirmable button (not the confirm bar) is
+           what's back on screen — its spinner only paints if `run`'s own
+           key still matches the one it was drawn with. A bare
+           "app_restore" left every button disabled with nothing moving. */
+        () => run("app_restore:" + previewed, { op: "app_restore", sha: previewed },
                   () => { preview(null); }),
         "Checkout"));
     }
@@ -4470,7 +4506,11 @@ async function loadDiff(data) {
        selection (or a reload) simply arms nothing here any more. */
     if (param("ask") === "revert:" + rev) {
       pane.append(confirmBar(revertQuestion,
-        () => run("revert", { op: "revert", sha: rev }), "Revert"));
+        /* Keyed the same as the `confirmable` button above (finding 5,
+           second review round) for the same reason as app_restore's own
+           call just above: after `ask` clears, `busy` has to match the
+           button that reappears, not the bare op name. */
+        () => run("revert:" + rev, { op: "revert", sha: rev }), "Revert"));
     }
     return pane;
   }

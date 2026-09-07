@@ -368,7 +368,7 @@ def test_the_preview_control_needs_a_pane_to_drive(source):
     assert "} else if (canPreview) {" in row
     assert "preview(entry.sha);" in row and "preview(null);" in row
     # ...and `preview()` refuses even if something called it anyway.
-    setter = source[source.index("function preview(sha)"):]
+    setter = source[source.index("function preview(sha, silent)"):]
     setter = setter[:setter.index("\n}")]
     assert "const next = (canPreview && sha) ? sha : null;" in setter
 

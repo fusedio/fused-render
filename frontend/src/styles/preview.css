@@ -186,6 +186,23 @@
   min-width: 0;
 }
 
+/* Preview.tsx's content-pane counterpart to Listing.tsx's own
+   ".listing-snapshot-banner" wrapper. `.preview-body` above is a flex ROW
+   (it also hosts the mode iframe as a sibling), so the banner and
+   `.preview-frames` need their own flex-COLUMN wrapper here to stack
+   vertically — without it the banner rendered as a squeezed vertical strip
+   to the LEFT of the frames instead of a bar above them, which is the trap
+   `.metadata-stack`'s own comment above already documents for the fallback
+   card. `.listing-main` (explorer.css) is already a column, which is why
+   Listing.tsx's identical banner never needed this wrapper of its own. */
+.preview-content-stack {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .preview-body iframe {
   flex: 1 1 auto;
   width: 100%;

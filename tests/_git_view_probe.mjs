@@ -84,6 +84,14 @@ class El {
     });
   }
   click() {
+    // A real DOM dispatches no click at all on a disabled element — the
+    // browser eats the event before any listener sees it. `action()`
+    // (template.html) guards its own handler only on `busy !== null`, not on
+    // `settings.disabled`, so without this check the probe could "verify" a
+    // gesture — clicking a button disabled for consent-key or gating
+    // reasons — that no browser would ever deliver (finding 6, second
+    // review round).
+    if (this.disabled) return;
     const event = { type: "click", preventDefault() {}, stopPropagation() {} };
     for (const fn of (this._listeners?.click ?? []).slice()) fn(event);
   }
