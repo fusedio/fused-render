@@ -51,6 +51,13 @@ export interface Job {
   // outright over the catalog's constant; a "phase" total may only ever
   // raise it (never-understate).
   total_scope: "download" | "phase";
+  // Whether `total` is a genuine count or a stand-in guess (today only the
+  // index-scan bridge sets this — the last scan's row count, standing in for
+  // a walk still in progress). Rendered as a qualifier next to the AMOUNT,
+  // not folded into `jobAmount` itself — see that call site in
+  // DownloadManager.tsx — so no other job kind grows an "(estimated)" suffix
+  // just by existing (D733).
+  total_estimated: boolean;
   unit: string; // "bytes" | "s" | "" — decides how done/total are formatted
   message: string; // the error text when state is "error"; the question's caption when state is "waiting"
   page: string; // the .html that raised it (attribution)
@@ -291,7 +298,21 @@ function clock(seconds: number): string {
 // takes for segments or steps. A unit that is only ever right by accident is
 // worse than one that is absent, since the bare pair looks deliberate.
 export function jobAmount(job: Job): string {
-  const { done, total, unit } = job;
+  const { total, unit } = job;
+  // A reporter's own `done` can pass a stale `total` (an index rescan whose
+  // tree grew since the last scan set `total_estimated` — the ONLY producer
+  // of this today) — `jobFraction` already clamps the BAR at full rather
+  // than past it or backwards. The printed number has to agree, or the row
+  // says two different things at once ("700,000 / 672,424 files" beside a
+  // bar already pinned at 100%). Clamping the numerator to the total — not
+  // dropping the denominator — was chosen because the total is still the
+  // honest fact worth showing (D733): it says what the walk expected, and a
+  // clamped "672,424 / 672,424" reads as "caught up to the estimate", which
+  // is closer to the truth than either a bare unclamped count or a total
+  // that vanishes the moment it is exceeded.
+  const rawDone = job.done;
+  const done =
+    rawDone !== null && total !== null && total > 0 && rawDone > total ? total : rawDone;
   if (done === null && total === null) return "";
   if (unit === "s") {
     if (done === null) return "";
@@ -299,11 +320,23 @@ export function jobAmount(job: Job): string {
       ? clock(done)
       : `${clock(done)} / ${clock(total)}`;
   }
+  // Any other unit is a plain COUNT: locale thousands separators (never a
+  // hard-coded comma — `toLocaleString()` is the one formatter in this file
+  // that has to agree with the Preferences panel's own count, which renders
+  // in the browser's locale and so groups digits Indian-style, not
+  // Western-style, once the count passes a lakh) plus the unit word itself,
+  // e.g. "10,856 files" or "10,856 / 672,424 files". `unit: "files"`
+  // (index scans, D724) and `unit: "tokens"` (text generation,
+  // `ai/supervisor.py`'s `text_row_fields`) are the two real callers today;
+  // both used to fall through to a bare, unformatted number (the defect
+  // this branch fixes) and both read strictly better with a word attached.
   if (unit !== "bytes") {
     if (done === null) return "";
+    const count = (n: number) => Math.round(n).toLocaleString();
+    const suffix = unit ? ` ${unit}` : "";
     return total === null || total <= 0
-      ? String(Math.round(done))
-      : `${Math.round(done)} / ${Math.round(total)}`;
+      ? `${count(done)}${suffix}`
+      : `${count(done)} / ${count(total)}${suffix}`;
   }
   const scale = byteScale(Math.max(done ?? 0, total ?? 0));
   if (total === null || total <= 0) {
@@ -355,7 +388,18 @@ export function jobStatusLine(job: Job): string {
   // had something true to say. The last-resort fallback belongs at the call
   // site instead, once status AND amount are both known to be empty
   // (DownloadManager.tsx's `statusLine`, `repoStatusText`'s job branch).
-  return job.detail || "";
+  //
+  // `message` joins `detail` here (was `detail` alone) because a reporter's
+  // PHASE — a fact distinct from `detail`'s "where"/"what" — has always
+  // lived in `message` for a running job (`_report`'s error/waiting-only
+  // convention meant it was simply never populated while running, until the
+  // index-scan bridge started putting its run's phase there — "writing
+  // index" / "writing signatures", D724 — with no code path that ever
+  // rendered it: `message` was read only for `error`/`waiting` above). Every
+  // other reporter still sends `message: ""` while running (or nothing at
+  // all), so this is additive for them — `[]` still degrades to `detail`
+  // alone.
+  return [job.message, job.detail].filter(Boolean).join(" · ");
 }
 
 /** A COARSE duration, in the largest unit that still says something true:

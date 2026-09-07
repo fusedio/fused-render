@@ -79,27 +79,45 @@ export function maxSpan(queryLength: number): number {
   return queryLength * 3 + 8;
 }
 
-export function fuzzyMatch(query: string, text: string): FuzzyResult | null {
-  if (query === "") return { score: 0, positions: [], longestRun: 0 };
+/**
+ * Case-insensitive substring match: `query` found verbatim and contiguous in
+ * `text`, or null. The same test `fused_render/index/query.py`'s `_rank_sql`
+ * filters on server-side (`WHERE lower(rel) LIKE '%q%'`) — home-search.ts's
+ * `narrowAnswer` and `answerFrom`, and listing/ranked-hits.ts's `hitsFromRank`,
+ * all call rows that already passed that server filter, so this is the exact
+ * test they need, not `fuzzyMatch`'s strictly looser subsequence one.
+ *
+ * Extracted out of `fuzzyMatch`'s own substring fast path (below) rather than
+ * reimplemented: this IS that branch, unchanged, just independently callable.
+ * `query === ""` matches at position 0 with no positions, same as
+ * `String.prototype.indexOf("")` always doing so — no special case needed.
+ */
+export function substringMatch(query: string, text: string): FuzzyResult | null {
   const q = query.toLowerCase();
   const t = text.toLowerCase();
   const sub = t.indexOf(q);
-  if (sub !== -1) {
-    // The substring branch is untouched, and stays AHEAD of everything below.
-    // `longestRun = q.length` is the maximum the subsequence branch can never
-    // reach, and rankCompare orders on longestRun first — that is what
-    // guarantees substring-over-fuzzy (listing/search.ts). Its span is the query
-    // length by construction, so the bound cannot apply to it.
-    const positions: number[] = [];
-    let score = 0;
-    for (let ti = sub; ti < sub + q.length; ti++) {
-      positions.push(ti);
-      score += 1;
-      if (ti > sub) score += 3; // consecutive run
-      if (isSegmentStart(text, ti)) score += 5; // landed on a word boundary
-    }
-    return { score, positions, longestRun: q.length };
+  if (sub === -1) return null;
+  const positions: number[] = [];
+  let score = 0;
+  for (let ti = sub; ti < sub + q.length; ti++) {
+    positions.push(ti);
+    score += 1;
+    if (ti > sub) score += 3; // consecutive run
+    if (isSegmentStart(text, ti)) score += 5; // landed on a word boundary
   }
+  return { score, positions, longestRun: q.length };
+}
+
+export function fuzzyMatch(query: string, text: string): FuzzyResult | null {
+  // The substring branch stays AHEAD of everything below. `longestRun =
+  // q.length` is the maximum the subsequence branch can never reach, and
+  // rankCompare orders on longestRun first — that is what guarantees
+  // substring-over-fuzzy (listing/search.ts). Its span is the query length by
+  // construction, so the bound cannot apply to it.
+  const sub = substringMatch(query, text);
+  if (sub) return sub;
+  const q = query.toLowerCase();
+  const t = text.toLowerCase();
   // Pass 1: does a subsequence exist, and where is the earliest it can end?
   let qi = 0;
   let end = -1;

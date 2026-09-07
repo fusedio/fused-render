@@ -53,6 +53,22 @@ export function unionWithDefaults(text: string, defaults: string[]): string {
   return [...base, ...missing].join("\n");
 }
 
+// The "Scanning now — N files so far under X." line. `files` alone is only
+// the newly-walked count (index/store.py's `Sink` credits an unchanged
+// directory to `reused` instead, not `files`) — a rescan that reuses most of
+// a tree would otherwise read as barely started until the run completes and
+// `files_indexed` jumps all at once. Pulled out of IndexingPanel so the
+// arithmetic can be tested without mounting the panel (D736): mounting it
+// drags in `useIndexStatus`'s file-access-daemon-adjacent polling machinery,
+// which needs a `window` this bun:test run does not always have.
+export function scanningLine(
+  status: { files: number; reused: number; root: string | null },
+): string {
+  return `Scanning now — ${(status.files + status.reused).toLocaleString()} files so far${
+    status.root ? ` under ${status.root}` : ""
+  }.`;
+}
+
 // The one line of a failed scan's `error` worth putting in a settings panel.
 //
 // A scan that raised reports `traceback.format_exc()` (index/scan.py's
