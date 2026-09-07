@@ -1190,3 +1190,45 @@ a.bookmark-name::after {
 .current-apps-compose .home-composer-wrap {
   margin-bottom: 0;
 }
+
+/* -- The setup meter (shell/onboarding/SetupProgress) --------------------------
+   A `.sidebar-item` row above Settings: ring glyph, "Setup", then a thin bar
+   and the number in the trailing slot. The fill is the accent — this is the
+   one row in the sidebar that is an invitation rather than a destination, and
+   the wizard's own yellow says so. The rail shows the ring alone. */
+.setup-progress-bar {
+  position: relative;
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.1);
+  overflow: hidden;
+}
+
+.setup-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 400ms ease;
+}
+
+.setup-progress-pct {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  min-width: 3ch;
+  text-align: right;
+}
+
+.setup-ring-fill {
+  color: var(--accent);
+  transition: stroke-dasharray 400ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-progress-fill,
+  .setup-ring-fill {
+    transition: none;
+  }
+}
