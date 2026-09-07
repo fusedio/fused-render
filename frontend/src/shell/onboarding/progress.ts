@@ -70,10 +70,41 @@ function set(next: OnboardingState | null) {
   emit();
 }
 
+// EVERY REPLY IS THE WHOLE STATE, AND REPLIES DO NOT ARRIVE IN ORDER. Two
+// stage POSTs in one tick, or the sidebar's mount-time GET racing the last
+// write the wizard made on its way out — whichever lands LAST would win, and a
+// stale one would put a stage back to what it was (bugbot: a showcase open is
+// the sharp case, since the server cannot observe it and nothing would ever
+// correct the loss). So a reply is MERGED, not adopted:
+//   * flags (completed/dismissed/opened) only ever gain a value — a stamp the
+//     server has made cannot be un-made by an older reply;
+//   * each stage keeps whichever record is NEWER by `updated_at`. An optimistic
+//     local write stamps `now`; the server's own stamp for that write is later
+//     still, so the reply replaces it, while a reply from BEFORE the write
+//     (older stamp, or no stage at all) leaves the local record standing.
+//     A server observation carries the stored record's stamp (or null), which
+//     is exactly "not newer than anything the wizard has written since".
+function merge(reply: OnboardingState): void {
+  const cur = snapshot;
+  if (!cur) return set(reply);
+  const stages: Stages = { ...(reply.stages ?? {}) };
+  for (const [id, mine] of Object.entries(cur.stages ?? {})) {
+    const theirs = stages[id];
+    if (!theirs || (mine.updated_at ?? -1) > (theirs.updated_at ?? -1)) stages[id] = mine;
+  }
+  set({
+    ...reply,
+    completed_at: reply.completed_at ?? cur.completed_at,
+    dismissed_at: reply.dismissed_at ?? cur.dismissed_at,
+    opened_at: reply.opened_at ?? cur.opened_at,
+    stages,
+  });
+}
+
 /** Adopt a snapshot some other call brought back (the wizard's `opened`
- *  write, complete, dismiss) — every reply is the whole state. */
+ *  write, complete, dismiss). Merged, like every reply (see `merge`). */
 export function setProgress(next: OnboardingState): void {
-  set(next);
+  merge(next);
 }
 
 /** Seed from the boot config, once — a first paint that does not wait. */
@@ -85,7 +116,7 @@ export function seedProgress(config: Config): void {
 export function refreshProgress(): Promise<void> {
   if (inflight) return inflight;
   inflight = getOnboarding()
-    .then((s) => set(s))
+    .then((s) => merge(s))
     .catch(() => undefined)
     .finally(() => {
       inflight = null;
@@ -138,7 +169,7 @@ export function reportStage(
     });
   }
   setOnboardingStage(stage, status, meta).then(
-    (s) => set(s),
+    (s) => merge(s),
     () => undefined,
   );
 }
