@@ -1481,6 +1481,36 @@ function revMarkedFrame() {
 }
 let canPreview = false;
 
+/* THE SECOND HALF OF THE GATE (D701, code review finding B4): a pane to drive
+ * is necessary but not sufficient — `/api/git/snapshot` can only ever resolve
+ * for a path with an enclosing app folder, so offering the eye anywhere else
+ * (a plain repo file, a folder with no app in it) promises a preview that can
+ * never land: the shell hops the sha through anyway, `getGitSnapshot` 404s,
+ * the sidebar's own `.catch()` swallows it, and the "previewing commit X"
+ * pill and dot are left claiming a pane that still shows the live file (and,
+ * per finding B2, would still accept writes had the write gate not also been
+ * fixed).
+ *
+ * Resolved once, against `/api/git/app-folder` — a cheap, sha-less probe (no
+ * git/tar fork, see git_snapshot.py's own comment on why it exists
+ * separately from `/api/git/snapshot`) — and cached for the life of this
+ * frame: `file` is read once at boot and never changes without a full reload
+ * of this frame (a new document, a fresh copy of this script), so there is
+ * nothing to re-probe. Starts `false` (fail closed): the eye stays hidden
+ * until the probe actually confirms an app folder, never the reverse. */
+let hasAppFolder = false;
+async function probeAppFolder() {
+  if (!file) return;
+  try {
+    const res = await fetch("/api/git/app-folder?path=" + encodeURIComponent(file));
+    const data = await res.json().catch(() => null);
+    hasAppFolder = !!(data && data.ok);
+  } catch (err) {
+    hasAppFolder = false;
+  }
+  pollRevTarget(); // re-evaluate canPreview now that hasAppFolder may have changed
+}
+
 /* The ONE writer of `previewed`, and the only thing that speaks to the shell.
  * Refuses while the capability is absent, so the state cannot be set by anything
  * the user cannot see the result of. */
@@ -1501,7 +1531,7 @@ function hopSnapshot() {
 }
 
 function pollRevTarget() {
-  const has = !!revMarkedFrame();
+  const has = !!revMarkedFrame() && hasAppFolder;
   if (has === canPreview) return;
   canPreview = has;
   /* A capability that has GONE takes the preview with it: the frame that was
@@ -4486,9 +4516,14 @@ hopSnapshot();
    because the host's mark arrives and departs long after this page has mounted
    (its mode switcher moves it; a listing removes it). Same discipline as the
    claude template's annotate target, and for the same reason. */
-canPreview = !!revMarkedFrame();
+canPreview = !!revMarkedFrame() && hasAppFolder;
 window.addEventListener("focus", () => pollRevTarget());
 setInterval(() => pollRevTarget(), REV_TARGET_POLL_MS);
+/* Kicked off here, once, alongside the plain initial assignment above:
+   `hasAppFolder` starts `false`, so this fires the async probe that flips
+   `canPreview` on (via its own call to `pollRevTarget`) the moment the
+   answer is known, rather than waiting for the first poll tick. */
+void probeAppFolder();
 
 fused.params.onChange(() => draw());
 draw(true);

@@ -372,6 +372,28 @@ def test_the_preview_control_needs_a_pane_to_drive(source):
     assert "const next = (canPreview && sha) ? sha : null;" in setter
 
 
+def test_the_preview_control_also_needs_an_enclosing_app_folder(source):
+    # D701 / code review finding B4: a pane to drive is necessary but not
+    # sufficient. `/api/git/snapshot` can only ever resolve for a path with an
+    # enclosing app folder, so `canPreview` must ALSO require that — offering
+    # the eye anywhere else promises a preview that can never land (the shell
+    # hops the sha through, `getGitSnapshot` 404s, and the sidebar's own
+    # `.catch()` swallows it while the pill still claims a live pane shows
+    # commit X).
+    assert "let hasAppFolder = false;" in source  # fails closed until proven
+    assert '"/api/git/app-folder?path="' in source
+    # Both places `canPreview` is assigned must require it, not just the mark.
+    assert "canPreview = !!revMarkedFrame() && hasAppFolder;" in source
+    poll = source[source.index("function pollRevTarget()"):]
+    poll = poll[:poll.index("\n}")]
+    assert "const has = !!revMarkedFrame() && hasAppFolder;" in poll
+    # The probe re-evaluates the poll once its answer lands, rather than
+    # leaving the eye hidden until the next scheduled tick.
+    probe = source[source.index("async function probeAppFolder()"):]
+    probe = probe[:probe.index("\n}")]
+    assert "pollRevTarget();" in probe
+
+
 def test_the_capability_is_polled_like_the_annotate_target(source):
     # The mark ARRIVES and DEPARTS after this page has mounted — the host's mode
     # switcher moves it, a listing removes it — so it is polled on focus plus a
