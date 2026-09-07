@@ -65,3 +65,12 @@ export function scanErrorLine(error: string): string {
   const lines = error.split("\n").filter((l) => l.trim() !== "");
   return lines.length === 0 ? "" : lines[lines.length - 1].trim();
 }
+
+// The scan route's 409 body when the packaged mac app has no Full Disk Access
+// (shell/index_gate.py FDA_MESSAGE), and the runner's ValueError for the same
+// gate — the one error the Indexing panel's FDA card already explains, so the
+// banner should not repeat it. Every OTHER error (Save, Delete, config load)
+// still shows: the gate being shut says nothing about those.
+export function isFdaRefusal(error: string | null | undefined): boolean {
+  return (error ?? "").toLowerCase().includes("needs full disk access");
+}
