@@ -970,7 +970,7 @@ def test_a_read_only_installation_gets_a_DIAGNOSTIC_session(client, install,
     monkeypatch.setattr(selffix_routes, "_spawn_helper", fake_spawn)
     watched = []
     monkeypatch.setattr(selffix_routes, "_watch_fix",
-                        lambda *a, **k: watched.append(a))
+                        lambda *a, **k: watched.append((a, k)))
 
     res = post(client, "/api/selffix/start", {"title": "boom"})
     assert res.status_code == 200
@@ -990,11 +990,45 @@ def test_a_read_only_installation_gets_a_DIAGNOSTIC_session(client, install,
     assert os.path.exists(body["incident"])
     assert os.path.exists(body["report"])
 
-    # Nothing to watch and nothing to stamp: no marker, no baseline, and no
-    # watcher thread that would poll a digest which cannot move.
-    assert watched == []
+    # FOLLOWED BUT NOT STAMPED. Nothing to stamp — no marker, no baseline, and
+    # no settle against a digest that cannot move — but the session is still
+    # followed, because the poll is what records its session id and commits its
+    # turn, and that writes to the runs directory rather than to the tree.
+    assert len(watched) == 1, "a diagnostic session was left unpolled"
+    assert watched[0][1] == {"stamp_tree": False}, (
+        "a diagnostic watcher must not settle the installation")
     assert selffix.status() is None
     assert not os.path.exists(selffix.baseline_path())
+
+
+def test_a_diagnostic_watcher_polls_the_run_and_stamps_NOTHING(install,
+                                                               monkeypatch):
+    """The two halves of the watcher, taken apart.
+
+    `record_session_when_ready` is what records a detached run's session id and
+    commits its finished turn — bookkeeping that lands in the runs directory and
+    the folder's repo, never in the installation. A read-only install is a
+    reason to skip the STAMP, and the stamp only: dropping the poll with it left
+    a Diagnose session unlisted on its folder and its turn uncommitted, alone
+    among the app's detached spawns.
+    """
+    polled = []
+
+    def fake_poll(agent, run_id, on_tick=None):
+        polled.append(run_id)
+        if on_tick:
+            on_tick({"session_id": "sess-ro", "done": True})
+
+    monkeypatch.setattr(selffix_routes, "_record_session_when_ready", fake_poll)
+    stamps = []
+    monkeypatch.setattr(selffix, "settle",
+                        lambda **kw: stamps.append(kw) or False)
+
+    REAL_WATCH_FIX("run-ro", "inc.md", "rep.md", "boom", "", stamp_tree=False)
+
+    assert polled == ["run-ro"], "the diagnostic run was never polled"
+    assert stamps == [], (
+        "a diagnostic watcher settled an installation it was told not to touch")
 
 
 def test_a_write_that_fails_after_os_access_said_yes_becomes_diagnostic(

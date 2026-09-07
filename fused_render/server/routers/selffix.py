@@ -181,7 +181,7 @@ def _live_session_in(root: str) -> str:
 
 
 def _watch_fix(run_id: str, incident: str, report: str, title: str,
-               before: str) -> None:
+               before: str, *, stamp_tree: bool = True) -> None:
     """Follow the fix session and stamp the installation if it changed.
 
     Two jobs the session cannot do for itself. The FIRST is the stamp — see
@@ -192,12 +192,22 @@ def _watch_fix(run_id: str, incident: str, report: str, title: str,
     run nobody polls never reaches its sidecar, so the conversation would not be
     listed when the user later opens that folder's chat.
 
+    `stamp_tree=False` keeps the second job and drops the first, which is the
+    whole of what a DIAGNOSTIC session needs. The two used to travel together
+    and a diagnostic start therefore skipped both — but only the stamp is about
+    the installation. The poll writes to the runs directory and the folder's
+    repo, never to the tree, so a read-only install is no reason to leave a
+    detached session unpolled: its conversation would go unlisted and its turn
+    uncommitted, alone among the app's detached spawns.
+
     Every failure is swallowed. A fix that landed but whose badge did not is a
     bad outcome; a background thread that raises into the server is a worse one.
     """
     state = {"ticks": 0, "session_id": ""}
 
     def stamp() -> None:
+        if not stamp_tree:
+            return
         try:
             selffix.settle(before=before, run_id=run_id,
                            session_id=state["session_id"],
@@ -491,17 +501,18 @@ def api_selffix_start(body: dict = Body(default={}),
         selffix.note_session(str(run_id), before=before, baseline=baseline,
                              report=report, incident=incident, title=title)
 
-    # NOT WATCHED WHEN DIAGNOSTIC. The watcher exists to notice that the tree
-    # changed and stamp the installation; on a read-only one it would poll a
-    # digest that cannot move, and then try to write a marker into the same tree
-    # it could not write the baseline to. The session is still perfectly real —
-    # it just has nothing to stamp.
-    if diagnostic:
-        return {"run_id": str(run_id), "target": root, "incident": incident,
-                "report": report, "diagnostic": True}
+    # WATCHED EITHER WAY, STAMPED ONLY WHEN THERE IS SOMETHING TO STAMP. On a
+    # read-only install the watcher must not settle — it would poll a digest
+    # that cannot move and then try to write a marker into the tree it could
+    # not write the baseline to. But the OTHER half of this thread is the poll
+    # every detached session in this codebase needs, and that writes to the
+    # runs directory, not the install: without it a Diagnose session the user
+    # walks away from is never listed on the folder and never has its turn
+    # committed. So the stamp is what a diagnostic start drops, not the follow.
     try:
         threading.Thread(target=_watch_fix,
                          args=(str(run_id), incident, report, title, before),
+                         kwargs={"stamp_tree": not diagnostic},
                          daemon=True, name="fused-render-selffix-watch").start()
     except Exception:  # noqa: BLE001 — the session is already running
         # Nothing to unwind. The session is running and its run directory
@@ -517,7 +528,11 @@ def api_selffix_start(body: dict = Body(default={}),
         # at all means the interpreter could not start a thread.
         logger.exception(
             "could not start the self-fix watcher for run %s — the session is "
-            "running unwatched and its changes will not be stamped", run_id)
+            "running unwatched, so its conversation may go unlisted and (on a "
+            "writable install) its changes unstamped", run_id)
+    if diagnostic:
+        return {"run_id": str(run_id), "target": root, "incident": incident,
+                "report": report, "diagnostic": True}
     return {"run_id": str(run_id), "target": root, "incident": incident,
             "report": report}
 
