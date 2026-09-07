@@ -5,6 +5,9 @@
 // now". It is deliberately a small surface: the index maintains itself (a scan
 // on every startup, incremental after the first), so these are the escape
 // hatches, not the normal path.
+//
+// Built from the shared form kit (`platform/ui/form`) — see that directory's
+// README for the old class → component map.
 import { useEffect, useState } from "react";
 import {
   askIndex,
@@ -20,7 +23,22 @@ import type { IndexQueryOutcome } from "@platform/lib/index-query";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { formatMtimeFull } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { Switch } from "@platform/shadcn/ui/switch";
+import { Button } from "@platform/shadcn/ui/button";
+import { TableHeader, TableBody, TableRow, TableHead, TableCell } from "@platform/shadcn/ui/table";
+import {
+  SettingsSection,
+  ChoiceRow,
+  MutedText,
+  CodeChip,
+  ActionRow,
+  DataTable,
+  dataTableHeadClass,
+  dataTableCellClass,
+  MonoTextarea,
+  SqlReadout,
+} from "@platform/ui/form";
 import {
   missingDefaults,
   patternsToText,
@@ -28,6 +46,17 @@ import {
   textToPatterns,
   unionWithDefaults,
 } from "./indexing-lib";
+
+// A few shimmer bars, standing in for a block of content while it loads.
+function SkeletonLines({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="flex max-w-[420px] flex-col gap-2.5 py-1.5" role="status" aria-busy="true">
+      {Array.from({ length: rows }, (_, i) => (
+        <Skeleton key={i} className="h-2.5 motion-reduce:animate-none" style={{ width: `${[72, 54, 63][i % 3]}%` }} />
+      ))}
+    </div>
+  );
+}
 
 // Same pattern as Preferences.tsx's ReaderToggle: local busy/error, a PUT
 // that returns the full Prefs, and the parent re-renders from it. Kept here
@@ -58,17 +87,14 @@ function IndexingToggle({
   };
 
   return (
-    <section className="prefs-section">
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Enable file indexing.</b> Turning this off stops all background scans — search
-          falls back to slower live walks of the folder you're in, and the existing index
-          keeps answering until it goes stale.
-        </span>
-      </label>
+    <SettingsSection>
+      <ChoiceRow control={<Switch checked={enabled} disabled={busy} onCheckedChange={toggle} />}>
+        <b>Enable file indexing.</b> Turning this off stops all background scans — search
+        falls back to slower live walks of the folder you're in, and the existing index
+        keeps answering until it goes stale.
+      </ChoiceRow>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -151,17 +177,16 @@ export function IndexingPanel({
   return (
     <>
       <IndexingToggle prefs={prefs} onChange={onChange} />
-      <section className="prefs-section">
-        <h2>File index</h2>
-        <p className="deploy-muted">
+      <SettingsSection title="File index">
+        <MutedText>
           A local index of your files' names, sizes and dates — no file contents. It is what
           makes searching inside a folder instant instead of re-walking the tree, and it
           survives restarts. It is rebuilt in the background when the app starts;
           unchanged folders cost one check each, so that is usually a second or two.
-        </p>
-        {!status && <SkeletonLines rows={2} label="Loading index status" />}
+        </MutedText>
+        {!status && <SkeletonLines rows={2} />}
         {status && (
-          <p className="deploy-muted">
+          <MutedText>
             {status.has_index ? (
               <>
                 <b>{status.files_indexed.toLocaleString()} files</b> indexed
@@ -183,7 +208,7 @@ export function IndexingPanel({
             {!status.has_index && !scanning
               ? " Searching a folder walks it live until one exists."
               : ""}
-          </p>
+          </MutedText>
         )}
         {/* How the last scan ENDED, when it ended badly. Nothing used to show
             this anywhere in the app: a worker that dies without a `run_end`
@@ -198,9 +223,10 @@ export function IndexingPanel({
             The last scan did not finish: {scanErrorLine(status.error)}
           </ErrorBanner>
         )}
-        <div className="prefs-actions">
-          <button
+        <ActionRow>
+          <Button
             type="button"
+            variant="outline"
             disabled={busy || scanning || indexingOff}
             title={
               indexingOff
@@ -215,9 +241,10 @@ export function IndexingPanel({
             }
           >
             {scanning ? "Scanning…" : "Re-index"}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="outline"
             disabled={busy || scanning || indexingOff}
             title={
               indexingOff
@@ -232,10 +259,10 @@ export function IndexingPanel({
             }
           >
             Full scan
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="btn btn-danger"
+            variant="destructive"
             disabled={busy}
             title="Delete the index. Search keeps working — it falls back to walking the folder — until the next scan."
             onClick={() =>
@@ -246,70 +273,69 @@ export function IndexingPanel({
             }
           >
             Delete index
-          </button>
-        </div>
+          </Button>
+        </ActionRow>
         {indexingOff && (
-          <p className="deploy-muted">
+          <MutedText>
             Indexing is off, so Re-index and Full scan have nothing to do — turn it back on
             above first.
-          </p>
+          </MutedText>
         )}
-        {note && <p className="deploy-muted">{note}</p>}
+        {note && <MutedText>{note}</MutedText>}
         {error && <ErrorBanner>{error}</ErrorBanner>}
-      </section>
+      </SettingsSection>
 
-      <section className="prefs-section">
-        <h2>Skipped folders</h2>
-        <p className="deploy-muted">
+      <SettingsSection title="Skipped folders">
+        <MutedText>
           Folders the index never looks inside — dependency and build caches, which are huge
-          and machine-generated. One rule per line. A bare name (<code>node_modules</code>)
-          matches at any depth, <code>*.egg-info</code> matches a name pattern, and anything
-          containing a slash (<code>~/Library/Caches</code>) matches that path and everything
-          under it. Lines starting with <code>#</code> are comments.
-        </p>
-        <p className="deploy-muted">
+          and machine-generated. One rule per line. A bare name (<CodeChip>node_modules</CodeChip>)
+          matches at any depth, <CodeChip>*.egg-info</CodeChip> matches a name pattern, and
+          anything containing a slash (<CodeChip>~/Library/Caches</CodeChip>) matches that path
+          and everything under it. Lines starting with <CodeChip>#</CodeChip> are comments.
+        </MutedText>
+        <MutedText>
           Remote mounts are never indexed and cannot be added here: reading them means network
           round-trips per folder, and a background crawl of one can break the mount.
-        </p>
-        {!config && !error && <SkeletonLines rows={4} label="Loading skip rules" />}
+        </MutedText>
+        {!config && !error && <SkeletonLines rows={4} />}
         {config && (
           <>
-            <textarea
-              className="prefs-textarea"
+            <MonoTextarea
               rows={10}
               spellCheck={false}
               value={text}
               onChange={(e) => setText(e.target.value)}
               aria-label="Skipped folders, one rule per line"
             />
-            <div className="prefs-actions">
-              <button type="button" disabled={busy || !dirty} onClick={save}>
+            <ActionRow>
+              <Button type="button" variant="outline" disabled={busy || !dirty} onClick={save}>
                 Save
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="outline"
                 disabled={busy || unionWithDefaults(text, config.defaults) === text}
                 onClick={restoreDefaults}
               >
                 Restore defaults
-              </button>
-            </div>
+              </Button>
+            </ActionRow>
             {stale.length > 0 && (
-              <p className="deploy-muted">
+              <MutedText>
                 New skip rules are available: {stale.join(", ")}. Restoring defaults adds
                 them; your own entries are kept.
-              </p>
+              </MutedText>
             )}
-            <p className="deploy-muted">
+            <MutedText>
               Changing these rules rebuilds the index, so folders you just excluded stop
               appearing in search and ones you re-included start appearing.
-            </p>
-            <p className="deploy-muted">
-              Stored at <code>{config.location}</code>.
-            </p>
+            </MutedText>
+            <MutedText>
+              Stored at <CodeChip>{config.location}</CodeChip>.
+            </MutedText>
           </>
         )}
-      </section>
+      </SettingsSection>
 
       <QuerySection />
     </>
@@ -357,24 +383,21 @@ function QuerySection() {
   };
 
   return (
-    <section className="prefs-section">
-      <h2>Query</h2>
-      <p className="deploy-muted">
-        Read-only SQL over the index. Two tables: <code>files</code>(path, dir, name, ext,
-        size, mtime, depth) and <code>dirs</code>(dir, n_files, total_size, mtime_ns,
-        n_subdirs, depth). <code>size</code> is bytes and <code>mtime</code> is epoch
-        seconds. Nothing here can write, and nothing can read a file outside the index.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={ask} onChange={(e) => setAsk(e.target.checked)} />
-        <span>
-          <b>Ask in plain English.</b> The question goes to Claude, which writes the SQL;
-          the statement it produced is shown with the results and runs under the same
-          guard as one you typed.
-        </span>
-      </label>
-      <textarea
-        className="prefs-textarea index-query-input"
+    <SettingsSection title="Query">
+      <MutedText>
+        Read-only SQL over the index. Two tables: <CodeChip>files</CodeChip>(path, dir, name,
+        ext, size, mtime, depth) and <CodeChip>dirs</CodeChip>(dir, n_files, total_size,
+        mtime_ns, n_subdirs, depth). <CodeChip>size</CodeChip> is bytes and{" "}
+        <CodeChip>mtime</CodeChip> is epoch seconds. Nothing here can write, and nothing can
+        read a file outside the index.
+      </MutedText>
+      <ChoiceRow control={<Switch checked={ask} onCheckedChange={(v) => setAsk(v)} />}>
+        <b>Ask in plain English.</b> The question goes to Claude, which writes the SQL;
+        the statement it produced is shown with the results and runs under the same
+        guard as one you typed.
+      </ChoiceRow>
+      <MonoTextarea
+        noWrap
         rows={ask ? 3 : 6}
         spellCheck={false}
         value={text}
@@ -390,54 +413,52 @@ function QuerySection() {
         }}
         aria-label={ask ? "Question about the index" : "SQL to run against the index"}
       />
-      <div className="prefs-actions">
-        <button type="button" disabled={busy || !text.trim()} onClick={() => void run()}>
+      <ActionRow>
+        <Button type="button" variant="outline" disabled={busy || !text.trim()} onClick={() => void run()}>
           {busy ? "Running…" : ask ? "Ask" : "Run"}
-        </button>
-        <span className="deploy-muted">⌘↵</span>
-      </div>
-      {outcome?.sql && (
-        <pre className="index-query-sql">
-          <code>{outcome.sql}</code>
-        </pre>
-      )}
+        </Button>
+        <MutedText as="span">⌘↵</MutedText>
+      </ActionRow>
+      {outcome?.sql && <SqlReadout>{outcome.sql}</SqlReadout>}
       {outcome && !outcome.ok && <ErrorBanner>{outcome.error}</ErrorBanner>}
       {outcome?.ok && <QueryTable outcome={outcome} />}
-    </section>
+    </SettingsSection>
   );
 }
 
 function QueryTable({ outcome }: { outcome: IndexQueryOutcome & { ok: true } }) {
   const { columns, rows, truncated } = outcome.table;
   if (rows.length === 0) {
-    return <p className="deploy-muted">No rows.</p>;
+    return <MutedText>No rows.</MutedText>;
   }
   return (
     <>
-      <div className="index-query-results">
-        <table>
-          <thead>
-            <tr>
-              {columns.map((c, i) => (
-                <th key={i}>{c}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={i}>
-                {row.map((cell, j) => (
-                  <td key={j}>{cell}</td>
-                ))}
-              </tr>
+      <DataTable>
+        <TableHeader>
+          <TableRow>
+            {columns.map((c, i) => (
+              <TableHead key={i} className={dataTableHeadClass}>
+                {c}
+              </TableHead>
             ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="deploy-muted">
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row, i) => (
+            <TableRow key={i}>
+              {row.map((cell, j) => (
+                <TableCell key={j} className={dataTableCellClass}>
+                  {cell}
+                </TableCell>
+              ))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </DataTable>
+      <MutedText>
         {rows.length.toLocaleString()} {rows.length === 1 ? "row" : "rows"}
         {truncated ? ` — stopped at ${QUERY_LIMIT}; add a LIMIT or an aggregate.` : "."}
-      </p>
+      </MutedText>
     </>
   );
 }

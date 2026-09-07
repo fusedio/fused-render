@@ -35,6 +35,11 @@
 // The active tab lives in the URL (`?tab=indexing`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
+//
+// Built from the shared form kit (`platform/ui/form`) — see that directory's
+// README for the old class → component map. This is a skin swap, not a
+// redesign: every handler, `disabled` rule, poll and URL-sync below is
+// unchanged from the pre-shadcn version.
 import { useEffect, useState } from "react";
 import {
   getPrefs,
@@ -59,11 +64,40 @@ import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { Switch } from "@platform/shadcn/ui/switch";
+import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  SettingsPage,
+  SettingsTitle,
+  PageTabs,
+  PageTab,
+  PageTabPanel,
+  SettingsSection,
+  ChoiceRow,
+  LockedNote,
+  MutedText,
+  CodeChip,
+  ActionRow,
+  FieldSelect,
+  FieldSelectOption,
+} from "@platform/ui/form";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
 
 type PrefsTab = "render" | "ai" | "indexing" | "lan";
+
+// A few shimmer bars, standing in for a block of content while it loads.
+function SkeletonLines({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="flex max-w-[420px] flex-col gap-2.5 py-1.5" role="status" aria-busy="true">
+      {Array.from({ length: rows }, (_, i) => (
+        <Skeleton key={i} className="h-2.5 motion-reduce:animate-none" style={{ width: `${[72, 54, 63][i % 3]}%` }} />
+      ))}
+    </div>
+  );
+}
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -74,47 +108,24 @@ type PrefsTab = "render" | "ai" | "indexing" | "lan";
 function AppearanceSection() {
   const [pref, setPref] = useThemePref();
   return (
-    <section className="prefs-section">
-      <h2>Appearance</h2>
-      <p className="deploy-muted">
+    <SettingsSection title="Appearance">
+      <MutedText>
         Light or dark for this app. Stored in this browser profile, so each browser and the
         desktop window remember their own choice. Applies immediately.
-      </p>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name="appearance"
-          checked={pref === "system"}
-          onChange={() => setPref("system")}
-        />
-        <span>
+      </MutedText>
+      <RadioGroup value={pref} onValueChange={(v) => setPref(v as typeof pref)}>
+        <ChoiceRow control={<RadioGroupItem value="system" />}>
           <b>System</b> — follows your desktop appearance, including a scheduled day/night
           switch.
-        </span>
-      </label>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name="appearance"
-          checked={pref === "light"}
-          onChange={() => setPref("light")}
-        />
-        <span>
+        </ChoiceRow>
+        <ChoiceRow control={<RadioGroupItem value="light" />}>
           <b>Light</b> — always light, whatever your desktop is set to.
-        </span>
-      </label>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name="appearance"
-          checked={pref === "dark"}
-          onChange={() => setPref("dark")}
-        />
-        <span>
+        </ChoiceRow>
+        <ChoiceRow control={<RadioGroupItem value="dark" />}>
           <b>Dark</b> — always dark, whatever your desktop is set to.
-        </span>
-      </label>
-    </section>
+        </ChoiceRow>
+      </RadioGroup>
+    </SettingsSection>
   );
 }
 
@@ -138,13 +149,10 @@ function ReaderToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
 
   return (
     <>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Reader (listen to files)</b>. Adds a Reader mode to text files and PDFs that reads
-          them aloud.
-        </span>
-      </label>
+      <ChoiceRow control={<Switch checked={enabled} disabled={busy} onCheckedChange={toggle} />}>
+        <b>Reader (listen to files)</b>. Adds a Reader mode to text files and PDFs that reads
+        them aloud.
+      </ChoiceRow>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </>
   );
@@ -158,10 +166,9 @@ function AccessibilitySection({
   onChange: (p: Prefs) => void;
 }) {
   return (
-    <section className="prefs-section">
-      <h2>Accessibility</h2>
+    <SettingsSection title="Accessibility">
       <ReaderToggle prefs={prefs} onChange={onChange} />
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -196,22 +203,18 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
   };
 
   return (
-    <section className="prefs-section">
-      <h2>Canvases</h2>
-      <p className="deploy-muted">
+    <SettingsSection title="Canvases">
+      <MutedText>
         Canvases are Fused Workbench canvases opened locally: a listing of the canvases on your
         account and a per-canvas workspace with the live workbench embedded, editing the same
         UDFs. Off by default — turn it on and it appears in the sidebar (once you are signed in to
         Fused) and in this Settings menu.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Show Canvases</b> in the sidebar and the Settings menu.
-        </span>
-      </label>
+      </MutedText>
+      <ChoiceRow control={<Switch checked={enabled} disabled={busy} onCheckedChange={toggle} />}>
+        <b>Show Canvases</b> in the sidebar and the Settings menu.
+      </ChoiceRow>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -274,21 +277,18 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
   };
 
   return (
-    <section className="prefs-section">
-      <h2>Share on local network</h2>
-      <p className="deploy-muted">
-        Open your apps — everything under <code>~/Fused</code> and every linked folder — from a
-        phone on the same Wi-Fi. Only devices you pair by scanning the code below get in; a paired
-        device can open and run those apps and read or change their files, and nothing else on this
-        computer is reachable. Plain http: on iPhone the live microphone and clipboard paste stay off,
-        and on an open (password-less) network the pairing cookie travels in the clear.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Share my apps</b> on this network.
-        </span>
-      </label>
+    <SettingsSection title="Share on local network">
+      <MutedText>
+        Open your apps — everything under <CodeChip>~/Fused</CodeChip> and every linked folder —
+        from a phone on the same Wi-Fi. Only devices you pair by scanning the code below get in;
+        a paired device can open and run those apps and read or change their files, and nothing
+        else on this computer is reachable. Plain http: on iPhone the live microphone and
+        clipboard paste stay off, and on an open (password-less) network the pairing cookie
+        travels in the clear.
+      </MutedText>
+      <ChoiceRow control={<Switch checked={enabled} disabled={busy} onCheckedChange={toggle} />}>
+        <b>Share my apps</b> on this network.
+      </ChoiceRow>
       {running && lan.url && (
         <LanPairing url={lan.url} deviceCount={devices.length} />
       )}
@@ -308,7 +308,7 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
         <ErrorBanner>{`The app's https listener is down (browsers unaffected): ${lan.tls_error}`}</ErrorBanner>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -346,27 +346,27 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
   }, [nonce]);
 
   return (
-    <div className="lan-pair">
+    <div className="mt-3.5 flex items-start gap-5">
       <div
-        className="lan-pair-qr"
+        className="h-42 w-42 flex-none rounded-card bg-[var(--qr-paper)] p-2.5 transition-opacity duration-(--dur-base)"
         aria-label="Pairing QR code"
         dangerouslySetInnerHTML={{ __html: svg ?? "" }}
       />
-      <div className="lan-pair-text">
+      <div className="min-w-0 flex-1">
         <p>
           <b>Scan from the Fused Render app</b> (or the iPhone's Camera app — not the Control Center
           scanner, whose in-app browser can't pair Safari). Each code pairs one device; a new code
           appears right after, and every five minutes. A paired phone then opens{" "}
           <a href={url} target="_blank" rel="noreferrer">{url}</a>.
         </p>
-        <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
+        <Button type="button" variant="outline" onClick={() => setNonce((n) => n + 1)}>
           New code
-        </button>
+        </Button>
         {ipUrl && (
-          <p className="deploy-muted" style={{ marginTop: 8 }}>
+          <MutedText className="mt-2">
             If the phone can't resolve the name, open this once instead:{" "}
-            <code style={{ wordBreak: "break-all" }}>{ipUrl}</code>
-          </p>
+            <CodeChip className="[word-break:break-all]">{ipUrl}</CodeChip>
+          </MutedText>
         )}
       </div>
     </div>
@@ -383,26 +383,26 @@ function agoLabel(ts: number): string {
 
 function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id: string | null) => void }) {
   if (!devices.length) {
-    return <p className="deploy-muted">No paired devices yet.</p>;
+    return <MutedText>No paired devices yet.</MutedText>;
   }
   return (
-    <div className="lan-devices">
-      <div className="lan-devices-head">
+    <div className="mt-5">
+      <div className="flex items-center justify-between">
         <b>Paired devices</b>
-        <button type="button" className="btn btn-secondary" onClick={() => onRevoke(null)}>
+        <Button type="button" variant="outline" onClick={() => onRevoke(null)}>
           Forget all
-        </button>
+        </Button>
       </div>
-      <ul>
+      <ul className="m-0 list-none border-t border-border p-0">
         {devices.map((d) => (
-          <li key={d.id}>
-            <span className="lan-device-name">{d.name}</span>
-            <span className="deploy-muted">
+          <li key={d.id} className="flex items-center gap-3 border-b border-border py-2">
+            <span className="min-w-[10em] font-semibold">{d.name}</span>
+            <MutedText as="span" className="flex-1 text-meta">
               paired {agoLabel(d.paired_at)} · seen {agoLabel(d.last_seen)}
-            </span>
-            <button type="button" className="btn btn-secondary" onClick={() => onRevoke(d.id)}>
+            </MutedText>
+            <Button type="button" variant="outline" onClick={() => onRevoke(d.id)}>
               Revoke
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
@@ -426,18 +426,17 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
-    <section className="prefs-section">
-      <h2>Default model</h2>
-      <p className="deploy-muted">
+    <SettingsSection title="Default model">
+      <MutedText>
         Which Claude model this app reaches for when nothing else has said. It preselects the
-        chat's model chip and picks the model behind <code>fused.ai</code>. A model chosen in a
-        chat, or one a page passes to <code>fused.ai</code> itself, still wins — this only
-        answers when nobody asked. <b>Automatic</b> leaves each to its own default.
-      </p>
-      <div className="prefs-field">
-        <label>
+        chat's model chip and picks the model behind <CodeChip>fused.ai</CodeChip>. A model chosen
+        in a chat, or one a page passes to <CodeChip>fused.ai</CodeChip> itself, still wins — this
+        only answers when nobody asked. <b>Automatic</b> leaves each to its own default.
+      </MutedText>
+      <div className="flex flex-col gap-1.5">
+        <label className="flex items-center gap-2">
           Model{" "}
-          <select
+          <FieldSelect
             value={prefs.model.default}
             disabled={busy}
             onChange={async (e) => {
@@ -454,15 +453,15 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
             }}
           >
             {prefs.model.choices.map((m) => (
-              <option key={m} value={m}>
+              <FieldSelectOption key={m} value={m}>
                 {MODEL_LABELS[m] ?? m}
-              </option>
+              </FieldSelectOption>
             ))}
-          </select>
+          </FieldSelect>
         </label>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -527,75 +526,72 @@ function HuggingFaceSection() {
 
   const locked = auth?.forcedByVar != null;
   return (
-    <section className="prefs-section">
-      <h2>Hugging Face</h2>
-      <p className="deploy-muted">
+    <SettingsSection title="Hugging Face">
+      <MutedText>
         Sign in to download AI models. Without an account the Hub serves this machine
         anonymously, meaning a lower rate limit, slower downloads, and no access to gated or
-        private repos. Signing in hands the token to <code>huggingface_hub</code>, which stores
-        it the same way <code>hf auth login</code> does.
-      </p>
-      {!auth && !error && <SkeletonLines rows={2} label="Loading Hugging Face status" />}
+        private repos. Signing in hands the token to <CodeChip>huggingface_hub</CodeChip>, which
+        stores it the same way <CodeChip>hf auth login</CodeChip> does.
+      </MutedText>
+      {!auth && !error && <SkeletonLines rows={2} />}
       {auth && (
         <>
           {auth.pending ? (
-            <div className="prefs-field">
+            <div className="flex flex-col gap-1.5">
               <p>
-                <a
-                  className="btn btn-primary hf-authorize-link"
-                  href={auth.pending.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <Button
+                  variant="default"
+                  render={<a href={auth.pending.url} target="_blank" rel="noopener noreferrer" />}
                 >
                   Authorize on huggingface.co
-                </a>
+                </Button>
               </p>
               {/* The code is shown as well as embedded in that link: the link
                   carries it, but the Hub asks for confirmation, and somebody who
                   opened the page in a different browser needs to type it. */}
-              <p className="deploy-muted">
+              <MutedText>
                 Waiting for you to authorize. If asked for a code, enter{" "}
-                <code>{auth.pending.userCode}</code>. This code expires in{" "}
+                <CodeChip>{auth.pending.userCode}</CodeChip>. This code expires in{" "}
                 {Math.max(1, Math.round(auth.pending.secondsLeft / 60))} min.
-              </p>
-              <div className="prefs-actions">
-                <button
+              </MutedText>
+              <ActionRow>
+                <Button
                   type="button"
-                  className="btn btn-secondary"
+                  variant="outline"
                   disabled={busy}
                   onClick={() => void act(cancelHfLogin)}
                 >
                   Cancel
-                </button>
-              </div>
+                </Button>
+              </ActionRow>
             </div>
           ) : (
-            <div className="prefs-actions">
+            <ActionRow>
               {auth.signedIn ? (
                 <>
                   <span>
                     Signed in{auth.account ? <> as <b>{auth.account}</b></> : null}
                   </span>
-                  <button
+                  <Button
                     type="button"
-                    className="btn btn-danger-text"
+                    variant="destructive"
                     disabled={busy || locked}
                     onClick={() => void act(hfLogout)}
                   >
                     Log out
-                  </button>
+                  </Button>
                 </>
               ) : (
-                <button
+                <Button
                   type="button"
-                  className="btn btn-primary"
+                  variant="default"
                   disabled={busy || locked}
                   onClick={() => void act(() => startHfLogin())}
                 >
                   Log in to Hugging Face
-                </button>
+                </Button>
               )}
-            </div>
+            </ActionRow>
           )}
           {/* No sentence under EITHER ordinary state, because the controls
               already are the state: "Signed in as X" beside a Log out button
@@ -605,11 +601,11 @@ function HuggingFaceSection() {
               one no control can show: a variable overriding hf's store, where
               the button is present and would change nothing. */}
           {locked && (
-            <div className="deploy-muted">
-              Using the token in <code>{auth.forcedByVar}</code> from this app&apos;s
+            <LockedNote>
+              Using the token in <CodeChip>{auth.forcedByVar}</CodeChip> from this app&apos;s
               environment — hf reads that ahead of its own store, so signing in here would
               change nothing until the variable is removed.
-            </div>
+            </LockedNote>
           )}
           {/* The last attempt's failure: denied, expired, or the network. Kept
               until the next attempt replaces it, so a login that failed while
@@ -618,7 +614,7 @@ function HuggingFaceSection() {
         </>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -656,89 +652,89 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
   };
 
   return (
-    <section className="prefs-section">
-      <h2>Call log</h2>
-      <p className="deploy-muted">
-        Records every API call your pages make — each <code>runPython</code>, <code>readFile</code>,{" "}
-        <code>stat</code> and <code>writeFile</code>, with its duration, result size, output and
-        any traceback. A page with recorded calls gains a <b>Calls</b> view mode showing charts and
-        a per-target breakdown; <code>fused-render calls</code> reads the same log from a terminal.
-      </p>
+    <SettingsSection title="Call log">
+      <MutedText>
+        Records every API call your pages make — each <CodeChip>runPython</CodeChip>,{" "}
+        <CodeChip>readFile</CodeChip>, <CodeChip>stat</CodeChip> and{" "}
+        <CodeChip>writeFile</CodeChip>, with its duration, result size, output and any traceback.
+        A page with recorded calls gains a <b>Calls</b> view mode showing charts and a per-target
+        breakdown; <CodeChip>fused-render calls</CodeChip> reads the same log from a terminal.
+      </MutedText>
       {/* The checkbox shows the STORED pref and the muted line below shows what
           is actually in force, exactly as the Engine section does: the control
           reflects the choice you made (and what a PUT round-trips), the line
           reports reality. They diverge whenever FUSED_RENDER_CALLS wins, and
           the control is disabled then so the discrepancy can't be acted on. */}
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          checked={calls.enabled}
-          disabled={busy || enabledLocked}
-          onChange={() => apply(() => putCallsEnabled(!calls.enabled))}
-        />
-        <span>
-          <b>Record API calls</b> made by pages rendered in this app.
-        </span>
-      </label>
-      <div className="deploy-muted">
+      <ChoiceRow
+        control={
+          <Switch
+            checked={calls.enabled}
+            disabled={busy || enabledLocked}
+            onCheckedChange={() => apply(() => putCallsEnabled(!calls.enabled))}
+          />
+        }
+      >
+        <b>Record API calls</b> made by pages rendered in this app.
+      </ChoiceRow>
+      <MutedText>
         Currently <b>{calls.effective_enabled ? "recording" : "not recording"}</b>
         {enabledLocked && (
           <>
             {" "}
-            — locked by <code>FUSED_RENDER_CALLS={calls.enabled_forced_by}</code> for this process;
-            the checkbox applies once the variable is removed.
+            — locked by <CodeChip>FUSED_RENDER_CALLS={calls.enabled_forced_by}</CodeChip> for
+            this process; the checkbox applies once the variable is removed.
           </>
         )}
-      </div>
-      <div className="prefs-field">
-        <label>
+      </MutedText>
+      <div className="flex flex-col gap-1.5">
+        <label className="flex items-center gap-2">
           Parameters{" "}
           {/* Gated on what is actually recording, not on the stored pref —
               otherwise an env-forced off state leaves these live, and an
               env-forced on state greys them out while calls are landing. */}
-          <select
+          <FieldSelect
             value={calls.params}
             disabled={busy || !calls.effective_enabled}
             onChange={(e) => apply(() => putCallsParamsMode(e.target.value as CallsParamsMode))}
           >
-            <option value="full">Record values</option>
-            <option value="keys">Record names only</option>
-            <option value="off">Record nothing</option>
-          </select>
+            <FieldSelectOption value="full">Record values</FieldSelectOption>
+            <FieldSelectOption value="keys">Record names only</FieldSelectOption>
+            <FieldSelectOption value="off">Record nothing</FieldSelectOption>
+          </FieldSelect>
         </label>
-        <p className="deploy-muted">
+        <MutedText>
           A run's parameters are usually the whole repro, so they are recorded by default — they
           are already visible in the URL. Switch to names-only if a page passes a secret as a
           parameter.
-        </p>
+        </MutedText>
       </div>
-      <div className="prefs-field">
-        <label>
+      <div className="flex flex-col gap-1.5">
+        <label className="flex items-center gap-2">
           Keep for{" "}
-          <select
+          <FieldSelect
             value={String(calls.retention_days)}
             disabled={busy || !calls.effective_enabled || retentionLocked}
             onChange={(e) => apply(() => putCallsRetentionDays(Number(e.target.value)))}
           >
-            <option value="1">1 day</option>
-            <option value="7">7 days</option>
-            <option value="14">14 days</option>
-            <option value="90">90 days</option>
-            <option value="0">Until the size cap</option>
-          </select>
+            <FieldSelectOption value="1">1 day</FieldSelectOption>
+            <FieldSelectOption value="7">7 days</FieldSelectOption>
+            <FieldSelectOption value="14">14 days</FieldSelectOption>
+            <FieldSelectOption value="90">90 days</FieldSelectOption>
+            <FieldSelectOption value="0">Until the size cap</FieldSelectOption>
+          </FieldSelect>
         </label>
         {retentionLocked && (
-          <p className="deploy-muted">
-            Currently keeping <b>{describeRetention(calls.effective_retention_days)}</b> — locked by{" "}
-            <code>FUSED_RENDER_CALLS_RETENTION_DAYS={calls.retention_forced_by}</code> for this
-            process; the choice above applies once the variable is removed.
-          </p>
+          <LockedNote>
+            Currently keeping <b>{describeRetention(calls.effective_retention_days)}</b> — locked
+            by <CodeChip>FUSED_RENDER_CALLS_RETENTION_DAYS={calls.retention_forced_by}</CodeChip>{" "}
+            for this process; the choice above applies once the variable is removed.
+          </LockedNote>
         )}
       </div>
-      <p className="deploy-muted">
-        Stored at <code>{calls.dir}</code>
+      <MutedText>
+        Stored at <CodeChip>{calls.dir}</CodeChip>
         {calls.dir_exists ? "." : " — no calls recorded yet, so the folder does not exist."}
-      </p>
+      </MutedText>
       {/* Navigates IN-APP, not to the OS file manager: the explorer is how you
           reach the Calls view — open the folder, click a .calls.jsonl, and it
           renders in the same viewer the mode switcher offers.
@@ -747,16 +743,18 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
           append, so browsing beforehand navigates to a path that fails to stat
           — an error card where the answer is simply "nothing has run yet",
           which is also the answer to "why has no page got a Calls mode?". */}
-      <button
+      <Button
         type="button"
+        variant="outline"
+        className="self-start"
         disabled={!calls.dir_exists}
         title={calls.dir_exists ? undefined : "No calls have been recorded yet"}
         onClick={() => navigate(calls.dir, { isDir: true })}
       >
         Browse call logs
-      </button>
+      </Button>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -794,58 +792,42 @@ export default function Preferences() {
   };
 
   return (
-    <div className="prefs-page">
+    <SettingsPage>
       {/* Page names itself — the topbar that used to carry "Preferences" is
           gone (settings pages render chrome-free). */}
-      <h1 className="prefs-title">Preferences</h1>
+      <SettingsTitle>Preferences</SettingsTitle>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!prefs && !error && <SkeletonLines rows={4} label="Loading preferences" />}
+      {!prefs && !error && <SkeletonLines rows={4} />}
       {prefs && (
         <>
-          <div className="prefs-tabs">
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "render" ? " active" : "")}
-              onClick={() => setTab("render")}
-            >
+          <PageTabs>
+            <PageTab type="button" active={tab === "render"} onClick={() => setTab("render")}>
               Render preferences
-            </button>
+            </PageTab>
             {/* AI — which model, and with whose credentials (D403). Named for
                 the subject rather than for the two controls in it, so adding a
                 third does not rename the tab. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "ai" ? " active" : "")}
-              onClick={() => setTab("ai")}
-            >
+            <PageTab type="button" active={tab === "ai"} onClick={() => setTab("ai")}>
               AI
-            </button>
+            </PageTab>
             {/* Indexing — the file index behind the explorer's search. The TAB
                 is always present — a user looking for "why is search
                 finding/missing this" has nowhere else to go — even though
                 indexing itself now has an opt-out toggle inside it
                 (`indexing_enabled`): the panel is where that answer lives,
                 on or off. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "indexing" ? " active" : "")}
-              onClick={() => setTab("indexing")}
-            >
+            <PageTab type="button" active={tab === "indexing"} onClick={() => setTab("indexing")}>
               Indexing
-            </button>
+            </PageTab>
             {/* Render local network — sharing apps with phones on the Wi-Fi
                 (lan.py): the switch, the pairing QR and the paired devices.
                 Its own tab because pairing is a task you come here to DO with
                 a phone in hand, not a setting you glance at. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "lan" ? " active" : "")}
-              onClick={() => setTab("lan")}
-            >
+            <PageTab type="button" active={tab === "lan"} onClick={() => setTab("lan")}>
               Render local network
-            </button>
-          </div>
-          <div className="prefs-tabpanel">
+            </PageTab>
+          </PageTabs>
+          <PageTabPanel>
             {tab === "render" && (
               <>
                 <AppearanceSection />
@@ -862,9 +844,9 @@ export default function Preferences() {
               </>
             )}
             {tab === "indexing" && <IndexingPanel prefs={prefs} onChange={setPrefs} />}
-          </div>
+          </PageTabPanel>
         </>
       )}
-    </div>
+    </SettingsPage>
   );
 }
