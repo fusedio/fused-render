@@ -112,13 +112,14 @@ const AI_OFF: AiPhase = { status: "off" };
 // the cheap pass cannot fill the limit, so a query WITH hits leaves the
 // expensive plan cold. This one runs both passes and comes back empty.
 // Exported so a test can identify (and filter out) this call rather than
-// hardcoding the literal — see FilesHome.render.test.tsx's `type()` helper,
-// which now has to strip it: the fake clock's `requestIdleCallback` is
-// stubbed out (Clock.install, listing/hook-harness.ts), so this fires
-// through the `window.setTimeout(cb, 300)` fallback below, which now lands
-// at the exact same tick as `INSTANT_DEBOUNCE_MS` (300) — a coincidence real
-// browsers do not have (`requestIdleCallback` fires independently of any
-// debounce timer there).
+// hardcoding the literal — see FilesHome.render.test.tsx's `flush` helper,
+// which strips it: the fake clock's `requestIdleCallback` is stubbed out
+// (Clock.install, listing/hook-harness.ts), so this fires through the
+// `window.setTimeout(cb, 300)` fallback below instead, on its own 300ms
+// schedule — unrelated to `INSTANT_DEBOUNCE_MS`, but still liable to land
+// inside SOME clock advance a test makes for its own reasons, a fake-clock
+// artifact real browsers do not have (`requestIdleCallback` fires
+// independently of any debounce timer there).
 export const WARM_QUERY = "zqxjv";
 
 function MagnifierIcon() {
@@ -400,9 +401,20 @@ export function FilesSearch({
     | { status: "exists"; path: string; is_dir: boolean }
     | { status: "missing" }
   >({ status: "unknown" });
+  // Whether the address STAT ITSELF is in flight — set true only inside
+  // `run()`, i.e. once the debounce below has actually elapsed and the
+  // request went out, and reset to false at the top of every effect run (a
+  // keystroke that changes `address` again abandons whatever was in flight,
+  // same as `addrCtl.current?.abort()` right above it). Deliberately NOT the
+  // same signal as `addr.status !== "unknown"` (which flips the instant the
+  // keystroke lands, review finding / D706): the staleness deadline below
+  // needs to know when the REQUEST started, not when the query started
+  // looking like a path.
+  const [statPending, setStatPending] = useState(false);
   const addrCtl = useRef<AbortController | null>(null);
   useEffect(() => {
     addrCtl.current?.abort();
+    setStatPending(false);
     if (address === null) {
       setAddr({ status: "unknown" });
       return;
@@ -412,12 +424,15 @@ export function FilesSearch({
       addrCtl.current?.abort();
       const ctl = new AbortController();
       addrCtl.current = ctl;
+      setStatPending(true);
       statPath(address, ctl.signal).then(
         (st) => {
+          setStatPending(false);
           if (ctl.signal.aborted) return;
           setAddr({ status: "exists", path: st.path, is_dir: st.is_dir });
         },
         (err: Error) => {
+          setStatPending(false);
           if (ctl.signal.aborted || err.name === "AbortError") return;
           // Not found, or not statable (permissions, a dead mount): either
           // way it is not a navigable address, so it falls back to a search
@@ -638,14 +653,14 @@ export function FilesSearch({
   // note — no rows and an honest label beats rows for a query the user has
   // visibly moved past.
   //
-  // `pending` was the only qualifying condition before `suppressRank`
+  // `pending` was the only qualifying condition before the address stat
   // existed — there was always a real request "outliving" the query to time
-  // out on. An address-shaped query holds ranking back entirely (`suppressRank`
+  // out on. An address-shaped query holds ranking back entirely (`statPending`
   // is a THIRD reason `behind` can be true, alongside `pending` and, briefly,
   // neither): `pending` is never true on that path (the rank effect
   // early-returns before setting it), so a guard reading only `pending` never
   // fires here at all — the held answer, and its `is-stale` dimming, stayed
-  // behind indefinitely regardless of how long the stat took. `suppressRank`
+  // behind indefinitely regardless of how long the stat took. `statPending`
   // is included in the gate for exactly the same reason `pending` is: it is
   // the other case where nothing is going to replace `answer` for THIS query
   // on its own — this one because the stat, not the ranking round trip, is
@@ -653,8 +668,21 @@ export function FilesSearch({
   // fires a real rank request, which unsticks this the normal way, but until
   // then the deadline is what stops a slow stat from pinning a stale answer
   // in place).
+  //
+  // `statPending`, deliberately, NOT `suppressRank` (D706 correction —
+  // review finding): `suppressRank` flips true the instant the keystroke
+  // makes `q` look like a path, but the stat itself does not fire until
+  // `INSTANT_DEBOUNCE_MS` later (the address effect above debounces exactly
+  // like the rank effect does). Gating this deadline on `suppressRank` meant
+  // the clock started at the KEYSTROKE, so the stat's real budget to answer
+  // before its held rows were thrown away was `STALE_CLEAR_MS` minus the
+  // debounce, not the full `STALE_CLEAR_MS` every other request gets.
+  // `statPending` flips true only once `run()` inside that effect actually
+  // fires, so this effect's own dependency change lands at the same moment —
+  // the deadline timer below now starts counting from ISSUANCE, matching how
+  // `pending` already behaves for the rank path.
   useEffect(() => {
-    if (!behind || (!pending && !suppressRank)) return;
+    if (!behind || (!pending && !statPending)) return;
     const timer = window.setTimeout(() => {
       setAnswer((prev) => {
         if (prev === null || prev.query === q) return prev;
@@ -662,7 +690,7 @@ export function FilesSearch({
       });
     }, STALE_CLEAR_MS);
     return () => window.clearTimeout(timer);
-  }, [pending, suppressRank, behind, q]);
+  }, [pending, statPending, behind, q]);
 
   // -- the box is where typing goes ------------------------------------------
   //

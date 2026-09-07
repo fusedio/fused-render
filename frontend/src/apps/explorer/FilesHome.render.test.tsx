@@ -186,13 +186,27 @@ afterEach(() => {
   resetFsMutations();
 });
 
-/** Run `fn` inside `act` and let any microtasks it releases settle. */
+/** Run `fn` inside `act` and let any microtasks it releases settle.
+ *
+ * Also strips any `indexRank(WARM_QUERY)` call the mount effect's idle
+ * warm-up fired during this flush — see the note on `WARM_QUERY` above and
+ * on `type()` below for why it exists at all. Done HERE, not only inside
+ * `type()`: at `INSTANT_DEBOUNCE_MS` (200) the warm's own
+ * `window.setTimeout(cb, 300)` fallback no longer lands on the exact same
+ * tick as the first debounce, so which `clock.advance` call crosses 300ms
+ * moved — it can now be a LATER, unrelated advance a test makes for its own
+ * reasons (a follow-up keystroke, running past a staleness deadline) rather
+ * than always the first one. Stripping in the one place every clock-advancing
+ * call already funnels through keeps every test's `rankCalls` clean of this
+ * noise regardless of exactly when it fires. */
 async function flush(fn: () => void = () => {}): Promise<void> {
   await act(async () => {
     fn();
     await Promise.resolve();
     await Promise.resolve();
   });
+  const warm = rankCalls.findIndex((c) => c.q === WARM_QUERY);
+  if (warm !== -1) rankCalls.splice(warm, 1);
 }
 
 /** The shared status poll's reading, as the page's own `useIndexStatus` would
@@ -268,16 +282,9 @@ function mount(
 async function type(box: { input: () => any }, value: string): Promise<void> {
   await flush(() => box.input().props.onChange({ target: { value } }));
   await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
-  // The idle warm-up (FilesHome.tsx's `idle` effect) falls back to
-  // `window.setTimeout(cb, 300)` because Clock stubs out
-  // `requestIdleCallback` — and now that `INSTANT_DEBOUNCE_MS` is ALSO 300,
-  // the very first `type()` call of any test fires it in the same
-  // `clock.advance` as the real request. A real browser's idle callback runs
-  // on its own schedule, independent of any debounce, so this coincidence is
-  // purely a fake-clock artifact — strip it here so `rankCalls[0]` stays the
-  // query-driven call every existing assertion already expects.
-  const warm = rankCalls.findIndex((c) => c.q === WARM_QUERY);
-  if (warm !== -1) rankCalls.splice(warm, 1);
+  // `flush` itself strips any `indexRank(WARM_QUERY)` the mount effect's idle
+  // warm-up fired during either of the two flushes above — see its own
+  // comment for why that lives there now rather than only here.
 }
 
 /** Elements carrying `cls` among possibly several space-separated classes —
@@ -377,12 +384,11 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
     await flush(() => rankCalls[0].resolve(
       answer({ hits: [hit("formula.txt"), hit("format.md")], total: 2 })));
 
-    // Extend the query; the second request is left hanging. Advanced by
-    // exactly the debounce, not a larger margin: the idle warm-up request
-    // (mount effect, `window.setTimeout(cb, 300)` since Clock stubs out
-    // `requestIdleCallback`) would otherwise land inside a longer window and
-    // pollute `rankCalls` with a query-less entry this assertion does not
-    // expect.
+    // Extend the query; the second request is left hanging. `flush` strips
+    // any idle warm-up call (`indexRank(WARM_QUERY)`) this advance happens
+    // to cross, so the exact margin here no longer matters for that reason —
+    // exactly the debounce is still the right amount to advance, just for its
+    // own sake (past the trailing debounce, no further).
     await flush(() => box.input().props.onChange({ target: { value: "forma" } }));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // past the trailing debounce
     expect(rankCalls).toHaveLength(2);
@@ -412,9 +418,7 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
     // query than the held answer ever had a chance to include) rather than
     // reverting to "Searching…" for a query that has not actually failed to
     // find anything yet.
-    // Exactly the debounce (see the identical note in the test above): a
-    // larger margin risks crossing the mount effect's 300ms idle warm-up and
-    // adding an unrelated entry to `rankCalls`.
+    // Exactly the debounce (see the identical note in the test above).
     await flush(() => box.input().props.onChange({ target: { value: "zzzqqq" } }));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
@@ -586,6 +590,42 @@ describe("a query that is really an address (section 7)", () => {
     box.unmount();
   });
 
+  test("the stale-clear deadline gets its full budget from ISSUANCE, not the keystroke (D706)", async () => {
+    // Review finding, fixed in D706: `suppressRank` flips true on the
+    // keystroke itself, but the stat does not fire until
+    // `INSTANT_DEBOUNCE_MS` later — gating the deadline effect on
+    // `suppressRank` (rather than `statPending`, which flips only once the
+    // stat actually goes out) started the STALE_CLEAR_MS clock at the
+    // keystroke, shrinking the stat's real budget to
+    // `STALE_CLEAR_MS - INSTANT_DEBOUNCE_MS`.
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
+
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    // Past the address stat's own trailing debounce: the stat is issued HERE
+    // (statPending flips true), which is when the deadline should start
+    // counting.
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(statCalls).toHaveLength(1);
+
+    // Just short of a FULL STALE_CLEAR_MS measured from issuance. Before
+    // D706, the deadline was already counting from the keystroke — i.e. from
+    // INSTANT_DEBOUNCE_MS earlier — so by this point in total elapsed time it
+    // had already fired and cleared the stale rows.
+    await flush(() => clock.advance(STALE_CLEAR_MS - 50));
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .toContain("is-stale");
+
+    // Cross the real deadline (measured from issuance) and confirm it does
+    // still fire eventually.
+    await flush(() => clock.advance(100));
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .not.toContain("is-stale");
+    box.unmount();
+  });
+
   test("suppresses the AI row even when the address does not resolve", async () => {
     const box = mount();
     await type(box, "/tmp/does-not-exist");
@@ -658,6 +698,32 @@ describe("Enter while a pasted path's stat is still resolving (section 7 paste-a
       }),
     );
     expect(navPushes).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("paste-and-Enter over a held answer still navigates once the debounced stat resolves", async () => {
+    // Paste-and-go over an EXISTING search (not an empty box, the shape every
+    // other test in this describe block starts from): a held rank answer is
+    // on screen, the paste makes the query address-shaped, and Enter is
+    // pressed once the address stat has actually been issued (D706:
+    // `statPending`, not the keystroke, is what the deadline effect now
+    // tracks). `awaitingCommit` has to survive the round trip and still
+    // commit once the stat lands.
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("readme.md")], total: 137 })));
+
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // the stat is now issued
+    expect(statCalls).toHaveLength(1);
+    await pressEnter(box);
+    await flush(() =>
+      statCalls[0].resolve({
+        path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
+      }),
+    );
+    expect(navPushes.some((u) => u.includes("report.csv"))).toBe(true);
     box.unmount();
   });
 });
