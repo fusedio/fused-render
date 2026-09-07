@@ -224,6 +224,7 @@ function scanStatus(over: Partial<IndexStatus> = {}): IndexStatus {
     phase: "",
     dirs: 0,
     files: 0,
+    reused: 0,
     error: null,
     ...over,
   };

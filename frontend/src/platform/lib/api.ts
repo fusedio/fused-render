@@ -681,7 +681,14 @@ export interface IndexStatus {
   root: string | null;
   phase: string;
   dirs: number;
-  files: number; // this run's progress
+  files: number; // this run's NEWLY-walked count — a reused (unchanged) dir's
+  // files are NOT in here, they're in `reused` below (index/store.py's `Sink`
+  // keeps the two separate: `files` credits a dir this run actually re-stat'd,
+  // `reused` credits one it skipped via cache). A live "N files so far" line
+  // has to add the two together to mean the same thing `files_indexed` means
+  // once the scan finishes — `files` alone undercounts by however much of the
+  // tree was unchanged, which is usually most of it on a rescan.
+  reused: number;
   error: string | null;
 }
 

@@ -225,7 +225,7 @@ export function IndexingPanel({
               <b>No index yet.</b>
             )}{" "}
             {scanning
-              ? `Scanning now — ${status.files.toLocaleString()} files so far${
+              ? `Scanning now — ${(status.files + status.reused).toLocaleString()} files so far${
                   status.root ? ` under ${status.root}` : ""
                 }.`
               : config?.roots.length
