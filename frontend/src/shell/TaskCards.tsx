@@ -752,26 +752,8 @@ function TaskPeek({
     }
   };
 
-  // THE CONFIRM REPLACES THE POPUP, it does not stack on it (bugbot, PR #1049):
-  // two Modals portal to the same layer and the later one — the popup — paints
-  // over the confirm and traps focus; Escape then reaches both. So while the
-  // question is open the popup is unmounted; Cancel brings it back, a confirmed
-  // delete closes the whole thing.
-  if (erasing) {
-    return (
-      <EraseTaskModal
-        task={task}
-        onClose={() => setErasing(false)}
-        onDone={() => {
-          setErasing(false);
-          pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
-          onReload?.();
-          onClose();
-        }}
-      />
-    );
-  }
   return (
+    <>
     <Modal
       title={
         <span className="task-peek-title">
@@ -784,7 +766,14 @@ function TaskPeek({
           </span>
         </span>
       }
-      onClose={onClose}
+      // While the confirm is up the popup is INERT to its own closers: the
+      // confirm is a second Modal portaled after this one (so it paints above
+      // and holds focus — the chassis leaves a nested [role="dialog"] alone),
+      // and Escape reaches both document listeners; this one must not also
+      // close the popup, or an Esc on the confirm ends the whole thing. The
+      // popup stays MOUNTED, so the chat frame keeps its draft and its Escape
+      // handler (review, PR #1049: unmounting it reloaded the frame).
+      onClose={erasing ? () => {} : onClose}
       width="54vw"
       dialogClassName="task-peek"
       plainBody
@@ -888,6 +877,19 @@ function TaskPeek({
         </p>
       )}
     </Modal>
+      {erasing && (
+        <EraseTaskModal
+          task={task}
+          onClose={() => setErasing(false)}
+          onDone={() => {
+            setErasing(false);
+            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            onReload?.();
+            onClose();
+          }}
+        />
+      )}
+    </>
   );
 }
 

@@ -39,6 +39,10 @@ export interface RenameBaseGuard {
 //     `${mounts_root}/<name>`, so a dir whose PARENT is mounts_root IS one)
 // Nothing else is special-cased: an ordinary folder anywhere else, including
 // one nested inside a mount, is rename-able like any other.
+function stripSlash(p: string): string {
+  return p.length > 1 ? p.replace(/\/+$/, "") : p;
+}
+
 export function canRenameBase(dir: string, guard: RenameBaseGuard): boolean {
   const norm = normDir(dir);
   const parent = dirname(norm);
@@ -47,8 +51,14 @@ export function canRenameBase(dir: string, guard: RenameBaseGuard): boolean {
   // home and no mounts root known, this cannot tell a renameable folder from
   // the two it must never move, so it offers nothing rather than everything.
   if (guard.home === undefined || guard.mountsRoot === undefined) return false;
-  if (norm === guard.home) return false;
-  if (parent === guard.mountsRoot) return false;
+  // Compared with trailing slashes stripped on BOTH sides: `dirname` strips
+  // them, a config value might carry one (review, PR #1049).
+  const home = stripSlash(guard.home);
+  const mounts = stripSlash(guard.mountsRoot);
+  if (norm === home) return false;
+  // The mounts root, and every mount directly under it: renaming either breaks
+  // every mount at once.
+  if (norm === mounts || parent === mounts) return false;
   return true;
 }
 

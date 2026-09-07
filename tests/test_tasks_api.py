@@ -2470,21 +2470,59 @@ def test_erasing_never_reaches_past_a_session_file(projects_dir):
     """`..` is not a glob pattern, it is a path: `PROJECTS_DIR/*/..` is the
     projects root, and an unguarded rmtree there is every Claude project on
     the machine (bugbot, PR #1049). The helper refuses the id shape outright,
-    and separately refuses any resolved target that is not exactly
-    `<root>/<project>/<id>[.jsonl]`."""
+    and separately refuses any target that is not `<a project dir>/<id>[.jsonl]`
+    — and a refusal COUNTS, so the endpoint cannot call it a delete."""
     proj = projects_dir / "-p"
     proj.mkdir()
     (proj / "other.jsonl").write_text("{}\n")
     for bad in ("..", ".", "../..", "-p/other", "*"):
-        assert tasks_mod._erase_session_files(bad, None) == (0, False, 0)
+        assert tasks_mod._erase_session_files(bad, None) == (0, False, 0, 1)
     # A row path that points OUTSIDE the tree (or at a project dir, or the
-    # root) is skipped even when the id itself is fine.
+    # root) is refused even when the id itself is fine.
     outside = projects_dir.parent / "elsewhere.jsonl"
     outside.write_text("{}\n")
-    assert tasks_mod._erase_session_files("sess-x", str(outside)) == (0, False, 0)
-    assert tasks_mod._erase_session_files("sess-x", str(proj)) == (0, False, 0)
-    assert tasks_mod._erase_session_files("sess-x", str(projects_dir)) == (0, False, 0)
+    assert tasks_mod._erase_session_files("sess-x", str(outside)) == (0, False, 0, 1)
+    assert tasks_mod._erase_session_files("sess-x", str(proj)) == (0, False, 0, 1)
+    assert tasks_mod._erase_session_files("sess-x", str(projects_dir)) == (0, False, 0, 1)
     assert outside.exists() and proj.exists() and (proj / "other.jsonl").exists()
+    # Nothing on disk for this id at all: nothing removed, nothing refused —
+    # a schedule-only task erases cleanly.
+    assert tasks_mod._erase_session_files("sess-none", None) == (0, False, 0, 0)
+
+
+def test_a_refused_file_is_not_a_deleted_task(client, projects_dir, state_dir):
+    """A transcript whose leaf is a symlink out of the tree is refused — and the
+    endpoint answers 500, forgets nothing, tombstones nothing (review, PR
+    #1049: a skip used to come back as a 200 with the row gone)."""
+    real = projects_dir.parent / "kept.jsonl"
+    real.write_text(json.dumps(_user("hi", T9)) + "\n")
+    proj = projects_dir / "-encoded-sess-a"
+    proj.mkdir()
+    (proj / "sess-a.jsonl").symlink_to(real)
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 500, r.text
+    assert real.exists() and (proj / "sess-a.jsonl").exists()
+    assert not (state_dir / "deleted.json").exists() or \
+        "sess-a" not in json.loads((state_dir / "deleted.json").read_text())
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+
+
+def test_a_symlinked_project_dir_is_still_ours(client, projects_dir):
+    """A PROJECT DIR that is a symlink out of the tree is somebody's real setup
+    (the docstring has always said so): its session files are erased, because
+    the parent is compared by the project dir's own realpath, not by depth
+    under the root (review, PR #1049 — these used to be refused)."""
+    real_dir = projects_dir.parent / "real-proj"
+    real_dir.mkdir()
+    (real_dir / "sess-a.jsonl").write_text(json.dumps(_user("hi", T9)) + "\n")
+    (projects_dir / "-encoded-sess-a").symlink_to(real_dir)
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] == 1 and r.json()["erased_transcript"] is True
+    assert not (real_dir / "sess-a.jsonl").exists()
+    assert real_dir.exists()  # the dir itself is not a session file
 
 
 def test_a_file_that_will_not_go_is_not_a_deleted_task(

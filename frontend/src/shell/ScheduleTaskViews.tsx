@@ -107,6 +107,8 @@ import {
   unmarkRead,
   unreadMarker,
   upcomingEditEntry,
+  eraseBlocked,
+  ERASE_BLOCKED_HINT,
 } from "./tasks-lib";
 import type {
   FilingIntent,
@@ -2448,7 +2450,10 @@ function TaskNode({
             type="button"
             className="tasks-act tasks-act--delete"
             aria-label={`Delete ${task.task_id} forever`}
-            data-hint="Delete task forever"
+            // The same guard the card door wears: a live run cannot be erased
+            // (409), so the trash greys out and says why (review, PR #1049).
+            disabled={eraseBlocked(task)}
+            data-hint={eraseBlocked(task) ? ERASE_BLOCKED_HINT : "Delete task forever"}
             onClick={(e) => {
               e.stopPropagation();
               setErasing(true);
@@ -3568,8 +3573,8 @@ function TaskCard({
               type="button"
               className="tasks-act tasks-card-act tasks-act--delete"
               aria-label={`Delete ${task.task_id} forever`}
-              data-hint="Delete task forever"
-              disabled={busy}
+              data-hint={eraseBlocked(task) ? ERASE_BLOCKED_HINT : "Delete task forever"}
+              disabled={busy || eraseBlocked(task)}
               onClick={() => setErasing(true)}
             >
               {ICON_TRASH}

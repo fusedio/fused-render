@@ -203,9 +203,13 @@ test("canRenameBase refuses a mount root but not what's inside or beside it", ()
   const guard = { home: "/Users/x", mountsRoot: "/Users/x/.fused-render/mounts" };
   expect(canRenameBase("/Users/x/.fused-render/mounts/bucket", guard)).toBe(false);
   expect(canRenameBase("/Users/x/.fused-render/mounts/bucket/inner", guard)).toBe(true);
-  // The mounts_root directory itself is not a mount root — no guard fires on it
-  // beyond whatever root/home checks already apply.
-  expect(canRenameBase("/Users/x/.fused-render/mounts", guard)).toBe(true);
+  // The mounts_root directory itself is refused too: renaming it breaks every
+  // mount at once (review, PR #1049). Trailing slashes in the config are fine.
+  expect(canRenameBase("/Users/x/.fused-render/mounts", guard)).toBe(false);
+  const slashed = { home: "/Users/x/", mountsRoot: "/Users/x/.fused-render/mounts/" };
+  expect(canRenameBase("/Users/x", slashed)).toBe(false);
+  expect(canRenameBase("/Users/x/.fused-render/mounts/bucket", slashed)).toBe(false);
+  expect(canRenameBase("/Users/x/Projects", slashed)).toBe(true);
 });
 
 test("canRenameBase fails closed while config hasn't loaded (home/mountsRoot undefined)", () => {

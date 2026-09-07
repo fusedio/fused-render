@@ -21,13 +21,21 @@ const listeners = new Set<() => void>();
 let started = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
 
+// Every re-arm bumps this; a poll that was already in flight when the timer
+// was cleared sees a stale generation on landing and arms nothing, so a poke
+// mid-request cannot leave two self-rearming chains running (review, PR #1049).
+let generation = 0;
+
 function set(next: UpdateStatus | null): void {
-  if (next === current) return;
+  // By VALUE: getConfig() hands back a fresh object every tick, so an identity
+  // check never held and every subscriber re-rendered on every poll.
+  if (JSON.stringify(next) === JSON.stringify(current)) return;
   current = next;
   listeners.forEach((fn) => fn());
 }
 
 async function poll(): Promise<void> {
+  const mine = generation;
   let next: UpdateStatus | null = current;
   try {
     const config = await getConfig();
@@ -36,6 +44,7 @@ async function poll(): Promise<void> {
   } catch {
     // Server down — ServerStatusBanner owns that story; keep last state.
   }
+  if (mine !== generation) return;
   timer = setTimeout(poll, pollDelay(next));
 }
 
@@ -62,7 +71,8 @@ export function pollDelay(status: UpdateStatus | null, sinceStartMs = Date.now()
 // idle interval.
 export function pokeUpdateStatus(): void {
   clearTimeout(timer);
-  poll();
+  generation += 1;
+  void poll();
 }
 
 // Let a caller push a freshly-fetched status straight into the store (the
@@ -74,6 +84,7 @@ export function setUpdateStatus(next: UpdateStatus | null): void {
   // that ran before the install began.
   if (started) {
     clearTimeout(timer);
+    generation += 1;
     timer = setTimeout(poll, pollDelay(next));
   }
 }

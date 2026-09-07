@@ -4040,7 +4040,8 @@ describe("the delete affordance", () => {
     // Both are the same row's answer to the same fact.
     expect((ROW.match(/\{folderMissing && \(/g) ?? []).length).toBe(2);
     expect(ROW).toContain("aria-label={`Delete ${task.task_id} forever`}");
-    expect(ROW).toContain('data-hint="Delete task forever"');
+    expect(ROW).toContain('data-hint={eraseBlocked(task) ? ERASE_BLOCKED_HINT : "Delete task forever"}');
+    expect(ROW).toContain("disabled={eraseBlocked(task)}");
     // Without this the row's own activate raises the missing-folder toast over
     // the dialog the press just opened.
     const at = ROW.indexOf('className="tasks-act tasks-act--delete"');
@@ -4070,8 +4071,11 @@ describe("the delete affordance", () => {
     expect(peek).toContain("<EraseTaskModal");
     // The confirm REPLACES the popup rather than stacking a second Modal on it,
     // and the popup's Delete is greyed while the run is live (bugbot, PR #1049).
-    expect(peek).toContain("if (erasing) {");
-    expect(peek.indexOf("if (erasing) {")).toBeLessThan(peek.indexOf("<Modal"));
+    // The confirm is a SECOND Modal portaled after the popup (paints above,
+    // holds focus), the popup stays mounted (its chat frame keeps its draft)
+    // and is inert to its own closers meanwhile (review, PR #1049).
+    expect(peek.indexOf("</Modal>")).toBeLessThan(peek.indexOf("<EraseTaskModal"));
+    expect(peek).toContain("onClose={erasing ? () => {} : onClose}");
     expect(acts).toContain("disabled={acting || blocked}");
     expect(acts).toContain('title={blocked ? ERASE_BLOCKED_HINT : "Delete task forever"}');
   });

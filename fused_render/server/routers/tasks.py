@@ -2541,22 +2541,26 @@ def api_task_erase(patch: ErasePatch):
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
-    removed, erased, failed = 0, False, 0
+    removed, erased, failed, refused = 0, False, 0, 0
     session_id = task["session_id"]
     if session_id:
-        removed, erased, failed = _erase_session_files(session_id, task["path"])
+        removed, erased, failed, refused = _erase_session_files(session_id, task["path"])
         # A FILE THAT WOULD NOT GO IS NOT A DELETED TASK (bugbot, PR #1049).
         # Nothing about the session is forgotten and the key is NOT tombstoned:
         # the transcript is still on disk, so the row must stay on the page
         # saying so, rather than vanish over a conversation that is still
         # there and come back the next time anything touches it. The work
         # already cancelled stays cancelled — that half did happen.
-        if failed:
+        # A REFUSAL IS THE SAME ANSWER (review, PR #1049): a candidate that was
+        # not ours to remove was not removed, and reporting a delete over it
+        # would tombstone a row whose transcript is still there.
+        if failed or refused:
             tasks_watch.notify({key})
+            left = failed + refused
             raise HTTPException(
                 status_code=500,
-                detail=(f"could not remove {failed} file"
-                        f"{'' if failed == 1 else 's'} — the task is still listed; "
+                detail=(f"could not remove {left} file"
+                        f"{'' if left == 1 else 's'} — the task is still listed; "
                         "see the server log"))
         sessions.forget_triage(session_id)
         tasks_store.forget_session(session_id)
@@ -2574,35 +2578,44 @@ def api_task_erase(patch: ErasePatch):
 _SESSION_ID_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
-def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, int]:
+def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, int, int]:
     """Take one session off the disk: (how many things went, did a transcript
-    go, how many refused to).
+    go, how many refused to go, how many were refused as not ours).
 
     Every copy of `<session_id>.jsonl` under any project dir, the sibling
     `<session_id>/` sidecar dir beside each, and the row's own path when it
-    names something the glob did not reach. `glob.escape` because a session id
-    is not guaranteed to be free of glob metacharacters, and one that was would
-    otherwise match — or miss — the wrong file.
+    names something the walk did not reach.
 
-    NOTHING OUTSIDE PROJECTS_DIR IS TOUCHED: each candidate is realpathed and
-    silently skipped unless it is under the realpathed root. A skip is not an
-    error and never raises — a project dir that is a symlink out of the tree is
-    somebody's real setup, and the answer there is "erase what is genuinely
-    Claude's", not a 500 or, far worse, an rmtree in the wrong place. OSError
-    is logged and counted as not-removed for the same reason.
+    WHAT IS OURS (review, PR #1049): a candidate must resolve to a leaf named
+    exactly `<session_id>` or `<session_id>.jsonl` whose parent resolves to one
+    of the project dirs — compared by REALPATH of the project dir, so a project
+    dir that is itself a symlink out of the tree (somebody's real setup) still
+    counts, while a leaf that is a symlink to anywhere else does not. Anything
+    else is REFUSED and counted, and a refusal is a failure to the caller: an
+    erase that skipped something is not an erase, and must not report one.
+    A session id that is not a name (`..`, `.`, a separator) is refused before
+    any path is built — `PROJECTS_DIR/*/..` is the projects root itself.
     """
-    root = os.path.realpath(sessions.PROJECTS_DIR)
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
-        return 0, False, 0
-    pattern = glob.escape(session_id)
-    targets = glob.glob(os.path.join(sessions.PROJECTS_DIR, "*",
-                                     pattern + ".jsonl"))
-    # The bare-name glob is for the SIDECAR DIR only: a plain file that happens
-    # to carry a session id as its whole name is not Claude's and stays.
-    targets += [d for d in glob.glob(os.path.join(sessions.PROJECTS_DIR, "*", pattern))
-                if os.path.isdir(d)]
-    if path:
+        return 0, False, 0, 1
+    root = os.path.realpath(sessions.PROJECTS_DIR)
+    names = (session_id, session_id + ".jsonl")
+    projects: dict[str, str] = {}  # realpath(project dir) -> as listed
+    try:
+        with os.scandir(sessions.PROJECTS_DIR) as it:
+            for entry in it:
+                if entry.is_dir():
+                    projects[os.path.realpath(entry.path)] = entry.path
+    except OSError:
+        pass
+    targets: list[str] = []
+    for listed in projects.values():
+        for name in names:
+            candidate = os.path.join(listed, name)
+            if os.path.lexists(candidate):
+                targets.append(candidate)
+    if path and os.path.lexists(path):
         targets.append(path)
 
     # SIDECARS FIRST, TRANSCRIPTS LAST, AND STOP AT THE FIRST REFUSAL (bugbot,
@@ -2611,24 +2624,20 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     # the transcript in place, the row on the page and a retry possible, instead
     # of a vanished task with orphaned files beside where it was.
     targets.sort(key=lambda t: t.endswith(".jsonl"))
-    removed, erased, failed = 0, False, 0
+    removed, erased, failed, refused = 0, False, 0, 0
     seen: set[str] = set()
     for target in targets:
         resolved = os.path.realpath(target)
         if resolved in seen:
             continue
         seen.add(resolved)
-        # EXACTLY `<root>/<project dir>/<session id>[.jsonl]` and nothing else
-        # (bugbot, PR #1049: the root itself used to pass). Two levels under the
-        # root, never the root or a project dir, and the leaf must be THIS
-        # session's — a symlink that resolves anywhere else is refused whole.
         parent = os.path.dirname(resolved)
-        if (not resolved.startswith(root + os.sep)
-                or os.path.dirname(parent) != root
-                or os.path.basename(resolved) not in (session_id, session_id + ".jsonl")):
-            logger.warning("erase: refusing %s — not a session file under %s",
-                           resolved, root)
-            continue
+        if (resolved == root or parent not in projects
+                or os.path.basename(resolved) not in names):
+            logger.warning("erase: refusing %s — not a session file of %s under %s",
+                           resolved, session_id, root)
+            refused += 1
+            break
         try:
             if os.path.isdir(resolved):
                 shutil.rmtree(resolved)
@@ -2642,7 +2651,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
             failed += 1
             break
         removed += 1
-    return removed, erased, failed
+    return removed, erased, failed, refused
 
 
 def _every_rule_behind(key: str) -> list[str]:
