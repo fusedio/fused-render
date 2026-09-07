@@ -19,9 +19,11 @@ from fused_render.server.routers import index as index_router
 def _reset():
     jobs.reset()
     index_router._mirrored_terminal.clear()
+    index_router._index_job_wake.clear()
     yield
     jobs.reset()
     index_router._mirrored_terminal.clear()
+    index_router._index_job_wake.clear()
 
 
 def _run(run_id, root="/Users/tester/docs", **over):
@@ -146,3 +148,116 @@ def test_cancel_requested_on_the_job_actually_cancels_the_run(monkeypatch):
 
     _tick(monkeypatch, [_run("r1", running=True)])
     assert cancelled_run_ids == ["r1"]
+
+
+# --------------------------------------------------------- idle backoff (D727)
+
+def test_mirror_index_jobs_once_reports_whether_any_run_is_live(monkeypatch):
+    """The loop's idle-vs-active cadence choice reads this return value
+    instead of a second `list_runs` call — so it has to actually reflect
+    liveness, not just "did something get upserted"."""
+    monkeypatch.setattr(
+        index_router.runner, "list_runs",
+        lambda cfg, limit=20: {"runs": [_run("r1", running=True)]})
+    assert index_router.mirror_index_jobs_once(cfg=object()) is True
+
+    jobs.reset()
+    index_router._mirrored_terminal.clear()
+    monkeypatch.setattr(
+        index_router.runner, "list_runs",
+        lambda cfg, limit=20: {"runs": [_run("r1", running=False)]})
+    assert index_router.mirror_index_jobs_once(cfg=object()) is False
+
+    monkeypatch.setattr(
+        index_router.runner, "list_runs", lambda cfg, limit=20: {"runs": []})
+    assert index_router.mirror_index_jobs_once(cfg=object()) is False
+
+
+class _StopLoop(Exception):
+    """Escapes `_index_job_loop`'s `while True` after exactly one tick."""
+
+
+def _one_tick_wait_spy(waits):
+    def _wait(timeout):
+        waits.append(timeout)
+        raise _StopLoop
+    return _wait
+
+
+def test_loop_sleeps_the_active_interval_when_a_run_is_live(monkeypatch):
+    waits = []
+    monkeypatch.setattr(index_router, "mirror_index_jobs_once", lambda: True)
+    monkeypatch.setattr(
+        index_router._index_job_wake, "wait", _one_tick_wait_spy(waits))
+    with pytest.raises(_StopLoop):
+        index_router._index_job_loop()
+    assert waits == [index_router.INDEX_JOB_ACTIVE_S]
+
+
+def test_loop_sleeps_the_idle_interval_when_no_run_is_live(monkeypatch):
+    waits = []
+    monkeypatch.setattr(index_router, "mirror_index_jobs_once", lambda: False)
+    monkeypatch.setattr(
+        index_router._index_job_wake, "wait", _one_tick_wait_spy(waits))
+    with pytest.raises(_StopLoop):
+        index_router._index_job_loop()
+    assert waits == [index_router.INDEX_JOB_IDLE_S]
+
+
+def test_a_failing_tick_backs_off_to_idle_rather_than_pinning_fast(monkeypatch):
+    """The existing exception protection (a bad tick must not kill the loop)
+    must not also pin the loop to the fast cadence forever."""
+    waits = []
+
+    def _boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(index_router, "mirror_index_jobs_once", _boom)
+    monkeypatch.setattr(
+        index_router._index_job_wake, "wait", _one_tick_wait_spy(waits))
+    with pytest.raises(_StopLoop):
+        index_router._index_job_loop()
+    assert waits == [index_router.INDEX_JOB_IDLE_S]
+
+
+def test_a_scan_starting_while_idle_wakes_the_loop_without_waiting_it_out(
+        monkeypatch):
+    """The wake mechanism: a scan starting sets `_index_job_wake`, which is
+    exactly what lets a real loop's `Event.wait(INDEX_JOB_IDLE_S)` return
+    early instead of a freshly started run waiting out the full idle
+    interval before it appears in Activity."""
+    assert not index_router._index_job_wake.is_set()
+    index_router._wake_index_job_bridge()
+    assert index_router._index_job_wake.is_set()
+
+
+def test_api_index_scan_wakes_the_bridge_on_a_started_run(monkeypatch):
+    monkeypatch.setattr(
+        index_router.index_gate, "indexing_blocked", lambda: "")
+    monkeypatch.setattr(
+        index_router, "load_config", lambda: object())
+    monkeypatch.setattr(
+        index_router.runner, "start",
+        lambda cfg, root, full=False: {"run_id": "r1", "root": root})
+    assert not index_router._index_job_wake.is_set()
+    index_router.api_index_scan(body={"root": "/Users/tester/docs"},
+                                x_fused="1")
+    assert index_router._index_job_wake.is_set()
+
+
+def test_run_startup_scan_wakes_the_bridge_on_a_started_run(monkeypatch):
+    monkeypatch.setattr(
+        index_router.index_gate, "indexing_blocked", lambda: "")
+    monkeypatch.setattr(index_router, "load_config", lambda: object())
+    monkeypatch.setattr(index_router.runner, "prune_runs",
+                        lambda cfg, keep=20: None)
+    monkeypatch.setattr(index_router, "scan_roots",
+                        lambda cfg, start_dir=None: ["/Users/tester"])
+    monkeypatch.setattr(index_router.runner, "last_scan",
+                        lambda cfg, root: None)
+    monkeypatch.setattr(
+        index_router.runner, "start",
+        lambda cfg, root, full=False: {"run_id": "r1", "root": root})
+    assert not index_router._index_job_wake.is_set()
+    index_router.run_startup_scan()
+    assert index_router._index_job_wake.is_set()

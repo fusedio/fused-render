@@ -222,6 +222,7 @@ def run_startup_scan(start_dir: str | None = None) -> None:
             run_id = (started or {}).get("run_id")
             if run_id:
                 _startup_runs[root] = run_id
+            _wake_index_job_bridge()
             logger.info("index: started background scan of %s (run %s)",
                         root, run_id)
         except ValueError as e:
@@ -546,7 +547,19 @@ INDEX_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "index:"
 # INDEX_POLL_MS, 1500ms): an Activity row for a scan updates no more (and no
 # less) often than the panel that has always shown this progress, so nothing
 # about how "live" a re-index looks changes by adding a second surface for it.
-INDEX_JOB_TICK_S = 1.5
+# Named, like `INDEX_JOB_IDLE_S` below, to match index-status.ts's own two
+# constants (`INDEX_POLL_MS` / `INDEX_IDLE_POLL_MS`) rather than the frontend's
+# names for one cadence and an invented name for the other.
+INDEX_JOB_ACTIVE_S = 1.5
+
+# The idle cadence — no run was live on the last tick. Equal to
+# index-status.ts's own `INDEX_IDLE_POLL_MS` (10000ms): the bridge was modeled
+# on that poller and copied its active cadence, but not this half, which is
+# the whole reason a server with no index scan running or ever run was waking
+# up and re-listing run directories roughly 24 times a minute forever. A scan
+# starting while idle does not wait out this interval — see
+# `_index_job_wake` below.
+INDEX_JOB_IDLE_S = 10.0
 
 
 def _index_job_id(run_id: str) -> str:
@@ -579,14 +592,17 @@ def _display_root(root: str) -> str:
 _mirrored_terminal: set = set()
 
 
-def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> None:
+def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> bool:
+    """Mirror one run into its job. Returns whether the run was live
+    (`running`) on this tick, so `mirror_index_jobs_once` can answer the
+    loop's cadence question without a second read of the run directories."""
     run_id = run.get("run_id")
     root = run.get("root")
     if not run_id or not root:
-        return
+        return False
     job_id = _index_job_id(str(run_id))
     if job_id in _mirrored_terminal:
-        return
+        return False
     running = bool(run.get("running"))
     fields = {
         "title": "Indexing files",
@@ -626,7 +642,7 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> None:
         return
     if not running:
         _mirrored_terminal.add(job_id)
-        return
+        return False
     # A cancel is a REQUEST the reporter honours on its next tick (jobs.py
     # `request_cancel`'s own docstring) — this IS that next tick, and
     # `runner.cancel` is the exact function `/api/index/cancel` calls, so
@@ -637,9 +653,10 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> None:
             runner.cancel(cfg, str(run_id))
         except ValueError:
             pass
+    return True
 
 
-def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> None:
+def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> bool:
     """One tick of the Activity bridge: every run `list_runs` currently
     knows about gets (or updates) a `sys:index:<run_id>` job.
 
@@ -648,30 +665,62 @@ def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> None:
     opening `events.jsonl` a second way, so this shares that function's
     liveness check and its 1s fold cache instead of adding a competing read
     of the same run directories.
+
+    Returns whether any run this tick was still `running` — the signal
+    `_index_job_loop` uses to pick its next sleep, again without a second
+    read of the run directories.
     """
     cfg = cfg or load_config()
     try:
         runs = runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]
     except Exception:  # noqa: BLE001 - a bridge tick must never take the server down
         logger.exception("could not list index runs for job mirroring")
-        return
+        return False
+    live = False
     for run in runs:
         try:
-            _mirror_one_run_job(cfg, run)
+            if _mirror_one_run_job(cfg, run):
+                live = True
         except Exception:  # noqa: BLE001 - one bad run must not stop the rest
             logger.exception("could not mirror index run %s into jobs",
                              run.get("run_id"))
+    return live
+
+
+# Set by every path that starts a scan (`run_startup_scan`, `api_index_scan`,
+# `api_index_scan_folder`, and the freshness check's own rescan) so the loop
+# below ticks immediately instead of waiting out up to `INDEX_JOB_IDLE_S` of
+# an idle sleep before a freshly started run reaches the Activity card. A
+# plain `threading.Event`, not a queue or counter: the loop only ever cares
+# whether SOMETHING happened since its last wait, never how many things or
+# what — the next tick's own `list_runs` answers that.
+_index_job_wake = threading.Event()
+
+
+def _wake_index_job_bridge() -> None:
+    _index_job_wake.set()
 
 
 def _index_job_loop() -> None:
-    import time
-
     while True:
         try:
-            mirror_index_jobs_once()
+            live = mirror_index_jobs_once()
         except Exception:  # noqa: BLE001 - the loop itself must never die
             logger.exception("index job bridge tick failed")
-        time.sleep(INDEX_JOB_TICK_S)
+            # A failing tick must not pin the loop to the fast cadence
+            # forever — treated the same as "nothing is running" so a
+            # persistent failure backs off instead of hot-looping.
+            live = False
+        # `wait` both sleeps AND clears on a spurious-looking early return:
+        # a wake that arrives DURING this wait ends it early (good — that is
+        # the point), and the flag is cleared right after regardless of
+        # whether this wait was the one satisfied by it, so a wake that
+        # lands between the `wait` returning and the `clear` below is never
+        # silently swallowed (`Event.wait` returning True vs timing out is
+        # not even checked: either way the next loop iteration's tick is
+        # about to run `list_runs` fresh).
+        _index_job_wake.wait(INDEX_JOB_ACTIVE_S if live else INDEX_JOB_IDLE_S)
+        _index_job_wake.clear()
 
 
 _index_job_thread: "threading.Thread | None" = None
@@ -845,6 +894,7 @@ def _run_freshness_check(path: str) -> None:
             return
         started = freshness.note_folder_opened(cfg, path, roots)
         if started:
+            _wake_index_job_bridge()
             logger.info("index: %s changed since the last scan; rescanning %s",
                         path, started)
     except Exception:  # noqa: BLE001 - housekeeping must never surface
@@ -900,6 +950,7 @@ def api_index_scan(body: dict = Body(default={}),
             started = runner.start(cfg, str(root), full=full)
         except ValueError as e:
             return _error(str(e))
+        _wake_index_job_bridge()
         return {"ok": True, **started, "runs": [started]}
     # No root means "the whole index", which is every configured root — the
     # panel's Re-index and Full-scan buttons say exactly that. Scanning only
@@ -915,6 +966,7 @@ def api_index_scan(body: dict = Body(default={}),
             logger.info("index: skipping %s (%s)", r, e)
     if not runs:
         return _error(last_error or "no scannable roots are configured")
+    _wake_index_job_bridge()
     return {"ok": True, **runs[0], "runs": runs}
 
 
@@ -997,6 +1049,7 @@ def api_index_scan_folder(body: dict = Body(default={}),
         logger.info("index: not scanning %s on demand (%s)", root, e)
         return {"ok": True, "started": False, "why": "refused",
                 "error": str(e), "run_id": None, "root": root}
+    _wake_index_job_bridge()
     logger.info("index: scanning %s on demand (run %s)",
                 root, started.get("run_id"))
     return {"ok": True, "started": True,
@@ -1600,6 +1653,8 @@ def api_index_config_write(body: dict = Body(default={}),
             rescan_run_ids.append((started or {}).get("run_id"))
         except (ValueError, OSError):
             logger.exception("could not start the post-edit rescan of %s", root)
+    if rescan_run_ids:
+        _wake_index_job_bridge()
     # Same shape as the GET: the panel swaps its whole state for this
     # response, so a save that reported the raw configured list would blank
     # the coverage line whenever the roots are the unconfigured home default.
