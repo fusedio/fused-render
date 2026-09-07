@@ -177,6 +177,25 @@ def test_mirror_index_jobs_once_reports_whether_any_run_is_live(monkeypatch):
     assert index_router.mirror_index_jobs_once(cfg=object()) is False
 
 
+def test_a_running_run_still_reports_live_when_reporting_itself_fails(monkeypatch):
+    """`running` is a fact about the RUN (from `run` itself), independent of
+    whether `jobs.upsert` managed to write it down. A bare `return` in the
+    `except jobs.JobError` branch used to answer `None` here regardless, which
+    `mirror_index_jobs_once`'s `if _mirror_one_run_job(...): live = True` read
+    as "not live" — backing the loop off to the idle cadence
+    (INDEX_JOB_IDLE_S) while a scan was genuinely running and merely failing
+    to report."""
+    monkeypatch.setattr(
+        index_router.runner, "list_runs",
+        lambda cfg, limit=20: {"runs": [_run("r1", running=True)]})
+
+    def _boom(*a, **kw):
+        raise jobs.JobError("boom")
+
+    monkeypatch.setattr(jobs, "upsert", _boom)
+    assert index_router.mirror_index_jobs_once(cfg=object()) is True
+
+
 class _StopLoop(Exception):
     """Escapes `_index_job_loop`'s `while True` after exactly one tick."""
 

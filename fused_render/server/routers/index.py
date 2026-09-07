@@ -695,8 +695,16 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> bool:
     try:
         result = jobs.upsert({"id": job_id, **fields}, server=True)
     except jobs.JobError:
+        # A reporting failure says nothing about whether the RUN is live —
+        # `running` above already answered that from `run` itself, before
+        # `jobs.upsert` was ever called. Returning bare `None` here used to
+        # read as "not live" to `mirror_index_jobs_once`'s `if
+        # _mirror_one_run_job(...): live = True`, which backed the tick off
+        # to the idle cadence (INDEX_JOB_IDLE_S, 10s) while a scan was
+        # genuinely running and simply failing to report — the two facts are
+        # independent and only one of them broke.
         logger.exception("could not report index job %s", job_id)
-        return
+        return running
     if not running:
         _mirrored_terminal.add(job_id)
         return False
