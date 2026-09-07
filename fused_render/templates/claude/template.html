@@ -8638,6 +8638,19 @@ function annWireTarget() {
 // adopted before it has a src. Hosted, `annFrame` is the host's or null and the
 // adoption happens in annSyncTarget instead — the target is not ours to assume,
 // so what starts there is the polling that keeps asking who it is.
+// A reload or close mid-walkthrough ASKS first (Akshil, 2026-09-07, option 1):
+// the recording cannot survive the page (see annBootMode), so the one thing
+// this document can do for it is make leaving deliberate. The browser's own
+// sheet — the text is the UA's, `returnValue` only arms it — and only while a
+// recording is live: an armed Comment round rides the URL and loses nothing.
+// EVERY layout (Bugbot, PR #1046): the full-page and split chats record too,
+// so this sits outside the CHAT_ONLY block below. Hosted, a frame's
+// beforeunload holds the parent's navigation as well.
+window.addEventListener("beforeunload", (e) => {
+  if (!annRecOn) return;
+  e.preventDefault();
+  e.returnValue = "A walkthrough is recording — leave and stop it?";
+});
 if (CHAT_ONLY) {
   annPollTarget();
   window.addEventListener("focus", annPollTarget);
@@ -8663,18 +8676,6 @@ if (CHAT_ONLY) {
   // browser no longer runs. Cleared here, the next instance re-adopts and
   // re-wires; the dead listeners it cannot remove stay inert for the same
   // reason they stopped working.
-  // A reload or close mid-walkthrough ASKS first (Akshil, 2026-09-07, option 1):
-  // the recording cannot survive the page (see annBootMode), so the one thing
-  // this document can do for it is make leaving deliberate. The browser's own
-  // sheet — the text is the UA's, `returnValue` only arms it — and only while
-  // a recording is live: an armed Comment round rides the URL and loses
-  // nothing. Registered on this window, which is enough hosted too: a frame's
-  // beforeunload holds the parent's navigation as well.
-  window.addEventListener("beforeunload", (e) => {
-    if (!annRecOn) return;
-    e.preventDefault();
-    e.returnValue = "A walkthrough is recording — leave and stop it?";
-  });
   window.addEventListener("pagehide", () => {
     annOn = false;   // gates any handler of ours the browser does still run
     // End the recording, fire-and-forget: no transcription — this document is

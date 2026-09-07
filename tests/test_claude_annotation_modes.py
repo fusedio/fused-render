@@ -1130,7 +1130,9 @@ def test_leaving_mid_walkthrough_asks_first(html):
     goes through the browser's leave prompt. Only while recording — an armed
     Comment round rides the URL and loses nothing — and registered before the
     pagehide that stops and keeps the file."""
-    guard = _block(html, 'window.addEventListener("beforeunload", (e) => {', "\n  });\n")
+    guard = _block(html, 'window.addEventListener("beforeunload", (e) => {', "\n});\n")
     assert "if (!annRecOn) return;" in guard
     assert "e.preventDefault();" in guard and "e.returnValue = " in guard
+    # top level, for EVERY layout — not inside the CHAT_ONLY block (Bugbot)
+    assert html.index('window.addEventListener("beforeunload"') < html.index("\nif (CHAT_ONLY) {\n")
     assert html.index('addEventListener("beforeunload"') < html.index('addEventListener("pagehide"')
