@@ -126,6 +126,43 @@ describe("clearShellSnapshot", () => {
       expect(curLoc().search).toBe("?foo=bar");
     }
   );
+
+  it(
+    "ROUND 5 ITEM A: does NOT write the URL (no history.replaceState call) " +
+      "when `_snapshot` is already absent — the write is what fires " +
+      "fused:urlchange (main.tsx wraps replaceState), and both effect hooks " +
+      "that call clearShellSnapshot on their own !isSha early return " +
+      "re-run on urlVersion, which that same event bumps. An unconditional " +
+      "write here is a same-tick infinite loop on EVERY ordinary page load " +
+      "with no `_snapshot` param at all (reproduced as a real " +
+      "'history.replaceState more than 100 times per 10 seconds' " +
+      "SecurityError and a totally blank explorer).",
+    () => {
+      (globalThis as Record<string, unknown>).location = {
+        search: "?foo=bar",
+        pathname: "/w/myapp/x.py",
+      };
+      let replaceStateCalls = 0;
+      (globalThis as Record<string, unknown>).history = {
+        state: null,
+        replaceState: (_state: unknown, _title: string, url: string) => {
+          replaceStateCalls++;
+          const target = curLoc();
+          const qIndex = url.indexOf("?");
+          target.pathname = qIndex === -1 ? url : url.slice(0, qIndex);
+          target.search = qIndex === -1 ? "" : url.slice(qIndex);
+        },
+      };
+      (globalThis as Record<string, unknown>).document = {
+        querySelector: () => null,
+      };
+
+      clearShellSnapshot();
+
+      expect(replaceStateCalls).toBe(0);
+      expect(curLoc().search).toBe("?foo=bar");
+    }
+  );
 });
 
 describe("disarmSidebarOnFailedSelect", () => {

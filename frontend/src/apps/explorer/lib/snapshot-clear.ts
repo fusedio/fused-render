@@ -71,7 +71,30 @@ function notifySidebarSnapshotCleared(): void {
  *  `useSnapshotForFolder`'s local state) — this does not know about those,
  *  the same reason `setResolvedSnapshot` alone never re-renders anything
  *  (see snapshot-param.ts's own comment). Call this, then clear the local
- *  mirror the same way every existing caller already does. */
+ *  mirror the same way every existing caller already does.
+ *
+ *  ROUND 5, ITEM A: the URL write (`replaceSearch`) only happens when it
+ *  would actually CHANGE the URL. Both `usePreviewSnapshot` and
+ *  `useSnapshotForFolder` call this unconditionally from their effect's
+ *  `!isSha(raw)` early-return branch — the branch that runs on EVERY
+ *  ordinary render with no `_snapshot` param at all, not only the ones
+ *  genuinely clearing a previous one. `replaceSearch` routes through
+ *  `history.replaceState`, which main.tsx wraps to dispatch
+ *  `fused:urlchange` UNCONDITIONALLY (it does not compare old/new url) —
+ *  and `urlVersion` (bumped by that event, `platform/lib/hooks.ts`'s
+ *  `useUrlVersion`) is in the dep array of both of those very effects. An
+ *  unconditional write here is therefore a same-tick infinite loop on every
+ *  page with no `_snapshot`: effect -> write -> event -> urlVersion bump ->
+ *  effect -> write -> ... — observed for real as a
+ *  "history.replaceState() more than 100 times per 10 seconds"
+ *  SecurityError and a totally blank explorer. Comparing the COMPUTED
+ *  search string against the current one (rather than just checking
+ *  whether `_snapshot` is present) is the robust guard: it also covers a
+ *  caller some day asking this to drop a DIFFERENT already-absent param, or
+ *  `_snapshot` being present but already stripped by an intervening write.
+ *  The singleton clear and the sidebar hop are cheap and side-effect-free
+ *  the second time, so they still run unconditionally — only the write
+ *  that can trigger the loop is guarded. */
 export function clearShellSnapshot(): void {
   setResolvedSnapshot(null);
   const search = writeQueryParam(
@@ -79,7 +102,10 @@ export function clearShellSnapshot(): void {
     "_snapshot",
     null
   );
-  replaceSearch(location.pathname + (search ? "?" + search : ""));
+  const nextUrl = location.pathname + (search ? "?" + search : "");
+  if (nextUrl !== location.pathname + location.search) {
+    replaceSearch(nextUrl);
+  }
   notifySidebarSnapshotCleared();
 }
 
