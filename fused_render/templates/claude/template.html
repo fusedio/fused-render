@@ -12683,6 +12683,13 @@ let taskIdBusy = "";
 // Declared BESIDE `taskIds` rather than down with the menu code, so it is
 // initialised before `showSession()` runs a few lines below.
 const archiveStates = new Map();
+/** Session id → is the task's run IN FLIGHT (`in_progress` / `needs_attention`),
+ *  read off the same /api/tasks listing as `archiveStates`. Archive and Delete
+ *  are DISABLED while it is (Akshil, 2026-09-07): the server refuses both on a
+ *  live run (409, "stop the run first"), so the menu says so up front instead
+ *  of offering a verb that will bounce. */
+const taskRunning = new Map();
+const RUNNING_STATES = new Set(["in_progress", "needs_attention"]);
 
 function showSession() {
   const id = fused.params.get("session_id");
@@ -12707,6 +12714,7 @@ async function loadTaskId(id) {
     // newest conversations. `null` is the real answer "this chat is not a task",
     // which is what hides the item rather than leaving it unknown.
     archiveStates.set(id, task ? task.status === "archived" : null);
+    taskRunning.set(id, !!task && RUNNING_STATES.has(task.status));
     // The item may be on screen right now with a stale reading (a menu left open
     // across a session switch), so paint what we just learned.
     applyArchiveOpt();
@@ -13150,13 +13158,19 @@ function applyArchiveOpt() {
     deleteOpt.hidden = true;
     return;
   }
+  // Live by either clock: the listing's word (a run parked on a permission
+  // card, or driven from elsewhere) or this page's own turn (`body.running`,
+  // which the listing may not have caught up with yet).
+  const live = !!taskRunning.get(id) || document.body.classList.contains("running");
   archiveKey = id;
   archiveOpt.textContent = filed ? "Unarchive this task" : "Archive this task";
   archiveOpt.dataset.filed = filed ? "1" : "";
-  archiveOpt.disabled = false;
+  archiveOpt.disabled = live;
+  archiveOpt.title = live ? "Stop the run first" : "";
   archiveOpt.hidden = false;
   eraseKey = id;
-  deleteOpt.disabled = false;
+  deleteOpt.disabled = live;
+  deleteOpt.title = live ? "Stop the run first" : "";
   deleteOpt.hidden = false;
 }
 
@@ -13178,6 +13192,7 @@ async function refreshArchiveOpt() {
     // for a conversation nobody is looking at any more.
     if (fused.params.get("session_id") !== id) return;
     archiveStates.set(id, task ? task.status === "archived" : null);
+    taskRunning.set(id, !!task && RUNNING_STATES.has(task.status));
     applyArchiveOpt();
   } catch (err) {
     /* FAILS CLOSED, unlike the task-number read above: that one costs a nicer
@@ -13338,6 +13353,7 @@ eraseGo.addEventListener("click", async () => {
     // showSession/applyArchiveOpt read them on the way out.
     archiveStates.delete(key);
     taskIds.delete(key);
+    taskRunning.delete(key);
     eraseBusy = false;
     eraseDlg.hidden = true;
     eraseAsked = "";
