@@ -91,6 +91,7 @@ import glob
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -2540,10 +2541,23 @@ def api_task_erase(patch: ErasePatch):
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
-    removed, erased = 0, False
+    removed, erased, failed = 0, False, 0
     session_id = task["session_id"]
     if session_id:
-        removed, erased = _erase_session_files(session_id, task["path"])
+        removed, erased, failed = _erase_session_files(session_id, task["path"])
+        # A FILE THAT WOULD NOT GO IS NOT A DELETED TASK (bugbot, PR #1049).
+        # Nothing about the session is forgotten and the key is NOT tombstoned:
+        # the transcript is still on disk, so the row must stay on the page
+        # saying so, rather than vanish over a conversation that is still
+        # there and come back the next time anything touches it. The work
+        # already cancelled stays cancelled — that half did happen.
+        if failed:
+            tasks_watch.notify({key})
+            raise HTTPException(
+                status_code=500,
+                detail=(f"could not remove {failed} file"
+                        f"{'' if failed == 1 else 's'} — the task is still listed; "
+                        "see the server log"))
         sessions.forget_triage(session_id)
         tasks_store.forget_session(session_id)
 
@@ -2553,8 +2567,16 @@ def api_task_erase(patch: ErasePatch):
             "erased_transcript": erased, "removed": removed}
 
 
-def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool]:
-    """Take one session off the disk: (how many things went, did a transcript).
+# What a Claude Code session id looks like on disk — a uuid, in practice — and
+# the shape the erase glob will accept at all. Not a dot, not `..`, no
+# separator: `glob.escape` keeps a name from being a PATTERN, but `..` is not a
+# pattern, it is a path, and `PROJECTS_DIR/*/..` is the projects root itself.
+_SESSION_ID_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, int]:
+    """Take one session off the disk: (how many things went, did a transcript
+    go, how many refused to).
 
     Every copy of `<session_id>.jsonl` under any project dir, the sibling
     `<session_id>/` sidecar dir beside each, and the row's own path when it
@@ -2570,6 +2592,9 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool]:
     is logged and counted as not-removed for the same reason.
     """
     root = os.path.realpath(sessions.PROJECTS_DIR)
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        logger.warning("erase: refusing session id %r", session_id)
+        return 0, False, 0
     pattern = glob.escape(session_id)
     targets = glob.glob(os.path.join(sessions.PROJECTS_DIR, "*",
                                      pattern + ".jsonl"))
@@ -2580,15 +2605,23 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool]:
     if path:
         targets.append(path)
 
-    removed, erased = 0, False
+    removed, erased, failed = 0, False, 0
     seen: set[str] = set()
     for target in targets:
         resolved = os.path.realpath(target)
         if resolved in seen:
             continue
         seen.add(resolved)
-        if resolved != root and not resolved.startswith(root + os.sep):
-            logger.warning("erase: refusing %s — outside %s", resolved, root)
+        # EXACTLY `<root>/<project dir>/<session id>[.jsonl]` and nothing else
+        # (bugbot, PR #1049: the root itself used to pass). Two levels under the
+        # root, never the root or a project dir, and the leaf must be THIS
+        # session's — a symlink that resolves anywhere else is refused whole.
+        parent = os.path.dirname(resolved)
+        if (not resolved.startswith(root + os.sep)
+                or os.path.dirname(parent) != root
+                or os.path.basename(resolved) not in (session_id, session_id + ".jsonl")):
+            logger.warning("erase: refusing %s — not a session file under %s",
+                           resolved, root)
             continue
         try:
             if os.path.isdir(resolved):
@@ -2600,9 +2633,10 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool]:
                 continue
         except OSError:
             logger.warning("erase: could not remove %s", resolved, exc_info=True)
+            failed += 1
             continue
         removed += 1
-    return removed, erased
+    return removed, erased, failed
 
 
 def _every_rule_behind(key: str) -> list[str]:

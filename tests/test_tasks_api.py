@@ -2466,6 +2466,48 @@ def test_erasing_a_task_with_no_session_only_cancels(client, tmp_path):
     assert _tasks(client) == []
 
 
+def test_erasing_never_reaches_past_a_session_file(projects_dir):
+    """`..` is not a glob pattern, it is a path: `PROJECTS_DIR/*/..` is the
+    projects root, and an unguarded rmtree there is every Claude project on
+    the machine (bugbot, PR #1049). The helper refuses the id shape outright,
+    and separately refuses any resolved target that is not exactly
+    `<root>/<project>/<id>[.jsonl]`."""
+    proj = projects_dir / "-p"
+    proj.mkdir()
+    (proj / "other.jsonl").write_text("{}\n")
+    for bad in ("..", ".", "../..", "-p/other", "*"):
+        assert tasks_mod._erase_session_files(bad, None) == (0, False, 0)
+    # A row path that points OUTSIDE the tree (or at a project dir, or the
+    # root) is skipped even when the id itself is fine.
+    outside = projects_dir.parent / "elsewhere.jsonl"
+    outside.write_text("{}\n")
+    assert tasks_mod._erase_session_files("sess-x", str(outside)) == (0, False, 0)
+    assert tasks_mod._erase_session_files("sess-x", str(proj)) == (0, False, 0)
+    assert tasks_mod._erase_session_files("sess-x", str(projects_dir)) == (0, False, 0)
+    assert outside.exists() and proj.exists() and (proj / "other.jsonl").exists()
+
+
+def test_a_file_that_will_not_go_is_not_a_deleted_task(
+        client, projects_dir, state_dir, monkeypatch):
+    """OSError on the remove used to be logged and then reported as a 200 with
+    the key tombstoned — a "permanent" delete that left the transcript on disk
+    to revive the row later (bugbot, PR #1049). Now it is a 500, nothing is
+    forgotten, and the row stays."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+
+    def refuse(_path):
+        raise OSError("busy")
+
+    monkeypatch.setattr(tasks_mod.os, "remove", refuse)
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 500, r.text
+    assert "could not remove 1 file" in r.json()["detail"]
+    assert path.exists()
+    assert not (state_dir / "deleted.json").exists() or \
+        "sess-a" not in json.loads((state_dir / "deleted.json").read_text())
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+
+
 def test_erasing_a_task_that_is_not_there_is_a_404(client):
     assert client.post("/api/tasks/erase",
                        json={"key": "nope"}).status_code == 404

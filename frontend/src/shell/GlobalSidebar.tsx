@@ -452,6 +452,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       pushToast({ msg: "Copied", tone: "info" });
       return;
     }
+    // ONLY AN UPDATE THAT IS WAITING GETS INSTALLED (bugbot, PR #1049): the
+    // row is drawn for every relevant state, but "Updating…" must not start
+    // a second install under the first, and "Ready to restart" is the
+    // ServerStatusBanner's restart card's job — this row is a status line
+    // there, the same as UpdateBadge's installed state.
+    if (updateStatus.state !== "available" && updateStatus.state !== "error") return;
     // Same order as UpdateBadge.install: the poke comes AFTER the install
     // answers, so the poll it arms sees "installing" and runs at the busy
     // interval — poked first it would still read "available" and arm the 60s
