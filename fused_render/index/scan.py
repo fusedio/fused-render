@@ -655,6 +655,19 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
             while i < len(keys) and (keys[i] == p or keys[i].startswith(p + "/")):
                 dead.add(keys[i])
                 i += 1
+        # This loop runs once per cached dir the journal didn't touch —
+        # hundreds of thousands of times on a large index — and used to credit
+        # all of them silently, so `files + reused` sat near zero and then
+        # jumped to ~total in one step right as the loop finished (the bar's
+        # "Window 2" problem). Beat-gated exactly like the walk loop above
+        # (same 0.5s cadence, same `last_beat`), but the `time.time()` call
+        # itself is masked behind a cheap integer check first — `& 0xFFF`,
+        # not a syscall, an allocation, or a per-iteration cost this loop
+        # didn't already have — so a fast loop still pays for `time.time()`
+        # only every 4096 dirs rather than every single one, and a loop that
+        # finishes inside one beat interval (nothing to report yet) emits
+        # nothing extra either way.
+        beat_i = 0
         for c in cache:
             if c in scanned or c in dead:
                 continue
@@ -662,6 +675,13 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
             sink.dirs += 1
             sink.udirs += 1
             sink.reused += cache[c][1] or 0
+            beat_i += 1
+            if beat_i & 0xFFF == 0:
+                now = time.time()
+                if now - last_beat >= 0.5:
+                    last_beat = now
+                    _emit(ev, type="progress", dirs=sink.dirs,
+                          files=sink.files, reused=sink.reused, current="")
     sink.close()
     totals = {"dirs": sink.dirs, "files": sink.files,
               "reused": sink.reused, "udirs": sink.udirs}
