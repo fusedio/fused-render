@@ -72,8 +72,8 @@ function escapeAttr(v: string | number): string {
 }
 
 /** A lucide icon as a standalone icon.svg document: a 64-unit square with no
- *  plate — the bare glyph in grey, like the generic AppStar fallback — the
- *  24-unit glyph scaled 1.75× and centred with 11 units of margin. */
+ *  plate, no margin — the bare glyph in grey, like the generic AppStar
+ *  fallback, filling lucide's own 24-unit viewBox edge to edge. */
 export function glyphIconSvg(node: IconNode): string {
   const inner = node
     .map(([tag, attrs]) => {
@@ -85,10 +85,10 @@ export function glyphIconSvg(node: IconNode): string {
     })
     .join("");
   return (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
-    // 1.75: a 42-unit glyph with 11 of margin — the glyph carries the icon
-    // on its own, at favicon size as much as in the row.
-    '<g transform="translate(11 11) scale(1.75)" fill="none" ' +
+    // Lucide's own viewBox, untransformed: the glyph fills the tile with no
+    // margin, so it draws as large as the host's box allows.
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+    '<g fill="none" ' +
     // 2.5 not lucide's 2: the row draws the file at 14px, where a 2-unit
     // stroke lands under a pixel and reads faint beside the emoji rows.
     `stroke="${GLYPH_GREY}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">` +
