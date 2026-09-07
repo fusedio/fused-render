@@ -7,12 +7,15 @@ import type { Config } from "@platform/lib/api";
 
 export const ONBOARDING_PATH = "/onboarding";
 
-/** The auto-show rule, from the server's flag: never completed AND never
-    dismissed. A backend without the field (older server) shows nothing. */
+/** The auto-show rule, from the server's flags: never completed, never
+    dismissed AND NEVER OPENED. The wizard is for a first run; once it has been
+    on screen, however the user left it (Back, a refresh, the sidebar meter),
+    /home is /home again and the meter row is the way back in. A backend without
+    the field (older server) shows nothing. */
 export function shouldAutoShow(config: Config): boolean {
   const s = config.onboarding;
   if (!s) return false;
-  return s.completed_at == null && s.dismissed_at == null;
+  return s.completed_at == null && s.dismissed_at == null && s.opened_at == null;
 }
 
 // The resume point. The server keeps the last open step (shell/onboarding.py

@@ -198,6 +198,10 @@ export function dismissFdaNudge(): Promise<{ ok: boolean }> {
 export interface OnboardingState {
   completed_at: number | null;
   dismissed_at: number | null;
+  // When the wizard was first on screen (stamped by the first step write).
+  // Third leg of the auto-show rule (shell/onboarding/state): a wizard that
+  // has been opened is never auto-shown again. Optional: older server.
+  opened_at?: number | null;
   // The step id the user last had open — the resume point after a server
   // restart or a dismiss. Optional: an older server does not send it.
   step?: string | null;

@@ -223,7 +223,14 @@ def snapshot() -> dict:
     if force == "1":
         # The override fakes the FLAGS, not the step: a dev server forced into
         # the wizard still resumes where it was, which is how this is smoked.
-        return {"completed_at": None, "dismissed_at": None, "step": step, "stages": stages, "version": VERSION}
+        return {
+            "completed_at": None,
+            "dismissed_at": None,
+            "opened_at": None,
+            "step": step,
+            "stages": stages,
+            "version": VERSION,
+        }
     if force == "0" and state.get("dismissed_at") is None:
         # Reads as dismissed without writing anything: the override is for
         # this process, not a decision the user made.
@@ -231,6 +238,14 @@ def snapshot() -> dict:
     return {
         "completed_at": state.get("completed_at"),
         "dismissed_at": state.get("dismissed_at"),
+        # First time the wizard was ever on screen (stamped by the first step
+        # write). The auto-show is for a wizard NEVER seen: once opened, every
+        # way out — Back, a refresh, the sidebar meter — is a way out, and the
+        # meter row is how one gets back in. Before this, only complete/dismiss
+        # stopped the bounce, and a /home reload after Back re-entered forever.
+        # A stored step from a build before this field IS evidence of an open;
+        # 0 = "opened, when unknown", so the upgrade does not bounce once more.
+        "opened_at": state.get("opened_at") if state.get("opened_at") is not None else (0 if step else None),
         "step": step,
         "stages": stages,
         "version": VERSION,
@@ -301,7 +316,11 @@ def api_onboarding_step(body: dict, x_fused: str | None = Header(default=None)):
     step = body.get("step") if isinstance(body, dict) else None
     if step not in STEPS:
         return JSONResponse({"error": f"unknown step {step!r}"}, status_code=400)
-    _write({"step": step})
+    with _LOCK:
+        patch: dict = {"step": step}
+        if _read().get("opened_at") is None:
+            patch["opened_at"] = time.time()
+        _write(patch)
     return snapshot()
 
 
