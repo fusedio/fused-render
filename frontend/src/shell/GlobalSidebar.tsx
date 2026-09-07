@@ -447,6 +447,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // toast says it instead.
   const handleUpdatePick = () => {
     if (!updateStatus) return;
+    // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the
+    // badge's own button and the ServerStatusBanner card use. FIRST, before
+    // the brew branch: a brew upgrade also lands in "installed" and clears
+    // manual_command, and the brew branch used to return on that before this
+    // path was reached (bugbot, PR #1058).
+    if (updateStatus.state === "installed") {
+      window.location.assign("fused-render://relaunch");
+      return;
+    }
     if (updateStatus.method === "brew") {
       if (!updateStatus.manual_command) return;
       navigator.clipboard.writeText(updateStatus.manual_command);
@@ -458,12 +467,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // a second install under the first, and "Ready to restart" is the
     // ServerStatusBanner's restart card's job — this row is a status line
     // there, the same as UpdateBadge's installed state.
-    // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the
-    // badge's own button and the ServerStatusBanner card use.
-    if (updateStatus.state === "installed") {
-      window.location.assign("fused-render://relaunch");
-      return;
-    }
     if (updateStatus.state !== "available" && updateStatus.state !== "error") return;
     // Same order as UpdateBadge.install: the poke comes AFTER the install
     // answers, so the poll it arms sees "installing" and runs at the busy
