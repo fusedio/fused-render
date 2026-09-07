@@ -22,11 +22,13 @@ import {
   useUpdateStatus,
 } from "@platform/lib/update-status";
 
-function formatProgress(done: number | null, total: number | null): string {
-  if (total) return `${Math.min(100, Math.round((100 * (done ?? 0)) / total))}%`;
-  if (!done) return "";
-  return `${Math.round(done / (1024 * 1024))} MB`;
-}
+// The install's progress lives in the Activity dock now — a server-owned
+// `sys:update:<version>` job (`fused_render/update/mac.py`'s `JOB_PREFIX`)
+// with the bytes, the phase and the Cancel on it. This panel says where to
+// look and stops there: a second counter here would be the same download
+// counted twice, in two places, by two different pollers — and only one of
+// them can offer the ✕.
+const INSTALLING_TEXT = "Updating — progress is in Activity";
 
 export default function UpdateBadge() {
   const status = useUpdateStatus();
@@ -107,9 +109,7 @@ export default function UpdateBadge() {
             </>
           )}
           {status.state === "installing" && (
-            <div className="update-badge-text">
-              Downloading… {formatProgress(status.progress, status.progress_total)}
-            </div>
+            <div className="update-badge-text">{INSTALLING_TEXT}</div>
           )}
           {status.state === "error" && (
             <>
