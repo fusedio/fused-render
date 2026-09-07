@@ -29,6 +29,7 @@ import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appSho
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { announceCurrentAppsChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, encodeFsPathSegments, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
   dirname,
@@ -78,7 +79,14 @@ import {
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
-import { isSha, setResolvedSnapshot, snapshotSrc } from "@platform/lib/snapshot-param";
+import {
+  getResolvedSnapshot,
+  isSha,
+  rewriteSnapshotPath,
+  setResolvedSnapshot,
+  snapshotSrc,
+  type ResolvedSnapshot,
+} from "@platform/lib/snapshot-param";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
@@ -1122,10 +1130,37 @@ function TemplatePreview({
     const raw = new URLSearchParams(location.search).get("_snapshot");
     return isSha(raw) ? raw : null;
   });
+  // A LOCAL mirror of the platform singleton, for one reason only: `srcFor`
+  // (below) needs to re-render when a resolve lands, and a bare
+  // `setResolvedSnapshot(...)` write to the module-level singleton triggers
+  // no re-render on its own (it is not React state) — the same reason
+  // Listing.tsx keeps its own local mirror of the same singleton. Every
+  // `setResolvedSnapshot` call in this component is paired with this one.
+  const [resolvedSnapshotState, setResolvedSnapshotState] =
+    useState<ResolvedSnapshot | null>(() => getResolvedSnapshot());
+  // `useUrlVersion()` in the deps (code review finding B5, the reverse
+  // direction): a commit selection or a "back to live" is a `replaceSearch`,
+  // which does not dispatch `fused:navigate` — only `fused:urlchange`. Keyed
+  // on `[fsPath]` alone, a `TemplatePreview` mounted for the same path never
+  // noticed a mounted Listing.tsx's OWN `backToLive` clearing `_snapshot`
+  // (or a companion pane's own selection changing it): this component kept
+  // its stale `snapshotSha` state and kept building every frame's src with
+  // it. `useUrlVersion` listens to `fused:urlchange`, which `replaceSearch`
+  // always dispatches, so any writer of `_snapshot` — this component's own
+  // handlers below, or a sibling Listing.tsx — reaches this one too.
+  const urlVersion = useUrlVersion();
   useEffect(() => {
     const raw = new URLSearchParams(location.search).get("_snapshot");
     if (!isSha(raw)) {
       setSnapshotSha(null);
+      return;
+    }
+    // Avoid a redundant round trip on every unrelated history write (a sort
+    // param, `_side`, `_mode`) that `useUrlVersion` also wakes this effect
+    // for — a resolution already sitting on this exact sha needs nothing
+    // more.
+    if (resolvedSnapshotState && resolvedSnapshotState.sha === raw) {
+      setSnapshotSha(raw);
       return;
     }
     setSnapshotSha(raw);
@@ -1139,16 +1174,40 @@ function TemplatePreview({
     let alive = true;
     getGitSnapshot(fsPath, raw)
       .then((r) => {
-        if (alive) setResolvedSnapshot({ sha: raw, dir: r.dir, app_dir: r.app_dir });
+        if (!alive) return;
+        const snap = { sha: raw, dir: r.dir, app_dir: r.app_dir };
+        setResolvedSnapshot(snap);
+        setResolvedSnapshotState(snap);
       })
       .catch(() => {
-        /* same posture as the selection handler: stay live rather than
-           surface a broken param */
+        if (!alive) return;
+        // Unlike the selection handler below (which never let `snapshotSha`
+        // become truthy for a sha it failed to resolve), THIS effect already
+        // set `snapshotSha` above, synchronously, straight off a URL that
+        // simply HAD `_snapshot` on it (a reload, a pasted link) — before
+        // knowing whether it would resolve. A failure here must actually go
+        // live, not merely decline to resolve: `srcFor` (below) holds every
+        // frame's src back for as long as `snapshotSha` is set but
+        // unresolved (finding B2's pending window), and a resolve that will
+        // NEVER land — no app folder here, git trouble — would otherwise
+        // leave every frame permanently pending instead of falling back to
+        // live, which is the posture this comment always claimed to take.
+        setSnapshotSha(null);
+        setResolvedSnapshot(null);
+        setResolvedSnapshotState(null);
+        const search = writeQueryParam(
+          location.search.replace(/^\?/, ""),
+          "_snapshot",
+          null
+        );
+        replaceSearch(location.pathname + (search ? "?" + search : ""));
       });
     return () => {
       alive = false;
     };
-  }, [fsPath]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- urlVersion is a
+    // re-run signal, not a value this effect reads
+  }, [fsPath, urlVersion]);
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
     // git sidebar to select in, and two instances racing for one window global
@@ -1158,22 +1217,46 @@ function TemplatePreview({
     if (!splitCapable) return;
     let alive = true;
     window._fusedSnapshotSelected = (sha: unknown) => {
-      const current = location.search.replace(/^\?/, "");
       if (!isSha(sha)) {
         // Back to live: drop both the resolution the carry rule and the
         // listing's own rewrite check, and the shell's own `_snapshot` param.
         setResolvedSnapshot(null);
+        setResolvedSnapshotState(null);
         setSnapshotSha(null);
-        const search = writeQueryParam(current, "_snapshot", null);
+        // `location.search` read HERE, not captured before this synchronous
+        // branch — there is no `await` between them in this branch, so it
+        // does not matter yet, but reading it fresh keeps this arm the same
+        // shape as the async one below (finding B8 — see its own comment).
+        const search = writeQueryParam(
+          location.search.replace(/^\?/, ""),
+          "_snapshot",
+          null
+        );
         replaceSearch(location.pathname + (search ? "?" + search : ""));
         return;
       }
       getGitSnapshot(fsPath, sha)
         .then((r) => {
           if (!alive) return; // a later selection, or this file closed, already won
-          setResolvedSnapshot({ sha, dir: r.dir, app_dir: r.app_dir });
+          const snap = { sha, dir: r.dir, app_dir: r.app_dir };
+          setResolvedSnapshot(snap);
+          setResolvedSnapshotState(snap);
           setSnapshotSha(sha);
-          const search = writeQueryParam(current, "_snapshot", sha);
+          // Finding B8: `location.search` is snapshotted BEFORE this `await`
+          // (the `getGitSnapshot` round trip) if read at the top of the
+          // handler — any OTHER `replaceSearch` landing in that window (e.g.
+          // `setSide` writing `_side`) would then be silently discarded when
+          // this write goes out, since it would overwrite the query string
+          // with a stale copy taken before that other write happened. Reading
+          // it fresh HERE, inside the `.then()`, is what makes this write
+          // additive to whatever the query string actually is by the time
+          // this call is ready to land, rather than a snapshot of what it
+          // was when the click happened.
+          const search = writeQueryParam(
+            location.search.replace(/^\?/, ""),
+            "_snapshot",
+            sha
+          );
           replaceSearch(location.pathname + (search ? "?" + search : ""));
         })
         .catch(() => {
@@ -1615,16 +1698,58 @@ function TemplatePreview({
   // folder to the extracted tree instead of fetching through a special
   // endpoint — which is why no template changes a line for this.
   //
-  // It goes onto the "_render" frame too, and that one is STILL a KNOWN
-  // partial, unchanged from the deleted `_rev` design: GET /render
-  // (server/routers/render.py) reads `path` straight off disk with no
-  // `_snapshot` of its own, so an .html file previewed as itself shows its
-  // LIVE document body and script — only the `fused.*` calls that document's
-  // OWN script makes resolve against the commit. Carrying the param here is
-  // still worth it for exactly that reason: any read the page makes through
-  // `fused.*` does resolve to the snapshot, and the write gate applies.
-  // Teaching /render itself to serve the extracted body is unaddressed scope,
-  // not an oversight — see the decisions log.
+  // `_snapshot_dir`/`_snapshot_app` ride ALONGSIDE `_snapshot`, carrying the
+  // exact `dir`/`app_dir` THIS component already resolved (`getGitSnapshot`,
+  // the effects above) — so the frame's own runtime.js never has to
+  // re-resolve `/api/git/snapshot` itself before it can rewrite a read. That
+  // used to be a real, structural race (code review finding B1): a
+  // template's boot-time `fused.readFile(fused.params.get("_file"))` runs
+  // synchronously, essentially always before a fresh network round trip
+  // could complete, so a pane opened at commit X rendered TODAY's file for
+  // that whole window. Handing the already-resolved answer down instead
+  // means the frame's own runtime.js needs no fetch at all in the ordinary
+  // case — see static/runtime.js's own comment on `resolvedSnapshot`.
+  //
+  // The "_render" sentinel ADDITIONALLY rewrites `path` ITSELF to the
+  // extracted file (`rewriteSnapshotPath`) rather than only carrying
+  // `_snapshot` for the runtime to resolve against — GET /render
+  // (server/routers/render.py) has no `_snapshot` awareness of its own, so
+  // an app previewed as ITSELF used to show its LIVE document body and
+  // script under an active snapshot, with only the `fused.*` calls that
+  // document's own script made resolving against the commit — two eras
+  // mixed in one frame (finding A1, the feature's headline claim). Once the
+  // src already addresses the extracted entry, there is nothing left for the
+  // runtime to re-resolve for this frame's OWN document, and no race to lose
+  // — which is what collapses A1 into the same fix as B1 rather than a
+  // second, separate one. Ordinary template entries need no equivalent
+  // rewrite of `path`/`_file`: that param always names the reader's own
+  // install-tree asset or the previewed FILE, both already resolved by the
+  // runtime's rewrite rule once it has `_snapshot_dir`/`_snapshot_app` in
+  // hand.
+  // `resolvedSnapshotState`, the local mirror declared above — not
+  // `getResolvedSnapshot()` read directly here — is what makes this
+  // component actually re-render once an in-flight resolve lands (see that
+  // state's own comment).
+  const resolvedSnap = resolvedSnapshotState;
+  // `snapshotSha` is the URL's claim; `resolvedSnap` is only trustworthy once
+  // it actually answers THAT claim (a re-sync effect above can set
+  // `snapshotSha` synchronously off a fresh URL — a reload, a pasted link —
+  // moments before its own `getGitSnapshot` call resolves, or a stale
+  // resolution can still be sitting in the singleton from a PREVIOUS file).
+  const snapshotResolved =
+    snapshotSha !== null && resolvedSnap !== null && resolvedSnap.sha === snapshotSha
+      ? resolvedSnap
+      : null;
+  // The URL claims an active snapshot but this component has not (yet, or
+  // not successfully) resolved it for THIS sha — finding B2's pending
+  // window. Held here, not just left to the runtime: a frame built during
+  // this window would either carry no `_snapshot_dir`/`_snapshot_app` at all
+  // (falling back to the runtime's own, slower resolve) or, for `_render`,
+  // point `path` at the still-live file. `null` below reads as "pending",
+  // the same posture a borrowed template's own unresolved gate takes
+  // elsewhere in this file — the column shows its existing loading state
+  // instead of a frame that would need to change out from under itself.
+  const snapshotPending = snapshotSha !== null && snapshotResolved === null;
   const remote = stat.remote ? "&_remote=1" : "";
   // A shell loaded as a card thumbnail (IS_PREVIEW) forwards the flag onto
   // every render it triggers, so peeking at an app's entry page is not
@@ -1641,12 +1766,25 @@ function TemplatePreview({
   const thumbFlags = IS_PREVIEW ? "&_preview=1&_nofocus=1" : "";
   const srcFor = (m: string): string | null => {
     if (m === "_listing") return null;
-    if (m === "_render")
-      return snapshotSrc(`/render?path=${encodeURIComponent(fsPath)}${thumbFlags}`, snapshotSha);
+    if (snapshotPending) return null; // see snapshotPending's own comment above
+    const snapParams = snapshotResolved
+      ? `&_snapshot_dir=${encodeURIComponent(snapshotResolved.dir)}` +
+        `&_snapshot_app=${encodeURIComponent(snapshotResolved.app_dir)}`
+      : "";
+    if (m === "_render") {
+      // A1: the extracted file itself when snapshotted (see the comment
+      // above) — a no-op (`fsPath` unchanged) whenever `snapshotResolved` is
+      // null, which is every non-snapshotted render.
+      const renderPath = snapshotResolved ? rewriteSnapshotPath(fsPath) : fsPath;
+      return snapshotSrc(
+        `/render?path=${encodeURIComponent(renderPath)}${snapParams}${thumbFlags}`,
+        snapshotSha
+      );
+    }
     const t = templates.find((x) => x.mode === m);
     return t
       ? snapshotSrc(
-          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}${thumbFlags}`,
+          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}${snapParams}${thumbFlags}`,
           snapshotSha
         )
       : null;

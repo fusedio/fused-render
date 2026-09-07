@@ -45,16 +45,10 @@ import {
   replaceSearch,
 } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
-import { addCurrentApp, getAppEntry, getGitSnapshot } from "@platform/lib/api";
-import { writeQueryParam } from "@apps/explorer/lib/preview-side";
-import {
-  getResolvedSnapshot,
-  isSha,
-  setResolvedSnapshot,
-  shortSha,
-  snapshotListing,
-  type ResolvedSnapshot,
-} from "@platform/lib/snapshot-param";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { addCurrentApp, getAppEntry } from "@platform/lib/api";
+import { shortSha, snapshotListing } from "@platform/lib/snapshot-param";
+import { useSnapshotForFolder } from "@apps/explorer/listing/useSnapshotForFolder";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
@@ -182,41 +176,20 @@ export default function Listing({
   barChrome?: boolean;
 }) {
   // --- browsing this folder under a git snapshot (`_snapshot`) --------------
-  // Own resolution, independent of Preview.tsx's: this component mounts for a
-  // DIRECTORY, which Preview.tsx never renders (it hosts a template iframe
-  // over a FILE — Listing.tsx IS the folder view). Same shape as Preview's own
-  // effect (re-synced from the URL whenever the open folder changes, so a
-  // navigation that carried or dropped `_snapshot` per the carry rule is
-  // picked up); the two independently populate the SAME module-level
-  // singleton (platform/lib/snapshot-param.ts), so whichever resolves
-  // first is what the other sees too — a harmless redundant fetch when both
-  // are mounted (a split pane showing this folder's preview), never a wrong
-  // answer.
-  const [resolvedSnapshot, setLocalResolvedSnapshot] =
-    useState<ResolvedSnapshot | null>(() => getResolvedSnapshot());
-  useEffect(() => {
-    const raw = new URLSearchParams(location.search).get("_snapshot");
-    if (!isSha(raw)) {
-      setResolvedSnapshot(null);
-      setLocalResolvedSnapshot(null);
-      return;
-    }
-    let alive = true;
-    getGitSnapshot(fsPath, raw)
-      .then((r) => {
-        if (!alive) return;
-        const snap = { sha: raw, dir: r.dir, app_dir: r.app_dir };
-        setResolvedSnapshot(snap);
-        setLocalResolvedSnapshot(snap);
-      })
-      .catch(() => {
-        // No app folder encloses this path, a mount-backed path, git trouble:
-        // this folder simply lists live, same posture Preview.tsx takes.
-      });
-    return () => {
-      alive = false;
-    };
-  }, [fsPath]);
+  // The resolution itself lives in useSnapshotForFolder (listing/), extracted
+  // there so it can be driven through the listing's own hook harness rather
+  // than only through this 2100-line component. `useUrlVersion()` is passed
+  // in as a caller-supplied number, not read by the hook itself — see that
+  // hook's own comment for why (code review finding B5: a commit selection
+  // is a `replaceSearch`, which does not dispatch `fused:navigate`, only
+  // `fused:urlchange`; keyed on `[fsPath]` alone, the resolution never
+  // re-ran for a selection made while `fsPath` itself stayed put). This
+  // closes the gap in both directions: Preview.tsx's own `backToLive`/
+  // selection writes reach a mounted Listing even though neither writer is
+  // Listing's own state, and Listing's own `backToLive` reaches a mounted
+  // Preview the same way.
+  const urlVersion = useUrlVersion();
+  const { resolvedSnapshot, backToLive } = useSnapshotForFolder(fsPath, urlVersion);
   // Under an active snapshot whose app folder actually ENCLOSES this folder,
   // list the extracted tree instead of the live one — the same rewrite rule
   // static/runtime.js applies to every template read, so the two cannot
@@ -225,16 +198,6 @@ export default function Listing({
   // The decision itself is `snapshotListing`, a pure function tested directly
   // (Listing.test.tsx) rather than only through this component.
   const { inSnapshot, listPath } = snapshotListing(fsPath);
-
-  // The one way back the banner offers: clear the resolution and drop
-  // `_snapshot` from the URL, same shape Preview.tsx's own "back to live"
-  // (triggered by the git sidebar's own control) uses.
-  const backToLive = () => {
-    setResolvedSnapshot(null);
-    setLocalResolvedSnapshot(null);
-    const search = writeQueryParam(location.search.replace(/^\?/, ""), "_snapshot", null);
-    replaceSearch(location.pathname + (search ? "?" + search : ""));
-  };
 
   const { state, refresh, refetch, loadMore, loadingMore, newNames } =
     useDirListing(fsPath, listPath);
