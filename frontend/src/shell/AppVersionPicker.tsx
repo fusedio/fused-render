@@ -33,6 +33,7 @@
 // and a singleton written by whichever view resolves last can hold another
 // view's resolution by the time a caller reads it).
 import { useEffect, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { getGitAppFolder, getGitCommits, type GitCommit } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
@@ -169,6 +170,15 @@ export default function AppVersionPicker({ dir }: { dir: string }) {
         <span className="app-version-picker-face-label" aria-hidden="true">
           {closedLabel}
         </span>
+        {/* FINDING 6: with no native select visibly painted (its own text is
+            transparent — see the comment above), this pill had NO
+            affordance at all saying "this opens a menu" — it read as plain
+            text. A sibling of the label rather than a child of it, so the
+            label's own text content (asserted elsewhere as exactly the
+            v-number/sha) stays pure text. Decorative only, same reasoning
+            as the label itself: the real select carries the accessible
+            name. */}
+        <ChevronDown className="app-version-picker-caret" aria-hidden="true" size={12} />
       </span>
     </label>
   );

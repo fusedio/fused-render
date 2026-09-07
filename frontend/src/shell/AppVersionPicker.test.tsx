@@ -434,3 +434,26 @@ test("a sha already on the URL that is not among the loaded commits still gets i
   expect(select.props.value).toBe(deepSha);
   expect(options(select)).toContain(deepSha);
 });
+
+// ------------------------------------------------------- reads as a control
+//
+// FINDING 6 (code review): the real `<select>` is `opacity: 0` and only its
+// own painted text was ever hidden by design (task 7) — but with no caret
+// glyph on the closed face, the control has NOTHING sighted-mouse-user
+// affordance saying "this opens a menu"; it reads as static text. A
+// `:focus-within` ring is the other half of this finding, and is NOT
+// assertable here: react-test-renderer has no CSS engine at all, so there is
+// nothing in this file that could ever tell a real ring from none — that
+// half is CSS-only and reviewed by reading the stylesheet, not tested here.
+test("the closed face carries a caret glyph, so it reads as a control and not plain text", async () => {
+  installFetch({ appFolder: "ok", commits: "ok" });
+  await act(async () => {
+    renderer = create(<AppVersionPicker dir={APP_DIR} />);
+  });
+  await flush();
+  const caret = findByClassName(renderer!.toJSON(), "app-version-picker-caret");
+  expect(caret).not.toBeNull();
+  // Decorative only — the select above already carries the accessible name,
+  // same reasoning as the face label itself.
+  expect(String(caret!.props["aria-hidden"])).toBe("true");
+});
