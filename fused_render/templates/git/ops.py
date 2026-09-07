@@ -867,17 +867,23 @@ def _tracked(root, rels):
     return tracked, [rel for rel in rels if rel not in tracked]
 
 
-def _knows_anything_at(root, sha, spec):
-    """`_knows_anything`'s twin for a historical tree rather than the index.
+def _decode_names(out):
+    return {chunk.decode("utf-8", "replace") for chunk in out.split(b"\0") if chunk}
 
-    `_restore_scope_from` must refuse BEFORE it deletes anything if `sha`'s
-    own tree has nothing under `spec` (finding 1) — a commit that deleted
-    the app folder (with a LATER commit re-adding it, so the folder's own
-    scoped log still shows history there and `probeAppFolder`, which is
-    sha-less, arms Checkout regardless) is exactly the case where
-    `checkout <sha> -- <spec>` exits 1 with "did not match any file(s)
-    known to git" — but only AFTER `rm -rf` has already wiped the working
-    tree, with nothing left to bring back.
+
+def _paths_at(root, sha, spec):
+    """The full set of repo-relative paths `sha`'s own tree holds under `spec`.
+
+    `_restore_scope_from` needs this for two things: to refuse BEFORE it
+    touches anything if `sha`'s own tree has nothing under `spec` (finding
+    1) — a commit that deleted the app folder (with a LATER commit
+    re-adding it, so the folder's own scoped log still shows history there
+    and `probeAppFolder`, which is sha-less, arms Checkout regardless) is
+    exactly the case where `checkout <sha> -- <spec>` exits 1 with "did not
+    match any file(s) known to git" — and, separately, to know exactly
+    which currently-tracked paths are NOT part of `sha`'s tree, so a path
+    added since `sha` can be removed by NAME instead of by first wiping the
+    whole scope and trusting the checkout to bring everything back.
 
     `git ls-tree`, not `git ls-files --with-tree`: the pathspec here can be
     `:/` (the whole tree, `_scope_spec`'s root case), which `ls-tree`
@@ -887,7 +893,15 @@ def _knows_anything_at(root, sha, spec):
     command whose own error has to be worked around.
     """
     out = _git_ok(root, "ls-tree", "-r", "--name-only", "-z", sha, *spec)
-    return bool(out.strip(b"\0"))
+    return _decode_names(out)
+
+
+def _tracked_paths(root, spec):
+    """The full set of repo-relative paths currently tracked under `spec`,
+    by NAME rather than by count — `_restore_scope_from` diffs this against
+    `_paths_at`'s answer for `sha` to find exactly what needs removing."""
+    out = _git_ok(root, "ls-files", "-z", *spec)
+    return _decode_names(out)
 
 
 def _knows_anything(root, spec):
@@ -1056,7 +1070,7 @@ def _commit(root, message):
     return _ok("commit", f"Committed {short}.", short=short, subject=subject)
 
 
-def _restore_scope_from(root, spec, sha):
+def _restore_scope_from(root, spec, sha, *, allow_empty_target=False):
     """Make everything under `spec` match `sha`'s own tree, EXACTLY —
     including a path that is at `sha` and gone from HEAD (an ordinary
     checkout-and-restore) or a path added since `sha` that must not survive
@@ -1064,64 +1078,81 @@ def _restore_scope_from(root, spec, sha):
     PRESENT at `sha`, so a file added afterwards silently survives, and the
     resulting tree is neither version).
 
-    `git rm -rf --ignore-unmatch` first, wiping the index AND working tree for
-    everything currently tracked under `spec`, THEN `checkout <sha> --
-    <spec>` to bring back exactly what `sha` holds there. The two steps
-    together are what make the end state a real, single version rather than
-    a union of two — `rm` alone would just delete, and `checkout` alone is
-    the bug this exists to fix. `--ignore-unmatch` so an empty scope (nothing
-    tracked here yet) is a no-op rather than git's own "did not match any
-    files" error. `-f`: this is also called to UNDO an earlier, half-applied
-    call to this same function (finding 2) — by then the index already holds
-    content that differs from HEAD (that is the whole thing being undone),
-    and plain `git rm` refuses exactly that case ("changes staged in the
-    index"). Forcing is safe here specifically because every caller already
-    holds `_require_clean`'s guarantee that nothing OUTSIDE this function's
-    own writes is being discarded.
+    `checkout <sha> -- <spec>` FIRST, then `git rm -rf --ignore-unmatch` of
+    only the specific paths `_paths_at` proves are NOT part of `sha`'s tree
+    — round 4's fix for a regression round 3 introduced. Round 3 did the
+    `rm` of the WHOLE scope first and trusted the checkout afterward to
+    bring everything back; if that checkout then failed for a PERSISTENT
+    reason (a leftover `index.lock`, a permission error, a `TIMEOUT_S`
+    expiry that will recur), the recovery below retries with an identical
+    checkout that fails the identical way — but the `rm` had already
+    removed the whole scope by then, so the folder was gone from the
+    working tree AND the index with no step left that could ever bring it
+    back. Checking out first means a failure of EITHER checkout — `sha`'s
+    or, in the recovery below, `HEAD`'s — never removes anything: checkout
+    only ever overwrites or creates paths the target tree holds, so nothing
+    that already existed can vanish because of it. Only the removal step
+    can make a path disappear, and it is scoped to the exact paths that do
+    NOT belong in the target tree, computed by NAME rather than by wiping
+    everything and hoping the checkout is what restores it.
 
     Two more failure modes, both from the second review round:
 
-    * **`sha` might not hold this scope at all** (finding 1). `checkout <sha>
-      -- <spec>` alone would exit 1 with "did not match any file(s) known to
-      git" — but only AFTER the `rm` above has already wiped the working
-      tree, with nothing left to bring back. `_knows_anything_at` probes
-      `sha`'s own tree FIRST, so this refuses cleanly with nothing touched
-      rather than deleting first and discovering there is nothing to
-      restore.
-    * **the checkout can still fail for an unrelated reason** after the `rm`
-      has already succeeded — a `TIMEOUT_S` expiry mid-checkout, a
-      permission error, a collision with an existing ignored directory. Left
-      alone that is a real, on-disk deletion with no way back, so this
-      restores from HEAD before propagating the failure. `sha != "HEAD"`
-      guards the one caller that already IS "restore from HEAD" (finding
-      2's own recovery, below) — retrying the identical call would just
-      fail the same way again.
+    * **`sha` might not hold this scope at all** (finding 1). This is
+      checked (`_paths_at`) BEFORE anything is touched, so it refuses
+      cleanly with nothing done rather than discovering there is nothing
+      to restore after the fact. `allow_empty_target` lifts this refusal
+      for the one caller that means it literally — the recovery below,
+      undoing a restore by going back to `HEAD`, must still remove
+      whatever `sha`'s checkout added even when `HEAD` itself holds
+      NOTHING under `spec` (round 4, the LOW alongside the main finding:
+      reachable when the app folder is gitignored, so `_require_clean` saw
+      a clean tree and the folder existed only at the older `sha` being
+      undone — precisely the case where only the removal is needed, not a
+      checkout).
+    * **the checkout, or the removal that follows it, can still fail for an
+      unrelated reason** — a `TIMEOUT_S` expiry, a permission error, a
+      collision with an existing ignored directory. This restores from
+      `HEAD` before propagating the failure, so a caller-visible failure
+      never leaves the scope holding an uneasy mix of `sha` and whatever
+      came before. `sha != "HEAD"` guards the one caller that already IS
+      "restore from HEAD" (finding 2's own recovery) — retrying the
+      identical call would just fail the same way again.
     """
-    if not _knows_anything_at(root, sha, spec):
+    sha_paths = _paths_at(root, sha, spec)
+    if not sha_paths and not allow_empty_target:
         raise _Refused(
             "no-such-version",
             "This does not exist in that version of the repository — "
             "nothing was changed.")
-    _git_ok(root, "rm", "-r", "-f", "-q", "--ignore-unmatch", *spec)
     try:
-        _git_ok(root, "checkout", sha, *spec)
+        if sha_paths:
+            _git_ok(root, "checkout", sha, *spec)
+        # Whatever is tracked here now that ISN'T part of `sha`'s own tree
+        # is exactly finding-1's "a path added since `sha` must not
+        # survive" — removed by NAME, `-f` because this may be undoing an
+        # earlier, half-applied call to this same function (finding 2),
+        # where the index already holds content that differs from HEAD and
+        # plain `git rm` refuses exactly that ("changes staged in the
+        # index"). Forcing is safe here specifically because every caller
+        # already holds `_require_clean`'s guarantee that nothing OUTSIDE
+        # this function's own writes is being discarded.
+        extras = _tracked_paths(root, spec) - sha_paths
+        if extras:
+            _git_ok(root, "rm", "-r", "-f", "-q", "--ignore-unmatch",
+                    *_spec(sorted(extras)))
     except _Refused as exc:
         if sha == "HEAD":
             raise
         try:
-            # A bare `checkout HEAD -- spec` here would only restore paths
-            # HEAD itself knows about — a path that exists at `sha` and NOT
-            # at HEAD (staged and/or written to the working tree by the
-            # `checkout sha -- spec` above, before it failed partway
-            # through) would stay behind, leaving the scope dirty for the
-            # next `_require_clean` caller on a tree the user never touched
-            # (round 3 finding 4). Recursing into this same function does
-            # the `rm` too, restoring HEAD exactly the way this function
-            # restores anything else. Safe from infinite recursion: this
-            # recursive call passes `sha="HEAD"`, so if IT fails the `if sha
-            # == "HEAD": raise` guard above fires on re-entry instead of
-            # recursing again.
-            _restore_scope_from(root, spec, "HEAD")
+            # Recursing into this same function does the checkout-then-
+            # remove the same way this function restores anything else,
+            # allowing an empty target because `HEAD` itself may hold
+            # nothing under `spec` (the LOW above). Safe from infinite
+            # recursion: this recursive call passes `sha="HEAD"`, so if IT
+            # fails the `if sha == "HEAD": raise` guard above fires on
+            # re-entry instead of recursing again.
+            _restore_scope_from(root, spec, "HEAD", allow_empty_target=True)
         except _Refused as recovery_exc:
             raise _Refused(
                 exc.payload["reason"],
@@ -1180,8 +1211,13 @@ def _app_restore(root, file, sha):
         # actual cause (their pre-commit hook), while the folder is left
         # fully deleted rather than half-restored. Catch it and re-raise the
         # ORIGINAL refusal, its message extended to say the undo also failed.
+        # `allow_empty_target=True`: HEAD may hold NOTHING under this scope
+        # (an app folder that is gitignored, so `_require_clean` saw a clean
+        # tree and it existed only at `sha`) — that must still remove what
+        # the checkout above added, not refuse with "no-such-version" right
+        # when only the removal is needed (round 4's LOW).
         try:
-            _restore_scope_from(root, spec, "HEAD")
+            _restore_scope_from(root, spec, "HEAD", allow_empty_target=True)
         except _Refused as recovery_exc:
             raise _Refused(
                 commit_exc.payload["reason"],

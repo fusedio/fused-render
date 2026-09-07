@@ -1151,6 +1151,67 @@ def test_app_restore_undoes_the_checkout_when_the_commit_itself_fails(
         assert fh.read() == before_main == "VERSION = 2\n"
 
 
+def _app_repo_gitignored(root):
+    """The app folder is tracked at `old_sha`, then gitignored — `git rm
+    --cached` untracks it (keeping the files on disk) and a later commit
+    adds `.gitignore`. `_require_clean` sees a clean tree (ignored files
+    never show in `status --porcelain`) even though the app folder exists,
+    from HEAD's own tree's point of view, only at `old_sha`."""
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q")
+    git(root, "config", "user.name", "Fixture Author")
+    git(root, "config", "user.email", "fixture@example.com")
+    git(root, "config", "commit.gpgsign", "false")
+    write(root, "app/index.html", '<meta name="fused-app">\n')
+    write(root, "app/main.py", "VERSION = 1\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "v1 tracks app/", when="2026-10-01T10:00:00+00:00")
+    old_sha = git(root, "rev-parse", "HEAD").strip()
+
+    write(root, ".gitignore", "app/\n")
+    git(root, "rm", "-r", "-q", "--cached", "app")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "v2 gitignores app/",
+        when="2026-10-02T10:00:00+00:00")
+    return root, old_sha
+
+
+@pytest.fixture()
+def app_repo_gitignored(tmp_path):
+    return _app_repo_gitignored(str(tmp_path / "app-repo-gitignored"))
+
+
+def test_app_restore_recovery_removes_a_gitignored_app_folder_HEAD_never_tracked(
+        ops, app_repo_gitignored):
+    """ITEM 1's LOW (round 4): the recovery from a failed commit restores
+    to `HEAD` by re-entering `_restore_scope_from`, which used to refuse
+    with "no-such-version" whenever `HEAD`'s own tree holds nothing under
+    the scope — exactly this case, where the app folder is gitignored so
+    `HEAD` never tracks it at all. That refusal fired BEFORE the removal
+    that undoes the checkout, so the content the failed restore staged
+    stayed staged forever, and every later op on this repo would be
+    blocked by `_require_clean` on a tree the user never touched. Only
+    the removal is needed here — no checkout — so the recovery must allow
+    an empty target instead of refusing."""
+    root, old_sha = app_repo_gitignored
+    head_sha = git(root, "rev-parse", "HEAD").strip()
+    assert git(root, "status", "--porcelain").strip() == ""
+    _install_rejecting_hook(root, "pre-commit")
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+
+    assert got["ok"] is False, got
+    assert git(root, "rev-parse", "HEAD").strip() == head_sha
+    # THE non-skippable assertion: the recovery actually ran the removal
+    # instead of refusing outright — nothing from the failed restore is
+    # left staged, and the scope is back to matching HEAD (nothing tracked
+    # there), not straddling `old_sha` and HEAD forever.
+    assert git(root, "status", "--porcelain").strip() == "", (
+        "the recovery must undo the staged checkout, not refuse and leave "
+        "it sitting in the index")
+    assert git(root, "ls-files", "app").strip() == ""
+
+
 def _app_repo_with_gap(root):
     """A history where the app folder EXISTS, then is DELETED, then is
     RE-ADDED — so a scoped `git log` on the app folder shows all three
@@ -1243,6 +1304,46 @@ def test_app_restore_recovers_when_the_checkout_itself_fails_after_the_rm(
     assert git(root, "status", "--porcelain").strip() == before_status == ""
     with open(_app_file(root), encoding="utf-8") as fh:
         assert fh.read() == before_main == "VERSION = 2\n"
+
+
+def test_app_restore_survives_a_persistent_checkout_failure(
+        ops, app_repo, monkeypatch):
+    """ITEM 1 (round 4): a checkout that fails for a PERSISTENT reason — a
+    leftover `index.lock`, a permission error, a hung hook that will time
+    out again on retry — fails identically on the recovery's own
+    `checkout HEAD -- spec`. Before this fix, `_restore_scope_from` did
+    `rm -r -f` of the whole scope BEFORE ever attempting a checkout, so
+    when BOTH the `sha` checkout and the recovery's `HEAD` checkout fail,
+    the `rm` had already succeeded and nothing brought the folder back —
+    it stayed deleted from the working tree AND the index. The fix orders
+    the checkout before any removal, so no failure of EITHER checkout can
+    ever have deleted anything."""
+    root, old_sha = app_repo
+    head_sha = git(root, "rev-parse", "HEAD").strip()
+    before_status = git(root, "status", "--porcelain").strip()
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "checkout" in argv and (old_sha in argv or "HEAD" in argv):
+            return subprocess.CompletedProcess(
+                argv, 1, b"", b"fatal: fake persistent checkout failure\n")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+
+    assert got["ok"] is False, got
+    # THE non-skippable assertion: neither checkout ever succeeded, so
+    # nothing should ever have been removed — the folder must still be here.
+    assert os.path.exists(_app_file(root)), (
+        "a persistent checkout failure must not leave the app folder "
+        "deleted")
+    assert os.path.exists(os.path.join(root, "app", "index.html"))
+    assert git(root, "rev-parse", "HEAD").strip() == head_sha
+    assert git(root, "status", "--porcelain").strip() == before_status == ""
+    with open(_app_file(root), encoding="utf-8") as fh:
+        assert fh.read() == "VERSION = 2\n"
 
 
 def test_app_restore_recovery_undoes_a_PARTIALLY_applied_checkout(
