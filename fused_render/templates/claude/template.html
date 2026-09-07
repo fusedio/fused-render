@@ -4668,7 +4668,7 @@ const ANN_TAG = "annotations";
 // never did, because sessions already on disk carry these blocks and a restored
 // transcript has to peel one off rather than render a screenful of JSON nobody
 // typed. The screenshot button writes this same shape again rather than inventing
-// a second one: every reader of it — stripPaneBlock, MARKER_VIEW, isMarkerOnly,
+// a second one: every reader of it — stripPaneBlock, MARKER_VIEW,
 // the re-attach probe — already exists and already agrees.
 const PANE_SHOT_TAG = "pane-shot";
 // Why there is nothing to say about the app. ONE const because two callers say
@@ -10395,18 +10395,11 @@ function paneShotIn(text) {
   }
 }
 
-// The substitute texts stripBlocks uses when a send carried no typed words — and
-// the predicate that recognises them. ONE definition, read by both the strip that
-// produces them and `resumeRun`, which must never match a prior turn on one:
-// every such send collapses to the same text, so it identifies no particular turn,
-// and a false match trims another turn's assistant rows and destroys real
-// transcript content.
-//
-// A literal repeated at those two ends is exactly what went wrong before: the
-// re-attach check knew about the annotations marker, then the pane shot added two
-// more marker shapes and the check did not learn them, so a view-only send could
-// match the wrong turn. A predicate over a named set cannot drift that way, and
-// adding a marker means adding it to MARKERS — where both ends see it.
+// The substitute texts stripBlocks/composeOutgoing use when a send carried no
+// typed words — ONE definition, so `sessionTitle`'s last-resort label (a chat
+// list entry for a turn that said nothing) can never drift from what the strip
+// actually produces. Adding a marker means adding it to MARKERS, where every
+// reader sees it.
 const MARKER_ANN = "📌 annotations";
 const MARKER_VIEW = "🖼 pane screenshot";
 // Pasted/dropped pictures get their own word, because the bubble is the only
@@ -10419,10 +10412,6 @@ const MARKER_IMG = "🖼 images";
 const MARKER_FILE = "📄 files";
 const MARKERS = [MARKER_ANN, MARKER_VIEW, MARKER_IMG, MARKER_FILE];
 const MARKER_JOIN = " + ";
-function isMarkerOnly(text) {
-  const t = (text || "").trim();
-  return !!t && t.split(MARKER_JOIN).every((part) => MARKERS.indexOf(part) !== -1);
-}
 
 // The inverse of composeOutgoing: hand back exactly what the user typed. Used by
 // BOTH readers of a wire message (the run re-attach probe and the history
@@ -17484,11 +17473,13 @@ async function resumeRun(run_id, opts) {
   // first version suppressed the line unconditionally and got the second case
   // visibly wrong: the second tab showed an answer hanging under no question.
   //
-  // `matches` below is the same question asked of the LAST bubble only, because
-  // it also decides whether to STRIP rows; this one only decides whether to
-  // print, so it may look at the whole transcript. A message the user sent twice
-  // reads as already-shown and prints nothing — the safe direction, and the same
-  // coincidence `matches` already refuses to resolve.
+  // This looks at the WHOLE transcript, not just the last bubble — the open
+  // exchange this run owns is never drawn by `loadHistory` (one owner per
+  // region: the saved transcript stops at `open_from`), so there is no
+  // still-open turn on screen here for this function to strip in the first
+  // place, only ever a question of whether to print one it did not start.
+  // A message the user sent twice reads as already-shown and prints
+  // nothing — the safe direction.
   const quiet = !!(opts && opts.quiet);
   const onScreen = (msg) => !!msg && [...log.querySelectorAll(".user .bubble")]
     .some((b) => b.textContent === msg);
@@ -17523,17 +17514,6 @@ async function resumeRun(run_id, opts) {
     }
     const probeMsg = stripBlocks(probe.message || "");
     const users = log.querySelectorAll(".user .bubble");
-    const lastUser = users[users.length - 1];
-    const lastTurn = lastUser && lastUser.parentElement;
-    // A marker-only message never counts as a match: every such send collapses to
-    // the same text, so it can't identify a specific turn — and a false match
-    // trims another turn's assistant rows. Worst case for refusing: a duplicated
-    // marker row, which is harmless by comparison. `isMarkerOnly` rather than a
-    // literal, so a marker added to stripBlocks cannot leave this check behind.
-    // `neverShown` first: with it, identical text is a COINCIDENCE (the same
-    // prompt sent twice), never this run's own line, so no match is legitimate.
-    const matches = !neverShown && !!lastUser && !isMarkerOnly(probeMsg)
-                    && lastUser.textContent === probeMsg;
     if (probe.done) {
       // Run finished with no frame attached: only repair what the restored
       // transcript can provably be missing (see the claude template).
@@ -17541,7 +17521,7 @@ async function resumeRun(run_id, opts) {
       annResolveSent();  // the run this frame missed still handled its notes
       snapInvalidate();  // ...and may have edited the file while we were away
       if (probe.error) {
-        if (matches || !users.length) {
+        if (!users.length) {
           addError(probe.error);
         } else if (neverShown) {
           // The turn is not on screen and never was, so the failure needs its own
@@ -17556,17 +17536,11 @@ async function resumeRun(run_id, opts) {
       // repair has to render what pollLoop would have, or a run that finished
       // while this frame was away loses its whole tool timeline until the next
       // history restore puts it back.
-      if (matches) {
-        while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
-        if (probe.text || (probe.segments || []).length) {
-          attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
-        }
-      } else if ((!users.length || neverShown
-                  || (quiet && !onScreen(probeMsg))) && probeMsg) {
-        // Appended, never matched: the log is empty, or the caller has told us
-        // this run's turn was never on screen (a scheduled send that fired and
-        // finished between polls), or the watch found a turn made in another tab
-        // that this transcript has never shown — a SHORT turn is over before the
+      if ((!users.length || neverShown || (quiet && !onScreen(probeMsg))) && probeMsg) {
+        // The log is empty, or the caller has told us this run's turn was
+        // never on screen (a scheduled send that fired and finished between
+        // polls), or the watch found a turn made in another tab that this
+        // transcript has never shown — a SHORT turn is over before the
         // watch's first look, and dropping it silently was the whole of the
         // second tab's remaining complaint (D415). All three render the whole
         // turn — user line plus the assistant rows and their tool timeline from
@@ -17579,11 +17553,7 @@ async function resumeRun(run_id, opts) {
       scrollBottom();
       return;
     }
-    if (matches) {
-      // In flight and this turn's user line is on screen: keep it, drop the
-      // partial assistant rows — pollLoop re-streams the whole turn.
-      while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
-    } else if (probeMsg && !(quiet && onScreen(probeMsg))) {
+    if (probeMsg && !(quiet && onScreen(probeMsg))) {
       addUser(probeMsg);
     }
     await pollLoop(run_id, gen);

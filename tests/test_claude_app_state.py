@@ -1200,9 +1200,10 @@ _WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
              # be its exact inverse, whether or not a given message carries one.
              "const PANE_SHOT_TAG",
              # stripBlocks names its no-words markers through these (see
-             # test_claude_shots.py) so resumeRun cannot drift from it.
+             # test_claude_shots.py) so sessionTitle's fallback label cannot
+             # drift from what the strip actually produces.
              "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
-             "function isMarkerOnly(", "function stripPaneBlock(",
+             "function stripPaneBlock(",
              "function stripAnnBlock("]
 
 _PENDING = ('[{"id": "1", "sent": 0, "createdAt": 5, "anchorId": "reset",'
