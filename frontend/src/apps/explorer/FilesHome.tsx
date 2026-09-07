@@ -651,8 +651,9 @@ export function FilesSearch({
   // match. It can only ever remove rows, never add or reorder them, so this
   // is always a subset of the rows already on screen — but "a provable subset
   // of the true (still in-flight) SERVER answer" only holds on THIS page's
-  // index-backed path, where `narrowAnswer` matches with `substringPositions`
-  // (home-search.ts), the same substring test the server filters on (D708).
+  // index-backed path, where `narrowAnswer` matches with `substringMatch`
+  // (platform/lib/fuzzy.ts), the same substring test the server filters on
+  // (D708).
   // A subsequence matcher (`fuzzyMatch`) would break that guarantee here — it
   // can accept a row the server's substring-only filter no longer would —
   // which is why the live-walk listing box, which narrows against no server

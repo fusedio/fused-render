@@ -20,18 +20,22 @@ describe("hitsFromRank", () => {
   });
 
   test("highlights are re-matched here, not taken off the wire", () => {
-    // fuzzy.ts is the single source of truth for what highlights, and the
-    // server's ranker is a port of it — so this reproduces the alignment that
-    // produced the score rather than trusting a second spelling of it.
-    const [row] = hitsFromRank([hit({ rel: "readme.md" })], "rme");
-    expect(row.positions.length).toBeGreaterThan(0);
-    expect(row.positions.every((p) => p >= 0 && p < "readme.md".length)).toBe(true);
+    // fuzzy.ts (`substringMatch`) is the single source of truth for what
+    // highlights — this reproduces the alignment rather than trusting a
+    // second spelling of it. A genuine substring, not merely a subsequence:
+    // every row here already passed the server's substring filter, and
+    // `hitsFromRank` matches with the same test (`substringMatch`, not the
+    // looser `fuzzyMatch`) so the guarantee is explicit rather than
+    // incidental.
+    const [row] = hitsFromRank([hit({ rel: "readme.md" })], "eadm");
+    expect(row.positions).toEqual([1, 2, 3, 4]);
   });
 
   test("a row the browser's matcher refuses still renders, unhighlighted", () => {
-    // The two rankers agree (a parity fixture pins it), but a disagreement
-    // must drop the HIGHLIGHT, never the row: a hit the server ranked and the
-    // client hid would be a file that exists and cannot be found.
+    // Client and server are expected to agree on every substring hit; a
+    // disagreement (a real one, or a manufactured one like this) must drop
+    // the HIGHLIGHT, never the row: a hit the server ranked and the client
+    // hid would be a file that exists and cannot be found.
     const [row] = hitsFromRank([hit({ rel: "readme.md" })], "zzz");
     expect(row.entry.rel).toBe("readme.md");
     expect(row.positions).toEqual([]);
