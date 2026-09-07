@@ -191,6 +191,32 @@ describe("snapshotFrameSrc — the shared frame-src composer (findings 1/2/4)", 
     expect(snapshotFrameSrc({ snap: null, sha: SNAP.sha, path: APP + "/index.html" })).toBeNull();
   });
 
+  it(
+    "THE regression for finding 4 (second round): `rewritePath: false` leaves `path` " +
+      "untouched even when it DOES sit under `snap.app_dir` — a template caller's own path, " +
+      "never the subject being previewed, must never be swapped onto the extracted tree",
+    () => {
+      const templatePathUnderApp = APP + "/vendored-template.html";
+      const src = snapshotFrameSrc({
+        snap: SNAP,
+        sha: SNAP.sha,
+        path: templatePathUnderApp,
+        rewritePath: false,
+        extra: "&_file=" + encodeURIComponent(APP + "/data.csv"),
+      });
+      const u = new URL(src as string, "http://x");
+      // Without `rewritePath: false` this would come back as
+      // `DIR + "/vendored-template.html"` — the exact defect finding 4 named.
+      expect(u.searchParams.get("path")).toBe(templatePathUnderApp);
+      // The three snapshot params still ride along regardless — the point of
+      // `rewritePath: false` is narrowly "don't touch `path`", not "treat
+      // this as a live, unsnapshotted frame".
+      expect(u.searchParams.get("_snapshot")).toBe(SNAP.sha);
+      expect(u.searchParams.get("_snapshot_dir")).toBe(DIR);
+      expect(u.searchParams.get("_snapshot_app")).toBe(APP);
+    }
+  );
+
   it("carries `extra` between the path and the snapshot params", () => {
     const src = snapshotFrameSrc({
       snap: null,

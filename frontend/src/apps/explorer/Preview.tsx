@@ -1842,6 +1842,13 @@ function TemplatePreview({
           snap: snapshotResolved,
           sha: snapshotSha,
           path: t.path as string,
+          // `t.path` is the TEMPLATE's own file, never the subject
+          // (`fsPath`, carried instead via `_file` in `extra` below) — code
+          // review finding 4, second round: a template's path must never be
+          // rewritten onto the snapshot even in the case (not true today,
+          // but not enforced either) that it happens to sit under this
+          // app's `app_dir`.
+          rewritePath: false,
           extra: `&_file=${encodeURIComponent(fsPath)}${remote}${thumbFlags}`,
         })
       : null;

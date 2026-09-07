@@ -203,14 +203,30 @@ export function snapshotListing(
 // AppPage.tsx's Overview), is what makes the NEXT frame-building caller reach
 // for this instead of re-deriving the same three rules a fifth time.
 //
-// `path` is rewritten against `snap` UNCONDITIONALLY. That is a no-op for a
-// path already outside `snap.app_dir` — which covers a caller that already
-// resolved its own path to the extracted tree (AppPage.tsx's Overview passes
-// `snap.entry` itself, already under `snap.dir`, not `snap.app_dir` — see that
-// field's own comment on why a directory-prefix swap could never have
-// produced it) exactly as safely as it covers the ordinary case of a still-live
-// path a caller hands in unchanged (AppFiles.tsx's `file`, Preview.tsx's
-// `fsPath`).
+// `path` is rewritten against `snap` whenever `rewritePath` (default true) is
+// left on. That is a no-op for a path already outside `snap.app_dir` — which
+// covers a caller that already resolved its own path to the extracted tree
+// (AppPage.tsx's Overview passes `snap.entry` itself, already under
+// `snap.dir`, not `snap.app_dir` — see that field's own comment on why a
+// directory-prefix swap could never have produced it) exactly as safely as it
+// covers the ordinary case of a still-live path a caller hands in unchanged
+// (AppFiles.tsx's `file`, Preview.tsx's `fsPath`).
+//
+// `rewritePath: false` is for the one caller shape where `path` names a
+// TEMPLATE file, not the subject being previewed (Preview.tsx's and
+// AppFiles.tsx's own non-`_render` branches, which pass a content template's
+// `t.path` here and carry the actual subject separately, in `extra`'s
+// `_file=`). Code review finding 4 (second round): before this option
+// existed, that call site rewrote `t.path` unconditionally too, on the
+// unenforced assumption that a template's own path never sits under any
+// app's `app_dir` (true today — built-in templates and
+// `~/.fused-render/templates` entries never do) — a template that ever DID
+// resolve to a path inside the snapshotted app folder would have silently
+// loaded that commit's copy of the template, or 404'd if it did not exist at
+// that commit, instead of the live one every other part of the page assumes
+// it is running. Rather than leave that "should never happen" as a comment
+// for a future path config to quietly falsify, callers whose `path` is a
+// template now say so explicitly and the rewrite never runs for them at all.
 //
 // `sha` is the URL's raw `_snapshot` claim (or null — the caller's own
 // component state, kept in sync with the URL regardless of resolve outcome,
@@ -231,11 +247,16 @@ export function snapshotFrameSrc(opts: {
   snap: ResolvedSnapshot | null;
   sha: string | null;
   path: string;
+  /** Whether `path` should be rewritten against `snap`'s app folder. Default
+   *  true — the ordinary case, where `path` names the actual subject a
+   *  caller wants to see AS OF the commit. Pass `false` when `path` names a
+   *  TEMPLATE file instead (see this function's own header comment). */
+  rewritePath?: boolean;
   extra?: string;
 }): string | null {
-  const { snap, sha, path, extra = "" } = opts;
+  const { snap, sha, path, rewritePath: shouldRewrite = true, extra = "" } = opts;
   if (sha !== null && snap === null) return null; // pending — see comment above
-  const renderPath = rewritePathAgainst(snap, path);
+  const renderPath = shouldRewrite ? rewritePathAgainst(snap, path) : path;
   const snapParams = snap
     ? `&_snapshot_dir=${encodeURIComponent(snap.dir)}&_snapshot_app=${encodeURIComponent(snap.app_dir)}`
     : "";
