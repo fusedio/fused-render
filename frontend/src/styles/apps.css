@@ -332,8 +332,8 @@ body[data-capture-shooting] .app-pcard-export {
 .app-pcard-body {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 11px 14px 12px;
+  gap: 9px;
+  padding: 8px 11px 9px;
   min-width: 0;
 }
 
@@ -341,15 +341,33 @@ body[data-capture-shooting] .app-pcard-export {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* The load-bearing one: a flex item's automatic minimum size is its content,
+     so without this a long app name refuses to shrink and pushes the mark out
+     of the card instead of ellipsising (the title's own overflow rules only
+     get to act once this box can be narrower than its text). */
   min-width: 0;
   flex: 1 1 auto;
 }
 
+/* 32px, deliberately under the two lines it spans: the name's line box is
+   ~16px (13.5px at the default `normal` line-height) and the meta row's about
+   the same, plus the 4px gap — ~36px, so the mark is the head's tallest thing
+   in neither theme nor font. That's what keeps a card the height it was before
+   icons, and Home's skeleton (which reuses these classes to track that height)
+   honest. */
 .app-pcard-icon,
-.app-pcard-star {
+.app-pcard-star,
+.app-pcard-body .app-pcard-icon-skel {
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
+}
+
+/* Home's skeleton square, in the mark's slot (Home.tsx SkeletonCard). Selector
+   compounded with the body so it beats `.skel-bar`'s own 10px height whatever
+   order the two stylesheets land in. */
+.app-pcard-body .app-pcard-icon-skel {
+  border-radius: 8px;
 }
 
 /* An author's svg can declare any intrinsic size; contain keeps a wide or
@@ -361,7 +379,7 @@ body[data-capture-shooting] .app-pcard-export {
 /* The generic mark for an app with no icon.svg: muted, so it reads as the
    slot being filled rather than as a badge on the name, and inset inside that
    slot — an authored icon is a whole tile of artwork, a bare sparkle drawn to
-   the same 34px would shout louder than the name next to it. */
+   the same 32px would shout louder than the name next to it. */
 .app-pcard-star {
   box-sizing: border-box;
   padding: 7px;
@@ -374,10 +392,6 @@ body[data-capture-shooting] .app-pcard-export {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* A flex child's min-width is auto, which refuses to shrink below its text
-     — without this the ellipsis never engages and a long name pushes the
-     icon out of the card. */
-  min-width: 0;
 }
 
 .app-pcard-meta {
