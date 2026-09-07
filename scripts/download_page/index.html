@@ -50,7 +50,7 @@
     --accent-fill: #e5ff44;
     --warn:        #f2b544;
     --warn-edge:   rgba(242, 181, 68, 0.45);
-    --warn-wash:   rgba(242, 181, 68, 0.10);
+    --warn-wash:   #1f1b10;   /* solid: the note floats over content, so no see-through */
     --accent-on:   #14150a;
     --accent-text: #dcf24a;
     --accent-edge: #6e7a1f;
@@ -327,46 +327,56 @@
     letter-spacing: -0.018em; line-height: 1.3;
   }
 
-  /* ===== §views · one file, its views float above it; the real view beside ===== */
-  .views-wrap { display: grid; grid-template-columns: minmax(0, 11fr) minmax(0, 9fr); gap: clamp(16px, 2.4vw, 32px); align-items: center; }
-  @media (max-width: 860px) { .views-wrap { grid-template-columns: 1fr; } }
-  .stack-svg { width: 100%; height: auto; display: block; }
-  .stack-svg .ground path { stroke: rgba(243, 242, 237, 0.05); stroke-width: 1; fill: none; }
-  .stack-svg .pad-t { fill: #191917; stroke: rgba(243, 242, 237, 0.12); stroke-width: 1; }
-  .stack-svg .pad-l { fill: #0c0c0b; } .stack-svg .pad-r { fill: #121211; }
-  .stack-svg .others .pad-t { fill: #141412; stroke: rgba(243, 242, 237, 0.08); }
-  .stack-svg .fname { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--ink-2); }
-  .stack-svg .others .fname { fill: var(--ink-4); }
-  .stack-svg .tag {
-    font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase;
-    fill: var(--ink-3);
+  /* ---------- §1 : the finder panel ---------- */
+  .field {
+    display: flex; align-items: center; gap: 12px;
+    padding: 18px clamp(18px, 2.4vw, 26px);
+    border-bottom: 1px solid var(--rule-2);
   }
-  .stack-svg .guide { stroke: rgba(243, 242, 237, 0.14); stroke-width: 1; stroke-dasharray: 3 5; fill: none; }
-  /* the wheel: four plates orbit in the iso plane; the front one sits over the file at full size */
-  .stack-svg .plate { fill: rgba(26, 26, 24, 0.96); stroke: rgba(243, 242, 237, 0.16); stroke-width: 1; transition: fill 0.4s var(--ease), stroke 0.4s var(--ease); }
-  .stack-svg .layer.top .plate { fill: rgba(229, 255, 68, 0.08); stroke: rgba(229, 255, 68, 0.55); }
-  .stack-svg .glyph { fill: none; stroke: var(--ink-3); stroke-width: 1.4; stroke-linecap: round; transition: stroke 0.4s var(--ease); }
-  .stack-svg .layer.top .glyph { stroke: var(--ink); }
-  .stack-svg .spark { fill: var(--ink-3); transition: fill 0.4s var(--ease); }
-  .stack-svg .layer.top .spark { fill: var(--accent-fill); }
-  .stack-svg .glow { fill: rgba(229, 255, 68, 0.35); opacity: 0; transition: opacity 0.4s var(--ease); }
-  .stack-svg .layer.top .glow { opacity: 1; }
-  .stack-svg .vtag { fill: var(--accent-text); transition: opacity 0.25s linear; text-anchor: middle; }
-  /* the deck under the file: more kinds of file, peeking out and fading away */
-  .stack-svg .grid .pad-t { fill: #1a1a18; stroke: rgba(243, 242, 237, 0.16); }
-  .stack-svg .grid .ic { fill: none; stroke: var(--ink-3); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-  .stack-svg .file-ic { fill: none; stroke: var(--ink); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .views-wrap { position: relative; }
-  .proj { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-  .proj line { stroke: rgba(229, 255, 68, 0.45); stroke-width: 1; stroke-dasharray: 3 6; stroke-linecap: round; }
-  @media (max-width: 860px) { .proj { display: none; } }
-
-  .shots { position: relative; aspect-ratio: 16 / 10; border-radius: var(--r); overflow: hidden;
-    background: var(--shot-bg); border: 1px solid var(--rule); }
-  .shots img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top left;
-    opacity: 0; transition: opacity 0.6s var(--ease); }
-  .shots img.on { opacity: 1; }
-  @media (prefers-reduced-motion: reduce) { .shots img { transition: none; } }
+  .field svg { width: 18px; height: 18px; color: var(--ink-3); flex: none; }
+  .field .q { font-size: var(--t-md); font-weight: 600; letter-spacing: -0.01em; }
+  .caret {
+    display: inline-block; width: 1.5px; height: 1.1em;
+    background: var(--ink); vertical-align: -0.16em;
+  }
+  .hits { padding: 6px 0 10px; }
+  .hit {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px clamp(18px, 2.4vw, 26px);
+    font: var(--t-sm)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--ink-3);
+  }
+  .hit .fico { width: 16px; height: 16px; flex: none; color: var(--ink-4); }
+  .hit b { color: var(--ink); font-weight: 620; }
+  .hit em {
+    font-style: normal; font-weight: 620;
+    box-shadow: inset 0 -0.14em 0 var(--rule-hi);
+  }
+  /* The view switcher. The lit pill is this section's single accent. */
+  .modes {
+    display: flex; align-items: center; gap: clamp(10px, 2vw, 20px);
+    flex-wrap: wrap;
+    padding: 14px clamp(18px, 2.4vw, 26px);
+    border-top: 1px solid var(--rule-2);
+    background: var(--tile-2);
+  }
+  .modes .fname {
+    font: var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--ink-3);
+  }
+  .modes .pills { display: flex; gap: 7px; flex-wrap: wrap; }
+  .modes .pill {
+    padding: 6px 12px; border-radius: 99px;
+    border: 1px solid var(--rule);
+    font-size: var(--t-xs); color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .modes .pill.on {
+    border-color: var(--accent-edge);
+    background: var(--accent-wash);
+    color: var(--accent-text);
+    font-weight: 620;
+  }
 
   /* --- formats: a slow marquee band of extensions --- */
   .fmt-band {
@@ -538,11 +548,10 @@
   .dl-others summary:hover { color: var(--ink-2); }
   .dl-note {
     display: flex; align-items: flex-start; gap: 10px;
-    margin: 0; max-width: 46ch; text-align: left;
-    padding: 12px 16px; border-radius: var(--r-sm);
+    margin: 0; width: fit-content; max-width: min(100%, 56ch); text-align: left;
+    padding: 12px 16px 12px 14px; border-radius: var(--r-sm);
     border: 1px solid var(--warn-edge); background: var(--warn-wash);
     font-size: var(--t-sm); line-height: 1.5; color: var(--ink-2);
-    text-wrap: pretty;
   }
   .dl-note[hidden] { display: none; }
   .dl-note svg { width: 18px; height: 18px; flex: none; color: var(--warn); margin-top: 0.15em; }
@@ -1038,27 +1047,12 @@
     position: relative; overflow: hidden;
     margin-top: var(--s4);
     border-top: 1px solid var(--rule);
-    padding: var(--s5) 0 clamp(120px, 14vw, 200px);
+    padding: var(--s5) 0;
   }
   footer .inner {
     display: flex; align-items: center; justify-content: space-between;
     flex-wrap: wrap; gap: 14px var(--s5);
   }
-  footer .mark-bg {
-    position: absolute;
-    right: 2px;
-    bottom: -0.2em;
-    display: flex; align-items: baseline; gap: 0.14em;
-    font-size: clamp(76px, 14vw, 196px);
-    font-weight: 700;
-    letter-spacing: -0.05em;
-    line-height: 0.8;
-    color: var(--ink);
-    opacity: 0.05;
-    pointer-events: none;
-    user-select: none;
-  }
-  footer .mark-bg .spark { color: var(--accent-fill); opacity: 0.65; }
   footer .foot-left { display: flex; flex-direction: column; gap: 8px; }
   footer .legal {
     font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1427,75 +1421,39 @@
     <h2>One window for 100+ kinds of file.</h2>
     <p class="deck">Opens any file, with Claude one tab away.</p>
   </div>
-  <div class="views-wrap">
-    <svg class="stack-svg" id="stack" viewBox="200 130 500 400" role="img"
-         aria-label="A PDF on an isometric pad among tiles of other file kinds. Its views orbit above it like a wheel: PDF, PDF Studio, Reader, Ask Claude.">
-      <defs>
-        <filter id="s-soft" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="8"/></filter>
-        <radialGradient id="s-fade" cx="50%" cy="50%" r="52%"><stop offset="0%" stop-color="#fff"/><stop offset="72%" stop-color="#fff" stop-opacity="0.5"/><stop offset="100%" stop-color="#000"/></radialGradient>
-        <mask id="s-mask"><rect x="200" y="130" width="500" height="400" fill="url(#s-fade)"/></mask>
-        <linearGradient id="s-deck" x1="0" y1="390" x2="0" y2="522" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.75"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
-        <mask id="s-deckmask"><rect x="100" y="330" width="700" height="300" fill="url(#s-deck)"/></mask>
-      </defs>
-      <g class="ground" mask="url(#s-mask)">
-        <path d="M-427 572L543 12"/><path d="M543 572L-427 12"/><path d="M-371 572L599 12"/><path d="M599 572L-371 12"/><path d="M-315 572L655 12"/><path d="M655 572L-315 12"/><path d="M-259 572L711 12"/><path d="M711 572L-259 12"/><path d="M-203 572L767 12"/><path d="M767 572L-203 12"/><path d="M-147 572L823 12"/><path d="M823 572L-147 12"/><path d="M-91 572L879 12"/><path d="M879 572L-91 12"/><path d="M-35 572L935 12"/><path d="M935 572L-35 12"/><path d="M21 572L991 12"/><path d="M991 572L21 12"/><path d="M77 572L1047 12"/><path d="M1047 572L77 12"/><path d="M133 572L1103 12"/><path d="M1103 572L133 12"/><path d="M189 572L1159 12"/><path d="M1159 572L189 12"/><path d="M245 572L1215 12"/><path d="M1215 572L245 12"/>
-      </g>
-
-      <!-- the floor: more kinds of file tiled around the PDF, fading out downward -->
-      <g mask="url(#s-mask)"><g class="grid" mask="url(#s-deckmask)">
-        <g transform="translate(-156 0)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-4 -6l10 6-10 6z"/></g></g>
-        <g transform="translate(156 0)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-11 -16h16l6 6v26h-22zM-5 -2h10M-5 6h10M-5 14h6"/></g></g>
-        <g transform="translate(-78 39)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-16 -4h32M-16 4h32M-5 -12v24M5 -12v24"/></g></g>
-        <g transform="translate(78 39)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-12 8l8-10 6 7 4-4 6 7"/><circle class="ic" cx="8" cy="-5" r="2"/></g></g>
-        <g transform="translate(-234 39)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-18 0h4l4-10 5 20 5-14 4 8 4-4h10"/></g></g>
-        <g transform="translate(234 39)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-12 -16h24v32h-24zM-2 -16v6M-2 -6v6M-2 4v6M-6 10h8v6h-8z"/></g></g>
-        <g transform="translate(0 78)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M0 -18l16 8v18l-16 8-16-8v-18zM-16 -10l16 8 16-8M0 -2v18"/></g></g>
-        <g transform="translate(-156 78)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-10 -8l-8 8 8 8M10 -8l8 8-8 8M3 -14l-6 28"/></g></g>
-        <g transform="translate(156 78)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -8l10-6 12 6 10-6v22l-10 6-12-6-10 6zM-6 -14v22M6 -8v22"/></g></g>
-        <g transform="translate(-78 117)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-16 -4h32M-5 -12v24"/></g></g>
-        <g transform="translate(78 117)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-4 -6l10 6-10 6z"/></g></g>
-        <g transform="translate(-234 117)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-11 -16h16l6 6v26h-22zM-5 -2h10M-5 6h10M-5 14h6"/></g></g>
-        <g transform="translate(234 117)"><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/><g transform="matrix(1 0 0 .5 450 410)"><path class="ic" d="M-16 -12h32v24h-32zM-12 8l8-10 6 7 4-4 6 7"/><circle class="ic" cx="8" cy="-5" r="2"/></g></g>
-      </g></g>
-
-      <!-- the file pad -->
-      <g>
-        <polygon class="pad-l" points="372,410 450,449 450,462 372,423"/><polygon class="pad-r" points="450,449 528,410 528,423 450,462"/><polygon class="pad-t" points="450,371 528,410 450,449 372,410"/>
-        <g transform="matrix(1 0 0 .5 450 410)"><path class="file-ic" d="M-14 -22h20l10 10v34h-30zM6 -22v10h10M-7 0h16M-7 9h16M-7 18h10"/></g>
-      </g>
-      <path class="guide" d="M372 410V300M528 410V300M450 449V339"/>
-
-      <!-- the wheel: JS places these on an ellipse; the one in front lands over the pad -->
-      <g id="wheel">
-        <g class="layer" data-k="0">
-          <polygon class="plate" points="450,371 528,410 450,449 372,410"/>
-          <g transform="matrix(1 0 0 .5 450 410)"><rect class="glyph" x="-22" y="-30" width="44" height="60" rx="3"/><path class="glyph" d="M-12 -14h24M-12 -2h24M-12 10h16"/></g>
-        </g>
-        <g class="layer" data-k="1">
-          <polygon class="plate" points="450,371 528,410 450,449 372,410"/>
-          <g transform="matrix(1 0 0 .5 450 410)"><rect class="glyph" x="-22" y="-30" width="44" height="60" rx="3"/><path class="glyph" d="M-12 -14h24M-12 -2h24"/><path class="glyph" d="M-14 14c8-14 14 8 22-6s10 4 16-2" style="stroke:var(--accent-fill)"/></g>
-        </g>
-        <g class="layer" data-k="2">
-          <polygon class="plate" points="450,371 528,410 450,449 372,410"/>
-          <g transform="matrix(1 0 0 .5 450 410)"><path class="glyph" d="M-26 -18h52M-26 -6h52M-26 6h52M-26 18h34"/></g>
-        </g>
-        <g class="layer" data-k="3">
-          <polygon class="plate" points="450,371 528,410 450,449 372,410"/>
-          <ellipse class="glow" cx="450" cy="404" rx="34" ry="13" filter="url(#s-soft)"/>
-          <text class="spark" transform="matrix(1 0 0 .5 450 404)" y="20" text-anchor="middle" font-size="60">&#10022;</text>
-        </g>
-      </g>
-      <text class="tag vtag" id="vtag" x="450" y="246">PDF</text>
-    </svg>
-
-    <div class="shots" id="shots" role="img" aria-label="Screenshots of report.pdf in Fused Render: the PDF view, PDF Studio, the Reader, and the Claude chat about the file.">
-      <img class="on" data-k="0" src="assets/showcase/view-pdf.jpg" width="1708" height="1067" loading="lazy" decoding="async" alt="">
-      <img data-k="1" src="assets/showcase/view-pdf-studio.jpg" width="1708" height="1067" loading="lazy" decoding="async" alt="">
-      <img data-k="2" src="assets/showcase/view-reader.jpg" width="1708" height="1067" loading="lazy" decoding="async" alt="">
-      <img data-k="3" src="assets/showcase/view-claude.jpg" width="1708" height="1067" loading="lazy" decoding="async" alt="">
+    <div class="bento">
+      <div class="tile w12 hoverable">
+        <div class="field">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="q mono">invoice<span class="caret" aria-hidden="true"></span></span>
+        </div>
+        <div class="hits">
+          <div class="hit">
+            <svg class="fico" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
+            <span>Documents / Freelance / <b><em>invoice</em>-2026-04.pdf</b></span>
+          </div>
+          <div class="hit">
+            <svg class="fico" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
+            <span>Desktop / <b>old-<em>invoice</em>s.zip</b></span>
+          </div>
+          <div class="hit">
+            <svg class="fico" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
+            <span>Projects / billing / templates / <b><em>invoice</em>.html</b></span>
+          </div>
+        </div>
+        <div class="modes" role="img"
+             aria-label="The open file offers several views: table, structure, map, and a Claude chat, with the Claude view selected.">
+          <span class="fname">sales.parquet</span>
+          <span class="pills">
+            <span class="pill">Table</span>
+            <span class="pill">Structure</span>
+            <span class="pill">Map</span>
+            <span class="pill on">Ask Claude</span>
+          </span>
+        </div>
+      </div>
     </div>
-    <svg class="proj" id="proj" aria-hidden="true"><line id="proj-a"/><line id="proj-b"/></svg>
-  </div>
+
 
   <!-- Marquee: doubled in markup so the loop is seamless with no JS. The
        second copy is hidden from assistive tech. -->
@@ -1617,7 +1575,7 @@
                   <span class="sub">macOS &middot; copy command</span>
                 </button>
                 <p class="dl-list-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span><b>Built for macOS.</b> Windows &amp; Linux are best effort:
-                there may be missing features and rough edges.</span></p>
+                there may be missing features and rough edges.<br>Intel MacBooks are not supported.</span></p>
               </div>
             </details>
             <span class="version" id="version" hidden></span>
@@ -1741,7 +1699,6 @@
   </section>
 
   <footer>
-    <div class="mark-bg" aria-hidden="true"><span class="spark">&#10022;</span><span class="word">FUSED</span></div>
     <div class="inner">
       <div class="foot-left">
         <a class="brand" href="index.html">
@@ -1803,16 +1760,25 @@
     // macOS is the native build; say so where it matters, on the other two.
     var note = document.getElementById("dl-note");
     if (note) {
-      if (visitorOS === "mac") { note.hidden = true; }
-      else {
+      if (visitorOS === "mac") {
+        document.getElementById("dl-note-text").innerHTML =
+          "<b>Apple silicon only.</b> Intel MacBooks are not supported.";
+      } else {
         document.getElementById("dl-note-text").innerHTML =
           "<b>Built for macOS.</b> " + osLabel + " is best effort: there may be missing " +
-          "features and rough edges. <a href=\"#troubleshooting\">Troubleshooting</a>";
-        note.hidden = false;
+          "features and rough edges.<br>Intel MacBooks are not supported. <a href=\"#troubleshooting\">Troubleshooting</a>";
       }
+      note.hidden = false;
     }
   }
   syncCta();
+
+  // ---- Other platforms: close on click outside / Escape ----
+  var others = document.querySelector(".dl-others");
+  if (others) {
+    document.addEventListener("click", function (e) { if (others.open && !others.contains(e.target)) others.open = false; });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape" && others.open) others.open = false; });
+  }
 
   // ---- Homebrew ----
   // The chip only shows itself to macOS visitors; the dropdown row is for
@@ -2243,69 +2209,6 @@
     window.addEventListener("hashchange", honorHash);
     honorHash();
   })();
-</script>
-<script>
-(function () {
-  var rm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var stack = document.getElementById("stack"), shots = document.getElementById("shots");
-  if (!stack || !shots) return;
-  var NAMES = ["PDF", "PDF Studio", "Reader", "Ask Claude"];
-  var wheel = document.getElementById("wheel"), layers = Array.prototype.slice.call(wheel.querySelectorAll(".layer"));
-  var imgs = shots.querySelectorAll("img"), vtag = document.getElementById("vtag");
-  // Orbit in the iso plane: front slot is straight above the pad (450,300), the back slot small and far.
-  var CX = 450, CY = 235, RX = 150, RY = 65, N = layers.length, STEP = Math.PI * 2 / N;
-  var k = 0;            // which plate is in front
-  function place(theta) {
-    var order = [];
-    layers.forEach(function (g, i) {
-      var a = theta + i * STEP, d = (Math.sin(a) + 1) / 2;        // d: 1 = front, 0 = back
-      var x = CX + RX * Math.cos(a), y = CY + RY * Math.sin(a), s = 0.48 + 0.52 * d;
-      g.setAttribute("transform", "translate(" + x + " " + y + ") scale(" + s + ") translate(-450 -410)");
-      g.style.opacity = 0.35 + 0.65 * d;
-      g.classList.toggle("top", d > 0.985);
-      order.push([d, g]);
-    });
-    order.sort(function (p, q) { return p[0] - q[0]; }).forEach(function (p) { wheel.appendChild(p[1]); });
-  }
-  function front(n) { return Math.PI / 2 - n * STEP; }   // theta that puts plate n in front
-  function show(n) {
-    imgs.forEach(function (im, i) { im.classList.toggle("on", i === n); });
-    vtag.textContent = NAMES[n];
-  }
-  place(front(k)); show(k);
-  if (rm) { k = 3; place(front(k)); show(k); return; }
-  var raf = window.requestAnimationFrame || function (f) { return setTimeout(function () { f(performance.now()); }, 16); };
-  var paused = false, busy = false; // paused stays false: the wheel keeps turning under the cursor
-  function ease(t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
-  function turn() {
-    if (paused || busy) return;
-    busy = true;
-    var from = front(k), to = from - STEP, t0 = performance.now(), D = 1100;
-    vtag.style.opacity = 0;
-    (function tick(now) {
-      var t = Math.min(1, (now - t0) / D), e = ease(t);
-      place(from + (to - from) * e);
-      if (t < 1) raf(tick);
-      else { k = (k + 1) % N; place(front(k)); show(k); vtag.style.opacity = 1; busy = false; }
-    })(t0);
-  }
-  setInterval(turn, 3400);
-})();
-// Dotted projection from the front plate to the screenshot beside it.
-(function () {
-  var stack = document.getElementById("stack"), shots = document.getElementById("shots"), proj = document.getElementById("proj");
-  if (!stack || !shots || !proj) return;
-  var la = document.getElementById("proj-a"), lb = document.getElementById("proj-b");
-  function pt(x, y, ctm, box) { var p = stack.createSVGPoint(); p.x = x; p.y = y; p = p.matrixTransform(ctm); return [p.x - box.left, p.y - box.top]; }
-  function draw() {
-    var box = proj.getBoundingClientRect(), sb = shots.getBoundingClientRect(), ctm = stack.getScreenCTM();
-    if (!ctm || sb.left < box.left + box.width * 0.4) { la.removeAttribute("x1"); lb.removeAttribute("x1"); return; }
-    var a = pt(450, 261, ctm, box), c = pt(450, 339, ctm, box);   // front plate: top and bottom vertex
-    la.setAttribute("x1", a[0]); la.setAttribute("y1", a[1]); la.setAttribute("x2", sb.left - box.left); la.setAttribute("y2", sb.top - box.top);
-    lb.setAttribute("x1", c[0]); lb.setAttribute("y1", c[1]); lb.setAttribute("x2", sb.left - box.left); lb.setAttribute("y2", sb.bottom - box.top);
-  }
-  draw(); window.addEventListener("resize", draw); window.addEventListener("load", draw);
-})();
 </script>
 </body>
 </html>

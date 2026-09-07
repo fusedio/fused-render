@@ -178,14 +178,15 @@ def test_no_route_through_this_button_survives_a_blocked_composer(code):
     is exactly ONE of them and this reads the same one."""
     state = code[code.index("function applyComposerBlockState("):]
     state = state[:state.index("\n}")]
-    assert "schedBtn.disabled = blocked" in state
+    assert "schedBtn.disabled = blocked || locked" in state
     assert "const blocked = schedBlocked();" in state
     clicks = code[code.index('document.querySelectorAll(".schedbtn")'):]
     clicks = clicks[:clicks.index("\n});")]
-    assert "if (schedBlocked()) return;" in clicks
+    # the annotation mode's lock is the second reason (annNavLock, 2026-09-07)
+    assert "if (schedBlocked() || annNavLocked()) return;" in clicks
     go = code[code.index('document.getElementById("schedpop-go").addEventListener'):]
     go = go[:go.index("\n});")]
-    assert "if (schedBlocked()) return;" in go
+    assert "if (schedBlocked() || annNavLocked()) return;" in go
     assert go.index("schedBlocked()") < go.index("openScheduler(")
     # and there is no fourth way in for it to have missed: no shortcut key, no
     # kebab item (deleted 2026-08-16, above), and only these two callers
