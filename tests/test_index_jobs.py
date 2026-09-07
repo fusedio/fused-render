@@ -277,6 +277,7 @@ def test_no_prior_manifest_leaves_total_none(monkeypatch, tmp_path):
     _tick(monkeypatch, [_run("r1", files=10856)], cfg=cfg)
     row = jobs.list_jobs()[0]
     assert row["total"] is None
+    assert row["total_estimated"] is False
     assert "(estimated)" not in row["detail"]
 
 
@@ -284,8 +285,10 @@ def test_a_prior_manifests_row_count_becomes_the_estimated_total(
         monkeypatch, tmp_path):
     """A rescan: the last completed scan's row count (the same
     `partitions.json` field `/api/index/status` already reads as
-    `files_indexed`) becomes the bar's denominator, and the row says so is a
-    guess rather than a promise."""
+    `files_indexed`) becomes the bar's denominator, and `total_estimated`
+    says so is a guess rather than a promise — a dedicated field (D733), not
+    a suffix baked into `detail` (the root path), which read as "the path is
+    a guess" rather than "the count is"."""
     cfg = IndexConfig(dir=str(tmp_path))
     os.makedirs(cfg.dir, exist_ok=True)
     with open(cfg.partitions_json, "w") as f:
@@ -293,7 +296,8 @@ def test_a_prior_manifests_row_count_becomes_the_estimated_total(
     _tick(monkeypatch, [_run("r1", files=10856)], cfg=cfg)
     row = jobs.list_jobs()[0]
     assert row["total"] == 672424.0
-    assert "(estimated)" in row["detail"]
+    assert row["total_estimated"] is True
+    assert "(estimated)" not in row["detail"]
 
 
 def test_a_prior_manifest_with_zero_rows_leaves_total_none(monkeypatch, tmp_path):

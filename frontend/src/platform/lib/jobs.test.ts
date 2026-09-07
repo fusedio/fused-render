@@ -35,6 +35,7 @@ function job(over: Partial<Job> = {}): Job {
     done: null,
     total: null,
     total_scope: "phase",
+    total_estimated: false,
     unit: "bytes",
     message: "",
     page: "/tmp/index.html",
@@ -113,6 +114,22 @@ test("a counted unit gets locale thousands separators and its own word", () => {
 
 test("a counted unit with a total renders both sides, unit word once", () => {
   expect(jobAmount(job({ unit: "files", done: 10856, total: 672424 }))).toBe(
+    "10,856 / 672,424 files"
+  );
+});
+
+test("a done that outgrows an estimated total clamps the printed numerator, matching the bar (D733)", () => {
+  // jobFraction already clamps the BAR at full when done > total (an index
+  // rescan whose tree grew since the last scan). The printed amount must
+  // not disagree with a bar already pinned at 100% — "700,000 / 672,424"
+  // beside a full bar claims the walk overran what it promised. Clamping
+  // the numerator to the total (not dropping the denominator) keeps the
+  // total's honest information ("what the walk expected") on the row.
+  expect(jobAmount(job({ unit: "files", done: 700_000, total: 672_424 }))).toBe(
+    "672,424 / 672,424 files"
+  );
+  // Still unclamped, still agrees with a non-full bar.
+  expect(jobAmount(job({ unit: "files", done: 10_856, total: 672_424 }))).toBe(
     "10,856 / 672,424 files"
   );
 });

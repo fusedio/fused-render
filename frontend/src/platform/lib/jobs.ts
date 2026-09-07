@@ -51,6 +51,13 @@ export interface Job {
   // outright over the catalog's constant; a "phase" total may only ever
   // raise it (never-understate).
   total_scope: "download" | "phase";
+  // Whether `total` is a genuine count or a stand-in guess (today only the
+  // index-scan bridge sets this — the last scan's row count, standing in for
+  // a walk still in progress). Rendered as a qualifier next to the AMOUNT,
+  // not folded into `jobAmount` itself — see that call site in
+  // DownloadManager.tsx — so no other job kind grows an "(estimated)" suffix
+  // just by existing (D733).
+  total_estimated: boolean;
   unit: string; // "bytes" | "s" | "" — decides how done/total are formatted
   message: string; // the error text when state is "error"; the question's caption when state is "waiting"
   page: string; // the .html that raised it (attribution)
@@ -291,7 +298,21 @@ function clock(seconds: number): string {
 // takes for segments or steps. A unit that is only ever right by accident is
 // worse than one that is absent, since the bare pair looks deliberate.
 export function jobAmount(job: Job): string {
-  const { done, total, unit } = job;
+  const { total, unit } = job;
+  // A reporter's own `done` can pass a stale `total` (an index rescan whose
+  // tree grew since the last scan set `total_estimated` — the ONLY producer
+  // of this today) — `jobFraction` already clamps the BAR at full rather
+  // than past it or backwards. The printed number has to agree, or the row
+  // says two different things at once ("700,000 / 672,424 files" beside a
+  // bar already pinned at 100%). Clamping the numerator to the total — not
+  // dropping the denominator — was chosen because the total is still the
+  // honest fact worth showing (D733): it says what the walk expected, and a
+  // clamped "672,424 / 672,424" reads as "caught up to the estimate", which
+  // is closer to the truth than either a bare unclamped count or a total
+  // that vanishes the moment it is exceeded.
+  const rawDone = job.done;
+  const done =
+    rawDone !== null && total !== null && total > 0 && rawDone > total ? total : rawDone;
   if (done === null && total === null) return "";
   if (unit === "s") {
     if (done === null) return "";
