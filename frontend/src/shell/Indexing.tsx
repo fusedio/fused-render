@@ -140,6 +140,11 @@ export function IndexingPanel({
       // rebuilds. The server starts that scan on save; say so, because the
       // alternative is a user wondering why an excluded folder is still
       // showing up in search.
+      // The server tries to start that rescan and swallows the refusal
+      // (logs it), so `needs_rescan` alone would promise a rebuild that never
+      // starts while the FDA gate is shut. Say what actually happens.
+      if (saved.needs_rescan && fdaBlocked)
+        return "Saved. The index rebuilds once Full Disk Access is granted and FusedRender relaunches.";
       return saved.needs_rescan
         ? "Saved. Rebuilding the index so the new rules apply."
         : "Saved.";
