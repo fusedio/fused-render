@@ -1122,3 +1122,15 @@ def test_annmode_names_which_mode_so_a_reload_keeps_the_walkthrough(html):
     assert html.index("let annRecStarting = false;") < html.index("\nannBootMode();\n")
     mode = _block(html, "function annSetMode(on)", "\n}\n")
     assert "if (!on) annBusyHold = false;" in mode
+
+
+def test_leaving_mid_walkthrough_asks_first(html):
+    """Option 1 for the reload-while-recording problem (Akshil, 2026-09-07): the
+    recording cannot survive the page, so a reload/close/back while one is live
+    goes through the browser's leave prompt. Only while recording — an armed
+    Comment round rides the URL and loses nothing — and registered before the
+    pagehide that stops and keeps the file."""
+    guard = _block(html, 'window.addEventListener("beforeunload", (e) => {', "\n  });\n")
+    assert "if (!annRecOn) return;" in guard
+    assert "e.preventDefault();" in guard and "e.returnValue = " in guard
+    assert html.index('addEventListener("beforeunload"') < html.index('addEventListener("pagehide"')
