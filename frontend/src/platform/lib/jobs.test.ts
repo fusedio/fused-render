@@ -12,6 +12,7 @@ import {
   jobAmount,
   jobDetail,
   jobFraction,
+  jobRows,
   jobsAfterClear,
   jobStatusLine,
   mergedRows,
@@ -356,6 +357,19 @@ test("terminalNotifications still drops a scheduled run's own job", () => {
 test("terminalNotifications leaves an ordinary terminal job alone", () => {
   const jobs = [job({ id: "dl", state: "done" })];
   expect(terminalNotifications(jobs).map((j) => j.id)).toEqual(["dl"]);
+});
+
+// An index scan's own job (fused_render/server/routers/index.py's
+// mirror_index_jobs_once, "sys:index:<run_id>") is NOT a sys:schedule:* row
+// and must draw a row in Activity like any other server-owned task — unlike
+// a scheduled run's job, which jobRows deliberately drops (see
+// isScheduleJob's own comment).
+test("an index scan's job is not caught by the schedule-job filter", () => {
+  const jobs = [
+    job({ id: "sys:index:20260907-1200-ab12", state: "running" }),
+    job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "running" }),
+  ];
+  expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:index:20260907-1200-ab12"]);
 });
 
 // ---- the chip's one word and one line (D673, statusbar redesign) ------------
