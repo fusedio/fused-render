@@ -318,6 +318,10 @@
      `.resuming` off annRecWant. */
   #anncta.resuming #annrec { color: var(--accent); border-color: var(--accent); }
   #anncta.resuming #annbtn.on { color: var(--dim); border-color: var(--border); }
+  /* …and Comment is INERT meanwhile (the rule above, with the busy seats), the
+     way it is while a recording runs: its click is Done, and a Done that lands
+     while the mic is still opening would send the round and then have the
+     recording arrive over a disarmed mode (Bugbot, PR #1046). Esc is the exit. */
   /* The OTHER two seats go inert while a mode is on (Akshil, 2026-09-06: "if
      I click on the other one it shouldn't work"): dimmed like a disabled seat,
      no hover, no pointer. Their click handlers refuse the same states, so a
@@ -325,8 +329,9 @@
      Esc, and ← Chats), never a neighbouring seat. Derived from the two state
      classes like every other face here. */
   #anncta:has(#annbtn.on) #viewshot,
-  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annrec,
-  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }
+  #anncta:not(.busy):not(.resuming):has(#annbtn.on):not(:has(#annrec.on)) #annrec,
+  #anncta:has(#annrec.on) #annbtn,
+  #anncta.resuming #annbtn { opacity: .55; cursor: default; pointer-events: none; }
   /* Empty label must not hold a gap seat open beside the icon. */
   #annreclbl:empty { display: none; }
 

@@ -1132,4 +1132,8 @@ def test_annmode_names_which_mode_so_a_reload_keeps_the_walkthrough(html):
     lock = _block(html, "function annNavLock()", "\n}\n")
     assert 'annCta.classList.toggle("resuming", annRecWant && !annRecOn);' in lock
     assert "#anncta.resuming #annrec { color: var(--accent); border-color: var(--accent); }" in html
+    # the inert-seat rule must not dim the seat that is resuming, and Comment
+    # is inert meanwhile (its click is Done) — Bugbot, PR #1046
+    assert "#anncta:not(.busy):not(.resuming):has(#annbtn.on):not(:has(#annrec.on)) #annrec," in html
+    assert "#anncta.resuming #annbtn { opacity: .55; cursor: default; pointer-events: none; }" in html
     assert "#anncta.resuming #annbtn.on { color: var(--dim); border-color: var(--border); }" in html
