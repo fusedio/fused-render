@@ -1,6 +1,8 @@
 // Notion-style icon picker popover: an Emoji tab (the whole Unicode set, from
 // emojibase), an Icons tab (the whole lucide set, written on pick as the bare
-// glyph in grey, like the generic fallback mark), a filter box, a shuffle
+// glyph in one of ten theme-following colours — icon-color.ts; the Notion
+// swatch popover beside the shuffle button chooses, and the choice sticks
+// across picks rather than being asked each time), a filter box, a shuffle
 // button that picks at random from the active tab, a Recent row per tab, and
 // a Remove action that restores the caller's default glyph.
 //
@@ -24,6 +26,13 @@ import React, {
 } from "react";
 import { Search, Shuffle } from "lucide-react";
 
+import {
+  ICON_COLORS,
+  ICON_COLOR_HEX,
+  ICON_COLOR_LABEL,
+  isIconColor,
+  type IconColor,
+} from "@platform/lib/icon-color";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
@@ -57,13 +66,7 @@ interface IconPickerProps {
   tabs?: IconPickerTab[];
 }
 
-// ---- icon svg--------------------------------------------------------------
-
-/** The glyph's grey, baked in: icon.svg is a static file with no theme
- *  context, so it cannot read `--fg-muted` — the tint the generic AppStar
- *  fallback wears. This sits between that token's two values (#9aa0a6 dark,
- *  #61656c light) so the file reads as the same quiet mark in either theme. */
-const GLYPH_GREY = "#7e838a";
+// ---- icon svg --------------------------------------------------------------
 
 type IconNode = [tag: string, attrs: Record<string, string | number>][];
 
@@ -71,10 +74,18 @@ function escapeAttr(v: string | number): string {
   return String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
-/** A lucide icon as a standalone icon.svg document: a 64-unit square with no
- *  plate, no margin — the bare glyph in grey, like the generic AppStar
- *  fallback, filling lucide's own 24-unit viewBox edge to edge. */
-export function glyphIconSvg(node: IconNode): string {
+/** A lucide icon as a standalone icon.svg document: no plate, no margin — the
+ *  bare glyph filling lucide's own 24-unit viewBox edge to edge, in the
+ *  named colour.
+ *
+ *  The colour is written TWICE, for two readers. The root's `data-fused-color`
+ *  plus `stroke="currentColor"` is the shell's contract (icon-color.ts): it
+ *  swaps the hex for the live theme before the `<img>` sees the file, so the
+ *  icon follows a pinned Light/Dark exactly as the AppStar fallback does. The
+ *  `<style>` block is for everyone else — Finder, GitHub, a bare tab — where
+ *  only the OS theme is knowable: it sets `color` (which currentColor reads)
+ *  for light and flips it under prefers-color-scheme: dark. */
+export function glyphIconSvg(node: IconNode, color: IconColor = "default"): string {
   const inner = node
     .map(([tag, attrs]) => {
       const a = Object.entries(attrs)
@@ -84,14 +95,16 @@ export function glyphIconSvg(node: IconNode): string {
       return `<${tag}${a}/>`;
     })
     .join("");
+  const hex = ICON_COLOR_HEX[color];
   return (
     // Lucide's own viewBox, untransformed: the glyph fills the tile with no
     // margin, so it draws as large as the host's box allows.
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" data-fused-color="${color}">` +
+    `<style>svg{color:${hex.light}}@media(prefers-color-scheme:dark){svg{color:${hex.dark}}}</style>` +
     '<g fill="none" ' +
     // 2.5 not lucide's 2: the row draws the file at 14px, where a 2-unit
     // stroke lands under a pixel and reads faint beside the emoji rows.
-    `stroke="${GLYPH_GREY}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">` +
+    'stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
     inner +
     "</g></svg>"
   );
@@ -249,6 +262,32 @@ function pushRecent(tab: IconPickerTab, id: string) {
   }
 }
 
+// ---- colour ----------------------------------------------------------------
+// The Icons tab's colour is a setting, not a per-pick question: it sticks
+// (localStorage) until the swatch popover changes it — Notion's "Ask every
+// time" is off here by design.
+
+const COLOR_KEY = "fused-render:icon-picker-color";
+
+function readColor(): IconColor {
+  try {
+    const v = localStorage.getItem(COLOR_KEY);
+    return isIconColor(v) ? v : "default";
+  } catch {
+    return "default";
+  }
+}
+
+function saveColor(color: IconColor) {
+  try {
+    localStorage.setItem(COLOR_KEY, color);
+  } catch {
+    // Storage blocked: the colour still applies for this open picker.
+  }
+}
+
+const colorVar = (color: IconColor) => `var(--app-icon-${color})`;
+
 // ---- component -------------------------------------------------------------
 
 const GRID_COLS = 8;
@@ -290,6 +329,8 @@ export default function IconPicker({
   const [tab, setTab] = useState<IconPickerTab>(tabs[0] ?? "emoji");
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  const [color, setColor] = useState<IconColor>(readColor);
+  const [colorOpen, setColorOpen] = useState(false);
   const baseId = useId();
   const rootRef = useRef<HTMLDivElement | null>(null);
   // The shadcn Input is a plain function component (no forwardRef under React
@@ -385,11 +426,18 @@ export default function IconPicker({
   const pick = useCallback(
     (cell: Cell) => {
       pushRecent(tab, cell.id);
-      if (cell.node) onPick({ kind: "icon", name: cell.id, svg: glyphIconSvg(cell.node) });
+      if (cell.node) onPick({ kind: "icon", name: cell.id, svg: glyphIconSvg(cell.node, color) });
       else onPick({ kind: "emoji", emoji: cell.id });
     },
-    [tab, onPick],
+    [tab, color, onPick],
   );
+
+  const chooseColor = (next: IconColor) => {
+    setColor(next);
+    saveColor(next);
+    setColorOpen(false);
+    searchInput()?.focus();
+  };
 
   // Choosing from the grid is the deliberate pick: apply it and close.
   const pickAndClose = useCallback(
@@ -450,6 +498,7 @@ export default function IconPicker({
     setTab(next);
     setQuery("");
     setActive(0);
+    setColorOpen(false);
     searchInput()?.focus();
   };
 
@@ -529,6 +578,59 @@ export default function IconPicker({
         >
           <Shuffle />
         </Button>
+        {tab === "icon" && (
+          // The colour every icon pick is written in — a dot in that colour,
+          // and under it Notion's two rows of five swatches. Inside the
+          // picker's root, so the document-level outside-click closer treats
+          // it as the picker's own.
+          <div className="relative">
+            <Button
+              variant="outline"
+              size="icon-sm"
+              title={`Icon colour: ${ICON_COLOR_LABEL[color]}`}
+              aria-label={`Icon colour: ${ICON_COLOR_LABEL[color]}`}
+              aria-haspopup="listbox"
+              aria-expanded={colorOpen}
+              onClick={() => setColorOpen((v) => !v)}
+            >
+              <span
+                className="block size-3 rounded-full"
+                style={{ background: colorVar(color) }}
+                aria-hidden="true"
+              />
+            </Button>
+            {colorOpen && (
+              <div
+                role="listbox"
+                aria-label="Icon colour"
+                data-slot="icon-picker-colors"
+                className="absolute top-full right-0 z-10 mt-1 grid grid-cols-5 gap-1.5 rounded-lg border border-border bg-popover p-2 shadow-md"
+              >
+                {ICON_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    role="option"
+                    aria-selected={c === color}
+                    title={ICON_COLOR_LABEL[c]}
+                    aria-label={ICON_COLOR_LABEL[c]}
+                    onClick={() => chooseColor(c)}
+                    className={cn(
+                      "flex size-7 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 hover:bg-muted",
+                      c === color && "ring-2 ring-ring",
+                    )}
+                  >
+                    <span
+                      className="block size-4 rounded-full"
+                      style={{ background: colorVar(c) }}
+                      aria-hidden="true"
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div
@@ -536,6 +638,9 @@ export default function IconPicker({
         role="listbox"
         aria-label={TAB_LABEL[tab]}
         className="max-h-[288px] overflow-y-auto"
+        // The Icons grid previews in the chosen colour (its glyphs draw on
+        // currentColor), so the swatch is seen before it is committed.
+        style={tab === "icon" ? { color: colorVar(color) } : undefined}
       >
         {!loaded && <div className="px-1 py-3 text-xs text-muted-foreground">Loading…</div>}
         {loaded && visible.length === 0 && (
@@ -573,7 +678,10 @@ export default function IconPicker({
                     title={cell.title}
                     onClick={() => pickAndClose(cell)}
                     className={cn(
-                      "flex size-8 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-[19px] leading-none text-foreground hover:bg-muted",
+                      "flex size-8 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-[19px] leading-none hover:bg-muted",
+                      // Emoji carry their own colours; a lucide cell inherits
+                      // the grid's tint (the chosen icon colour, above).
+                      cell.node ? "text-inherit" : "text-foreground",
                       isActive && "bg-muted ring-2 ring-ring ring-inset",
                     )}
                   >
