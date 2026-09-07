@@ -319,8 +319,12 @@
    strip like every other door rule, or `.prefs-section button` blanks it. */
 .task-card-doors > .task-card-door--danger:hover:not(:disabled),
 .task-card-doors > .task-card-door--danger:focus-visible:not(:disabled) {
+  /* The same wash the List row's and Board strip's trash take (tasks.css
+     `.tasks-act--delete:hover`), so one door reads the same on every surface
+     (Akshil, 2026-09-07). */
   color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 40%, transparent);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 32%, transparent);
 }
 
 .task-card-doors > .task-card-door:disabled,
@@ -533,5 +537,6 @@
 .modal-head-actions > .modal-head-act--danger:hover:not(:disabled),
 .modal-head-actions > .modal-head-act--danger:focus-visible:not(:disabled) {
   color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 40%, transparent);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 32%, transparent);
 }
