@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import threading
+import weakref
 
 from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -58,16 +59,67 @@ from fused_render.shell.prefs import indexing_enabled
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Bounds how many index reads (stats/search/rank/query) run their duckdb call
-# at once. `asyncio.to_thread` alone dispatches onto the default executor
-# (min(32, cpu+4) workers) with no ceiling of its own, and each of those
-# threads opens a DuckDB connection capped to `search_threads()`
-# (index/store.py) — so without this, up to 32 of those capped pools could
-# still run concurrently, which adds back most of the whole-machine exposure
-# the per-connection cap exists to remove. 2 is deliberately tight: these are
-# interactive, so a third request should wait milliseconds behind two running
-# ones rather than the app inventing a fourth simultaneous full-width scan.
-_READ_CONCURRENCY = asyncio.Semaphore(2)
+# Bounds how many index reads run their duckdb call at once. `asyncio.to_thread`
+# alone dispatches onto the default executor (min(32, cpu+4) workers) with no
+# ceiling of its own, and each of those threads opens a DuckDB connection
+# capped to `search_threads()` (index/store.py) — so without this, up to 32 of
+# those capped pools could still run concurrently, which adds back most of the
+# whole-machine exposure the per-connection cap exists to remove.
+#
+# TWO LANES (D701 correction / D706), not one shared semaphore: `rank`,
+# `search`, and `stats` are per-keystroke and their statements are ours —
+# bounded, cheap, and known-shaped. `query` and `ask` run a CALLER-AUTHORED
+# statement (a hand-typed SQL-panel query, or one a model compiled) bounded
+# only by `guarded_query.TIMEOUT_S` (10s). One shared semaphore meant two
+# SQL-panel queries could hold both of its slots for up to 10s each, and every
+# keystroke in the home search box — an unrelated workload — queued behind
+# them: the search box went dead for seconds because of an unrelated panel.
+# Splitting the lanes means the authored-SQL path can never again block the
+# per-keystroke one, whatever it is doing.
+#
+# Widths: the interactive lane keeps its previous width of 2 — tight on
+# purpose, so a third keystroke waits milliseconds behind two running ones
+# rather than the app inventing a fourth simultaneous full-width scan. The
+# authored-SQL lane is narrower still, 1: it is rare (one SQL panel, one ask
+# box, almost never both at once), each statement can run for up to 10
+# `search_threads()`-capped seconds, and a caller who fires a second query
+# while the first is still running is already watching that first one's tab —
+# serializing them costs that caller nothing a second slot would have saved,
+# and keeps two long full-table scans from ever running side by side.
+#
+# Each lane is a LAZY PER-EVENT-LOOP semaphore rather than one instance built
+# at import time: `asyncio.Semaphore` binds to whichever loop first CONTENDS
+# on it (an uncontended acquire skips the bind, which is why the single
+# module-level instance this replaced passed this repo's own test suite while
+# still carrying the bug) — a second event loop in the same process that later
+# contends on an already-bound semaphore raises `RuntimeError: ... is bound to
+# a different event loop`, surfacing as a 500 instead of a queued request. A
+# `WeakKeyDictionary` keyed on the running loop gives each loop (the app's
+# own, and any test harness that opens its own) its own semaphore, and lets a
+# closed test loop's entry be collected instead of accumulating for the life
+# of the process.
+_interactive_lane_loops: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_query_lane_loops: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _lane(loops: "weakref.WeakKeyDictionary", width: int) -> asyncio.Semaphore:
+    """This running loop's semaphore of the given width, created on first use."""
+    loop = asyncio.get_running_loop()
+    sem = loops.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(width)
+        loops[loop] = sem
+    return sem
+
+
+def _interactive_read_concurrency() -> asyncio.Semaphore:
+    """The `rank`/`search`/`stats` lane. See the block comment above."""
+    return _lane(_interactive_lane_loops, 2)
+
+
+def _query_read_concurrency() -> asyncio.Semaphore:
+    """The `query`/`ask` (caller-authored SQL) lane. See the block comment above."""
+    return _lane(_query_lane_loops, 1)
 
 # How recently a root must have been scanned for the startup scheduler to skip
 # it. Short enough that a machine left on for a day rescans when the app is
@@ -888,7 +940,7 @@ async def api_index_stats(request: Request, root: str = Query(default=""),
         # watcher is already running while this request waits its turn —
         # otherwise a client that gave up while queued would sit uncancellable
         # until it reached the front, wasting its slot on nobody.
-        async with _READ_CONCURRENCY:
+        async with _interactive_read_concurrency():
             if token.cancelled:
                 return Response(status_code=499)
             try:
@@ -933,7 +985,7 @@ async def api_index_search(request: Request, root: str = Query(default=""),
     async with cancellable(request) as token:
         # See api_index_stats above for why the semaphore is acquired inside
         # `cancellable` rather than around it.
-        async with _READ_CONCURRENCY:
+        async with _interactive_read_concurrency():
             if token.cancelled:
                 return Response(status_code=499)
             try:
@@ -1013,7 +1065,7 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     async with cancellable(request) as token:
         # See api_index_stats above for why the semaphore is acquired inside
         # `cancellable` rather than around it.
-        async with _READ_CONCURRENCY:
+        async with _interactive_read_concurrency():
             if token.cancelled:
                 return Response(status_code=499)
             try:
@@ -1170,7 +1222,7 @@ async def api_index_query(request: Request, body: dict = Body(default={}),
     async with cancellable(request) as token:
         # See api_index_stats above for why the semaphore is acquired inside
         # `cancellable` rather than around it.
-        async with _READ_CONCURRENCY:
+        async with _query_read_concurrency():
             if token.cancelled:
                 return Response(status_code=499)
             try:
@@ -1272,12 +1324,20 @@ async def api_index_ask(request: Request, body: dict = Body(default={}),
     # this route's; a token bound before the relay's `await` would just sit
     # idle for however long that hop takes.
     async with cancellable(request) as token:
-        try:
-            out = await asyncio.to_thread(
-                _guarded, load_config(), sql, body.get("limit"), token)
-        except Cancelled:
-            logger.debug("index ask: abandoned by the client")
-            return Response(status_code=499)
+        # The `query`/`ask` lane (D701 correction / D706), not the interactive
+        # one: a model-compiled statement runs the exact same guarded DuckDB
+        # call `api_index_query` does, so it belongs on the same authored-SQL
+        # side of the split, not the per-keystroke side. Acquired inside
+        # `cancellable`, same reasoning as `api_index_stats` above.
+        async with _query_read_concurrency():
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(
+                    _guarded, load_config(), sql, body.get("limit"), token)
+            except Cancelled:
+                logger.debug("index ask: abandoned by the client")
+                return Response(status_code=499)
     if not isinstance(out, dict):
         # Same 400, plus the statement that earned it.
         return JSONResponse({**json.loads(bytes(out.body)), "sql": sql},
