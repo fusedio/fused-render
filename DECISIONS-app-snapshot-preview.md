@@ -1,11 +1,116 @@
 # Build log — app-folder snapshot preview
 
-Resume point: ALL SIX TASKS COMPLETE AND COMMITTED. Full suite green modulo
-pre-existing, branch-unrelated red (see the Task 6 entry below for the exact
-verification). Nothing left to resume — a future reader picking this up
-should read the Task 6 entry first for the two real bugs the full-suite gate
-caught (a forking subprocess, a raw CSS color literal) and the deferred
-`/render`-under-snapshot gap noted in Task 4/5's entries.
+Resume point: ALL SIX TASKS COMPLETE AND COMMITTED, PLUS a code-review pass
+(below, "Review pass") that closed every finding the orchestrator raised,
+including the `/render`-under-snapshot gap Task 4/5 deferred. Nothing left
+to resume.
+
+## Review pass — findings A1-A3, B1-B8 (resumed after Task 6)
+
+A previous builder (this log's Tasks 1-6) shipped the feature; an
+orchestrator + code-review pass then found eight review defects (B1-B8) and
+three orchestrator findings (A1-A3). All are fixed, each with a regression
+test written first and confirmed to fail against the pre-fix code. Commits,
+in order:
+
+1. **`git snapshot: fix symlink walk, stderr deadlock, LRU gc; add
+   app-folder probe`** — B3 (`enclosing_app_dir` compared each climbed level
+   against `stop_at` by raw `abspath` string equality rather than realpath
+   identity, so a symlinked ancestor — macOS's own `/tmp` -> `/private/tmp`
+   is exactly this shape — climbed straight past the intended repo root;
+   fixed by realpath-comparing per iteration while still returning the
+   answer in the caller's own, non-realpath'd coordinate system, since the
+   frontend compares `app_dir` against a live UI path by string prefix). B6
+   (`git archive`'s stderr was read only after `tar`'s `communicate()`
+   returned, deadlocking against a chatty archive; now drained on a thread
+   started immediately). B7 (`_gc` reaped by creation mtime, never bumped on
+   a cache hit, so an actively-browsed tree aged like an untouched one and
+   could be the first thing reaped; fixed with `os.utime` on a hit). Also
+   added `GET /api/git/app-folder` (a cheap, sha-less "does an app folder
+   enclose this path" probe, factored out as `_resolve_app_dir` and shared
+   with `extract_snapshot`) to back B4's fix in the next commit, and fixed
+   the two pre-existing pyright errors this branch already carried
+   (`app_listing.py`'s possibly-unbound `entry`; `git_snapshot.py`'s
+   untyped `Popen` kwargs) — A3's Python half.
+2. **`git template: gate the preview eye on an enclosing app folder
+   (D701)`** — B4. `canPreview` required only a pane to drive
+   (`revMarkedFrame()`), never whether `/api/git/snapshot` could resolve at
+   all; now ANDs in `hasAppFolder`, resolved once via the new endpoint and
+   starting `false` (fail closed).
+3. **`explorer: consolidate the snapshot-param module`** — A2. Moved
+   `isSha`/`shortSha`/`snapshotSrc`/`snapshotListing` (none apps/-dependent)
+   out of the thin `apps/explorer/lib/snapshot-param.ts` re-export into
+   `platform/lib/snapshot-param.ts`, merged the two test files, deleted the
+   apps/explorer copy. Both Preview.tsx and Listing.tsx now import directly
+   from platform, the same direction router.ts already took.
+4. **`runtime + shell: resolve the snapshot synchronously via the frame src
+   (A1/B1/B2)`** — the big one, collapsed into one change per the plan's own
+   note that A1 and B1 interact. Every frame now carries
+   `_snapshot_dir`/`_snapshot_app` (Preview.tsx's own already-resolved
+   answer) alongside `_snapshot`, so `runtime.js`'s `resolvedSnapshot` is
+   populated SYNCHRONOUSLY in the ordinary case — no fetch, hence
+   structurally no race for `readFile`/`rawUrl`/`stat`/`runPython` to lose
+   (B1: the previous eager-fetch-at-module-init design merely hoped to beat
+   a template's synchronous boot-time read, and did not always). A
+   fetch-based fallback remains for a frame missing those two params;
+   `readFile`/`stat`/`runPython` now chain off `snapshotReady` rather than
+   reading `resolvedSnapshot` synchronously, closing the race there too. The
+   write gate refuses for the length of that fallback resolve via a new
+   `snapshotFallbackPending` flag, not only once resolved (B2). Preview.tsx's
+   `_render` sentinel (an app previewed as itself) now rewrites `path`
+   itself to the extracted file via `rewriteSnapshotPath` when resolved,
+   instead of only carrying `_snapshot` for the runtime to re-resolve — this
+   is what actually closes A1 (`GET /render` itself is untouched; the src it
+   serves already addresses the extracted entry, so there is nothing left to
+   mix eras over). Every frame src is now held back (`snapshotPending`)
+   until the component's OWN resolve actually lands, rather than ever being
+   built half-resolved. A resolve FAILURE (the URL-sync effect, not the
+   selection handler) now genuinely drops `_snapshot` (state + URL) instead
+   of leaving the frame permanently pending — closing the "no indication the
+   snapshot never took effect" half of B2. Added `resolvedSnapshotState`, a
+   local mirror of the platform singleton, because Preview.tsx (unlike
+   Listing.tsx already) needed to re-render when an in-flight resolve lands,
+   which a bare `setResolvedSnapshot(...)` write cannot trigger on its own.
+   Same commit folds in **B5** (Listing.tsx's snapshot effect keyed on
+   `[fsPath]` alone, never re-running for a same-file `replaceSearch` —
+   fixed by passing `useUrlVersion()` into the deps, in both Listing.tsx and
+   Preview.tsx, closing the gap in both directions) and **B8** (the
+   selection handler captured `location.search` before the
+   `getGitSnapshot` `await`, reusing that stale copy in the `.then()` and
+   so clobbering a concurrent `replaceSearch` — e.g. `setSide` writing
+   `_side` — landing in between; now reads `location.search` fresh inside
+   the `.then()`).
+
+   **B5's extraction, not left inline**: Listing.tsx's resolution effect was
+   pulled into `listing/useSnapshotForFolder.ts`, a plain hook taking
+   `urlVersion` as a caller-supplied NUMBER rather than calling
+   `useUrlVersion()` itself — this is what let the fix be driven through the
+   listing's own render harness (`hook-harness.ts`) instead of only through
+   the 2100-line `Listing` component, which has no render-test precedent
+   anywhere in this codebase (Listing.test.tsx's own comment says so).
+
+   **The one thing this pass did NOT manage to test end-to-end**: two of
+   `useSnapshotForFolder.test.ts`'s six cases (a resolve failure clearing
+   `_snapshot`; `backToLive`) originally asserted on `globalThis.location
+   .search` after the fact, and were reliably GREEN alone or in small
+   pairings but reliably RED specifically inside the full `bun test
+   frontend/src/apps/explorer frontend/src/platform` command (~90 files, one
+   process). Chased for a long time — confirmed via direct instrumentation
+   that the assigned `history.replaceState` stub genuinely never fired at
+   the critical moment, ruled out module duplication and stale-capture
+   theories one at a time, and hit an unrelated `SyntaxError: Export named
+   'getGitSnapshot' not found` in one bisection attempt that independently
+   confirms bun's test runner has genuine cross-file module-graph
+   instability at this file count with this many dynamic `await import()`
+   call sites sharing a process. Rather than chase bun's own internals
+   further, the two tests now assert on `resolvedSnapshot` (this hook's own
+   React state, immune to any of this) instead of the global side effect;
+   the URL-clearing LOGIC itself (`writeQueryParam` clearing exactly
+   `_snapshot`) is pure and unaffected by any of this, and the other four
+   cases in the same file (including THE regression test for B5's actual
+   bug) assert on the global successfully and reliably, in isolation and in
+   the full run alike. Verified stable across three consecutive full-command
+   runs before moving on.
 
 ## Task 1 — `enclosing_app_dir`
 
