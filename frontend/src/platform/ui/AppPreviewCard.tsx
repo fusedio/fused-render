@@ -37,6 +37,7 @@ import type { AppInfo } from "@platform/lib/api";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
+import { AppStar } from "@platform/ui/AppStar";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
@@ -244,18 +245,10 @@ export function AppPreviewCard({
             draggable={false}
           />
         ) : (
-          // The generic mark, one drawing shared with the sidebar
-          // (CurrentAppsSection's `current-app-star`): the app icon's own
-          // sparkle, on currentColor so it takes the card's muted tone
-          // rather than competing with the name beside it.
-          <svg
-            className="app-pcard-star"
-            viewBox="0 0 64 64"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path d="M32 2 C36.5 20.5 43.5 27.5 62 32 C43.5 36.5 36.5 43.5 32 62 C27.5 43.5 20.5 36.5 2 32 C20.5 27.5 27.5 20.5 32 2 Z" />
-          </svg>
+          // The generic mark (AppStar — the same drawing the sidebar row and
+          // the app page's header show), on currentColor so it takes the
+          // card's muted tone rather than competing with the name beside it.
+          <AppStar className="app-pcard-star" />
         )}
         {/* The two text lines, stacked beside the icon rather than under it —
             the icon is a column of the head, spanning both (owner). Their own

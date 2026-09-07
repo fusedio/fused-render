@@ -29,12 +29,12 @@ import {
   getCurrentApps,
   openCurrentApp,
   readCurrentAppTasks,
-  removeAppIcon,
   removeCurrentApp,
   renameCurrentApp,
-  setAppIcon,
   type CurrentAppEntry,
 } from "@platform/lib/api";
+import { applyIconPick } from "@platform/lib/app-icon";
+import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
@@ -68,22 +68,6 @@ export const ORDER_KEY = "fused-render:current-apps-order:v2";
 // /api/current-apps/open lands, so the other windows' sections refetch the
 // desk (the server row is the truth; this only says "look again").
 export const DESK_CHANGED_KEY = "fused-render:current-apps-changed";
-
-/** The picked emoji as a standalone icon.svg document — square viewBox, no
- *  fixed size, transparent ground (a colour emoji carries its own colours, so
- *  it reads on both themes; see skills/fused-render-app-icon). The same file
- *  a hand-authored icon.svg would be, just generated. */
-function emojiIconSvg(emoji: string): string {
-  const safe = emoji
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  return (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
-    '<text x="32" y="32" text-anchor="middle" dominant-baseline="central" ' +
-    `font-size="52">${safe}</text></svg>`
-  );
-}
 
 // The section fold, "1" when hidden — the Bookmarks section's own key pattern.
 export const COLLAPSED_KEY = "fused-render:current-apps-collapsed";
@@ -319,20 +303,12 @@ function CurrentAppRow({
             draggable={false}
           />
         ) : (
-          // The brand's four-point star (the app icon's sparkle) as the
-          // generic mark, on currentColor so it follows the glyph's tokens
+          // The brand's four-point star (AppStar — the app icon's sparkle, the
+          // same drawing the /apps cards and the app page's header show) as
+          // the generic mark, on currentColor so it follows the glyph's tokens
           // (muted at rest, accent on the active row) — the SidebarFrame
           // cube's own posture.
-          <svg
-            className="current-app-star"
-            width="12"
-            height="12"
-            viewBox="0 0 64 64"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path d="M32 2 C36.5 20.5 43.5 27.5 62 32 C43.5 36.5 36.5 43.5 32 62 C27.5 43.5 20.5 36.5 2 32 C20.5 27.5 27.5 20.5 32 2 Z" />
-          </svg>
+          <AppStar className="current-app-star" width={12} height={12} />
         )}
       </span>
       <a
@@ -596,11 +572,10 @@ export default function CurrentAppsSection() {
     setIconPicker(null);
     if (!target) return;
     try {
-      if (pick === null) await removeAppIcon(target.path);
-      // An icon pick arrives as the finished branded svg; an emoji gets the
-      // same standalone wrapper a hand-authored icon.svg would have.
-      else if (pick.kind === "icon") await setAppIcon(target.path, pick.svg);
-      else await setAppIcon(target.path, emojiIconSvg(pick.emoji));
+      // The pick → disk rule is shared with the app page's header mark
+      // (platform/lib/app-icon): remove, or store the svg an icon pick
+      // arrives as, or wrap an emoji in one.
+      await applyIconPick(target.path, pick);
     } catch {
       // A failed write leaves the old glyph; the refetch shows the truth.
     }
