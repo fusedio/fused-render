@@ -297,7 +297,12 @@ def resume() -> None:
             # start would re-walk the whole package to reach the same answer,
             # for the life of the installation, and this module is careful that
             # an ordinary start pays a `stat` and not a hash (`reconcile`).
-            selffix.note_session(run_id)
+            #
+            # CONDITIONAL, because `settle` above just spent seconds hashing the
+            # tree and a fix started in that window owns the pointer now —
+            # writing this run's name back would drop that session's `before`
+            # and stop the guard seeing it (`selffix.retire_session_digest`).
+            selffix.retire_session_digest(run_id)
             return
         threading.Thread(target=_watch_fix,
                          args=(run_id, incident, report, title, before),

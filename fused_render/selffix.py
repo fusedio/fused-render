@@ -717,19 +717,65 @@ def note_session(run_id: str, *, before: str = "", baseline: str = "",
     of the guard, and the scan still covers the ordinary case; refusing to start
     a fix over it would be the wrong trade.
     """
+    _write_session_pointer({"schema": 3, "version": __version__,
+                            "run_id": str(run_id), "before": str(before),
+                            "baseline": str(baseline), "report": str(report),
+                            "incident": str(incident), "title": str(title)})
+
+
+def _write_session_pointer(payload: dict) -> None:
+    """The write itself, shared by the two callers, and lock-free on purpose.
+
+    A session STARTING may always overwrite what it finds — the next start
+    overwriting the last is the documented behaviour of this pointer, and a
+    mutex around it would only decide which of two starts wins a race they are
+    both entitled to. `retire_session_digest` is the one write that is NOT
+    entitled to that, and it takes the lock itself.
+    """
     wrote = False
     for home in record_homes():
         try:
-            _write_json(_session_file(home),
-                        {"schema": 3, "version": __version__,
-                         "run_id": str(run_id), "before": str(before),
-                         "baseline": str(baseline), "report": str(report),
-                         "incident": str(incident), "title": str(title)})
+            _write_json(_session_file(home), payload)
             wrote = True
         except OSError:
             continue
     if not wrote:
         logger.debug("could not record the fix session id", exc_info=True)
+
+
+def retire_session_digest(run_id: str) -> bool:
+    """Stop the pointer carrying a digest — but ONLY while it still names this
+    run. Returns whether it did.
+
+    `resume` retires the digest of a run it has finished stamping, so that no
+    later start re-walks the whole package to reach the same answer. The value
+    it writes is STALE BY THE TIME IT WRITES IT: between reading the pointer and
+    getting here, `settle` hashed the entire installation — seconds on a cold
+    tree — and the obvious thing for a user to do in those seconds is exactly
+    what this feature invites, click Fix on a failing row. That start has
+    already replaced the pointer with its own run and its own `before`.
+
+    Written blind, this put the DEAD run's name back and dropped the live
+    session's `before` with it, which costs both halves at once: the pointer
+    stops excluding the running agent (the long-session half of the guard,
+    SF-13a) and a later restart has nothing to settle against, so the
+    installation the live session is patching can end up with no badge.
+
+    So the read and the write are one step under `_lock`, and a pointer that has
+    moved on is left exactly as it is. Nothing is lost by declining: the digest
+    this would have retired belongs to a run that is over, and the next start
+    reads a pointer whose `before` is the LIVE session's — which is the one that
+    still has something to measure.
+    """
+    with _lock:
+        record = session_record()
+        if str(record.get("run_id") or "") != str(run_id):
+            return False
+        _write_session_pointer({"schema": 3, "version": __version__,
+                                "run_id": str(run_id), "before": "",
+                                "baseline": "", "report": "",
+                                "incident": "", "title": ""})
+        return True
 
 
 def session_record() -> dict:

@@ -2222,6 +2222,47 @@ def test_a_session_that_deleted_the_state_dir_is_still_stamped_after_a_restart(
     assert selffix.status()["fixes"][0]["run_id"] == "r-wiper"
 
 
+def test_a_resume_does_not_retire_a_pointer_a_NEW_session_has_taken(
+        install, monkeypatch):
+    """The retire write is stale by the time it happens, so it has to check.
+
+    `resume` reads the pointer, then `settle` hashes the whole installation —
+    seconds on a cold tree — and the obvious thing for a user to do in those
+    seconds is the thing this feature invites: click Fix on a failing row. That
+    start owns the pointer now. Writing the finished run's name back over it
+    drops the live session's `before` and stops the pointer naming the process
+    that is running, which costs the long-session half of the guard (SF-13a)
+    and leaves a later restart with nothing to settle against — the patched
+    install with no badge this feature exists to prevent.
+    """
+    before = _pristine()
+    selffix.note_session("r-finished", before=before)
+
+    real_digest = selffix.tree_digest
+
+    def digest_then_a_new_session_starts(*args, **kwargs):
+        out = real_digest(*args, **kwargs)
+        monkeypatch.setattr(selffix, "tree_digest", real_digest)
+        # A user clicks Fix while the resume's walk is still running.
+        selffix.note_session("r-brand-new", before="the-new-session-reading")
+        return out
+
+    monkeypatch.setattr(selffix, "tree_digest", digest_then_a_new_session_starts)
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    REAL_RESUME()
+
+    record = selffix.session_record()
+    assert record.get("run_id") == "r-brand-new", (
+        "the finished run's name was written back over a live session's pointer")
+    assert record.get("before") == "the-new-session-reading", (
+        "the live session's `before` was dropped, so a restart could not stamp "
+        "what it changes")
+    assert selffix.active_run() == "r-brand-new", (
+        "the guard stopped naming the process that is actually running")
+
+
 def test_a_live_session_keeps_its_digest_across_the_resume(install, monkeypatch):
     """The retirement above is for FINISHED runs only. A session still editing
     needs its `before` on the next restart too — servers can bounce twice."""
