@@ -44,9 +44,11 @@ import {
 } from "@platform/lib/api";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { Badge } from "@platform/shadcn/ui/badge";
 import { useMarginWheel } from "./useMarginWheel";
 import { BOARD_COLUMNS, BOARD_LANES, columnLabel, laneOf } from "./schedule-lib";
 import type { BoardColumn, BoardLane } from "./schedule-lib";
+import { FilterCount } from "@platform/ui/list";
 import {
   EMPTY_FILTERS,
   EMPTY_LIST_MEMORY,
@@ -539,10 +541,16 @@ function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
    own words, and the foot is for the run's circumstances — the folder it ran in,
    the run ahead. This is a fact about the task, so it goes with the id. */
 function OutcomePill({ outcome }: { outcome: OutcomeTag }) {
+  // Badge for the semantic/kit wrapper; the visual geometry (14px height,
+  // hairline border in the text's own colour, radius-pill, text-micro) stays
+  // exactly `.tasks-outcome-pill` (tasks.css:1680) — Badge's own utility
+  // classes for those same properties are unlayered-losers against it by
+  // design (see SHADCN_MIGRATION_PLAYBOOK.md's cascade note), so keeping the
+  // class is what guarantees pixel parity rather than approximating it.
   return (
-    <span className="tasks-outcome-pill" title={outcome.title}>
+    <Badge variant="outline" className="tasks-outcome-pill" title={outcome.title}>
       {outcome.text}
-    </span>
+    </Badge>
   );
 }
 
@@ -694,7 +702,7 @@ function FilterMenu({
           onClick={() => setOpen((v) => !v)}
         >
           {glyph ?? ICON_CIRCLE_DOT} {label}
-          {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
+          {count > 0 && <FilterCount>{count}</FilterCount>}
         </button>
         {splittable && (
           <button

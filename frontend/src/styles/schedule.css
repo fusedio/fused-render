@@ -2941,17 +2941,6 @@ input.schedule-when-field {
   color: var(--fg-muted);
 }
 
-.schedule-tv-filter-count {
-  min-width: 16px;
-  padding: 0 var(--space-1-5);
-  border-radius: var(--radius-pill);
-  background: rgba(var(--accent-rgb), 0.16);
-  color: var(--accent-soft);
-  font-size: var(--text-micro);
-  font-weight: 600;
-  line-height: 16px;
-  text-align: center;
-}
 
 /* Absolute, and nothing between it and the page clips: the toolbar is a plain
    flex row with no overflow of its own. */
