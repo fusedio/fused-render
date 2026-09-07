@@ -4222,21 +4222,29 @@ function render(data, stashes, diff) {
         "Files are shown as of ",
         el("span", { className: "sha", textContent: known ? known.short : previewed.slice(0, 7) }),
         known && known.subject ? " — " + known.subject : ""),
-      confirmable("app_restore", [icon(CHECKOUT_GLYPH, 14), btnLabel("Checkout")],
+      confirmable("app_restore:" + previewed, [icon(CHECKOUT_GLYPH, 14), btnLabel("Checkout")],
         checkoutQuestion,
         { label: "Commit the app folder back to this version" }),
       action("preview-off", "Back to now", {
         label: "Stop previewing and show the current files",
         onClick: () => preview(null),
       })));
-    if (param("ask") === "app_restore") {
+    /* Keyed to THIS banner's own sha (finding 5, D703 second review round):
+       `ask=app_restore` alone carried no subject, so previewing a DIFFERENT
+       commit while a Checkout was armed re-rendered this same bar pointing
+       at the new commit — one click would commit a rollback to a version
+       the user never actually confirmed. Requiring `ask` to still name
+       exactly the commit being previewed closes that; a reload with a bare
+       `?ask=app_restore` (no sha, or the previewed commit changed) also no
+       longer arms anything, matching finding 5's own reload complaint. */
+    if (param("ask") === "app_restore:" + previewed) {
       /* Success leaves the app folder matching HEAD already, so the preview
          it was showing is now stale — clearing it (`preview(null)`) is what
          moves the view from "previewing a version" back to "now", rather
          than continuing to claim a preview of what is already current. */
       page.append(confirmBar(checkoutQuestion,
         () => run("app_restore", { op: "app_restore", sha: previewed },
-                  () => { preview(null); return true; }),
+                  () => { preview(null); }),
         "Checkout"));
     }
   }
@@ -4404,7 +4412,7 @@ async function loadDiff(data) {
        could never have landed in the first place — does not offer a second,
        unrelated write action either. */
     const revertBtn = canPreview
-      ? confirmable("revert", [icon(REVERT_GLYPH, 14), btnLabel("Revert")],
+      ? confirmable("revert:" + rev, [icon(REVERT_GLYPH, 14), btnLabel("Revert")],
           revertQuestion, { label: "Revert " + (meta && meta.short ? meta.short : rev.slice(0, 7)) })
       : null;
     /* No title: the diff renders inline under the selected row, which already
@@ -4415,7 +4423,14 @@ async function loadDiff(data) {
       data.repo.rel ? "scoped to " + data.repo.rel : null,
       payload,
       commitMeta(meta, rev, revertBtn));
-    if (param("ask") === "revert") {
+    /* Keyed to THIS commit's own sha (finding 4, D703 second review round):
+       `select()` never clears `ask`, so arming Revert on one commit and then
+       expanding a DIFFERENT row left `ask === "revert"` still true — this
+       pane would render an ARMED confirmation for a commit the user never
+       confirmed. Requiring `ask` to still name the commit actually selected
+       closes it; a stale `ask=revert:<oldSha>` left over from a prior
+       selection (or a reload) simply arms nothing here any more. */
+    if (param("ask") === "revert:" + rev) {
       pane.append(confirmBar(revertQuestion,
         () => run("revert", { op: "revert", sha: rev }), "Revert"));
     }

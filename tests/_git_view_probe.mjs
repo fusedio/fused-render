@@ -70,8 +70,23 @@ class El {
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
   removeAttribute(k) { delete this.attrs[k]; }
-  addEventListener() {}
-  removeEventListener() {}
+  // Real enough to drive the view's own click/keydown handlers (see `click()`
+  // below) — the fixture-driven `actions` list needs this to arm a
+  // confirmation on one row and then select a different one, which no amount
+  // of asserting on rendered markup alone can exercise.
+  addEventListener(type, fn) {
+    (this._listeners ||= {});
+    (this._listeners[type] ||= []).push(fn);
+  }
+  removeEventListener(type, fn) {
+    this._listeners?.[type]?.splice(0).forEach((f) => {
+      if (f !== fn) (this._listeners[type] ||= []).push(f);
+    });
+  }
+  click() {
+    const event = { type: "click", preventDefault() {}, stopPropagation() {} };
+    for (const fn of (this._listeners?.click ?? []).slice()) fn(event);
+  }
   focus() {}
   scrollIntoView() {}
   closest() { return null; }
@@ -284,6 +299,45 @@ try {
 await new Promise((r) => setTimeout(r, 60));
 await new Promise((r) => setTimeout(r, 60));
 
+// `fixture.actions`: an ordered list of clicks the harness performs against
+// the ALREADY-RENDERED view, each `{ titleIncludes }` or `{ ariaLabel }`
+// selecting the first matching element by DFS. This is what lets a test drive
+// the view through a real sequence of gestures (select commit A, arm Revert,
+// select commit B) rather than hand-assigning `selection`/`previewed` —
+// neither of which is reachable through a URL param (see the state header's
+// own "not a param at all any more"), so a fixture that could only set params
+// could never reach the state findings 4/5 are about.
+function findWhere(node, pred) {
+  if (!node || node.tagName === undefined) return null;
+  if (pred(node)) return node;
+  for (const kid of node.children || []) {
+    const hit = findWhere(kid, pred);
+    if (hit) return hit;
+  }
+  return null;
+}
+for (const step of fixture.actions || []) {
+  // `title` on these nodes is a plain DOM PROPERTY (`el()` sets it via
+  // `Object.assign`, never `setAttribute`), so it lives on the node itself —
+  // NOT in `.attrs`, which only holds what an explicit `setAttribute` call
+  // put there (that is where `aria-label` lives, e.g. the row's own click
+  // target has no `aria-label` at all).
+  const pred = step.ariaLabel !== undefined
+    ? (n) => n.attrs && n.attrs["aria-label"] === step.ariaLabel
+    : (n) => typeof n.title === "string" && n.title.includes(step.titleIncludes);
+  const target = findWhere(byId.view, pred);
+  if (!target) {
+    unhandled.push("probe action found no element for " + JSON.stringify(step));
+    continue;
+  }
+  target.click();
+  // Every handler here either repaints synchronously (`select`, `preview`)
+  // or kicks off an async `draw()` — settle the same way the initial paint
+  // does before the next action reads the DOM it left behind.
+  await new Promise((r) => setTimeout(r, 60));
+  await new Promise((r) => setTimeout(r, 60));
+}
+
 // A `title`/`aria-label` never shows up in `textContent` — a button's
 // TOOLTIP and its confirm-dialog question live there, not in the visible
 // label — so a test that needs to pin what those actually SAY (not just
@@ -315,4 +369,5 @@ process.stdout.write(JSON.stringify({
   error: fatal,
   unhandled,
   calls,
+  finalParams: Object.fromEntries(params),
 }, null, 1));

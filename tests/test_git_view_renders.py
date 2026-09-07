@@ -93,6 +93,20 @@ def empty_repo(root):
     return root
 
 
+def two_commit_repo(root):
+    """Two commits with distinct subjects, so a test can select/preview one
+    and then the other and tell which row a click actually landed on."""
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q", root)
+    _put(root, "f.txt", "one\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "first commit")
+    _put(root, "f.txt", "one\ntwo\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "second commit")
+    return root
+
+
 def conflicted_repo(root):
     os.makedirs(root, exist_ok=True)
     git(root, "init", "-q", root)
@@ -113,7 +127,8 @@ def conflicted_repo(root):
 
 
 def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None,
-           preview_capable=False, git_app_folder=None):
+           preview_capable=False, git_app_folder=None, actions=None,
+           commit_sha=None):
     """Run the template's script against `repo`'s real reader payloads.
 
     `repo_patch` overrides fields on the `overview` payload's `repo` dict
@@ -131,6 +146,15 @@ def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None,
     it `False` and gets today's capability-off DOM, unchanged.
     `git_app_folder` overrides the app-folder half alone (e.g. a marked pane
     with NO app folder), the probe's other documented override.
+
+    `actions` is an ordered list of clicks the probe performs against the
+    ALREADY-RENDERED view (`{"titleIncludes": ...}` or `{"ariaLabel": ...}`,
+    see `_git_view_probe.mjs`) — the only way to drive `selection`/`previewed`
+    into a real state, since neither is ever a URL param. `commit_sha`, when a
+    test's `actions` select a commit row, supplies the `op: "commit"` payload
+    every such selection reads (the stub's `runPython` keys purely by `op`, so
+    one payload answers for whichever commit was actually clicked — fine here
+    since these tests assert on the confirm bar, not the diff body).
     """
     node = shutil.which("node")
     if not node:  # pragma: no cover - node is present on CI runners
@@ -143,12 +167,15 @@ def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None,
     assert payloads["overview"]["ok"] is True, payloads["overview"]
     if repo_patch:
         payloads["overview"]["repo"].update(repo_patch)
+    if commit_sha:
+        payloads["commit"] = reader.main(file=repo, op="commit", sha=commit_sha)
     fixture = tmp_path / "fixture.json"
     fixture_obj = {
         "params": dict({"_file": repo}, **(params or {})),
         "payloads": payloads,
         "github": github or {},
         "previewCapable": preview_capable,
+        "actions": actions or [],
     }
     if git_app_folder is not None:
         fixture_obj["gitAppFolder"] = git_app_folder
@@ -383,3 +410,77 @@ def test_the_probe_fails_on_a_template_that_paints_nothing(reader, tmp_path):
     # And the real assertion helper must reject it.
     with pytest.raises(AssertionError, match="EMPTY"):
         _assert_painted(out, "suppressed render")
+
+
+# ---------------------------------------------------------- stale-consent keys
+#
+# Findings 4 and 5 (D703 second review round): `ask=revert` and `ask=app_restore`
+# carried no subject of their own, so an ARMED confirmation followed the user to
+# a different commit — one click could revert or checkout something they never
+# actually confirmed. Neither `selection` (which row's diff is open) nor
+# `previewed` (which commit the content pane shows) is ever a URL param — see
+# the state header comment above `let previewed` — so the only way to drive
+# either into a real, non-default state is a REAL click through the probe's new
+# `actions` list, not a hand-assigned fixture field.
+
+REVERT_QUESTION = "Revert this commit? This adds a new commit"
+CHECKOUT_QUESTION = "Commit the app folder back to this version? Other folders"
+
+
+def test_revert_confirm_bar_only_shows_for_the_commit_it_was_armed_on(reader, tmp_path):
+    repo = two_commit_repo(str(tmp_path / "revert-arming"))
+    overview = reader.main(file=repo, op="overview")
+    commits = overview["commits"]
+    assert len(commits) == 2, commits
+    newer, older = commits[0], commits[1]
+
+    # Positive control first: select the newer commit, arm Revert on it, and
+    # confirm the bar actually renders — proving the harness's click plumbing
+    # works before the negative case is trusted to mean anything.
+    armed = render(reader, repo, tmp_path, preview_capable=True,
+                   commit_sha=newer["sha"],
+                   actions=[{"titleIncludes": newer["subject"]},
+                            {"titleIncludes": "Revert this commit?"}])
+    _assert_painted(armed, "revert armed on the selected commit")
+    assert REVERT_QUESTION in armed["viewHTML"], armed["viewHTML"]
+
+    # The regression: arm Revert on the newer commit, then select the OLDER
+    # one. The confirmation must NOT follow — it was never confirmed for this
+    # commit.
+    retargeted = render(reader, repo, tmp_path, preview_capable=True,
+                        commit_sha=newer["sha"],
+                        actions=[{"titleIncludes": newer["subject"]},
+                                 {"titleIncludes": "Revert this commit?"},
+                                 {"titleIncludes": older["subject"]}])
+    _assert_painted(retargeted, "revert re-targeted by selecting a different commit")
+    assert REVERT_QUESTION not in retargeted["viewHTML"], (
+        "an armed Revert confirmation followed the user to a commit they "
+        f"never confirmed it against:\n{retargeted['viewHTML']}")
+
+
+def test_checkout_confirm_bar_only_shows_for_the_previewed_commit_it_was_armed_on(
+        reader, tmp_path):
+    repo = two_commit_repo(str(tmp_path / "checkout-arming"))
+    overview = reader.main(file=repo, op="overview")
+    commits = overview["commits"]
+    assert len(commits) == 2, commits
+    newer, older = commits[0], commits[1]
+
+    # Positive control: preview the newer commit, arm Checkout, and confirm
+    # the bar renders while nothing has re-targeted it.
+    armed = render(reader, repo, tmp_path, preview_capable=True,
+                   actions=[{"ariaLabel": "Preview the files as of " + newer["short"]},
+                            {"ariaLabel": "Commit the app folder back to this version"}])
+    _assert_painted(armed, "checkout armed on the previewed commit")
+    assert CHECKOUT_QUESTION in armed["viewHTML"], armed["viewHTML"]
+
+    # The regression: arm Checkout while previewing the newer commit, then
+    # preview the OLDER one instead. The confirmation must not follow.
+    retargeted = render(reader, repo, tmp_path, preview_capable=True,
+                        actions=[{"ariaLabel": "Preview the files as of " + newer["short"]},
+                                 {"ariaLabel": "Commit the app folder back to this version"},
+                                 {"ariaLabel": "Preview the files as of " + older["short"]}])
+    _assert_painted(retargeted, "checkout re-targeted by previewing a different commit")
+    assert CHECKOUT_QUESTION not in retargeted["viewHTML"], (
+        "an armed Checkout confirmation followed the user to a preview they "
+        f"never confirmed it against:\n{retargeted['viewHTML']}")
