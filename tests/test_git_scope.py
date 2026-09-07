@@ -34,6 +34,7 @@ reachable and the workaround is retired.
 import importlib.util
 import json
 import os
+import re
 import subprocess
 
 import pytest
@@ -361,7 +362,7 @@ def test_the_preview_control_needs_a_pane_to_drive(source):
     # and nothing else offers one. (It is a span-with-role inside the row button
     # now, because buttons cannot nest; both states still speak only through
     # `preview()`.)
-    row = source[source.index("function commitLine(entry, selected, isLatest)"):]
+    row = source[source.index("function commitLine(entry, selected)"):]
     row = row[:row.index("\nfunction ")]
     assert "if (canPreview && previewingHere) {" in row
     assert "} else if (canPreview) {" in row
@@ -408,6 +409,29 @@ def test_the_capability_is_polled_like_the_annotate_target(source):
     poll = poll[:poll.index("\n}")]
     assert "if (!has && previewed !== null)" in poll
     assert "hopSnapshot();" in poll
+
+
+def test_the_latest_commit_dot_is_gone_but_the_previewing_pills_stays(source):
+    # D703: two dots shared one colour and one stated meaning ("the commit
+    # the files on screen belong to"), but only one of them was ever
+    # informative. The latest-commit dot appeared only when NOTHING was
+    # previewed, where it marked the top row of a newest-first list — a fact
+    # the list's own order already states. The previewing pill's dot is the
+    # one that answers a live question, and it stays.
+    assert "isLatest" not in source, "the dead parameter is still here"
+    assert "const liveDot" not in source, "the latest-commit dot node is still built"
+    # commitLine's own signature dropped the parameter…
+    assert "function commitLine(entry, selected)" in source
+    # …and so did its one call site.
+    assert re.search(r"commits\.map\(\(c[^)]*\)\s*=>\s*commitLine\(c,\s*c\.sha === rev\)\)",
+                     source), source[source.index("commits.map("):source.index("commits.map(") + 200]
+    assert "i === 0" not in source
+    # The previewing pill's OWN dot (the one that stays) is untouched, and so
+    # is the CSS rule it depends on.
+    row = source[source.index("function commitLine(entry, selected)"):]
+    row = row[:row.index("\nfunction ")]
+    assert 'marker.prepend(el("span", { className: "live-dot" }));' in row
+    assert ".row .live-dot {" in source
 
 
 def test_a_reload_of_this_frame_returns_the_pane_to_live(source):

@@ -1003,11 +1003,13 @@
   }
   .row .where.is-current { border-color: var(--accent-dim); color: var(--accent-dim); }
   .row .where.is-preview { border-color: var(--good-line); color: var(--good-fg); }
-  /* The commit list's one status mark: a green dot at the END of the subject.
-     On the newest commit it means "this is what the files show now"; when a
-     commit is previewed the dot travels there and brings the `previewing`
-     pill with it — one colour, one meaning: the commit the files on screen
-     belong to. */
+  /* The previewing pill's own on-state mark (D703). It used to also sit on
+     the newest commit's row, meaning "this is what the files show now" —
+     dropped: that dot only ever appeared while NOTHING was previewed, where
+     it marked the top row of a list already ordered newest-first, so it
+     answered a question the list's own order already had. This one answers
+     a real question — which commit are the files on screen from — and only
+     it needs the colour. */
   .row .live-dot {
     flex: none;
     align-self: center;
@@ -3473,7 +3475,7 @@ function changeLine(repo, change, selected) {
    there is none, and then there is no button, rather than one that does nothing.
    Hidden, not disabled, for the reason the claude template's annotate switch is:
    a control that cannot do anything is not a promise worth keeping on screen. */
-function commitLine(entry, selected, isLatest) {
+function commitLine(entry, selected) {
   const line = el("div", { className: "line" });
   const previewingHere = previewed === entry.sha;
 
@@ -3518,21 +3520,12 @@ function commitLine(entry, selected, isLatest) {
     });
   }
 
-  /* The latest commit's own mark: what the files show NOW. Suppressed while a
-     preview is active anywhere — one green dot on screen, one meaning: the
-     commit the visible files belong to. */
-  const liveDot = (isLatest && !previewed)
-    ? el("span", { className: "live-dot",
-                   title: "The latest commit — what the files show now" })
-    : null;
-
   const row = el("button", {
     className: "row",
     type: "button",
     title: entry.short + "  " + entry.subject + "\n" + entry.author + " — " + entry.date,
   },
     el("span", { className: "subject", textContent: entry.subject || "(no subject)" }),
-    liveDot,
     marker,
     /* The short id APPEARS on the selected row (only there — on every row it
        turned the list into a table), on the RIGHT, out of the reading line.
@@ -4123,7 +4116,7 @@ function render(data, stashes, diff) {
   if (commits.length) sections.push(listSection(
     "Commits", null, null,
     spliceDiff(
-      commits.map((c, i) => commitLine(c, c.sha === rev, i === 0)),
+      commits.map((c) => commitLine(c, c.sha === rev)),
       rev ? commits.findIndex((c) => c.sha === rev) : -1),
     "No commits have touched this path yet.",
     loadMore,
