@@ -2209,7 +2209,7 @@ def test_annotate_mode_defaults_off_and_owns_pin_visibility(html):
     follow the mode, and Done always sends the pending notes."""
     boot = html[html.index("function annBootMode()"):]
     boot = boot[:boot.index("\n}\n")]
-    assert 'annSetMode(m === "1" || m === "2");' in boot
+    assert 'annSetMode(m === "1");' in boot
     assert "annshow" not in html
     assert "annautosend" not in html
     # pins gate on the mode itself, and toggling the mode repaints them

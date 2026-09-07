@@ -311,17 +311,6 @@
   #anncta:not(.busy) #annreclbl { display: none; }
   #anncta.busy #annrec .rec-word { display: none; }
   #anncta.busy #annrec { color: var(--accent); border-color: var(--accent); }
-  /* A reload in a walkthrough (annmode=2) re-opens the mic (annBootMode): until
-     it answers the mode is armed with the recording still to come, and the seat
-     that reads active is the ANNOTATE one, not Comment (Akshil, 2026-09-07:
-     "click on mic, reload, it shows comment active"). annNavLock stamps
-     `.resuming` off annRecWant. */
-  #anncta.resuming #annrec { color: var(--accent); border-color: var(--accent); }
-  #anncta.resuming #annbtn.on { color: var(--dim); border-color: var(--border); }
-  /* …and Comment is INERT meanwhile (the rule above, with the busy seats), the
-     way it is while a recording runs: its click is Done, and a Done that lands
-     while the mic is still opening would send the round and then have the
-     recording arrive over a disarmed mode (Bugbot, PR #1046). Esc is the exit. */
   /* The OTHER two seats go inert while a mode is on (Akshil, 2026-09-06: "if
      I click on the other one it shouldn't work"): dimmed like a disabled seat,
      no hover, no pointer. Their click handlers refuse the same states, so a
@@ -329,9 +318,8 @@
      Esc, and ← Chats), never a neighbouring seat. Derived from the two state
      classes like every other face here. */
   #anncta:has(#annbtn.on) #viewshot,
-  #anncta:not(.busy):not(.resuming):has(#annbtn.on):not(:has(#annrec.on)) #annrec,
-  #anncta:has(#annrec.on) #annbtn,
-  #anncta.resuming #annbtn { opacity: .55; cursor: default; pointer-events: none; }
+  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annrec,
+  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }
   /* Empty label must not hold a gap seat open beside the icon. */
   #annreclbl:empty { display: none; }
 
@@ -6785,7 +6773,6 @@ let schedUiReady = false;   // applyComposerBlockState's consts land late in the
 function annNavLock() {
   const lock = annNavLocked();
   document.body.classList.toggle("annlock", lock);
-  annCta.classList.toggle("resuming", annRecWant && !annRecOn);
   const back = document.getElementById("back");
   if (back) {
     back.disabled = lock;
@@ -7495,10 +7482,10 @@ let annArmEpoch = 0;
 // mode too, and a second copy of this would be a second chance for the banner's
 // text to disagree with `annOn`.
 function annSetMode(on) {
-  // A disarm, whoever asks and whether or not it lands below, withdraws the
-  // boot's resume promise (annRecWant) and the settle's hold on the chat
-  // (annBusyHold): both are claims the mode made, and the mode is going.
-  if (!on) { annRecWant = false; annBusyHold = false; }
+  // A disarm, whoever asks and whether or not it lands below, releases the
+  // settle's hold on the chat (annBusyHold): a claim the mode made, and the
+  // mode is going.
+  if (!on) annBusyHold = false;
   // Nothing to point at can never be armed, whoever asks. Enforced HERE rather
   // than only at the button because arming has five entry points (the click, the
   // boot default below, the `annmode` param, the app menu's exit action, and the
@@ -7652,16 +7639,8 @@ async function annDone() {
 // else is off. annSetMode and annRecBegin both write through here, and the
 // write is skipped when the URL already MEANS this (a semantic no-op would
 // still cost a history entry — see the note on annSetMode).
-// `annRecWant` is the boot's promise: a "2" URL is RESUMING a walkthrough, and
-// the param must keep saying so through annSetMode(true) — which runs before
-// the mic answers, with annRecOn still false — or the reload would rewrite
-// "2" to "1" on its way in and the hosted re-arm would then read Comment.
-// Cleared the moment the mic answers either way, and by any disarm.
-let annRecWant = false;
-// One start request in flight at most (annRecBegin) — declared HERE, above
-// the boot that may already ask annResumeRec to read it.
-let annRecStarting = false;
-function annModeWant() { return (annRecOn || annRecWant) ? "2" : annOn ? "1" : "0"; }
+let annRecStarting = false;   // one start request in flight at most (annRecBegin)
+function annModeWant() { return annRecOn ? "2" : annOn ? "1" : "0"; }
 function annModeSync() {
   const cur = fused.params.get("annmode");
   const want = annModeWant();
@@ -7669,27 +7648,22 @@ function annModeSync() {
   if (curOn !== annOn || (annOn && cur !== want)) fused.params.set("annmode", want);
 }
 // The boot default, and the hosted re-arm when a target appears: OFF unless
-// the URL says otherwise — reading the pane is the common case and an armed
-// layer swallows the clicks that reading needs. "2" re-opens the microphone:
-// the recording a reload cut off is kept (pagehide stops it), and a fresh one
-// begins in its place rather than the mode quietly becoming Comment. A mic
-// that refuses on this boot leaves the mode OFF, not Comment, for the same
-// reason.
+// the URL says "1" — reading the pane is the common case and an armed layer
+// swallows the clicks that reading needs.
+//
+// "2" — the page was reloaded MID-WALKTHROUGH — ends the mode, not "becomes
+// Comment" (Akshil, 2026-09-07). A walkthrough cannot survive a reload: the
+// recording handle, the marks it stamped (annRecIds) and its clock live in
+// this page's memory, the app's recorder offers no way to re-adopt a capture
+// that is still running, and a mic opened from a boot rather than a click is
+// exactly the start that races the hosted pane's arrival (the clock became
+// Done and both seats sat dimmed). pagehide already STOPPED the recording and
+// KEPT the file (<home>/recordings), so nothing spoken is lost — it is a
+// download-manager row, not a note — and the round's typed notes still ride
+// `annotations`. So: disarm, and let the URL say so.
 function annBootMode() {
   const m = fused.params.get("annmode");
-  if (m === "2" && !annRecOn) annRecWant = true;
-  annSetMode(m === "1" || m === "2");
-  annResumeRec();
-}
-// The promise kept: start the resumed walkthrough once there is a target to
-// record against. The boot often runs before the hosted pane has arrived
-// (annCapable is false, annRecBegin would refuse), and the pane can already
-// be there by the first poll — so annPollTarget asks this on every tick while
-// the promise stands, and it is a no-op the moment the mic has answered.
-function annResumeRec() {
-  if (annRecWant && annOn && !annRecOn && !annRecStarting && annCapable()) {
-    annRecBegin({ resume: true });
-  }
+  annSetMode(m === "1");
 }
 annBootMode();
 
@@ -7764,8 +7738,7 @@ function annWarmTranscriber() {
   }
 })();
 
-async function annRecBegin(opts) {
-  const resume = !!(opts && opts.resume);
+async function annRecBegin() {
   // `.busy` too (Bugbot, PR #1022): through Stopping…/Transcribing… the mic
   // seat is drawn inert, and a keyboard press must not start a second
   // walkthrough on the epoch the in-flight annRecEnd is about to disarm.
@@ -7796,12 +7769,7 @@ async function annRecBegin(opts) {
     rec = await fused.capture.audio({ title: "Spoken walkthrough" });
   } catch (err) {
     annRecStarting = false;
-    annRecWant = false;
     annRecBtn.disabled = false;
-    // A resumed walkthrough (annBootMode) that the mic refuses is not the
-    // reader's click: no alert, and the mode goes OFF rather than staying
-    // armed as a Comment round nobody asked for.
-    if (resume) { annSetMode(false); return; }
     // Nothing appended: `unavailable` carries the machine's own sentence
     // (System Settings, or a browser that can), and the fixed "allow
     // microphone access" line this used to add was wrong for half of them.
@@ -7809,7 +7777,6 @@ async function annRecBegin(opts) {
     return;
   }
   annRecStarting = false;
-  annRecWant = false;
   annRecBtn.disabled = false;
   // Recording needs the same click handler the manual mode uses, just pointed
   // the other way (annWireTarget's branch below) — arm it if the reader went
@@ -8379,7 +8346,6 @@ function annPollTarget() {
   // poll and no need for one — enterNoPane removes both buttons outright, which
   // is the structural version of this line.
   for (const b of shotBtns()) b.hidden = !has;
-  if (has) annResumeRec();   // a "2" boot still waiting on its target (annBootMode)
   if (has === had) {
     // Same ANSWER, different FRAME: the shell switched the pane's mode between
     // two iframes it keeps mounted and moved the mark from one to the other.

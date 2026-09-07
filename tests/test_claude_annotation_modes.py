@@ -150,7 +150,7 @@ def test_the_tool_picker_follows_the_mode(html):
     assert "if (!annOn || annXO) annToolHide();" in mode
     assert "else annToolShow();" in mode
     # arming by mic keeps the picker up too — and cancels a pending exit glide
-    begin = _block(html, "async function annRecBegin(opts)", "\n}\n")
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert "annToolShow();" in begin
     # stopping a walkthrough does NOT hide the picker by hand: the disarm at
     # the end goes through annSetMode, which owns the hide — and the selected
@@ -317,14 +317,13 @@ def test_the_other_two_seats_are_inert_while_a_mode_is_on(html):
     assert ("() => (annRecOn ? null : annOn ? annDone() : annSetMode(true)));") in html
     assert ("() => (annRecOn ? annRecEnd() : annOn ? null : annRecBegin()));") in html
     assert ("#anncta:has(#annbtn.on) #viewshot,\n"
-            "  #anncta:not(.busy):not(.resuming):has(#annbtn.on):not(:has(#annrec.on)) #annrec,\n"
-            "  #anncta:has(#annrec.on) #annbtn,\n"
-            "  #anncta.resuming #annbtn { opacity: .55; cursor: default; pointer-events: none; }") in html
+            "  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annrec,\n"
+            "  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }") in html
     shot = _block(html, "async function shotAttachPane()", "\n}\n")
     assert "if (shotBusy || annOn || !annCapable()) return;" in shot
     # Bugbot, PR #1022: the mic refuses the settle too, the resting Comment
     # seat is not named "Stop", and aria-disabled follows the dimming
-    begin = _block(html, "async function annRecBegin(opts)", "\n}\n")
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert 'if (annRecOn || annCta.classList.contains("busy") || !annCapable()) return;' in begin
     assert 'annBtn.setAttribute("aria-label", "Stop the recording");' not in html
     aria = _block(html, "function annSeatsAria()", "\n}\n")
@@ -448,7 +447,7 @@ def test_the_live_recording_is_never_announced_as_done(html):
     """annSetMode(true) names the mic seat Done (annRecOn is still false when
     annRecBegin arms the mode), so the recording writers must claim the
     aria-label too, not just the tooltip (Bugbot, PR #664)."""
-    begin = _block(html, "async function annRecBegin(opts)", "\n}\n")
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert 'annRecBtn.setAttribute("aria-label", "Stop the recording");' in begin
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert "annRecIdleName();" in end   # the idle name comes back when the settle ends
@@ -693,7 +692,7 @@ def test_the_walkthrough_records_through_fused_capture(html):
     the file and NAMES IT before the first sample, so the stop hands
     `fused.ai.transcribe({path})` a path instead of this page uploading a blob
     it had to guess a container for."""
-    begin = _block(html, "async function annRecBegin(opts)", "\n}\n")
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert "await fused.capture.audio(" in begin
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert "const out = await handle.stop()" in end
@@ -715,7 +714,7 @@ def test_the_walkthrough_names_no_path_of_its_own(html):
     fragmented mp4 or WebM where the browser encodes — and a caller `path`
     whose extension contradicts it is refused, so the default timestamped name
     under <home>/recordings is the only portable ask."""
-    begin = _block(html, "async function annRecBegin(opts)", "\n}\n")
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
     call = begin[begin.index("fused.capture.audio("):]
     call = call[:call.index(")")]
     assert "path" not in call, call
@@ -749,7 +748,7 @@ def test_the_teardown_ends_the_recording_without_transcribing(html):
 def test_the_recorder_warms_the_transcriber_at_start(html):
     """The load runs while the reader is still talking — the dead time it
     fits in — instead of the words waiting on a cold model at stop."""
-    rec = _block(html, "async function annRecBegin(opts)", "\n}\n")
+    rec = _block(html, "async function annRecBegin()", "\n}\n")
     assert "annWarmTranscriber();" in rec
 
 
@@ -1070,7 +1069,7 @@ def test_a_mode_locks_the_reader_on_this_chat(html):
     # Esc during a settle that never answers must not hold the reader here:
     # every disarm drops the settle's claim, and every settle raises it
     mode = _block(html, "function annSetMode(on)", "\n}\n")
-    assert "if (!on) { annRecWant = false; annBusyHold = false; }" in mode
+    assert "if (!on) annBusyHold = false;" in mode
     assert mode.index("annBusyHold = false;") < mode.index("if (!annCapable()) {")
     assert html.count('annCta.classList.add("busy");\n  annBusyHold = true;') == 3
     lock = _block(html, "function annNavLock()", "\n}\n")
@@ -1101,40 +1100,25 @@ def test_annmode_names_which_mode_so_a_reload_keeps_the_walkthrough(html):
     `annmode` said only "on". Now "1" is Comment and "2" a recording — written
     by both arms through one sync, read by one boot — and a mic that refuses
     on that boot leaves the mode OFF rather than quietly Comment."""
-    assert 'function annModeWant() { return (annRecOn || annRecWant) ? "2" : annOn ? "1" : "0"; }' in html
+    assert 'function annModeWant() { return annRecOn ? "2" : annOn ? "1" : "0"; }' in html
     mode = _block(html, "function annSetMode(on)", "\n}\n")
     assert "annModeSync();" in mode
     assert 'fused.params.set("annmode"' not in mode
     boot = _block(html, "function annBootMode()", "\n}\n")
-    assert 'annSetMode(m === "1" || m === "2");' in boot
-    begin = _block(html, "async function annRecBegin(opts)", "\n}\n")
-    assert 'if (m === "2" && !annRecOn) annRecWant = true;' in boot
-    assert "annResumeRec();" in boot
-    resume = _block(html, "function annResumeRec()", "\n}\n")
-    assert "if (annRecWant && annOn && !annRecOn && !annRecStarting && annCapable()) {" in resume
-    # the hosted pane usually arrives AFTER the boot: every poll re-asks
-    poll = _block(html, "function annPollTarget()", "\n}\n")
-    assert "if (has) annResumeRec();" in poll
-    # the boot's promise outlives annSetMode(true) — which runs with annRecOn
-    # still false — and is withdrawn by any disarm or by the mic's answer
-    mode = _block(html, "function annSetMode(on)", "\n}\n")
-    assert "if (!on) { annRecWant = false; annBusyHold = false; }" in mode
-    assert begin.count("annRecWant = false;") == 2
+    # a "2" boot — a reload mid-walkthrough — ENDS the mode (Akshil, 2026-09-07):
+    # the handle, marks and clock were this page's memory, pagehide kept the
+    # audio file, and a mic opened from a boot raced the pane's arrival
+    assert 'annSetMode(m === "1");' in boot
+    assert "annRecBegin" not in boot
+    for gone in ("annRecWant", "annResumeRec", ".resuming"):
+        assert gone not in html, gone
+    assert html.count("annBootMode();") == 2   # the boot default and the hosted re-arm
+    assert 'annSetMode(fused.params.get("annmode") === "1")' not in html
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert begin.index("annRecOn = true;") < begin.index("annModeSync();")
     # one start request at a time, for programmatic callers too — and the flag
     # is initialised before the boot that reads it (a TDZ here killed the script)
     assert "if (annRecStarting) return;" in begin
-    assert html.index("let annRecWant = false;") < html.index("let annRecStarting = false;") \
-        < html.index("\nannBootMode();\n")
-    assert html.count("annBootMode();") == 2   # the boot default and the hosted re-arm
-    assert 'annSetMode(fused.params.get("annmode") === "1")' not in html
-    assert begin.index("annRecOn = true;") < begin.index("annModeSync();")
-    assert "if (resume) { annSetMode(false); return; }" in begin
-    # while the mic re-opens the ANNOTATE seat reads active, not Comment
-    lock = _block(html, "function annNavLock()", "\n}\n")
-    assert 'annCta.classList.toggle("resuming", annRecWant && !annRecOn);' in lock
-    assert "#anncta.resuming #annrec { color: var(--accent); border-color: var(--accent); }" in html
-    # the inert-seat rule must not dim the seat that is resuming, and Comment
-    # is inert meanwhile (its click is Done) — Bugbot, PR #1046
-    assert "#anncta:not(.busy):not(.resuming):has(#annbtn.on):not(:has(#annrec.on)) #annrec," in html
-    assert "#anncta.resuming #annbtn { opacity: .55; cursor: default; pointer-events: none; }" in html
-    assert "#anncta.resuming #annbtn.on { color: var(--dim); border-color: var(--border); }" in html
+    assert html.index("let annRecStarting = false;") < html.index("\nannBootMode();\n")
+    mode = _block(html, "function annSetMode(on)", "\n}\n")
+    assert "if (!on) annBusyHold = false;" in mode
