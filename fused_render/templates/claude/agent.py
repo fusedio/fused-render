@@ -3602,6 +3602,41 @@ def _starts_new_turn(row: dict) -> bool:
                for item in content)
 
 
+def _turn_boundary_step(seen_result: bool, row: dict) -> tuple:
+    """One row's effect on "is the main exchange still open", the ONE answer
+    both `_read_current_turn` (over the live `out.jsonl` stream) and
+    `_history` (over the CLI's own persisted transcript) need — both files
+    carry the same `type`/`parent_tool_use_id` shape for the rows this
+    decides on, so one function settles it for both instead of two readings
+    of "where does a turn start" quietly drifting apart (which is how the
+    defect this fixes was born).
+
+    Returns `(seen_result, opens_new)`: the carried-forward `seen_result` a
+    caller threads into the next call, and whether THIS row is the CLI's own
+    proof that a fresh, user-authored turn just began.
+
+    A row carrying `parent_tool_use_id` is a subagent's — spawned by a
+    Task/Agent tool call, not typed by the user — so neither its `result`
+    (that sub-conversation's own close) nor anything else about it may close
+    or reopen the MAIN exchange; `seen_result` passes through untouched and
+    it never opens anything.
+
+    Otherwise: a `result` row sets `seen_result` (the exchange most recently
+    closed here). Once `seen_result` is true, the newest `_starts_new_turn`
+    row proves a fresh exchange has begun — folding a follow-up into a turn
+    still streaming (`_send`) echoes back in the exact same shape but with no
+    `result` in between, so `_starts_new_turn` alone, without `seen_result`
+    already true, must NOT open a new exchange: that would be the follow-up
+    itself, not a new one."""
+    if row.get("parent_tool_use_id"):
+        return seen_result, False
+    if row.get("type") == "result":
+        return True, False
+    if seen_result and _starts_new_turn(row):
+        return False, True
+    return seen_result, False
+
+
 def _read_current_turn(run_dir: str) -> tuple:
     """(rows, cursor) — the parsed rows of `out.jsonl` from the last proven-safe
     offset onward, and the offset `_poll` should persist for next time.
@@ -3721,20 +3756,16 @@ def _read_current_turn(run_dir: str) -> tuple:
             line_start = pos
             continue  # a stray blank/garbage line; not this poll's problem
         rows.append(row)
-        # A subagent's own `result` row is not the main turn's — `_poll` and
-        # `_turn_state` both skip it before deciding anything off `type`, and
-        # this cursor needs to agree: otherwise a follow-up echoed back after
-        # a subagent finishes reads as a genuine turn boundary (the row right
-        # before it looks like the "result closed the previous turn" this
-        # rule requires), and the cursor jumps past text the main turn has
-        # already streamed.
-        if row.get("parent_tool_use_id"):
-            pass
-        elif row.get("type") == "result":
-            seen_result = True
-        elif seen_result and _starts_new_turn(row):
+        # `_turn_boundary_step` is what makes a subagent's own `result` row
+        # not the main turn's — `_poll` and `_turn_state` both skip it before
+        # deciding anything off `type`, and this cursor needs to agree:
+        # otherwise a follow-up echoed back after a subagent finishes reads
+        # as a genuine turn boundary (the row right before it looks like the
+        # "result closed the previous turn" this rule requires), and the
+        # cursor jumps past text the main turn has already streamed.
+        seen_result, opens_new = _turn_boundary_step(seen_result, row)
+        if opens_new:
             advance_to = line_start  # the newest genuine turn's own start
-            seen_result = False      # this turn needs its own result too
         line_start = pos
 
     if tail:
