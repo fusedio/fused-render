@@ -1137,10 +1137,28 @@ def _restore_scope_from(root, spec, sha, *, allow_empty_target=False):
         # index"). Forcing is safe here specifically because every caller
         # already holds `_require_clean`'s guarantee that nothing OUTSIDE
         # this function's own writes is being discarded.
+        #
+        # ROUND 5, ITEM C: "safe" above assumes a `checkout sha -- spec`
+        # just ran to put a REPLACEMENT in every extra's place — true
+        # whenever `sha_paths` is non-empty. When `sha_paths` is EMPTY
+        # (only reachable with `allow_empty_target`, i.e. this is the
+        # recovery re-entry and `HEAD` itself holds nothing under `spec` —
+        # a gitignored app folder), there is no checkout, no replacement,
+        # and every "extra" is everything currently tracked here. A plain
+        # `git rm -f` deletes those from the WORKING TREE too, so the
+        # recovery — reached because an unrelated commit failure needed
+        # undoing — would delete the user's files with nothing to put back
+        # in their place: the exact destructive class `allow_empty_target`
+        # was added to close, relocated to this branch instead. `--cached`
+        # untracks without touching disk; `_require_clean` still sees a
+        # clean tree afterward either way, since a gitignored path never
+        # shows in `status --porcelain` whether it is tracked or not.
         extras = _tracked_paths(root, spec) - sha_paths
         if extras:
-            _git_ok(root, "rm", "-r", "-f", "-q", "--ignore-unmatch",
-                    *_spec(sorted(extras)))
+            rm_args = ["rm", "-r", "-f", "-q", "--ignore-unmatch"]
+            if not sha_paths:
+                rm_args.append("--cached")
+            _git_ok(root, *rm_args, *_spec(sorted(extras)))
     except _Refused as exc:
         if sha == "HEAD":
             raise

@@ -1212,6 +1212,53 @@ def test_app_restore_recovery_removes_a_gitignored_app_folder_HEAD_never_tracked
     assert git(root, "ls-files", "app").strip() == ""
 
 
+def test_app_restore_recovery_never_deletes_a_gitignored_app_folder_from_disk(
+        ops, app_repo_gitignored):
+    """ROUND 5, ITEM C: the test above (`..._removes_a_gitignored_app_folder_
+    HEAD_never_tracked`) only checks the INDEX (`ls-files`) and `status
+    --porcelain` — both of which read the same whether the recovery
+    untracked the app folder or deleted it outright, because ignored files
+    never show up in either. It is blind to what actually happened on DISK.
+
+    `allow_empty_target=True` (round 4) makes the recovery skip the refusal
+    and fall straight through to `git rm -r -f` of every extra path — and
+    since `HEAD` holds nothing under a gitignored scope, EVERY currently
+    tracked path (the checkout of `old_sha` staged, right before the commit
+    that was rejected) is an "extra". `-f` with no `--cached` removes the
+    WORKING TREE copy too: the app folder is deleted from disk, not merely
+    untracked. Before round 4 this same failure left the checked-out
+    content sitting there uncommitted (recoverable by hand); round 4 turned
+    that into an unrecoverable delete — the exact destructive class it was
+    trying to close, just moved to a different trigger.
+
+    The fix: a removal with no replacement being checked out (`sha_paths`
+    empty) must only ever untrack (`--cached`), never touch the working
+    tree — `_require_clean` still sees a clean repo afterward (ignored
+    files don't show in `status --porcelain` either way), but the user's
+    files survive.
+    """
+    root, old_sha = app_repo_gitignored
+    _install_rejecting_hook(root, "pre-commit")
+    assert os.path.exists(_app_file(root))
+    with open(_app_file(root), encoding="utf-8") as fh:
+        before = fh.read()
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+
+    assert got["ok"] is False, got
+    # THE non-skippable assertion: the app folder's files are still on disk
+    # afterward — a failed restore/recovery must never make the folder
+    # DISAPPEAR, whatever it does to git's own bookkeeping of it.
+    assert os.path.exists(os.path.join(root, "app")), (
+        "the app folder must survive a failed restore's recovery, even "
+        "when HEAD's own tree holds nothing under it")
+    assert os.path.exists(_app_file(root)), (
+        "app/main.py must survive — it must never be deleted from disk "
+        "just because there is no HEAD version to check out in its place")
+    with open(_app_file(root), encoding="utf-8") as fh:
+        assert fh.read() == before
+
+
 def _app_repo_with_gap(root):
     """A history where the app folder EXISTS, then is DELETED, then is
     RE-ADDED — so a scoped `git log` on the app folder shows all three
