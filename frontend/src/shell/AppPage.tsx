@@ -286,8 +286,9 @@ export default function AppPage({
   const [iconAnchor, setIconAnchor] = useState<{ top: number; left: number } | null>(
     null,
   );
+  // The picker decides when it closes (a shuffle leaves it open), so this only
+  // writes.
   const onPickIcon = async (pick: IconPick | null) => {
-    setIconAnchor(null);
     try {
       await applyIconPick(dir, pick);
     } catch (e) {
