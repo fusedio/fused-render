@@ -604,15 +604,42 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> bool:
     if job_id in _mirrored_terminal:
         return False
     running = bool(run.get("running"))
+    # An ESTIMATE for a rescan's denominator: the file count `partitions.json`
+    # recorded as of the LAST completed scan — the same fold `/api/index/status`
+    # already reads (`read_manifest(cfg)["rows"]`), so this costs nothing beyond
+    # the one JSON read that endpoint already does per request; no duckdb query
+    # is added to the tick. A first-ever scan has no such file (`read_manifest`
+    # returns None) and stays `total: None` — the correct indeterminate sweep
+    # (jobs.ts `jobFraction`/`StatusChip`) rather than a fake number invented to
+    # fill a bar. `cfg` is best-effort here (a caller can hand this a stub, as
+    # every non-estimate test in test_index_jobs.py does): a bad or absent
+    # manifest just means no estimate, not a broken tick.
+    prev_total = None
+    if running:
+        try:
+            manifest = read_manifest(cfg)
+        except Exception:
+            manifest = None
+        prev_rows = int((manifest or {}).get("rows") or 0)
+        if prev_rows > 0:
+            prev_total = float(prev_rows)
+    root_display = _display_root(str(root))
     fields = {
         "title": "Indexing files",
-        "detail": _display_root(str(root)),
+        # "(estimated)" only when `total` is actually set below — a tree that
+        # grew since the last scan means `done` can pass `total` before the
+        # walk finishes (jobs.ts `jobFraction` clamps the bar at 1.0 rather
+        # than render past full or backwards), so the row has to say the
+        # denominator is a guess, not a promise. No number lives in this
+        # string — the count itself is rendered client-side by `jobAmount`
+        # (`total_scope`, the wire field that marks a DIFFERENT kind of
+        # approximation for model downloads, `shared/modelSize.ts`, has
+        # nothing to do with this case and was left alone) so it always comes
+        # out in the *viewer's* locale, never this server's.
+        "detail": f"{root_display} (estimated)" if prev_total is not None else root_display,
         "kind": "task",
-        # No known total for a scan — `total: None` renders as the correct
-        # indeterminate sweep (jobs.ts `jobFraction`/`StatusChip`), not a
-        # fake number invented to fill a bar.
         "done": float(run.get("files") or 0),
-        "total": None,
+        "total": prev_total,
         "unit": "files",
         # The run's phase, verbatim — this covers compaction too, which has
         # no structured flag of its own and appears only as this same text

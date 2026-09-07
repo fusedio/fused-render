@@ -299,11 +299,23 @@ export function jobAmount(job: Job): string {
       ? clock(done)
       : `${clock(done)} / ${clock(total)}`;
   }
+  // Any other unit is a plain COUNT: locale thousands separators (never a
+  // hard-coded comma — `toLocaleString()` is the one formatter in this file
+  // that has to agree with the Preferences panel's own count, which renders
+  // in the browser's locale and so groups digits Indian-style, not
+  // Western-style, once the count passes a lakh) plus the unit word itself,
+  // e.g. "10,856 files" or "10,856 / 672,424 files". `unit: "files"`
+  // (index scans, D724) and `unit: "tokens"` (text generation,
+  // `ai/supervisor.py`'s `text_row_fields`) are the two real callers today;
+  // both used to fall through to a bare, unformatted number (the defect
+  // this branch fixes) and both read strictly better with a word attached.
   if (unit !== "bytes") {
     if (done === null) return "";
+    const count = (n: number) => Math.round(n).toLocaleString();
+    const suffix = unit ? ` ${unit}` : "";
     return total === null || total <= 0
-      ? String(Math.round(done))
-      : `${Math.round(done)} / ${Math.round(total)}`;
+      ? `${count(done)}${suffix}`
+      : `${count(done)} / ${count(total)}${suffix}`;
   }
   const scale = byteScale(Math.max(done ?? 0, total ?? 0));
   if (total === null || total <= 0) {
@@ -355,7 +367,18 @@ export function jobStatusLine(job: Job): string {
   // had something true to say. The last-resort fallback belongs at the call
   // site instead, once status AND amount are both known to be empty
   // (DownloadManager.tsx's `statusLine`, `repoStatusText`'s job branch).
-  return job.detail || "";
+  //
+  // `message` joins `detail` here (was `detail` alone) because a reporter's
+  // PHASE — a fact distinct from `detail`'s "where"/"what" — has always
+  // lived in `message` for a running job (`_report`'s error/waiting-only
+  // convention meant it was simply never populated while running, until the
+  // index-scan bridge started putting its run's phase there — "writing
+  // index" / "writing signatures", D724 — with no code path that ever
+  // rendered it: `message` was read only for `error`/`waiting` above). Every
+  // other reporter still sends `message: ""` while running (or nothing at
+  // all), so this is additive for them — `[]` still degrades to `detail`
+  // alone.
+  return [job.message, job.detail].filter(Boolean).join(" · ");
 }
 
 /** A COARSE duration, in the largest unit that still says something true:

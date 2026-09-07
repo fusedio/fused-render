@@ -9,9 +9,13 @@ and writes one `jobs.upsert(..., server=True)` per active/just-finished run.
 
 See DECISIONS.md D724+.
 """
+import json
+import os
+
 import pytest
 
 from fused_render import jobs
+from fused_render.index.config import IndexConfig
 from fused_render.server.routers import index as index_router
 
 
@@ -36,11 +40,11 @@ def _run(run_id, root="/Users/tester/docs", **over):
     return base
 
 
-def _tick(monkeypatch, runs):
+def _tick(monkeypatch, runs, cfg=None):
     monkeypatch.setattr(
         index_router.runner, "list_runs",
         lambda cfg, limit=20: {"runs": runs})
-    index_router.mirror_index_jobs_once(cfg=object())
+    index_router.mirror_index_jobs_once(cfg=cfg if cfg is not None else object())
 
 
 def test_active_run_creates_an_indeterminate_job_keyed_by_run_id(monkeypatch):
@@ -261,3 +265,62 @@ def test_run_startup_scan_wakes_the_bridge_on_a_started_run(monkeypatch):
     assert not index_router._index_job_wake.is_set()
     index_router.run_startup_scan()
     assert index_router._index_job_wake.is_set()
+
+
+# ------------------------------------------------- estimated total (rescan)
+
+def test_no_prior_manifest_leaves_total_none(monkeypatch, tmp_path):
+    """A first-ever scan: `partitions.json` does not exist yet, so there is
+    no honest denominator — `total` stays the indeterminate `None`, not a
+    guess."""
+    cfg = IndexConfig(dir=str(tmp_path))
+    _tick(monkeypatch, [_run("r1", files=10856)], cfg=cfg)
+    row = jobs.list_jobs()[0]
+    assert row["total"] is None
+    assert "(estimated)" not in row["detail"]
+
+
+def test_a_prior_manifests_row_count_becomes_the_estimated_total(
+        monkeypatch, tmp_path):
+    """A rescan: the last completed scan's row count (the same
+    `partitions.json` field `/api/index/status` already reads as
+    `files_indexed`) becomes the bar's denominator, and the row says so is a
+    guess rather than a promise."""
+    cfg = IndexConfig(dir=str(tmp_path))
+    os.makedirs(cfg.dir, exist_ok=True)
+    with open(cfg.partitions_json, "w") as f:
+        json.dump({"rows": 672424, "updated": 0}, f)
+    _tick(monkeypatch, [_run("r1", files=10856)], cfg=cfg)
+    row = jobs.list_jobs()[0]
+    assert row["total"] == 672424.0
+    assert "(estimated)" in row["detail"]
+
+
+def test_a_prior_manifest_with_zero_rows_leaves_total_none(monkeypatch, tmp_path):
+    """`rows: 0` is not a usable estimate (an empty prior scan says nothing
+    about how big this one will be) — treated the same as no manifest at
+    all."""
+    cfg = IndexConfig(dir=str(tmp_path))
+    os.makedirs(cfg.dir, exist_ok=True)
+    with open(cfg.partitions_json, "w") as f:
+        json.dump({"rows": 0, "updated": 0}, f)
+    _tick(monkeypatch, [_run("r1", files=5)], cfg=cfg)
+    row = jobs.list_jobs()[0]
+    assert row["total"] is None
+
+
+def test_a_grown_tree_does_not_stop_the_estimate_from_being_offered(
+        monkeypatch, tmp_path):
+    """`done` (this scan's live count) already exceeds the prior scan's
+    count when the tree has grown — the bridge still reports the honest
+    numbers; clamping the displayed FRACTION is jobs.ts `jobFraction`'s job
+    (it already clamps `done / total` to 1.0 for every job kind), not
+    something the bridge should hide by lying about `total`."""
+    cfg = IndexConfig(dir=str(tmp_path))
+    os.makedirs(cfg.dir, exist_ok=True)
+    with open(cfg.partitions_json, "w") as f:
+        json.dump({"rows": 100, "updated": 0}, f)
+    _tick(monkeypatch, [_run("r1", files=150)], cfg=cfg)
+    row = jobs.list_jobs()[0]
+    assert row["total"] == 100.0
+    assert row["done"] == 150.0
