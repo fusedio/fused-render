@@ -506,7 +506,6 @@ export default function BookmarksSection() {
   // nowhere to live here.
   const onPickIcon = async (pick: IconPick | null) => {
     const target = iconPicker;
-    setIconPicker(null);
     if (target) {
       await setBookmarkIcon(target.id, pick && pick.kind === "emoji" ? pick.emoji : null);
       notifyBookmarksChanged();
