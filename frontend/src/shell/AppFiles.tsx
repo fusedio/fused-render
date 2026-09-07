@@ -267,9 +267,20 @@ export default function AppFiles({
   // column: there is nothing useful to show in either half while the commit
   // itself never resolved.
   if (snapshot.error) {
+    // Wrapped in the same `.app-files-view` / `.app-files-stage` nesting the
+    // ordinary `stat.kind === "error"` branch below renders its own
+    // `ErrorBanner` inside (`.app-files-stage > .error-banner` is what gives
+    // it its 16px margin) — a bare `SnapshotError` directly under
+    // `.app-files` was a flex item of a `display: flex; align-items:
+    // stretch` row and so stretched to the tab's full height while hugging
+    // its own content width (code review finding 2).
     return (
       <div className="app-files">
-        <SnapshotError onRetry={snapshot.retry} />
+        <section className="app-files-view">
+          <div className="app-files-stage">
+            <SnapshotError onRetry={snapshot.retry} />
+          </div>
+        </section>
       </div>
     );
   }
