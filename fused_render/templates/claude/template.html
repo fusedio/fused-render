@@ -1217,9 +1217,6 @@
     font-size: 13px; line-height: 1.45; color: var(--fg); overflow-y: auto;
   }
   .erasedlg-body p { margin: 0; }
-  .erasedlg-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                   color: var(--dim); word-break: break-all; }
-  .erasedlg-path[hidden] { display: none; }
   .erasedlg-err {
     color: var(--error); border: 1px solid var(--error); border-radius: 6px;
     background: color-mix(in srgb, var(--error) 7%, transparent);
@@ -4430,10 +4427,9 @@
         <button id="erasedlg-x" type="button" class="erasedlg-x" aria-label="Close" title="Close">✕</button>
       </div>
       <div class="erasedlg-body">
-        <p>This deletes the Claude session behind this task — its transcript,
-           history and any pending runs.</p>
+        <p>This deletes the Claude session behind this task — its transcript and
+           its history.</p>
         <p><strong>This is permanent and cannot be undone.</strong></p>
-        <p class="erasedlg-path" id="erasedlg-path" hidden></p>
         <p class="erasedlg-err" id="erasedlg-err" hidden role="alert"></p>
       </div>
       <div class="erasedlg-bar">
@@ -13260,7 +13256,6 @@ const eraseErr = document.getElementById("erasedlg-err");
 const eraseGo = document.getElementById("erasedlg-go");
 const eraseCancel = document.getElementById("erasedlg-cancel");
 const eraseX = document.getElementById("erasedlg-x");
-const erasePath = document.getElementById("erasedlg-path");
 /** The session the open dialog is ABOUT, captured at open time: `eraseKey`
  *  tracks the URL and the reader can walk away (Back, a recent chat) with the
  *  confirm still up — a POST must never be aimed at whatever the page moved on
@@ -13278,11 +13273,6 @@ function eraseOpen() {
   // confirm is a fact the reader cannot check anything against.
   const num = taskIds.get(eraseAsked) || "";
   eraseTitle.textContent = num ? "Delete " + num + "?" : "Delete this task?";
-  // The same line the Tasks page's dialog draws (shell/EraseTaskModal
-  // transcriptPath): the project slug is the server's encoding of the folder,
-  // so the middle is elided rather than guessed.
-  erasePath.textContent = "~/.claude/projects/\u2026/" + eraseAsked + ".jsonl";
-  erasePath.hidden = false;
   eraseErr.hidden = true;
   eraseErr.textContent = "";
   eraseGo.textContent = "Delete forever";

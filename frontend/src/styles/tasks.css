@@ -726,6 +726,11 @@ button.tasks-caret,
      leaves the box it paints alone, the same trick every other mark on this row
      uses. */
   margin-block: -3px;
+  /* …and CENTRED on the line, not flex-start (Akshil, 2026-09-07: "make sure
+     everything in the row is center aligned"): with the negative margins the
+     pill's ink is 13px in a 16px+ line, and started at the top of it, so its
+     word sat a hair above the row's other words ("Folder missing", the time). */
+  align-self: center;
   /* ABOVE THE STRETCHED ROW LINK, like the caret and the hover actions — and
      for the reason those two carry the same pair. `.tasks-rowlink` is an
      absolutely positioned <a> over the whole row at `z-index: 1`, so a control
@@ -984,20 +989,9 @@ button.tasks-caret,
 /* The trash stands CLOSE to the sentence it is about (Akshil, 2026-09-07:
    "a bit closer to the error message"): the row's gap is for separating facts,
    and these two are one fact. Pulls the sentence back to 4px behind the glyph
-   on the List row; the Board foot's gap is 8px, so the same 4px there. */
+   on the List row. */
 .tasks-act--delete + .tasks-row-missing {
   margin-left: calc(4px - var(--tasks-row-gap));
-}
-.schedule-tv-card-foot .tasks-act--delete + .tasks-row-missing {
-  margin-left: -4px;
-}
-
-/* The Board card reveals it the way the List row does — on the card's hover or
-   focus — since the card is the surface a pointer rests on, not a row. */
-.schedule-tv-card:hover .tasks-act--delete,
-.schedule-tv-card:focus-visible .tasks-act--delete {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .tasks-act--delete:hover:not(:disabled),

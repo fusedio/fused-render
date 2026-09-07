@@ -527,3 +527,11 @@
   font-size: 12px;
   color: var(--fg-muted);
 }
+
+/* The popup head's delete door: the head's own .btn skin at rest, Cancel's red
+   under the pointer — the same escalation the card strip's trash door makes. */
+.modal-head-actions > .modal-head-act--danger:hover:not(:disabled),
+.modal-head-actions > .modal-head-act--danger:focus-visible:not(:disabled) {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 40%, transparent);
+}

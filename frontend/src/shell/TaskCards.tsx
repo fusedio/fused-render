@@ -547,24 +547,12 @@ function TaskCard({
             a folder that opens, and a folder that is not gone has none). */}
         {(filing || explorer || gone) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
-          {filing && (
-            <button
-              type="button"
-              className="task-card-door"
-              disabled={acting}
-              data-hint={note || filing.label}
-              aria-label={filing.label}
-              onClick={refile}
-            >
-              {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
-            </button>
-          )}
           {/* Delete for good — ONLY on a card whose folder is gone (Akshil,
               2026-09-07: "should only show up if it has a folder missing
               error"): a task that can still be opened is archived, not
               deleted, and a trash on every card read as an invitation. It
-              sits BEFORE the folder door, which on such a card is the disabled
-              one, so the way out stands next to the door that is shut. */}
+              sits LEFT of Archive (Akshil, 2026-09-07), first in the strip,
+              on every surface that has the strip: card, Board, popup. */}
           {gone && (
 <button
             type="button"
@@ -580,6 +568,18 @@ function TaskCard({
           >
             {ICON_TRASH}
           </button>
+          )}
+          {filing && (
+            <button
+              type="button"
+              className="task-card-door"
+              disabled={acting}
+              data-hint={note || filing.label}
+              aria-label={filing.label}
+              onClick={refile}
+            >
+              {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
+            </button>
           )}
           {explorer && (
             <a
@@ -695,6 +695,7 @@ function TaskPeek({
   const filing = filingIntent(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
+  const [erasing, setErasing] = useState(false);
 
   // ESCAPE FROM INSIDE THE FRAME. The chassis closes on Esc with a listener on
   // THIS document, and the frame is the dialog's first focusable, so the focus
@@ -749,6 +750,19 @@ function TaskPeek({
   };
 
   return (
+    <>
+      {erasing && (
+        <EraseTaskModal
+          task={task}
+          onClose={() => setErasing(false)}
+          onDone={() => {
+            setErasing(false);
+            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            onReload?.();
+            onClose();
+          }}
+        />
+      )}
     <Modal
       title={
         <span className="task-peek-title">
@@ -778,6 +792,20 @@ function TaskPeek({
       // (Akshil, 2026-09-05: "switch archive and open explorer buttons").
       headActions={
         <>
+          {/* Same door, same place as the card's strip: delete for good, only
+              when the folder is gone, LEFT of Archive (Akshil, 2026-09-07). */}
+          {gone && (
+            <button
+              type="button"
+              className="btn btn-secondary modal-head-act modal-head-act--danger"
+              disabled={acting}
+              title="Delete task forever"
+              onClick={() => setErasing(true)}
+            >
+              {ICON_TRASH}
+              Delete
+            </button>
+          )}
           {filing && (
             <button
               type="button"
@@ -851,6 +879,7 @@ function TaskPeek({
         </p>
       )}
     </Modal>
+    </>
   );
 }
 

@@ -21,18 +21,6 @@ import { eraseTask } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
 import { Modal } from "@platform/ui/modal/Modal";
 
-/** The transcript this task's session lives in, as much of it as the client can
- *  honestly name.
- *
- *  The project SLUG is the server's own encoding of the folder path, so the
- *  middle segment is elided rather than guessed — a path this dialog printed
- *  wrong would be worse than one it printed short. Empty while a task has never
- *  run (`session_id` is ""), and then no line is drawn at all: there is no file
- *  to name, and an ellipsis on its own says nothing. */
-export function transcriptPath(task: Pick<Task, "session_id">): string {
-  return task.session_id ? `~/.claude/projects/…/${task.session_id}.jsonl` : "";
-}
-
 export function EraseTaskModal({
   task,
   onClose,
@@ -54,7 +42,6 @@ export function EraseTaskModal({
   // press Cancel next. Verbatim, so the words the row's hint promises and the
   // words the refusal gives are the same words.
   const [err, setErr] = useState("");
-  const path = transcriptPath(task);
 
   const confirm = async () => {
     if (busy) return;
@@ -86,14 +73,13 @@ export function EraseTaskModal({
         </>
       }
     >
-      <p>
-        This deletes the Claude session behind this task — its transcript, history and any
-        pending runs.
-      </p>
+      {/* Two sentences and nothing else (Akshil, 2026-09-07): what goes, and
+          that it cannot come back. No path and no session id — a uuid is a
+          fact the reader cannot check anything against. */}
+      <p>This deletes the Claude session behind this task — its transcript and its history.</p>
       <p>
         <b>This is permanent and cannot be undone.</b>
       </p>
-      {path && <p className="cc-mono cc-unset">{path}</p>}
       {/* The app's own error card (fields.css `.deploy-error`), not a class of
           this component's own: the same shape every other modal's refusal
           wears, and `role="alert"` because it arrives without a press. */}

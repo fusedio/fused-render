@@ -3499,35 +3499,7 @@ function TaskCard({
             goes rather than leaving an empty row of padding. */}
         {(showProject || soon || folderMissing) && (
           <span className="schedule-tv-card-foot">
-            {/* The List row's own mark, same words, same colour (see the row) —
-                and the same trash in front of it. A SPAN with the button role,
-                because this foot is inside the card's <button> and a button
-                inside a button is not HTML; the press stops before the card's,
-                so it never also opens the thread. */}
-            {folderMissing && (
-              <span
-                role="button"
-                tabIndex={0}
-                className="tasks-act tasks-act--delete"
-                aria-label={`Delete ${task.task_id} forever`}
-                data-hint="Delete task forever"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setErasing(true);
-                }}
-                onKeyDown={(e) => {
-                  // A button's keyboard: Enter and Space press it, and the
-                  // press stops here so the card's own key handler does not
-                  // also open the thread (bugbot, PR #1049).
-                  if (e.key !== "Enter" && e.key !== " ") return;
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setErasing(true);
-                }}
-              >
-                {ICON_TRASH}
-              </span>
-            )}
+            {/* The List row's own mark, same words, same colour (see the row). */}
             {folderMissing && (
               <span
                 className="tasks-row-missing"
@@ -3585,8 +3557,24 @@ function TaskCard({
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
-      {(file || (SHOW_ROW_ACTIONS && run)) && (
+      {(file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
+          {/* DELETE FOR GOOD, only on a card whose folder is gone, and LEFT of
+              Archive (Akshil, 2026-09-07: a trash in the foot "looks odd here …
+              move the delete icon to the top right, leftside of archive"). Same
+              hover strip, same size, same silence at rest as its neighbours. */}
+          {folderMissing && (
+            <button
+              type="button"
+              className="tasks-act tasks-card-act tasks-act--delete"
+              aria-label={`Delete ${task.task_id} forever`}
+              data-hint="Delete task forever"
+              disabled={busy}
+              onClick={() => setErasing(true)}
+            >
+              {ICON_TRASH}
+            </button>
+          )}
           {SHOW_ROW_ACTIONS && run && (
             <button
               type="button"

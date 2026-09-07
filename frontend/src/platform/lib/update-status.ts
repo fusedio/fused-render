@@ -12,6 +12,7 @@ import { getConfig, type UpdateStatus } from "@platform/lib/api";
 
 const POLL_IDLE_MS = 60_000;
 const POLL_BUSY_MS = 2_000;
+const POLL_WARM_MS = 15_000;
 
 let current: UpdateStatus | null = null;
 const listeners = new Set<() => void>();
@@ -33,8 +34,19 @@ async function poll(): Promise<void> {
   } catch {
     // Server down — ServerStatusBanner owns that story; keep last state.
   }
-  const busy = next?.state === "installing";
-  timer = setTimeout(poll, busy ? POLL_BUSY_MS : POLL_IDLE_MS);
+  timer = setTimeout(poll, pollDelay(next));
+}
+
+// How long until the next look. Busy while an install runs; WARM while the
+// packaged app has an updater but it has not answered yet ("idle"/"checking":
+// the server's first manifest check lands ~10s after boot, and a 60s tick
+// after that left the badge up to a minute late); the slow idle tick otherwise
+// — including for an unpackaged dev run, where `update` is absent and there is
+// nothing to be quick about.
+export function pollDelay(status: UpdateStatus | null): number {
+  if (status?.state === "installing") return POLL_BUSY_MS;
+  if (status && (status.state === "idle" || status.state === "checking")) return POLL_WARM_MS;
+  return POLL_IDLE_MS;
 }
 
 // Re-arm the poll now — called after an install kicks off so
@@ -54,8 +66,7 @@ export function setUpdateStatus(next: UpdateStatus | null): void {
   // that ran before the install began.
   if (started) {
     clearTimeout(timer);
-    const busy = next?.state === "installing";
-    timer = setTimeout(poll, busy ? POLL_BUSY_MS : POLL_IDLE_MS);
+    timer = setTimeout(poll, pollDelay(next));
   }
 }
 

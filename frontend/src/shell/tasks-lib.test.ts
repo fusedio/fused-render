@@ -3798,7 +3798,7 @@ describe("the archive action", () => {
     // out on 2026-08-18 — see "the hidden row actions" — so the strip is drawn
     // whenever EITHER survives its own guard, and its one-pin arrangement is
     // what the flag has to come back to.
-    expect(card).toContain("{(file || (SHOW_ROW_ACTIONS && run)) && (");
+    expect(card).toContain("{(file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (");
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*display: flex/);
@@ -4047,40 +4047,45 @@ describe("the delete affordance", () => {
     expect(ROW.slice(at, ROW.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
   });
 
-  it("is a door only on a card whose folder is gone, before the folder door", () => {
+  it("is a door only on a card whose folder is gone, first in the strip, left of Archive", () => {
     const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
     const head = CARDS_SRC.slice(CARDS_SRC.indexOf("<header"), CARDS_SRC.indexOf("</header>"));
-    // GATED on `gone`, like the List row's trash is gated on folderMissing
-    // (Akshil, 2026-09-07): a task that still opens is archived, not deleted.
     const at = head.indexOf('className="task-card-door task-card-door--danger"');
     expect(at).toBeGreaterThan(0);
+    // GATED on `gone` (Akshil, 2026-09-07): a task that still opens is archived.
     expect(head.slice(head.indexOf("{/* Delete for good"), at)).toContain("{gone && (");
-    // The strip is drawn only when it has a door to hold.
     expect(head).toContain("{(filing || explorer || gone) && (");
-    // Archive, then trash, then the folder: the reversible doors keep the
-    // places a reader already learned.
-    expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_TRASH"));
-    expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_FOLDER"));
-    // The guard is the shared one, and a blocked door says why.
+    // Trash, then Archive, then the folder (Akshil: "left-side of the archive button").
+    expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_ARCHIVE"));
+    expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
     expect(CARDS_SRC).toContain("const blocked = eraseBlocked(task);");
     expect(head).toContain("disabled={blocked || acting}");
-    expect(head).toContain("data-hint={blocked ? ERASE_BLOCKED_HINT :");
-    // A press on a door never also opens the popup.
     expect(head.slice(at, head.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
+    // The popup's head has the same door in the same place: left of Archive.
+    const peek = CARDS_SRC.slice(CARDS_SRC.indexOf("function TaskPeek("));
+    const acts = peek.slice(peek.indexOf("headActions={"), peek.indexOf("initialFocus", peek.indexOf("headActions={")) || undefined);
+    expect(acts).toContain("modal-head-act--danger");
+    expect(acts.indexOf("{gone && (")).toBeLessThan(acts.indexOf("{filing && ("));
+    expect(acts.indexOf("ICON_TRASH")).toBeLessThan(acts.indexOf("ICON_ARCHIVE"));
+    expect(peek).toContain("<EraseTaskModal");
   });
 
-  it("is a prefix of the Board card's Folder missing too, and opens the same dialog", () => {
+  it("is in the Board card's hover strip, left of Archive, only when the folder is gone", () => {
     const VIEWS_SRC = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
-    const start = VIEWS_SRC.indexOf('<span className="schedule-tv-card-foot">');
-    const foot = VIEWS_SRC.slice(start, VIEWS_SRC.indexOf("</button>", start));
-    // Inside the card BUTTON, so a span with the button role, not a nested
-    // <button> (invalid HTML); its press stops before the card's own.
-    const at = foot.indexOf('className="tasks-act tasks-act--delete"');
+    const start = VIEWS_SRC.indexOf('<span className="tasks-card-acts">');
+    const strip = VIEWS_SRC.slice(start, VIEWS_SRC.indexOf("</span>", VIEWS_SRC.indexOf("ICON_UNARCHIVE", start)));
+    const at = strip.indexOf('className="tasks-act tasks-card-act tasks-act--delete"');
     expect(at).toBeGreaterThan(0);
-    expect(foot.slice(0, at)).toContain("{folderMissing && (");
-    expect(foot.slice(at - 80, at)).toContain('role="button"');
-    expect(foot.indexOf("{ICON_TRASH}")).toBeLessThan(foot.indexOf('className="tasks-row-missing"'));
-    expect(foot.slice(at, foot.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
+    expect(strip.slice(0, at)).toContain("{folderMissing && (");
+    expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
+    // The strip is drawn for a gone folder even with nothing to file.
+    expect(VIEWS_SRC).toContain("{(file || folderMissing || (SHOW_ROW_ACTIONS && run)) && (");
+    // And the foot is back to the sentence alone — no trash before it there.
+    const foot = VIEWS_SRC.slice(
+      VIEWS_SRC.indexOf('<span className="schedule-tv-card-foot">'),
+      VIEWS_SRC.indexOf("</button>", VIEWS_SRC.indexOf('<span className="schedule-tv-card-foot">')),
+    );
+    expect(foot).not.toContain("tasks-act--delete");
   });
 
   it("goes through ONE dialog, which names what it destroys and cannot be undone", () => {
@@ -4095,9 +4100,12 @@ describe("the delete affordance", () => {
     // The words: the target in the title, the consequence in the body, the
     // permanence in bold, the verb on the button.
     expect(MODAL).toContain("title={`Delete ${task.task_id}?`}");
+    // Two sentences, no path, no id (Akshil, 2026-09-07).
     expect(MODAL).toContain(
-      "This deletes the Claude session behind this task — its transcript, history and any",
+      "This deletes the Claude session behind this task — its transcript and its history.",
     );
+    expect(MODAL).not.toContain("pending runs");
+    expect(MODAL).not.toContain("cc-mono");
     expect(MODAL).toContain("<b>This is permanent and cannot be undone.</b>");
     expect(MODAL).toContain('className="btn btn-danger"');
     expect(MODAL).toContain('{busy ? "Deleting…" : "Delete forever"}');
