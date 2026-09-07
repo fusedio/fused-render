@@ -1020,6 +1020,16 @@ def test_rename_dir_settles_the_claude_chats_now(tmp_path, monkeypatch):
     src2.mkdir()
     out = _data(RENAME({"src": str(src2), "dst": str(dst2)}, x_fused="1"))
     assert out["is_dir"] is True and dst2.is_dir()
+    # a trip through the bin is not a move the chats follow (Bugbot, PR #1048)
+    calls.clear()
+    monkeypatch.setattr(claude_session_move, "relocate",
+                        lambda a, b: calls.append(("relocate", a, b)))
+    src3 = tmp_path / "t1"
+    src3.mkdir()
+    trash = tmp_path / "Trash" / "files"
+    trash.mkdir(parents=True)
+    _data(TRASH_MOVE({"from": str(src3), "to": str(trash / "t1")}, x_fused="1"))
+    assert calls == []
     # a FILE rename has no chats to carry
     calls.clear()
     f = tmp_path / "a.txt"

@@ -1199,7 +1199,12 @@ def _fs_trash_move(body: dict, x_fused: str | None):
     info_out = _xdg_trash_entry_info(src)   # leaving the trash → drop its sidecar
     info_in = _xdg_trash_entry_info(dst)    # entering the trash → write one
 
-    result = _fs_rename({"src": src, "dst": dst, "overwrite": False}, x_fused)
+    # `settle=False`: a trip into or out of the bin is not a move the chats
+    # follow (Bugbot, PR #1048) — rehoming them under a trash path would leave
+    # them pointing at nothing after an OS-level restore. The sessions stay
+    # keyed to the folder's real path and are there again when it comes back.
+    result = _fs_rename({"src": src, "dst": dst, "overwrite": False}, x_fused,
+                        settle=False)
     # Any refusal comes back verbatim and the sidecars are left exactly as they
     # were: nothing moved, so nothing about the bin's bookkeeping has changed.
     if isinstance(result, JSONResponse):
@@ -1245,7 +1250,7 @@ def _fs_trash_move(body: dict, x_fused: str | None):
     return result
 
 
-def _fs_rename(body: dict, x_fused: str | None):
+def _fs_rename(body: dict, x_fused: str | None, *, settle: bool = True):
     # Move/rename src -> dst. dst must be absolute and its parent writable
     # (same "outside"/readonly guards as elsewhere). An existing dst is a 409
     # unless overwrite=true; a missing src is a 404. shutil.move handles the
@@ -1357,7 +1362,7 @@ def _fs_rename(body: dict, x_fused: str | None):
     # (`_noopen`). Same two doors /api/current-apps/rename uses: the witness
     # (`.fused/meta.json` naming the old path) settles through `ensure`'s full
     # machinery; a folder with no witness settles best-effort by hand.
-    if os.path.isdir(dst) and not os.path.islink(dst):
+    if settle and os.path.isdir(dst) and not os.path.islink(dst):
         try:
             from fused_render import (app_fused_dir, app_state_move,
                                       claude_session_move)
