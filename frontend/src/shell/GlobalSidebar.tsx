@@ -447,6 +447,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // toast says it instead.
   const handleUpdatePick = () => {
     if (!updateStatus) return;
+    // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the
+    // badge's own button and the ServerStatusBanner card use. FIRST, before
+    // the brew branch: a brew upgrade also lands in "installed" and clears
+    // manual_command, and the brew branch used to return on that before this
+    // path was reached (bugbot, PR #1058).
+    if (updateStatus.state === "installed") {
+      window.location.assign("fused-render://relaunch");
+      return;
+    }
     if (updateStatus.method === "brew") {
       if (!updateStatus.manual_command) return;
       navigator.clipboard.writeText(updateStatus.manual_command);
