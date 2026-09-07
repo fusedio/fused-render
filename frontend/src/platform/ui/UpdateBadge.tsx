@@ -99,7 +99,7 @@ export default function UpdateBadge() {
           {status.state === "available" && status.method !== "brew" && (
             <>
               <div className="update-badge-text">
-                Downloads the new version and installs it in place.
+                Downloads and installs the new version.
               </div>
               <button type="button" className="update-badge-action" onClick={install}>
                 Update to v{status.latest_version}
