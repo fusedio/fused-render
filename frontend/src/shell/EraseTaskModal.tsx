@@ -76,7 +76,7 @@ export function EraseTaskModal({
       {/* Two sentences and nothing else (Akshil, 2026-09-07): what goes, and
           that it cannot come back. No path and no session id — a uuid is a
           fact the reader cannot check anything against. */}
-      <p>This deletes the Claude session behind this task — its transcript and its history.</p>
+      <p>This deletes the Claude session transcript behind this task.</p>
       <p>
         <b>This is permanent and cannot be undone.</b>
       </p>

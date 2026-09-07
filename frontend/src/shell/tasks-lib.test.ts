@@ -4102,7 +4102,7 @@ describe("the delete affordance", () => {
     expect(MODAL).toContain("title={`Delete ${task.task_id}?`}");
     // Two sentences, no path, no id (Akshil, 2026-09-07).
     expect(MODAL).toContain(
-      "This deletes the Claude session behind this task — its transcript and its history.",
+      "This deletes the Claude session transcript behind this task.",
     );
     expect(MODAL).not.toContain("pending runs");
     expect(MODAL).not.toContain("cc-mono");
