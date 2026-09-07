@@ -1120,3 +1120,36 @@ exact ms window between two git invocations against the SAME repo this
 same process is inspecting. Not worth a fix that would need a single
 `git log`-only call to report both a count and a slice (a bigger change to
 `git_snapshot.py`'s log reader than this control's own cosmetics justify).
+
+## Later change — a content-pane banner reverses this doc's own "invisible
+   outside the listing" rule
+
+This build's own tombstone comment (Preview.tsx:~900-916; the Task 5
+note above) argued that a previewed commit is deliberately INVISIBLE outside
+Listing.tsx: "a content pane is the ordinary template rendering ordinary
+bytes... with no room to say 'these are a past commit's' without every
+template growing a line for it." That held for a plain file, but a rendered
+APP is exactly the case that argument doesn't cover — a previewed app's
+iframe looks completely, indistinguishably live. Silently serving frozen
+content behind a normal-looking pane reads as a bug, not a feature — the
+same reasoning that justified `.listing-snapshot-banner` in the first place.
+
+`Preview.tsx` now renders that same banner (reusing `.listing-snapshot-banner`
+/ `.listing-snapshot-sha` / `.listing-snapshot-back` from
+`frontend/src/styles/preview.css` verbatim, not a duplicate ruleset) as a row
+above `.preview-frames`, worded for a file ("Showing this file as of commit
+&lt;sha&gt;.") instead of a folder. It is gated on `snapshotResolved`
+(Preview.tsx:~1803) — non-null only once the URL's sha has actually resolved
+AND that resolution's `app_dir` actually encloses this file — the same guard
+`srcFor` already trusts, so the banner cannot flash for a still-pending
+resolve or a sha that resolves to a different app folder sharing the same
+sha. "Back to live" now goes through a `backToLive` callback extracted from
+what was inline logic in the `window._fusedSnapshotSelected` handler's
+non-sha branch (Preview.tsx:~1272), so the sidebar's own back-to-live click
+and this new button run the identical drop-resolution/clear-URL steps
+instead of two copies.
+
+Net effect: the earlier "invisible everywhere but the listing" design still
+holds for non-app files (nothing about a code/text template display changes),
+but a snapshot of an app's own rendered output is no longer indistinguishable
+from live.

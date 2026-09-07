@@ -3,7 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   addCurrentApp,
@@ -84,6 +84,7 @@ import {
   getResolvedSnapshot,
   isSha,
   setResolvedSnapshot,
+  shortSha,
   snapshotFrameSrc,
   type ResolvedSnapshot,
 } from "@platform/lib/snapshot-param";
@@ -896,18 +897,24 @@ const FRAME_FADE_MS = 150;
 // previous mode's content forever — past this the swap completes regardless.
 const FRAME_SWAP_TIMEOUT_MS = 4000;
 
-// THIS FILE STILL HOSTS NO SNAPSHOT INDICATOR OF ITS OWN, and that is
-// unchanged by the `_snapshot` design: a content pane is the ordinary
-// template rendering ordinary bytes — the code editor looks exactly like the
-// code editor — with no room to say "these are a past commit's" without
-// every template growing a line for it. The git sidebar's commit list still
-// carries the dot and the `previewing` pill on the previewed row, and its own
-// banner still carries the way back (templates/git/template.html) — nothing
-// here duplicates it. What DID change is that the state now also has a
-// listing-level home: browsing the app's OWN subfolders under a snapshot
-// shows Listing.tsx's own banner (".listing-snapshot-banner"), because a
-// listing has no per-row heading a template could wear instead, and silently
-// showing a frozen tree there would read as a bug rather than a feature.
+// THIS FILE ONCE HOSTED NO SNAPSHOT INDICATOR OF ITS OWN — the reasoning was
+// that a content pane is the ordinary template rendering ordinary bytes, the
+// code editor looks exactly like the code editor, with no room to say "these
+// are a past commit's" without every template growing a line for it. That
+// held for a plain file, but not for a rendered APP: its iframe looks
+// completely, indistinguishably live, and silently serving frozen content
+// behind a normal-looking pane reads as a bug rather than a feature — see
+// DECISIONS-app-snapshot-preview.md's later entry. `TemplatePreview` below
+// now renders that same `.listing-snapshot-banner` (reused verbatim from
+// Listing.tsx's own, not a duplicate) above `.preview-frames`, gated on
+// `snapshotResolved` so it only shows once the sha is genuinely resolved for
+// THIS file's app folder. The git sidebar's commit list still carries the
+// dot and the `previewing` pill on the previewed row, and its own banner
+// still carries the way back (templates/git/template.html) — nothing here
+// duplicates that. Listing.tsx's own banner (".listing-snapshot-banner")
+// still exists for browsing the app's OWN subfolders under a snapshot, for
+// the same reason: a listing has no per-row heading a template could wear
+// instead.
 function TemplatePreview({
   fsPath,
   stat,
@@ -1177,6 +1184,21 @@ function TemplatePreview({
   // always dispatches, so any writer of `_snapshot` — this component's own
   // handlers below, or a sibling Listing.tsx — reaches this one too.
   const urlVersion = useUrlVersion();
+  // Shared by the sidebar's own "back to live" click (routed through
+  // `window._fusedSnapshotSelected` below with a non-sha value) and the new
+  // banner's own button (rendered near `.preview-frames`): one implementation
+  // of "drop the resolution and the shell's `_snapshot` param", not two.
+  const backToLive = useCallback(() => {
+    setResolvedSnapshot(null);
+    setResolvedSnapshotState(null);
+    setSnapshotSha(null);
+    const search = writeQueryParam(
+      location.search.replace(/^\?/, ""),
+      "_snapshot",
+      null
+    );
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
+  }, []);
   useEffect(() => {
     const raw = new URLSearchParams(location.search).get("_snapshot");
     if (!isSha(raw)) {
@@ -1273,19 +1295,7 @@ function TemplatePreview({
       if (!isSha(sha)) {
         // Back to live: drop both the resolution the carry rule and the
         // listing's own rewrite check, and the shell's own `_snapshot` param.
-        setResolvedSnapshot(null);
-        setResolvedSnapshotState(null);
-        setSnapshotSha(null);
-        // `location.search` read HERE, not captured before this synchronous
-        // branch — there is no `await` between them in this branch, so it
-        // does not matter yet, but reading it fresh keeps this arm the same
-        // shape as the async one below (finding B8 — see its own comment).
-        const search = writeQueryParam(
-          location.search.replace(/^\?/, ""),
-          "_snapshot",
-          null
-        );
-        replaceSearch(location.pathname + (search ? "?" + search : ""));
+        backToLive();
         return;
       }
       getGitSnapshot(fsPath, sha)
@@ -1322,7 +1332,7 @@ function TemplatePreview({
       alive = false;
       delete window._fusedSnapshotSelected;
     };
-  }, [splitCapable, fsPath]);
+  }, [splitCapable, fsPath, backToLive]);
 
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
@@ -2197,10 +2207,39 @@ function TemplatePreview({
             barChrome={actionsInTopbar}
           />
         ) : (
-          /* One frame per mounted mode (see the held-frame swap above). Each
+          <>
+            {/* The content-pane counterpart to Listing.tsx's own
+                ".listing-snapshot-banner": a previewed commit changes what
+                every frame below renders, but nothing about a rendered app
+                says so on its own — it looks completely live. Gated on
+                `snapshotResolved`, not the raw `_snapshot` URL param, so the
+                banner only appears once the sha is actually resolved AND
+                that resolution's app folder actually encloses THIS file (the
+                same guard `srcFor` below trusts) — never a flash of "as of
+                commit" for a sha that turns out to belong to a different app,
+                or for a still-pending resolve. See
+                DECISIONS-app-snapshot-preview.md for why this reverses that
+                doc's "invisible outside the listing" rule. */}
+            {snapshotResolved && (
+              <div className="listing-snapshot-banner">
+                Showing this file as of commit{" "}
+                <span className="listing-snapshot-sha">
+                  {shortSha(snapshotResolved.sha)}
+                </span>
+                .
+                <button
+                  type="button"
+                  className="listing-snapshot-back"
+                  onClick={backToLive}
+                >
+                  Back to live
+                </button>
+              </div>
+            )}
+            {/* One frame per mounted mode (see the held-frame swap above). Each
              key is its own mode, so a frame is created once and never
-             re-created by a switch away and back within the swap window. */
-          <div className="preview-frames">
+             re-created by a switch away and back within the swap window. */}
+            <div className="preview-frames">
             {frames.map((m) => (
               <iframe
                 key={m}
@@ -2266,7 +2305,8 @@ function TemplatePreview({
                 }}
               />
             ))}
-          </div>
+            </div>
+          </>
         )}
         {/* EMBED ONLY, by the CSS (see .preview-browse-chip): it is the embed's
             whole mode affordance, because the embed hides .preview-header and
