@@ -452,12 +452,16 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       pushToast({ msg: "Copied", tone: "info" });
       return;
     }
-    updateInstall()
+    // Same order as UpdateBadge.install: the poke comes AFTER the install
+    // answers, so the poll it arms sees "installing" and runs at the busy
+    // interval — poked first it would still read "available" and arm the 60s
+    // idle timer, leaving the rail dot behind for a minute (bugbot, PR #1049).
+    void updateInstall()
       .then(setUpdateStatus)
       .catch(() => {
         // Fall through — the re-armed poll picks up the real state.
-      });
-    pokeUpdateStatus();
+      })
+      .finally(pokeUpdateStatus);
   };
   const updateDot = updateIsRelevant ? (
     <span

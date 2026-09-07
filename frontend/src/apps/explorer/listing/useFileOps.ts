@@ -327,8 +327,21 @@ export function useFileOps({
           // attempt, and one that 404s or 409s would otherwise sit at the top
           // failing for every later Undo.
           pushOther({ kind: op.kind, pairs: report.done }, startedAt);
-          pendingSelectRef.current = report.done[report.done.length - 1].to;
-          refetch();
+          // THE FOLDER ON SCREEN MAY BE WHAT MOVED (bugbot, PR #1049): undoing
+          // a rename of the current folder puts it back under its old name,
+          // and a refetch of `base` would read a path that no longer exists.
+          // Follow it instead — the same navigation the rename itself made —
+          // and refetch only when the rows moved but the room did not.
+          const here = normDir(base);
+          const carried = report.done.find(
+            (pair) => here === pair.from || here.startsWith(pair.from + "/"),
+          );
+          if (carried) {
+            navigateUrl(urlForFsPath(carried.to + here.slice(carried.from.length), location.search));
+          } else {
+            pendingSelectRef.current = report.done[report.done.length - 1].to;
+            refetch();
+          }
         }
         // Everything a SYSTEMIC refusal left undone — the pair it refused and the
         // pairs it never reached — goes back on the stack this gesture took the op
@@ -532,12 +545,18 @@ export function useFileOps({
         if (name === basename(dir)) return;
         if (rejectName(name)) return;
         const dst = join(dirname(dir), name);
-        run(async () => {
-          await renameEntry(dir, dst);
-          recordFsOp({ kind: "rename", pairs: [{ from: dir, to: dst }] });
-          remapClipboardPath(dir, dst);
-          navigateUrl(urlForFsPath(dst, location.search));
-        }, { verb: "rename", name: basename(dir) });
+        // Not through `run`: its refetch would re-read the OLD path after the
+        // navigation below has already left it — a fetch of a folder that no
+        // longer exists, landing on a view that is being unmounted.
+        void renameEntry(dir, dst).then(
+          () => {
+            recordFsOp({ kind: "rename", pairs: [{ from: dir, to: dst }] });
+            remapClipboardPath(dir, dst);
+            navigateUrl(urlForFsPath(dst, location.search));
+          },
+          (e: unknown) =>
+            pushToast({ msg: friendlyFsError(e, { verb: "rename", name: basename(dir) }), tone: "error" }),
+        );
       },
     });
 

@@ -49,6 +49,14 @@ export function pokeUpdateStatus(): void {
 // install button's optimistic update) without waiting on the next poll tick.
 export function setUpdateStatus(next: UpdateStatus | null): void {
   set(next);
+  // A pushed status re-arms the timer at the cadence IT calls for: a status
+  // that says "installing" must not sit on a 60s idle tick armed by the poll
+  // that ran before the install began.
+  if (started) {
+    clearTimeout(timer);
+    const busy = next?.state === "installing";
+    timer = setTimeout(poll, busy ? POLL_BUSY_MS : POLL_IDLE_MS);
+  }
 }
 
 function ensureStarted(): void {
