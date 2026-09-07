@@ -7,6 +7,8 @@
 // An install upgrading into this build never sees it, and a finished setup
 // gives the row back to the Settings block — the wizard stays one click away
 // under Help › Setup wizard.
+import { useState } from "react";
+
 import { navigateUrl } from "@platform/lib/router";
 import type { Config } from "@platform/lib/api";
 
@@ -21,7 +23,7 @@ export interface SetupMeter {
 
 /** The meter for the sidebar, or null when the row should not exist. */
 export function useSetupMeter(config: Config): SetupMeter | null {
-  seedProgress(config);
+  useState(() => seedProgress(config)); // once, before the first subscriber
   const state = useOnboardingState();
   if (!meterVisible(state)) return null;
   const p = progressPercent(state?.stages);

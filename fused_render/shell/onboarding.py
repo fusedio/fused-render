@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 
 from fastapi import APIRouter, Header
@@ -94,15 +95,24 @@ def _read() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+#: Every write is a read-modify-write of the whole prefs file, and the routes
+#: are sync `def`s FastAPI runs on a threadpool — so two stage reports landing
+#: in the same tick (the wizard's `step` and `about`, health's `claude` and
+#: `fda: n/a`) would each read the old `stages` and the loser's vanish from
+#: disk. One lock; reentrant so a route can read-then-write under it.
+_LOCK = threading.RLock()
+
+
 def _write(patch: dict) -> dict:
-    all_prefs = prefs.read_prefs()
-    current = all_prefs.get(_KEY)
-    state = dict(current) if isinstance(current, dict) else {}
-    state.update(patch)
-    state["version"] = VERSION
-    all_prefs[_KEY] = state
-    storage.write_json(prefs._path(), all_prefs)
-    return state
+    with _LOCK:
+        all_prefs = prefs.read_prefs()
+        current = all_prefs.get(_KEY)
+        state = dict(current) if isinstance(current, dict) else {}
+        state.update(patch)
+        state["version"] = VERSION
+        all_prefs[_KEY] = state
+        storage.write_json(prefs._path(), all_prefs)
+        return state
 
 
 def _stages(state: dict) -> dict:
@@ -320,10 +330,11 @@ def api_onboarding_stage(body: dict, x_fused: str | None = Header(default=None))
             return JSONResponse({"error": f"meta over {META_MAX_BYTES} bytes"}, status_code=400)
     except (TypeError, ValueError):
         return JSONResponse({"error": "meta must be JSON"}, status_code=400)
-    state = _read()
-    stages = dict(state["stages"]) if isinstance(state.get("stages"), dict) else {}
-    prev = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
-    prev_meta = prev.get("meta") if isinstance(prev.get("meta"), dict) else {}
-    stages[stage] = {"status": status, "meta": {**prev_meta, **meta}, "updated_at": time.time()}
-    _write({"stages": stages})
+    with _LOCK:
+        state = _read()
+        stages = dict(state["stages"]) if isinstance(state.get("stages"), dict) else {}
+        prev = stages.get(stage) if isinstance(stages.get(stage), dict) else {}
+        prev_meta = prev.get("meta") if isinstance(prev.get("meta"), dict) else {}
+        stages[stage] = {"status": status, "meta": {**prev_meta, **meta}, "updated_at": time.time()}
+        _write({"stages": stages})
     return snapshot()

@@ -10,7 +10,9 @@
 //   5 First app    — the Home composer, or a showcase local-AI app
 //
 // Steps 1–3 write nothing but the resume step (which step is open, so a
-// restart or a reopen lands back on it). Step 4 starts model downloads, which
+// restart or a reopen lands back on it) and their own STAGE STATUS for the
+// progress meter (progress.ts — the sidebar's "Setup N%" row and the pills in
+// the bar above). Step 4 starts model downloads, which
 // are server-owned jobs that outlive the wizard and block nothing in it — a
 // head start, since a model is fetched on first use anyway. Step 5's create
 // (or a showcase open) is the only other durable action and doubles as
@@ -112,7 +114,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // PROGRESS (progress.ts): seeded from the config we hold, then live. The
   // pills read a step's STATUS from it, not its position — a skipped Claude
   // step is not a green tick because the user walked past it.
-  seedProgress(config);
+  useState(() => seedProgress(config)); // once, before the first subscriber
   const progress = useOnboardingState();
   const stages = progress?.stages;
   // Stages this machine does not have leave the meter: `n/a` once the answer
@@ -204,11 +206,12 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // The unmount is that navigation.
   const lastRef = useRef(last);
   lastRef.current = last;
+  // The FLAG only: this unmount also fires on browser Back from the last
+  // step, where nothing was built. The First-app STAGE is claimed by the step
+  // itself, which checks the page it landed on (FirstAppStep onShowcaseOpened).
   useEffect(
     () => () => {
-      // Not already settled: a dismiss or "explore on my own" from the last
-      // step settled first, so what is left here is a card's navigation.
-      if (lastRef.current && !settled.current) markComplete("showcase");
+      if (lastRef.current) markComplete();
     },
     [markComplete],
   );
@@ -366,7 +369,12 @@ export function OnboardingWizard({ config }: { config: Config }) {
           {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "app" && (
-            <FirstAppStep health={health} eyebrow={eyebrow} onComplete={() => markComplete("composer")} />
+            <FirstAppStep
+              health={health}
+              eyebrow={eyebrow}
+              onComplete={() => markComplete("composer")}
+              onShowcaseOpened={() => markComplete("showcase")}
+            />
           )}
         </div>
       </div>
