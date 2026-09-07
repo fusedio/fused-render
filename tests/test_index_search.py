@@ -544,6 +544,42 @@ def test_search_ranked_still_reads_a_files_partition_with_no_name_column(tmp_pat
     assert [h["rel"] for h in out["hits"]] == ["alpha.txt"]
 
 
+def test_search_ranked_describes_each_source_only_once(tmp_path, monkeypatch):
+    """Review finding: `_name_col` and `_depth_col` each ran their own
+    `DESCRIBE SELECT * FROM {src} LIMIT 0` against the files source, so a
+    single ranked request with dirs included paid for that footer read three
+    times over (twice for files, once for dirs) instead of once each. `_src_cols`
+    now caches per source within one call, so exactly one DESCRIBE lands per
+    distinct source string."""
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/beta.txt"],
+                 dirs=["/r/sub"])
+    describes = []
+    import duckdb as real_duckdb
+    real_connect = real_duckdb.connect
+
+    class _SpyingConnection:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *a, **kw):
+            if sql.strip().startswith("DESCRIBE"):
+                describes.append(sql)
+            return self._con.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def spying_connect(*a, **kw):
+        return _SpyingConnection(real_connect(*a, **kw))
+
+    monkeypatch.setattr(real_duckdb, "connect", spying_connect)
+    out = search_ranked(cfg, "/r", "alpha")
+    assert out["hits"], out
+    # Exactly one DESCRIBE per distinct source string (files, dirs) — not one
+    # per column asked about it.
+    assert len(describes) == len(set(describes)) == 2, describes
+
+
 # -- cancellation: a `token` handed to search_ranked -------------------------
 #
 # `asyncio.to_thread` (server/routers/index.py) cannot kill the thread it

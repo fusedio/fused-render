@@ -127,8 +127,33 @@ def files_src(cfg: IndexConfig, parts) -> str:
     return "read_parquet([" + ",".join(f"'{f}'" for f in files) + "])"
 
 
-def _name_col(con, src: str) -> str:
-    """`lower(name)` when the parquet behind `src` carries a `name` column,
+def _src_cols(con, src: str, cache: dict | None = None) -> set:
+    """The column names the parquet behind `src` carries.
+
+    DESCRIBE reads footers only, so a single call costs no rows — but
+    `_name_col` and `_depth_col` both used to run their OWN `DESCRIBE` against
+    the same `src` (one footer read each), so `search_ranked`'s files branch
+    paid for the files partitions' footers twice per request for no reason:
+    both questions are answered by the same column list. `cache`, when given,
+    is a dict this call reads and writes under `src` — one lookup per SOURCE
+    per caller rather than per column asked about; passing none (the default)
+    keeps this usable standalone.
+
+    Deciding per SOURCE rather than per file is exact: every partition a
+    manifest names was written by one compaction, so a generation's schema is
+    uniform (and DuckDB would refuse a mixed-schema read_parquet list
+    anyway)."""
+    if cache is not None and src in cache:
+        return cache[src]
+    cols = {r[0] for r in con.execute(
+        f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
+    if cache is not None:
+        cache[src] = cols
+    return cols
+
+
+def _name_col(cols: set) -> str:
+    """`lower(name)` when `cols` (from `_src_cols`) carries a `name` column,
     else the regex extracted from `path`.
 
     Same pattern as `_depth_col` just below, and for the same reason: without
@@ -141,23 +166,14 @@ def _name_col(con, src: str) -> str:
     paying for the regex. Only the files table HAS a `name` column — dirs has
     none (store.py's dir schema) — so this is for the files branch only; an
     index predating the column keeps answering via the fallback."""
-    cols = {r[0] for r in con.execute(
-        f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
     return ("lower(name)" if "name" in cols
             else "regexp_extract(lower(path), '[^/]*$')")
 
 
-def _depth_col(con, src: str, path_col: str) -> str:
-    """`depth` when the parquet behind `src` carries it, else the slash-count
-    expression over `path_col`.
-
-    DESCRIBE reads footers only, so this costs no rows. Deciding per SOURCE
-    rather than per file is exact: every partition a manifest names was written
-    by one compaction, so a generation's schema is uniform (and DuckDB would
-    refuse a mixed-schema read_parquet list anyway). An index predating the
-    column keeps answering; migrating it is a full rescan."""
-    cols = {r[0] for r in con.execute(
-        f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
+def _depth_col(cols: set, path_col: str) -> str:
+    """`depth` when `cols` (from `_src_cols`) carries it, else the slash-count
+    expression over `path_col`. An index predating the column keeps answering;
+    migrating it is a full rescan."""
     return "depth" if "depth" in cols else depth_expr(path_col)
 
 
@@ -372,7 +388,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
             branches.append(
                 f"SELECT path, size, mtime, false AS is_dir, "
-                f"{_depth_col(con, fsrc, 'path')} AS depth FROM {fsrc} "
+                f"{_depth_col(_src_cols(con, fsrc), 'path')} AS depth FROM {fsrc} "
                 f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
         if include_dirs:
             dsrc = dirs_src(cfg)
@@ -380,7 +396,7 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
             branches.append(
                 f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-                f"{_depth_col(con, dsrc, 'dir')} AS depth FROM {dsrc} "
+                f"{_depth_col(_src_cols(con, dsrc), 'dir')} AS depth FROM {dsrc} "
                 f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
         entries, truncated = [], False
         if branches:
@@ -583,12 +599,19 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # would let the root's own spelling admit rows no fuzzy match will keep.
         rel_from = len(prefix) + 1
         branches = []
+        # One `_src_cols` lookup per SOURCE, not per column asked about: the
+        # files branch used to ask `_depth_col` and `_name_col` each their own
+        # `DESCRIBE SELECT * FROM {fsrc} LIMIT 0` — two identical footer reads
+        # of the same partitions on every call. `src_cache` makes the second
+        # ask a dict lookup.
+        src_cache: dict = {}
         if hit:
             fsrc = files_src(cfg, hit)
+            fcols = _src_cols(con, fsrc, src_cache)
             branches.append(
                 f"SELECT substr(path, {rel_from}) AS rel, size, mtime, "
-                f"false AS is_dir, {_depth_col(con, fsrc, 'path')} AS depth, "
-                f"{_name_col(con, fsrc)} AS nm "
+                f"false AS is_dir, {_depth_col(fcols, 'path')} AS depth, "
+                f"{_name_col(fcols)} AS nm "
                 f"FROM {fsrc} WHERE path LIKE '{prefix_like}%' ESCAPE '\\'")
         if include_dirs:
             dsrc = dirs_src(cfg)
@@ -599,7 +622,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             branches.append(
                 f"SELECT substr(dir, {rel_from}) AS rel, CAST(NULL AS BIGINT) AS size, "
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-                f"{_depth_col(con, dsrc, 'dir')} AS depth, "
+                f"{_depth_col(_src_cols(con, dsrc, src_cache), 'dir')} AS depth, "
                 f"regexp_extract(lower(substr(dir, {rel_from})), '[^/]*$') AS nm "
                 f"FROM {dsrc} WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'")
         if not branches:
