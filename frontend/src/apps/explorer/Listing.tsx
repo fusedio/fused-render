@@ -54,7 +54,7 @@ import {
   shortSha,
   snapshotListing,
   type ResolvedSnapshot,
-} from "@apps/explorer/lib/snapshot-param";
+} from "@platform/lib/snapshot-param";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
@@ -188,7 +188,7 @@ export default function Listing({
   // effect (re-synced from the URL whenever the open folder changes, so a
   // navigation that carried or dropped `_snapshot` per the carry rule is
   // picked up); the two independently populate the SAME module-level
-  // singleton (apps/explorer/lib/snapshot-param.ts), so whichever resolves
+  // singleton (platform/lib/snapshot-param.ts), so whichever resolves
   // first is what the other sees too — a harmless redundant fetch when both
   // are mounted (a split pane showing this folder's preview), never a wrong
   // answer.

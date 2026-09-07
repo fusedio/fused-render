@@ -78,7 +78,7 @@ import {
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
-import { isSha, setResolvedSnapshot, snapshotSrc } from "@apps/explorer/lib/snapshot-param";
+import { isSha, setResolvedSnapshot, snapshotSrc } from "@platform/lib/snapshot-param";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";

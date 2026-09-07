@@ -1,17 +1,25 @@
-// The `_snapshot` shell URL param's carry rule and the small piece of state
-// `router.ts::navigate` needs to apply it.
+// Everything the `_snapshot` shell URL param needs: the carry rule, the
+// resolved-snapshot singleton, the rewrite rule, and the small pure helpers
+// (`isSha`, `shortSha`, `snapshotSrc`, `snapshotListing`) Preview.tsx and
+// Listing.tsx build the feature's actual UI out of.
 //
 // LIVES IN platform/, NOT apps/explorer/, though the feature is explorer-only
-// and apps/explorer/lib/snapshot-param.ts is where its public surface is
-// documented and re-exported from. The reason is the same one appEntry.ts,
-// appAnnotation.ts and dismissOnOutside.ts already state for themselves:
-// platform/ never imports from apps/ (no existing platform module does, and
-// router.ts's own comments about /apps/<tag>/<name> never resolve to an
-// import) — it is the boundary that keeps a platform-level concern like
-// routing from depending on any one app's internals. `navigate` is exactly
-// such a concern, so the logic it calls has to sit beside it; apps/explorer's
-// copy of this module is a thin re-export for Preview.tsx and Listing.tsx, the
-// two callers that actually own resolving and setting it.
+// — the reason is the same one appEntry.ts, appAnnotation.ts and
+// dismissOnOutside.ts already state for themselves: platform/ never imports
+// from apps/ (no existing platform module does, and router.ts's own comments
+// about /apps/<tag>/<name> never resolve to an import) — it is the boundary
+// that keeps a platform-level concern like routing from depending on any one
+// app's internals. `router.ts::navigate` is exactly such a concern, so the
+// carry rule it calls has to sit beside it.
+//
+// ONE MODULE, NOT TWO: this used to be split with a thin re-export living at
+// apps/explorer/lib/snapshot-param.ts, each with its own test file — two
+// names for the same rule invited exactly the "which one do I edit" question
+// a later change would eventually get wrong (code review finding A2). Every
+// function here is pure string/object logic with no apps/ dependency, so
+// there was no boundary reason for the split: apps/explorer (Preview.tsx,
+// Listing.tsx) imports this module directly, the same direction router.ts
+// already takes.
 //
 // THE CARRY RULE. `_snapshot=<sha>` survives a navigation exactly when the
 // DESTINATION is still inside the app folder the sha was resolved against —
@@ -91,4 +99,58 @@ export function rewriteSnapshotPath(path: string): string {
   if (path === app_dir) return dir;
   if (path.indexOf(app_dir + "/") === 0) return dir + path.slice(app_dir.length);
   return path;
+}
+
+// A hex object name, full or abbreviated — the same shape `/api/git/snapshot`
+// accepts and the runtime re-checks before it builds a read URL. Validated on
+// the way IN (the ancestor-window hook, Preview.tsx) so a junk value can
+// never become a param.
+//
+// LIVES HERE, alongside the carry rule and the singleton, rather than only in
+// apps/explorer: a single module is one source of truth for everything this
+// feature needs on both sides of the platform/apps boundary (code review
+// finding A2 — this module and apps/explorer/lib/snapshot-param.ts used to
+// duplicate a test file each for the same rule). Every one of the functions
+// below is pure string/object logic with no dependency on anything apps/
+// specific, so there is no boundary reason to keep them out of platform/;
+// apps/explorer imports this module directly, the same direction router.ts
+// already takes.
+const SHA_RE = /^[0-9a-fA-F]{4,64}$/;
+
+export function isSha(value: unknown): value is string {
+  return typeof value === "string" && SHA_RE.test(value);
+}
+
+// The pill's short form — seven characters, the same abbreviation the git
+// template's rows and `git log --oneline` show, so the listing's banner and
+// the sidebar's commit list read as the same commit rather than as two ids.
+export function shortSha(sha: string): string {
+  return sha.slice(0, 7);
+}
+
+// `_snapshot` onto a content frame's src — the mechanism that makes it reach
+// templates at all. The runtime reads params off its OWN frame src
+// (`ownQuery`, static/runtime.js), so a param that is not forwarded here is
+// invisible in there. Null src (the `_listing` sentinel, an unresolved mode)
+// stays null — there is no frame.
+export function snapshotSrc(src: string | null, sha: string | null): string | null {
+  if (src === null || sha === null) return src;
+  return src + "&_snapshot=" + encodeURIComponent(sha);
+}
+
+// What Listing.tsx needs to decide for one folder, in one pure call: is it
+// inside the CURRENTLY resolved snapshot's app folder, and if so what should
+// actually be fetched. `listPath` is `fsPath` itself whenever `inSnapshot` is
+// false (no active snapshot, or this folder sits outside its app) — the
+// ordinary, unrewritten case — so a caller need not branch twice on the same
+// fact. Consults the shared singleton rather than taking it as a parameter,
+// same as `rewriteSnapshotPath`: this and static/runtime.js's `rewritePath`
+// are the two places the one rewrite rule is applied, and both read off
+// whatever `/api/git/snapshot` last resolved.
+export function snapshotListing(
+  fsPath: string
+): { inSnapshot: boolean; listPath: string } {
+  const snap = getResolvedSnapshot();
+  const inSnapshot = snap !== null && carries(snap.app_dir, fsPath);
+  return { inSnapshot, listPath: inSnapshot ? rewriteSnapshotPath(fsPath) : fsPath };
 }

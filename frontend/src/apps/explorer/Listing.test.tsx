@@ -1,5 +1,5 @@
 // The file explorer browses a git snapshot: `snapshotListing` (the pure
-// folder-inside-vs-outside-the-app decision, apps/explorer/lib/snapshot-param.ts)
+// folder-inside-vs-outside-the-app decision, platform/lib/snapshot-param.ts)
 // and `useDirListing`'s own snapshot-aware fetch target.
 //
 // Driven through the real hook via the listing's own render harness
@@ -19,7 +19,7 @@ import {
   getResolvedSnapshot,
   setResolvedSnapshot,
   snapshotListing,
-} from "@apps/explorer/lib/snapshot-param";
+} from "@platform/lib/snapshot-param";
 
 const APP = "/repo/myapp";
 const DIR = "/cache/key/abc1234";
