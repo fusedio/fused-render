@@ -1605,6 +1605,37 @@ const el = (tag, props, ...kids) => {
 
 const plural = (n, one, many) => n + " " + (n === 1 ? one : (many || one + "s"));
 
+/* The row's own age, SHORTENED for a column that is narrow by design (this is
+   a sidebar list, not the pane's identity line — `commitMeta` below still
+   shows the full "%ar" string). This computes its own bucket from `%aI`
+   (`entry.date`, machine-readable ISO 8601) rather than truncating git's
+   human string (`entry.relative`, "%ar") — the log.py docstring's "don't
+   reinvent %ar" rule is about not PARSING git's human output, and parsing a
+   machine timestamp is not that; `%ar` stays in the format and is exactly
+   the fallback used here when the date does not parse, plus the full string
+   this always leaves reachable in the row's tooltip.
+   "mo" and not "m" for months, on purpose: "5mo" cannot be misread as
+   minutes the way "5m" already means them one row up in the same column. */
+function shortWhen(entry) {
+  if (!entry) return "";
+  const when = entry.date ? new Date(entry.date) : null;
+  if (!when || Number.isNaN(when.getTime())) return entry.relative || "";
+  const secs = Math.max(0, (Date.now() - when.getTime()) / 1000);
+  const UNITS = [
+    [60, null, null],
+    [3600, 60, "m"],
+    [86400, 3600, "h"],
+    [604800, 86400, "d"],
+    [2629800, 604800, "w"],
+    [31557600, 2629800, "mo"],
+    [Infinity, 31557600, "y"],
+  ];
+  for (const [ceiling, div, suffix] of UNITS) {
+    if (secs < ceiling) return div ? Math.floor(secs / div) + suffix : "now";
+  }
+  return entry.relative || "";
+}
+
 /* ------------------------------------------------------------------ chrome */
 
 function icon(paths, size) {
@@ -3535,7 +3566,8 @@ function commitLine(entry, selected) {
   const row = el("button", {
     className: "row",
     type: "button",
-    title: entry.short + "  " + entry.subject + "\n" + entry.author + " — " + entry.date,
+    title: entry.short + "  " + entry.subject + "\n" + entry.author
+           + " — " + entry.relative + " (" + entry.date + ")",
   },
     el("span", { className: "subject", textContent: entry.subject || "(no subject)" }),
     marker,
@@ -3543,7 +3575,7 @@ function commitLine(entry, selected) {
        turned the list into a table), on the RIGHT, out of the reading line.
        Once a commit is picked, the row and the pane say the same identity. */
     selected ? el("span", { className: "sha", textContent: entry.short }) : null,
-    el("span", { className: "when", textContent: entry.relative }));
+    el("span", { className: "when", textContent: shortWhen(entry), title: entry.relative }));
   if (selected) line.setAttribute("aria-current", "true");
   /* The FULL object name, never the abbreviation the row displays: this value is
      what the shell resolves the content pane's bytes with (`_fusedSelectSnapshot`
