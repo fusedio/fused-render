@@ -1109,7 +1109,19 @@ def _restore_scope_from(root, spec, sha):
         if sha == "HEAD":
             raise
         try:
-            _git_ok(root, "checkout", "HEAD", *spec)
+            # A bare `checkout HEAD -- spec` here would only restore paths
+            # HEAD itself knows about — a path that exists at `sha` and NOT
+            # at HEAD (staged and/or written to the working tree by the
+            # `checkout sha -- spec` above, before it failed partway
+            # through) would stay behind, leaving the scope dirty for the
+            # next `_require_clean` caller on a tree the user never touched
+            # (round 3 finding 4). Recursing into this same function does
+            # the `rm` too, restoring HEAD exactly the way this function
+            # restores anything else. Safe from infinite recursion: this
+            # recursive call passes `sha="HEAD"`, so if IT fails the `if sha
+            # == "HEAD": raise` guard above fires on re-entry instead of
+            # recursing again.
+            _restore_scope_from(root, spec, "HEAD")
         except _Refused as recovery_exc:
             raise _Refused(
                 exc.payload["reason"],

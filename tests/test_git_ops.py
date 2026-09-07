@@ -1245,6 +1245,77 @@ def test_app_restore_recovers_when_the_checkout_itself_fails_after_the_rm(
         assert fh.read() == before_main == "VERSION = 2\n"
 
 
+def test_app_restore_recovery_undoes_a_PARTIALLY_applied_checkout(
+        ops, tmp_path, monkeypatch):
+    """FINDING 4 (round 3): the existing recovery test above fakes a
+    checkout that writes NOTHING before failing, so it cannot see this bug.
+    A `TIMEOUT_S` expiry (the docstring's own example) can fire AFTER the
+    child process has already written and staged some paths — here, a
+    restore TARGET (`fwd_sha`) that holds `app/helper.py`, a path absent
+    from HEAD. A bare `checkout HEAD -- spec` recovery only restores paths
+    HEAD itself knows about; it does nothing about a path that exists at
+    the target sha and not at HEAD, so `helper.py` stays added in the index
+    and working tree — the scope is left dirty, and the next `_app_restore`
+    is blocked by `_require_clean` on a tree the user never touched. The
+    fix recurses into `_restore_scope_from(root, spec, "HEAD")`, which does
+    the `rm` first and so removes `helper.py` too.
+    """
+    root = str(tmp_path / "app-repo-fwd")
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q")
+    git(root, "config", "user.name", "Fixture Author")
+    git(root, "config", "user.email", "fixture@example.com")
+    git(root, "config", "commit.gpgsign", "false")
+    write(root, "app/index.html", '<meta name="fused-app">\n')
+    write(root, "app/main.py", "VERSION = 1\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "v1", when="2026-10-01T10:00:00+00:00")
+    head_sha = git(root, "rev-parse", "HEAD").strip()
+
+    # A sibling commit (a branch this app folder never actually moved onto)
+    # that adds `helper.py` on top of v1 — the restore TARGET, not HEAD.
+    git(root, "checkout", "-q", "-b", "fwd")
+    write(root, "app/helper.py", "I do not exist at HEAD\n")
+    write(root, "app/main.py", "VERSION = 2\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "fwd adds helper.py",
+        when="2026-10-02T10:00:00+00:00")
+    fwd_sha = git(root, "rev-parse", "HEAD").strip()
+    git(root, "checkout", "-q", "main")
+    assert git(root, "rev-parse", "HEAD").strip() == head_sha
+
+    before_status = git(root, "status", "--porcelain").strip()
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "checkout" in argv and fwd_sha in argv:
+            # Simulate a checkout that actually wrote to disk (staged
+            # `helper.py` and rewrote `main.py`) before the TIMEOUT_S
+            # expiry the docstring calls out — the process already did its
+            # work; only the report of it comes back late and as a failure.
+            real_run(argv, *args, **kwargs)
+            return subprocess.CompletedProcess(
+                argv, 1, b"", b"fatal: fake late-arriving checkout failure\n")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    got = ops.main(_app_file(root), op="app_restore", sha=fwd_sha)
+
+    assert got["ok"] is False, got
+    assert git(root, "rev-parse", "HEAD").strip() == head_sha
+    # THE non-skippable assertion: `helper.py` (present at fwd_sha, absent
+    # from HEAD) must not survive the recovery — the scope must be back to
+    # exactly what it was before this op touched anything, not "HEAD's own
+    # paths overwritten, everything else left as the failed checkout put it".
+    assert not os.path.exists(os.path.join(root, "app", "helper.py")), (
+        "a bare `checkout HEAD -- spec` recovery cannot remove a path HEAD "
+        "does not know about — this must come back deleted")
+    with open(_app_file(root), encoding="utf-8") as fh:
+        assert fh.read() == "VERSION = 1\n"
+    assert git(root, "status", "--porcelain").strip() == before_status == ""
+
+
 def test_app_restore_names_the_original_cause_when_recovery_ALSO_fails(
         ops, app_repo, monkeypatch):
     """FINDING 2: `_restore_scope_from(root, spec, "HEAD")` runs inside
