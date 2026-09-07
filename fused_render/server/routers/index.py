@@ -572,11 +572,20 @@ def _display_root(root: str) -> str:
     anywhere in this repo for this (checked `shell/pathops.py`,
     `envinstall.py`'s `projectenv.display_name`, and the frontend's
     `platform/lib` — none of them shorten a path against home), so this is
-    the smallest version that does it, scoped to this one call site."""
-    home = os.path.expanduser("~")
+    the smallest version that does it, scoped to this one call site.
+
+    `root` arrives already run through `runner.canonical_root` (forward
+    slashes, however this run's spec was recorded). Comparing it against a
+    raw `os.path.expanduser("~")` fails on Windows, where that returns
+    backslashes (`C:\\Users\\x`) — the prefix could never match, and the
+    card would always show the full absolute path. Running `home` through
+    `runner.canonical_root` too — the same function that produced `root`'s
+    spelling — keeps this a single normalization, not a second hand-rolled
+    one that could drift from the first."""
+    home = runner.canonical_root("~")
     if root == home:
         return "~"
-    prefix = home.rstrip("/\\") + "/"
+    prefix = home.rstrip("/") + "/"
     if root.startswith(prefix):
         return "~/" + root[len(prefix):]
     return root

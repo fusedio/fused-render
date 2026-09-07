@@ -339,3 +339,21 @@ def test_a_grown_tree_does_not_stop_the_estimate_from_being_offered(
     row = jobs.list_jobs()[0]
     assert row["total"] == 100.0
     assert row["done"] == 150.0
+
+
+def test_display_root_shortening_is_separator_agnostic(monkeypatch):
+    """`_display_root` shortens against home the same way regardless of which
+    platform produced the spellings. `root` always arrives already run
+    through `runner.canonical_root` (forward slashes); the bug was comparing
+    that against a raw, un-normalized `os.path.expanduser("~")`, which on
+    Windows returns backslashes (`C:\\Users\\x`) and so could never match a
+    forward-slash root — the card would always show the full absolute path.
+
+    Constructed explicitly (a forward-slash root against what `canonical_root`
+    would produce for a backslash home) rather than gated behind `os.name`,
+    so this pins the Windows shape on every platform that runs the suite."""
+    monkeypatch.setattr(index_router.runner, "canonical_root",
+                        lambda root: "C:/Users/x")
+    assert index_router._display_root("C:/Users/x/proj") == "~/proj"
+    assert index_router._display_root("C:/Users/x") == "~"
+    assert index_router._display_root("D:/other/proj") == "D:/other/proj"
