@@ -1184,6 +1184,29 @@ def _app_restore(root, file, sha):
                short=new_short, subject=subject)
 
 
+def _revert_in_progress(root):
+    """Whether git itself considers a revert (or cherry-pick — they share the
+    same sequencer state, `REVERT_HEAD`/`CHERRY_PICK_HEAD`) in progress right
+    now.
+
+    Asked of git (`rev-parse --verify -q REVERT_HEAD`) rather than answered
+    by reading `.git/REVERT_HEAD` off the filesystem directly, so this stays
+    correct regardless of how `.git` resolves for this checkout (a linked
+    worktree's `.git` is a file pointing elsewhere, not a directory) — the
+    same reason this module always asks git rather than parsing its files
+    when a question can be put to git instead.
+    """
+    try:
+        code, _, _ = _run(root, "rev-parse", "--verify", "-q", "REVERT_HEAD")
+    except _Refused:
+        # Can't even ask. Assume the worst so a genuine mid-revert is never
+        # silently missed — the false-alarm case (this fires when nothing
+        # was ever started) is the opposite failure and requires git to be
+        # reachable, which it just proved it is not.
+        return True
+    return code == 0
+
+
 def _safe_abort(root):
     """`git revert --abort`, best-effort. Used only as cleanup after a
     failure this function is already about to report — a SECOND failure
@@ -1191,20 +1214,35 @@ def _safe_abort(root):
     must not replace, or hide behind an unrelated traceback, the original
     refusal the caller is already raising.
 
-    Returns whether the abort actually succeeded (FINDING 3). On a real
-    timeout, `subprocess.run` SIGKILLs the child git, which typically leaves
-    `.git/index.lock` behind; `revert --abort` then fails ("Unable to create
-    index.lock") with a non-zero exit code — NOT an exception — and the
-    previous version of this function looked at neither the exit code nor
-    the exception, so that failure was invisible: the user was told only
-    "conflicts" while the repository was ALSO still mid-revert. The caller
-    uses the return value to say so.
+    Returns whether the repository is left NOT mid-revert afterward
+    (FINDING 3, corrected in round 3). This is not the same question as "did
+    the abort command exit 0" — `revert --abort` exits 128 with "no
+    cherry-pick or revert in progress" whenever the revert this is cleaning
+    up after never actually started (a merge commit with no `-m`, a bad
+    sha — refused before any sequencer state is written), and that is
+    success for this function's purpose just as much as a real abort is: in
+    both cases nothing is left in progress. Conflating the two previously
+    made every such refusal claim the repository "may still be mid-revert"
+    when it plainly was not (round 3's own finding). So a non-zero exit here
+    is checked against the actual state via `_revert_in_progress` rather
+    than treated as failure on its own — only a revert genuinely still in
+    progress afterward counts as this function failing.
+
+    On a real timeout, `subprocess.run` SIGKILLs the child git, which
+    typically leaves `.git/index.lock` behind; `revert --abort` then fails
+    ("Unable to create index.lock") while a real revert WAS in progress, so
+    `_revert_in_progress` correctly reports that as still-failed.
     """
     try:
         code, _, _ = _run(root, "revert", "--abort")
     except _Refused:
-        return False
-    return code == 0
+        # git itself couldn't be run (no-git, timeout). Don't assume the
+        # abort failed on that alone — fall through to the state check,
+        # which is the actual question this function answers.
+        code = None
+    if code == 0:
+        return True
+    return not _revert_in_progress(root)
 
 
 def _revert(root, sha):

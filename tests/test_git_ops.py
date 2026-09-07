@@ -1414,6 +1414,68 @@ def test_a_conflicting_revert_whose_abort_ALSO_fails_warns_the_user(
         "mid-revert" in got["message"].lower(), got
 
 
+def test_reverting_a_merge_commit_refuses_without_a_bogus_mid_revert_warning(
+        ops, tmp_path):
+    """FINDING 1 (round 3): `git revert <merge-sha>` (no `-m`) refuses BEFORE
+    any revert is ever started ("commit ... is a merge but no -m option was
+    given", exit 1) — `.git/REVERT_HEAD` is never written. The abort that
+    follows every revert failure then hits `revert --abort` with nothing in
+    progress, which itself exits 128 ("no cherry-pick or revert in
+    progress"). `_safe_abort` must read that as "there was nothing to abort"
+    (success), not as "the abort failed" — the caller must not tack on "this
+    repository may still be mid-revert" when it plainly is not.
+    """
+    root = str(tmp_path / "merge-repo")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    git(root, "config", "user.name", "Fixture Author")
+    git(root, "config", "user.email", "fixture@example.com")
+    git(root, "config", "commit.gpgsign", "false")
+    write(root, "base.txt", "base\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "c1", when="2026-10-01T10:00:00+00:00")
+    git(root, "branch", "feature")
+
+    write(root, "main.txt", "main\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "c2 on main", when="2026-10-02T10:00:00+00:00")
+
+    git(root, "checkout", "-q", "feature")
+    write(root, "feature.txt", "feature\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "c3 on feature", when="2026-10-03T10:00:00+00:00")
+
+    git(root, "checkout", "-q", "main")
+    git(root, "merge", "-q", "--no-ff", "-m", "merge feature", "feature",
+        when="2026-10-04T10:00:00+00:00")
+    merge_sha = git(root, "rev-parse", "HEAD").strip()
+    assert len(git(root, "rev-parse", f"{merge_sha}^@").strip().split("\n")) == 2
+
+    got = ops.main(root, op="revert", sha=merge_sha)
+
+    assert got["ok"] is False, got
+    # Never started, so must never be reported as maybe-still-in-progress.
+    assert not os.path.exists(os.path.join(root, ".git", "REVERT_HEAD"))
+    assert "mid-revert" not in got["message"].lower(), got
+    assert "revert --abort" not in got["message"], got
+
+
+def test_reverting_a_nonexistent_sha_refuses_without_a_bogus_mid_revert_warning(
+        ops, repo):
+    """Same shape as the merge-commit case: a well-formed but nonexistent sha
+    makes `git revert` fail with "bad object" before anything is started, so
+    the follow-up abort's "nothing in progress" must read as success too.
+    """
+    bogus = "abc123d" * 5 + "0"  # 40 hex chars, not an object in this repo
+
+    got = ops.main(repo, op="revert", sha=bogus)
+
+    assert got["ok"] is False, got
+    assert not os.path.exists(os.path.join(repo, ".git", "REVERT_HEAD"))
+    assert "mid-revert" not in got["message"].lower(), got
+    assert "revert --abort" not in got["message"], got
+
+
 # ------------------------------------------------------------------ refusals
 
 
