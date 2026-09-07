@@ -196,6 +196,33 @@ def test_a_running_run_still_reports_live_when_reporting_itself_fails(monkeypatc
     assert index_router.mirror_index_jobs_once(cfg=object()) is True
 
 
+def test_the_manifest_is_read_once_per_tick_not_once_per_running_run(monkeypatch):
+    """`partitions.json` is the SAME file for every run under one `cfg` — so
+    with three running runs sharing a config, a correct tick reads it once,
+    not three times. This was the disagreement D733's own comment settles:
+    `_mirror_one_run_job` runs once per run in `mirror_index_jobs_once`'s own
+    `for run in runs:` loop, so a `read_manifest` call living INSIDE that
+    function ran once per running run per tick, not once per tick."""
+    calls = []
+
+    def _spy(cfg):
+        calls.append(cfg)
+        return {"rows": 100, "updated": 0}
+
+    monkeypatch.setattr(index_router, "read_manifest", _spy)
+    monkeypatch.setattr(
+        index_router.runner, "list_runs",
+        lambda cfg, limit=20: {"runs": [
+            _run("r1", running=True), _run("r2", running=True),
+            _run("r3", running=True),
+        ]})
+    index_router.mirror_index_jobs_once(cfg=object())
+    assert len(calls) == 1
+    rows = jobs.list_jobs()
+    assert len(rows) == 3
+    assert all(r["total"] == 100.0 for r in rows)
+
+
 class _StopLoop(Exception):
     """Escapes `_index_job_loop`'s `while True` after exactly one tick."""
 

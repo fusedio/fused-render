@@ -601,10 +601,22 @@ def _display_root(root: str) -> str:
 _mirrored_terminal: set = set()
 
 
-def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> bool:
+def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -> bool:
     """Mirror one run into its job. Returns whether the run was live
     (`running`) on this tick, so `mirror_index_jobs_once` can answer the
-    loop's cadence question without a second read of the run directories."""
+    loop's cadence question without a second read of the run directories.
+
+    `prev_total` — the rescan denominator ESTIMATE — is read by the CALLER,
+    once per tick, not here: this function runs once per run
+    `mirror_index_jobs_once` is mirroring (its own `for run in runs:` loop),
+    so a `read_manifest(cfg)` call inside this function would run once PER
+    RUNNING RUN per tick, not once per tick — the two disagree on multi-root
+    setups, where every configured root scanning at once used to mean one
+    JSON read of the same `partitions.json` per root, every tick. Hoisted out
+    (D733) because every run under one `cfg` shares that one file, so reading
+    it once and handing the same value to every run this tick is both cheaper
+    and, unlike N separate reads, immune to the file changing mid-tick and
+    making sibling runs disagree about the denominator."""
     run_id = run.get("run_id")
     root = run.get("root")
     if not run_id or not root:
@@ -613,25 +625,8 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> bool:
     if job_id in _mirrored_terminal:
         return False
     running = bool(run.get("running"))
-    # An ESTIMATE for a rescan's denominator: the file count `partitions.json`
-    # recorded as of the LAST completed scan — the same fold `/api/index/status`
-    # already reads (`read_manifest(cfg)["rows"]`), so this costs nothing beyond
-    # the one JSON read that endpoint already does per request; no duckdb query
-    # is added to the tick. A first-ever scan has no such file (`read_manifest`
-    # returns None) and stays `total: None` — the correct indeterminate sweep
-    # (jobs.ts `jobFraction`/`StatusChip`) rather than a fake number invented to
-    # fill a bar. `cfg` is best-effort here (a caller can hand this a stub, as
-    # every non-estimate test in test_index_jobs.py does): a bad or absent
-    # manifest just means no estimate, not a broken tick.
-    prev_total = None
-    if running:
-        try:
-            manifest = read_manifest(cfg)
-        except Exception:
-            manifest = None
-        prev_rows = int((manifest or {}).get("rows") or 0)
-        if prev_rows > 0:
-            prev_total = float(prev_rows)
+    if not running:
+        prev_total = None
     root_display = _display_root(str(root))
     fields = {
         "title": "Indexing files",
@@ -741,10 +736,31 @@ def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> bool:
     except Exception:  # noqa: BLE001 - a bridge tick must never take the server down
         logger.exception("could not list index runs for job mirroring")
         return False
+    # An ESTIMATE for a rescan's denominator: the file count `partitions.json`
+    # recorded as of the LAST completed scan — the same fold `/api/index/status`
+    # already reads (`read_manifest(cfg)["rows"]`). Read ONCE HERE, per tick,
+    # not inside `_mirror_one_run_job`'s own per-run loop below — every run
+    # under this one `cfg` shares the same `partitions.json`, so N running
+    # runs sharing one config used to mean N identical JSON reads every tick
+    # (D733). A first-ever scan has no such file (`read_manifest` returns
+    # None) and every run's `total` stays the indeterminate `None` (jobs.ts
+    # `jobFraction`/`StatusChip`) rather than a fake number invented to fill
+    # a bar. `cfg` is best-effort here (a caller can hand this a stub, as
+    # every non-estimate test in test_index_jobs.py does): a bad or absent
+    # manifest just means no estimate, not a broken tick. Read unconditionally
+    # (not gated on any run being `running`) — cheap (one small JSON file),
+    # and `_mirror_one_run_job` already drops it back to `None` for a run
+    # that isn't running, so a wasted read here costs nothing observable.
+    try:
+        manifest = read_manifest(cfg)
+    except Exception:
+        manifest = None
+    prev_rows = int((manifest or {}).get("rows") or 0)
+    prev_total = float(prev_rows) if prev_rows > 0 else None
     live = False
     for run in runs:
         try:
-            if _mirror_one_run_job(cfg, run):
+            if _mirror_one_run_job(cfg, run, prev_total):
                 live = True
         except Exception:  # noqa: BLE001 - one bad run must not stop the rest
             logger.exception("could not mirror index run %s into jobs",
