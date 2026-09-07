@@ -11,6 +11,7 @@
 // navigation delegate accepts exactly that CA for exactly this host
 // (TLSTrust.swift) — which is what gives pages a secure context, and with it
 // the microphone and clipboard the same pages lack on plain http.
+import Network
 import SwiftUI
 import WebKit
 import os
@@ -126,11 +127,40 @@ struct WebView: UIViewRepresentable {
         let onGridLoaded: (String) -> Void
         let bridge = CaptureBridge()
 
+        /// Set when a navigation failed, cleared when one lands. What makes
+        /// the network watch below reload exactly once after a failure rather
+        /// than on every Wi-Fi ⇄ cellular handoff of a page that is fine.
+        private var navigationFailed = false
+        private let network = NWPathMonitor()
+
         init(server: Server, controller: WebController, onGridLoaded: @escaping (String) -> Void) {
             self.server = server
             self.baseURL = server.baseURL
             self.controller = controller
             self.onGridLoaded = onGridLoaded
+            super.init()
+            // Coming back onto a network reloads a page that died on the way
+            // out. Leaving one Wi-Fi for another takes the computer's address
+            // with it — the desktop re-announces itself (lan.py's watcher),
+            // and this is the phone's half: without it the webview sits on
+            // WebKit's error page until someone pulls to refresh.
+            network.pathUpdateHandler = { [weak self] path in
+                guard path.status == .satisfied else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self?.retryAfterNetworkChange() }
+            }
+            network.start(queue: .main)
+        }
+
+        deinit { network.cancel() }
+
+        @MainActor
+        private func retryAfterNetworkChange() {
+            guard navigationFailed, let web = webView else { return }
+            webLog.info("network back; reloading \(web.url?.absoluteString ?? self.baseURL.absoluteString, privacy: .public)")
+            // `reload()` on an error page re-requests the URL that failed;
+            // with no URL at all (the very first load never landed) there is
+            // nothing to reload, so go to the base.
+            if web.url != nil { web.reload() } else { web.load(URLRequest(url: baseURL)) }
         }
 
         @objc func pulled(_ sender: UIRefreshControl) {
@@ -162,14 +192,17 @@ struct WebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             webView.scrollView.refreshControl?.endRefreshing()
+            navigationFailed = true
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             webView.scrollView.refreshControl?.endRefreshing()
+            navigationFailed = true
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             webView.scrollView.refreshControl?.endRefreshing()
+            navigationFailed = false
             webLog.info("finished \(webView.url?.absoluteString ?? "-", privacy: .public)")
             controller.location = webView.url
             controller.canGoBack = webView.canGoBack

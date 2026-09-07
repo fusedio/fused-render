@@ -71,6 +71,9 @@ PORT_CANDIDATES = (80, 8080, 1888)
 #: first so the app's URL carries no port.
 TLS_PORT_CANDIDATES = (443, 8443, 1889)
 
+# How often the watcher looks at the network address (see _Controller._watch).
+WATCH_INTERVAL_S = 5.0
+
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "lan")
 
 
@@ -874,6 +877,11 @@ class _Controller:
         self._tls_ip: str | None = None
         self.tls_port: int | None = None
         self.tls_error: str | None = None
+        # The watcher that follows the network (see _watch). `_last_seen` is
+        # what the last poll OBSERVED; `_ip` above is what is advertised.
+        self._watch_thread: threading.Thread | None = None
+        self._watch_stop = threading.Event()
+        self._last_seen: str | None = None
 
     # -- wiring
     def attach(self, inner) -> None:
@@ -1011,7 +1019,64 @@ class _Controller:
             self._advertise(ip)
         else:
             self.error = "no network address found"
+        self._last_seen = ip
+        self._start_watch()
         logger.info("lan: sharing at %s / %s (%s)", self.url(), self.https_url(), ip)
+
+    def _start_watch(self) -> None:
+        if self._watch_thread is not None and self._watch_thread.is_alive():
+            return
+        self._watch_stop.clear()
+        self._watch_thread = threading.Thread(target=self._watch, daemon=True, name="fused-lan-watch")
+        self._watch_thread.start()
+
+    def _watch(self) -> None:
+        """Follow the network. Joining a different Wi-Fi, or leaving one and
+        coming back, leaves the mDNS records pointing at an address that is
+        gone — and the records themselves gone with the interface they were
+        announced on, even when the address comes back the same. Nothing on
+        the phone can repair that, and until this existed nothing here
+        noticed either: the check lived in status(), which only runs when
+        something reads the preferences.
+        """
+        while not self._watch_stop.wait(WATCH_INTERVAL_S):
+            # Only the current watcher works. A stop while this one waited on
+            # the lock (`_stop` holds it) hands the job to whichever thread
+            # `_start_watch` made next, and this one retires.
+            if self._watch_thread is not threading.current_thread():
+                return
+            try:
+                ip = lan_ip()
+                # A DOWN → UP transition re-announces even at the same
+                # address: the sockets those records were announced on went
+                # with the interface, and zeroconf does not announce again by
+                # itself. (A flap shorter than one interval at an unchanged
+                # address is the gap this leaves.)
+                moved = ip is not None and (ip != self._ip or self._last_seen is None)
+                self._last_seen = ip
+                if not moved and not (self._want and self._thread is not None
+                                      and not self._thread.is_alive()):
+                    continue
+                with self._lock:
+                    if self._watch_thread is not threading.current_thread():
+                        return  # stopped (or replaced) while this waited for the lock
+                    if self._want and self._thread is not None and not self._thread.is_alive():
+                        logger.warning("lan: http listener stopped on its own; restarting")
+                        self._server = self._thread = None
+                        self.port = None
+                        self._start()
+                        continue  # _start advertised and reissued for `ip` itself
+                    if moved and self.running:
+                        logger.info("lan: network changed (%s -> %s); re-advertising", self._ip, ip)
+                        # `_advertise` closes the old zeroconf and opens a new
+                        # one — bounded (goodbye packets, python-zeroconf
+                        # 0.151), and on this thread rather than a request's.
+                        self._advertise(ip)
+                        if ip != self._tls_ip:
+                            self._stop_tls()
+                            self._start_tls(ip)
+            except Exception:  # noqa: BLE001 — a watcher that dies stops watching
+                logger.warning("lan: network watch failed", exc_info=True)
 
     def _start_tls(self, ip: str | None) -> None:
         """The https listener for the native shell (lan_tls.py). Best-effort:
@@ -1066,6 +1131,13 @@ class _Controller:
         self._tls_server, self._tls_thread = server, thread
 
     def _stop(self) -> None:
+        # The watcher first: it restarts a listener that stopped, so leaving it
+        # running through a shutdown would bring sharing back. NOT joined —
+        # this runs holding the lock the watcher takes, so waiting for it here
+        # would wait out its own timeout every time. Dropping the reference is
+        # the signal: a watcher that is no longer `_watch_thread` retires.
+        self._watch_stop.set()
+        self._watch_thread = None
         self._unadvertise()
         server, thread = self._server, self._thread
         tls_server, tls_thread = self._tls_server, self._tls_thread
