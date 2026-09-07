@@ -3,20 +3,31 @@
 // request. Everything here is a sequence, which is precisely what the source
 // guards next door could not test.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { IndexRankResult } from "@platform/lib/api";
+import type { IndexRankResult, Prefs } from "@platform/lib/api";
 import { Clock, Deferred, flush, renderHook } from "@apps/explorer/listing/hook-harness";
 import { INSTANT_DEBOUNCE_MS } from "@platform/lib/instant-search";
 
 // --- the module boundary ------------------------------------------------------
-const rankCalls: { root: string; q: string; reply: Deferred<IndexRankResult> }[] = [];
+const rankCalls: {
+  root: string;
+  q: string;
+  ranked: boolean | undefined;
+  reply: Deferred<IndexRankResult>;
+}[] = [];
 const scanCalls: string[] = [];
 let scanReply: { started: boolean; why: string } = { started: true, why: "started" };
 const walkCalls: string[] = [];
+// The owner's unranked-search preference (D720) — `useRankedSearchEnabled`
+// (ranked-search-pref.ts) reads it via `getPrefs`, which this stub answers
+// synchronously-resolved rather than deferred: the pref is not this file's
+// subject, and every existing test here asserts the FIRST rank call's shape,
+// before a real (deferred) GET could ever land anyway.
+let prefsRanked = true;
 
 mock.module("@platform/lib/api", () => ({
-  indexRank: (root: string, q: string) => {
+  indexRank: (root: string, q: string, opts?: { ranked?: boolean }) => {
     const reply = new Deferred<IndexRankResult>();
-    rankCalls.push({ root, q, reply });
+    rankCalls.push({ root, q, ranked: opts?.ranked, reply });
     return reply.promise;
   },
   requestFolderScan: (path: string) => {
@@ -27,12 +38,20 @@ mock.module("@platform/lib/api", () => ({
     walkCalls.push(path);
     return new Promise(() => {}); // a walk nobody resolves; its start is the fact
   },
+  getPrefs: () =>
+    Promise.resolve({ indexing: { enabled: true, ranked: prefsRanked } } as Prefs),
 }));
 
 mock.module("@platform/lib/router", () => ({ replaceSearch: () => {} }));
 
 const { useWalkSearch } = await import("@apps/explorer/listing/useWalkSearch");
 const freshness = await import("@platform/lib/index-freshness");
+// Imported directly (not through the `getPrefs` stub above) so a test can
+// pin the preference deterministically: the module-level cache in
+// ranked-search-pref.ts is process-global (bun runs every test file in one
+// process), so relying on the mocked GET alone would make this hook's
+// starting value whatever an earlier, unrelated test file last published.
+const { publishRankedSearchEnabled } = await import("@apps/explorer/lib/ranked-search-pref");
 
 function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
@@ -54,6 +73,8 @@ beforeEach(() => {
   scanCalls.length = 0;
   walkCalls.length = 0;
   scanReply = { started: true, why: "started" };
+  prefsRanked = true;
+  publishRankedSearchEnabled(true);
   freshness.resetFsMutations();
   clock.install();
 });
@@ -327,6 +348,49 @@ describe("a completed scan", () => {
     await flush(() => rankCalls[1].reply.resolve(
       answer({ hits: [hit("a/widget.md")], total: 1 })));
     expect(box.current().behind).toBe(false);
+    box.unmount();
+  });
+});
+
+describe("the ranked-search preference (D720)", () => {
+  test("a user query sends `ranked` reflecting the current preference", async () => {
+    const box = await search("widget");
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].ranked).toBe(true);
+    box.unmount();
+  });
+
+  test("turning ranking off changes what the next request sends", async () => {
+    publishRankedSearchEnabled(false);
+    const box = await search("widget");
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].ranked).toBe(false);
+    box.unmount();
+  });
+
+  test("toggling the preference while mounted invalidates the memoised answer "
+    + "and re-asks with the new value", async () => {
+    const box = await search("widget");
+    await flush(() => rankCalls[0].reply.resolve(
+      answer({ hits: [hit("a/widget.md")], total: 1 })));
+    expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["a/widget.md"]);
+
+    // A second query, memoised, so a later return to "widget" would normally
+    // answer from memory without a new request — see the "answered from
+    // memory" case above. Toggling `ranked` must invalidate that memo: the
+    // remembered rows are in the WRONG order for the new preference.
+    await flush(() => box.current().setQuery("zeta"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[1].reply.resolve(
+      answer({ hits: [hit("zeta.md")], total: 1 })));
+
+    await flush(() => publishRankedSearchEnabled(false));
+    await flush(() => box.current().setQuery("widget"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    // Answered from a FRESH request, not the memo — and that request carries
+    // the new preference.
+    expect(rankCalls).toHaveLength(3);
+    expect(rankCalls[2].ranked).toBe(false);
     box.unmount();
   });
 });

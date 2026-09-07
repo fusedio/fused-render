@@ -652,10 +652,14 @@ export interface IndexRankResult {
 export function indexRank(
   fsPath: string,
   query: string,
-  opts: { signal?: AbortSignal; limit?: number } = {},
+  opts: { signal?: AbortSignal; limit?: number; ranked?: boolean } = {},
 ): Promise<IndexRankResult> {
   const params = new URLSearchParams({ root: fsPath, q: query });
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  // Omitted entirely when unset — the route defaults to `ranked=true`
+  // (D720), so a caller that never passes it (the warm-up/source-selection
+  // probes) gets exactly the same answer it always did.
+  if (opts.ranked !== undefined) params.set("ranked", String(opts.ranked));
   return getJson<IndexRankResult>("/api/index/rank?" + params.toString(), {
     signal: opts.signal,
   });
@@ -1096,7 +1100,11 @@ export interface Prefs {
   // opt-OUT, the opposite polarity from `reader`). Turning it off does not
   // delete the on-disk index or stop search from answering it; only new
   // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
-  indexing: { enabled: boolean };
+  // `ranked` (D720, also default ON) is a separate, sibling preference:
+  // whether index-backed search ORDERS its hits by relevance score at all —
+  // off means `/api/index/rank?ranked=false`'s shallowest-then-alphabetical
+  // order instead (`ranked_search_enabled` server-side).
+  indexing: { enabled: boolean; ranked: boolean };
 }
 
 export interface AiIdlePrefs {
@@ -1318,6 +1326,10 @@ export function putLanEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
+}
+
+export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { ranked_search_enabled: enabled });
 }
 
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {

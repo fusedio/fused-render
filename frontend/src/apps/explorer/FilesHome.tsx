@@ -9,6 +9,7 @@ import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/li
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
 import { searchCaveat } from "@apps/explorer/listing/index-caveat";
+import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
 import {
   getClaudeSessionFolders,
   getGitRepos,
@@ -371,6 +372,12 @@ export function FilesSearch({
   const [query, setQuery] = useState(initialQuery);
   const [ai, setAi] = useState<AiPhase>(AI_OFF);
   const [highlight, setHighlight] = useState<number | null>(null);
+  // The owner's unranked-search preference (D720) — read here, not threaded
+  // as a prop: this box has no other `Prefs` access, and the module-level
+  // cache (ranked-search-pref.ts) is exactly the pattern
+  // apps/canvases/feature-flag.ts already established for "a Preferences-page
+  // boolean a component elsewhere in the app needs on every request".
+  const ranked = useRankedSearchEnabled();
   const q = query.trim();
   const active = q !== "";
   // Below MIN_QUERY_CHARS the REQUEST is gated, not `active`: `active` is what
@@ -544,8 +551,11 @@ export function FilesSearch({
   const [mutations, setMutations] = useState(fsMutationCount);
   useEffect(() => subscribeFsMutations(() => setMutations(fsMutationCount())), []);
   useEffect(() => {
+    // `ranked` too: a memoized answer from before the preference was toggled
+    // is in the WRONG order, not merely stale in the freshness sense the
+    // other two deps cover.
     memo.current.clear();
-  }, [lifecycle, mutations, home]);
+  }, [lifecycle, mutations, home, ranked]);
 
   // Warm at idle, once per mount. The first search of a fresh server process
   // pays for the duckdb import and the gitignore verdict pool, and the whole
@@ -603,7 +613,7 @@ export function FilesSearch({
       // rankingSettled — armed the AI row on every keystroke after one
       // transient error.
       setFailure("");
-      indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT }).then(
+      indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT, ranked }).then(
         (res) => {
           if (ctl.signal.aborted) return;
           const next = answerFrom(res, q, home, Date.now() - issuedAt.current);
@@ -627,7 +637,7 @@ export function FilesSearch({
     // request.
     const timer = window.setTimeout(run, INSTANT_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [home, q, active, searchable, suppressRank, lifecycle, mutations, retryNonce]);
+  }, [home, q, active, searchable, suppressRank, lifecycle, mutations, retryNonce, ranked]);
 
   useEffect(() => {
     if (!pending) {

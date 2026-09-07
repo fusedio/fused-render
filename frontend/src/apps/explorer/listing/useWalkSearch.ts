@@ -59,6 +59,7 @@ import { replaceSearch } from "@platform/lib/router";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
 import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "@platform/lib/search-hold";
 import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
+import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
 import { shouldReconcile } from "@apps/explorer/listing/revalidate";
 import { capHits } from "@apps/explorer/listing/result-cap";
 import { hitsFromRank } from "@apps/explorer/listing/ranked-hits";
@@ -106,6 +107,9 @@ interface RankAnswer {
 // mode) keeps the query fully local: it neither seeds from ?q nor mirrors
 // keystrokes back to the address bar — that URL belongs to the host view.
 export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
+  // The owner's unranked-search preference (D720) — same module-level cache
+  // FilesHome.tsx's home search reads; both boxes honour the one setting.
+  const rankedPref = useRankedSearchEnabled();
   const [query, setQueryState] = useState<string>(() => (urlSync ? currentQuery() : ""));
   const [walk, setWalk] = useState<WalkState>(IDLE_WALK);
   // Which refresh generation of the walk has been REQUESTED (null = none).
@@ -271,8 +275,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // when the re-ask lands, because a completed scan is not a reason to blank
   // the list.
   useEffect(() => {
+    // `rankedPref` too: a memoized answer from before the preference was
+    // toggled is in the WRONG order, not merely stale.
     memo.current.clear();
-  }, [fsPath, pinned, lifecycle]);
+  }, [fsPath, pinned, lifecycle, rankedPref]);
   // A new folder or an adopted generation, on the other hand, drops the answer
   // outright: those rows are about something else.
   useEffect(() => {
@@ -379,7 +385,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     // that outlasts SCAN_POLL_MS would otherwise never be allowed to finish,
     // and the loop would outlive the scan it is waiting for. It also drops the
     // duplicate that the `polling` flag flipping used to cost.
-    const key = [fsPath, pinned, lifecycle, retryNonce, q].join("\u0000");
+    const key = [fsPath, pinned, lifecycle, retryNonce, q, rankedPref].join("\u0000");
     if (inflightKey.current === key) return;
     const run = () => {
       inflight.current?.abort();
@@ -398,7 +404,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       setPending(true);
       // The previous failure is not this request's verdict.
       setFailure("");
-      indexRank(fsPath, q, { signal: ctl.signal, limit: SEARCH_RANK_LIMIT }).then(
+      indexRank(fsPath, q, { signal: ctl.signal, limit: SEARCH_RANK_LIMIT, ranked: rankedPref }).then(
         (res) => {
           if (ctl.signal.aborted || sourceEpoch.current !== epoch) return;
           inflightKey.current = null;
@@ -441,7 +447,7 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- applyStep is
     // recreated each render; everything it reads is a ref or listed here.
   }, [fsPath, q, searching, walkMode, pinned, lifecycle, retryNonce, pollTick,
-      polling]);
+      polling, rankedPref]);
 
   // The poll itself: while a scan covering this folder is running, ask again
   // on a modest cadence and repaint. The ordering WILL shift as rows land;
