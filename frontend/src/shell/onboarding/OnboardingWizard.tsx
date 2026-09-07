@@ -131,11 +131,15 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // One yellow button per screen. A step with its own work to do (install,
   // grant, download) owns the colour while that work is open and Next goes
   // quiet; the moment it is done — or on a step with nothing to do — Next
-  // is the yellow one. Steps report through `onWork`; a step change resets
-  // to "nothing open" so a fresh step never inherits the last one's verdict.
-  const [stepHasWork, setStepHasWork] = useState(false);
-  useEffect(() => setStepHasWork(false), [step.id]);
-  const onWork = useCallback((busy: boolean) => setStepHasWork(busy), []);
+  // is the yellow one. Steps report through `onWork`, and the report is
+  // TAGGED with the step it came from: a fresh step never inherits the last
+  // one's verdict, and no reset effect is needed. (A reset effect was tried
+  // and lost the race — a child's effect runs before its parent's, so the new
+  // step's `onWork(true)` landed first and the reset then wiped it, leaving
+  // Download AND Next both yellow.)
+  const [work, setWork] = useState<{ id: string; busy: boolean } | null>(null);
+  const stepHasWork = work?.id === step.id && work.busy;
+  const onWork = useCallback((busy: boolean) => setWork({ id: step.id, busy }), [step.id]);
 
   // Fire-and-forget, and at most one flag per visit: the flag is a courtesy
   // to the NEXT launch, and a failed write must not hold the page over the
