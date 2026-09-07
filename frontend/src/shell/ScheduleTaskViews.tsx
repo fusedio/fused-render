@@ -3507,10 +3507,20 @@ function TaskCard({
             {folderMissing && (
               <span
                 role="button"
+                tabIndex={0}
                 className="tasks-act tasks-act--delete"
                 aria-label={`Delete ${task.task_id} forever`}
                 data-hint="Delete task forever"
                 onClick={(e) => {
+                  e.stopPropagation();
+                  setErasing(true);
+                }}
+                onKeyDown={(e) => {
+                  // A button's keyboard: Enter and Space press it, and the
+                  // press stops here so the card's own key handler does not
+                  // also open the thread (bugbot, PR #1049).
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
                   e.stopPropagation();
                   setErasing(true);
                 }}
