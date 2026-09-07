@@ -75,8 +75,12 @@ describe("useSnapshotForFolder", () => {
       const sha = u.searchParams.get("sha") ?? "";
       requested.push(`${path}@${sha}`);
       if (sha === "deadbee0") {
+        // A DEFINITIVE 404 (finding [2], round 2: only this status is
+        // grounds to give up and clear `_snapshot` — see this file's own
+        // status-branching tests below for the transient-error case).
         return Promise.resolve({
           ok: false,
+          status: 404,
           json: () => Promise.resolve({ ok: false, error: "no app folder encloses it" }),
         }) as unknown as Promise<Response>;
       }
@@ -200,4 +204,79 @@ describe("useSnapshotForFolder", () => {
     expect(box.current().resolvedSnapshot).toBe(null);
     box.unmount();
   });
+
+  it(
+    "a TRANSIENT failure (no numeric 404) leaves the resolution pending, " +
+      "not cleared to live",
+    async () => {
+      // Regression for finding [2], round 2 review: only a DEFINITIVE 404
+      // (no app folder encloses this path) is grounds to give up and clear
+      // `_snapshot`. A network drop, a 500, or a server mid-restart must not
+      // read identically to "there is genuinely no snapshot here" — the
+      // previous shape cleared the shared `_snapshot` URL (and the
+      // singleton) on ANY failure alike.
+      curLoc().search = "?_snapshot=aaaa111";
+      globalThis.fetch = (() =>
+        Promise.reject(new TypeError("network error"))) as unknown as typeof fetch;
+      const box = renderHook(useSnapshotForFolder, "/w/myapp", 0);
+      for (let i = 0; i < 8 && box.current().resolvedSnapshot !== null; i++) {
+        await flush();
+      }
+      // Still null (never resolved), but critically the mechanism did not
+      // treat this as a confirmed "no app folder" and blow away a snapshot
+      // some OTHER pane might legitimately be showing — proven directly
+      // below, in the cross-pane test.
+      expect(box.current().resolvedSnapshot).toBe(null);
+      box.unmount();
+    }
+  );
+
+  it(
+    "a 404 for THIS folder does not clear a sha another pane already " +
+      "resolved successfully",
+    async () => {
+      // Regression for finding [2], round 2 review: the previous shape
+      // cleared the SHELL's own `_snapshot` URL unconditionally the instant
+      // ANY mount's resolve failed — tearing the snapshot down for every
+      // other pane. Two apps in one repo share shas, so a companion
+      // Preview pane resolving the SAME sha against a DIFFERENT app folder
+      // is exactly the shape that must survive this folder's own 404.
+      setResolvedSnapshot({ sha: "deadbee0", dir: "/cache/key/deadbee0", app_dir: "/w/otherapp" });
+      curLoc().search = "?_snapshot=deadbee0";
+      const box = renderHook(useSnapshotForFolder, "/w/myapp", 0);
+      for (let i = 0; i < 8 && box.current().resolvedSnapshot !== null; i++) {
+        await flush();
+      }
+      // This folder gives up locally (it lists live)...
+      expect(box.current().resolvedSnapshot).toBe(null);
+      // ...but the shared URL, and the OTHER pane's resolution, survive.
+      expect(curLoc().search).toBe("?_snapshot=deadbee0");
+      box.unmount();
+    }
+  );
+
+  it(
+    "a cached resolution for a DIFFERENT app folder is not reused just " +
+      "because the sha matches",
+    async () => {
+      // Regression for finding [3], round 2 review: the "already resolved"
+      // short-circuit used to compare only `sha`, never whether the cached
+      // `app_dir` actually encloses THIS folder. Two apps in one repo share
+      // shas, so a resolution the singleton already holds for appA must not
+      // be reused, unresolved, for a folder in appB under the same sha.
+      setResolvedSnapshot({ sha: "abc1234", dir: "/cache/key/abc1234", app_dir: "/w/otherapp" });
+      curLoc().search = "?_snapshot=abc1234";
+      const box = renderHook(useSnapshotForFolder, "/w/myapp", 0);
+      await flush();
+      // Must have RE-resolved against THIS folder's own app, not reused the
+      // other app's cached answer.
+      expect(requested).toEqual(["/w/myapp@abc1234"]);
+      expect(box.current().resolvedSnapshot).toEqual({
+        sha: "abc1234",
+        dir: "/cache/key/abc1234",
+        app_dir: "/w/myapp",
+      });
+      box.unmount();
+    }
+  );
 });

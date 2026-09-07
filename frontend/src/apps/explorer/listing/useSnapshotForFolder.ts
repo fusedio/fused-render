@@ -31,6 +31,7 @@ import { getGitSnapshot } from "@platform/lib/api";
 import { replaceSearch } from "@platform/lib/router";
 import { writeQueryParam } from "@apps/explorer/lib/preview-side";
 import {
+  carries,
   getResolvedSnapshot,
   isSha,
   setResolvedSnapshot,
@@ -53,8 +54,18 @@ export function useSnapshotForFolder(
     }
     // `urlVersion` bumps on EVERY history write, most of which have nothing
     // to do with `_snapshot` (a sort param, `_side`, `_mode`) — a resolution
-    // already sitting on this exact sha needs no redundant round trip.
-    if (resolvedSnapshot && resolvedSnapshot.sha === raw) return;
+    // already sitting on this exact sha needs no redundant round trip,
+    // PROVIDED it was resolved against an app folder that actually encloses
+    // THIS folder (code review finding [3], round 2: matching only on `sha`
+    // let a resolution for a DIFFERENT app — two apps in one repo share
+    // shas — survive a hop between them and ship the wrong `dir` forever).
+    if (
+      resolvedSnapshot &&
+      resolvedSnapshot.sha === raw &&
+      carries(resolvedSnapshot.app_dir, fsPath)
+    ) {
+      return;
+    }
     let alive = true;
     getGitSnapshot(fsPath, raw)
       .then((r) => {
@@ -63,15 +74,29 @@ export function useSnapshotForFolder(
         setResolvedSnapshot(snap);
         setLocalResolvedSnapshot(snap);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (!alive) return;
-        // No app folder encloses this path, a mount-backed path, git
-        // trouble: this folder simply lists live, same posture Preview.tsx
-        // takes — and, like Preview.tsx's own re-sync effect, this must
-        // actually drop `_snapshot` rather than leave the URL claiming a
-        // resolution that will never land (finding B2's pending window,
-        // symmetric here: a bare folder listing with no mounted Preview to
-        // otherwise clear it).
+        // Only a DEFINITIVE 404 (no app folder encloses this path) is
+        // grounds to give up — a TRANSIENT failure (a dropped connection, a
+        // 500, the server mid-restart) must not read identically to "there
+        // is genuinely no snapshot here" (code review finding [2], round 2):
+        // stay pending instead, same as Preview.tsx's own re-sync effect.
+        const status = (err as { status?: number } | null | undefined)?.status;
+        if (status !== 404) return;
+        // A confirmed 404 for THIS folder. If the SAME sha has already
+        // resolved successfully somewhere ELSE in this shell — a companion
+        // Preview pane on a DIFFERENT app folder, since two apps in one
+        // repo share shas — the sha itself is still perfectly valid; only
+        // THIS folder has nothing to show for it, so only this hook's own
+        // local state gives up (this folder lists live), leaving the shared
+        // `_snapshot` URL and the singleton alone for whichever pane is
+        // legitimately using it. The previous shape cleared the SHELL's own
+        // URL unconditionally on any one mount's failure, tearing the
+        // snapshot down for every other pane.
+        if (getResolvedSnapshot()?.sha === raw) {
+          setLocalResolvedSnapshot(null);
+          return;
+        }
         setResolvedSnapshot(null);
         setLocalResolvedSnapshot(null);
         const search = writeQueryParam(location.search.replace(/^\?/, ""), "_snapshot", null);

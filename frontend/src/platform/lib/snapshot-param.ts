@@ -87,18 +87,42 @@ export function carries(fromAppDir: string | null, toPath: string): boolean {
 }
 
 // The one rewrite rule, mirroring static/runtime.js's `rewritePath` exactly:
-// a path at or under the resolved snapshot's app folder maps to the same
-// relative path under its extracted tree; anything else — including
-// `null`/non-absolute input, or no resolution yet — is left alone. Kept in
-// lockstep with the runtime's copy by tests/test_runtime_snapshot.py (the
-// runtime side) and platform/lib/snapshot-param.test.ts (this side) asking
-// the same questions of both.
-export function rewriteSnapshotPath(path: string): string {
-  if (!resolvedSnapshot || typeof path !== "string" || path[0] !== "/") return path;
-  const { app_dir, dir } = resolvedSnapshot;
+// a path at or under `snap`'s app folder maps to the same relative path
+// under its extracted tree; anything else — including `null`/non-absolute
+// input, or no resolution at all — is left alone. Kept in lockstep with the
+// runtime's copy by tests/test_runtime_snapshot.py (the runtime side) and
+// platform/lib/snapshot-param.test.ts (this side) asking the same questions
+// of both.
+//
+// Takes `snap` EXPLICITLY rather than only reading the module singleton —
+// code review finding [1], round 2: a caller that already holds its own
+// validated resolution (Preview.tsx's `snapshotResolved`, re-derived from
+// THIS component's own `resolvedSnapshotState` and re-checked against the
+// URL's sha) must rewrite against THAT, not against whatever the singleton
+// happens to hold at call time. Two apps in one repo share shas, and every
+// mounted `useSnapshotForFolder`/this component writes the SAME singleton —
+// a split view with a Listing on one app and a Preview on another, both
+// under the same sha, could have the singleton land on either one's
+// resolution by the time this runs. `rewriteSnapshotPath` (below) is the
+// singleton-reading convenience for callers with no local resolution of
+// their own (Listing.tsx's `snapshotListing`); this is the one the rewrite
+// rule is actually defined in terms of.
+export function rewritePathAgainst(
+  snap: ResolvedSnapshot | null,
+  path: string
+): string {
+  if (!snap || typeof path !== "string" || path[0] !== "/") return path;
+  const { app_dir, dir } = snap;
   if (path === app_dir) return dir;
   if (path.indexOf(app_dir + "/") === 0) return dir + path.slice(app_dir.length);
   return path;
+}
+
+// The singleton-reading convenience — everything that has no local
+// resolution of its own to rewrite against calls this instead of threading
+// `getResolvedSnapshot()` through by hand.
+export function rewriteSnapshotPath(path: string): string {
+  return rewritePathAgainst(resolvedSnapshot, path);
 }
 
 // A hex object name, full or abbreviated — the same shape `/api/git/snapshot`

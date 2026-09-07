@@ -80,9 +80,10 @@ import {
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import {
+  carries as snapshotCarries,
   getResolvedSnapshot,
   isSha,
-  rewriteSnapshotPath,
+  rewritePathAgainst,
   setResolvedSnapshot,
   snapshotSrc,
   type ResolvedSnapshot,
@@ -1158,8 +1159,19 @@ function TemplatePreview({
     // Avoid a redundant round trip on every unrelated history write (a sort
     // param, `_side`, `_mode`) that `useUrlVersion` also wakes this effect
     // for — a resolution already sitting on this exact sha needs nothing
-    // more.
-    if (resolvedSnapshotState && resolvedSnapshotState.sha === raw) {
+    // more, PROVIDED it was resolved against an app folder that actually
+    // encloses THIS file (code review finding [3], round 2). Matching only
+    // on `sha` let a resolution sitting in the singleton for a DIFFERENT
+    // app — two apps in one repo share shas — survive a hop between them:
+    // browsing `/repo/appA/x.py?_snapshot=abc` then opening a bookmarked
+    // `/repo/appB/y.py?_snapshot=abc` matched the sha, skipped re-resolving,
+    // and left `resolvedSnapshotState` holding appA's `dir`/`app_dir`
+    // forever — nothing else ever re-runs this effect for the same sha.
+    if (
+      resolvedSnapshotState &&
+      resolvedSnapshotState.sha === raw &&
+      snapshotCarries(resolvedSnapshotState.app_dir, fsPath)
+    ) {
       setSnapshotSha(raw);
       return;
     }
@@ -1179,19 +1191,33 @@ function TemplatePreview({
         setResolvedSnapshot(snap);
         setResolvedSnapshotState(snap);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (!alive) return;
-        // Unlike the selection handler below (which never let `snapshotSha`
-        // become truthy for a sha it failed to resolve), THIS effect already
-        // set `snapshotSha` above, synchronously, straight off a URL that
-        // simply HAD `_snapshot` on it (a reload, a pasted link) — before
-        // knowing whether it would resolve. A failure here must actually go
-        // live, not merely decline to resolve: `srcFor` (below) holds every
-        // frame's src back for as long as `snapshotSha` is set but
-        // unresolved (finding B2's pending window), and a resolve that will
-        // NEVER land — no app folder here, git trouble — would otherwise
-        // leave every frame permanently pending instead of falling back to
-        // live, which is the posture this comment always claimed to take.
+        // Only a DEFINITIVE 404 (no app folder encloses this path — see
+        // git_snapshot.py's own status choice) is grounds to give up here —
+        // a TRANSIENT failure (a dropped connection, a 500, the server
+        // mid-restart) must not read identically to "there is genuinely no
+        // snapshot for this file" (code review finding [2], round 2): stay
+        // pending instead, the same honest "don't know yet" `srcFor` already
+        // holds every frame in while unresolved, rather than a false "live".
+        const status = (err as { status?: number } | null | undefined)?.status;
+        if (status !== 404) return;
+        // A confirmed 404 for THIS component's own path. If the SAME sha has
+        // already resolved successfully somewhere ELSE in this shell — a
+        // companion pane on a DIFFERENT app folder, since two apps in one
+        // repo share shas — the sha itself is still perfectly valid; only
+        // THIS pane has nothing to show for it, so only this pane's own
+        // state gives up, leaving the shared `_snapshot` URL (and the
+        // singleton) alone for whichever pane is legitimately resolving it.
+        // The previous shape cleared the SHELL's own URL unconditionally on
+        // ANY pane's failure, tearing the snapshot down for every other pane
+        // the instant one of them had no app folder to show it in (e.g. a
+        // second `TemplatePreview` on a plain `/repo/README.md` beside an
+        // app that resolves fine).
+        if (getResolvedSnapshot()?.sha === raw) {
+          setSnapshotSha(null);
+          return;
+        }
         setSnapshotSha(null);
         setResolvedSnapshot(null);
         setResolvedSnapshotState(null);
@@ -1711,8 +1737,10 @@ function TemplatePreview({
   // case — see static/runtime.js's own comment on `resolvedSnapshot`.
   //
   // The "_render" sentinel ADDITIONALLY rewrites `path` ITSELF to the
-  // extracted file (`rewriteSnapshotPath`) rather than only carrying
-  // `_snapshot` for the runtime to resolve against — GET /render
+  // extracted file (`rewritePathAgainst`, against THIS component's own
+  // `snapshotResolved` — see that const's own comment on why not the
+  // singleton) rather than only carrying `_snapshot` for the runtime to
+  // resolve against — GET /render
   // (server/routers/render.py) has no `_snapshot` awareness of its own, so
   // an app previewed as ITSELF used to show its LIVE document body and
   // script under an active snapshot, with only the `fused.*` calls that
@@ -1735,9 +1763,21 @@ function TemplatePreview({
   // it actually answers THAT claim (a re-sync effect above can set
   // `snapshotSha` synchronously off a fresh URL — a reload, a pasted link —
   // moments before its own `getGitSnapshot` call resolves, or a stale
-  // resolution can still be sitting in the singleton from a PREVIOUS file).
+  // resolution can still be sitting in the singleton from a PREVIOUS file) —
+  // AND once its `app_dir` actually encloses THIS FILE (code review finding
+  // [3], round 2). Matching the sha alone is not enough: two apps in one
+  // repo share shas, so `resolvedSnap` can hold a perfectly valid resolution
+  // for the SAME sha against a DIFFERENT app folder — a bookmarked/pasted url
+  // for `/repo/appB/y.py?_snapshot=abc` opened right after browsing
+  // `/repo/appA/x.py?_snapshot=abc` would otherwise see the sha match, skip
+  // re-resolving, and ship appA's `dir`/`app_dir` into appB's frame forever
+  // (nothing re-runs the effect once the sha guard above already let it
+  // return early).
   const snapshotResolved =
-    snapshotSha !== null && resolvedSnap !== null && resolvedSnap.sha === snapshotSha
+    snapshotSha !== null &&
+    resolvedSnap !== null &&
+    resolvedSnap.sha === snapshotSha &&
+    snapshotCarries(resolvedSnap.app_dir, fsPath)
       ? resolvedSnap
       : null;
   // The URL claims an active snapshot but this component has not (yet, or
@@ -1774,8 +1814,21 @@ function TemplatePreview({
     if (m === "_render") {
       // A1: the extracted file itself when snapshotted (see the comment
       // above) — a no-op (`fsPath` unchanged) whenever `snapshotResolved` is
-      // null, which is every non-snapshotted render.
-      const renderPath = snapshotResolved ? rewriteSnapshotPath(fsPath) : fsPath;
+      // null, which is every non-snapshotted render. `rewritePathAgainst`
+      // takes `snapshotResolved` EXPLICITLY (code review finding [1], round
+      // 2), not the module singleton `getResolvedSnapshot()` a sibling
+      // Listing.tsx/useSnapshotForFolder may have last written: a split
+      // view with a Listing on one app and this Preview on another, both
+      // under the SAME sha (two apps in one repo share shas), could leave
+      // the singleton holding the OTHER pane's resolution by the time this
+      // runs — the rewrite would then find no prefix match for THIS file
+      // and return the live path while `snapParams` (built from
+      // `snapshotResolved`, right above) still described THIS pane's own
+      // app — live content rendered under a snapshot pill, exactly the
+      // mixed-era bug finding A1 exists to close.
+      const renderPath = snapshotResolved
+        ? rewritePathAgainst(snapshotResolved, fsPath)
+        : fsPath;
       return snapshotSrc(
         `/render?path=${encodeURIComponent(renderPath)}${snapParams}${thumbFlags}`,
         snapshotSha
@@ -1870,7 +1923,16 @@ function TemplatePreview({
   // after asking for A. Entries are dropped when their frame is retired: a later
   // mount of the same mode is a NEW document that has to load again.
   const loadedFrames = useRef<Set<string>>(new Set());
-  const framePending = isListing || isPending(entry);
+  // `snapshotPending` in the mix too (code review finding [6], round 2):
+  // without it, `srcFor` returns `null` for a pending resolve but this stayed
+  // `false` — the frame still mounted with `src={null}`, React omits the
+  // attribute, the iframe loads `about:blank`, fires `onLoad` as if it were
+  // real content (recording itself in `loadedFrames`, completing the swap,
+  // even calling `onRenderedTitle(null)` for a `_render` frame) — a blank
+  // white pane on a reload of a `_snapshot` url instead of the loading
+  // skeleton this same condition already shows for every other kind of
+  // pending gate.
+  const framePending = isListing || isPending(entry) || snapshotPending;
   useLayoutEffect(() => {
     // Layout effect: the incoming frame must be in the DOM before the paint
     // that starts its fade, or the transition has no `from` value to run from.

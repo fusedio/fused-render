@@ -4,6 +4,7 @@ import {
   getResolvedSnapshot,
   getSnapshotAppDir,
   isSha,
+  rewritePathAgainst,
   rewriteSnapshotPath,
   setResolvedSnapshot,
   shortSha,
@@ -87,6 +88,38 @@ describe("rewriteSnapshotPath — mirrors static/runtime.js's rewritePath", () =
     setResolvedSnapshot(null);
     expect(rewriteSnapshotPath(APP + "/reader.py")).toBe(APP + "/reader.py");
   });
+});
+
+describe("rewritePathAgainst — takes a snapshot explicitly, not the singleton", () => {
+  it("rewrites and passes through exactly like rewriteSnapshotPath, given the same snap", () => {
+    expect(rewritePathAgainst(SNAP, APP)).toBe(DIR);
+    expect(rewritePathAgainst(SNAP, APP + "/reader.py")).toBe(DIR + "/reader.py");
+    expect(rewritePathAgainst(SNAP, "/repo/otherapp/file.txt")).toBe("/repo/otherapp/file.txt");
+    expect(rewritePathAgainst(null, APP + "/reader.py")).toBe(APP + "/reader.py");
+  });
+
+  it(
+    "THE regression for finding [1]: diverges from rewriteSnapshotPath when the " +
+      "singleton holds a DIFFERENT pane's resolution",
+    () => {
+      // Two apps in one repo share shas — the singleton (written by
+      // whichever pane resolved last) holds appB's answer, but THIS
+      // caller's own local resolution (`snap`) is for appA.
+      const otherPaneSnap = { sha: "abc1234", dir: "/cache/key/abc1234b", app_dir: "/repo/appB" };
+      setResolvedSnapshot(otherPaneSnap);
+      const ownSnap = { sha: "abc1234", dir: "/cache/key/abc1234a", app_dir: "/repo/appA" };
+      const target = "/repo/appA/index.html";
+
+      // The singleton-reading convenience finds no prefix match for appA
+      // under appB's app_dir — this is the bug: a caller that blindly used
+      // `rewriteSnapshotPath` here would render the LIVE file.
+      expect(rewriteSnapshotPath(target)).toBe(target);
+      // Passing the caller's OWN resolution explicitly gets the right answer
+      // regardless of what the singleton currently holds.
+      expect(rewritePathAgainst(ownSnap, target)).toBe("/cache/key/abc1234a/index.html");
+      setResolvedSnapshot(null);
+    }
+  );
 });
 
 describe("isSha", () => {
