@@ -2207,7 +2207,9 @@ def test_annotate_mode_defaults_off_and_owns_pin_visibility(html):
     `=== "1"` rather than `!== "0"` so ABSENT reads as disarmed.
     Pin visibility and auto-send have no params of their own any more: pins
     follow the mode, and Done always sends the pending notes."""
-    assert 'annSetMode(fused.params.get("annmode") === "1")' in html
+    boot = html[html.index("function annBootMode()"):]
+    boot = boot[:boot.index("\n}\n")]
+    assert 'annSetMode(m === "1" || m === "2");' in boot
     assert "annshow" not in html
     assert "annautosend" not in html
     # pins gate on the mode itself, and toggling the mode repaints them
@@ -2221,8 +2223,10 @@ def test_annotate_mode_defaults_off_and_owns_pin_visibility(html):
     # runs; only the write is conditional, and only on a no-op — writing "1"
     # over an absent param is a real arm and still pushes.
     mode = _between(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
-    assert 'if ((fused.params.get("annmode") === "1") !== annOn) {' in mode
-    assert mode.count('fused.params.set("annmode"') == 1
+    assert "annModeSync();" in mode
+    sync = _between(html, "function annModeSync() {", "\n}\n")
+    assert 'if (curOn !== annOn || (annOn && cur !== want)) fused.params.set("annmode", want);' in sync
+    assert html.count('fused.params.set("annmode"') == 1
     # Done's send is unconditional (bar the in-flight guard) — an empty
     # composer sends bare, the annotations carrying the content. Saving a note
     # sends nothing: notes pool until Done (Akshil, 2026-09-04).
