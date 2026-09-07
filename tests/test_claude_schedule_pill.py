@@ -101,8 +101,9 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
         and "probeMsg" in append, \
         "a finished run must APPEND when the caller says the turn was never shown"
     # a failed turn needs its own user line too, or the error reads as belonging to
-    # whatever the reader last said
-    assert "if (probeMsg) addUser(probeMsg);" in done
+    # whatever the reader last said — but only when it is not already on screen,
+    # which is what `onScreen(probeMsg)` guards against.
+    assert "if (probeMsg && !onScreen(probeMsg)) addUser(probeMsg);" in done
 
     # and the reload caller keeps the conservative default for THIS opt. It no
     # longer passes no opts at all — #610 gave it `{ retryUnknown: true }`, which

@@ -15966,9 +15966,22 @@ async function pollLoop(run_id, gen = logGen) {
       // const pinned by test to that function (D742) — this is its own,
       // identical dedup, so a message this tick sees already up (drawn by
       // `resumeRun`'s own probe, or a previous tick) is never drawn twice.
-      for (const text of data.pending || []) {
+      // `_pending_messages` strips only the app-state block — the wire text
+      // still carries `<pane-shot>…</pane-shot>` and the annotations block
+      // (`composeOutgoing`), so both the render and the dedup key run
+      // through `stripBlocks` here, same as every other place a message
+      // reaches the transcript.
+      for (const raw of data.pending || []) {
+        const text = stripBlocks(raw);
         const already = [...log.querySelectorAll(".user .bubble")].some((b) => b.textContent === text);
-        if (!already) addUser(text);
+        if (!already) {
+          addUser(text);
+          // Adopted from another tab, or from this one before its own
+          // `sendFollowUp` bump landed — either way this bubble is brand new
+          // on screen, so the streaming reply resets exactly as it would for
+          // a follow-up sent from here (see the reset check above).
+          followupSeq++;
+        }
       }
       // Not awaited, for the same reason the app-state answer below is not: a
       // strip of chips may never hold up the streaming reply by a single frame.
@@ -17524,23 +17537,18 @@ async function resumeRun(run_id, opts) {
     }
     const probeMsg = stripBlocks(probe.message || "");
     const users = log.querySelectorAll(".user .bubble");
-    // Every render branch from here on either draws this run's open exchange
-    // itself or has a considered reason not to (see each branch) — either
-    // way, `loadHistory`'s reserved turns for it are no longer history's to
-    // fall back on: this probe is the live, authoritative answer for the
-    // SAME exchange, and drawing both would be the double-print one owner
-    // per region exists to end. The caller's own fallback (renderReservedOpenTurns)
-    // runs only where this never got called at all — a stale run_id, no
-    // run_id to try, adoptLiveRun's watch finding nothing.
-    pendingOpenTurns = null;
     // Anything of the user's still queued when this attaches — a follow-up
     // sent (from this tab or another) before the CLI echoed it back —
     // belongs to this exchange too (agent.py's `_pending_messages`).
     // Rendered as ordinary user bubbles, in queue order, deduped the same
-    // way `onScreen` already dedupes the exchange's own message: an
-    // identical bubble already up reads as already-shown, never twice.
+    // way `onScreen` already dedupes the exchange's own message. The wire
+    // text carries `<pane-shot>…</pane-shot>` and the annotations block on
+    // top of whatever the user typed — `_pending_messages` strips only the
+    // app-state block — so both the render and the dedup key run through
+    // `stripBlocks` here too, same as `probeMsg` above.
     const renderPending = (list) => {
-      for (const text of list || []) {
+      for (const raw of list || []) {
+        const text = stripBlocks(raw);
         if (!onScreen(text)) addUser(text);
       }
     };
@@ -17551,14 +17559,20 @@ async function resumeRun(run_id, opts) {
       annResolveSent();  // the run this frame missed still handled its notes
       snapInvalidate();  // ...and may have edited the file while we were away
       if (probe.error) {
-        if (!users.length) {
+        // Shown unless this exchange is already on screen — the same bar the
+        // success branch below holds itself to (`!users.length` and
+        // `neverShown` both already imply `!onScreen(probeMsg)`; naming them
+        // is for a reader, not the logic). An ordinary reload of a crashed or
+        // killed run — `quiet` false, `neverShown` false, a non-empty
+        // transcript — used to fall through both and drop "claude exited
+        // unexpectedly" on the floor.
+        if (!users.length || neverShown || !onScreen(probeMsg)) {
+          if (probeMsg && !onScreen(probeMsg)) addUser(probeMsg);
           addError(probe.error);
-        } else if (neverShown) {
-          // The turn is not on screen and never was, so the failure needs its own
-          // user line to hang under — otherwise the error reads as belonging to
-          // whatever the reader last said.
-          if (probeMsg) addUser(probeMsg);
-          addError(probe.error);
+          // This exchange is now on screen — an error, at minimum — so
+          // `loadHistory`'s reservation for it is spoken for and is no
+          // longer the fallback's to draw.
+          pendingOpenTurns = null;
         }
         return;
       }
@@ -17580,10 +17594,18 @@ async function resumeRun(run_id, opts) {
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
         }
+        // Drawn above — this reload's own repair, not the fallback's.
+        pendingOpenTurns = null;
       }
       scrollBottom();
       return;
     }
+    // Still running: this attach takes ownership of the open exchange from
+    // here on — its user turns (this probe's own message, plus anything
+    // still queued) now, its assistant reply from the poll `pollLoop` is
+    // about to start. `loadHistory`'s reservation for it is no longer
+    // history's to fall back on.
+    pendingOpenTurns = null;
     if (probeMsg && !(quiet && onScreen(probeMsg))) {
       addUser(probeMsg);
     }
@@ -17773,24 +17795,32 @@ function renderHistoryTurns(rows) {
 // while a background refresh (followTranscript) is already mid-restore of its
 // own scroll position and would have that fought over it.
 //
+// `opts.gen`: the log generation the caller sampled before its own attach
+// awaited anything (resumeRun/adoptLiveRun, both long round trips). Back
+// bumps `logGen` and wipes `log` while such an await is in flight — without
+// this check the reservation lands in the wiped log, or (a different chat
+// opened in the meantime) consumes the NEW session's reservation instead of
+// the one the caller actually meant.
+//
 // `opts.anchor`: try the `?msg=` flare now that this exchange is finally on
-// screen. Only the boot-path caller passes it — a link naming a turn INSIDE
-// the still-open exchange cannot be resolved the instant loadHistory returns
-// (see loadHistory's own deferral, below), and consumeAnchor disarms on its
-// first try whether or not it landed, so it must wait for the one render
-// that might actually contain the turn. A background refresh never carries
-// a fresh `?msg=` of its own and does not pass this. Left unresolved: a link
-// into a turn a live attach draws itself (pollLoop never retries the anchor)
-// stays unflared — narrower than the general case, and not this fix's to
-// close.
+// screen — whether or not there was anything left HERE to draw. An attach
+// that drew the exchange itself (resumeRun) never spends the anchor on its
+// own, and this is the one call every such caller makes right after, so it
+// is also the only place left that can: a link naming a turn inside the open
+// exchange, or a closed turn `loadHistory` deferred behind this same call,
+// would otherwise never get its try and the reader lands at the bottom
+// instead of on the message they clicked.
 function renderReservedOpenTurns(opts) {
-  if (!pendingOpenTurns || !pendingOpenTurns.length) { pendingOpenTurns = null; return false; }
+  if (opts && opts.gen !== undefined && logGen !== opts.gen) return false;
   const rows = pendingOpenTurns;
   pendingOpenTurns = null;
-  renderHistoryTurns(rows);
-  attachCodeCopy(log);
+  const drew = !!(rows && rows.length);
+  if (drew) {
+    renderHistoryTurns(rows);
+    attachCodeCopy(log);
+  }
   if (opts && opts.anchor) consumeAnchor();
-  return true;
+  return drew;
 }
 
 async function loadHistory(session_id, opts) {
@@ -17987,6 +18017,11 @@ function addChatRow(list, s) {
     fused.params.set("session_id", s.id);
     showSession();
     enterChat();
+    // Sampled before the two long awaits below, same reason as resumeRun's
+    // own `gen` (Bugbot, PR #653): a Back landing during either one wipes
+    // `log` out from under this row's click and must outdate the reservation
+    // render past it, not append into what the leave just cleared.
+    const gen = logGen;
     await loadHistory(s.id);
     // ...and if that chat's last turn is STILL RUNNING, pick it back up. Opening
     // a row is one of the two arrivals that carry no `run` param (see
@@ -18000,7 +18035,7 @@ function addChatRow(list, s) {
     // is a no-op the moment `adoptLiveRun` already drew something (it clears
     // `pendingOpenTurns` itself via resumeRun), so this is free to call
     // unconditionally rather than thread that outcome back up here.
-    if (renderReservedOpenTurns({ anchor: true })) scrollBottom();
+    if (renderReservedOpenTurns({ anchor: true, gen })) scrollBottom();
   };
   row.onclick = open;
   row.onkeydown = (e) => { if (e.key === "Enter") open(); };
@@ -19072,6 +19107,11 @@ const ASK_DETECTION_TIMEOUT_MS = 1500;
     // A bare `run` param (frame died before the first poll saw the session id)
     // still means an in-flight conversation — enter chat and re-attach.
     enterChat();
+    // Sampled before the awaits below, same reason as resumeRun's own `gen`
+    // (Bugbot, PR #653) — nothing else on the page can bump `logGen` this
+    // early in boot, but the awaits below are long enough that it is not
+    // worth trusting that to stay true.
+    const gen = logGen;
     if (session_id) await loadHistory(session_id);
     else markChatReady();  // a bare `run`: nothing to restore, the chat itself is the view
     // The chips this session already earned. The poll loop rebuilds them while a
@@ -19090,7 +19130,7 @@ const ASK_DETECTION_TIMEOUT_MS = 1500;
     // watch exhausting its laps with no run to find). Whichever happened,
     // `renderReservedOpenTurns` is a no-op the moment resumeRun already drew
     // something for it, so this is free to call unconditionally.
-    if (renderReservedOpenTurns({ anchor: true })) scrollBottom();
+    if (renderReservedOpenTurns({ anchor: true, gen })) scrollBottom();
   } else {
     // No conversation to belong to, so nothing to restore.
     focusBox(homebox);
