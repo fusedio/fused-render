@@ -64,6 +64,21 @@ test("a reporter over-counting past its own total clamps to full", () => {
   expect(jobFraction(job({ done: 120, total: 100 }))).toBe(1);
 });
 
+test("a done that outgrows an ESTIMATED total (an index rescan's tree grew since the last scan) still clamps to full, never past it or backwards", () => {
+  // The index-job bridge (D724+) sets `total` to the last completed scan's
+  // file count as an ESTIMATE for a rescan's denominator — a real but
+  // possibly-stale number, since the tree can have grown. `jobFraction` is
+  // where every job's bar gets clamped (there is no bridge-side clamp; a
+  // reporter honestly stating `done` past a stale `total` is real data, not
+  // something to hide at the source), so this is the one place a fast-
+  // growing rescan's bar is guaranteed not to render past full.
+  expect(jobFraction(job({ state: "running", done: 700_000, total: 672_424 }))).toBe(1);
+  // Still a normal fraction well before the estimate is exceeded.
+  expect(jobFraction(job({ state: "running", done: 10_856, total: 672_424 }))).toBeCloseTo(
+    10856 / 672424
+  );
+});
+
 test("a done job reads as complete even if its last numbers never caught up", () => {
   expect(jobFraction(job({ state: "done", done: 7, total: 10 }))).toBe(1);
 });
@@ -83,6 +98,23 @@ test("bytes with no total still say how much has arrived", () => {
 
 test("a non-byte unit counts plainly", () => {
   expect(jobAmount(job({ unit: "", done: 3, total: 12 }))).toBe("3 / 12");
+});
+
+test("a counted unit gets locale thousands separators and its own word", () => {
+  // `unit: "files"` (index scans, D724) and `unit: "tokens"` (text
+  // generation) used to fall through to a bare, unformatted number — no
+  // separators, no word — which is why an in-progress scan read "10856"
+  // instead of "10,856 files". `toLocaleString()`, not a hard-coded comma:
+  // the Preferences panel's own count renders in the browser's locale (e.g.
+  // Indian digit grouping), and this has to agree with it.
+  expect(jobAmount(job({ unit: "files", done: 10856, total: null }))).toBe("10,856 files");
+  expect(jobAmount(job({ unit: "tokens", done: 512, total: null }))).toBe("512 tokens");
+});
+
+test("a counted unit with a total renders both sides, unit word once", () => {
+  expect(jobAmount(job({ unit: "files", done: 10856, total: 672424 }))).toBe(
+    "10,856 / 672,424 files"
+  );
 });
 
 test("seconds of audio read as a CLOCK, not as a bare pair of numbers", () => {
@@ -147,6 +179,24 @@ test("a running job with no detail and no message reads as empty — the fallbac
   // over that amount at the render site. Callers apply `jobDetail` only once
   // BOTH the status line and the amount are known to be empty.
   expect(jobStatusLine(job({ state: "running", detail: undefined }))).toBe("");
+});
+
+test("a running job's phase (message) leads, its detail follows — both reach the line", () => {
+  // The index-scan bridge (D724) puts its run's phase in `message`
+  // ("writing index" / "writing signatures") and its root in `detail` — but
+  // this function used to read `message` only for `error`/`waiting`, so a
+  // running row's phase was written to the job record and never rendered.
+  // Every other running reporter still sends `message: ""`, so this is
+  // additive for them (see the plain-`detail` case just below).
+  expect(jobStatusLine(job({ state: "running", message: "writing index", detail: "~" }))).toBe(
+    "writing index · ~"
+  );
+});
+
+test("a running job with only a detail (message empty) is unchanged from before", () => {
+  expect(jobStatusLine(job({ state: "running", message: "", detail: "shard 3/8" }))).toBe(
+    "shard 3/8"
+  );
 });
 
 test("jobDetail names the kind and how long it has been running, from facts every job always carries", () => {
