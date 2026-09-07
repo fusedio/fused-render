@@ -173,11 +173,18 @@ running `run_startup_warm()`: `search_under` over `expanduser("~")`,
 and then `search_ranked` with a query that matches NOTHING over the same root — exactly
 the two requests the explorer makes (the in-folder corpus and the home page's ranked
 search), under exactly the same pool key. Warming only the corpus would leave the
-ranked path's own duckdb plan cold, and that is the one a keystroke waits on. The
-no-match query is not laziness: the ladder above stops at the substring pass as soon as
-it has enough, so a query WITH hits never touches the subsequence-regex plan — the
-expensive half, and the one a mistyped query lands on. The client's idle warm
-(`FilesHome.tsx`) sends the same shape of query for the same reason.
+ranked path's own duckdb plan cold, and that is the one a keystroke waits on. There is
+no ladder or subsequence pass any more (D708 — index-backed search is one substring-
+filtering SQL statement, scored and ordered entirely by duckdb); a no-match query is
+still deliberate, not laziness, for a narrower reason: `_rank_sql` scores every row
+that passes its substring filter BEFORE the top-N cut (`search_ranked`'s docstring,
+D714), so a query that matches something real would spend the warm scoring real rows
+for no reason a cold PROCESS needs — what this warm is actually priming is `duckdb`'s
+first import, the connection/thread setup, and the query's plan and pool key, none of
+which depend on getting a hit. A no-match query exercises that whole pipeline (parse,
+plan, the substring filter, `ORDER BY … LIMIT`) at the lowest possible cost: zero rows
+ever reach scoring. The client's idle warm (`FilesHome.tsx`) sends the same shape of
+query for the same reason.
 
 Everything that path caches is **per process** and starts empty: `duckdb` is not
 imported until the first query. Measured on a 164k-entry home,
@@ -282,8 +289,11 @@ substring branch always set `longestRun = len(q)`, the maximum a subsequence-onl
 could reach, and `rankCompare` ordered on `longestRun` first — so every substring hit
 already outranked every subsequence-only one. With the subsequence pass gone,
 `longest_run` is constant across every surviving row and drops out of the SQL `ORDER
-BY` entirely (`tier ASC, score DESC, depth ASC, lower(rel) ASC`); it is still reported
-on each hit, since the wire contract and `listing/ranked-hits.ts` still read it.
+BY` entirely (`tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC` — the trailing
+`rel ASC` is a later fix, a free final tie-break so a pair equal in every other column,
+including `lower(rel)`, doesn't land in an arbitrary order on a multi-threaded top-N);
+`longest_run` is still reported on each hit, since the wire contract and
+`listing/ranked-hits.ts` still read it.
 
 **`positions` are not returned.** The client re-runs `fuzzyMatch` over the ~200 rows it
 got back to build its highlights, so `platform/lib/fuzzy.ts` stays the single source of
@@ -460,11 +470,10 @@ the honest fix is to make the index right — and the only client-side remnant i
 completes or the claim expires (the server refuses some rescans and does not report
 that back, so the claim has to be able to end on its own).
 
-**Known and logged:** stage A's cap can in principle drop a row stage B would have
-ranked first. Tier ordering makes it unlikely (a name-substring hit outranks a
-fuzzy-only one in `rank_compare` too), and a cap that bites is a `logger.debug` line plus
-`truncated: true` — silent truncation is what this route removes, not what it
-reintroduces.
+**Stale, pre-D708 note removed here:** this used to describe a two-stage candidate-cap
+design ("stage A"/"stage B") that could in principle drop a row full ranking would have
+preferred. §7 covers the current design — one SQL statement, no candidate cap, so that
+risk doesn't exist any more (`search_ranked`'s docstring, `_rank_sql`).
 
 ## Non-goals
 

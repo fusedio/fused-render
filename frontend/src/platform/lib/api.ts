@@ -638,8 +638,10 @@ export interface IndexRankResult {
   reason: RankReason;
   root: string;
   hits: IndexRankHit[];
-  // More matched than were returned — either more than `limit` survived
-  // ranking, or the server's candidate cap bit.
+  // More matched than were returned: more than `limit` survived ranking.
+  // (Was ALSO true when the server's candidate cap bit before D708 — that
+  // cap, and `RANK_CANDIDATE_CAP`, are gone; index-backed search scores every
+  // matched row in one SQL statement with no candidate cap to hit.)
   truncated: boolean;
   total: number;
   updated: number | null;
