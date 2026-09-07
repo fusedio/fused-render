@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 // Step 2 — Claude Code. A CHECKLIST, not the strip: the strip renders only
 // what is wrong and nothing when all is well, which is right for a page
 // header and wrong for a setup step, where "installed ✓, signed in ✓" is the
@@ -105,12 +105,23 @@ function StateIcon({ state, optional }: { state: RowState; optional?: boolean })
 
 // `setup` is the wizard's single machine (OnboardingWizard owns it, so what
 // gets fixed here is what step 4 reads).
-export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: ReactNode }) {
+export function ClaudeStep({
+  setup,
+  eyebrow,
+  onWork,
+}: {
+  setup: ClaudeSetup;
+  eyebrow: ReactNode;
+  onWork: (busy: boolean) => void;
+}) {
   const { health, loaded, busy, load } = setup;
   const issues = claudeIssues(health);
   const rows = health ? rowsFor(health) : null;
   const allDone = rows?.every((r) => r.state === "done" || (r.optional && r.state !== "open"));
   const anyActionable = rows?.some((r) => r.state === "open" && issues.some((i) => r.issueIds.includes(i.id)));
+  // Tell the wizard whether this step still has a button of its own to press:
+  // while it does (the strip's yellow actions), Next is not the yellow one.
+  useEffect(() => onWork(anyActionable === true), [onWork, anyActionable]);
 
   return (
     <div className="flex flex-col gap-6">

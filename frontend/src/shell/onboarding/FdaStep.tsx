@@ -30,7 +30,15 @@ import { Button } from "@platform/shadcn/ui/button";
 
 import { StepHeader } from "./StepHeader";
 
-export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: ReactNode }) {
+export function FdaStep({
+  config,
+  eyebrow,
+  onWork,
+}: {
+  config: Config;
+  eyebrow: ReactNode;
+  onWork: (busy: boolean) => void;
+}) {
   // The wizard already holds a config: seed so the first paint is right,
   // then the shared store takes over.
   useEffect(() => seedFda(config.fda), [config.fda]);
@@ -44,6 +52,9 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: ReactNod
   const offered = fda != null;
   const granted = fda?.granted === true;
   const pending = fda?.pending_relaunch === true;
+  // Open Settings / Relaunch is the yellow button until the grant is in;
+  // then Next takes the colour. A dev server (nothing offered) has no button.
+  useEffect(() => onWork(offered && !granted), [onWork, offered, granted]);
 
   const open = () => {
     setError(null);
@@ -124,7 +135,7 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: ReactNod
             {/* A plain link, like the update-restart banner: the OS hands the
                 deep link to the running app, which quits and respawns. This
                 tab keeps polling and flips to "Already granted" on its own. */}
-            <Button render={<a href={RELAUNCH_HREF} />}>
+            <Button variant="accent" render={<a href={RELAUNCH_HREF} />}>
               <RotateCw data-icon="inline-start" />
               {FDA_COPY.relaunch}
             </Button>
@@ -140,7 +151,7 @@ export function FdaStep({ config, eyebrow }: { config: Config; eyebrow: ReactNod
               ))}
             </ol>
             <div className="flex flex-wrap items-center gap-3">
-              <Button onClick={open} disabled={!offered} title={offered ? undefined : "Available in the installed FusedRender app"}>
+              <Button variant="accent" onClick={open} disabled={!offered} title={offered ? undefined : "Available in the installed FusedRender app"}>
                 <ExternalLink data-icon="inline-start" />
                 {opened ? FDA_COPY.reopen : FDA_COPY.open}
               </Button>

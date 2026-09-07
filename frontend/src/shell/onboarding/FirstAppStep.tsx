@@ -97,7 +97,7 @@ export function FirstAppStep({
       )}
 
       <div className="onboarding-composer">
-        <HeroComposer onCreated={onComplete} />
+        <HeroComposer onCreated={onComplete} autoFocus />
       </div>
 
       <section className="flex flex-col gap-3">

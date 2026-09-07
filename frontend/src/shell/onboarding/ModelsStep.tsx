@@ -204,7 +204,15 @@ function useJobs(): { jobs: Job[]; refresh: () => void } {
   return { jobs, refresh: () => refresh.current() };
 }
 
-export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: ReactNode }) {
+export function ModelsStep({
+  picks,
+  eyebrow,
+  onWork,
+}: {
+  picks: ModelPicks;
+  eyebrow: ReactNode;
+  onWork: (busy: boolean) => void;
+}) {
   // Each of the three is React state for THIS mount and module memory across
   // mounts — the setters below write both, so a remount seeds from what the
   // last one left rather than from scratch.
@@ -278,6 +286,9 @@ export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: Rea
   });
   const pending = rows.filter((r) => r.pending);
   const busyCount = rows.filter((r) => r.busy).length;
+  // Download is the yellow button while something is selected and not yet
+  // fetched; once started (or nothing to do) Next takes the colour.
+  useEffect(() => onWork(pending.length > 0), [onWork, pending.length]);
 
   // Driven by the checkbox's own reported value, not by flipping what this
   // render happened to see: the primitive owns the state transition.
@@ -373,7 +384,7 @@ export function ModelsStep({ picks, eyebrow }: { picks: ModelPicks; eyebrow: Rea
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={start} disabled={pending.length === 0}>
+        <Button variant={pending.length > 0 ? "accent" : "outline"} onClick={start} disabled={pending.length === 0}>
           {pending.length > 0
             ? startLabel
             : busyCount > 0

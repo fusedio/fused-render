@@ -128,6 +128,14 @@ export function OnboardingWizard({ config }: { config: Config }) {
   const setIndex = (i: number) => setStepId(steps[Math.max(0, Math.min(i, steps.length - 1))].id);
   // Counted over the steps this machine actually has (no FDA off macOS).
   const eyebrowText = `Step ${index + 1} of ${steps.length}`;
+  // One yellow button per screen. A step with its own work to do (install,
+  // grant, download) owns the colour while that work is open and Next goes
+  // quiet; the moment it is done — or on a step with nothing to do — Next
+  // is the yellow one. Steps report through `onWork`; a step change resets
+  // to "nothing open" so a fresh step never inherits the last one's verdict.
+  const [stepHasWork, setStepHasWork] = useState(false);
+  useEffect(() => setStepHasWork(false), [step.id]);
+  const onWork = useCallback((busy: boolean) => setStepHasWork(busy), []);
 
   // Fire-and-forget, and at most one flag per visit: the flag is a courtesy
   // to the NEXT launch, and a failed write must not hold the page over the
@@ -214,7 +222,13 @@ export function OnboardingWizard({ config }: { config: Config }) {
             I'll explore on my own
           </Button>
         ) : (
-          <Button key="next" size="sm" onClick={next} title="⌘/Ctrl + Enter">
+          <Button
+            key="next"
+            variant={stepHasWork ? "outline" : "accent"}
+            size="sm"
+            onClick={next}
+            title="⌘/Ctrl + Enter"
+          >
             Next
             <ArrowRight data-icon="inline-end" />
           </Button>
@@ -304,9 +318,9 @@ export function OnboardingWizard({ config }: { config: Config }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-4xl px-6 py-10">
           {step.id === "about" && <AboutStep eyebrow={eyebrow} />}
-          {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} />}
-          {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} />}
-          {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} />}
+          {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "app" && <FirstAppStep health={health} eyebrow={eyebrow} onComplete={markComplete} />}
         </div>
       </div>
