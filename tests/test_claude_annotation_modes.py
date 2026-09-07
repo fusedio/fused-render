@@ -988,6 +988,16 @@ def test_the_bar_folds_by_measure_not_breakpoint(html):
     assert "@container" not in html
 
 
+def test_escape_in_comment_mode_discards_the_round(html):
+    """Esc in a typed Comment mode is cancel (Akshil, 2026-09-06): the round's
+    unsent notes die with the mode, same as the bar's trash. A live recording
+    keeps Esc = stop-and-keep, and a settling one only leaves the mode."""
+    esc = _block(html, "function onEscape(e) {", "\n}\n")
+    assert 'else if (annRecOn || annCta.classList.contains("busy")) annSetMode(false);' in esc
+    assert "else annNotesDiscard();" in esc
+    assert esc.index("annCloseComposer();") < esc.index("annNotesDiscard();")
+
+
 def test_discard_covers_the_typed_round_too(html):
     """The bar keeps BOTH exits in both modes (Akshil, 2026-09-04; onto the
     bar 2026-09-06): the trash beside ✓ Done throws this round's unsent notes
