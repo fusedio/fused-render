@@ -84,8 +84,8 @@ export const MenuIcons: Record<string, ReactNode> = {
   // ring's `::after` is, so it tints with the row like every other glyph here.
   unread: (
     <svg {...svgProps}>
-      <circle cx="12" cy="12" r="9" />
-      <circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="8.5" strokeWidth="2.25" />
+      <circle cx="12" cy="12" r="4.5" fill="currentColor" stroke="none" />
     </svg>
   ),
   // Rename — pencil.
