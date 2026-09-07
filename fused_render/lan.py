@@ -897,6 +897,18 @@ class _Controller:
 
     def status(self) -> dict:
         ip = lan_ip()
+        # The http listener's thread is gone but the preference is still on
+        # (INCIDENT 2026-09-07 — why it died is not known; nothing in the log
+        # ahead of it). `apply()` only runs when the preference changes, so
+        # this read is the one place that notices, and a stale `port` here is
+        # what let a pairing code advertise a dead listener.
+        if self._thread is not None and not self._thread.is_alive():
+            with self._lock:
+                if self._thread is not None and not self._thread.is_alive():
+                    logger.warning("lan: http listener stopped on its own; restarting")
+                    self._server = self._thread = None
+                    self.port = None
+                    self._start()
         if self.running and ip and ip != self._ip:
             # Wi-Fi changed under us: re-advertise the new address, and reissue
             # the certificate (it names the address) on a fresh https listener.
@@ -994,6 +1006,11 @@ class _Controller:
 
         from fused_render import lan_tls
 
+        # Already listening for this address — a restart of the http half
+        # (status()) must not start a second one, which would find 443 taken
+        # by us, land on 8443, and leave the first thread orphaned.
+        if self.tls_running and ip == self._tls_ip:
+            return
         self.tls_error = None
         try:
             cert, key = lan_tls.ensure_server_cert([HOSTNAME, ALIAS_HOSTNAME], [ip] if ip else [])
@@ -1123,8 +1140,19 @@ def api_lan_pair_token():
     """Mint a one-time pairing token and the URL to put in the QR code."""
     from fused_render import lan_tls
 
+    # NEVER a made-up base. A code naming `http://<host>/` while the http
+    # listener is down (INCIDENT 2026-09-07: the listener's thread had gone,
+    # `port` still said 80) points the phone at a port nothing answers on, and
+    # the app could only report it as a certificate that did not match. When
+    # http is down but https is up the app can still pair — it fetches the CA
+    # over https and the fingerprint below is what vouches for it — so the
+    # https base is the honest code; with neither, there is no code to give.
+    http_base, https_base = _controller.url(), _controller.https_url()
+    if not http_base and not https_base:
+        return JSONResponse(
+            {"error": _controller.error or "local-network sharing is not running"},
+            status_code=503)
     token = mint_pair_token()
-    base = _controller.url()
     # The QR is an http URL so a browser can use it as-is. Two extra params
     # ride along for the native shell: `ca`, the private CA's fingerprint, and
     # `s`, the https port — it fetches /lan/ca.pem, checks the fingerprint, pins
@@ -1136,12 +1164,17 @@ def api_lan_pair_token():
             params["s"] = str(_controller.tls_port)
         except Exception:  # noqa: BLE001 — https stays optional
             pass
-    url = (base or f"http://{HOSTNAME}/") + "pair?" + urlencode(params)
+    # http while it is up, so a phone browser can use the same code; https only
+    # as the fallback that keeps the native app pairing without it.
+    over_http = bool(http_base)
+    base = http_base if over_http else https_base
+    url = base + "pair?" + urlencode(params)
     ip = _controller._ip or lan_ip()
-    port = _controller.port
     ip_url = None
     if ip:
-        ip_url = f"http://{ip}{'' if port in (None, 80) else ':' + str(port)}/pair?" + urlencode(params)
+        scheme, port, default = ("http", _controller.port, 80) if over_http else ("https", _controller.tls_port, 443)
+        host = f"{ip}{'' if port in (None, default) else ':' + str(port)}"
+        ip_url = f"{scheme}://{host}/pair?" + urlencode(params)
     return {"url": url, "ip_url": ip_url, "ttl_s": PAIR_TOKEN_TTL_S,
             "https_url": _controller.https_url(), "ca_fingerprint": params.get("ca")}
 

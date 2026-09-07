@@ -225,6 +225,9 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
   const lan = prefs.lan;
   const enabled = lan?.enabled ?? false;
   const running = enabled && !!lan?.running;
+  // Enough of the listener is up to pair a device: the http one (browsers and
+  // the app) or, on its own, the https one (the app alone).
+  const pairable = enabled && ((running && !!lan?.url) || !!lan?.https_url);
   const [devices, setDevices] = useState<LanDevice[]>(lan?.devices ?? []);
 
   const toggle = async () => {
@@ -245,7 +248,7 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
   // While the QR is on screen, watch for the phone to pair: the list grows,
   // and the spent code is replaced with a fresh one (tokens are single-use).
   useEffect(() => {
-    if (!running) return;
+    if (!pairable) return;
     let alive = true;
     const tick = async () => {
       try {
@@ -261,7 +264,7 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
       alive = false;
       window.clearInterval(id);
     };
-  }, [running]);
+  }, [pairable]);
 
   const revoke = async (id: string | null) => {
     setError(null);
@@ -289,13 +292,22 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
           <b>Share my apps</b> on this network.
         </span>
       </label>
-      {running && lan.url && (
-        <LanPairing url={lan.url} deviceCount={devices.length} />
+      {/* A code as long as SOMETHING is listening: with the http listener down
+          but https up, a browser cannot get in but the iPhone app still pairs
+          (the code names https then — /api/lan/pair-token decides). */}
+      {pairable && (
+        <LanPairing url={lan!.url ?? lan!.https_url!} deviceCount={devices.length} />
       )}
-      {running && (
+      {pairable && (
         <LanDevices devices={devices} onRevoke={revoke} />
       )}
-      {enabled && !lan?.running && (
+      {enabled && !lan?.running && lan?.https_url && (
+        <ErrorBanner>
+          {`Browsers can't reach this computer${lan.error ? `: ${lan.error}` : " (the http listener is down)"}. ` +
+            "The iPhone app can still pair with the code above."}
+        </ErrorBanner>
+      )}
+      {enabled && !lan?.running && !lan?.https_url && (
         <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>
       )}
       {/* The listener can be up while a piece of it failed — zeroconf missing
