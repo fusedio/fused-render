@@ -4068,6 +4068,12 @@ describe("the delete affordance", () => {
     expect(acts.indexOf("{gone && (")).toBeLessThan(acts.indexOf("{filing && ("));
     expect(acts.indexOf("ICON_TRASH")).toBeLessThan(acts.indexOf("ICON_ARCHIVE"));
     expect(peek).toContain("<EraseTaskModal");
+    // The confirm REPLACES the popup rather than stacking a second Modal on it,
+    // and the popup's Delete is greyed while the run is live (bugbot, PR #1049).
+    expect(peek).toContain("if (erasing) {");
+    expect(peek.indexOf("if (erasing) {")).toBeLessThan(peek.indexOf("<Modal"));
+    expect(acts).toContain("disabled={acting || blocked}");
+    expect(acts).toContain('title={blocked ? ERASE_BLOCKED_HINT : "Delete task forever"}');
   });
 
   it("is in the Board card's hover strip, left of Archive, only when the folder is gone", () => {

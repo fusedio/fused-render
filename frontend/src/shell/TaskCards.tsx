@@ -693,6 +693,9 @@ function TaskPeek({
   // is gone, when the door goes disabled and says why (the card's rule).
   const explorer = gone ? null : (taskHref(task) ?? folderHref(task));
   const filing = filingIntent(task);
+  // Same guard as the card's door: a live run cannot be erased (409), so the
+  // popup's Delete greys out and says why instead of opening a doomed confirm.
+  const blocked = eraseBlocked(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
   const [erasing, setErasing] = useState(false);
@@ -749,20 +752,26 @@ function TaskPeek({
     }
   };
 
+  // THE CONFIRM REPLACES THE POPUP, it does not stack on it (bugbot, PR #1049):
+  // two Modals portal to the same layer and the later one — the popup — paints
+  // over the confirm and traps focus; Escape then reaches both. So while the
+  // question is open the popup is unmounted; Cancel brings it back, a confirmed
+  // delete closes the whole thing.
+  if (erasing) {
+    return (
+      <EraseTaskModal
+        task={task}
+        onClose={() => setErasing(false)}
+        onDone={() => {
+          setErasing(false);
+          pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+          onReload?.();
+          onClose();
+        }}
+      />
+    );
+  }
   return (
-    <>
-      {erasing && (
-        <EraseTaskModal
-          task={task}
-          onClose={() => setErasing(false)}
-          onDone={() => {
-            setErasing(false);
-            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
-            onReload?.();
-            onClose();
-          }}
-        />
-      )}
     <Modal
       title={
         <span className="task-peek-title">
@@ -798,8 +807,8 @@ function TaskPeek({
             <button
               type="button"
               className="btn btn-secondary modal-head-act modal-head-act--danger"
-              disabled={acting}
-              title="Delete task forever"
+              disabled={acting || blocked}
+              title={blocked ? ERASE_BLOCKED_HINT : "Delete task forever"}
               onClick={() => setErasing(true)}
             >
               {ICON_TRASH}
@@ -879,7 +888,6 @@ function TaskPeek({
         </p>
       )}
     </Modal>
-    </>
   );
 }
 
