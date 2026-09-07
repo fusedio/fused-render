@@ -8,6 +8,7 @@ import {
   rewriteSnapshotPath,
   setResolvedSnapshot,
   shortSha,
+  snapshotFrameSrc,
   snapshotListing,
   snapshotSrc,
 } from "@platform/lib/snapshot-param";
@@ -153,6 +154,52 @@ describe("snapshotSrc", () => {
   it("passes a null src or a null sha through unchanged", () => {
     expect(snapshotSrc(null, "abc1234")).toBe(null);
     expect(snapshotSrc("/render?path=x", null)).toBe("/render?path=x");
+  });
+});
+
+describe("snapshotFrameSrc — the shared frame-src composer (findings 1/2/4)", () => {
+  it("live (no sha, no snap): rewrites nothing, appends no snapshot params", () => {
+    expect(snapshotFrameSrc({ snap: null, sha: null, path: "/repo/myapp/index.html" })).toBe(
+      "/render?path=" + encodeURIComponent("/repo/myapp/index.html")
+    );
+  });
+
+  it(
+    "resolved: rewrites `path`, AND appends all three params — the whole " +
+      "defect this helper closes is one happening without the other",
+    () => {
+      const src = snapshotFrameSrc({ snap: SNAP, sha: SNAP.sha, path: APP + "/index.html" });
+      expect(src).not.toBeNull();
+      const u = new URL(src as string, "http://x");
+      expect(u.searchParams.get("path")).toBe(DIR + "/index.html");
+      expect(u.searchParams.get("_snapshot")).toBe(SNAP.sha);
+      expect(u.searchParams.get("_snapshot_dir")).toBe(DIR);
+      expect(u.searchParams.get("_snapshot_app")).toBe(APP);
+    }
+  );
+
+  it("a path already under the extracted tree (not the app folder) is left unchanged by the rewrite", () => {
+    // AppPage.tsx's Overview passes `snap.entry` itself — already resolved by
+    // the server against the extracted tree — not the live entry path.
+    const extractedEntry = DIR + "/main.html";
+    const src = snapshotFrameSrc({ snap: SNAP, sha: SNAP.sha, path: extractedEntry });
+    const u = new URL(src as string, "http://x");
+    expect(u.searchParams.get("path")).toBe(extractedEntry);
+  });
+
+  it("pending (sha claimed, not yet resolved) returns null — no frame, not a live one", () => {
+    expect(snapshotFrameSrc({ snap: null, sha: SNAP.sha, path: APP + "/index.html" })).toBeNull();
+  });
+
+  it("carries `extra` between the path and the snapshot params", () => {
+    const src = snapshotFrameSrc({
+      snap: null,
+      sha: null,
+      path: "/templates/csv/template.html",
+      extra: "&_file=" + encodeURIComponent(APP + "/data.csv"),
+    });
+    const u = new URL(src as string, "http://x");
+    expect(u.searchParams.get("_file")).toBe(APP + "/data.csv");
   });
 });
 

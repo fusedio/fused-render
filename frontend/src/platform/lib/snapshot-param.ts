@@ -39,6 +39,20 @@ export interface ResolvedSnapshot {
   sha: string;
   dir: string;
   app_dir: string;
+  // The snapshot's OWN entry page — `GET /api/git/snapshot`'s `entry` field,
+  // computed by `app_entry()` against the EXTRACTED tree, never the live one
+  // (fused_render/server/routers/git_snapshot.py). Optional: only the app
+  // page's own hook (shell/useAppPageSnapshot.ts) currently has a caller that
+  // asks what a COMMIT's entry page was; the explorer's consumers (Preview.tsx,
+  // Listing.tsx, useSnapshotForFolder.ts) preview one specific FILE, not "the
+  // app's entry", and never read this. Code review finding 3 (app page
+  // version dropdown pass): a caller holding only `dir`/`app_dir` and
+  // rewriting the LIVE entry's path against them gets the wrong FILENAME the
+  // moment the entry was renamed between the commit and HEAD —
+  // `rewritePathAgainst` only swaps a directory prefix, and can never recover
+  // a changed filename. `null` means the extracted tree genuinely has no
+  // entry at that commit (same meaning as `getAppEntry`'s live `entry: null`).
+  entry?: string | null;
 }
 
 // The CURRENT `_snapshot`'s resolution, or null before one has landed
@@ -177,4 +191,56 @@ export function snapshotListing(
   const snap = getResolvedSnapshot();
   const inSnapshot = snap !== null && carries(snap.app_dir, fsPath);
   return { inSnapshot, listPath: inSnapshot ? rewriteSnapshotPath(fsPath) : fsPath };
+}
+
+// THE shared frame-src composer — extracted out of Preview.tsx's own `srcFor`
+// (code review, app page version dropdown pass, root cause): the app page
+// re-implemented frame-src composition from scratch for its own three tabs
+// instead of reusing this, and every lesson `srcFor` had already learned —
+// rewrite `path`, append all three snapshot params, refuse to build a frame
+// during the resolve window — was lost in the copy (findings 1, 2 and 4).
+// One helper, at least four callers (Preview.tsx's two branches, AppFiles.tsx,
+// AppPage.tsx's Overview), is what makes the NEXT frame-building caller reach
+// for this instead of re-deriving the same three rules a fifth time.
+//
+// `path` is rewritten against `snap` UNCONDITIONALLY. That is a no-op for a
+// path already outside `snap.app_dir` — which covers a caller that already
+// resolved its own path to the extracted tree (AppPage.tsx's Overview passes
+// `snap.entry` itself, already under `snap.dir`, not `snap.app_dir` — see that
+// field's own comment on why a directory-prefix swap could never have
+// produced it) exactly as safely as it covers the ordinary case of a still-live
+// path a caller hands in unchanged (AppFiles.tsx's `file`, Preview.tsx's
+// `fsPath`).
+//
+// `sha` is the URL's raw `_snapshot` claim (or null — the caller's own
+// component state, kept in sync with the URL regardless of resolve outcome,
+// mirroring Preview.tsx's own `snapshotSha`); `snap` is THIS caller's own
+// resolution of it, never a shared singleton (see `rewritePathAgainst`'s own
+// comment on why). Returns `null` exactly when `sha` names something not yet
+// (or not successfully) resolved into `snap` — Preview.tsx's `snapshotPending`
+// gate (finding 4, and its own `framePending` comment on why a `null` src,
+// not a live one, is what closes the mixed-era window on first paint): a
+// frame built during this window has nothing honest to address — the live
+// document is the wrong era, and there is no extracted one yet to point at.
+//
+// `extra` is any additional `&key=value` segments a caller's own mode needs
+// (`_file`, `_remote`, the preview thumbnail flags) — appended between the
+// rewritten path and the three snapshot params; order carries no meaning to
+// a query string, so callers need not match `srcFor`'s historical ordering.
+export function snapshotFrameSrc(opts: {
+  snap: ResolvedSnapshot | null;
+  sha: string | null;
+  path: string;
+  extra?: string;
+}): string | null {
+  const { snap, sha, path, extra = "" } = opts;
+  if (sha !== null && snap === null) return null; // pending — see comment above
+  const renderPath = rewritePathAgainst(snap, path);
+  const snapParams = snap
+    ? `&_snapshot_dir=${encodeURIComponent(snap.dir)}&_snapshot_app=${encodeURIComponent(snap.app_dir)}`
+    : "";
+  return snapshotSrc(
+    `/render?path=${encodeURIComponent(renderPath)}${extra}${snapParams}`,
+    sha
+  );
 }

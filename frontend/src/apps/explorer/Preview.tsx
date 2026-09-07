@@ -83,9 +83,8 @@ import {
   carries as snapshotCarries,
   getResolvedSnapshot,
   isSha,
-  rewritePathAgainst,
   setResolvedSnapshot,
-  snapshotSrc,
+  snapshotFrameSrc,
   type ResolvedSnapshot,
 } from "@platform/lib/snapshot-param";
 import { ModeMenu } from "@apps/explorer/BarMenu";
@@ -1737,9 +1736,9 @@ function TemplatePreview({
   // case — see static/runtime.js's own comment on `resolvedSnapshot`.
   //
   // The "_render" sentinel ADDITIONALLY rewrites `path` ITSELF to the
-  // extracted file (`rewritePathAgainst`, against THIS component's own
-  // `snapshotResolved` — see that const's own comment on why not the
-  // singleton) rather than only carrying `_snapshot` for the runtime to
+  // extracted file (`snapshotFrameSrc` does this internally, against THIS
+  // component's own `snapshotResolved` — see that const's own comment on why
+  // not the singleton) rather than only carrying `_snapshot` for the runtime to
   // resolve against — GET /render
   // (server/routers/render.py) has no `_snapshot` awareness of its own, so
   // an app previewed as ITSELF used to show its LIVE document body and
@@ -1806,40 +1805,45 @@ function TemplatePreview({
   const thumbFlags = IS_PREVIEW ? "&_preview=1&_nofocus=1" : "";
   const srcFor = (m: string): string | null => {
     if (m === "_listing") return null;
-    if (snapshotPending) return null; // see snapshotPending's own comment above
-    const snapParams = snapshotResolved
-      ? `&_snapshot_dir=${encodeURIComponent(snapshotResolved.dir)}` +
-        `&_snapshot_app=${encodeURIComponent(snapshotResolved.app_dir)}`
-      : "";
+    // Both branches below route through the shared `snapshotFrameSrc`
+    // (platform/lib/snapshot-param.ts) rather than composing the src by
+    // hand — the app page's own copy of this logic (AppPage.tsx, AppFiles.tsx)
+    // is what code review's root-cause finding traced every one of findings
+    // 1/2/4 back to: each lesson this function had already learned (rewrite
+    // `path` AND append all three snapshot params AND refuse a frame during
+    // the resolve window) was lost when re-implemented from scratch. The
+    // helper's own pending check (`sha` claimed, `snap` not yet resolved)
+    // is exactly `snapshotPending` below, restated once for every caller.
     if (m === "_render") {
-      // A1: the extracted file itself when snapshotted (see the comment
-      // above) — a no-op (`fsPath` unchanged) whenever `snapshotResolved` is
-      // null, which is every non-snapshotted render. `rewritePathAgainst`
-      // takes `snapshotResolved` EXPLICITLY (code review finding [1], round
-      // 2), not the module singleton `getResolvedSnapshot()` a sibling
-      // Listing.tsx/useSnapshotForFolder may have last written: a split
-      // view with a Listing on one app and this Preview on another, both
-      // under the SAME sha (two apps in one repo share shas), could leave
-      // the singleton holding the OTHER pane's resolution by the time this
-      // runs — the rewrite would then find no prefix match for THIS file
-      // and return the live path while `snapParams` (built from
-      // `snapshotResolved`, right above) still described THIS pane's own
-      // app — live content rendered under a snapshot pill, exactly the
-      // mixed-era bug finding A1 exists to close.
-      const renderPath = snapshotResolved
-        ? rewritePathAgainst(snapshotResolved, fsPath)
-        : fsPath;
-      return snapshotSrc(
-        `/render?path=${encodeURIComponent(renderPath)}${snapParams}${thumbFlags}`,
-        snapshotSha
-      );
+      // A1: the extracted file itself when snapshotted — a no-op (`fsPath`
+      // unchanged) whenever `snapshotResolved` is null, which is every
+      // non-snapshotted render. `snapshotResolved` is passed EXPLICITLY
+      // (code review finding [1], round 2), not the module singleton
+      // `getResolvedSnapshot()` a sibling Listing.tsx/useSnapshotForFolder
+      // may have last written: a split view with a Listing on one app and
+      // this Preview on another, both under the SAME sha (two apps in one
+      // repo share shas), could leave the singleton holding the OTHER
+      // pane's resolution by the time this runs — the rewrite would then
+      // find no prefix match for THIS file and return the live path while
+      // the snapshot params (built from `snapshotResolved` inside the
+      // helper) still described THIS pane's own app — live content
+      // rendered under a snapshot pill, exactly the mixed-era bug finding
+      // A1 exists to close.
+      return snapshotFrameSrc({
+        snap: snapshotResolved,
+        sha: snapshotSha,
+        path: fsPath,
+        extra: thumbFlags,
+      });
     }
     const t = templates.find((x) => x.mode === m);
     return t
-      ? snapshotSrc(
-          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}${snapParams}${thumbFlags}`,
-          snapshotSha
-        )
+      ? snapshotFrameSrc({
+          snap: snapshotResolved,
+          sha: snapshotSha,
+          path: t.path as string,
+          extra: `&_file=${encodeURIComponent(fsPath)}${remote}${thumbFlags}`,
+        })
       : null;
   };
 
