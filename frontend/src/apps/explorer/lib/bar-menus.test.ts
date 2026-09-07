@@ -194,13 +194,13 @@ test("canRenameBase refuses the filesystem root", () => {
 });
 
 test("canRenameBase refuses the home folder", () => {
-  const guard = { home: "/Users/x" };
+  const guard = { home: "/Users/x", mountsRoot: "/Users/x/.fused-render/mounts" };
   expect(canRenameBase("/Users/x", guard)).toBe(false);
   expect(canRenameBase("/Users/x/Documents", guard)).toBe(true);
 });
 
 test("canRenameBase refuses a mount root but not what's inside or beside it", () => {
-  const guard = { mountsRoot: "/Users/x/.fused-render/mounts" };
+  const guard = { home: "/Users/x", mountsRoot: "/Users/x/.fused-render/mounts" };
   expect(canRenameBase("/Users/x/.fused-render/mounts/bucket", guard)).toBe(false);
   expect(canRenameBase("/Users/x/.fused-render/mounts/bucket/inner", guard)).toBe(true);
   // The mounts_root directory itself is not a mount root — no guard fires on it
@@ -209,16 +209,19 @@ test("canRenameBase refuses a mount root but not what's inside or beside it", ()
 });
 
 test("canRenameBase fails closed while config hasn't loaded (home/mountsRoot undefined)", () => {
-  // Root is still refused (needs no config), everything else is allowed —
-  // matching useFileOps's initial `{}` guard state before getConfig() resolves.
+  // Nothing is renameable until BOTH are known (bugbot, PR #1049): an empty
+  // guard used to allow home and mount roots through.
   expect(canRenameBase("/", {})).toBe(false);
-  expect(canRenameBase("/Users/x", {})).toBe(true);
+  expect(canRenameBase("/Users/x", {})).toBe(false);
+  expect(canRenameBase("/Users/x/Projects", {})).toBe(false);
+  expect(canRenameBase("/Users/x/Projects", { home: "/Users/x" })).toBe(false);
+  expect(canRenameBase("/Users/x/Projects", { home: "/Users/x", mountsRoot: "/m" })).toBe(true);
 });
 
 test("withFolderRename leads the list with Rename… + a separator when allowed", () => {
   const rest: MenuEntry[] = [{ label: "New Folder…" }, "separator", { label: "Refresh" }];
   let renamed = false;
-  const items = withFolderRename(rest, "/Users/x/Projects", { home: "/Users/x" }, () => {
+  const items = withFolderRename(rest, "/Users/x/Projects", { home: "/Users/x", mountsRoot: "/m" }, () => {
     renamed = true;
   });
   expect(labels(items)).toEqual(["Rename…", "—", "New Folder…", "—", "Refresh"]);

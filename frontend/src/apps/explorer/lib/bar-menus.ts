@@ -43,8 +43,12 @@ export function canRenameBase(dir: string, guard: RenameBaseGuard): boolean {
   const norm = normDir(dir);
   const parent = dirname(norm);
   if (parent === norm) return false; // filesystem/drive root
-  if (guard.home !== undefined && norm === guard.home) return false;
-  if (guard.mountsRoot !== undefined && parent === guard.mountsRoot) return false;
+  // FAILS CLOSED until the config has answered (bugbot, PR #1049): with no
+  // home and no mounts root known, this cannot tell a renameable folder from
+  // the two it must never move, so it offers nothing rather than everything.
+  if (guard.home === undefined || guard.mountsRoot === undefined) return false;
+  if (norm === guard.home) return false;
+  if (parent === guard.mountsRoot) return false;
   return true;
 }
 

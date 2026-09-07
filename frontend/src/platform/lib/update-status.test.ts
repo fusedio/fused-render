@@ -3,7 +3,7 @@
 // themselves on, so a bug here would be wrong in three places at once.
 import { describe, expect, it } from "bun:test";
 import type { UpdateStatus } from "@platform/lib/api";
-import { updateLabel, updateRelevant } from "./update-status";
+import { pollDelay, updateLabel, updateRelevant } from "./update-status";
 
 function status(overrides: Partial<UpdateStatus>): UpdateStatus {
   return {
@@ -61,5 +61,21 @@ describe("updateLabel", () => {
     expect(updateLabel(status({ state: "error", latest_version: "0.5.10" }))).toBe(
       "Update available — v0.5.10"
     );
+  });
+});
+
+
+describe("pollDelay", () => {
+  const st = (state: UpdateStatus["state"]) => ({ state } as UpdateStatus);
+  it("is quick while an install runs, warm only while the first check is still plausibly coming", () => {
+    expect(pollDelay(st("installing"), 0)).toBe(2_000);
+    expect(pollDelay(st("checking"), 0)).toBe(15_000);
+    expect(pollDelay(st("idle"), 30_000)).toBe(15_000);
+    // …and settles: idle is also the resting state after a check found nothing.
+    expect(pollDelay(st("idle"), 120_000)).toBe(60_000);
+    expect(pollDelay(st("checking"), 300_000)).toBe(60_000);
+    expect(pollDelay(st("available"), 0)).toBe(60_000);
+    // No updater at all (dev run): nothing to be quick about.
+    expect(pollDelay(null, 0)).toBe(60_000);
   });
 });

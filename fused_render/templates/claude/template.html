@@ -13366,6 +13366,13 @@ eraseGo.addEventListener("click", async () => {
     // than reimplemented here: a second teardown written beside it would be the
     // half of it that drifts. No toast either — this page has none, and the
     // receipt is a landing page the reader cannot come back from.
+    // …which REFUSES while a comment mode holds the reader here (annNavLocked)
+    // — and a page must not stay on a transcript that no longer exists (bugbot,
+    // PR #1049). The notes were about a conversation that is gone, so the mode
+    // is dropped first, the way its own discard path drops it.
+    if (annOn) annSetMode(false);
+    annBusyHold = false;
+    annNavLock();
     document.getElementById("back").onclick();
   } catch (err) {
     eraseBusy = false;

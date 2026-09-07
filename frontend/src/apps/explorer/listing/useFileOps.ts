@@ -97,19 +97,27 @@ export function useFileOps({
   // guard reads as "fail closed" — no Rename item flashes on before /api/config
   // answers, well before a user's first right-click in practice.
   const [renameGuard, setRenameGuard] = useState<RenameBaseGuard>({});
-  useEffect(() => {
-    let live = true;
+  // Read once at mount and, should that read fail, again on the next menu open
+  // (bugbot, PR #1049): a failed read used to leave the guard empty for the
+  // session, and the guard now fails CLOSED on empty, so without a re-read one
+  // blip at mount would hide Rename for the page's life. Re-read on demand
+  // rather than on a timer — nothing here should keep a clock running.
+  const guardLoadedRef = useRef(false);
+  const guardInFlightRef = useRef(false);
+  const loadRenameGuard = () => {
+    if (guardLoadedRef.current || guardInFlightRef.current) return;
+    guardInFlightRef.current = true;
     getConfig().then((c) => {
-      if (!live) return;
+      guardLoadedRef.current = true;
       setRenameGuard({
         home: c.home.replace(/\\/g, "/"),
         mountsRoot: c.mounts_root.replace(/\\/g, "/"),
       });
-    }, () => {});
-    return () => {
-      live = false;
-    };
-  }, []);
+    }, () => {}).finally(() => {
+      guardInFlightRef.current = false;
+    });
+  };
+  useEffect(loadRenameGuard, []);
 
   // Run a mutating fs call, then refetch on success or surface its error as a
   // toast. The dir-watch socket also refetches, but that lags 300 ms and only
@@ -778,8 +786,9 @@ export function useFileOps({
   // (mirroring fileBarMenu's own item-then-separator opener) whenever
   // canRenameBase allows renaming THIS folder — root, home and mount roots
   // never get it (withFolderRename, bar-menus.ts).
-  const backgroundMenu = (): MenuEntry[] =>
-    withFolderRename(
+  const backgroundMenu = (): MenuEntry[] => {
+    loadRenameGuard(); // a failed mount-time read gets another go on every open
+    return withFolderRename(
       [
         { label: "New Folder…", icon: MenuIcons.newFolder, onClick: () => startNewFolder(base) },
         { label: "New File…", icon: MenuIcons.newFile, onClick: () => startNewFile(base) },
@@ -806,6 +815,7 @@ export function useFileOps({
       renameGuard,
       () => startRenameFolder(normDir(base))
     );
+  };
 
   // The folder's menu as the CRUMB BAR offers it: this folder's own actions plus
   // the splits — item for item what the middle panel's header `⋮` shows, because

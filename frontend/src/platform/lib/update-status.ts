@@ -13,6 +13,8 @@ import { getConfig, type UpdateStatus } from "@platform/lib/api";
 const POLL_IDLE_MS = 60_000;
 const POLL_BUSY_MS = 2_000;
 const POLL_WARM_MS = 15_000;
+const WARM_WINDOW_MS = 120_000;
+const startedAt = Date.now();
 
 let current: UpdateStatus | null = null;
 const listeners = new Set<() => void>();
@@ -43,9 +45,15 @@ async function poll(): Promise<void> {
 // after that left the badge up to a minute late); the slow idle tick otherwise
 // — including for an unpackaged dev run, where `update` is absent and there is
 // nothing to be quick about.
-export function pollDelay(status: UpdateStatus | null): number {
+export function pollDelay(status: UpdateStatus | null, sinceStartMs = Date.now() - startedAt): number {
   if (status?.state === "installing") return POLL_BUSY_MS;
-  if (status && (status.state === "idle" || status.state === "checking")) return POLL_WARM_MS;
+  // WARM ONLY WHILE THE FIRST ANSWER IS PLAUSIBLY STILL COMING (bugbot, PR
+  // #1049): "idle" is also the packaged app's resting state after a check that
+  // found nothing, so warm-on-idle forever would never settle. The server's
+  // first check lands ~10s after boot and a check takes seconds, so two minutes
+  // after this page started the cadence goes back to the slow tick for good.
+  const pending = status?.state === "checking" || status?.state === "idle";
+  if (status && pending && sinceStartMs < WARM_WINDOW_MS) return POLL_WARM_MS;
   return POLL_IDLE_MS;
 }
 

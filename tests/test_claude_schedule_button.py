@@ -403,3 +403,15 @@ def test_archive_and_delete_are_disabled_while_the_task_runs(source):
     # The word comes from the listing's status, for both running states.
     assert 'RUNNING_STATES = new Set(["in_progress", "needs_attention"])' in src
     assert src.count("taskRunning.set(id, !!task && RUNNING_STATES.has(task.status));") == 2
+
+
+def test_an_erase_leaves_the_chat_even_under_a_comment_mode(source):
+    """The Back handler refuses while annNavLocked (a comment mode holds the
+    reader); a successful erase must not be refused that way — the transcript
+    is gone (bugbot, PR #1049) — so the mode is dropped before Back is called."""
+    body = source[source.index('eraseGo.addEventListener("click"'):source.index("function kebabClose()")]
+    at = body.index('document.getElementById("back").onclick();')
+    before = body[:at]
+    assert "if (annOn) annSetMode(false);" in before
+    assert "annBusyHold = false;" in before
+    assert "annNavLock();" in before
