@@ -548,11 +548,10 @@
   .dl-others summary:hover { color: var(--ink-2); }
   .dl-note {
     display: flex; align-items: flex-start; gap: 10px;
-    margin: 0; max-width: 46ch; text-align: left;
-    padding: 12px 16px; border-radius: var(--r-sm);
+    margin: 0; width: fit-content; max-width: min(100%, 56ch); text-align: left;
+    padding: 12px 16px 12px 14px; border-radius: var(--r-sm);
     border: 1px solid var(--warn-edge); background: var(--warn-wash);
     font-size: var(--t-sm); line-height: 1.5; color: var(--ink-2);
-    text-wrap: pretty;
   }
   .dl-note[hidden] { display: none; }
   .dl-note svg { width: 18px; height: 18px; flex: none; color: var(--warn); margin-top: 0.15em; }
@@ -1576,7 +1575,7 @@
                   <span class="sub">macOS &middot; copy command</span>
                 </button>
                 <p class="dl-list-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span><b>Built for macOS.</b> Windows &amp; Linux are best effort:
-                there may be missing features and rough edges. Intel MacBooks are not supported.</span></p>
+                there may be missing features and rough edges.<br>Intel MacBooks are not supported.</span></p>
               </div>
             </details>
             <span class="version" id="version" hidden></span>
@@ -1767,7 +1766,7 @@
       } else {
         document.getElementById("dl-note-text").innerHTML =
           "<b>Built for macOS.</b> " + osLabel + " is best effort: there may be missing " +
-          "features and rough edges. Intel MacBooks are not supported. <a href=\"#troubleshooting\">Troubleshooting</a>";
+          "features and rough edges.<br>Intel MacBooks are not supported. <a href=\"#troubleshooting\">Troubleshooting</a>";
       }
       note.hidden = false;
     }
