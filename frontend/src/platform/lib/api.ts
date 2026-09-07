@@ -2196,6 +2196,13 @@ export interface AppInfo {
   // repo's per-app metadata shape), or null when absent/invalid. Undefined on
   // older backends. Apps without one only appear under the "All" filter.
   category?: string | null;
+  // The app's optional `icon.svg` at the folder's root (absolute path) and its
+  // mtime — the mark a card draws to the left of its name, the same file the
+  // sidebar's Projects row and the app's tab favicon draw. Null for an app
+  // without one (and for an exported `.fused`, which has no folder root),
+  // undefined on backends that predate the keys; draw it through appIconUrl.
+  icon?: string | null;
+  icon_mtime?: number | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.

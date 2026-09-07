@@ -12,12 +12,33 @@
 // (`pending_relaunch`); granted (which this process can only see after that
 // relaunch, so in practice the callout is gone by then — the startup scan has
 // begun and the gap reads `scanning`).
+//
+// Also the card Preferences > Indexing shows for the same gate: there the
+// server answers a Re-index with 409 "indexing needs Full Disk Access on
+// macOS", which named the wall and offered no door. Same callout, indexing
+// wording (`copy`), same one action.
 import { useState } from "react";
 
 import { openFdaSettings } from "@platform/lib/api";
 import { FDA_COPY, RELAUNCH_HREF, pokeFda, useFda } from "@platform/lib/fda";
 
-export function IndexFdaCta() {
+export const SEARCH_FDA_COPY = {
+  blocked:
+    "Search needs Full Disk Access to index your files — nothing is scanned until you grant it.",
+  pending: "Full Disk Access is granted — relaunch FusedRender to start indexing your files.",
+} as const;
+
+export const INDEXING_FDA_COPY = {
+  blocked:
+    "Indexing needs Full Disk Access on macOS — no scan can start until you grant it. Search still works by walking folders live.",
+  pending: "Full Disk Access is granted — relaunch FusedRender and the startup scan will build the index.",
+} as const;
+
+export function IndexFdaCta({
+  copy = SEARCH_FDA_COPY,
+}: {
+  copy?: { blocked: string; pending: string };
+} = {}) {
   const fda = useFda();
   const [opened, setOpened] = useState(false);
   const pending = fda?.pending_relaunch === true;
@@ -30,9 +51,7 @@ export function IndexFdaCta() {
   return (
     <div className="fh-index-cta" data-testid="fh-index-fda">
       <span className="fh-index-cta-text">
-        {pending
-          ? "Full Disk Access is granted — relaunch FusedRender to start indexing your files."
-          : "Search needs Full Disk Access to index your files — nothing is scanned until you grant it."}
+        {pending ? copy.pending : copy.blocked}
       </span>
       {pending ? (
         <a className="btn btn-secondary fh-index-cta-btn" href={RELAUNCH_HREF}>

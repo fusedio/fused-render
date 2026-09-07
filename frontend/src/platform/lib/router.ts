@@ -152,6 +152,22 @@ export function withPreviewFlag(src: string): string {
 export const IS_SNAPSHOT =
   new URLSearchParams(location.search).get("snapshot") === "1";
 
+// AM I A TOP-LEVEL EMBED? — the embed shell running as the WHOLE WINDOW, not
+// framed by anything: a Finder double-click on a `.fused` (the view-URL codec
+// lands OS opens on the embed prefix, D390), a CLI/deeplink `/explorer/embed/`
+// URL, a pasted link. This is the one embed the user is stranded in: no
+// sidebar, no crumb, no header (D39), and nothing to click to reach the real
+// explorer or the Clone button (D397). EmbedStrip (apps/explorer/EmbedStrip)
+// renders exactly there.
+//
+// `IS_EMBED` alone is far too wide — it is every panel pane, tab, bookmark
+// card peek and foreign-page component, all of which have a host that owns
+// their chrome and none of which want a strip. `window === window.top` is the
+// whole test for "no host"; a thumbnail/snapshot can never be top-level in
+// practice, but the guards make the intent explicit and cost nothing. Read
+// once at module init like the flags above — a document cannot be re-parented.
+export const IS_TOP_EMBED = IS_EMBED && window === window.top && !IS_PREVIEW && !IS_SNAPSHOT;
+
 // Is this pathname panel mode's sentinel route? Both prefixes, because panel
 // mode lives under the page's own one (Panel.tsx's PANEL_PATH) so that
 // entering/refreshing/exiting stays in the active mode — which means the shell

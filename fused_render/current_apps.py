@@ -298,20 +298,20 @@ def _added_epoch(ts) -> float | None:
         return None
 
 
-ICON_NAME = "icon.svg"
+ICON_NAME = app_listing.ICON_NAME
 
 
 def app_icon(folder: str) -> dict | None:
     """The app's optional ``icon.svg`` — ``{"icon": <canonical path>, "mtime":
-    <epoch>}`` when the file sits directly in the app folder, else None. One
-    fixed name, no lookup table: the sidebar's Projects row and the tab favicon
-    both read it, and the mtime rides along so the client can bust the
-    browser's (aggressive) favicon cache when the author edits the file.
-    Raises OSError like the isdir it sits next to — callers already catch."""
-    p = os.path.join(folder, ICON_NAME)
-    if not os.path.isfile(p):
+    <epoch>}`` when the file sits directly in the app folder, else None. The
+    resolution itself lives in `app_listing.app_icon` (which the /apps listing
+    reads through `app_dict`, so a card carries the same mark this row does);
+    this wrapper only restates the path in the shell's canonical (forward-slash)
+    form, which every other field of a desk row is already in."""
+    found = app_listing.app_icon(folder)
+    if found is None:
         return None
-    return {"icon": canonical_fs_path(p), "mtime": os.stat(p).st_mtime}
+    return {"icon": canonical_fs_path(found["icon"]), "mtime": found["mtime"]}
 
 
 def list_apps() -> list[dict]:

@@ -678,7 +678,9 @@
     font-size: 12px;
     line-height: 1.3;
     pointer-events: auto;
-    overflow: hidden;
+    /* Not `overflow: hidden` any more (Akshil, 2026-09-07): the instant
+       tooltip (.tip) hangs BELOW the bar over the app. The lead and the
+       sentence clip themselves. */
   }
   .annbar.show { display: flex; animation: annbarin .18s ease; }
   @keyframes annbarin { from { opacity: 0; transform: translateY(-6px); } }
@@ -751,6 +753,31 @@
   }
   .annbar .discard:hover { color: var(--error); border-color: var(--error); }
   .annbar .discard svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+  /* The bar's tooltip (Akshil, 2026-09-07: "takes long time, show that
+     instantly"). One node per bar, filled from the hovered button's data-tip
+     and placed under its right edge by annBarNode's hover handler — the OS
+     tooltip a `title` produces waits ~a second and cannot be hurried. */
+  .annbar .tip {
+    position: absolute;
+    top: calc(100% + 6px);
+    display: none;
+    z-index: 4;
+    padding: 3px 7px;
+    border-radius: 5px;
+    /* The shell's own `[data-tip]` panel (frontend/src/styles/schedule.css):
+       page ink on the raised surface, a hairline and a soft shadow — so the
+       tip reads the same in both themes and beside the shell's tooltips. */
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: 0 2px 8px var(--shadow);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.3;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .annbar .tip.show { display: block; }
   .annbar.rec .done { display: none; }
   .annbar .stop { display: none; }
   .annbar.rec .stop {
@@ -1352,6 +1379,16 @@
     transition: color .12s, border-color .12s, background .12s;
   }
   #back:hover { color: var(--fg); border-color: var(--border-strong); background: var(--surface); }
+  /* A MODE LOCKS THE CHAT (Akshil, 2026-09-07): while Comment or Annotate is
+     on — or the recording is still settling — the ways OUT of this chat are
+     drawn inert: ← Chats, the recent-chat rows, the calendar. The notes belong
+     to this chat and this app; leaving would strand them. annNavLock is the
+     one writer of body.annlock and the buttons' `disabled`. */
+  #back:disabled { opacity: .55; cursor: default; pointer-events: none; }
+  body.annlock #recentlist .chat-row,
+  body.annlock #artifactslist .art-row,
+  body.annlock #snapslist .snap-row { opacity: .55; cursor: default; pointer-events: none; }
+  body.annlock .schedbtn { opacity: .55; cursor: default; pointer-events: none; }
 
   /* the scheduled-message block (see the #schedblock markup)
      It rides the COMPOSER'S column — same 720px measure, same 20px gutter as
@@ -3839,10 +3876,10 @@
       <div id="anntool" role="radiogroup" aria-label="What a click pins" hidden>
         <button id="toolel" type="button" role="radio" aria-checked="true"
                 aria-label="Element"
-                title="Clicks pin the element under the cursor"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5"/><rect class="fill" x="6" y="6" width="4" height="4" rx="1"/></svg><span class="lbl">Element</span></button>
+                data-tip="Clicks pin the element under the cursor"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="11" rx="2.5"/><rect class="fill" x="6" y="6" width="4" height="4" rx="1"/></svg><span class="lbl">Element</span></button>
         <button id="toolpt" type="button" role="radio" aria-checked="false"
                 aria-label="Point"
-                title="Clicks pin the exact spot, with a marked screenshot"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.25"/><line x1="8" y1="1.5" x2="8" y2="4"/><line x1="8" y1="12" x2="8" y2="14.5"/><line x1="1.5" y1="8" x2="4" y2="8"/><line x1="12" y1="8" x2="14.5" y2="8"/></svg><span class="lbl">Point</span></button>
+                data-tip="Clicks pin the exact spot, with a marked screenshot"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.25"/><line x1="8" y1="1.5" x2="8" y2="4"/><line x1="8" y1="12" x2="8" y2="14.5"/><line x1="1.5" y1="8" x2="4" y2="8"/><line x1="12" y1="8" x2="14.5" y2="8"/></svg><span class="lbl">Point</span></button>
       </div>
       <!-- THREE buttons in every state (Akshil, 2026-09-06): Screenshot,
            Comment, Annotate, each an icon plus a word (annFitStrip drops the
@@ -6059,7 +6096,7 @@ function annBarNode(doc) {
   const done = doc.createElement("button");
   done.className = "done";
   done.type = "button";
-  done.title = "Send the notes to Claude and finish · Esc cancels";
+  done.dataset.tip = "Send the notes to Claude and finish · Esc cancels";
   done.setAttribute("aria-label", "Done — send the notes and finish");
   done.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl">Done</span>';
   done.addEventListener("click", () => annDone());
@@ -6069,7 +6106,7 @@ function annBarNode(doc) {
   const stop = doc.createElement("button");
   stop.className = "stop";
   stop.type = "button";
-  stop.title = "Stop the recording · Esc also stops it";
+  stop.dataset.tip = "Stop the recording · Esc also stops it";
   stop.setAttribute("aria-label", "Stop the recording");
   stop.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg><span class="clk"></span>';
   stop.addEventListener("click", () => annRecEnd());
@@ -6081,11 +6118,33 @@ function annBarNode(doc) {
   const discard = doc.createElement("button");
   discard.className = "discard";
   discard.type = "button";
-  discard.title = "Discard — nothing is sent";
+  discard.dataset.tip = "Discard — nothing is sent";
   discard.setAttribute("aria-label", "Discard the notes and leave the mode");
   discard.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11"/><path d="M5.5 4V2.75a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4"/><path d="M3.75 4l.6 9a1 1 0 0 0 1 .95h5.3a1 1 0 0 0 1-.95l.6-9"/><line x1="6.5" y1="7" x2="6.5" y2="10.5"/><line x1="9.5" y1="7" x2="9.5" y2="10.5"/></svg>';
   discard.addEventListener("click", () => annDiscard());
-  bar.append(lead, slot, discard, done, stop);
+  // The instant tooltip: one node, shown on hover/focus of any button on the
+  // bar (the portaled picker's two included) and placed under that button's
+  // right edge. Delegated on the BAR, which is rebuilt with every layer, so
+  // it cannot lose its handlers the way a node that outlives a document does
+  // (see annToolClick).
+  const tip = doc.createElement("div");
+  tip.className = "tip";
+  tip.setAttribute("role", "tooltip");
+  const tipFor = (t) => t && t.closest && t.closest("[data-tip]");
+  const tipShow = (btn) => {
+    const b = btn.getBoundingClientRect(), r = bar.getBoundingClientRect();
+    tip.textContent = btn.dataset.tip;
+    tip.style.right = Math.max(0, r.right - b.right) + "px";
+    tip.style.left = "auto";
+    tip.classList.add("show");
+  };
+  const tipHide = () => tip.classList.remove("show");
+  bar.addEventListener("mouseover", (e) => { const b = tipFor(e.target); if (b) tipShow(b); });
+  bar.addEventListener("mouseout", (e) => { if (tipFor(e.target) && !tipFor(e.relatedTarget)) tipHide(); });
+  bar.addEventListener("focusin", (e) => { const b = tipFor(e.target); if (b) tipShow(b); });
+  bar.addEventListener("focusout", tipHide);
+  bar.addEventListener("click", tipHide);
+  bar.append(lead, slot, discard, done, stop, tip);
   // The bar's box changes with the pane (the divider drags, the window
   // resizes) — refit the words on every change. The observer is the bar's
   // OWN window's: the node may live in another document.
@@ -6221,7 +6280,7 @@ const ANN_LAYER_CSS = [
   ".annbar { position: absolute; top: 0; left: 0; right: 0; box-sizing: border-box;"
   + " height: 43px; display: none; align-items: center; gap: 12px; padding: 8px 16px;"
   + " background: var(--bg, #191a1e); border-bottom: 1px solid var(--border, #34363e);"
-  + " color: var(--fg, #ececf1); pointer-events: auto; overflow: hidden;"
+  + " color: var(--fg, #ececf1); pointer-events: auto;"
   + " font: 400 12px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }",
   ".annbar.show { display: flex; animation: annbarin .18s ease; }",
   "@keyframes annbarin { from { opacity: 0; transform: translateY(-6px); } }",
@@ -6255,6 +6314,11 @@ const ANN_LAYER_CSS = [
   ".annbar .discard:hover { color: var(--error, #f26d6d); border-color: var(--error, #f26d6d); }",
   ".annbar .discard svg { width: 14px; height: 14px; fill: none; stroke: currentColor;"
   + " stroke-width: 1.5; stroke-linecap: round; }",
+  ".annbar .tip { position: absolute; top: calc(100% + 6px); display: none; z-index: 4;"
+  + " padding: 3px 7px; border-radius: 5px; color: var(--fg, #ececf1); background: var(--surface, #26282f);"
+  + " border: 1px solid var(--border, #34363e); box-shadow: 0 2px 8px var(--shadow, rgba(0,0,0,.4));"
+  + " font-size: 11px; font-weight: 500; line-height: 1.3; white-space: nowrap; pointer-events: none; }",
+  ".annbar .tip.show { display: block; }",
   ".annbar.rec .done { display: none; }",
   ".annbar .stop { display: none; }",
   ".annbar.rec .stop { border-color: var(--error, #f26d6d); color: var(--error, #f26d6d); }",
@@ -6432,8 +6496,15 @@ function annSetTool(t) {
   annToolElBtn.setAttribute("aria-checked", String(t === "element"));
   annToolPtBtn.setAttribute("aria-checked", String(t === "point"));
 }
-annToolElBtn.addEventListener("click", () => annSetTool("element"));
-annToolPtBtn.addEventListener("click", () => annSetTool("point"));
+// ONE named handler on the group, not two closures on the buttons: it is
+// re-attached by annBarPaint after every adoption (see there), which only a
+// stable function reference makes idempotent.
+function annToolClick(e) {
+  const b = e.target && e.target.closest && e.target.closest("button");
+  if (b === annToolElBtn) annSetTool("element");
+  else if (b === annToolPtBtn) annSetTool("point");
+}
+annToolEl.addEventListener("click", annToolClick);
 let annDraft = null;    // anchor of a NEW note being composed
 let annEditing = null;  // id of an existing pending note being edited
 // When the mode was last ARMED. Pins are drawn only for notes saved since
@@ -6562,8 +6633,8 @@ function annLabelFor(i) {
 // node is left where it last stood, hidden; a layer rebuilt by a live reload
 // simply adopts it again.
 const ANN_BAR = {
-  comment: ["Comment", "Click an element or a point, then type the change."],
-  rec: ["Voice annotation", "Click an element or a point, then say the change."],
+  comment: ["Comment", "Click on a spot and type what to change."],
+  rec: ["Voice annotation", "Click on a spot and say what to change."],
 };
 // The bar's words fit or fold, by MEASURE (the strip's annFitStrip idiom —
 // collision detection, never a breakpoint): everything on, then the sentence
@@ -6609,7 +6680,7 @@ function annBarFit() {
 // copied as inline custom properties on the node. Read off THIS document's
 // root, so `data-theme` here is what the bar over there wears.
 const ANN_BAR_TOKENS = ["--bg", "--surface", "--border", "--fg", "--dim", "--accent",
-                        "--on-accent", "--error"];
+                        "--on-accent", "--error", "--shadow"];
 function annBarTheme() {
   if (!annBar || annBar.ownerDocument === document) return;   // the page sheet has them
   const cs = getComputedStyle(document.documentElement);
@@ -6659,7 +6730,7 @@ function annBarPaint() {
   // The trash names what it throws — the round's notes, or the walkthrough.
   const discard = annBar.querySelector(".discard");
   discard.setAttribute("aria-label", annRecOn ? "Discard the recording" : "Discard the notes");
-  discard.title = annRecOn
+  discard.dataset.tip = annRecOn
     ? "Discard the recording — nothing is transcribed or sent"
     : "Discard the notes — nothing is sent";
   annBar.querySelector(".txt").textContent = words[1];
@@ -6673,8 +6744,41 @@ function annBarPaint() {
         slot.appendChild(annToolEl);
       } catch (err) { /* document torn down mid-gesture: next paint retries */ }
     }
+    // Re-wired on EVERY paint, not once at boot (Akshil, 2026-09-07 —
+    // "Element | Point after repeated use gets stuck"): the picker is one
+    // node that rides into the app's document, and when that document
+    // unloads (the app reloads after an edit, the pane navigates) the
+    // browser strips every listener off the nodes still in it — adoptNode
+    // keeps listeners, a document teardown does not. addEventListener with
+    // the same function is a no-op while the listener is there and a
+    // repair the moment it is gone.
+    annToolEl.addEventListener("click", annToolClick);
   }
+  annNavLock();
   annBarFit();
+}
+// A mode holds the reader on THIS chat (Akshil, 2026-09-07): the notes and
+// the walkthrough are about the app beside it, and ← Chats, a recent-chat
+// row or the calendar would carry them off to a chat they are not about.
+// Locked for the settle too (`.busy`): a transcription that lands after the
+// reader has left would send itself into the wrong chat. The stylesheet
+// draws the lock off body.annlock; `disabled` and the handlers' guards keep
+// the keyboard honest.
+// `annBusyHold` is the settle's claim on the lock, and a DISARM releases it
+// (Esc during Transcribing…): the reader has said they are leaving, and a
+// transcription that never answers must not hold them here forever.
+let annBusyHold = false;
+function annNavLocked() { return annOn || (annBusyHold && annCta.classList.contains("busy")); }
+let schedUiReady = false;   // applyComposerBlockState's consts land late in the script
+function annNavLock() {
+  const lock = annNavLocked();
+  document.body.classList.toggle("annlock", lock);
+  const back = document.getElementById("back");
+  if (back) {
+    back.disabled = lock;
+    back.title = lock ? "Finish or discard the notes first" : "";
+  }
+  if (schedUiReady) applyComposerBlockState();
 }
 function renderAnn() {
   // No pane, no pins and no chips: both hosts (#annpins over the frame, the two
@@ -7378,6 +7482,10 @@ let annArmEpoch = 0;
 // mode too, and a second copy of this would be a second chance for the banner's
 // text to disagree with `annOn`.
 function annSetMode(on) {
+  // A disarm, whoever asks and whether or not it lands below, releases the
+  // settle's hold on the chat (annBusyHold): a claim the mode made, and the
+  // mode is going.
+  if (!on) annBusyHold = false;
   // Nothing to point at can never be armed, whoever asks. Enforced HERE rather
   // than only at the button because arming has five entry points (the click, the
   // boot default below, the `annmode` param, the app menu's exit action, and the
@@ -7422,9 +7530,7 @@ function annSetMode(on) {
   // Writing "1" over an ABSENT param is not a no-op and still writes: arming is
   // a state change the user asked for, and Back should undo it. Only the
   // normalisation is silenced.
-  if ((fused.params.get("annmode") === "1") !== annOn) {
-    fused.params.set("annmode", annOn ? "1" : "0");
-  }
+  annModeSync();
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
   // Any mode transition ends the transcribing status's claim on the seat
@@ -7528,10 +7634,38 @@ async function annDone() {
     annDoneBusy = false;
   }
 }
-// Annotate mode is OFF by default: reading the pane is the common case and an
-// armed comment layer swallows the clicks that reading needs, so only an
-// explicit `annmode=1` (the user slid it on) starts it armed.
-annSetMode(fused.params.get("annmode") === "1");
+// `annmode` names WHICH mode (Akshil, 2026-09-07 — a reload in a walkthrough
+// used to come back in Comment): "1" is Comment, "2" is a recording, anything
+// else is off. annSetMode and annRecBegin both write through here, and the
+// write is skipped when the URL already MEANS this (a semantic no-op would
+// still cost a history entry — see the note on annSetMode).
+let annRecStarting = false;   // one start request in flight at most (annRecBegin)
+function annModeWant() { return annRecOn ? "2" : annOn ? "1" : "0"; }
+function annModeSync() {
+  const cur = fused.params.get("annmode");
+  const want = annModeWant();
+  const curOn = cur === "1" || cur === "2";
+  if (curOn !== annOn || (annOn && cur !== want)) fused.params.set("annmode", want);
+}
+// The boot default, and the hosted re-arm when a target appears: OFF unless
+// the URL says "1" — reading the pane is the common case and an armed layer
+// swallows the clicks that reading needs.
+//
+// "2" — the page was reloaded MID-WALKTHROUGH — ends the mode, not "becomes
+// Comment" (Akshil, 2026-09-07). A walkthrough cannot survive a reload: the
+// recording handle, the marks it stamped (annRecIds) and its clock live in
+// this page's memory, the app's recorder offers no way to re-adopt a capture
+// that is still running, and a mic opened from a boot rather than a click is
+// exactly the start that races the hosted pane's arrival (the clock became
+// Done and both seats sat dimmed). pagehide already STOPPED the recording and
+// KEPT the file (<home>/recordings), so nothing spoken is lost — it is a
+// download-manager row, not a note — and the round's typed notes still ride
+// `annotations`. So: disarm, and let the URL say so.
+function annBootMode() {
+  const m = fused.params.get("annmode");
+  annSetMode(m === "1");
+}
+annBootMode();
 
 // ── annrec: recording a spoken walkthrough ──────────────────────────────────
 // mm:ss, no library — same shape the rest of this file already has no need for
@@ -7609,6 +7743,11 @@ async function annRecBegin() {
   // seat is drawn inert, and a keyboard press must not start a second
   // walkthrough on the epoch the in-flight annRecEnd is about to disarm.
   if (annRecOn || annCta.classList.contains("busy") || !annCapable()) return;
+  // One start at a time, for callers too: the boot and the hosted re-arm can
+  // both ask while the first request is still out (the click is already held
+  // off by `disabled` below, which a programmatic call does not see).
+  if (annRecStarting) return;
+  annRecStarting = true;
   annWarmTranscriber();
   // Disabled for the width of the start request too, not just while a
   // recording runs — otherwise a second click before the app answers the
@@ -7629,6 +7768,7 @@ async function annRecBegin() {
     // which STOPS and keeps (CP-4) — a mic nobody turned off still turns off.
     rec = await fused.capture.audio({ title: "Spoken walkthrough" });
   } catch (err) {
+    annRecStarting = false;
     annRecBtn.disabled = false;
     // Nothing appended: `unavailable` carries the machine's own sentence
     // (System Settings, or a browser that can), and the fixed "allow
@@ -7636,6 +7776,7 @@ async function annRecBegin() {
     alert("Cannot record — " + (err.message || err.name));
     return;
   }
+  annRecStarting = false;
   annRecBtn.disabled = false;
   // Recording needs the same click handler the manual mode uses, just pointed
   // the other way (annWireTarget's branch below) — arm it if the reader went
@@ -7648,6 +7789,7 @@ async function annRecBegin() {
   // trip home — inside what annRecAssign's nearest-word match cares about.
   annRecStartedAt = performance.now();
   annRecOn = true;
+  annModeSync();   // the URL now says "2": a reload comes back recording
   // The picker usually arrived with annSetMode(true) above; this direct call
   // covers the one path where the mode was ALREADY armed when the mic was
   // pressed — a pending exit animation must be cancelled, which annToolShow
@@ -7918,6 +8060,7 @@ async function annRecEnd() {
   annBtn.setAttribute("aria-label", "Comment — unavailable while the recording settles");
   annBtn.title = "Unavailable while the recording settles";
   annCta.classList.add("busy");
+  annBusyHold = true;
   annRecLbl.textContent = "Stopping…";
   annBarPaint();   // the clicks are over: the bar goes with them
   // The ending that KEEPS the file (CP-4) — `cancel()` is the discard. Its
@@ -7979,6 +8122,7 @@ async function annRecEnd() {
     annBtn.setAttribute("aria-label", "Comment — unavailable while the recording settles");
     annBtn.title = "Unavailable while the recording settles";
     annCta.classList.add("busy");
+  annBusyHold = true;
     annRecLbl.textContent = "Transcribing…";
   }
   try {
@@ -8101,6 +8245,7 @@ async function annRecDiscard() {
   annBtn.setAttribute("aria-label", "Comment — unavailable while the recording settles");
   annBtn.title = "Unavailable while the recording settles";
   annCta.classList.add("busy");
+  annBusyHold = true;
   annRecLbl.textContent = "Discarding…";
   annBarPaint();   // the clicks are over: the bar goes with them
   // `cancel()` STOPS AND DELETES (CP-4) — the ✕'s own meaning — where a stop
@@ -8219,7 +8364,7 @@ function annPollTarget() {
   // itself may have run before the host stamped anything — the switch would then
   // read "Comment" while the URL says the mode is on. Through annSetMode, the
   // one door, so the label, aria-pressed, the param and the pins agree.
-  if (has) annSetMode(fused.params.get("annmode") === "1");
+  if (has) annBootMode();
   // And a target that has GONE disarms without writing the param: annSetMode
   // refuses (annCapable is false now) after setting annOn, which is exactly the
   // "ignored, not rewritten" posture a stale `annmode` gets everywhere else. The
@@ -8493,6 +8638,19 @@ function annWireTarget() {
 // adopted before it has a src. Hosted, `annFrame` is the host's or null and the
 // adoption happens in annSyncTarget instead — the target is not ours to assume,
 // so what starts there is the polling that keeps asking who it is.
+// A reload or close mid-walkthrough ASKS first (Akshil, 2026-09-07, option 1):
+// the recording cannot survive the page (see annBootMode), so the one thing
+// this document can do for it is make leaving deliberate. The browser's own
+// sheet — the text is the UA's, `returnValue` only arms it — and only while a
+// recording is live: an armed Comment round rides the URL and loses nothing.
+// EVERY layout (Bugbot, PR #1046): the full-page and split chats record too,
+// so this sits outside the CHAT_ONLY block below. Hosted, a frame's
+// beforeunload holds the parent's navigation as well.
+window.addEventListener("beforeunload", (e) => {
+  if (!annRecOn) return;
+  e.preventDefault();
+  e.returnValue = "A walkthrough is recording — leave and stop it?";
+});
 if (CHAT_ONLY) {
   annPollTarget();
   window.addEventListener("focus", annPollTarget);
@@ -11804,7 +11962,7 @@ document.querySelectorAll(".schedbtn").forEach((btn) => {
     // a task is input the same way a typed reply is (see applyComposerBlockState,
     // which is what actually disables the button). Guarded here anyway, the same
     // discipline `submitChat` keeps — disabled for the eye, guarded for the hand.
-    if (schedBlocked()) return;
+    if (schedBlocked() || annNavLocked()) return;
     // A second press on the same button closes, rather than closing on the
     // document handler below and reopening here.
     const same = schedPopFor === btn;
@@ -11819,7 +11977,9 @@ document.getElementById("schedpop-go").addEventListener("click", () => {
   // caller of openScheduler — so the last word on whether a task may be made from
   // here is read here, not at open time. The block also closes the confirm
   // (applyComposerBlockState), which makes this the race and not the ordinary path.
-  if (schedBlocked()) return;
+  // The mode's lock too (Bugbot, PR #1046): a confirm opened before Comment was
+  // armed would otherwise still leave for Tasks and strand the notes.
+  if (schedBlocked() || annNavLocked()) return;
   // The box belonging to the composer that was clicked, not "the visible one":
   // only one composer is on screen at a time, but reading the button's own form
   // is what keeps that a fact about the layout rather than an assumption here.
@@ -12703,6 +12863,9 @@ function consumeAnchor() {
 // Clear the session param so a reload lands on the landing page,
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
+  // A mode holds the reader here (annNavLock): the button is disabled, and
+  // this guard is the keyboard's copy of the same refusal.
+  if (annNavLocked()) return;
   // Live even mid-turn (Akshil, 2026-08-19 — "when it is working I can't
   // click back"). The old `if (sending) return` guarded against orphaning the
   // streaming run's UI, but the architecture already survives leaving: the
@@ -14234,6 +14397,37 @@ function showPermissionCard(card, working) {
   scrollBottom();
 }
 
+// OPEN cards are the things the run is blocked on, so together they are the
+// LAST thing before the working line — whatever else got mounted after them.
+// Anything that inserts before `working.el` after a card did (the reply bubble
+// on a re-attach, a follow-up's fresh bubble, a note) would otherwise sit
+// between the two and, with a long enough reply, push the card above the fold
+// while the status line below says "Waiting for your approval".
+//
+// Takes the WHOLE set of open cards, in request order, and pins them as one
+// contiguous block ending at the working line: card[n-1] directly before the
+// working line, card[n-2] directly before card[n-1], and so on. Checking each
+// card against its own successor (not all of them against the working line) is
+// what makes this idempotent with two or more cards pending — a sub-agent's
+// card beside the main one — so the 400 ms poll never reorders anything
+// already in place, and scrolls only when a card actually moved.
+function pinOpenCards(cards, working) {
+  const anchorEl = working && working.el;
+  if (!anchorEl || !anchorEl.isConnected) return;
+  let anchor = anchorEl;
+  let moved = false;
+  for (let i = cards.length - 1; i >= 0; i--) {
+    const el = cards[i].el;
+    if (!el || !el.isConnected || el.parentNode !== anchor.parentNode) continue;
+    if (el.nextElementSibling !== anchor) {
+      anchor.parentNode.insertBefore(el, anchor);
+      moved = true;
+    }
+    anchor = el;
+  }
+  if (moved) scrollBottom();
+}
+
 // An ANSWERED card belongs where it was answered. While a card is open it lives
 // at the bottom of the log, right above the working line, because that is where
 // a control the run is blocked on has to be — but the turn's prose and tool
@@ -14282,6 +14476,7 @@ function parkResolvedCard(card) {
 // Reconcile the poll's request list with what is on screen. Idempotent — poll
 // replays the whole list every 400 ms.
 function syncPermissions(list, run_id, working, liveMode) {
+  const open = [];   // still-unanswered cards, in request order — see pinOpenCards
   for (const p of list || []) {
     if (!p || !p.id) continue;
     let card = permCards.get(p.id);
@@ -14292,6 +14487,7 @@ function syncPermissions(list, run_id, working, liveMode) {
     if (!card.el.isConnected) {
       showPermissionCard(card, working);
     }
+    if (!p.decision) open.push(card);
     // `answers` is only ever set on a question card, and it is why poll carries
     // it: a frame that re-attaches after the click has to be able to show what
     // was chosen, not just that something was.
@@ -14304,6 +14500,7 @@ function syncPermissions(list, run_id, working, liveMode) {
       parkResolvedCard(card);
     }
   }
+  pinOpenCards(open, working);
 }
 
 // What a LIVE api_retry says on the status line. The status code picks the
@@ -15496,7 +15693,14 @@ function onEscape(e) {
   e.preventDefault();
   if (act === "close-viewer") shotViewClose();
   else if (act === "close-composer") annCloseComposer();
-  else annSetMode(false);
+  // Esc in a typed Comment mode is CANCEL (Akshil, 2026-09-06: "I press
+  // escape, it doesn't discard it") — this round's unsent notes go, not just
+  // the mode; the bar's trash and this key are the same exit. A live
+  // walkthrough keeps its own Esc (stop and keep — annSetMode's branch), and
+  // through Stopping…/Transcribing… the marks are the recording's to settle,
+  // so those two still only leave the mode.
+  else if (annRecOn || annCta.classList.contains("busy")) annSetMode(false);
+  else annNotesDiscard();
 }
 
 // Bound on BOTH documents. Annotate mode is driven with the pointer over the
@@ -15773,7 +15977,11 @@ async function pollLoop(run_id, gen = logGen) {
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
       w.setStats(tokens, data.phase || "thinking", data.retry, data.activity);
-      syncPermissions(data.permissions, run_id, w, data.mode);
+      // syncPermissions runs AFTER the segment render below, not here — see the
+      // call site past it. A card mounted before the reply bubble existed ended
+      // up ABOVE the bubble once `addAssistant` slid in under the working line,
+      // and a long reply then scrolled the one control the run was blocked on
+      // out of view.
       noteSkills(data.skills, w);
       // Not awaited: a snapshot must never hold up the streaming reply, and the
       // answered-set makes a second poll arriving mid-answer a no-op.
@@ -15835,6 +16043,14 @@ async function pollLoop(run_id, gen = logGen) {
           tailText = renderSegments(segBody, segs, { typer });
         } else if (!data.done) typer.update(flatText);
       }
+      // After the reply bubble is guaranteed to exist for anything this poll
+      // carried, so an open card lands BELOW the prose it interrupts — a
+      // re-attach (open from Tasks, reload, follow-up reset) delivers the
+      // card and the reply in the same poll, and the order they are mounted
+      // in is the order the reader sees. syncPermissions also re-pins an
+      // unanswered cards right above the working line every poll, so no later
+      // mount can bury them either.
+      syncPermissions(data.permissions, run_id, w, data.mode);
       if (data.done) {
         // OWNERSHIP-GUARDED, same as the `finally` block below: a respawn
         // (sendFollowUp's attachment/effort-change path) kills this run and
@@ -16376,6 +16592,7 @@ const SCHED_BTN_LABEL = schedBtn.getAttribute("aria-label");
 // EMPTY is the only state in which the composer works — and it is also the state
 // a schedule that could not be read leaves behind (applyComposerBlock).
 let schedBlockers = [];
+schedUiReady = true;   // annNavLock may repaint the calendar from here on
 // The entry whose cancel came back refused (it was already away). Kept by ID so
 // the sentence belongs to a message rather than to the banner — see
 // renderSchedBlock.
@@ -16741,23 +16958,27 @@ function applyComposerBlockState() {
   // fires no click for Enter or Space either — a control that paints itself dead
   // and still navigates is worse than one that never dimmed. The click handler
   // guards as well, the same belt-and-braces `submitChat` uses.
-  const why = blocked ? schedBlockReason(schedBlockers[0]) : "";
-  schedBtn.disabled = blocked;
-  schedBtn.title = blocked ? why : SCHED_BTN_TITLE;
+  // The mode's lock (annNavLock) is the other reason the calendar is off:
+  // scheduling leaves for the Tasks view, and the notes stay behind.
+  const locked = !blocked && annNavLocked();
+  const why = blocked ? schedBlockReason(schedBlockers[0])
+            : locked ? "finish or discard the notes first" : "";
+  schedBtn.disabled = blocked || locked;
+  schedBtn.title = (blocked || locked) ? why : SCHED_BTN_TITLE;
   // And the SPOKEN name says it too, the way the box's placeholder does above:
   // `disabled` takes the button out of tab order, so the title is unreachable by
   // keyboard and the name is all a reader browsing this row will hear. The name
   // stays first — what the control is, then why it is off — so the button is
   // still identifiable while it is refusing.
-  schedBtn.setAttribute("aria-label", blocked ? SCHED_BTN_LABEL + " — " + why
-                                              : SCHED_BTN_LABEL);
+  schedBtn.setAttribute("aria-label", (blocked || locked) ? SCHED_BTN_LABEL + " — " + why
+                                                        : SCHED_BTN_LABEL);
   // A confirm can already be up when the poll lands: "Schedule this as a task?"
   // is a question about a button that has just died, and its Continue would hit
   // the guard and do nothing visible. Take it down instead, so what the reader
   // ends up looking at is the banner. Only on the way IN — closing a confirm the
   // user opened the moment the block lifted would be the block reaching past its
   // own end.
-  if (blocked) closeSchedConfirm();
+  if (blocked || locked) closeSchedConfirm();
   // The row's number and name, fetched AFTER the card is on screen and never
   // before the block: what shuts the composer is the schedule, and the listing
   // only decorates the row (see schedLoadTaskRow). Guarded there against refetching
@@ -17683,6 +17904,9 @@ function addChatRow(list, s) {
     row.querySelector(".row-fileic").title = pane;
   }
   const open = async () => {
+    // A mode holds the reader on the chat they are in (annNavLock draws the
+    // rows inert; this is the keyboard's copy).
+    if (annNavLocked()) return;
     // A chat about ANOTHER file does not belong in this pane: resuming it here
     // would put its transcript beside a preview of a file it never mentions.
     // The host is sent to that file with the session attached instead, so the
@@ -18032,7 +18256,7 @@ function addArtifactRow(list, a) {
     row.title = local ? a.file_path : a.remote_url;
     // A new tab, not this frame: this window is a chat (often a pane of a
     // split), and navigating it away would end the conversation.
-    const open = () => window.open(
+    const open = () => annNavLocked() ? null : window.open(
       local ? artOpenHref(a.file_path) : a.remote_url, "_blank", "noopener");
     row.onclick = open;
     row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
@@ -18280,6 +18504,7 @@ function snapItem(v, timeline) {
   row.setAttribute("aria-expanded", open ? "true" : "false");
   row.tabIndex = 0;
   const toggle = () => {
+    if (annNavLocked()) return;   // a mode holds the reader on this chat (annNavLock)
     snapOpenId = open ? null : v.id;
     renderSnapshots(snapTimeline);
   };

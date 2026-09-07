@@ -65,6 +65,7 @@ import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
 import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
+import EmbedStrip from "@apps/explorer/EmbedStrip";
 import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
@@ -457,6 +458,12 @@ function StatView({
           home={home}
           renderedTitle={renderedTitle}
         />
+        {/* The top-level embed's one piece of chrome (IS_TOP_EMBED): a
+            dismissable strip with the way back to the explorer and, for a
+            .fused, Clone. Here and not in Preview: the preview header is
+            CSS-hidden in embed, and the fusedapp template frames the entry
+            page as a SECOND embed, so only this outer shell is top-level. */}
+        <EmbedStrip fsPath={fsPath} isDir={isDir} />
         <div id="content">{content}</div>
       </div>
       <PreviewSideSlot />

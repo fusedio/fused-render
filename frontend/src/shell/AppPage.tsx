@@ -47,8 +47,10 @@
 // must not reload it. The frame stays mounted behind the Tasks tab for the
 // same reason (display:none, not unmount).
 import {
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type MouseEvent,
   type ReactNode,
@@ -63,7 +65,7 @@ import {
 } from "@platform/lib/api";
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { embedUrlForFsPath, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
@@ -74,7 +76,14 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { announceTasksChanged } from "@platform/lib/tasksChanged";
+import { AppStar } from "@platform/ui/AppStar";
+import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
+import { applyIconPick } from "@platform/lib/app-icon";
+import { pushToast } from "@platform/lib/toast";
+import {
+  announceTasksChanged,
+  CURRENT_APPS_CHANGED_EVENT,
+} from "@platform/lib/tasksChanged";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { Button } from "@platform/shadcn/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
@@ -266,24 +275,74 @@ export default function AppPage({
   // treat as "live" (finding 4).
   const snapshot = useAppPageSnapshot(dir, urlVersion);
 
-  // The tab favicon is the app's optional icon.svg while its page is open
-  // (`/api/apps/icon`; the same file the Projects row draws). Guarded by
-  // `live` like the resolve below, so a fast switch between two apps cannot
-  // paint the first one's icon over the second.
+  // The app's optional icon.svg (`/api/apps/icon`; the same file the Projects
+  // row draws) — the header's mark AND, through useFavicon, the tab icon while
+  // this page is open. One state for both, and one refetch after a pick: the
+  // POST answers `{path, replaced}` with no mtime, and the mtime is exactly
+  // what busts the browser's image and (far more stubborn) favicon caches, so
+  // an optimistic set would show the old glyph under a new URL-less src.
   const [iconHref, setIconHref] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    setIconHref(null);
+  // The generation token stands in for the effect's usual `live` flag: a pick
+  // reloads outside any effect, and a bare boolean captured per-effect cannot
+  // cancel THAT read when the folder changes under it. A stale response is one
+  // whose token is no longer current, whoever asked for it — which is also
+  // what keeps a fast switch between two apps from painting the first one's
+  // icon over the second.
+  const iconGenRef = useRef(0);
+  const loadIcon = useCallback(() => {
+    const gen = ++iconGenRef.current;
     getAppIcon(dir)
       .then((r) => {
-        if (live) setIconHref(r.icon ? appIconUrl(r.icon, r.mtime) : null);
+        if (iconGenRef.current === gen) {
+          setIconHref(r.icon ? appIconUrl(r.icon, r.mtime) : null);
+        }
       })
-      .catch(() => live && setIconHref(null));
-    return () => {
-      live = false;
-    };
+      .catch(() => {
+        if (iconGenRef.current === gen) setIconHref(null);
+      });
   }, [dir]);
+  useEffect(() => {
+    setIconHref(null);
+    loadIcon();
+  }, [loadIcon]);
+  // The icon can also be changed from the OTHER end of the same app — the
+  // sidebar's Projects glyph, whose picker writes the same file while this
+  // page is the one on screen. It pokes the desk on a successful write
+  // (applyIconPick), so the poke is the signal to re-read: without this the
+  // header's mark and the tab favicon both kept the old glyph until the next
+  // navigation, and only a pick made HERE ever looked refreshed.
+  useEffect(() => {
+    window.addEventListener(CURRENT_APPS_CHANGED_EVENT, loadIcon);
+    return () => window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, loadIcon);
+  }, [loadIcon]);
   useFavicon(iconHref);
+
+  // ---- the header mark's icon picker -----------------------------------------
+  // The same picker the sidebar's Projects row opens from its glyph (the emoji
+  // + branded-lucide IconPicker), anchored to the mark that opened it, writing
+  // the same `icon.svg` through the same shared rule (applyIconPick, which also
+  // pokes the sidebar so that row's glyph changes with this one). Its own
+  // toggle selector: both glyphs are on screen together, and a loose selector
+  // means each leaves the other's picker open (IconPicker's own note).
+  const [iconAnchor, setIconAnchor] = useState<{ top: number; left: number } | null>(
+    null,
+  );
+  // The picker decides when it closes (a shuffle leaves it open), so this only
+  // writes.
+  const onPickIcon = async (pick: IconPick | null) => {
+    try {
+      await applyIconPick(dir, pick);
+    } catch (e) {
+      // Louder than the sidebar's silent swallow: this mark is a deliberate
+      // click on a page-level action, and a header that simply doesn't change
+      // reads as the page being broken rather than the write having failed.
+      pushToast({
+        msg: "Could not change the icon: " + (e as Error).message,
+        tone: "error",
+      });
+    }
+    loadIcon();
+  };
 
   useEffect(() => {
     let live = true;
@@ -434,12 +493,41 @@ export default function AppPage({
     <div className="app-page">
       <header className="app-page-head">
         <div className="app-page-title">
-          <h1>{slug}</h1>
-          {/* Reads as the folder and IS the folder: opens its listing in the
-              explorer. The app itself is the "Open app" button opposite. */}
-          <a className="app-page-folder" href={folderHref} title={dir}>
-            {tildePath(dir, home)}
-          </a>
+          {/* The app's mark, and the way to change it: a click opens the same
+              icon picker the sidebar's Projects row does (below). The app's
+              own icon.svg drawn as is — the author's colours, no tint — or
+              the generic star when it has none, which is also the affordance
+              for an app that has never had an icon. */}
+          <button
+            type="button"
+            className="app-page-icon app-page-icon-toggle"
+            title="Change icon"
+            aria-label="Change icon"
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              setIconAnchor((cur) =>
+                cur ? null : { top: rect.top, left: rect.left },
+              );
+            }}
+          >
+            {iconHref ? (
+              <img src={iconHref} alt="" draggable={false} />
+            ) : (
+              <AppStar />
+            )}
+          </button>
+          {/* The name and the folder keep their own baseline row: the mark is
+              a column beside the PAIR (it centers against both), and a
+              baseline-aligned box in the same row would drop the text off
+              center against it. */}
+          <div className="app-page-name">
+            <h1>{slug}</h1>
+            {/* Reads as the folder and IS the folder: opens its listing in the
+                explorer. The app itself is the "Open app" button opposite. */}
+            <a className="app-page-folder" href={folderHref} title={dir}>
+              {tildePath(dir, home)}
+            </a>
+          </div>
         </div>
         {entry && (
           <div className="app-page-actions">
@@ -474,13 +562,16 @@ export default function AppPage({
                       : "Migrate to new version"}
               </Button>
             )}
-            {/* The app full-size in the explorer (its entry page), in a new tab
-                so this page and its live frame stay put. */}
+            {/* The app full-size AS AN APP — its entry page in embed mode,
+                chrome-free — in a new tab so this page and its live frame stay
+                put. The top-level embed's strip (EmbedStrip) is the way back
+                into the explorer from there; the folder link opposite is the
+                explorer route from here. */}
             <Button
               size="sm"
               variant="outline"
               className="app-page-open"
-              onClick={() => window.open(urlForFsPath(entry), "_blank", "noopener")}
+              onClick={() => window.open(embedUrlForFsPath(entry), "_blank", "noopener")}
             >
               Open app
               <ExternalLink data-icon="inline-end" />
@@ -488,6 +579,15 @@ export default function AppPage({
           </div>
         )}
       </header>
+      {iconAnchor && (
+        <IconPicker
+          anchor={iconAnchor}
+          toggleSelector=".app-page-icon-toggle"
+          onPick={(pick) => onPickIcon(pick)}
+          onRemove={() => onPickIcon(null)}
+          onClose={() => setIconAnchor(null)}
+        />
+      )}
       {migrateError && (
         <ErrorBanner>Could not create the migration task: {migrateError}</ErrorBanner>
       )}

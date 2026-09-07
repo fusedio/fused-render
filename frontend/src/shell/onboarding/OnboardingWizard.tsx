@@ -127,7 +127,19 @@ export function OnboardingWizard({ config }: { config: Config }) {
   const last = index >= steps.length - 1;
   const setIndex = (i: number) => setStepId(steps[Math.max(0, Math.min(i, steps.length - 1))].id);
   // Counted over the steps this machine actually has (no FDA off macOS).
-  const eyebrow = `Step ${index + 1} of ${steps.length}`;
+  const eyebrowText = `Step ${index + 1} of ${steps.length}`;
+  // One yellow button per screen. A step with its own work to do (install,
+  // grant, download) owns the colour while that work is open and Next goes
+  // quiet; the moment it is done — or on a step with nothing to do — Next
+  // is the yellow one. Steps report through `onWork`, and the report is
+  // TAGGED with the step it came from: a fresh step never inherits the last
+  // one's verdict, and no reset effect is needed. (A reset effect was tried
+  // and lost the race — a child's effect runs before its parent's, so the new
+  // step's `onWork(true)` landed first and the reset then wiped it, leaving
+  // Download AND Next both yellow.)
+  const [work, setWork] = useState<{ id: string; busy: boolean } | null>(null);
+  const stepHasWork = work?.id === step.id && work.busy;
+  const onWork = useCallback((busy: boolean) => setWork({ id: step.id, busy }), [step.id]);
 
   // Fire-and-forget, and at most one flag per visit: the flag is a courtesy
   // to the NEXT launch, and a failed write must not hold the page over the
@@ -198,6 +210,36 @@ export function OnboardingWizard({ config }: { config: Config }) {
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `next` is a per-render closure over index
   }, [finish, last, index, steps.length]);
+
+  // Step counter on the left, Back/Next hugging the right edge of the content
+  // column: the pair reads as one control, so they sit together.
+  const eyebrow = (
+    <>
+      <span>{eyebrowText}</span>
+      <div className="flex items-center gap-2 normal-case tracking-normal">
+        <Button variant="outline" size="sm" onClick={back} disabled={index === 0}>
+          <ArrowLeft data-icon="inline-start" />
+          Back
+        </Button>
+        {last ? (
+          <Button key="explore" variant="outline" size="sm" onClick={() => finish("complete")}>
+            I'll explore on my own
+          </Button>
+        ) : (
+          <Button
+            key="next"
+            variant={stepHasWork ? "outline" : "accent"}
+            size="sm"
+            onClick={next}
+            title="⌘/Ctrl + Enter"
+          >
+            Next
+            <ArrowRight data-icon="inline-end" />
+          </Button>
+        )}
+      </div>
+    </>
+  );
 
   return (
     <div
@@ -280,33 +322,13 @@ export function OnboardingWizard({ config }: { config: Config }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-4xl px-6 py-10">
           {step.id === "about" && <AboutStep eyebrow={eyebrow} />}
-          {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} />}
-          {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} />}
-          {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} />}
+          {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} onWork={onWork} />}
           {step.id === "app" && <FirstAppStep health={health} eyebrow={eyebrow} onComplete={markComplete} />}
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="flex items-center justify-between border-t border-border px-5 py-3">
-        <Button variant="ghost" size="sm" onClick={back} disabled={index === 0}>
-          <ArrowLeft data-icon="inline-start" />
-          Back
-        </Button>
-        <div className="text-xs text-muted-foreground sm:hidden">
-          {index + 1} / {steps.length}
-        </div>
-        {last ? (
-          <Button key="explore" variant="outline" size="sm" onClick={() => finish("complete")}>
-            I'll explore on my own
-          </Button>
-        ) : (
-          <Button key="next" size="sm" onClick={next} title="⌘/Ctrl + Enter">
-            Next
-            <ArrowRight data-icon="inline-end" />
-          </Button>
-        )}
-      </div>
     </div>
   );
 }
