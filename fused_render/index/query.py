@@ -476,21 +476,36 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> 
     `inner` is the UNION ALL of the files/dirs branches (each already carries
     `rel`, `size`, `mtime`, `is_dir`, `depth` — RELATIVE to the search root,
     `search_ranked`'s `rel_depth` — and `nm`, the lowercased basename,
-    `_name_col`'s doing) plus `lrel` (`lower(rel)`). `ql` is `qs.lower()` as a
-    LIKE literal (metachars escaped, use with ESCAPE '\\'); `qq` is the same
-    string as a plain SQL string literal (quotes doubled only) for `strpos`/
-    `=` comparisons, which are not LIKE and must not see LIKE's escapes. `n`
-    is `len(qs)` — the constant `longest_run` every surviving row shares now
-    that the fuzzy/subsequence pass is gone (see this module's docstring on
-    `search_ranked` for why that constant safely drops out of the ORDER BY).
+    `_name_col`'s doing) plus `lrel` (`lower(rel)`). `ql` is the ORIGINAL-case
+    `qs` as a LIKE literal (metachars escaped, use with ESCAPE '\\'); `qq` is
+    the same original-case string as a plain SQL string literal (quotes
+    doubled only) for `strpos`/`=` comparisons, which are not LIKE and must
+    not see LIKE's escapes. Every comparison against `ql`/`qq` below wraps
+    them in SQL's own `lower(...)` rather than lowering in Python first — see
+    the paragraph below for why. `n` is `len(qs)` — the constant `longest_run`
+    every surviving row shares now that the fuzzy/subsequence pass is gone
+    (see this module's docstring on `search_ranked` for why that constant
+    safely drops out of the ORDER BY).
 
     Ported line for line from the deleted index/rank.py's `fuzzy_match`
     substring branch, `_is_segment_start`, `_name_tier` and `_sort_key` — see
     that module's own history for the fuzzy-subsequence half this replaces.
-    `KNOWN, deliberate`: both this and rank.py assume `lower()` preserves
-    character offsets, which is false for a handful of Unicode cases; the
-    Python ranker made the identical assumption, so SQL inherits it rather
-    than introducing a new divergence.
+
+    The query is lowercased IN SQL, with the same `lower()` call that already
+    produces `lrel` — not in Python (`qs.lower()`) before being embedded as a
+    literal. The two used to disagree: Python's `str.lower()` and DuckDB's
+    `lower()` don't always fold the same character the same way — U+0130
+    ('İ') folds to TWO Python characters ('i' + a combining dot, U+0307) but
+    to plain 'i' in DuckDB — so a query lowered in Python could never appear
+    as a substring of a `rel` DuckDB lowered, even on an exact-letter match a
+    user would expect to work. Deferring both sides' lowering to the SAME
+    function makes them agree by construction, whichever way `lower()`
+    happens to fold any given character; `rank.py` made the Python-side
+    assumption alone (a `KNOWN, deliberate` divergence noted in its own
+    docstring, about `lower()` not preserving character OFFSETS — a related
+    but different Unicode wrinkle from this one, about the two sides FOLDING
+    a character differently in the first place), which this rewrite no
+    longer needs to inherit now that both sides are one implementation.
 
     Per matched row, at the substring's start position `p0` (`strpos(lrel,
     qq) - 1`, 0-indexed):
@@ -542,9 +557,9 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> 
         f"OR (regexp_matches(substr(rel, i + 1, 1), '^[A-Z]$') "
         f"AND NOT regexp_matches(substr(rel, i, 1), '^[A-Z]$'))))"
     )
-    name_bonus = (f"CASE WHEN nm = '{qq}' THEN 100 "
-                  f"WHEN nm LIKE '{ql}%' ESCAPE '\\' THEN 25 ELSE 0 END")
-    tier = (f"CASE WHEN strpos(nm, '{qq}') > 0 THEN 1 "
+    name_bonus = (f"CASE WHEN nm = lower('{qq}') THEN 100 "
+                  f"WHEN nm LIKE lower('{ql}') || '%' ESCAPE '\\' THEN 25 ELSE 0 END")
+    tier = (f"CASE WHEN strpos(nm, lower('{qq}')) > 0 THEN 1 "
             f"WHEN p0 + {n} - 1 < length(rel) - length(nm) THEN 3 "
             f"ELSE 2 END")
     score = (f"{n} + 3 * ({n} - 1) + 5 * {segment_starts} "
@@ -552,8 +567,8 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> 
              f"+ {name_bonus}")
     return (
         f"WITH matched AS ("
-        f"SELECT *, strpos(lrel, '{qq}') - 1 AS p0 FROM ({inner}) "
-        f"WHERE lrel LIKE '%{ql}%' ESCAPE '\\'{hidden}) "
+        f"SELECT *, strpos(lrel, lower('{qq}')) - 1 AS p0 FROM ({inner}) "
+        f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden}) "
         f"SELECT rel, size, mtime, is_dir, depth, ({score}) AS score, "
         f"({tier}) AS tier FROM matched "
         f"ORDER BY tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC "
@@ -720,8 +735,12 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         if not branches:
             return {**base, "hits": [], "truncated": False, "total": 0}
 
-        ql = like_literal(qs.lower())
-        qq = _q(qs.lower())
+        # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself, with
+        # the same `lower()` call that produces `lrel`, so the query and the
+        # rel it's compared against always fold through one implementation
+        # (see `_rank_sql`'s docstring on why that used to diverge).
+        ql = like_literal(qs)
+        qq = _q(qs)
         n = len(qs)
         # Hidden entries are dropped HERE, in the same query that filters and
         # scores — `query_wants_hidden`/`is_hidden_rel` (this module, moved

@@ -158,6 +158,25 @@ def test_hits_carry_the_wire_fields(tmp_path):
     assert hit["longest_run"] == len("environment.yml")
 
 
+def test_the_query_is_lowercased_in_sql_to_agree_with_lower_rel(tmp_path):
+    """`lrel` (the candidate filter's other side of `LIKE`) is `lower(rel)`,
+    computed by DuckDB. If the query is instead lowercased in PYTHON
+    (`qs.lower()`) before being embedded as a literal, the two sides can use
+    DIFFERENT lowering rules for the same character and silently disagree.
+    U+0130 (LATIN CAPITAL LETTER I WITH DOT ABOVE, 'İ') is a real case of
+    this: Python's `str.lower()` folds it to two characters ('i' + a
+    combining dot, U+0307), but DuckDB's `lower()` folds it to plain 'i' —
+    so a query lowered in Python could never appear as a substring of a rel
+    DuckDB lowered, even though the user's search for the "same" letter
+    obviously should match. Lowering the query in SQL too (the same `lower()`
+    call that already produces `lrel`) makes the two sides agree by
+    construction, whichever way `lower()` happens to fold any given
+    character."""
+    cfg = _index(tmp_path, "/r", ["/r/uİmax.txt"])
+    rels = [h["rel"] for h in search_ranked(cfg, "/r", "İ")["hits"]]
+    assert rels == ["uİmax.txt"]
+
+
 def test_hidden_entries_need_a_dot_leading_query_segment(tmp_path):
     cfg = _index(tmp_path, "/r", ["/r/.env", "/r/environment.yml"])
     rels = [h["rel"] for h in search_ranked(cfg, "/r", "env")["hits"]]
