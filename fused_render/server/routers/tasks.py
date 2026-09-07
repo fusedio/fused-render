@@ -2605,6 +2605,12 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     if path:
         targets.append(path)
 
+    # SIDECARS FIRST, TRANSCRIPTS LAST, AND STOP AT THE FIRST REFUSAL (bugbot,
+    # PR #1049): the transcript is what makes the row a task at all, so it must
+    # be the last thing to go — a sidecar that will not be removed then leaves
+    # the transcript in place, the row on the page and a retry possible, instead
+    # of a vanished task with orphaned files beside where it was.
+    targets.sort(key=lambda t: t.endswith(".jsonl"))
     removed, erased, failed = 0, False, 0
     seen: set[str] = set()
     for target in targets:
@@ -2634,7 +2640,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
         except OSError:
             logger.warning("erase: could not remove %s", resolved, exc_info=True)
             failed += 1
-            continue
+            break
         removed += 1
     return removed, erased, failed
 

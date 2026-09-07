@@ -2508,6 +2508,36 @@ def test_a_file_that_will_not_go_is_not_a_deleted_task(
     assert [t["key"] for t in _tasks(client)] == ["sess-a"]
 
 
+def test_a_sidecar_that_will_not_go_leaves_the_transcript_and_the_row(
+        client, projects_dir, monkeypatch):
+    """The transcript is what makes the row a task, so it goes LAST and nothing
+    goes after a refusal: a stuck sidecar leaves the conversation on disk, the
+    row on the page and the retry possible — not a vanished task with orphaned
+    files beside where it was (bugbot, PR #1049)."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    sidecar = path.parent / "sess-a"
+    sidecar.mkdir()
+    (sidecar / "subagent.jsonl").write_text("{}\n")
+
+    real_rmtree = tasks_mod.shutil.rmtree
+
+    def refuse(_path):
+        raise OSError("busy")
+
+    monkeypatch.setattr(tasks_mod.shutil, "rmtree", refuse)
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 500, r.text
+    assert path.exists() and sidecar.exists()
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+    # With the sidecar removable again, the retry finishes the job. (Only
+    # rmtree is put back — `monkeypatch.undo()` would also drop the fixtures
+    # that point PROJECTS_DIR at the tmp tree.)
+    monkeypatch.setattr(tasks_mod.shutil, "rmtree", real_rmtree)
+    r = client.post("/api/tasks/erase", json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert not path.exists() and not sidecar.exists()
+
+
 def test_erasing_a_task_that_is_not_there_is_a_404(client):
     assert client.post("/api/tasks/erase",
                        json={"key": "nope"}).status_code == 404
