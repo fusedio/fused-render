@@ -35,7 +35,8 @@ import {
 } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
-import { rewritePathAgainst, type ResolvedSnapshot } from "@platform/lib/snapshot-param";
+import { rewritePathAgainst } from "@platform/lib/snapshot-param";
+import type { AppPageSnapshotState } from "./useAppPageSnapshot";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -126,17 +127,22 @@ const MONO = "font-mono text-[12.5px]";
 export default function AppApi({
   dir,
   folderHref,
-  resolvedSnapshot,
+  snapshot,
 }: {
   /** The app folder, absolute forward-slash. */
   dir: string;
   folderHref: string;
-  /** AppPage's own snapshot resolution, or null when live — rewritten
-   *  against directly, never a shared singleton. Under a selected commit the
-   *  endpoint list (and so every Execute call, which runs whatever `.py` that
-   *  listing names) comes from the extracted tree instead of the working
-   *  tree: the API tab lists — and runs — that commit's own code. */
-  resolvedSnapshot: ResolvedSnapshot | null;
+  /** AppPage's own snapshot resolution — rewritten against directly, never a
+   *  shared singleton. Under a selected commit the endpoint list (and so
+   *  every Execute call, which runs whatever `.py` that listing names) comes
+   *  from the extracted tree instead of the working tree: the API tab lists
+   *  — and runs — that commit's own code. While `snapshot.pending` (a
+   *  `_snapshot` sha is claimed but not yet resolved), `effectiveDir` is null
+   *  rather than falling back to the live `dir` — code review finding 4: the
+   *  endpoint list used to load from the live tree in this window, and an
+   *  Execute clicked in it ran live code under a URL claiming a past
+   *  commit. */
+  snapshot: AppPageSnapshotState;
 }) {
   useUrlVersion();
   // Absent `ep` means "nothing chosen yet" — the first endpoint opens so the
@@ -155,8 +161,15 @@ export default function AppApi({
   const [runs, setRuns] = useState<Record<string, Run>>({});
   const [invalid, setInvalid] = useState<Record<string, string | null>>({});
 
-  const effectiveDir = rewritePathAgainst(resolvedSnapshot, dir);
+  const effectiveDir = snapshot.pending ? null : rewritePathAgainst(snapshot.snap, dir);
   useEffect(() => {
+    // Pending: nothing honest to list yet (see this component's own prop
+    // comment) — stay on the loading skeleton rather than list, and let
+    // Execute run, the LIVE tree's code under a URL claiming a past commit.
+    if (!effectiveDir) {
+      setLoad({ kind: "loading" });
+      return;
+    }
     let live = true;
     setLoad({ kind: "loading" });
     getAppPy(effectiveDir)

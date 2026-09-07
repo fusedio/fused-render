@@ -4,6 +4,7 @@
 // (a bare test runtime included).
 import type { TemplateEntry, WalkEntry } from "@platform/lib/api";
 import { partitionModes } from "@platform/lib/mode-visibility";
+import { snapshotFrameSrc, type ResolvedSnapshot } from "@platform/lib/snapshot-param";
 
 // The same set ModeSwitcher.tsx exports — repeated here rather than imported
 // because that module is JSX with a fetch-backed icon renderer, and this file
@@ -107,12 +108,38 @@ export function contentTemplates(templates: TemplateEntry[]): TemplateEntry[] {
   ).content.filter((t) => t.mode !== "_listing");
 }
 
-/** The iframe URL for a file in a template — Preview.tsx's shape. No
- *  `_preview` (a real open, D301) and no `_remote` (the workspace is local). */
-export function renderSrc(file: string, t: TemplateEntry): string {
-  if (t.mode === "_render") return `/render?path=${encodeURIComponent(file)}`;
-  return (
-    `/render?path=${encodeURIComponent(t.path as string)}` +
-    `&_file=${encodeURIComponent(file)}`
-  );
+/** The iframe URL for a file in a template — Preview.tsx's shape (No
+ *  `_preview`, a real open (D301), and no `_remote`, the workspace is local),
+ *  routed through the shared `snapshotFrameSrc` (platform/lib/snapshot-param.ts)
+ *  rather than composed by hand. Code review finding 2: the hand-rolled
+ *  version passed `file` (already rewritten onto the extracted tree by this
+ *  component's own `effectiveDir`, see AppFiles.tsx) straight into the src
+ *  with no `_snapshot`/`_snapshot_dir`/`_snapshot_app` alongside it — the
+ *  framed runtime then had no snapshot awareness of its own (the same gap
+ *  Preview.tsx's `_render` sentinel comment on `snapParams` describes), and
+ *  an editor template's write gate stayed silently open under a snapshotted
+ *  file instead of refusing with the snapshot message.
+ *
+ *  `snap`/`sha` are AppPage's own resolution (AppPage.tsx passes
+ *  `snapshot.snap`/`snapshot.sha` straight through) — `file` is already
+ *  resolved against `snap` by the caller (`effectiveDir + "/" + rel`), so the
+ *  rewrite `snapshotFrameSrc` performs internally is a no-op here (the path
+ *  is already outside `snap.app_dir`); what this call adds is the three
+ *  params, and — a caller that reaches this function should already have
+ *  gated on `pending` (AppFiles.tsx's `file` is null while pending, so this
+ *  is never actually called in that window) — the shared pending check as a
+ *  second line of defense. */
+export function renderSrc(
+  file: string,
+  t: TemplateEntry,
+  snap: ResolvedSnapshot | null,
+  sha: string | null,
+): string | null {
+  if (t.mode === "_render") return snapshotFrameSrc({ snap, sha, path: file });
+  return snapshotFrameSrc({
+    snap,
+    sha,
+    path: t.path as string,
+    extra: `&_file=${encodeURIComponent(file)}`,
+  });
 }

@@ -64,7 +64,7 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
-import { rewritePathAgainst, type ResolvedSnapshot } from "@platform/lib/snapshot-param";
+import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
   Files,
@@ -91,7 +91,7 @@ import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
 import AppApi from "./AppApi";
 import AppVersionPicker from "./AppVersionPicker";
-import { useAppPageSnapshot } from "./useAppPageSnapshot";
+import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnapshot";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -109,13 +109,17 @@ type TabCtx = {
   dir: string;
   entry: string | null;
   folderHref: string;
-  /** This page's OWN resolution of the URL's `_snapshot` sha — null when
-   *  live, or while a resolve is still in flight. Rewrite every read against
-   *  THIS, never a shared singleton (code review finding 1, round 2: two
-   *  apps in one repo share shas, and a singleton written by whichever view
-   *  resolves last can hold another view's resolution by the time a caller
-   *  reads it — there is no such singleton here at all, deliberately). */
-  resolvedSnapshot: ResolvedSnapshot | null;
+  /** This page's OWN resolution of the URL's `_snapshot` sha, including the
+   *  PENDING window a caller must refuse to render live content into (code
+   *  review finding 4: the old shape returned null for "live" and "still
+   *  resolving" alike, and a first paint of `/apps/<dir>?_snapshot=<sha>`
+   *  read `null` as live and booted the live app before the resolve landed).
+   *  Rewrite every read against `snapshot.snap`, never a shared singleton
+   *  (code review finding 1, round 2: two apps in one repo share shas, and a
+   *  singleton written by whichever view resolves last can hold another
+   *  view's resolution by the time a caller reads it — there is no such
+   *  singleton here at all, deliberately). */
+  snapshot: AppPageSnapshotState;
 };
 
 type TabDef = {
@@ -130,18 +134,38 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     label: "Overview",
     Icon: AppWindow,
     keepMounted: true,
-    // Under a snapshot the src must address the EXTRACTED entry, exactly as
-    // Preview.tsx's own `_render` sentinel does for a single-file preview:
-    // `GET /render` itself has no `_snapshot` awareness of its own, so the
-    // src it serves already addressing the extracted file is what actually
-    // puts the app on the selected commit — rewritten against THIS page's own
-    // resolution (`resolvedSnapshot`), never a singleton.
-    render: ({ slug, entry, folderHref, resolvedSnapshot }) =>
-      entry ? (
+    // Routed through the shared `snapshotFrameSrc` (platform/lib/snapshot-param.ts,
+    // the same helper Preview.tsx's own `_render` sentinel now uses) rather
+    // than a hand-rolled src string — that hand-rolled version is what
+    // findings 1 and 4 trace to: it rewrote `path` but never appended
+    // `_snapshot`/`_snapshot_dir`/`_snapshot_app` (so the framed runtime had
+    // no snapshot awareness of its own — `snapshotWritable()` saw
+    // `snapshotSha === null` and left the write gate open for an absolute
+    // live path), and it built a src unconditionally instead of refusing to
+    // during the pending window (a bookmarked `?_snapshot=<sha>` booted the
+    // LIVE app first, then swapped).
+    //
+    // `entryPath` is `snapshot.snap.entry` when resolved — the snapshot's OWN
+    // entry page, already resolved by the server against the extracted tree
+    // (finding 3) — not `entry` (the LIVE tree's) rewritten by directory
+    // prefix alone, which gets the wrong FILENAME whenever the app's entry
+    // was renamed since that commit.
+    render: ({ slug, entry, folderHref, snapshot }) => {
+      if (snapshot.pending) {
+        return <SkeletonLines rows={2} label="Loading app" />;
+      }
+      const entryPath = snapshot.snap ? snapshot.snap.entry ?? null : entry;
+      return entryPath ? (
         <div className="app-page-frame-wrap">
           <iframe
             className="app-page-frame"
-            src={`/render?path=${encodeURIComponent(rewritePathAgainst(resolvedSnapshot, entry))}`}
+            src={
+              snapshotFrameSrc({
+                snap: snapshot.snap,
+                sha: snapshot.sha,
+                path: entryPath,
+              }) as string
+            }
             title={`App: ${slug}`}
           />
         </div>
@@ -150,7 +174,8 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
           This folder has no entry page yet.{" "}
           <a href={folderHref}>Open the folder</a> to see what is there.
         </p>
-      ),
+      );
+    },
   },
   tasks: {
     label: "Tasks",
@@ -162,12 +187,12 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Files,
     // Not keepMounted: the selection is in the URL, so a return costs one walk
     // and one stat — cheaper than a hidden frame that keeps running.
-    render: ({ dir, entry, folderHref, resolvedSnapshot }) => (
+    render: ({ dir, entry, folderHref, snapshot }) => (
       <AppFiles
         dir={dir}
         entry={entry}
         folderHref={folderHref}
-        resolvedSnapshot={resolvedSnapshot}
+        snapshot={snapshot}
       />
     ),
   },
@@ -176,8 +201,8 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Webhook,
     // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
     // one folder inspection — form values and responses are session scratch.
-    render: ({ dir, folderHref, resolvedSnapshot }) => (
-      <AppApi dir={dir} folderHref={folderHref} resolvedSnapshot={resolvedSnapshot} />
+    render: ({ dir, folderHref, snapshot }) => (
+      <AppApi dir={dir} folderHref={folderHref} snapshot={snapshot} />
     ),
   },
 };
@@ -216,10 +241,11 @@ export default function AppPage({
 
   // This page's OWN resolution of the URL's `_snapshot` sha — extracted into
   // useAppPageSnapshot.ts, which has its own header comment for why this is
-  // a hook and not a shared singleton. Rewritten against directly
-  // (rewritePathAgainst below) by Overview's src and passed straight through
-  // to AppFiles/AppApi, which do their own rewriting the same way.
-  const resolvedSnapshot = useAppPageSnapshot(dir, urlVersion);
+  // a hook and not a shared singleton. Passed straight through to every tab
+  // (`snapshotFrameSrc`/`rewritePathAgainst` at each read site), including
+  // the `pending` flag a tab must gate its own frame/fetch on rather than
+  // treat as "live" (finding 4).
+  const snapshot = useAppPageSnapshot(dir, urlVersion);
 
   // The tab favicon is the app's optional icon.svg while its page is open
   // (`/api/apps/icon`; the same file the Projects row draws). Guarded by
@@ -519,7 +545,7 @@ export default function AppPage({
                 role="tabpanel"
                 aria-hidden={!active}
               >
-                {def.render({ slug, dir, entry, folderHref, resolvedSnapshot })}
+                {def.render({ slug, dir, entry, folderHref, snapshot })}
               </section>
             );
           })}

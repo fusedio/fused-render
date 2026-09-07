@@ -35,7 +35,8 @@ import {
 } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
-import { rewritePathAgainst, type ResolvedSnapshot } from "@platform/lib/snapshot-param";
+import { rewritePathAgainst } from "@platform/lib/snapshot-param";
+import type { AppPageSnapshotState } from "./useAppPageSnapshot";
 import {
   defaultMode,
   effectiveActive,
@@ -76,20 +77,25 @@ export default function AppFiles({
   dir,
   entry,
   folderHref,
-  resolvedSnapshot,
+  snapshot,
 }: {
   /** The app folder, absolute forward-slash. */
   dir: string;
   /** The app's entry page (absolute) — the default selection. */
   entry: string | null;
   folderHref: string;
-  /** The app page's own snapshot resolution (AppPage.tsx), or null when live.
-   *  Rewritten against directly — never a shared singleton — so under a
-   *  selected commit this tab walks and previews THAT commit's tree instead
-   *  of the working tree. `rel`/`?file=` stay live-relative regardless: only
-   *  the actual fetch/render TARGETS move, mirroring the explorer's own
-   *  Listing.tsx (rows keep the live path, only listPath is rewritten). */
-  resolvedSnapshot: ResolvedSnapshot | null;
+  /** The app page's own snapshot resolution (AppPage.tsx). Rewritten against
+   *  directly — never a shared singleton — so under a selected commit this
+   *  tab walks and previews THAT commit's tree instead of the working tree.
+   *  `rel`/`?file=` stay live-relative regardless: only the actual
+   *  fetch/render TARGETS move, mirroring the explorer's own Listing.tsx
+   *  (rows keep the live path, only listPath is rewritten). While
+   *  `snapshot.pending` (a `_snapshot` sha is claimed but not yet resolved),
+   *  `effectiveDir` is null rather than falling back to the live `dir` —
+   *  code review finding 4's shape applied here too: walking/previewing the
+   *  live tree during that window would show the wrong era under a URL that
+   *  already claims a past commit. */
+  snapshot: AppPageSnapshotState;
 }) {
   useUrlVersion();
   const params = new URLSearchParams(location.search);
@@ -99,9 +105,12 @@ export default function AppFiles({
   const requestedMode = params.get("_mode");
   // The actual walk/stat/render target: `dir` itself, unless a snapshot is
   // active and encloses it, in which case every read below addresses the
-  // extracted tree instead.
-  const effectiveDir = rewritePathAgainst(resolvedSnapshot, dir);
-  const file = rel ? effectiveDir + "/" + rel : null;
+  // extracted tree instead. `null` while pending (see this component's own
+  // prop comment) — every effect below treats a null `effectiveDir`/`file`
+  // as "nothing to fetch yet", the same shape a not-yet-selected file
+  // already takes.
+  const effectiveDir = snapshot.pending ? null : rewritePathAgainst(snapshot.snap, dir);
+  const file = rel && effectiveDir ? effectiveDir + "/" + rel : null;
 
   const [walk, setWalk] = useState<Walk>({ kind: "loading" });
   const [open, setOpen] = useState<Set<string>>(() => new Set(rel ? ancestorsOf(rel) : []));
@@ -109,6 +118,13 @@ export default function AppFiles({
   const [verdicts, setVerdicts] = useState<ConditionVerdicts>(null);
 
   useEffect(() => {
+    // Pending: nothing honest to walk yet (see `effectiveDir`'s own comment)
+    // — stay on the loading skeleton rather than issue a request the
+    // snapshot resolve landing a moment later would immediately replace.
+    if (!effectiveDir) {
+      setWalk({ kind: "loading" });
+      return;
+    }
     let live = true;
     setWalk({ kind: "loading" });
     walkDir(effectiveDir)
@@ -343,7 +359,7 @@ export default function AppFiles({
                 <iframe
                   key={file + "|" + active.mode}
                   className="app-files-frame"
-                  src={renderSrc(file, active)}
+                  src={renderSrc(file, active, snapshot.snap, snapshot.sha) ?? undefined}
                   title={`${rel} — ${modeTitle(active.mode)}`}
                 />
               )}

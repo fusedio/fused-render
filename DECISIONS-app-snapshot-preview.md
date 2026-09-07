@@ -909,3 +909,107 @@ the moment the row limit changes. `_snapshot` on the URL, and every row's own
 counts commits reachable from HEAD, so it renumbers on a rebase or branch
 switch, and a link keyed on one would silently come to mean a different
 commit later. The sha stays reachable as each row's own `title`.
+
+**Amendment — code review pass, root cause: the app page re-implemented
+frame-src composition instead of reusing Preview.tsx's, and every lesson
+`srcFor` had already learned was lost in the copy.** Four findings, one
+fix: `snapshotFrameSrc`, a new function in
+`frontend/src/platform/lib/snapshot-param.ts` (beside `rewritePathAgainst`,
+`snapshotSrc`, the `ResolvedSnapshot` shape it already owned — no better
+home found, and the module's own header comment already frames itself as
+"everything the `_snapshot` param needs", so a frame-src composer belongs
+there and not in `apps/explorer` or `shell/`). It takes `{ snap, sha, path,
+extra? }`: rewrites `path` against `snap` unconditionally (a no-op for a
+path a caller already resolved onto the extracted tree — see below),
+appends `_snapshot_dir`/`_snapshot_app` when `snap` is resolved and
+`_snapshot=sha` via the existing `snapshotSrc`, and returns `null` whenever
+`sha` is claimed but `snap` is not yet resolved (the pending window). Both
+`Preview.tsx`'s `srcFor` (its `_render` and ordinary-template branches) and
+the app page's three tabs now build every frame src through this one
+function — a fifth caller reaches for it instead of re-deriving the same
+three rules again.
+
+**Finding 1** (`AppPage.tsx`'s Overview src dropped all three snapshot
+params, rewriting `path` alone): closed by routing Overview through
+`snapshotFrameSrc`, which appends the params `rewritePathAgainst` alone
+never did.
+
+**Finding 2** (`AppFiles.tsx`'s `renderSrc`, same omission for the file
+preview frame): `app-files-lib.ts::renderSrc` now takes `(file, template,
+snap, sha)` and returns `string | null` via `snapshotFrameSrc`, instead of
+hand-building the src string. `file` arrives already rewritten onto the
+extracted tree by `AppFiles.tsx`'s own `effectiveDir`, so the rewrite
+`snapshotFrameSrc` performs internally is a no-op for this caller — verified
+by a test asserting the path is unchanged when it is already under the
+snapshot's `dir`, not merely under its `app_dir`. New test file
+`frontend/src/shell/app-files-lib.test.ts` (this pure helper had none before
+this pass) pins the finding directly: a snapshotted call carries all three
+params, not merely the rewritten path.
+
+**Finding 3** (`useAppPageSnapshot.ts` discarded `GET /api/git/snapshot`'s
+`entry` field, so Overview rewrote the LIVE entry's path by directory prefix
+instead of using the commit's OWN entry — wrong the moment an app's entry
+was renamed since): `ResolvedSnapshot` (the shared type) gains an optional
+`entry?: string | null` field, carried through from the hook's `getGitSnapshot`
+call. Optional rather than required, deliberately: the explorer's own three
+constructors of this shape (`Preview.tsx` ×2, `useSnapshotForFolder.ts`)
+preview one specific FILE, not "the app's entry", and have no use for it —
+widening the field to required would force a `entry: null` at every one of
+those (and every test fixture building the same literal) purely to satisfy
+the compiler, for a value nothing there reads. AppPage.tsx's Overview now
+picks `snapshot.snap.entry` when resolved, falling back to the LIVE
+`getAppEntry` entry only when live — never rewriting the live entry's path
+by prefix and hoping the filename still matches.
+
+**Finding 4** (no pending guard — a `_snapshot=<sha>` URL booted the LIVE
+app first, then swapped once the resolve landed; the same window let the
+API tab list, and Execute run, live code under a URL claiming a past
+commit): `useAppPageSnapshot`'s return type changed from a bare
+`ResolvedSnapshot | null` to `{ sha, snap, pending }` — its own docstring's
+former claim ("a caller has no reason" to distinguish resolving from live)
+is deleted along with the shape it described. `AppPage.tsx`'s Overview
+renders a loading skeleton while `pending`; `AppFiles.tsx` and `AppApi.tsx`
+both compute `effectiveDir` as `null` while pending (rather than falling
+back to the live `dir`), so their fetch effects stay on their existing
+loading state instead of listing/walking the live tree for the length of
+the resolve. Regression coverage: `AppPage.test.tsx` (renamed from testing
+a bare nullable return to testing the `{sha,snap,pending}` object) gained a
+case asserting `pending: true` synchronously on mount with a `_snapshot` sha
+and no settled fetch yet — the exact window finding 4 named. A related
+subtlety surfaced while writing that suite and is now itself documented in
+`useAppPageSnapshot.ts`: on a confirmed-404 fallback, the URL write
+(`replaceSearch`) now runs BEFORE the `setResolvedSnapshot(null)` state
+write (previously the other order) — React can bail out of the state write
+as a no-op (the state was already `null`) and skip re-rendering entirely, so
+the URL write has to land first or a render reading `sha` fresh off
+`location.search` can observe the stale, still-`_snapshot`-bearing URL. This
+was latent in the original ordering too (state changing to the SAME value
+never re-rendered), just unobservable while the hook's old return value
+didn't depend on `location.search` at read time.
+
+**Preview.tsx / explorer regression check**: `srcFor`'s two branches now
+call `snapshotFrameSrc` instead of building the src by hand; behaviour is
+unchanged (`snapshotPending`'s own early-return became redundant with the
+helper's identical internal check, `snapParams`/`thumbFlags`/`_file`/`remote`
+all still ride the same way, just as `extra`). No dedicated `Preview.tsx`
+unit test exists to pin this directly (none did before this pass either —
+see this file's own task-5 note on why), so the guarantee here is the
+`snapshotFrameSrc` unit tests plus the full `src/shell src/apps/explorer
+src/platform` run (2510 pass, 0 fail) with no behavioural diff expected or
+observed.
+
+**Two notes from review, judgement recorded rather than fixed**:
+`AppVersionPicker.tsx`'s `list_commits` (`git log` then a separate
+`git rev-list --count` process) can have a commit land between the two,
+shifting every `v<n>` label by one; and `git_snapshot.py`'s `_run_log`
+silently `continue`s past a malformed record, which would also shift
+`total - i` numbering. Left unfixed, agreeing with review's own read: this
+picker is coarse and cosmetic by design (this file's own "keep it cosmetic"
+amendment above, and `title` always carries the real sha so a label rename
+never strands a broken link) — the failure mode is an off-by-one in a
+DISPLAY label for a control whose real, only-thing-that-matters value is
+the sha in `<option value>`, and both races require a commit to land in the
+exact ms window between two git invocations against the SAME repo this
+same process is inspecting. Not worth a fix that would need a single
+`git log`-only call to report both a count and a slice (a bigger change to
+`git_snapshot.py`'s log reader than this control's own cosmetics justify).
