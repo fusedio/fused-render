@@ -315,3 +315,49 @@ def test_no_more_than_limit_rows_come_back_from_the_database(tmp_path):
     assert len(out["hits"]) == 10
     assert out["truncated"] is True
     assert out["total"] == 10
+
+
+def test_like_metacharacters_in_the_query_match_only_the_literal_filename(tmp_path):
+    """`_rank_sql`'s `WHERE lrel LIKE '%' || lower(ql) || '%' ESCAPE '\\'` is
+    built from `like_literal(qs)` (store.py), which escapes `\\`, `%` and `_`
+    before the query is spliced into the pattern — the whole point being that
+    a `%` or `_` the USER typed is matched as a literal character, not read
+    back by LIKE as its own wildcard. D712 wraps that same literal in SQL's
+    `lower(...)` rather than lowering it in Python first, but the escaping
+    `like_literal` does is unchanged and this test's job is unchanged with it:
+    pin that a `%`/`_` in `qs` cannot leak into the pattern as a wildcard and
+    match a sibling file it has no business matching. Each decoy below is a
+    file a LEAKED wildcard (an un-escaped `%` or `_` read back by LIKE as
+    "any run of characters" / "any one character") WOULD match but the
+    literal query must not."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/100%done.txt", "/r/100xdone.txt", "/r/100done.txt",
+        "/r/a_b.txt", "/r/aXb.txt",
+    ])
+
+    def rels(q):
+        return {h["rel"] for h in search_ranked(cfg, "/r", q)["hits"]}
+
+    # A literal "%" must not act as LIKE's own "match anything" wildcard.
+    assert rels("100%done") == {"100%done.txt"}
+    assert rels("%done") == {"100%done.txt"}
+    # A literal "_" must not act as LIKE's own "match any one character"
+    # wildcard.
+    assert rels("a_b") == {"a_b.txt"}
+    assert rels("_b") == {"a_b.txt"}
+
+
+def test_a_quote_or_backslash_in_the_query_does_not_break_the_sql(tmp_path):
+    """`like_literal`/`_q` (store.py/query.py) double every single quote so
+    the query can never close the SQL string literal it is spliced into, and
+    `like_literal` additionally escapes a literal backslash (`\\` ->
+    `\\\\`) so it isn't misread as the start of an ESCAPE sequence for the
+    character that follows it. Without either, a query containing `'` or `\\`
+    would either break the generated SQL outright or silently match the
+    wrong rows — this pins that both characters still round-trip to an exact,
+    literal match."""
+    cfg = _index(tmp_path, "/r", ["/r/it's.txt", "/r/back\\slash.txt"])
+    assert {h["rel"] for h in search_ranked(cfg, "/r", "it's")["hits"]} == \
+        {"it's.txt"}
+    assert {h["rel"] for h in search_ranked(cfg, "/r", "back\\slash")["hits"]} == \
+        {"back\\slash.txt"}
