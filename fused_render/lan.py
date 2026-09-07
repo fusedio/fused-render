@@ -1006,11 +1006,14 @@ class _Controller:
 
         from fused_render import lan_tls
 
-        # Already listening for this address — a restart of the http half
-        # (status()) must not start a second one, which would find 443 taken
-        # by us, land on 8443, and leave the first thread orphaned.
-        if self.tls_running and ip == self._tls_ip:
-            return
+        # Already listening — a restart of the http half (status()) must not
+        # start a second one, which would find 443 taken by us, land on 8443,
+        # and leave the first thread orphaned. For a different address the
+        # certificate has to be reissued, so that one stops first.
+        if self.tls_running:
+            if ip == self._tls_ip:
+                return
+            self._stop_tls()
         self.tls_error = None
         try:
             cert, key = lan_tls.ensure_server_cert([HOSTNAME, ALIAS_HOSTNAME], [ip] if ip else [])
