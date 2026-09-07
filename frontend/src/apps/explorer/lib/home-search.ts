@@ -9,15 +9,19 @@
 // results (see FilesHome), taken only when the user asks for it.
 //
 // The SERVER now filters and ranks (/api/index/rank, fused_render/index/
-// rank.py). The page used to fetch the whole corpus — 19.8 MB and 164k rows on
-// the first keystroke, capped at 200k entries so ~71% of a 571k-file home
-// could not be found at all — and rank it here. It now asks per query and gets
-// a few KB, over the WHOLE index.
+// query.py's `_rank_sql`, one SQL statement — see D708). The page used to
+// fetch the whole corpus — 19.8 MB and 164k rows on the first keystroke,
+// capped at 200k entries so ~71% of a 571k-file home could not be found at
+// all — and rank it here. It now asks per query and gets a few KB, over the
+// WHOLE index.
 //
-// The ranking is still not reimplemented anywhere: rank.py is a port of
-// listing/search.ts pinned by a cross-language fixture, because two search
-// boxes in the same app that order results differently is a bug the user
-// experiences as "it found it last time".
+// Index-backed search is substring-only (D708 — the deleted `index/rank.py`'s
+// fuzzy subsequence escalation is gone, an owner-accepted trade). `narrowAnswer`
+// below matches that with its own substring test rather than `fuzzyMatch`,
+// which still accepts a subsequence and would otherwise keep rows the server
+// no longer returns. `fuzzyMatch` (listing/search.ts, platform/lib/fuzzy.ts)
+// stays subsequence-based and is still correct there — the live walk it ranks
+// has no server to agree with.
 //
 // Two things must not be papered over:
 //
@@ -144,8 +148,12 @@ export function answerFrom(
       size: h.size,
       mtime: h.mtime,
       // Re-matched HERE rather than sent: fuzzy.ts decides what highlights,
-      // full stop, and the server's ranker is a port of it (index/rank.py),
-      // so this reproduces the alignment that produced the score.
+      // full stop. `fuzzyMatch` (subsequence) rather than `substringPositions`
+      // (below) is deliberate and safe here specifically: every row in `res`
+      // already passed the server's substring filter, and a substring is
+      // always a subsequence, so this can never fail to find a match — it can
+      // only ever produce a highlight span at least as generous as the exact
+      // substring would.
       positions: fuzzyMatch(query, h.rel)?.positions ?? [],
     })),
     truncated: res.truncated,
@@ -157,31 +165,60 @@ export function answerFrom(
 }
 
 /**
+ * Case-insensitive substring positions of `q` within `text`, or null when `q`
+ * is not a substring — the SAME test the server's `_rank_sql` filters on
+ * (`fused_render/index/query.py`, `WHERE lower(rel) LIKE '%q%'`), reproduced
+ * here so `narrowAnswer` can agree with it with no round trip.
+ *
+ * Deliberately separate from `fuzzyMatch` (platform/lib/fuzzy.ts), which
+ * accepts a subsequence — a strictly weaker test. The two matchers used to be
+ * implicitly the same function for this call site; keeping them as two named
+ * functions makes it a compile-time question which test any given caller
+ * means, rather than a runtime accident of which one happened to get passed
+ * in.
+ */
+export function substringPositions(q: string, text: string): { positions: number[] } | null {
+  if (q === "") return { positions: [] };
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx === -1) return null;
+  const positions: number[] = [];
+  for (let i = 0; i < q.length; i++) positions.push(idx + i);
+  return { positions };
+}
+
+/**
  * The held answer's hits, re-filtered against a NEWER query with no round
  * trip.
  *
  * The common case while a request is in flight is the new query EXTENDING the
- * old one ("read" -> "readm"): re-running `fuzzyMatch` (the same matcher
- * rank.py mirrors) over the hits already in hand and keeping only the ones
- * that still match — with `positions` recomputed for the new query — narrows
- * the list on screen with no round trip and no blank frame, which is strictly
- * better than dimming rows that cannot possibly be answers to what is now
- * typed.
+ * old one ("read" -> "readm"): re-running `substringPositions` over the hits
+ * already in hand and keeping only the ones that still match — with
+ * `positions` recomputed for the new query — narrows the list on screen with
+ * no round trip and no blank frame, which is strictly better than dimming
+ * rows that cannot possibly be answers to what is now typed.
+ *
+ * `substringPositions`, NOT `fuzzyMatch` (D708 correction — review finding):
+ * the index-backed server is substring-only, so narrowing with `fuzzyMatch`'s
+ * looser subsequence test could KEEP a row the server would no longer return
+ * (`"rdme"` is a subsequence of `"readme.md"` but never a substring of it) —
+ * painting a hit for a query, then watching it vanish when the real answer
+ * lands empty. `fuzzyMatch` stays correct for the LIVE-WALK path
+ * (`listing/search.ts`), which has no server-side filter to disagree with.
  *
  * Deliberately does NOT re-rank or add rows: it can only ever REMOVE hits from
  * the held answer, which is what makes the result a provable SUBSET of the
  * true answer for `q` — it can never show something the fresh answer
- * wouldn't. A query that is not an extension of the old one (a paste, a
- * select-all retype) narrows to whichever held hits happen to still
- * fuzzy-match `q` directly, which is usually few or none; that emptiness is
- * exactly the signal the staleness deadline (`STALE_CLEAR_MS`,
- * platform/lib/instant-search) uses to decide there is nothing worth holding
- * onto.
+ * wouldn't, now that both agree on what counts as a match. A query that is
+ * not an extension of the old one (a paste, a select-all retype) narrows to
+ * whichever held hits happen to still contain `q` as a substring, which is
+ * usually few or none; that emptiness is exactly the signal the staleness
+ * deadline (`STALE_CLEAR_MS`, platform/lib/instant-search) uses to decide
+ * there is nothing worth holding onto.
  */
 export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
   const out: HomeHit[] = [];
   for (const hit of answer.hits) {
-    const m = fuzzyMatch(q, hit.rel);
+    const m = substringPositions(q, hit.rel);
     if (!m) continue;
     out.push({ ...hit, positions: m.positions });
   }
