@@ -51,14 +51,20 @@ def _group_case_only_ties(rels):
     The deleted index/rank.py's own docstring flagged this as a KNOWN,
     deliberate divergence: the JS ranker's final tie-break is
     `Intl.Collator(sensitivity: "base")`, and both the old Python ranker and
-    this SQL rewrite use plain `lower()` instead — every OTHER tie-break
-    (tier, score, depth) still has to agree exactly, but a pair that is equal
-    under all of them AND differs only in case (e.g. "file.txt" vs
-    "FILE.TXT") can land in either order depending on which physical row
-    order the source happened to hand the final sort, which for a real
-    on-disk index (unlike the fixture's flat in-memory list) is out of this
-    module's control. Grouping same-tie runs into an order-independent tuple
-    keeps the comparison strict about everything else."""
+    this SQL rewrite use plain `rel ASC` (byte/ASCII comparison) instead —
+    every OTHER tie-break (tier, score, depth, `lower(rel)`) still has to
+    agree exactly, but a pair that is equal under all of them AND differs
+    only in case (e.g. "file.txt" vs "FILE.TXT") is not guaranteed to land in
+    the SAME order a locale-aware collator would pick. This is now purely a
+    CROSS-LANGUAGE divergence, not a within-SQL nondeterminism one: `rel ASC`
+    (query.py's `_rank_sql`) makes the SQL side's own order for such a pair
+    deterministic and repeatable run to run — the physical-row-order
+    dependency this helper originally existed to paper over is gone — but
+    that deterministic order can still legitimately differ from what
+    `Intl.Collator` would produce for the same pair, which is what this
+    helper still exists to tolerate. Grouping same-tie runs into an
+    order-independent tuple keeps the comparison strict about everything
+    else."""
     out = []
     i = 0
     while i < len(rels):
@@ -158,6 +164,29 @@ def test_hidden_entries_need_a_dot_leading_query_segment(tmp_path):
     assert ".env" not in rels and "environment.yml" in rels
     rels = [h["rel"] for h in search_ranked(cfg, "/r", ".env")["hits"]]
     assert ".env" in rels
+
+
+def test_case_only_ties_get_a_deterministic_final_order(tmp_path):
+    """`notes/Alpha.txt` and `notes/alpha.txt` are a tie on every column
+    `_rank_sql`'s ORDER BY had before `rel ASC` was added (tier, score,
+    depth, and `lower(rel)` — the two rels are equal under `lower()`), so a
+    multi-threaded top-N in DuckDB is free to resolve the tie arbitrarily and
+    the pair could silently swap order between two otherwise-identical runs.
+    `rel ASC` is a free, byte-comparable final tie-break that makes the whole
+    ORDER BY total: run the same query several times and the order must not
+    move, and it must match Python's own `sorted()` over the tied rels
+    (case-sensitive, ASCII byte order — `"Alpha.txt" < "alpha.txt"` since
+    `A` (0x41) sorts before `a` (0x61))."""
+    cfg = _index(tmp_path, "/r", ["/r/notes/Alpha.txt", "/r/notes/alpha.txt",
+                                  "/r/xutils.ts", "/r/Xutils.ts"])
+    for _ in range(5):
+        out = search_ranked(cfg, "/r", "alpha")
+        rels = [h["rel"] for h in out["hits"] if "alpha" in h["rel"].lower()]
+        assert rels == sorted(rels)
+    for _ in range(5):
+        out = search_ranked(cfg, "/r", "utils")
+        rels = [h["rel"] for h in out["hits"] if "utils" in h["rel"].lower()]
+        assert rels == sorted(rels)
 
 
 # -- pinned directly: the pieces `_rank_sql` ports from the deleted rank.py --

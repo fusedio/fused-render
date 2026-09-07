@@ -516,8 +516,26 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> 
     '^[A-Z]$')` is the ASCII-uppercase test (RE2's `[A-Z]` is byte/ASCII by
     default, matching rank.py's `.isupper() and .isascii()` pair).
 
-    Final order is `tier ASC, score DESC, depth ASC, lower(rel) ASC` —
-    `longest_run` does not appear because every surviving row shares it."""
+    Final order is `tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC` —
+    `longest_run` does not appear because every surviving row shares it. The
+    trailing `rel ASC` is what makes this a TOTAL order: a pair equal under
+    every column before it (tier, score, depth) AND under `lower(rel)` — two
+    rels differing only in case, e.g. `notes/Alpha.txt` vs `notes/alpha.txt`
+    — was otherwise still an unresolved tie, and DuckDB's multi-threaded
+    top-N is free to resolve an unresolved tie arbitrarily, so the pair could
+    silently swap order between two runs of the identical query and shift
+    keyboard selection out from under a user who hadn't typed anything.
+    `rel` (byte/ASCII comparison, not `lower(rel)`) breaks that tie for free
+    — it costs nothing beyond a column DuckDB already has in hand — and
+    always resolves it the same way. This makes the SQL side deterministic
+    ON ITS OWN, but not necessarily identical to `frontend/src/platform/lib/
+    fuzzy.ts`'s tie-break: the JS ranker's is `Intl.Collator(sensitivity:
+    "base")`, which is locale-aware and does not always agree with a plain
+    ASCII byte comparison on which of a case-only pair sorts first. That
+    divergence is pre-existing (`tests/test_index_rank.py`'s
+    `_group_case_only_ties` helper exists because of it, not because of
+    this) and is unaffected by adding `rel ASC` here — it only fixes SQL's
+    OWN run-to-run stability, not cross-language agreement."""
     segment_starts = (
         f"len(list_filter(range(p0, p0 + {n}), i -> "
         f"i = 0 OR list_contains({_SEGMENT_SEPARATORS!r}, substr(rel, i, 1)) "
@@ -538,7 +556,7 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> 
         f"WHERE lrel LIKE '%{ql}%' ESCAPE '\\'{hidden}) "
         f"SELECT rel, size, mtime, is_dir, depth, ({score}) AS score, "
         f"({tier}) AS tier FROM matched "
-        f"ORDER BY tier ASC, score DESC, depth ASC, lower(rel) ASC "
+        f"ORDER BY tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC "
         f"LIMIT {limit}")
 
 
