@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App-folder snapshot preview — implementation plan</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --fg: #1c1a17; --muted: #6b6459; --line: #e0dcd4;
+    --card: #ffffff; --accent: #8a5a2b; --accent-soft: #f4ece2;
+    --del: #a33; --del-soft: #fbeeee; --add: #2f6b45; --add-soft: #ecf5ef;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161513; --fg: #ece8e1; --muted: #9b9387; --line: #322f2a;
+      --card: #1e1c19; --accent: #d9a066; --accent-soft: #2a231b;
+      --del: #e08585; --del-soft: #2b1e1e; --add: #7dc79b; --add-soft: #1b2a21;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 28px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 48px 0 16px; font-weight: 600;
+  }
+  h3 { font-size: 16px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; }
+  .goal { font-size: 17px; margin-bottom: 16px; }
+  .lede { color: var(--muted); max-width: 68ch; }
+  code, .path { font-family: var(--mono); font-size: 0.88em; }
+  .path { color: var(--accent); word-break: break-all; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px 20px; margin: 0 0 14px;
+  }
+  .task-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+  .num {
+    flex: none; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent);
+    font: 600 13px/26px var(--mono); text-align: center;
+  }
+  ul.files { list-style: none; margin: 0 0 14px; padding: 0; }
+  ul.files li { padding: 7px 0; border-top: 1px solid var(--line); }
+  ul.files li:first-child { border-top: 0; }
+  .tag {
+    display: inline-block; font: 600 10px/1.6 var(--mono); letter-spacing: 0.04em;
+    padding: 0 6px; border-radius: 4px; margin-right: 8px; vertical-align: 1px;
+  }
+  .t-new { background: var(--add-soft); color: var(--add); }
+  .t-mod { background: var(--accent-soft); color: var(--accent); }
+  .t-del { background: var(--del-soft); color: var(--del); }
+  .t-test { background: var(--line); color: var(--muted); }
+  .verify {
+    font-family: var(--mono); font-size: 12.5px; background: var(--accent-soft);
+    border-radius: 6px; padding: 8px 10px; margin: 0 0 8px; overflow-x: auto;
+    white-space: pre;
+  }
+  .commit { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .commit::before { content: "commit  "; opacity: 0.6; }
+  dl.dec { margin: 0; }
+  dl.dec dt { font-weight: 600; margin-top: 14px; }
+  dl.dec dt:first-child { margin-top: 0; }
+  dl.dec dd { margin: 2px 0 0; color: var(--muted); }
+  .figure { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 20px; margin-bottom: 14px; overflow-x: auto; }
+  .figure figcaption { color: var(--muted); font-size: 13px; margin-top: 12px; }
+  svg { display: block; max-width: 100%; height: auto; }
+  .svg-label { font: 12px var(--mono); fill: var(--fg); }
+  .svg-muted { font: 11px var(--mono); fill: var(--muted); }
+  .svg-box { fill: var(--card); stroke: var(--line); }
+  .svg-box-hot { fill: var(--accent-soft); stroke: var(--accent); }
+  .svg-box-gone { fill: var(--del-soft); stroke: var(--del); stroke-dasharray: 4 3; }
+  .svg-line { stroke: var(--muted); fill: none; }
+  .note { color: var(--muted); font-size: 14px; }
+  table.rule { border-collapse: collapse; width: 100%; font-size: 14px; }
+  table.rule th, table.rule td { text-align: left; padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+  table.rule th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; border-top: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>App-folder snapshot preview</h1>
+<p class="goal">A commit clicked in the <code>git</code> view puts the shell into a <strong><code>_snapshot=&lt;sha&gt;</code></strong> state, and every template under it — the file explorer included — reads the enclosing <strong>app folder</strong> as of that commit.</p>
+<p class="lede">
+  Today <code>_rev</code> re-srcs one frame and the runtime resolves that single file's bytes through <code>/api/git/show</code>, so a historical page renders against today's <code>.py</code> readers, assets and data — and nothing but that one frame knows a revision is in play. Instead: the server extracts the enclosing app folder at that sha into <span class="path">~/.fused-render/app-versions/&lt;key&gt;/&lt;sha&gt;/</span>, the shell carries <code>_snapshot=&lt;sha&gt;</code> as top-level URL state, and the runtime resolves any path inside the app folder against the extracted tree. Templates get it for free; ones that want to say so out loud read the param themselves. The single-file mechanism is then deleted.
+</p>
+
+<h2>Two things that already exist</h2>
+<p class="lede">
+  A predecessor design extracted these trees and was deleted in D243 — but both guardrails were kept with no producer left: <code>mount.py::_is_under_snapshot_root</code> (<span class="path">mount.py:53-92</span>) makes every <code>/api/fs</code> mutation 403 <code>readonly</code> under that prefix and makes <code>_writable</code> report false, so a framed editor draws read-only up front; and <code>snapshot=1</code> / <code>IS_SNAPSHOT</code> (<span class="path">router.ts:104-150</span>) is the shell's frozen-tree framing. This plan writes the missing producer and adds the sha-carrying param beside the existing flag.
+</p>
+
+<h2>Visual overview</h2>
+
+<figure class="figure">
+<svg viewBox="0 0 820 330" role="img" aria-label="Snapshot state flows from the git template into every frame">
+  <rect x="0" y="10" width="170" height="46" rx="6" class="svg-box"/>
+  <text x="12" y="30" class="svg-label">git template</text>
+  <text x="12" y="46" class="svg-muted">eye on a commit</text>
+
+  <path d="M170 33 H240" class="svg-line" marker-end="url(#a)"/>
+  <rect x="240" y="10" width="200" height="46" rx="6" class="svg-box-hot"/>
+  <text x="252" y="30" class="svg-label">_fusedSelectSnapshot</text>
+  <text x="252" y="46" class="svg-muted">window hop, sha only</text>
+
+  <path d="M440 33 H510" class="svg-line" marker-end="url(#a)"/>
+  <rect x="510" y="10" width="310" height="46" rx="6" class="svg-box-hot"/>
+  <text x="522" y="30" class="svg-label">shell URL  ?_snapshot=&lt;sha&gt;</text>
+  <text x="522" y="46" class="svg-muted">the ONE writer of the state</text>
+
+  <path d="M665 56 V96" class="svg-line" marker-end="url(#a)"/>
+  <rect x="510" y="96" width="310" height="46" rx="6" class="svg-box"/>
+  <text x="522" y="116" class="svg-label">GET /api/git/snapshot</text>
+  <text x="522" y="132" class="svg-muted">git archive → dir, entry, app_dir</text>
+
+  <path d="M510 119 H330 V96" class="svg-line" marker-end="url(#a)"/>
+
+  <rect x="150" y="96" width="180" height="46" rx="6" class="svg-box-hot"/>
+  <text x="162" y="116" class="svg-label">every frame src</text>
+  <text x="162" y="132" class="svg-muted">_snapshot forwarded</text>
+
+  <path d="M240 142 V180" class="svg-line" marker-end="url(#a)"/>
+  <rect x="60" y="180" width="360" height="60" rx="6" class="svg-box-hot"/>
+  <text x="72" y="200" class="svg-label">runtime: ownQuery("_snapshot")</text>
+  <text x="72" y="216" class="svg-muted">readFile · rawUrl · stat · runPython</text>
+  <text x="72" y="232" class="svg-muted">path under app_dir → same path under dir</text>
+
+  <path d="M240 240 V276" class="svg-line" marker-end="url(#a)"/>
+  <rect x="0" y="276" width="200" height="44" rx="6" class="svg-box"/>
+  <text x="12" y="296" class="svg-label">any template</text>
+  <text x="12" y="311" class="svg-muted">code · map · duckdb …</text>
+
+  <rect x="230" y="276" width="200" height="44" rx="6" class="svg-box"/>
+  <text x="242" y="296" class="svg-label">file explorer</text>
+  <text x="242" y="311" class="svg-muted">lists the extracted tree</text>
+
+  <rect x="460" y="276" width="200" height="44" rx="6" class="svg-box"/>
+  <text x="472" y="296" class="svg-label">the app itself</text>
+  <text x="472" y="311" class="svg-muted">its own .py, as of then</text>
+
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="currentColor" style="color: var(--muted)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>One writer (the shell URL), one resolver (the runtime's path rewrite). A template needs no snapshot awareness to be correct under one.</figcaption>
+</figure>
+
+<figure class="figure">
+<h3 style="margin-bottom:12px">When <code>_snapshot</code> survives a hop</h3>
+<table class="rule">
+  <tr><th>Navigation</th><th>Param</th><th>Why</th></tr>
+  <tr><td>File to file inside the app folder</td><td>carried</td><td>Still the same snapshot; the whole point.</td></tr>
+  <tr><td>Into a subfolder of the app</td><td>carried</td><td>Browsing the frozen tree is the feature.</td></tr>
+  <tr><td>Breadcrumb up, out of the app folder</td><td>dropped</td><td>No app, no snapshot — the sha names nothing there.</td></tr>
+  <tr><td>To a different app folder</td><td>dropped</td><td>A sha from one app's history says nothing about another's.</td></tr>
+  <tr><td>Reload / copied link</td><td>survives</td><td>It is URL state, unlike <code>_rev</code>. Accepted, see decisions.</td></tr>
+</table>
+<figcaption>The carry rule is scoped by the app folder the sha was resolved against — enforced in <code>navigate</code>, next to the existing <code>snapshot=1</code> exception.</figcaption>
+</figure>
+
+<h2>Task breakdown</h2>
+<p class="note">TDD throughout: each task writes its tests first, ends on a green suite, and lands as one commit. Tasks 1–2 build the server side, 3–5 the shell and runtime, 6 deletes the old path — so no task leaves the tree with a broken preview.</p>
+
+<div class="card">
+  <div class="task-head"><span class="num">1</span><div><h3>Resolve the enclosing app folder</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-mod">mod</span><span class="path">fused_render/app_listing.py</span> — add <code>enclosing_app_dir(path, stop_at)</code> beside <code>app_entry</code> (<span class="path">app_listing.py:62</span>): walk up from <code>path</code>, returning the first ancestor whose <code>app_entry()</code> is not None, stopping at <code>stop_at</code> and never above it. Swallow <code>OSError</code> per level and keep climbing — <code>app_entry</code> raises on an unreadable dir, and one unreadable level must not hide an app higher up.</li>
+    <li><span class="tag t-test">test</span><span class="path">tests/test_app_listing.py</span> — follow the fixture style already there: a file inside an app, an app dir handed in directly, a file with no app between it and the root, an unreadable intermediate dir, and a <code>stop_at</code> the walk must not climb past.</li>
+  </ul>
+  <div class="verify">.venv/bin/pytest tests/test_app_listing.py -q</div>
+  <p class="note">Expected: all pass, including the existing <code>app_entry</code> parity cases.</p>
+  <div class="commit">app_listing: resolve the app folder enclosing a path</div>
+</div>
+
+<div class="card">
+  <div class="task-head"><span class="num">2</span><div><h3>The extraction route</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-new">new</span><span class="path">fused_render/server/routers/git_snapshot.py</span> — <code>GET /api/git/snapshot?path=&lt;abs&gt;&amp;sha=&lt;hex&gt;</code>. Take the validation shape from <span class="path">git_show.py:1-60</span> in spirit: absolute path only, hex sha only, mount-backed refused, <code>git -C &lt;root&gt;</code> with a timeout, four clean status codes rather than a traceback. Resolve the repo root as <span class="path">templates/git/log.py::_locate</span> does, then <code>enclosing_app_dir</code>; 404 when there is no app folder. Extract with <code>git archive &lt;sha&gt; -- :(literal)&lt;app rel&gt;</code>, matching log.py's argv-list-and-<code>--</code> discipline. Respond <code>{ok, dir, entry, app_dir}</code> — <code>entry</code> from <code>app_entry()</code> of the <em>extracted</em> dir, <code>app_dir</code> the live app folder the rewrite rule is keyed on.</li>
+    <li><span class="tag t-new">new</span><span class="path">fused_render/server/routers/git_snapshot.py</span> — cache and GC in the same module: key is <code>sha256(repo_root + "\0" + app_rel)[:16]</code>, the shaping <span class="path">templates/shared/file_history.py</span> uses for its path keys; an existing <code>&lt;key&gt;/&lt;sha&gt;/</code> is a hit and returns without forking git. Extract to a sibling temp dir and <code>os.replace</code> it into place, so a killed extraction can never be served as a complete one. GC oldest-mtime dirs past a cap on each miss.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">fused_render/server/app.py:736</span> — register the router beside the <code>/api/git/show</code> comment, the way the neighbouring routers are included.</li>
+    <li><span class="tag t-test">test</span><span class="path">tests/test_git_snapshot.py</span> — model repo fixtures on <span class="path">tests/test_git_scope.py</span>: an app folder extracted at an older sha carries that commit's <code>.py</code> and assets, not today's; a second call is a cache hit that spawns no git; no app above the path 404s; non-hex sha and relative path 400; mount-backed refuses; the entry resolves from the extracted tree when the live entry was since renamed.</li>
+    <li><span class="tag t-test">test</span><span class="path">tests/test_snapshot_readonly.py</span> — add a case that a dir produced by this route is refused by the <code>/api/fs</code> mutation handlers, pinning producer and guard together rather than only through <span class="path">mount.py:53</span>'s own unit test.</li>
+  </ul>
+  <div class="verify">.venv/bin/pytest tests/test_git_snapshot.py tests/test_snapshot_readonly.py -q</div>
+  <p class="note">Expected: all pass; the read-only case fails first if the route writes outside <code>home_dir()/app-versions</code>.</p>
+  <div class="commit">git: extract an app folder at a commit for preview</div>
+</div>
+
+<div class="card">
+  <div class="task-head"><span class="num">3</span><div><h3><code>_snapshot</code> as shell URL state</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-new">new</span><span class="path">frontend/src/apps/explorer/lib/snapshot-param.ts</span> — the param's rules as pure functions, DOM-free like <span class="path">lib/preview-side.ts</span>: read/validate the sha (the <code>SHA_RE</code> shape from <span class="path">lib/preview-rev.ts:49</span>, which task 6 deletes), and <code>carries(fromAppDir, toPath)</code> deciding whether a hop keeps it — inside the same app folder yes, anywhere else no.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/platform/lib/router.ts:369-382</span> — <code>_snapshot</code> becomes the second exception to the fresh-query rule, beside <code>snapshot=1</code>, gated on <code>carries()</code>. The block's own comment explains why exceptions are costly; extend it to say what this one buys and what bounds it.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">fused_render/static/runtime.js:5555</span> and <span class="path">fused_render/templates/git/template.html:1476</span> — rename the hop <code>_fusedSelectRev</code> → <code>_fusedSelectSnapshot</code>, still a bare sha. The template cannot write the top-level URL from its frame, so the hop stays; what changes is that the shell's response is a URL write rather than component state. Update the header comments at <span class="path">template.html:1242-1263,1417-1436</span>, which describe per-file bytes.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/apps/explorer/Preview.tsx:1107-1141</span> — install <code>_fusedSelectSnapshot</code> in place of <code>_fusedRevSelected</code>; the handler resolves <code>/api/git/snapshot</code> and writes <code>_snapshot</code> to the URL through the existing <code>writeQueryParam</code>/<code>replaceSearch</code> idiom this file already uses for <code>_side</code> (<span class="path">Preview.tsx:1160-1175</span>). Keep the <code>splitCapable</code> guard and the per-file re-install; both reasons still hold.</li>
+    <li><span class="tag t-test">test</span><span class="path">frontend/src/apps/explorer/lib/snapshot-param.test.ts</span> — the carry table: same app folder, subfolder, out of the app, sibling app, junk sha. Port the junk-value case from <span class="path">preview-rev.test.ts:77</span>.</li>
+    <li><span class="tag t-test">test</span><span class="path">frontend/src/platform/lib/router.test.ts</span> — extend the existing navigate cases: <code>_snapshot</code> carried on an in-app hop, dropped on the way out, and never invented where absent.</li>
+  </ul>
+  <div class="verify">bun test frontend/src/platform frontend/src/apps/explorer</div>
+  <p class="note">Expected: green. Nothing consumes the param yet — task 4 does.</p>
+  <div class="commit">explorer: carry a git snapshot as shell url state</div>
+</div>
+
+<div class="card">
+  <div class="task-head"><span class="num">4</span><div><h3>Every frame inherits it; the runtime resolves it</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/apps/explorer/Preview.tsx:1560-1600</span> — forward <code>_snapshot</code> onto the content frame's src, replacing the <code>revSrc(...)</code> calls at <span class="path">1591</span> and <span class="path">1594</span>. This is the mechanism that makes it reach templates at all: the runtime reads params off its own frame src (<code>ownQuery</code>, <span class="path">runtime.js:1415</span>), so a param that is not forwarded is invisible in there. Rewrite the "<code>_rev</code> rides here and nowhere else" comment as the same statement about <code>_snapshot</code>.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">fused_render/static/runtime.js:1519-1600</span> — replace the <code>_rev</code> read with a <code>_snapshot</code> one that resolves <code>/api/git/snapshot</code> once per document and caches <code>{sha, dir, app_dir}</code>, exposed to templates as <code>fused.snapshot</code>.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">fused_render/static/runtime.js:2514-2537, 3065</span> — rewrite paths rather than fetching bytes: a path at or under <code>app_dir</code> maps to the same relative path under <code>dir</code>, for <code>readFile</code>, <code>rawUrl</code>, <code>stat</code> <em>and</em> <code>runPython</code>. A path outside <code>app_dir</code> is left alone. The KNOWN GAP block at <span class="path">2514</span> is deleted with the change it describes — a snapshot runs the commit's real <code>.py</code> files, so a Python reader is no longer the exception.</li>
+    <li><span class="tag t-test">test</span><span class="path">tests/test_runtime_snapshot.py</span> — the served-runtime slice, following the pytest-over-<code>runtime.js</code> pattern the repo already uses: paths under <code>app_dir</code> rewrite, paths outside do not, an absent param rewrites nothing, and a failed resolve leaves reads live rather than half-rewritten.</li>
+  </ul>
+  <div class="verify">.venv/bin/pytest tests/test_runtime_snapshot.py -q &amp;&amp; bun test frontend/src/apps/explorer</div>
+  <p class="note">Expected: opening an app under <code>_snapshot</code> now runs the commit's own Python, not today's.</p>
+  <div class="commit">runtime: resolve reads against the app snapshot</div>
+</div>
+
+<div class="card">
+  <div class="task-head"><span class="num">5</span><div><h3>The file explorer browses the snapshot</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/apps/explorer/Listing.tsx</span> — under <code>_snapshot</code>, list the extracted dir for any path inside the app folder, using the same rewrite rule as task 4 so the two cannot disagree; rows keep the live path in the URL so the breadcrumb and the carry rule stay meaningful.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/apps/explorer/Listing.tsx</span> — surface the state: the listing must say it is showing a commit, not the working tree, and offer the way back to live. This is the one piece of chrome the param adds — everywhere else the state is invisible by design.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/apps/explorer/Preview.tsx:862-872, 1771</span> — the two tombstone comments about the removed revision badge describe a mechanism this replaces; rewrite them for the snapshot indicator or delete them.</li>
+    <li><span class="tag t-test">test</span><span class="path">frontend/src/apps/explorer/Listing.test.tsx</span> — a folder inside the app under <code>_snapshot</code> lists the extracted tree; a folder outside it lists live; the way-back-to-live control clears the param.</li>
+  </ul>
+  <div class="verify">bun test frontend/src/apps/explorer</div>
+  <p class="note">Expected: green, and clicking through the app's folders under a snapshot never shows a live file.</p>
+  <div class="commit">explorer: browse the app folder at a snapshot</div>
+</div>
+
+<div class="card">
+  <div class="task-head"><span class="num">6</span><div><h3>Delete the single-file path</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-del">del</span><span class="path">frontend/src/apps/explorer/lib/preview-rev.ts</span> and <span class="path">frontend/src/apps/explorer/lib/preview-rev.test.ts</span> — whole files.</li>
+    <li><span class="tag t-del">del</span><span class="path">fused_render/server/routers/git_show.py</span> — whole file, plus its registration and comment at <span class="path">fused_render/server/app.py:736</span>.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/platform/lib/router.ts</span> — drop the remaining <code>_rev</code> reference. <code>IS_SNAPSHOT</code> stays: it is the framing flag, load-bearing again now that a producer exists.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">SPEC.md:545</span> (PT-14) and <span class="path">DECISIONS.md:684</span> (D243) — both state that a commit resolves on read through <code>/api/git/show</code> with nothing written to disk, and D243 records that <code>app-versions/</code> has no producer. Both are now false. Amend in place and add a decision recording the reversal, the app-only scope, the new param and its carry rule, and why <code>git cat-file</code> behind a URL prefix was rejected.</li>
+    <li><span class="tag t-test">test</span><span class="path">tests/test_git_scope.py</span>, <span class="path">tests/test_deeplink.py</span>, <span class="path">tests/test_ask_claude_hop.py</span> — 28 <code>_rev</code> references in the first and the hop name in the others; move what still applies onto <code>_snapshot</code>, delete what asserted per-file byte resolution.</li>
+  </ul>
+  <div class="verify">.venv/bin/pytest -n auto -q &amp;&amp; bun test</div>
+  <p class="note">Expected: the full suite at the branch's known-red baseline and no worse — compare failure-ID sets against the same run on <code>main</code> in both directions rather than counting failures. <code>bun test</code> green.</p>
+  <div class="commit">git: retire the single-file _rev preview</div>
+</div>
+
+<h2>Key decisions &amp; risks</h2>
+<dl class="dec">
+  <dt>A top-level param, reversing <code>preview-rev.ts</code>'s founding argument.</dt>
+  <dd>That module refuses to be a param because a <code>_rev</code> would leak onto the next file and into bookmarks. Owner's call, and the leak is what is wanted here: the state must reach the explorer and every template, which in-memory state structurally cannot. The two leaks are answered rather than ignored — the carry rule bounds it to the app folder, and a bookmark of an app at a commit is a coherent thing to have.</dd>
+
+  <dt>The runtime rewrites paths; it does not fetch bytes.</dt>
+  <dd>The deleted helpers routed each read through <code>/api/git/show</code>, which is why a <code>.py</code> reader could not be covered. Rewriting <code>app_dir</code> → extracted <code>dir</code> makes every read a plain filesystem read of a real file, so <code>runPython</code> is fixed by the same three lines as <code>readFile</code>.</dd>
+
+  <dt>Extraction rather than <code>git cat-file</code> behind a <code>/rev/&lt;sha&gt;/</code> prefix.</dt>
+  <dd>The prefix keeps resolve-on-read and needs no disk, but cannot make a Python reader truthful without changing the <code>main()</code> contract (the deferral at <span class="path">runtime.js:2514</span>). Owner's call: too much plumbing.</dd>
+
+  <dt>The extraction root is <code>~/.fused-render/app-versions/</code>, not <code>$TMPDIR</code>.</dt>
+  <dd>That literal prefix is hardcoded in <code>_is_under_snapshot_root</code> (<span class="path">mount.py:90</span>) and is what makes <code>/api/fs</code> mutations 403 and <code>_writable</code> false. Under <code>$TMPDIR</code> the frame looks live and editable while saves fail late or land in a tree the OS reaps mid-session.</dd>
+
+  <dt>Preview is app-only; no app above the target means no eye and no param.</dt>
+  <dd>Owner's call. A frozen listing of an arbitrary folder is what the deleted <code>history</code> mode was. The <code>canPreview</code> gate (<span class="path">template.html:1441,3428</span>) already models "no pane to drive"; "no app folder" joins it.</dd>
+
+  <dt>The entry page is resolved inside the extracted tree.</dt>
+  <dd>An app whose entry was renamed since must open at the entry that commit had, not a filename that did not exist yet.</dd>
+
+  <dt>Risk: <code>_snapshot</code> must be stripped from page params.</dt>
+  <dd>Shell params reaching a page's own query is a known live defect — <code>_side=claude</code> blanks a page URL-syncing <code>model=</code>. <code>_snapshot</code> is forwarded onto frame srcs deliberately, so it must be in the shell's strip list on the way into page params, or a page with its own <code>snapshot</code> state collides with it.</dd>
+
+  <dt>Risk: the runtime edit in task 4 touches shared read helpers.</dt>
+  <dd>Those helpers serve every call, snapshot or not. The rewrite must be a no-op when the param is absent; the served-runtime pytest slice plus <code>bun test</code> are the check.</dd>
+
+  <dt>Risk: extraction latency on the first click.</dt>
+  <dd>A cache hit is a stat; a miss forks <code>git archive</code> and writes a tree. Scoped to one app subfolder rather than a repo snapshot, which is what makes it tolerable. If a large app feels slow, the answer is a spinner, not a smaller extraction.</dd>
+
+  <dt>Deferred: no preview control on the app page's Git tab.</dt>
+  <dd>Its Git tab (<span class="path">AppPage.tsx:175-186</span>) frames the template with no adjacent content pane, so <code>canPreview</code> is false there and stays false. Driving the Overview frame from that tab is a separate change.</dd>
+</dl>
+
+<h2>How we'll know it works</h2>
+<p>
+  Open an app inside a git repo, open the <code>git</code> sidebar, click a commit from before a change to one of the app's <code>.py</code> readers. The URL gains <code>_snapshot=&lt;sha&gt;</code>, the app renders <em>as it behaved then</em> — old reader output, old assets, old data — and the editor is read-only up front. Browse into the app's subfolders: the explorer lists that commit's files, and opening any of them in any template shows that commit's bytes. Walk the breadcrumb out of the app and the param is gone, live content is back. Reload mid-snapshot and you are still in it. Nothing under <code>~/.fused-render/app-versions/</code> is ever writable through <code>/api/fs</code>.
+</p>
+
+</div>
+</body>
+</html>
