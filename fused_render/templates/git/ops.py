@@ -190,7 +190,7 @@ _SAFE_OPS = (
 # history on one click — that deserves the same consent step, not because
 # anything could be lost but because both are one-way once done (D703).
 DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve",
-                   "app_restore")
+                   "app_restore", "revert")
 _OPS = _SAFE_OPS + DESTRUCTIVE_OPS
 
 # Ops that take an explicit `paths` list, and ops that operate on the whole open
@@ -1065,6 +1065,39 @@ def _app_restore(root, file, sha):
                short=new_short, subject=subject)
 
 
+def _revert(root, sha):
+    """DESTRUCTIVE (writes history). `git revert --no-edit <sha>` — a new
+    commit undoing that one. Whole-repo: unlike stage/discard/stash, a
+    revert is not a concept that scopes to a folder.
+
+    `--no-edit` is belt and braces: `GIT_EDITOR=false` (module-level `_ENV`)
+    already makes an editor launch fail instantly rather than hang, but
+    `--no-edit` means one is never even attempted.
+
+    A conflicting revert leaves git MID-OPERATION — `.git/REVERT_HEAD` set,
+    conflict markers written into the working tree — with no UI here to
+    finish it. That is the worst outcome a sidebar button could produce, so
+    ANY failure here is followed by `revert --abort` before refusing, the
+    same posture `_pull` takes for a non-fast-forward: point at a terminal
+    rather than leave the repository stuck. `--abort` with nothing in
+    progress is itself a harmless failure, and its result is discarded.
+    """
+    _require_clean(root)
+    code, out, err = _run(root, "revert", "--no-edit", sha)
+    if code == 0:
+        log_out = _git_ok(root, "log", "-1", "--no-color",
+                          f"--format={_COMMIT_FORMAT}")
+        parts = log_out.decode("utf-8", "replace").strip().split("\0")
+        short, subject = (parts + ["", ""])[:2]
+        return _ok("revert", f"Reverted as {short}.", short=short,
+                   subject=subject)
+    _run(root, "revert", "--abort")
+    raise _Refused(
+        "revert-conflict",
+        _brief(err) or "That revert conflicts and needs manual resolution "
+        "— nothing was changed here. Finish it in a terminal.")
+
+
 def _branch_create(root, name, checkout):
     _check_branch_name(root, name)
     if checkout:
@@ -1416,6 +1449,8 @@ def main(
             return _commit(root, message)
         if op == "app_restore":
             return _app_restore(root, file, sha)
+        if op == "revert":
+            return _revert(root, sha)
         if op == "branch_create":
             return _branch_create(root, name, bool(checkout))
         if op == "branch_checkout":

@@ -1074,6 +1074,76 @@ def test_app_restore_refuses_on_a_mount_backed_repo(ops, app_repo, monkeypatch):
     assert got["ok"] is False and got["reason"] == "mount", got
 
 
+# ---------------------------------------------------------------------- revert
+
+
+def _revert_repo(root):
+    """A history shaped so reverting the MIDDLE commit conflicts: c1 adds a
+    file, c2 (the revert target) appends a line, c3 edits that same line —
+    reverting c2 tries to remove a line that no longer reads what c2 left."""
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q")
+    git(root, "config", "user.name", "Fixture Author")
+    git(root, "config", "user.email", "fixture@example.com")
+    git(root, "config", "commit.gpgsign", "false")
+    write(root, "f.txt", "line1\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "c1", when="2026-10-01T10:00:00+00:00")
+
+    write(root, "f.txt", "line1\nline2\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "c2 add line2", when="2026-10-02T10:00:00+00:00")
+    target_sha = git(root, "rev-parse", "HEAD").strip()
+
+    write(root, "f.txt", "line1\nline2 edited\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "c3 edit line2", when="2026-10-03T10:00:00+00:00")
+    return root, target_sha
+
+
+@pytest.fixture()
+def revert_repo(tmp_path):
+    return _revert_repo(str(tmp_path / "revert-repo"))
+
+
+def test_revert_undoes_the_tip_commit_and_adds_a_new_one(ops, repo):
+    tip = git(repo, "rev-parse", "HEAD").strip()
+    before_count = int(git(repo, "rev-list", "--count", "HEAD").strip())
+
+    got = ops.main(repo, op="revert", sha=tip)
+
+    assert got["ok"] is True, got
+    after_count = int(git(repo, "rev-list", "--count", "HEAD").strip())
+    assert after_count == before_count + 1, "history GREW, nothing rewritten"
+    # The reverted commit is still present and reachable.
+    assert git(repo, "cat-file", "-t", tip).strip() == "commit"
+    assert tip in git(repo, "log", "--format=%H").strip().split("\n")
+    # The seed commit added top.txt; reverting it removes the file again.
+    assert not os.path.exists(os.path.join(repo, "top.txt"))
+
+
+def test_revert_refuses_on_a_dirty_repo(ops, repo):
+    tip = git(repo, "rev-parse", "HEAD").strip()
+    write(repo, "top.txt", "dirty\n")
+
+    got = ops.main(repo, op="revert", sha=tip)
+
+    assert got["ok"] is False and got["reason"] == "dirty", got
+
+
+def test_a_conflicting_revert_aborts_cleanly_and_leaves_no_in_progress_revert(
+        ops, revert_repo):
+    root, target_sha = revert_repo
+
+    got = ops.main(root, op="revert", sha=target_sha)
+
+    assert got["ok"] is False, got
+    assert got["reason"] != "bad-op", got
+    # THE non-skippable assertion: git must never be left mid-operation.
+    assert not os.path.exists(os.path.join(root, ".git", "REVERT_HEAD"))
+    assert git(root, "status", "--porcelain").strip() == ""
+
+
 # ------------------------------------------------------------------ refusals
 
 
