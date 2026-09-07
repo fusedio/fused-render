@@ -105,6 +105,40 @@ def app_entry(dir_path: str) -> str | None:
     return None
 
 
+def enclosing_app_dir(path: str, stop_at: str) -> str | None:
+    """The app folder that `path` sits inside, or `path` itself when it already
+    is one — the first ancestor (inclusive) whose `app_entry()` is not None.
+
+    Walks upward from `path` (its containing directory, when `path` is a file)
+    towards `stop_at`, which bounds the climb: `stop_at` itself is checked, but
+    nothing above it ever is — a repo root is a reasonable place to end up with
+    no app, and this must never wander out past it into unrelated ancestors.
+
+    `OSError` from a level's own `app_entry()` call (an unreadable directory)
+    is swallowed and the walk keeps climbing — one unreadable intermediate
+    directory must not hide an app that sits higher up and is perfectly
+    readable.
+
+    None when no ancestor up to and including `stop_at` declares an app, or
+    when `path` does not sit under `stop_at` at all.
+    """
+    path = os.path.abspath(path)
+    stop_at = os.path.abspath(stop_at)
+    current = path if os.path.isdir(path) else os.path.dirname(path)
+    while True:
+        try:
+            if app_entry(current) is not None:
+                return current
+        except OSError:
+            pass  # unreadable at this level: keep climbing regardless
+        if os.path.normcase(current) == os.path.normcase(stop_at):
+            return None  # reached the ceiling with no app found
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None  # hit the filesystem root without reaching stop_at
+        current = parent
+
+
 # The one authored thumbnail name. A card's picture of an app is otherwise the
 # entry page rendered live in a scaled iframe, which is honest but is also a
 # whole page load per card and shows whatever the app looks like with no data in

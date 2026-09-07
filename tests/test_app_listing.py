@@ -857,3 +857,66 @@ def test_a_symlinked_app_folder_lists_at_its_realpath(tmp_path):
     assert len(apps) == 1
     assert apps[0]["path"] == os.path.realpath(str(link))
     assert apps[0]["path"] == os.path.realpath(str(real))
+
+
+# ------------------------------------------------------------- enclosing_app_dir
+
+
+def test_enclosing_app_dir_from_a_file_inside_the_app(tmp_path):
+    """A file nested inside an app's folder resolves to that folder."""
+    app = _app(tmp_path / "local", "real")
+    (app / "sub").mkdir()
+    deep = app / "sub" / "reader.py"
+    deep.write_text("x", encoding="utf-8")
+
+    assert app_listing.enclosing_app_dir(str(deep), str(tmp_path)) == str(app)
+
+
+def test_enclosing_app_dir_given_the_app_dir_directly(tmp_path):
+    """The app folder itself counts as its own enclosing app dir."""
+    app = _app(tmp_path / "local", "real")
+
+    assert app_listing.enclosing_app_dir(str(app), str(tmp_path)) == str(app)
+
+
+def test_enclosing_app_dir_with_no_app_between_it_and_the_root(tmp_path):
+    """A plain file with no app anywhere above it up to stop_at: None."""
+    plain_dir = tmp_path / "notes"
+    plain_dir.mkdir()
+    f = plain_dir / "todo.txt"
+    f.write_text("x", encoding="utf-8")
+
+    assert app_listing.enclosing_app_dir(str(f), str(tmp_path)) is None
+
+
+def test_enclosing_app_dir_skips_an_unreadable_intermediate_dir(tmp_path):
+    """An unreadable directory between the file and a real app higher up must
+    not hide that app — the OSError from app_entry() at that level is
+    swallowed and the walk keeps climbing."""
+    app = _app(tmp_path / "local", "real")
+    blocked = app / "blocked"
+    blocked.mkdir()
+    deep = blocked / "sub"
+    deep.mkdir()
+    target = deep / "reader.py"
+    target.write_text("x", encoding="utf-8")
+
+    os.chmod(str(blocked), 0o000)
+    try:
+        assert app_listing.enclosing_app_dir(str(target), str(tmp_path)) == str(app)
+    finally:
+        os.chmod(str(blocked), 0o755)  # restore so tmp_path cleanup can remove it
+
+
+def test_enclosing_app_dir_never_climbs_past_stop_at(tmp_path):
+    """An app that sits ABOVE stop_at must never be returned — the climb ends
+    at stop_at even when nothing there declares an app."""
+    outer = _app(tmp_path, "outer", entry="outer.html")
+    inner_root = outer / "workspace"
+    inner_root.mkdir()
+    plain = inner_root / "plain"
+    plain.mkdir()
+    f = plain / "notes.txt"
+    f.write_text("x", encoding="utf-8")
+
+    assert app_listing.enclosing_app_dir(str(f), str(inner_root)) is None
