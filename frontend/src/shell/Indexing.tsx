@@ -27,6 +27,7 @@ import {
   missingDefaults,
   patternsToText,
   scanErrorLine,
+  scanningLine,
   textToPatterns,
   unionWithDefaults,
 } from "./indexing-lib";
@@ -225,9 +226,7 @@ export function IndexingPanel({
               <b>No index yet.</b>
             )}{" "}
             {scanning
-              ? `Scanning now — ${(status.files + status.reused).toLocaleString()} files so far${
-                  status.root ? ` under ${status.root}` : ""
-                }.`
+              ? scanningLine(status)
               : config?.roots.length
                 ? `Covers ${config.roots.join(", ")}.`
                 : ""}
