@@ -3602,37 +3602,50 @@ def _starts_new_turn(row: dict) -> bool:
                for item in content)
 
 
-def _turn_boundary_step(seen_result: bool, row: dict) -> tuple:
+def _turn_boundary_step(seen_result: bool, row: dict, *, opens: bool) -> tuple:
     """One row's effect on "is the main exchange still open", the ONE answer
     both `_read_current_turn` (over the live `out.jsonl` stream) and
     `_history` (over the CLI's own persisted transcript) need — both files
     carry the same `type`/`parent_tool_use_id` shape for the rows this
-    decides on, so one function settles it for both instead of two readings
-    of "where does a turn start" quietly drifting apart (which is how the
-    defect this fixes was born).
+    decides on, so one function settles the CLOSING half for both instead of
+    two readings of "where does a turn start" quietly drifting apart (which
+    is how the defect this fixes was born).
+
+    `opens` is the caller's OWN answer to "does this row begin a fresh,
+    user-authored turn" — deliberately not decided in here, because the two
+    callers read that off different shapes. `out.jsonl`'s live stream can
+    carry a genuine echo and a D415 wake with the same `type: "user"`, and
+    only `_starts_new_turn`'s stricter check (content must be the exact list
+    `_write_inbox_entry` writes) tells them apart. The persisted transcript
+    `_history` reads has NO such tell — a real typed turn and a wake both
+    surface there as a bare string (`_starts_new_turn`'s own docstring), so
+    `_history` already carries its own correct answer (a non-empty, non-
+    machinery user turn) by the time it gets here, and reusing that is right,
+    not a second guess at the same question `_starts_new_turn` answers for
+    the other file's different shape.
 
     Returns `(seen_result, opens_new)`: the carried-forward `seen_result` a
-    caller threads into the next call, and whether THIS row is the CLI's own
-    proof that a fresh, user-authored turn just began.
+    caller threads into the next call, and whether THIS row is proof that a
+    fresh exchange just began.
 
     A row carrying `parent_tool_use_id` is a subagent's — spawned by a
     Task/Agent tool call, not typed by the user — so neither its `result`
     (that sub-conversation's own close) nor anything else about it may close
     or reopen the MAIN exchange; `seen_result` passes through untouched and
-    it never opens anything.
+    it never opens anything, regardless of what the caller passed for `opens`.
 
     Otherwise: a `result` row sets `seen_result` (the exchange most recently
-    closed here). Once `seen_result` is true, the newest `_starts_new_turn`
-    row proves a fresh exchange has begun — folding a follow-up into a turn
-    still streaming (`_send`) echoes back in the exact same shape but with no
-    `result` in between, so `_starts_new_turn` alone, without `seen_result`
-    already true, must NOT open a new exchange: that would be the follow-up
-    itself, not a new one."""
+    closed here). Once `seen_result` is true, the caller's `opens` proves a
+    fresh exchange has begun — folding a follow-up into a turn still
+    streaming (`_send`) echoes back in exactly the same shape a fresh turn's
+    own opening message has, but with no `result` in between, so `opens`
+    alone, without `seen_result` already true, must NOT open a new exchange:
+    that would be the follow-up itself, not a new one."""
     if row.get("parent_tool_use_id"):
         return seen_result, False
     if row.get("type") == "result":
         return True, False
-    if seen_result and _starts_new_turn(row):
+    if seen_result and opens:
         return False, True
     return seen_result, False
 
@@ -3763,7 +3776,8 @@ def _read_current_turn(run_dir: str) -> tuple:
         # as a genuine turn boundary (the row right before it looks like the
         # "result closed the previous turn" this rule requires), and the
         # cursor jumps past text the main turn has already streamed.
-        seen_result, opens_new = _turn_boundary_step(seen_result, row)
+        seen_result, opens_new = _turn_boundary_step(
+            seen_result, row, opens=_starts_new_turn(row))
         if opens_new:
             advance_to = line_start  # the newest genuine turn's own start
         line_start = pos
@@ -4974,9 +4988,37 @@ def _history(file: str, session_id: str) -> dict:
     list reads the same uuid off the same record (`_prompt`, server/routers/
     tasks.py) and links a message as `?msg=<uuid>`, so the chat can scroll to the
     turn a person clicked instead of to the top of the conversation. "" on a
-    record that has none — the template treats the key as optional throughout."""
+    record that has none — the template treats the key as optional throughout.
+
+    `open_from` is the index into `turns` where the still-open exchange
+    begins, or `None` when the last exchange is closed. Every turn rides back
+    regardless — nothing is trimmed here — because the page still needs the
+    open exchange reachable (a `?msg=` anchor may name a turn inside it) and
+    because a run that finishes between this read and a live poll attaching
+    would otherwise belong to nobody: the page keeps these turns in hand and
+    draws them itself if that attach never happens or comes up empty. What
+    changes here is only that the CALLER now knows where to stop drawing on
+    its own, so the live poll — which owns everything from `open_from`
+    onward, follow-ups still queued included — is never drawing the same
+    words this payload already carries.
+
+    Closing is decided by `_turn_boundary_step`, the same rule
+    `_read_current_turn` applies to the live `out.jsonl` stream — a `result`
+    row closes the exchange, a subagent's own (`parent_tool_use_id`) does
+    not, and nothing may reopen one except a fresh turn actually starting.
+    "Fresh turn starting" is answered differently here than it is for
+    `out.jsonl`, though, and deliberately so: `_starts_new_turn` exists to
+    tell a genuine echo apart from a D415 wake by CONTENT SHAPE (list vs.
+    bare string), a distinction that only matters for `out.jsonl`, where both
+    shapes are live in the same stream. On the persisted transcript a real
+    typed turn can equally be a bare string, so the shape test would refuse
+    to reopen on perfectly ordinary turns. What already tells a real turn
+    apart from a wake HERE is the very check a few lines below that decides
+    whether to append one to `turns` at all (non-empty, non-machinery text)
+    — so that decision, not `_starts_new_turn`, is what `_turn_boundary_step`
+    is fed as `opens` in this loop."""
     if _bad_id(session_id):
-        return {"turns": [], "transcript": _transcript_stat("")}
+        return {"turns": [], "transcript": _transcript_stat(""), "open_from": None}
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
@@ -4992,10 +5034,12 @@ def _history(file: str, session_id: str) -> dict:
     # folder this chat is open on), and the endpoint refuses to do it.
     stat = _transcript_stat(path)
     if not os.path.isfile(path):
-        return {"turns": [], "transcript": stat}
+        return {"turns": [], "transcript": stat, "open_from": None}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
+    open_from = None
+    seen_result = False  # a `result` closed the exchange; nothing has reopened it since
 
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
@@ -5025,6 +5069,19 @@ def _history(file: str, session_id: str) -> dict:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
+        # Run BEFORE the isMeta/isSidechain skip below, over every row exactly
+        # as `_read_current_turn` does for `out.jsonl` — a `result` closing
+        # the exchange (or a subagent's own, which must not) is real either
+        # way, whether or not the row goes on to build a visible turn.
+        opens = False
+        if row.get("type") == "user" and not (row.get("isMeta") or row.get("isSidechain")):
+            u_content = (row.get("message") or {}).get("content")
+            u_text = u_content if isinstance(u_content, str) else "\n".join(
+                b.get("text", "") for b in (u_content if isinstance(u_content, list) else [])
+                if isinstance(b, dict) and b.get("type") == "text")
+            u_text = _strip_app_state(u_text)
+            opens = bool(u_text.strip()) and not _LEADING_DROP_OPEN.match(u_text.lstrip())
+        seen_result, opens_new = _turn_boundary_step(seen_result, row, opens=opens)
         if row.get("isMeta") or row.get("isSidechain"):
             continue
         msg = row.get("message") or {}
@@ -5054,6 +5111,10 @@ def _history(file: str, session_id: str) -> dict:
                 close_stretch()  # before the user turn, or the segments land on it
                 turns.append({"role": "user", "text": text,
                               "uuid": str(row.get("uuid") or "")})
+                # This is the exact row `opens` was computed off above, so a
+                # true `opens_new` here always lands on the turn just appended.
+                if opens_new:
+                    open_from = len(turns) - 1
             else:
                 # Everything else on a `user` row belongs to the assistant's
                 # reply: tool_result blocks are what its tool segments are
@@ -5071,6 +5132,12 @@ def _history(file: str, session_id: str) -> dict:
                 else:
                     turns.append({"role": "assistant", "text": text})
     close_stretch()
+    # `seen_result` still true at EOF means the last thing that happened was
+    # a close with nothing since to reopen it — the last exchange is done,
+    # and `open_from` (however it was left by an EARLIER exchange opening)
+    # must not leak forward as "still open".
+    if seen_result:
+        open_from = None
     # ...and whether the last of those turns was ENDED BY THE USER. The
     # transcript cannot say — a killed run just stops writing — so it is read
     # off the run dir (`_stopped_last`) and reported on the turn it belongs to,
@@ -5082,7 +5149,7 @@ def _history(file: str, session_id: str) -> dict:
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
-    return {"turns": turns, "transcript": stat}
+    return {"turns": turns, "transcript": stat, "open_from": open_from}
 
 
 def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
