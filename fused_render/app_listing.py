@@ -149,6 +149,38 @@ def app_preview_image(dir_path: str) -> str | None:
     return os.path.abspath(p) if stat.S_ISREG(st.st_mode) and st.st_size > 0 else None
 
 
+# The one app icon name — `icon.svg` at the app folder's root. The same file
+# the sidebar's Projects row draws as its glyph and an app's pages serve as
+# their tab favicon (`current_apps.app_icon` delegates here), so an author who
+# drops one in gets the app's mark on every surface that lists the app rather
+# than on one at a time.
+ICON_NAME = "icon.svg"
+
+
+def app_icon(dir_path: str) -> dict | None:
+    """The app's optional icon: ``{"icon": <abs path>, "mtime": <epoch>}`` for
+    an `icon.svg` sitting directly in the folder, else None.
+
+    The mtime rides along because every reader turns this into a URL, and both
+    the browser's image cache and (far more stubbornly) its favicon cache will
+    keep serving yesterday's glyph — callers stamp it on as a cache key.
+
+    A stat, not the listdir `app_preview_image` pays for: this name is WRITTEN
+    by us (POST /api/apps/icon) rather than dropped in by hand, so there is no
+    `Icon.svg` for two filesystems to disagree about.
+
+    Never raises, like the two resolvers above it: an unreadable or vanished
+    folder is "no icon", which is exactly what a card then draws.
+    """
+    p = os.path.join(dir_path, ICON_NAME)
+    try:
+        if not os.path.isfile(p):
+            return None
+        return {"icon": os.path.abspath(p), "mtime": os.stat(p).st_mtime}
+    except OSError:
+        return None
+
+
 def app_category(dir_path: str) -> str | None:
     """The app's authored category: the `category` field of a `metadata.json`
     at the folder's root — the same per-app metadata shape the showcase repo
@@ -180,6 +212,7 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None, *,
     such ambiguity to hand back (see `app_preview_image`), so resolving it once
     in the shared shape keeps callers from having to remember it separately.
     """
+    icon = app_icon(path)
     return {
         "name": name,
         "tag": tag,
@@ -206,6 +239,12 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None, *,
         # The authored category from `metadata.json`, or None. Drives the apps
         # page's category filter; None means "All only".
         "category": app_category(path),
+        # The app's own `icon.svg` and its mtime, or None twice — the mark a
+        # card draws to the left of its name, the same file the sidebar row
+        # and the tab favicon draw. Resolved here for `preview_image`'s
+        # reason: one shape, one place, no caller left to remember it.
+        "icon": icon["icon"] if icon else None,
+        "icon_mtime": icon["mtime"] if icon else None,
         "title": entry_title(entry_html) if entry_html else None,
         # A recent-first caller already has `opened_at`, which outranks this
         # fallback timestamp. It may skip the direct-child stat sweep; the

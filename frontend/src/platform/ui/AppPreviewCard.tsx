@@ -34,7 +34,7 @@
 // live preview (D365).
 import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
-import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
+import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
@@ -225,12 +225,51 @@ export function AppPreviewCard({
       title={openTargetFor(app).path}
     >
       <span className="app-pcard-body">
-        <span className="app-pcard-title">{title}</span>
-        <span className="app-pcard-meta">
-          <span className="app-pcard-tag">{app.tag}</span>
-          {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
-          {badge && <span className="app-pcard-name">{badge}</span>}
-          {ago && <span className="app-pcard-ago">{ago}</span>}
+        {/* The app's own `icon.svg` to the left of its two text lines, tall
+            enough to span both — the same mark
+            the sidebar's Projects row and the app's tab favicon draw, so an
+            app reads as itself wherever it is listed. Drawn AS IS: the
+            author's colours, no mask or tint (owner, 2026-08-27).
+            An app with no icon.svg gets the same generic mark the sidebar row
+            falls back to — the brand's four-point star — so the slot is there
+            on every card and a name never shifts left for the want of a file.
+            `draggable={false}` for the reason the still's shield exists — an
+            <img> carries the browser's native drag-the-image gesture, which
+            starts a drag instead of the click that opens the card. */}
+        {app.icon ? (
+          <img
+            className="app-pcard-icon"
+            src={appIconUrl(app.icon, app.icon_mtime)}
+            alt=""
+            draggable={false}
+          />
+        ) : (
+          // The generic mark, one drawing shared with the sidebar
+          // (CurrentAppsSection's `current-app-star`): the app icon's own
+          // sparkle, on currentColor so it takes the card's muted tone
+          // rather than competing with the name beside it.
+          <svg
+            className="app-pcard-star"
+            viewBox="0 0 64 64"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M32 2 C36.5 20.5 43.5 27.5 62 32 C43.5 36.5 36.5 43.5 32 62 C27.5 43.5 20.5 36.5 2 32 C20.5 27.5 27.5 20.5 32 2 Z" />
+          </svg>
+        )}
+        {/* The two text lines, stacked beside the icon rather than under it —
+            the icon is a column of the head, spanning both (owner). Their own
+            element because the icon has to be a SIBLING of the pair for that:
+            with the icon inside the first line it could only ever be as tall
+            as the name. */}
+        <span className="app-pcard-lines">
+          <span className="app-pcard-title">{title}</span>
+          <span className="app-pcard-meta">
+            <span className="app-pcard-tag">{app.tag}</span>
+            {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
+            {badge && <span className="app-pcard-name">{badge}</span>}
+            {ago && <span className="app-pcard-ago">{ago}</span>}
+          </span>
         </span>
       </span>
       {/* `data-capture-ready` marks the thumb as a picture of the APP — the
