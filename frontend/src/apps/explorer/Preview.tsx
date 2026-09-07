@@ -1606,7 +1606,7 @@ function TemplatePreview({
   // `_listing` builds no src — it renders a shell component, not an iframe.
   //
   // `_snapshot` rides here and on the shell's OWN url, unlike the deleted
-  // `_rev` design (lib/preview-rev, gone in this task): a snapshot is a
+  // `_rev` design (lib/preview-rev.ts, deleted): a snapshot is a
   // property of the whole page, not just what this one frame is showing, but
   // this frame still needs it on ITS OWN src — the runtime reads params off
   // its own frame's query (`ownQuery`, static/runtime.js), so a param that

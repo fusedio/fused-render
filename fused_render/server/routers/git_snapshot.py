@@ -107,6 +107,23 @@ def _git_bin():
     return _GIT_BIN
 
 
+# `tar`'s own absolute path, resolved the same way and for the same reason as
+# `_git_bin()`: the posix_spawn hazard is not git-specific — ANY child process
+# started with a bare, un-dirname'd argv[0] forks first, and a fork in this
+# process with libproj resident SIGSEGVs before exec regardless of which
+# program the fork was headed towards. `tar` runs in the same request as
+# `git archive`, so it needs the identical discipline.
+_TAR_BIN = None
+
+
+def _tar_bin():
+    global _TAR_BIN
+    if _TAR_BIN is None:
+        import shutil as _shutil
+        _TAR_BIN = _shutil.which("tar") or "tar"
+    return _TAR_BIN
+
+
 class _Refused(Exception):
     """A refusal with the status the pane should see — same shape as
     `git_show.py`'s, so both routes fail the same way for the same caller."""
@@ -117,10 +134,16 @@ class _Refused(Exception):
         self.status = status
 
 
-def _popen_kwargs():
+def _popen_kwargs(stdin=subprocess.DEVNULL):
+    """The posix_spawn-safe kwargs every Popen here shares. `stdin` is the one
+    knob a caller may override (the tar leg of `_run_archive` pipes from
+    git's stdout instead of DEVNULL) — a parameter rather than a second
+    dict literal, so tests/test_git_posix_spawn.py's static sweep still finds
+    ONE `return {...}` to read `close_fds`/`cwd` off of regardless of which
+    call passed what; it never inspects `stdin` itself."""
     return {
         "env": {**os.environ, **_ENV},
-        "stdin": subprocess.DEVNULL,
+        "stdin": stdin,
         # Required, together with the absolute argv[0] and the ABSENCE of
         # `cwd=`, to reach posix_spawn rather than fork — see git_show.py's
         # comment above its own `_GIT_BIN` for the full story.
@@ -204,16 +227,21 @@ def _run_archive(repo_root: str, sha: str, app_rel: str, dest_tmp: str) -> None:
     the app folder's OWN contents rather than nesting them `app_rel` levels
     deep.
     """
-    args = ["archive", sha]
-    if app_rel:
-        args += ["--", f":(literal){app_rel}"]
-    archive_argv = [_git_bin(), "--no-pager", "-C", repo_root, *args]
     strip = app_rel.count("/") + 1 if app_rel else 0
-    tar_argv = ["tar", "-x", f"--strip-components={strip}", "-C", dest_tmp]
 
+    # BOTH argv lists are inlined here, not built into a named variable first:
+    # tests/test_git_posix_spawn.py's static sweep can only verify argv[0] and
+    # the posix_spawn kwargs when it can read the literal list at the call
+    # site — a `Name` defeats it (see that file's own comment on the
+    # recognition blind spot it deliberately still flags for). This is not
+    # only about passing that check: it is what makes the fact TRUE — a
+    # variable holding "the argv" invites a later edit that swaps it for
+    # something not-quite-inline again.
     try:
         archive = subprocess.Popen(
-            archive_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            [_git_bin(), "--no-pager", "-C", repo_root, "archive", sha,
+             *(["--", f":(literal){app_rel}"] if app_rel else [])],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             **_popen_kwargs())
     except FileNotFoundError as exc:
         raise _Refused("git is not installed, or not on this app's PATH",
@@ -222,9 +250,16 @@ def _run_archive(repo_root: str, sha: str, app_rel: str, dest_tmp: str) -> None:
         raise _Refused(f"git could not be started: {exc}", status=502) from exc
 
     try:
+        # `_popen_kwargs()` here too: the posix_spawn hazard is not
+        # git-specific (see `_tar_bin`'s own comment) — this child forks
+        # exactly as readily as an un-dirname'd git would. `stdin=` is the
+        # override `_popen_kwargs` takes a parameter for, rather than passed
+        # as a second keyword alongside the `**` spread — that would be two
+        # values for one keyword (its default is DEVNULL) and Python raises.
         extract = subprocess.Popen(
-            tar_argv, stdin=archive.stdout, stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE)
+            [_tar_bin(), "-x", f"--strip-components={strip}", "-C", dest_tmp],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            **_popen_kwargs(stdin=archive.stdout))
     except OSError as exc:
         archive.kill()
         raise _Refused(f"tar could not be started: {exc}", status=502) from exc

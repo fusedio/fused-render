@@ -1,7 +1,11 @@
 # Build log — app-folder snapshot preview
 
-Resume point: tasks 1-5 committed. Next up: task 6 (delete the single-file
-path, amend SPEC.md/DECISIONS.md).
+Resume point: ALL SIX TASKS COMPLETE AND COMMITTED. Full suite green modulo
+pre-existing, branch-unrelated red (see the Task 6 entry below for the exact
+verification). Nothing left to resume — a future reader picking this up
+should read the Task 6 entry first for the two real bugs the full-suite gate
+caught (a forking subprocess, a raw CSS color literal) and the deferred
+`/render`-under-snapshot gap noted in Task 4/5's entries.
 
 ## Task 1 — `enclosing_app_dir`
 
@@ -320,3 +324,106 @@ deleted** — both still say something true and worth keeping (a content pane
 carries no indicator of its own; the git sidebar's own commit list still
 owns that state), so they were updated to also point at Listing.tsx's new
 banner rather than removed outright.
+
+## Task 6 — delete the single-file `_rev` path; SPEC/DECISIONS amended
+
+**Real bug caught by the full suite, not by any task's own verify command:
+two `subprocess.Popen` calls in `git_snapshot.py::_run_archive` would have
+FORKED rather than posix_spawn'd.** `tests/test_git_posix_spawn.py`'s static
+sweep (not part of any task's per-task verify line, only run here at task 6)
+flagged both the `git archive` and the `tar -x` calls: their argv lists were
+built into a named variable first (`archive_argv`/`tar_argv`) rather than
+inlined at the `Popen(...)` call site, which the sweep cannot statically
+verify and treats as a potential fork. Investigated further and found a
+SECOND, real defect the sweep's git-only scope doesn't even check for: the
+`tar` Popen call had no `close_fds=False`/absolute-executable treatment at
+all — and the posix_spawn hazard this whole mechanism guards against
+(`pthread_atfork` SIGSEGV with libproj resident) is **not git-specific**, it
+hits any forked child. Fixed both: inlined both argv lists as list literals
+at their call sites, added a `_tar_bin()` resolving an absolute path the same
+way `_git_bin()` does, and gave `_popen_kwargs()` a `stdin` parameter
+(default `DEVNULL`) so the tar leg can override it to `archive.stdout`
+without colliding with `_popen_kwargs()`'s own `stdin` key — passing both
+`stdin=archive.stdout` and `**_popen_kwargs()` in one call raises rather than
+picking one. Re-ran `tests/test_git_posix_spawn.py`: 42 passed. **This would
+have shipped a silently-forking, SIGSEGV-prone extraction path** in any
+server process with libproj resident (any map/geotiff/zarr template or
+daemon) had the full suite not been run before merge — exactly the scenario
+the plan's task 6 note anticipates ("no task leaves the tree with a broken
+preview" via a full-suite gate at the end, not per-task).
+
+**Second real bug, also only caught here: a raw CSS color literal.**
+`tests/test_theme.py::test_shell_css_has_no_colour_literals_outside_the_palettes`
+flagged `rgba(127, 127, 127, 0.08)` in the task-5 snapshot banner's CSS — a
+fallback I'd added inside `var(--accent-soft, rgba(...))`, which the sweep
+still parses as a literal regardless of the `var()` wrapper. Fixed by using
+`var(--bg-alt)` outright (a real palette token, present in both light and
+dark tokens.css blocks) and dropping the fallback entirely, plus removing an
+equivalent `var(--mono, ...)` fallback for the sha's monospace font (spelled
+out the real stack instead, matching how other rules in this file do it).
+
+**Deletion scope for `tests/test_git_scope.py`** (28 `_rev` references,
+matching the plan's count almost exactly): the ENTIRE "the file AS OF a
+commit" section (`/api/git/show`'s own TestClient-driven tests, plus the
+`runtime.js` string-contract tests for `revUrl`/`revResolves`/`revRefusal`/
+`revStat`/the KNOWN GAP block) was deleted wholesale — none of it "moves" to
+`_snapshot`, because `tests/test_git_snapshot.py` (task 2) and
+`tests/test_runtime_snapshot.py` (task 4) already cover the successor
+mechanism in their own dedicated files; keeping a second, adapted copy here
+would just be redundant coverage. What DID move (renamed identifiers, same
+assertions): `test_the_commit_reaches_the_shell_through_the_ancestor_global`,
+`test_the_pane_subject_and_the_previewed_commit_are_separate_state`,
+`test_the_capability_is_polled_like_the_annotate_target`,
+`test_a_reload_of_this_frame_returns_the_pane_to_live` — all four test
+`hopRev`/`_fusedSelectRev`-shaped mechanics that still exist under new names.
+**One test deleted outright as testing a now-REVERSED invariant, not
+adapted**: `test_only_the_content_frame_carries_rev` asserted `_rev` is
+NEVER written as a param anywhere in Preview.tsx — exactly the promise task 3
+deliberately breaks for `_snapshot`. Adapting its assertions to the opposite
+claim would just re-derive what `router.test.ts`'s task-3 cases and
+`Listing.test.tsx`'s task-5 cases already pin. **One test kept unmodified on
+purpose**: `test_the_shell_marks_only_a_frame_a_revision_can_be_driven_into`
+tests `data-fused-rev-target`/`revMarkedFrame`/`canPreview` — identifiers I
+deliberately left unrenamed back in task 3 (out of scope: no task's file list
+mentions them, and renaming risked touching the capability-handshake
+mechanism itself rather than just its name). Still passes unmodified,
+confirming that decision was safe.
+
+**Comment-only stale references fixed beyond the plan's named files**:
+`fused_render/server/mount.py::_is_under_snapshot_root`'s docstring claimed
+"NOTHING WRITES THIS DIRECTORY ANY MORE" — false the moment task 2 landed,
+and I should have caught it THEN rather than at task 6. Also fixed:
+`tests/test_snapshot_readonly.py`'s module docstring (same false claim),
+`fused_render/git_upstream.py`'s citation of `git_show.py:144-155` (now a
+dangling line reference to a deleted file), `tests/test_git_posix_spawn.py`
+and `tests/test_git_conflicts.py`'s comment mentions of the old hop/route
+names. None of these were in the plan's task 6 file list, but all were
+directly caused by earlier tasks' deletions/renames and were caught by
+grepping for `git_show`/`revUrl`/`revResolves`/`_fusedSelectRev` across the
+whole tree before considering task 6 done, not by the plan's own list.
+
+**SPEC.md PT-14 and DECISIONS.md D243 amended in place** (not rewritten):
+PT-14's two false claims (`/api/git/show` resolving reads; "neither has a
+producer" for `app-versions/`) were corrected inline, since the surrounding
+prose about `git` being folder-only, the `?snapshot=1` framing, and the
+`mount.py` guard are all still true and didn't need touching. D243 got a
+parenthetical `*(Amendment, 2026-09-07, see D701: ...)*` in the same style
+its own row already uses for later reversals (D236 and D243 itself both do
+this), rather than editing D243's body — the body is what the NEW decision's
+reversal is measured against, so leaving it as the historical record and
+pointing forward reads truer than rewriting history.
+
+**Full suite run (this task's own verify command)**: `.venv/bin/pytest -n
+auto -q` — 36 failed, 11652 passed, 162 skipped, 1 error (down from 38
+failed before the two fixes above). Verified via
+`git diff --stat <merge-base> HEAD -- <each failing file's path>` that EVERY
+file behind a remaining failure (`test_claude_health.py`, the `map` template
+tests, `test_ai_worker_base.py`, `test_env_install.py`,
+`test_env_install_worker_progress.py`, `test_calls.py`, `test_ai_metrics.py`,
+`joblib_model`) is **byte-identical to the branch point** — this diff came
+back empty for all of them — so every remaining failure is pre-existing
+noise in this environment, not something this branch introduced, without
+needing to check out `main` itself (avoided per the "never touch a sibling
+worktree/checkout" constraint; an empty diff against the merge-base is
+sufficient proof for an unmodified file). `bun test` (frontend, full run):
+3072 pass, 0 fail.

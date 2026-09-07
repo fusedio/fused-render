@@ -12,10 +12,15 @@ own default view — `code` or `markdown`, both of which call `fused.writeFile`.
 Cmd+S SUCCEEDED, the real file was untouched, the edit was lost, and the
 "historical" revision was quietly rewritten.
 
-THE VIEW THAT MATERIALISED THESE TREES IS GONE (the `git` view resolves a
-revision on read instead, /api/git/show), so nothing writes `app-versions/` any
-more. The guard is still the truth for trees an older version left on disk, which
-are still reachable by path and still immutable.
+THIS HAS A PRODUCER AGAIN. The predecessor per-path timeline mode that first
+materialised these trees was retired, and for a while nothing wrote here at
+all (the `git` view resolved a revision on read instead, `/api/git/show`,
+since deleted). `server/routers/git_snapshot.py` is the current producer:
+the `git` sidebar's commit preview extracts the app folder enclosing a path
+at a commit, so every read the runtime makes under it — `readFile`, `rawUrl`,
+`stat`, `runPython` — resolves against a real file. The guard is unchanged
+either way: nothing under this root is ever writable through `/api/fs`,
+whether the tree was cached yesterday or a second ago.
 
 Fixing only the framing template would leave the path writable to everything else
 (the explorer's own file ops, an /api/fs/write from any view, a rename). The

@@ -481,11 +481,13 @@ html.side-reopening iframe {
   padding: 8px 16px;
   font-size: 12px;
   color: var(--fg-muted);
-  background: var(--accent-soft, rgba(127, 127, 127, 0.08));
+  /* Every colour here must come from a palette token (tests/test_theme.py) so
+     light mode can repaint it — no raw rgba() literal. */
+  background: var(--bg-alt);
   border-bottom: 1px solid var(--border);
 }
 .listing-snapshot-banner .listing-snapshot-sha {
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: ui-monospace, SFMono-Regular, monospace;
   color: var(--fg);
 }
 .listing-snapshot-back {

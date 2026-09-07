@@ -58,7 +58,6 @@ from fused_render.server.routers.export import router as export_router
 from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.git_repos import router as git_repos_router
-from fused_render.server.routers.git_show import router as git_show_router
 from fused_render.server.routers.git_snapshot import router as git_snapshot_router
 from fused_render.server.routers.git_upstream import router as git_upstream_router
 from fused_render.server.routers import index as index_routes
@@ -734,12 +733,6 @@ def create_app(start_dir: str) -> FastAPI:
     # (routers/git_repos.py) — candidates come from the file index, never a
     # fresh walk, so it cannot touch a mount. Read-only, no auth guard.
     app.include_router(git_repos_router)
-    # GET /api/git/show (routers/git_show.py): one file's bytes as of one commit,
-    # resolved out of the object database with nothing written to disk. Backs the
-    # git sidebar's revision selection — the runtime routes readFile/rawUrl/stat
-    # here while a frame carries `_rev`. Read-only, no guard; it refuses a
-    # mount-backed path outright, like every other git call in the app.
-    app.include_router(git_show_router)
     # GET /api/git/snapshot (routers/git_snapshot.py): the app folder enclosing
     # a path, `git archive`d to ~/.fused-render/app-versions/<key>/<sha>/ so
     # every read under it — runPython included — can be rewritten against a
