@@ -1090,6 +1090,17 @@ def reconcile() -> None:
         if not before:
             return
         current = tree_digest()  # SLOW — deliberately outside the lock
+        # The release digest through the SHARED recovery, not `baseline.json`
+        # alone. This was the one read path that remembered half of what
+        # `_pristine_digest` knows, and the half it forgot is the half a fix
+        # session takes with it: a session that deletes the state dir leaves a
+        # marker (stamped by `resume` from the pointer) with no `baseline.json`
+        # beside it. Reading only that file, this returned early — and the badge
+        # then survived the same-version reinstall this function exists to
+        # notice, which is the promise the panel makes to the user. Taken out
+        # here beside `current` for the same reason that is: both are
+        # measurements, and the lock below is for the write-back.
+        pristine = _pristine_digest()
 
         # RE-READ under the lock. The walk above takes long enough for the world
         # to move: a `clear` (the user dismissing) or a `mark_modified` (a fix
@@ -1119,9 +1130,6 @@ def reconcile() -> None:
             if marker.get("version") != __version__:
                 _discard(marker_path())
                 return
-            baseline = (_read_json(baseline_path()) or {})
-            pristine = (baseline.get("digest")
-                        if baseline.get("version") == __version__ else None)
             if not pristine:
                 return
             if current == pristine:

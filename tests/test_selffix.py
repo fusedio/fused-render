@@ -667,6 +667,35 @@ def test_a_lost_baseline_is_recovered_from_the_marker_not_from_the_patched_tree(
     assert selffix.status() is not None, "the badge was cleared over a live patch"
 
 
+def test_a_reinstall_clears_the_badge_even_with_no_baseline_FILE(install):
+    """`reconcile` exists to notice a same-version reinstall, and it has to keep
+    noticing one after the state dir has been deleted.
+
+    The pristine digest has three homes — `baseline.json`, the marker's own
+    copy, the session pointer's (`_pristine_digest`) — because a fix session is
+    an agent editing this installation and can delete the state dir, taking the
+    file with it. This read path used to consult only the file, so a marker
+    stamped after such a session (by `resume`, from the pointer) left the badge
+    surviving the reinstall it is supposed to clear: pip's RECORD never listed
+    the state dir, so the marker comes through the reinstall intact while the
+    tree underneath it is the release again.
+    """
+    release = _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.mark_modified(run_id="r1", digest=selffix.tree_digest(),
+                          baseline_digest=release)
+    os.unlink(selffix.baseline_path())          # the session took it with it
+    assert selffix.status() is not None
+
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")  # the reinstall
+    assert selffix.tree_digest() == release
+    selffix.reconcile()
+
+    assert selffix.status() is None, (
+        "the badge outlived a same-version reinstall because the release digest "
+        "was only looked for in a file the fix session had deleted")
+
+
 def test_with_no_pristine_digest_anywhere_the_badge_is_kept_not_cleared(install):
     """The other half: a marker whose own `baseline_digest` is empty.
 
