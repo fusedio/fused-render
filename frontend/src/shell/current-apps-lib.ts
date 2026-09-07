@@ -51,8 +51,10 @@ export interface CurrentApp {
   /** Something is running under it right now — the row wears the running dot.
    *  Read from the task pulse, which the sidebar already subscribes to. */
   running: boolean;
-  /** A task under it finished with something unread — the row wears the green
-   *  dot (unless running: yellow outranks green, the Tasks row's own rule). */
+  /** A task under it finished since the user last opened this app — the row
+   *  wears the green dot (unless running: yellow outranks green, the Tasks
+   *  row's own rule). The server's flag (the unread section below), the app's
+   *  OWN state: reading the task elsewhere does not clear it, opening the app does. */
   unread: boolean;
   /** The app's optional `icon.svg`, as a drawable URL (api.appIconUrl), or
    *  null — the glyph slot falls back to the generic mark. */
@@ -66,16 +68,34 @@ export function isUnderDir(project: string, dir: string): boolean {
   return project === dir || project.startsWith(dir + "/");
 }
 
+// ---- the per-app unread dot -------------------------------------------------
+//
+// The dot used to be the tasks' own unread state worn per app: it lit when a
+// task under the app finished with unread output and went out when THAT TASK
+// was read. The owner decoupled the two (2026-09-07): the task is still the
+// trigger — a completion under the app lights the dot — but the app clears it
+// on its own gesture, opening the app, and nothing done to the task clears it.
+//
+// The flag is the SERVER's (fused_render/current_apps.py, the unread section):
+// the desk row carries `unread`, recomputed on every tasks listing from each
+// task's `happened_at` against the row's `opened_at`, and cleared by POST
+// /api/current-apps/open. This file does not compute it — it draws it. Two
+// client-side cuts that derived it here from the pulse's `last_active` both
+// broke on the same fact: `last_active` keeps a scheduled message's DUE time
+// for sorting, so it is not a clock an open can be compared against (Bugbot
+// ×2, 2026-09-07). The only client-side input is `clearedHere`: the rows the
+// user opened in THIS window ahead of the refetch, so the dot dies on the click.
+
 /** The store's rows as sidebar rows, in the store's ADDED order (oldest
  *  first), with the running dot read off the projects of the tasks currently
- *  in progress. */
+ *  in progress and the unread dot the server's flag, minus the rows opened here
+ *  since the last fetch. */
 export function currentApps(
   entries: CurrentAppEntry[],
   runningProjects: Iterable<string>,
-  unreadProjects: Iterable<string> = [],
+  clearedHere: ReadonlySet<string> = new Set(),
 ): CurrentApp[] {
   const live = [...runningProjects];
-  const fresh = [...unreadProjects];
   return entries.map((e) => ({
     path: e.path,
     name: e.name,
@@ -83,7 +103,7 @@ export function currentApps(
     kind: e.kind,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
-    unread: fresh.some((p) => isUnderDir(p, e.path)),
+    unread: Boolean(e.unread) && !clearedHere.has(e.path),
     iconUrl: e.icon ? iconUrlFor(e.icon, e.icon_mtime) : null,
   }));
 }

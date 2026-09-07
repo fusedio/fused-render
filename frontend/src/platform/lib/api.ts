@@ -2375,10 +2375,31 @@ export interface CurrentAppEntry {
   icon?: string | null;
   icon_mtime?: number | null;
   added_at: number | null;
+  /** Epoch (server clock) of the last `openCurrentApp`; 0 for a row a task
+   *  put on the desk that has never been opened. */
+  opened_at?: number | null;
+  /** A task under the app finished since `opened_at` — the sidebar's green
+   *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
+   *  and by nothing done to the tasks. */
+  unread?: boolean;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
   return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
+}
+
+/** The user opened the app: stamp its row `opened_at` (server clock) and clear
+ *  its `unread`. Touches no task. Answers with the whole table as it stands
+ *  after the stamp, so the caller can adopt it without a second read. */
+export interface OpenCurrentAppResult {
+  ok: boolean;
+  opened: boolean;
+  opened_at: number;
+  apps: CurrentAppEntry[];
+}
+
+export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
+  return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
@@ -2716,6 +2737,12 @@ export interface Task {
   // server, which reads the same way.
   started?: number;
   last_active: number;
+  // WHEN SOMETHING LAST ACTUALLY HAPPENED — a run finishing, a transcript
+  // growing — and 0 when nothing has. Unlike `last_active` it never carries a
+  // scheduled due time or a creation stamp (tasks.py `_row`). The desk's
+  // unread flag is judged against it server-side, and the sidebar refetches the
+  // projects table when it moves. Absent on an older server.
+  happened_at?: number;
   message_count: number;
   // WHEN THIS NEXT RUNS, and WHICH schedule entry that run is: `min(at)` over
   // every PENDING entry the task has, epoch seconds, decided by the server
@@ -2763,6 +2790,7 @@ export type TaskPulseTask = Pick<
   | "status"
   | "unread"
   | "last_active"
+  | "happened_at"
   | "project"
   | "task_id"
   | "title"

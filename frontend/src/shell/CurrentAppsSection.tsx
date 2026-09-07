@@ -27,6 +27,7 @@ import React, {
 import {
   archiveCurrentAppTasks,
   getCurrentApps,
+  openCurrentApp,
   readCurrentAppTasks,
   removeAppIcon,
   removeCurrentApp,
@@ -34,14 +35,14 @@ import {
   setAppIcon,
   type CurrentAppEntry,
 } from "@platform/lib/api";
-import IconPicker from "@platform/ui/IconPicker";
-import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
+import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
-import { inFlight, isDoneUnread, opensElsewhere, statusColumn } from "@shell/tasks-lib";
+import { inFlight, opensElsewhere, statusColumn } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import {
@@ -62,6 +63,11 @@ import {
 // Bumped from `current-apps-order` with the redesign: the saved list was slugs
 // and is folder paths now, and a slug-shaped order would match nothing.
 export const ORDER_KEY = "fused-render:current-apps-order:v2";
+
+// A cross-window nudge, not a store: set to the stamp after POST
+// /api/current-apps/open lands, so the other windows' sections refetch the
+// desk (the server row is the truth; this only says "look again").
+export const DESK_CHANGED_KEY = "fused-render:current-apps-changed";
 
 /** The picked emoji as a standalone icon.svg document — square viewBox, no
  *  fixed size, transparent ground (a colour emoji carries its own colours, so
@@ -164,26 +170,39 @@ try {
 }
 
 /** The desk's table, fetched on mount and again whenever `signal` changes —
- *  the caller passes the pulse's set of task keys, since a task this document
- *  has not seen is the one thing that can add a row. Errors keep the last
- *  answer: a failed read is not an empty desk. */
-function useCurrentApps(signal: string, refreshEpoch: number): CurrentAppEntry[] {
+ *  the caller passes a digest of the task pulse (`pulseSignal`), since a task
+ *  appearing adds a row and a task finishing flips a row's `unread`, both on
+ *  the server. Errors keep the last answer: a failed read is not an empty desk. */
+function useCurrentApps(
+  signal: string,
+  refreshEpoch: number,
+): { entries: CurrentAppEntry[]; adopt: (apps: CurrentAppEntry[]) => void } {
   const [apps, setApps] = useState<CurrentAppEntry[]>(knownApps);
+  // Every table this hook shows is SEQUENCED: a read applies only if nothing
+  // newer was issued while it was in flight. Without this a slow fetch started
+  // before an open could land after the open's answer and put the pre-stamp
+  // row — dot and all — back on screen (Bugbot, 2026-09-07). Latest issued
+  // wins; a stale answer is dropped, not merged.
+  const seq = useRef(0);
   useEffect(() => {
-    let live = true;
+    const mine = ++seq.current;
     getCurrentApps().then(
       (r) => {
-        if (!live) return;
+        if (mine !== seq.current) return;
         knownApps = r.apps ?? [];
         setApps(knownApps);
       },
       () => {},
     );
-    return () => {
-      live = false;
-    };
   }, [signal, refreshEpoch]);
-  return apps;
+  // A table handed in from elsewhere — the open's answer carries one — takes
+  // the newest sequence, so any read still in flight is stale by definition.
+  const adopt = useCallback((next: CurrentAppEntry[]) => {
+    seq.current++;
+    knownApps = next;
+    setApps(next);
+  }, []);
+  return { entries: apps, adopt };
 }
 
 interface RowDragProps {
@@ -201,6 +220,7 @@ function CurrentAppRow({
   onRemoved,
   onGlyphClick,
   onMenu,
+  onSeen,
 }: {
   app: CurrentApp;
   active: boolean;
@@ -208,6 +228,8 @@ function CurrentAppRow({
   onRemoved: () => void;
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>, path: string) => void;
   onMenu: (e: React.MouseEvent, app: CurrentApp) => void;
+  /** The user opened this app — stamp its completions seen (clears the dot). */
+  onSeen: (path: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   // The destination keeps the TAB the user is on (owner, 2026-08-26): switching
@@ -219,10 +241,19 @@ function CurrentAppRow({
   const onAppPage = appPathFromPath(location.pathname) !== null;
   const tab = onAppPage ? appPageTabFromSearch(location.search) : undefined;
   const href = appPageUrl(app.path, tab);
+  // The dot clears on the OPEN gesture, whatever the tasks under the app say
+  // (owner, 2026-09-07) — and on the row already active, since a completion
+  // landing while the user is on the app's page is one they are looking at.
+  // Safe to key on `app.unread`: onSeen hides the dot at once and a failed
+  // POST leaves it hidden (see onSeen), so this cannot re-fire into a retry loop.
+  useEffect(() => {
+    if (active && app.unread) onSeen(app.path);
+  }, [active, app.unread, app.path, onSeen]);
   const onOpen = (e: React.MouseEvent<HTMLAnchorElement>) => {
     // Middle/modified clicks keep the browser's own new-tab gesture on the href.
     if (opensElsewhere(e)) return;
     e.preventDefault();
+    onSeen(app.path);
     // The row for the page already on screen, on the tab it already shows, is
     // a no-op; the tab's own params would be the only thing the click cleared.
     if (!active) navigateUrl(href);
@@ -321,12 +352,12 @@ function CurrentAppRow({
           aria-hidden="true"
         />
       )}
-      {/* The unread dot: a task under this app finished and has not been read —
-          the Tasks row's green, worn per app, in the running dot's own slot
-          after the name (owner, 2026-08-31). Yellow outranks green (one dot per
-          row, the Tasks rule), so it hides while anything runs; it clears when
-          the task is read, since it draws the raw doneUnread state, not a
-          visit-stamped one. */}
+      {/* The unread dot: a task under this app finished since the user last
+          opened it — the Tasks row's green, worn per app, in the running dot's
+          own slot after the name (owner, 2026-08-31). Yellow outranks green
+          (one dot per row, the Tasks rule), so it hides while anything runs.
+          It clears when the APP is opened, not when the task is read — the
+          app's own state (owner, 2026-09-07; current-apps-lib.projectUnread). */}
       {app.unread && !app.running && (
         <span
           className="sidebar-rail-dot is-unread current-app-unread"
@@ -350,13 +381,19 @@ function CurrentAppRow({
 
 export default function CurrentAppsSection() {
   const rows = useTasksPulseRows();
-  // The set of task keys, as one string: it changes exactly when a task
-  // appears or leaves, and a new task is the only thing that can add an app.
-  // Order-independent (sorted) so a re-sorted pulse does not refetch.
-  const keySignal = useMemo(
+  // When to refetch the desk: a digest of the pulse — per task its key, lane,
+  // read state and activity — so the table reloads when a task appears or
+  // leaves (the one thing that adds a row) AND when one changes lane or speaks
+  // (the things that flip a row's `unread` on the server, which is computed
+  // inside the same listing the pulse reads). The activity term is
+  // `happened_at`, the clock `observe` itself compares — NOT `last_active`,
+  // which keeps a scheduled due time and so does not move when a recurring
+  // run finishes early (Bugbot, 2026-09-07). Sorted, so a re-ordered pulse
+  // does not refetch.
+  const pulseSignal = useMemo(
     () =>
       rows
-        .map((r) => r.key)
+        .map((r) => `${r.key} ${r.status} ${r.happened_at ?? 0}`)
         .sort()
         .join("\n"),
     [rows],
@@ -365,27 +402,76 @@ export default function CurrentAppsSection() {
     () => rows.filter((r) => inFlight(statusColumn(r.status))).map((r) => r.project || ""),
     [rows],
   );
-  // The projects with a finished-and-unread task — the raw doneUnread state
-  // the Tasks row's count chip reads, not the visit-stamped `unseen`: a dot
-  // per app clears by the task being READ, not by glancing at some page.
-  const unreadProjects = useMemo(
-    () => rows.filter(isDoneUnread).map((r) => r.project || ""),
-    [rows],
-  );
   const [refreshEpoch, setRefreshEpoch] = useState(0);
-  const entries = useCurrentApps(keySignal, refreshEpoch);
+  const { entries, adopt } = useCurrentApps(pulseSignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
   // turns that mutation into a render.
   const [orderEpoch, setOrderEpoch] = useState(0);
+  // The rows the user opened in THIS window whose open the server has not yet
+  // answered — so the dot dies on the click rather than on the refetch. A path
+  // leaves the set the moment the POST's answer (which carries the stamped
+  // table) is adopted (`onSeen`): from then on the server's flag is drawn as
+  // is, so a completion after the stamp — or an `observe` that raced the open
+  // — shows rather than being masked for the page's lifetime (Bugbot,
+  // 2026-09-07).
+  const [clearedHere, setClearedHere] = useState<ReadonlySet<string>>(() => new Set());
+  const uncover = useCallback(
+    (path: string) =>
+      setClearedHere((s) => {
+        if (!s.has(path)) return s;
+        const next = new Set(s);
+        next.delete(path);
+        return next;
+      }),
+    [],
+  );
   const apps = useMemo(() => {
-    const found = currentApps(entries, runningProjects, unreadProjects);
+    const found = currentApps(entries, runningProjects, clearedHere);
     // Assigning during render is safe because it is idempotent: an app that
     // already has a sequence keeps it, so a double-invoked render (StrictMode)
     // or a re-run on the same rows cannot renumber anything.
     assignSequences(appOrder, found);
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
-  }, [entries, runningProjects, unreadProjects, orderEpoch]);
+  }, [entries, runningProjects, clearedHere, orderEpoch]);
+  // The user opened `path`: clear the dot here at once, tell the server (POST
+  // /api/current-apps/open — the row's `opened_at` and `unread` are its to
+  // keep), then read the table back and hand the row to the server's flag.
+  const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
+  const onSeen = useCallback(
+    (path: string) => {
+      setClearedHere((s) => new Set(s).add(path));
+      openCurrentApp(path).then(
+        async (r) => {
+          // Tell the OTHER windows the desk changed: `storage` fires only in
+          // other documents (the ORDER_KEY wiring above, the chat's activity
+          // stamp), and their sections refetch on it. Without this a second
+          // window keeps the dot until something else makes it refetch (Bugbot,
+          // 2026-09-07). Value is the stamp so two opens in one second still
+          // differ; a blocked store just means no cross-window nudge.
+          try {
+            localStorage.setItem(DESK_CHANGED_KEY, String(r.opened_at));
+          } catch {
+            /* no store: this window is up to date, the others catch up on their own */
+          }
+          // The answer carries the table after the stamp: adopt it and lift the
+          // cover in the same tick. No second read to race, and `adopt` takes
+          // the newest sequence so a fetch still in flight from before the POST
+          // is dropped rather than putting the pre-stamp row back.
+          adopt(r.apps ?? []);
+          uncover(path);
+        },
+        () => {
+          // The server never heard. The dot stays hidden for this page — it
+          // comes back on the next load, since the server still says unread.
+          // Deliberately NOT restored: the active-row effect above keys on
+          // `app.unread`, and a restore would re-fire it into a retry loop at
+          // network-error cadence.
+        },
+      );
+    },
+    [adopt, uncover],
+  );
   // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
   // those move rows on screen and write nothing to the store; the saved order is
   // an arrangement the user made, and only they can change it.
@@ -464,20 +550,27 @@ export default function CurrentAppsSection() {
     },
   });
 
-  const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
-
   // The explorer's "Open in project" button adds a row (POST
   // /api/current-apps/add) and announces it over the window — apps cannot
   // import this section — so the new row lands on top as its page opens,
   // rather than on the next task pulse (platform/lib/tasksChanged).
+  // The same nudge from ANOTHER window (DESK_CHANGED_KEY): an open there
+  // stamped a row on the server, and this window's dot has to follow.
   useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === DESK_CHANGED_KEY) refetch();
+    };
     window.addEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
-    return () => window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [refetch]);
 
   // ---- the icon picker -------------------------------------------------------
-  // The glyph toggles the Bookmarks' emoji picker (IconPicker), anchored to
-  // itself. A pick is wrapped in a standalone svg and written to the folder's
+  // The glyph toggles the shared IconPicker (emoji + branded lucide icons),
+  // anchored to itself. A pick is written as a standalone svg to the folder's
   // icon.svg (POST /api/apps/icon) — the file the row and the tab favicon
   // already read — and the refetch brings back the new mtime, which is what
   // busts the <img> cache. Remove deletes the file; the row falls back to the
@@ -498,13 +591,16 @@ export default function CurrentAppsSection() {
     },
     [],
   );
-  const onPickIcon = async (icon: string | null) => {
+  const onPickIcon = async (pick: IconPick | null) => {
     const target = iconPicker;
     setIconPicker(null);
     if (!target) return;
     try {
-      if (icon === null) await removeAppIcon(target.path);
-      else await setAppIcon(target.path, emojiIconSvg(icon));
+      if (pick === null) await removeAppIcon(target.path);
+      // An icon pick arrives as the finished branded svg; an emoji gets the
+      // same standalone wrapper a hand-authored icon.svg would have.
+      else if (pick.kind === "icon") await setAppIcon(target.path, pick.svg);
+      else await setAppIcon(target.path, emojiIconSvg(pick.emoji));
     } catch {
       // A failed write leaves the old glyph; the refetch shows the truth.
     }
@@ -578,13 +674,14 @@ export default function CurrentAppsSection() {
 
   const menuItems = (app: CurrentApp): MenuEntry[] => [
     {
-      // The app page header's own "Open app": the entry page full-size in the
-      // explorer, in a new tab so the current page stays put.
+      // The app page header's own "Open app": the entry page full-size AS AN
+      // APP — embed mode, chrome-free — in a new tab so the current page stays
+      // put. Same URL as AppPage's button; the two must not diverge.
       label: "Open app",
       icon: MenuIcons.open,
       disabled: !app.exists || !app.entry,
       onClick: () => {
-        if (app.entry) window.open(urlForFsPath(app.entry), "_blank", "noopener");
+        if (app.entry) window.open(embedUrlForFsPath(app.entry), "_blank", "noopener");
       },
     },
     {
@@ -596,6 +693,7 @@ export default function CurrentAppsSection() {
     "separator",
     {
       label: "Mark all tasks as read",
+      icon: MenuIcons.unread,
       onClick: () => {
         readCurrentAppTasks(app.path)
           .catch(() => {})
@@ -638,10 +736,11 @@ export default function CurrentAppsSection() {
         onRemoved={refetch}
         onGlyphClick={onGlyphClick}
         onMenu={onRowMenu}
+        onSeen={onSeen}
       />
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps closes over `apps`
-    [onPath, apps, refetch, onGlyphClick, onRowMenu],
+    [onPath, apps, refetch, onGlyphClick, onRowMenu, onSeen],
   );
   // The "+ New app" row at the foot of the list opens the /apps composer in a
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
@@ -754,7 +853,7 @@ export default function CurrentAppsSection() {
         <IconPicker
           anchor={iconPicker}
           toggleSelector=".current-app-icon-toggle"
-          onPick={(icon) => onPickIcon(icon)}
+          onPick={(pick) => onPickIcon(pick)}
           onRemove={() => onPickIcon(null)}
           onClose={() => setIconPicker(null)}
         />

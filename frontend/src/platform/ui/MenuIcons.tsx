@@ -77,6 +77,17 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M10 11v6M14 11v6" />
     </svg>
   ),
+  // Unread — the task views' status ring with its centre filled
+  // (`.schedule-ring--unread`, schedule.css: a 16px ring with an 8px disc in
+  // it), redrawn on this table's 24-grid so "Mark all tasks as read" carries
+  // the very mark it clears. The disc is filled with currentColor, as the
+  // ring's `::after` is, so it tints with the row like every other glyph here.
+  unread: (
+    <svg {...svgProps}>
+      <circle cx="12" cy="12" r="8.5" strokeWidth="2.25" />
+      <circle cx="12" cy="12" r="4.5" fill="currentColor" stroke="none" />
+    </svg>
+  ),
   // Rename — pencil.
   rename: (
     <svg {...svgProps}>
