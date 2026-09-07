@@ -138,7 +138,7 @@ export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: Re
                 ? "A few things still need doing — the open rows have buttons."
                 : "Nothing here will block you — carry on."}
         </p>
-        <Button variant="ghost" size="sm" onClick={() => load(true)} disabled={busy}>
+        <Button variant="outline" size="sm" onClick={() => load(true)} disabled={busy}>
           <RefreshCw data-icon="inline-start" className={busy ? "animate-spin" : undefined} />
           {busy ? "Checking…" : "Check again"}
         </Button>

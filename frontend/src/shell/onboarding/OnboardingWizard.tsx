@@ -205,7 +205,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
     <>
       <span>{eyebrowText}</span>
       <div className="flex items-center gap-2 normal-case tracking-normal">
-        <Button variant="ghost" size="sm" onClick={back} disabled={index === 0}>
+        <Button variant="outline" size="sm" onClick={back} disabled={index === 0}>
           <ArrowLeft data-icon="inline-start" />
           Back
         </Button>
