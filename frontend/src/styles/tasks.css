@@ -981,6 +981,25 @@ button.tasks-caret,
    the words it belongs to and read as the row's headline. `--error` is the token
    `.tasks-row-missing` itself uses, so the glyph and the sentence it sits in
    front of light up in one colour. */
+/* The trash stands CLOSE to the sentence it is about (Akshil, 2026-09-07:
+   "a bit closer to the error message"): the row's gap is for separating facts,
+   and these two are one fact. Pulls the sentence back to 4px behind the glyph
+   on the List row; the Board foot's gap is 8px, so the same 4px there. */
+.tasks-act--delete + .tasks-row-missing {
+  margin-left: calc(4px - var(--tasks-row-gap));
+}
+.schedule-tv-card-foot .tasks-act--delete + .tasks-row-missing {
+  margin-left: -4px;
+}
+
+/* The Board card reveals it the way the List row does — on the card's hover or
+   focus — since the card is the surface a pointer rests on, not a row. */
+.schedule-tv-card:hover .tasks-act--delete,
+.schedule-tv-card:focus-visible .tasks-act--delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .tasks-act--delete:hover:not(:disabled),
 .tasks-act--delete:focus-visible:not(:disabled),
 .prefs-section .tasks-act--delete:hover:not(:disabled) {

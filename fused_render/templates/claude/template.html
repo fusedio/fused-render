@@ -1156,43 +1156,70 @@
      the kebab, nothing can open over it, and a confirm that anything could
      cover would be a confirm that could be answered blind. */
   .erasedlg { position: fixed; inset: 0; z-index: 100;
-              display: flex; align-items: center; justify-content: center; }
+              display: flex; align-items: center; justify-content: center; padding: 24px; }
   .erasedlg[hidden] { display: none; }
   .erasedlg-scrim { position: absolute; inset: 0; background: var(--scrim); }
+  /* THE SHELL'S MODAL, REDRAWN HERE (Akshil, 2026-09-07: "the modal UI inside
+     claude chat and the modal ui from tasks page is different"). Same chassis
+     as platform/ui/modal/Modal + styles/deploy.css + buttons-modal.css: a 600px
+     panel, a head row with the title and a ✕ over a rule, a 13px body with
+     12px between its paragraphs, a footer under a rule with 32px buttons —
+     Cancel in the secondary skin, the destructive one in .btn-danger's. The
+     numbers are copied, not approximated, so the two read as one dialog. */
   .erasedlg-box {
     position: relative; display: flex; flex-direction: column;
-    width: min(420px, calc(100vw - 48px));
-    background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    width: min(600px, 100%); max-height: 85vh;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
     box-shadow: 0 12px 40px var(--shadow); overflow: hidden;
   }
+  .erasedlg-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
   .erasedlg-title {
-    margin: 0; padding: 14px 16px 0; font-size: 14px; font-weight: 600;
-    color: var(--fg);
+    margin: 0; font-size: 15px; font-weight: 600; color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .erasedlg-x {
+    background: none; border: none; color: var(--dim); font: inherit;
+    font-size: 14px; cursor: pointer; padding: 4px 6px;
+  }
+  .erasedlg-x:hover { color: var(--fg); }
   .erasedlg-body {
-    padding: 8px 16px 4px; font-size: 12.5px; line-height: 1.5; color: var(--dim);
+    padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 12px;
+    font-size: 13px; line-height: 1.45; color: var(--fg); overflow-y: auto;
   }
-  .erasedlg-body p { margin: 6px 0; }
-  .erasedlg-body strong { color: var(--fg); }
-  .erasedlg-err { color: var(--error); }
+  .erasedlg-body p { margin: 0; }
+  .erasedlg-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                   color: var(--dim); word-break: break-all; }
+  .erasedlg-path[hidden] { display: none; }
+  .erasedlg-err {
+    color: var(--error); border: 1px solid var(--error); border-radius: 6px;
+    background: color-mix(in srgb, var(--error) 7%, transparent);
+    padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
+  }
   .erasedlg-err[hidden] { display: none; }
   .erasedlg-bar {
-    display: flex; align-items: center; gap: 8px; padding: 12px 16px 14px;
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+    gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border);
   }
-  .erasedlg-bar .spacer { flex: 1; }
-  /* The destructive button carries the colour as a BORDER at rest and fills on
-     hover — the same escalation the annotate bar's Stop uses, so this template
-     has one way of drawing "this ends something". */
+  .erasedlg-btn {
+    font: inherit; font-size: 13px; height: 32px; padding: 0 14px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: transparent; color: var(--fg); cursor: pointer; white-space: nowrap;
+  }
+  .erasedlg-btn:hover:not([disabled]) { border-color: var(--dim); }
+  .erasedlg-btn[disabled] { opacity: .5; cursor: default; }
+  .erasedlg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .erasedlg-danger {
-    border-color: var(--error);
-    color: var(--error);
+    border-color: var(--error); color: var(--error);
     background-color: color-mix(in srgb, var(--error) 10%, transparent);
   }
   .erasedlg-danger:hover:not([disabled]) {
-    background-color: color-mix(in srgb, var(--error) 20%, transparent);
+    border-color: var(--error);
+    background-color: color-mix(in srgb, var(--error) 18%, transparent);
   }
-  .erasedlg-danger[disabled] { color: var(--dim); border-color: var(--border);
-                               background-color: transparent; cursor: default; }
   /* A comment row in a receipt IS the door into the "what was sent" popup —
      no separate button, the row itself is clickable. */
   .annsum-note { cursor: pointer; border-radius: 4px; }
@@ -4361,18 +4388,23 @@
        aria-labelledby="erasedlg-title">
     <div class="erasedlg-scrim"></div>
     <div class="erasedlg-box">
-      <h3 class="erasedlg-title" id="erasedlg-title">Delete this task?</h3>
+      <div class="erasedlg-head">
+        <h3 class="erasedlg-title" id="erasedlg-title">Delete this task?</h3>
+        <button id="erasedlg-x" type="button" class="erasedlg-x" aria-label="Close" title="Close">✕</button>
+      </div>
       <div class="erasedlg-body">
         <p>This deletes the Claude session behind this task — its transcript,
-           history and any pending runs.
-           <strong>This is permanent and cannot be undone.</strong></p>
-        <p class="erasedlg-err" id="erasedlg-err" hidden></p>
+           history and any pending runs.</p>
+        <p><strong>This is permanent and cannot be undone.</strong></p>
+        <p class="erasedlg-path" id="erasedlg-path" hidden></p>
+        <p class="erasedlg-err" id="erasedlg-err" hidden role="alert"></p>
       </div>
       <div class="erasedlg-bar">
-        <span class="spacer"></span>
-        <button id="erasedlg-cancel" type="button" class="pill">Cancel</button>
-        <button id="erasedlg-go" type="button" class="pill erasedlg-danger">Delete forever</button>
+        <button id="erasedlg-cancel" type="button" class="erasedlg-btn">Cancel</button>
+        <button id="erasedlg-go" type="button" class="erasedlg-btn erasedlg-danger">Delete forever</button>
       </div>
+    </div>
+  </div>
     </div>
   </div>
 
@@ -13066,6 +13098,8 @@ const eraseTitle = document.getElementById("erasedlg-title");
 const eraseErr = document.getElementById("erasedlg-err");
 const eraseGo = document.getElementById("erasedlg-go");
 const eraseCancel = document.getElementById("erasedlg-cancel");
+const eraseX = document.getElementById("erasedlg-x");
+const erasePath = document.getElementById("erasedlg-path");
 /** The session the open dialog is ABOUT, captured at open time: `eraseKey`
  *  tracks the URL and the reader can walk away (Back, a recent chat) with the
  *  confirm still up — a POST must never be aimed at whatever the page moved on
@@ -13083,6 +13117,11 @@ function eraseOpen() {
   // confirm is a fact the reader cannot check anything against.
   const num = taskIds.get(eraseAsked) || "";
   eraseTitle.textContent = num ? "Delete " + num + "?" : "Delete this task?";
+  // The same line the Tasks page's dialog draws (shell/EraseTaskModal
+  // transcriptPath): the project slug is the server's encoding of the folder,
+  // so the middle is elided rather than guessed.
+  erasePath.textContent = "~/.claude/projects/\u2026/" + eraseAsked + ".jsonl";
+  erasePath.hidden = false;
   eraseErr.hidden = true;
   eraseErr.textContent = "";
   eraseGo.textContent = "Delete forever";
@@ -13110,6 +13149,7 @@ deleteOpt.addEventListener("click", () => {
   eraseOpen();
 });
 eraseCancel.onclick = eraseClose;
+eraseX.onclick = eraseClose;
 eraseDlg.querySelector(".erasedlg-scrim").onclick = eraseClose;
 // Capture, and it stops the press, for the same reason the "what was sent"
 // popup's does: this template's other Escape handlers (the kebab, the annotate

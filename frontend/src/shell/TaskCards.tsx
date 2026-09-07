@@ -543,9 +543,9 @@ function TaskCard({
             `title` — the app's panel shows on pointerover, a title after the
             browser's second, which read as no caption at all.
 
-            THE STRIP IS UNCONDITIONAL NOW (2026-09-07): the trash door is on
-            every card, whatever its filing and whatever became of its folder,
-            so there is no card left whose head has no doors to hold. */}
+            Drawn only when it has a door to hold (a card with nothing to file,
+            a folder that opens, and a folder that is not gone has none). */}
+        {(filing || explorer || gone) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
           {filing && (
             <button
@@ -559,11 +559,14 @@ function TaskCard({
               {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
             </button>
           )}
-          {/* Delete for good, BEFORE the folder door and after Archive: the
-              two reversible doors keep the places a reader already learned,
-              and the irreversible one is not the door nearest the card's
-              edge — where a pointer travelling to the next card passes. */}
-          <button
+          {/* Delete for good — ONLY on a card whose folder is gone (Akshil,
+              2026-09-07: "should only show up if it has a folder missing
+              error"): a task that can still be opened is archived, not
+              deleted, and a trash on every card read as an invitation. It
+              sits BEFORE the folder door, which on such a card is the disabled
+              one, so the way out stands next to the door that is shut. */}
+          {gone && (
+<button
             type="button"
             className="task-card-door task-card-door--danger"
             disabled={blocked || acting}
@@ -577,6 +580,7 @@ function TaskCard({
           >
             {ICON_TRASH}
           </button>
+          )}
           {explorer && (
             <a
               // A real link with a real href, so ⌘-click and middle-click open
@@ -607,6 +611,7 @@ function TaskCard({
             </button>
           )}
         </span>
+        )}
       </header>
       <div className="task-card-body">
         {src ? (

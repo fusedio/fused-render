@@ -4044,29 +4044,40 @@ describe("the delete affordance", () => {
     expect(ROW.slice(at, ROW.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
   });
 
-  it("is a door on EVERY card, before the folder and greyed while the run is live", () => {
+  it("is a door only on a card whose folder is gone, before the folder door", () => {
     const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
     const head = CARDS_SRC.slice(CARDS_SRC.indexOf("<header"), CARDS_SRC.indexOf("</header>"));
-    // Unconditional: no `{... && (` in front of it, unlike Archive and the
-    // folder — every card can be deleted, which is what the chat's kebab says
-    // too (design.md §2's open question, answered "all cards").
-    expect(head).toContain('className="task-card-door task-card-door--danger"');
-    expect(head).toMatch(/\{\/\* Delete for good[\s\S]*?\*\/\}\s*<button/);
+    // GATED on `gone`, like the List row's trash is gated on folderMissing
+    // (Akshil, 2026-09-07): a task that still opens is archived, not deleted.
+    const at = head.indexOf('className="task-card-door task-card-door--danger"');
+    expect(at).toBeGreaterThan(0);
+    expect(head.slice(head.indexOf("{/* Delete for good"), at)).toContain("{gone && (");
+    // The strip is drawn only when it has a door to hold.
+    expect(head).toContain("{(filing || explorer || gone) && (");
     // Archive, then trash, then the folder: the reversible doors keep the
     // places a reader already learned.
     expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_TRASH"));
     expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_FOLDER"));
-    // The strip itself no longer depends on what it holds.
-    expect(CARDS_SRC).not.toContain("{(filing || explorer || gone) && (");
-    // The guard is the shared one, and a blocked door says why instead of
-    // opening a dialog whose refusal a reader would meet for the first time
-    // after confirming.
+    // The guard is the shared one, and a blocked door says why.
     expect(CARDS_SRC).toContain("const blocked = eraseBlocked(task);");
     expect(head).toContain("disabled={blocked || acting}");
     expect(head).toContain("data-hint={blocked ? ERASE_BLOCKED_HINT :");
     // A press on a door never also opens the popup.
-    const at = head.indexOf('className="task-card-door task-card-door--danger"');
     expect(head.slice(at, head.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
+  });
+
+  it("is a prefix of the Board card's Folder missing too, and opens the same dialog", () => {
+    const VIEWS_SRC = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
+    const start = VIEWS_SRC.indexOf('<span className="schedule-tv-card-foot">');
+    const foot = VIEWS_SRC.slice(start, VIEWS_SRC.indexOf("</button>", start));
+    // Inside the card BUTTON, so a span with the button role, not a nested
+    // <button> (invalid HTML); its press stops before the card's own.
+    const at = foot.indexOf('className="tasks-act tasks-act--delete"');
+    expect(at).toBeGreaterThan(0);
+    expect(foot.slice(0, at)).toContain("{folderMissing && (");
+    expect(foot.slice(at - 80, at)).toContain('role="button"');
+    expect(foot.indexOf("{ICON_TRASH}")).toBeLessThan(foot.indexOf('className="tasks-row-missing"'));
+    expect(foot.slice(at, foot.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
   });
 
   it("goes through ONE dialog, which names what it destroys and cannot be undone", () => {

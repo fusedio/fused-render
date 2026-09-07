@@ -3195,6 +3195,7 @@ export function TaskBoard({
                     }}
                     onFile={(intent) => refile(task, intent)}
                     onRun={runNow}
+                    onErased={onReload}
                     onOpen={(intent) => openCard(task, intent)}
                   />
                 ))}
@@ -3239,9 +3240,13 @@ function TaskCard({
   onFile,
   onRun,
   onOpen,
+  onErased,
 }: {
   task: Task;
   home: string;
+  /** The card's task was erased (the foot's trash → EraseTaskModal): the
+   *  Board re-reads, since the card that was pressed is the one that left. */
+  onErased: () => void;
   /** Whether the folder chip is worth drawing — the BOARD's answer, for the same
    * reason the List row takes it as a prop (spansProjects). */
   showProject: boolean;
@@ -3330,6 +3335,8 @@ function TaskCard({
   const failedOffLane = isFailedTask(task) && lane !== "blocked";
   const waiting = needsAttention(task);
   const [busy, setBusy] = useState(false);
+  // The Board's own copy of the List row's erase confirm; see the foot.
+  const [erasing, setErasing] = useState(false);
   const refile = async (intent: FilingIntent) => {
     setBusy(true);
     try {
@@ -3492,7 +3499,25 @@ function TaskCard({
             goes rather than leaving an empty row of padding. */}
         {(showProject || soon || folderMissing) && (
           <span className="schedule-tv-card-foot">
-            {/* The List row's own mark, same words, same colour (see the row). */}
+            {/* The List row's own mark, same words, same colour (see the row) —
+                and the same trash in front of it. A SPAN with the button role,
+                because this foot is inside the card's <button> and a button
+                inside a button is not HTML; the press stops before the card's,
+                so it never also opens the thread. */}
+            {folderMissing && (
+              <span
+                role="button"
+                className="tasks-act tasks-act--delete"
+                aria-label={`Delete ${task.task_id} forever`}
+                data-hint="Delete task forever"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setErasing(true);
+                }}
+              >
+                {ICON_TRASH}
+              </span>
+            )}
             {folderMissing && (
               <span
                 className="tasks-row-missing"
@@ -3515,6 +3540,17 @@ function TaskCard({
           </span>
         )}
       </button>
+      {erasing && (
+        <EraseTaskModal
+          task={task}
+          onClose={() => setErasing(false)}
+          onDone={() => {
+            setErasing(false);
+            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            onErased();
+          }}
+        />
+      )}
       {/* Quiet until the card is pointed at or focused, exactly like the List's
           row actions: a lane is a column of cards, and a permanent glyph on
           every one of them would compete with the titles the lane exists to
