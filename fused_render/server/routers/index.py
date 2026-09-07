@@ -67,25 +67,40 @@ router = APIRouter()
 # whole-machine exposure the per-connection cap exists to remove.
 #
 # TWO LANES (D701 correction / D706), not one shared semaphore: `rank`,
-# `search`, and `stats` are per-keystroke and their statements are ours —
-# bounded, cheap, and known-shaped. `query` and `ask` run a CALLER-AUTHORED
-# statement (a hand-typed SQL-panel query, or one a model compiled) bounded
-# only by `guarded_query.TIMEOUT_S` (10s). One shared semaphore meant two
-# SQL-panel queries could hold both of its slots for up to 10s each, and every
-# keystroke in the home search box — an unrelated workload — queued behind
-# them: the search box went dead for seconds because of an unrelated panel.
-# Splitting the lanes means the authored-SQL path can never again block the
-# per-keystroke one, whatever it is doing.
+# `search`, and plain `stats` are per-keystroke and their statements are
+# ours — bounded, cheap, and known-shaped. `query` and `ask` run a
+# CALLER-AUTHORED statement (a hand-typed SQL-panel query, or one a model
+# compiled) bounded only by `guarded_query.TIMEOUT_S` (10s). One shared
+# semaphore meant two SQL-panel queries could hold both of its slots for up
+# to 10s each, and every keystroke in the home search box — an unrelated
+# workload — queued behind them: the search box went dead for seconds
+# because of an unrelated panel. Splitting the lanes means the authored-SQL
+# path can never again block the per-keystroke one, whatever it is doing.
+#
+# `stats?breakdown=true` (review finding) shares the authored-SQL lane too,
+# despite running OUR sql rather than a caller's: the "bounded, cheap, and
+# known-shaped" premise the interactive lane rests on is true of plain
+# `stats` but not of a breakdown, an unbounded `GROUP BY ext` over every
+# partition under the root that can take seconds on a large index. Two
+# breakdown requests used to fill the entire width-2 interactive lane on
+# their own, and every keystroke in the home search box queued behind
+# them — the exact head-of-line blocking the two-lane split exists to
+# eliminate, relocated inside the lane meant to be safe from it. It costs the
+# authored-SQL lane nothing extra to also hold this: a breakdown request is
+# rare (an explorer settings panel, not typed per keystroke) and no slower
+# than the caller-authored statements that lane already tolerates serializing
+# behind each other.
 #
 # Widths: the interactive lane keeps its previous width of 2 — tight on
 # purpose, so a third keystroke waits milliseconds behind two running ones
 # rather than the app inventing a fourth simultaneous full-width scan. The
 # authored-SQL lane is narrower still, 1: it is rare (one SQL panel, one ask
-# box, almost never both at once), each statement can run for up to 10
-# `search_threads()`-capped seconds, and a caller who fires a second query
-# while the first is still running is already watching that first one's tab —
-# serializing them costs that caller nothing a second slot would have saved,
-# and keeps two long full-table scans from ever running side by side.
+# box, almost never both at once, and now one breakdown request), each
+# statement can run for up to 10 `search_threads()`-capped seconds, and a
+# caller who fires a second one while the first is still running is already
+# watching that first one's tab — serializing them costs that caller nothing
+# a second slot would have saved, and keeps two long full-table scans from
+# ever running side by side.
 #
 # Each lane is a LAZY PER-EVENT-LOOP semaphore rather than one instance built
 # at import time: `asyncio.Semaphore` binds to whichever loop first CONTENDS
@@ -941,7 +956,13 @@ async def api_index_stats(request: Request, root: str = Query(default=""),
         # watcher is already running while this request waits its turn —
         # otherwise a client that gave up while queued would sit uncancellable
         # until it reached the front, wasting its slot on nobody.
-        async with _interactive_read_concurrency():
+        #
+        # `breakdown=true` shares the authored-SQL lane, not the interactive
+        # one: see the block comment above `_interactive_read_concurrency` —
+        # a breakdown is an unbounded GROUP BY, not the bounded/cheap/
+        # known-shaped statement the interactive lane is sized for.
+        lane = _query_read_concurrency() if breakdown else _interactive_read_concurrency()
+        async with lane:
             if token.cancelled:
                 return Response(status_code=499)
             try:

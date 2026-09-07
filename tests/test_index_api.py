@@ -344,6 +344,68 @@ def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkey
     assert query_resp.status_code == 200
 
 
+def test_a_breakdown_request_does_not_consume_an_interactive_slot(home, tmp_path, monkeypatch):
+    """Code review finding: `stats`/`search`/`rank` share the interactive
+    lane on the premise that every member is "bounded, cheap, and
+    known-shaped" -- true of a plain `/api/index/stats`, but not of
+    `?breakdown=true`, an unbounded `GROUP BY ext` over every partition under
+    the root that can take seconds on a large index. Two PLAIN stats calls
+    filling the whole width-2 interactive lane must not delay a breakdown
+    request -- if breakdown still shared that lane, it would queue behind
+    them for as long as they run, the exact head-of-line blocking the
+    two-lane split (D706) was introduced to eliminate, reintroduced inside
+    the lane meant to be safe from it."""
+    import threading
+
+    import httpx
+
+    lock = threading.Lock()
+    plain_concurrent = 0
+    plain_started = threading.Event()
+    plain_release = threading.Event()
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        nonlocal plain_concurrent
+        if not breakdown:
+            with lock:
+                plain_concurrent += 1
+                if plain_concurrent >= 2:
+                    plain_started.set()
+            plain_release.wait(timeout=5)
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            plain_tasks = [
+                asyncio.create_task(client.get("/api/index/stats"))
+                for _ in range(2)
+            ]
+            for _ in range(50):
+                if plain_started.is_set():
+                    break
+                await asyncio.sleep(0.02)
+            assert plain_started.is_set()  # both interactive-lane slots taken
+            t0 = time.monotonic()
+            breakdown_resp = await client.get(
+                "/api/index/stats", params={"breakdown": "true"})
+            elapsed = time.monotonic() - t0
+            plain_release.set()
+            plain_resps = await asyncio.gather(*plain_tasks)
+            return breakdown_resp, elapsed, plain_resps
+
+    breakdown_resp, elapsed, plain_resps = asyncio.run(run())
+    assert breakdown_resp.status_code == 200
+    # Would be seconds if breakdown queued behind the two plain calls filling
+    # the interactive lane.
+    assert elapsed < 2.0, elapsed
+    assert all(r.status_code == 200 for r in plain_resps)
+
+
 def test_ask_shares_the_query_lane_with_query(home, tmp_path, monkeypatch):
     """Review finding: `/api/index/ask` ran the same guarded DuckDB call
     `/api/index/query` does, over model-generated SQL, on a worker thread, and
