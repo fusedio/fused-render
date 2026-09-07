@@ -865,5 +865,11 @@ def create_app(start_dir: str) -> FastAPI:
         # paid at idle rather than by the user's first keystroke
         # (index/specs/server-api.md §4).
         index_routes.startup_warm()
+        # ...and mirror every scan run into a sys:index:<run_id> Job so it
+        # shows up in the Activity card the same way a download does. Same
+        # idempotent start-once pattern as shell_mounts.start_health_monitor
+        # above; called here rather than at import time so a test that never
+        # boots the app never gets a background thread.
+        index_routes.start_index_job_bridge()
 
     return app

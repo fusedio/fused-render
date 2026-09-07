@@ -29,6 +29,7 @@ import weakref
 from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.responses import JSONResponse, Response
 
+from fused_render import jobs
 from fused_render.index import freshness, runner
 from fused_render.index.cancel import CancelToken, Cancelled, cancellable
 from fused_render.index.freshness import enclosing_root
@@ -527,6 +528,167 @@ def startup_warm() -> None:
     is what guarantees a warm still waiting cannot hold the process open."""
     threading.Thread(target=run_startup_warm, name="index-warm",
                      daemon=True).start()
+
+
+# --------------------------------------------------------- activity job bridge
+
+# Re-indexing is a server-owned Job (jobs.SERVER_ID_PREFIX, "sys:"), the same
+# idiom `envinstall.py` and `ai/supervisor.py` already use, so it shows up in
+# the Activity card the same way a download or a background AI task does —
+# without teaching the card to speak /api/index/* or adding a third polling
+# loop to the frontend. One job per RUN (keyed by run_id, not by root): the
+# existing status poll can only ever answer for the most recent run, and this
+# is what makes two concurrent per-root scans each get their own row instead
+# of one clobbering the other.
+INDEX_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "index:"
+
+# Same order of magnitude as the Indexing panel's own poll (index-status.ts
+# INDEX_POLL_MS, 1500ms): an Activity row for a scan updates no more (and no
+# less) often than the panel that has always shown this progress, so nothing
+# about how "live" a re-index looks changes by adding a second surface for it.
+INDEX_JOB_TICK_S = 1.5
+
+
+def _index_job_id(run_id: str) -> str:
+    return INDEX_JOB_PREFIX + run_id
+
+
+def _display_root(root: str) -> str:
+    """`root` the way a user would type it, not the canonical absolute form
+    `runner.canonical_root` stores it as. No shared "~/..." helper exists
+    anywhere in this repo for this (checked `shell/pathops.py`,
+    `envinstall.py`'s `projectenv.display_name`, and the frontend's
+    `platform/lib` — none of them shorten a path against home), so this is
+    the smallest version that does it, scoped to this one call site."""
+    home = os.path.expanduser("~")
+    if root == home:
+        return "~"
+    prefix = home.rstrip("/\\") + "/"
+    if root.startswith(prefix):
+        return "~/" + root[len(prefix):]
+    return root
+
+
+# run_ids whose terminal state has already been written to their job once.
+# `list_runs` keeps reporting a finished run for as long as it stays one of
+# the KEEP_RUNS most recent — without this, every tick after a scan finishes
+# would re-upsert an already-terminal job forever. Never cleared: a run_id is
+# minted once per `runner.start` (a timestamp plus a random suffix) and is
+# never reused, and a process restart — which empties this set — is also what
+# empties the job registry itself (jobs.py carries no state across restarts).
+_mirrored_terminal: set = set()
+
+
+def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> None:
+    run_id = run.get("run_id")
+    root = run.get("root")
+    if not run_id or not root:
+        return
+    job_id = _index_job_id(str(run_id))
+    if job_id in _mirrored_terminal:
+        return
+    running = bool(run.get("running"))
+    fields = {
+        "title": "Indexing files",
+        "detail": _display_root(str(root)),
+        "kind": "task",
+        # No known total for a scan — `total: None` renders as the correct
+        # indeterminate sweep (jobs.ts `jobFraction`/`StatusChip`), not a
+        # fake number invented to fill a bar.
+        "done": float(run.get("files") or 0),
+        "total": None,
+        "unit": "files",
+        # The run's phase, verbatim — this covers compaction too, which has
+        # no structured flag of its own and appears only as this same text
+        # ("writing index" / "writing signatures", index/store.py). The
+        # bridge does not special-case it into a separate concept.
+        "message": str(run.get("phase") or ""),
+        "cancellable": True,
+    }
+    if running:
+        fields["state"] = jobs.RUNNING
+    elif run.get("cancelled"):
+        fields["state"] = "cancelled"
+    elif run.get("error"):
+        fields["state"] = "error"
+        fields["message"] = str(run.get("error"))
+    else:
+        fields["state"] = "done"
+        summary = run.get("summary")
+        files_done = run.get("files")
+        if isinstance(summary, dict) and summary.get("files") is not None:
+            files_done = summary.get("files")
+        fields["message"] = f"{int(files_done or 0)} files indexed"
+    try:
+        result = jobs.upsert({"id": job_id, **fields}, server=True)
+    except jobs.JobError:
+        logger.exception("could not report index job %s", job_id)
+        return
+    if not running:
+        _mirrored_terminal.add(job_id)
+        return
+    # A cancel is a REQUEST the reporter honours on its next tick (jobs.py
+    # `request_cancel`'s own docstring) — this IS that next tick, and
+    # `runner.cancel` is the exact function `/api/index/cancel` calls, so
+    # driving it from here is the same action through the same path, just
+    # without an HTTP hop the server does not need to make to itself.
+    if result.get("cancel_requested"):
+        try:
+            runner.cancel(cfg, str(run_id))
+        except ValueError:
+            pass
+
+
+def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> None:
+    """One tick of the Activity bridge: every run `list_runs` currently
+    knows about gets (or updates) a `sys:index:<run_id>` job.
+
+    Deliberately reads through `runner.list_runs` — the same fold
+    `/api/index/status` and the Indexing panel already use — rather than
+    opening `events.jsonl` a second way, so this shares that function's
+    liveness check and its 1s fold cache instead of adding a competing read
+    of the same run directories.
+    """
+    cfg = cfg or load_config()
+    try:
+        runs = runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]
+    except Exception:  # noqa: BLE001 - a bridge tick must never take the server down
+        logger.exception("could not list index runs for job mirroring")
+        return
+    for run in runs:
+        try:
+            _mirror_one_run_job(cfg, run)
+        except Exception:  # noqa: BLE001 - one bad run must not stop the rest
+            logger.exception("could not mirror index run %s into jobs",
+                             run.get("run_id"))
+
+
+def _index_job_loop() -> None:
+    import time
+
+    while True:
+        try:
+            mirror_index_jobs_once()
+        except Exception:  # noqa: BLE001 - the loop itself must never die
+            logger.exception("index job bridge tick failed")
+        time.sleep(INDEX_JOB_TICK_S)
+
+
+_index_job_thread: "threading.Thread | None" = None
+_index_job_started = threading.Lock()
+
+
+def start_index_job_bridge() -> None:
+    """Start the background tick loop. Idempotent, same pattern as
+    `shell.mounts.health.start_health_monitor` — safe to call once at server
+    startup; a redundant call while the thread is alive is a no-op."""
+    global _index_job_thread
+    with _index_job_started:
+        if _index_job_thread is not None and _index_job_thread.is_alive():
+            return
+        _index_job_thread = threading.Thread(
+            target=_index_job_loop, daemon=True, name="index-job-bridge")
+        _index_job_thread.start()
 
 
 # ------------------------------------------------------ open-folder freshness
