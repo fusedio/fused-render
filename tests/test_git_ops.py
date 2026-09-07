@@ -1024,6 +1024,42 @@ def test_app_restore_commits_the_app_folder_back_to_an_older_version(ops, app_re
     assert old_sha in git(root, "log", "--format=%H").strip().split("\n")
 
 
+def _tree(root, sha, rel):
+    """`git ls-tree -r <sha> -- <rel>`, as `{path: blob_sha}` — the whole
+    tree's identity, not a couple of files picked by hand."""
+    out = git(root, "ls-tree", "-r", sha, "--", rel)
+    entries = {}
+    for line in out.strip().split("\n"):
+        if not line:
+            continue
+        meta, path = line.split("\t", 1)
+        entries[path] = meta.split()[2]  # mode, type, blob-sha, path
+    return entries
+
+
+def test_app_restore_makes_the_app_folder_BYTE_IDENTICAL_to_sha(ops, app_repo):
+    """FINDING 1: `git checkout <sha> -- <scope>` only overwrites paths
+    PRESENT at `sha` — a file ADDED after `sha` survives the restore, so the
+    resulting tree is neither version. `_app_repo`'s v2 commit adds
+    `app/helper.py`; restoring to v1 must remove it, not merely rewrite
+    `main.py` back to v1's content."""
+    root, old_sha = app_repo
+    write(root, "app/helper.py", "I did not exist at old_sha\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "v3 adds helper.py",
+        when="2026-10-03T10:00:00+00:00")
+    assert os.path.exists(os.path.join(root, "app", "helper.py"))
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+    assert got["ok"] is True, got
+
+    assert not os.path.exists(os.path.join(root, "app", "helper.py")), (
+        "helper.py was added after old_sha and must be gone after the restore")
+    # THE non-skippable assertion: the whole app-folder tree matches sha's own,
+    # not just the couple of files a narrower check might happen to look at.
+    assert _tree(root, "HEAD", "app") == _tree(root, old_sha, "app")
+
+
 def test_app_restore_leaves_files_outside_the_app_folder_byte_identical(
         ops, app_repo):
     # THE non-skippable assertion: a pathspec bug here would make this a
@@ -1072,6 +1108,47 @@ def test_app_restore_refuses_on_a_mount_backed_repo(ops, app_repo, monkeypatch):
     got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
 
     assert got["ok"] is False and got["reason"] == "mount", got
+
+
+def _install_rejecting_hook(root, name):
+    """A `pre-commit` (or `commit-msg`) hook that always exits 1 — the
+    cleanest deterministic way to make `git commit` fail without touching
+    anything about the commit's own content."""
+    hooks = os.path.join(root, ".git", "hooks")
+    os.makedirs(hooks, exist_ok=True)
+    path = os.path.join(hooks, name)
+    with open(path, "w") as fh:
+        fh.write("#!/bin/sh\necho 'refused by hook' >&2\nexit 1\n")
+    os.chmod(path, 0o755)
+
+
+def test_app_restore_undoes_the_checkout_when_the_commit_itself_fails(
+        ops, app_repo):
+    """FINDING 2: `checkout <sha> -- <scope>` updates the index AND the
+    working tree; if the commit that is meant to follow it then fails (a
+    rejecting `pre-commit` hook here — a missing `user.email` or a gpg
+    failure are the same shape in practice), the repo must NOT be left
+    straddling the two versions. `_require_clean` would otherwise refuse
+    every later op on this repo forever, on a tree the user never touched."""
+    root, old_sha = app_repo
+    head_sha = git(root, "rev-parse", "HEAD").strip()
+    before_status = git(root, "status", "--porcelain").strip()
+    with open(_app_file(root), encoding="utf-8") as fh:
+        before_main = fh.read()
+    _install_rejecting_hook(root, "pre-commit")
+
+    got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
+
+    assert got["ok"] is False, got
+    assert got["reason"] != "no-op-restore", got
+    # No commit happened — HEAD did not move.
+    assert git(root, "rev-parse", "HEAD").strip() == head_sha
+    # THE non-skippable assertion: the working tree and index are back to
+    # exactly what they were before this op touched anything, not merely
+    # "some content restored somewhere".
+    assert git(root, "status", "--porcelain").strip() == before_status
+    with open(_app_file(root), encoding="utf-8") as fh:
+        assert fh.read() == before_main == "VERSION = 2\n"
 
 
 # ---------------------------------------------------------------------- revert
@@ -1140,6 +1217,43 @@ def test_a_conflicting_revert_aborts_cleanly_and_leaves_no_in_progress_revert(
     assert got["ok"] is False, got
     assert got["reason"] != "bad-op", got
     # THE non-skippable assertion: git must never be left mid-operation.
+    assert not os.path.exists(os.path.join(root, ".git", "REVERT_HEAD"))
+    assert git(root, "status", "--porcelain").strip() == ""
+
+
+def test_a_timed_out_revert_still_aborts_cleanly(ops, revert_repo, monkeypatch):
+    """FINDING 3: `_run` raises `_Refused` itself on `TimeoutExpired` (and on
+    `OSError`), so control never reached the `revert --abort` that only ran
+    after a NON-ZERO RETURN CODE — the abort was unreachable on exactly the
+    path the module's own docstring calls out (a slow hook, or a large
+    revert). A conflicting revert that genuinely times out leaves
+    `.git/REVERT_HEAD` and conflict markers behind, same as an unaborted
+    conflict.
+
+    Driven by letting the REAL `git revert` run to completion (so the
+    conflict and `.git/REVERT_HEAD` land on disk exactly as they would for a
+    slow one) while `subprocess.run` is patched to report it to `_run` as a
+    timeout — the real, deterministic shape of "the process finished after
+    Python gave up waiting on it", without depending on wall-clock racing
+    against a real timeout window.
+    """
+    root, target_sha = revert_repo
+    real_run = subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if "revert" in argv and "--no-edit" in argv:
+            real_run(argv, *args, **kwargs)  # produces the real conflict + REVERT_HEAD
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 0))
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    got = ops.main(root, op="revert", sha=target_sha)
+
+    assert got["ok"] is False, got
+    assert got["reason"] == "timeout", got
+    # THE non-skippable assertion: a timeout must abort exactly like a
+    # conflict does — git must never be left mid-operation.
     assert not os.path.exists(os.path.join(root, ".git", "REVERT_HEAD"))
     assert git(root, "status", "--porcelain").strip() == ""
 
