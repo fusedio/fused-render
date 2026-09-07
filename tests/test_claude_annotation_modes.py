@@ -903,8 +903,8 @@ def test_the_bar_carries_the_picker_and_done(html):
 def test_the_bar_speaks_one_plain_line(html):
     """The lead is the mode; the sentence is one plain line per mode (Akshil,
     2026-09-05: "one liner but easy to understand")."""
-    assert '"Voice annotation", "Click spots on the page as you talk — each click becomes a note."' in html
-    assert '"Comment", "Click a spot on the page (an element, or a point), then type what to change."' in html
+    assert '"Voice annotation", "Click on a spot and say what to change."' in html
+    assert '"Comment", "Click on a spot and type what to change."' in html
     # the tag is a LABEL (no border, no wash — it read as a button), red while
     # recording; the sentence carries full ink at the composer's 13px
     assert ".annbar.rec .tag { color: var(--error); }" in html
@@ -1047,8 +1047,16 @@ def test_the_bar_tooltips_are_instant_and_never_os_titles(html):
     assert picker.count("data-tip=") == 2 and "title=" not in picker
     paint = _block(html, "function annBarPaint()", "\n}\n")
     assert "discard.dataset.tip = annRecOn" in paint and "discard.title" not in paint
-    # the tip hangs below the bar, so the bar no longer clips its overflow
+    # the tip hangs below the bar, so the bar no longer clips its overflow;
+    # and it is the shell's [data-tip] panel — ink on surface with a hairline —
+    # in both sheets, so light and dark read alike (--shadow rides the token copy)
     assert ".annbar .tip {" in html
+    tip = _block(html, ".annbar .tip {", "\n  }\n")
+    for prop in ("color: var(--fg);", "background: var(--surface);", "border: 1px solid var(--border);",
+                 "box-shadow: 0 2px 8px var(--shadow);"):
+        assert prop in tip
+    assert "background: var(--surface, #26282f);" in html
+    assert '"--on-accent", "--error", "--shadow"];' in html
     assert 'pointer-events: auto; overflow: hidden;"' not in html
 
 
@@ -1078,8 +1086,13 @@ def test_a_mode_locks_the_reader_on_this_chat(html):
     block = _block(html, "function applyComposerBlockState()", "\n}\n")
     assert "const locked = !blocked && annNavLocked();" in block
     assert "schedBtn.disabled = blocked || locked;" in block
-    for sel in ("#back:disabled {", "body.annlock #recentlist .chat-row {", "body.annlock .schedbtn {"):
+    for sel in ("#back:disabled {", "body.annlock #recentlist .chat-row,",
+                "body.annlock #artifactslist .art-row,", "body.annlock #snapslist .snap-row {",
+                "body.annlock .schedbtn {"):
         assert sel in html
+    # artifacts open in a tab and snapshots expand — both guarded too
+    assert "const open = () => annNavLocked() ? null : window.open(" in html
+    assert "if (annNavLocked()) return;   // a mode holds the reader on this chat" in html
 
 
 def test_annmode_names_which_mode_so_a_reload_keeps_the_walkthrough(html):
@@ -1115,3 +1128,8 @@ def test_annmode_names_which_mode_so_a_reload_keeps_the_walkthrough(html):
     assert 'annSetMode(fused.params.get("annmode") === "1")' not in html
     assert begin.index("annRecOn = true;") < begin.index("annModeSync();")
     assert "if (resume) { annSetMode(false); return; }" in begin
+    # while the mic re-opens the ANNOTATE seat reads active, not Comment
+    lock = _block(html, "function annNavLock()", "\n}\n")
+    assert 'annCta.classList.toggle("resuming", annRecWant && !annRecOn);' in lock
+    assert "#anncta.resuming #annrec { color: var(--accent); border-color: var(--accent); }" in html
+    assert "#anncta.resuming #annbtn.on { color: var(--dim); border-color: var(--border); }" in html
