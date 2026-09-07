@@ -317,8 +317,9 @@ def test_the_other_two_seats_are_inert_while_a_mode_is_on(html):
     assert ("() => (annRecOn ? null : annOn ? annDone() : annSetMode(true)));") in html
     assert ("() => (annRecOn ? annRecEnd() : annOn ? null : annRecBegin()));") in html
     assert ("#anncta:has(#annbtn.on) #viewshot,\n"
-            "  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annrec,\n"
-            "  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }") in html
+            "  #anncta:not(.busy):not(.resuming):has(#annbtn.on):not(:has(#annrec.on)) #annrec,\n"
+            "  #anncta:has(#annrec.on) #annbtn,\n"
+            "  #anncta.resuming #annbtn { opacity: .55; cursor: default; pointer-events: none; }") in html
     shot = _block(html, "async function shotAttachPane()", "\n}\n")
     assert "if (shotBusy || annOn || !annCapable()) return;" in shot
     # Bugbot, PR #1022: the mic refuses the settle too, the resting Comment
