@@ -396,43 +396,53 @@ export function FilesSearch({
   // AbortController) — a query that merely LOOKS like a path is typed one
   // character at a time same as any other.
   const address = pathShortcut(q, home);
+  // One discriminated union instead of a `{status}` object plus a separate
+  // `statPending` boolean (code review, D706/D709): the pair used to be able
+  // to drift out of lockstep, and both review bugs those D-entries fixed sat
+  // exactly on that seam — a deadline that armed from the keystroke instead
+  // of from issuance (D706), and one that never re-armed once the stat
+  // resolved (D709). A single value makes "debounce still pending" ("idle")
+  // and "request actually in flight" ("checking") two states of the SAME
+  // variable, so nothing downstream can read one flag while the other lags.
+  //
+  // "unknown" (the old status the object carried on its own) is exactly
+  // "idle" or "checking" — both mean "no resolution yet, don't trust `addr`
+  // for `showOpenRow`/`suppressRank`'s `!== "missing"`/`!== "exists"` checks
+  // beyond that". Nothing needs to keep telling those two apart on those
+  // paths, and the two call sites that used to check `addr.status ===
+  // "unknown"` (submit's paste-and-go wait, and the commit-effect below) now
+  // check `addr.status === "idle" || addr.status === "checking"`.
   const [addr, setAddr] = useState<
-    | { status: "unknown" }
+    | { status: "idle" }
+    | { status: "checking" }
     | { status: "exists"; path: string; is_dir: boolean }
     | { status: "missing" }
-  >({ status: "unknown" });
-  // Whether the address STAT ITSELF is in flight — set true only inside
-  // `run()`, i.e. once the debounce below has actually elapsed and the
-  // request went out, and reset to false at the top of every effect run (a
-  // keystroke that changes `address` again abandons whatever was in flight,
-  // same as `addrCtl.current?.abort()` right above it). Deliberately NOT the
-  // same signal as `addr.status !== "unknown"` (which flips the instant the
-  // keystroke lands, review finding / D706): the staleness deadline below
-  // needs to know when the REQUEST started, not when the query started
-  // looking like a path.
-  const [statPending, setStatPending] = useState(false);
+  >({ status: "idle" });
   const addrCtl = useRef<AbortController | null>(null);
   useEffect(() => {
+    // Disarms synchronously on every `address` change, matching the old
+    // dual `setAddr(unknown)` + `setStatPending(false)` reset — a keystroke
+    // that changes `address` again abandons whatever was in flight, same as
+    // `addrCtl.current?.abort()` right above it.
     addrCtl.current?.abort();
-    setStatPending(false);
-    if (address === null) {
-      setAddr({ status: "unknown" });
-      return;
-    }
-    setAddr({ status: "unknown" });
+    setAddr({ status: "idle" });
+    if (address === null) return;
     const run = () => {
       addrCtl.current?.abort();
       const ctl = new AbortController();
       addrCtl.current = ctl;
-      setStatPending(true);
+      // Set only once the debounce below has actually elapsed and the
+      // request went out — deliberately NOT synchronous with the keystroke
+      // that made `address` non-null (review finding / D706): the staleness
+      // deadline below needs to know when the REQUEST started, not when the
+      // query started looking like a path.
+      setAddr({ status: "checking" });
       statPath(address, ctl.signal).then(
         (st) => {
-          setStatPending(false);
           if (ctl.signal.aborted) return;
           setAddr({ status: "exists", path: st.path, is_dir: st.is_dir });
         },
         (err: Error) => {
-          setStatPending(false);
           if (ctl.signal.aborted || err.name === "AbortError") return;
           // Not found, or not statable (permissions, a dead mount): either
           // way it is not a navigable address, so it falls back to a search
@@ -449,8 +459,8 @@ export function FilesSearch({
   }, [address]);
   useEffect(() => () => addrCtl.current?.abort(), []);
 
-  // Enter pressed WHILE the stat above is still in flight (addr.status ===
-  // "unknown") used to be a silent no-op: `suppressRank` holds the rank
+  // Enter pressed WHILE the stat above is still in flight ("idle" or
+  // "checking") used to be a silent no-op: `suppressRank` holds the rank
   // request back, `showOpenRow` is false (nothing has resolved yet), and the
   // AI row is suppressed too (`address !== null`) — so `submitRow` has
   // nothing to commit. That drops exactly the paste-and-go gesture the
@@ -468,7 +478,8 @@ export function FilesSearch({
   // committing anyway.
   const awaitingCommit = useRef<string | null>(null);
   useEffect(() => {
-    if (awaitingCommit.current === null || addr.status === "unknown") return;
+    if (awaitingCommit.current === null
+        || addr.status === "idle" || addr.status === "checking") return;
     const target = awaitingCommit.current;
     awaitingCommit.current = null;
     if (target !== address) return; // superseded by a newer keystroke
@@ -662,47 +673,53 @@ export function FilesSearch({
   //
   // `pending` was the only qualifying condition before the address stat
   // existed — there was always a real request "outliving" the query to time
-  // out on. An address-shaped query holds ranking back entirely (`statPending`
-  // is a THIRD reason `behind` can be true, alongside `pending` and, briefly,
-  // neither): `pending` is never true on that path (the rank effect
-  // early-returns before setting it), so a guard reading only `pending` never
-  // fires here at all — the held answer, and its `is-stale` dimming, stayed
-  // behind indefinitely regardless of how long the stat took. `statPending`
-  // is included in the gate for exactly the same reason `pending` is: it is
-  // the other case where nothing is going to replace `answer` for THIS query
-  // on its own — this one because the stat, not the ranking round trip, is
-  // what has to resolve first (and if it resolves to "missing", 7d's fallback
-  // fires a real rank request, which unsticks this the normal way, but until
-  // then the deadline is what stops a slow stat from pinning a stale answer
-  // in place).
+  // out on. An address-shaped query holds ranking back entirely (`addr.status
+  // === "checking"` is a THIRD reason `behind` can be true, alongside
+  // `pending` and, briefly, neither): `pending` is never true on that path
+  // (the rank effect early-returns before setting it), so a guard reading
+  // only `pending` never fires here at all — the held answer, and its
+  // `is-stale` dimming, stayed behind indefinitely regardless of how long the
+  // stat took. `addr.status === "checking"` is included in the gate for
+  // exactly the same reason `pending` is: it is the other case where nothing
+  // is going to replace `answer` for THIS query on its own — this one because
+  // the stat, not the ranking round trip, is what has to resolve first (and
+  // if it resolves to "missing", 7d's fallback fires a real rank request,
+  // which unsticks this the normal way, but until then the deadline is what
+  // stops a slow stat from pinning a stale answer in place).
   //
-  // `statPending`, deliberately, NOT `suppressRank` (D706 correction —
-  // review finding): `suppressRank` flips true the instant the keystroke
-  // makes `q` look like a path, but the stat itself does not fire until
-  // `INSTANT_DEBOUNCE_MS` later (the address effect above debounces exactly
-  // like the rank effect does). Gating this deadline on bare `suppressRank`
-  // meant the clock started at the KEYSTROKE, so the stat's real budget to
-  // answer before its held rows were thrown away was `STALE_CLEAR_MS` minus
-  // the debounce, not the full `STALE_CLEAR_MS` every other request gets.
-  // `statPending` flips true only once `run()` inside that effect actually
-  // fires, so this effect's own dependency change lands at the same moment —
-  // the deadline timer below starts counting from ISSUANCE, matching how
-  // `pending` already behaves for the rank path.
+  // `addr.status === "checking"`, deliberately, NOT `suppressRank` (D706
+  // correction — review finding): `suppressRank` flips true the instant the
+  // keystroke makes `q` look like a path, but the stat itself does not fire
+  // until `INSTANT_DEBOUNCE_MS` later (the address effect above debounces
+  // exactly like the rank effect does). Gating this deadline on bare
+  // `suppressRank` meant the clock started at the KEYSTROKE, so the stat's
+  // real budget to answer before its held rows were thrown away was
+  // `STALE_CLEAR_MS` minus the debounce, not the full `STALE_CLEAR_MS` every
+  // other request gets. `addr.status` flips to `"checking"` only once `run()`
+  // inside that effect actually fires, so this effect's own dependency change
+  // lands at the same moment — the deadline timer below starts counting from
+  // ISSUANCE, matching how `pending` already behaves for the rank path. This
+  // is exactly the distinction `addr`'s discriminated union exists to keep
+  // from drifting: "idle" (debounce still pending) and "checking" (request
+  // actually in flight) are two states of the ONE variable this effect reads,
+  // not two flags that could disagree.
   //
-  // That swap alone (`pending || statPending`) left a second gap, found in
-  // code review: once the stat RESOLVES, `statPending` drops back to false —
-  // but `suppressRank` (`addr.status !== "missing"`) stays true forever, so
-  // the rank effect keeps early-returning and nothing is ever going to touch
-  // `answer` for this query again. A gate reading only `pending ||
-  // statPending` never re-arms once that happens, so the deadline never
-  // fires and `is-stale` dimming sticks around for as long as the box stays
-  // open. `suppressRank && addr.status === "exists"` covers exactly that
-  // window — the query resolved to a real address and ranking is
-  // permanently suppressed for it — without touching the `unknown` window
-  // above, which `statPending` already owns.
+  // Reading only `pending || addr.status === "checking"` left a second gap,
+  // found in code review: once the stat RESOLVES, `addr.status` moves to
+  // `"exists"`/`"missing"` — but `suppressRank` (`addr.status !== "missing"`)
+  // stays true forever once it lands on `"exists"`, so the rank effect keeps
+  // early-returning and nothing is ever going to touch `answer` for this
+  // query again. A gate reading only `pending || addr.status === "checking"`
+  // never re-arms once that happens, so the deadline never fires and
+  // `is-stale` dimming sticks around for as long as the box stays open.
+  // `suppressRank && addr.status === "exists"` covers exactly that window —
+  // the query resolved to a real address and ranking is permanently
+  // suppressed for it — without touching the `"idle"`/`"checking"` window
+  // above, which `addr.status === "checking"` already owns.
   useEffect(() => {
+    const checking = addr.status === "checking";
     const addressSettled = suppressRank && addr.status === "exists";
-    if (!behind || (!pending && !statPending && !addressSettled)) return;
+    if (!behind || (!pending && !checking && !addressSettled)) return;
     const timer = window.setTimeout(() => {
       setAnswer((prev) => {
         if (prev === null || prev.query === q) return prev;
@@ -710,7 +727,7 @@ export function FilesSearch({
       });
     }, STALE_CLEAR_MS);
     return () => window.clearTimeout(timer);
-  }, [pending, statPending, suppressRank, addr.status, behind, q]);
+  }, [pending, suppressRank, addr.status, behind, q]);
 
   // -- the box is where typing goes ------------------------------------------
   //
@@ -979,7 +996,7 @@ export function FilesSearch({
   // effect above as the query is typed, so by the time Enter is pressed the
   // row model already reflects it — `activeRow`/`submitRow` do the rest.
   const submit = () => {
-    if (address !== null && addr.status === "unknown") {
+    if (address !== null && (addr.status === "idle" || addr.status === "checking")) {
       // The paste-and-go gesture: Enter fired before the stat came back.
       // Await it instead of dropping the keystroke — the effect above
       // commits once `addr` settles.
@@ -1101,8 +1118,8 @@ export function FilesSearch({
                 sent (7c skips it entirely). `suppressRank`, right below it,
                 is the SAME protection one beat earlier in the address's
                 lifecycle: the stat hasn't resolved yet (addr.status is
-                "unknown", neither "exists" nor "missing"), so no rank
-                request went out for this query either — `answer` is still
+                "idle" or "checking", neither "exists" nor "missing"), so no
+                rank request went out for this query either — `answer` is still
                 whatever the PREVIOUS, non-address query left behind. This
                 used to fall all the way through to the count-note branch
                 below, reporting that stale answer's total over rows that

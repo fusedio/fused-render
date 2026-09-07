@@ -588,9 +588,9 @@ describe("a query that is really an address (section 7)", () => {
     // Review finding, fixed in D706: `suppressRank` flips true on the
     // keystroke itself, but the stat does not fire until
     // `INSTANT_DEBOUNCE_MS` later — gating the deadline effect on
-    // `suppressRank` (rather than `statPending`, which flips only once the
-    // stat actually goes out) started the STALE_CLEAR_MS clock at the
-    // keystroke, shrinking the stat's real budget to
+    // `suppressRank` (rather than `addr.status === "checking"`, which flips
+    // only once the stat actually goes out) started the STALE_CLEAR_MS clock
+    // at the keystroke, shrinking the stat's real budget to
     // `STALE_CLEAR_MS - INSTANT_DEBOUNCE_MS`.
     const box = mount();
     await type(box, "readme");
@@ -599,8 +599,8 @@ describe("a query that is really an address (section 7)", () => {
 
     await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
     // Past the address stat's own trailing debounce: the stat is issued HERE
-    // (statPending flips true), which is when the deadline should start
-    // counting.
+    // (addr.status moves to "checking"), which is when the deadline should
+    // start counting.
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(statCalls).toHaveLength(1);
 
@@ -621,14 +621,14 @@ describe("a query that is really an address (section 7)", () => {
   });
 
   test("the stale-clear deadline still fires once the address RESOLVES (code review finding)", async () => {
-    // The `statPending` swap (D706) fixed the hanging-stat case above, but it
-    // lost the case where the stat actually settles to a real path:
-    // `suppressRank` stays true forever once `addr.status` is "exists" (it
-    // only excludes "missing"), so the rank effect keeps early-returning
-    // (`pending` never fires) and `statPending` drops back to false the
-    // moment the stat resolves — a gate reading only `pending || statPending`
-    // never arms again, and the held answer's `is-stale` dimming never
-    // clears.
+    // The D706 swap (gate on `addr.status === "checking"`) fixed the
+    // hanging-stat case above, but it lost the case where the stat actually
+    // settles to a real path: `suppressRank` stays true forever once
+    // `addr.status` is "exists" (it only excludes "missing"), so the rank
+    // effect keeps early-returning (`pending` never fires) and `addr.status`
+    // moves off "checking" the moment the stat resolves — a gate reading only
+    // `pending || addr.status === "checking"` never arms again, and the held
+    // answer's `is-stale` dimming never clears.
     const box = mount();
     await type(box, "readme");
     await flush(() => rankCalls[0].resolve(
@@ -730,8 +730,8 @@ describe("Enter while a pasted path's stat is still resolving (section 7 paste-a
     // other test in this describe block starts from): a held rank answer is
     // on screen, the paste makes the query address-shaped, and Enter is
     // pressed once the address stat has actually been issued (D706:
-    // `statPending`, not the keystroke, is what the deadline effect now
-    // tracks). `awaitingCommit` has to survive the round trip and still
+    // `addr.status === "checking"`, not the keystroke, is what the deadline
+    // effect now tracks). `awaitingCommit` has to survive the round trip and still
     // commit once the stat lands.
     const box = mount();
     await type(box, "readme");
