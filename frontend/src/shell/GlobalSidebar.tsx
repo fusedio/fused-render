@@ -439,18 +439,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // second timer.
   const updateStatus = useUpdateStatus();
   const updateIsRelevant = updateRelevant(updateStatus);
-  // Same action UpdateBadge's own button performs: dmg installs itself, brew
-  // installs are copy-the-command-and-run-it-yourself (the app never shells
-  // out to brew). Reached from the popover row rather than the expanded
-  // badge's own panel, so there's no panel here to flash "Copied" in — a
-  // toast says it instead.
+  // Same action UpdateBadge's own button performs: the install downloads and
+  // swaps the bundle, whichever tool put it there (brew included). Reached
+  // from the popover row rather than the expanded badge's own panel, so
+  // there's no panel here to flash a result in — a toast says it instead.
   const handleUpdatePick = () => {
     if (!updateStatus) return;
     // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the
-    // badge's own button and the ServerStatusBanner card use. FIRST, before
-    // the brew branch: a brew upgrade also lands in "installed" and clears
-    // manual_command, and the brew branch used to return on that before this
-    // path was reached (bugbot, PR #1058).
+    // badge's own button and the ServerStatusBanner card use.
     if (updateStatus.state === "installed") {
       window.location.assign("fused-render://relaunch");
       return;

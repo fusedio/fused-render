@@ -6,17 +6,24 @@ solely on an explicit POST /api/update/install.
 
 Two methods, decided once per process:
 
-- "brew": the running bundle is Homebrew-managed. The app never runs brew
-  itself — swapping the bundle behind brew's back would desync its
-  bookkeeping (Caskroom metadata, `brew list`) permanently. Instead the
-  "available" state carries `manual_command` (`brew update && brew upgrade
-  --cask fused-render`) for the user to run in a terminal; POST
-  /api/update/install is a no-op. The `brew update` is required: the tap's
-  cask (fusedio/homebrew-tap) has no livecheck, so Homebrew only learns of a
-  version bump after refreshing its local clone of the tap — otherwise
-  `brew upgrade` reads the stale cached cask and reports nothing to do. The
-  next check() tick reads the bundle on disk and flips to "installed" once
-  the user's upgrade lands.
+- "brew": the running bundle is Homebrew-managed. POST /api/update/install
+  still runs the DMG swap below — same download, same version-verified
+  bundle replacement (Akshil, 2026-09-08: "just show the download button
+  regardless"); the bundle is the bundle whichever tool put it there. What
+  brew adds is a SECONDARY way: "available" (and a failed install) also
+  carries `manual_command` (`brew update && brew upgrade --cask
+  fused-render`) for the user to run in a terminal, and that is the one that
+  keeps Homebrew's own receipt in step. The `brew update` is required: the
+  tap's cask (fusedio/homebrew-tap) has no livecheck, so Homebrew only learns
+  of a version bump after refreshing its local clone of the tap — otherwise
+  `brew upgrade` reads the stale cached cask and reports nothing to do.
+  The desync this accepts, stated plainly: after an in-app swap Homebrew's
+  bookkeeping (Caskroom metadata, `brew list --versions`) still names the OLD
+  version, and stays wrong until the user runs the brew command — at which
+  point a later `brew upgrade` installs its own newer cask over ours, which
+  is a redundant reinstall rather than a broken one. The next check() tick
+  reads the bundle on disk either way and flips to "installed" once a newer
+  bundle has landed, ours or brew's.
 - "dmg": download the signed DMG, verify, and swap the .app bundle in place.
   Replacing the bundle under a running process is the SUPPORTED existing flow
   (a manual DMG drag does exactly this): installed.installed_version() then
@@ -144,13 +151,30 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
     return "dmg"
 
 
+def _discard_old_bundle(old: str) -> None:
+    """Best-effort removal of the bundle the swap renamed away."""
+    try:
+        if os.path.islink(old):
+            os.remove(old)
+        else:
+            shutil.rmtree(old, ignore_errors=True)
+    except OSError:
+        logger.debug("could not remove old bundle %s", old, exc_info=True)
+
+
 class UpdateManager:
     """State machine behind /api/config's `update` field.
 
     states: idle -> checking -> (idle | available) -> installing(progress)
             -> installed | error(message, manual_command?)
     "installed" means the bundle on disk is the new version; the existing
-    installed_version drift banner drives the restart from there."""
+    installed_version drift banner drives the restart from there.
+    The `manual_command?` on "error" is the brew command, present only for a
+    brew-managed bundle: an install that failed still leaves that user a way
+    out (the badge's "Automatic update failed. Run this in your terminal:"),
+    so `_sync_manual_command` re-populates it on the error path exactly as it
+    does on "available". A dmg-managed error carries None — there is no
+    terminal command to offer."""
 
     def __init__(self, *, manifest_url: str = MANIFEST_URL, bundle: str | None = None,
                  method: str | None = None):
@@ -283,8 +307,10 @@ class UpdateManager:
         """A brew-managed install's "available" carries the terminal command
         as well — the secondary way to update, beside the in-app button, and
         the one that keeps Homebrew's own receipt in step. Called with the
-        lock held after every check() state transition."""
-        if self._state == "available" and self.method() == "brew":
+        lock held after every check() state transition, and from `_install`'s
+        error path: a failed automatic install is precisely when a brew user
+        needs the command back (see the class docstring)."""
+        if self._state in ("available", "error") and self.method() == "brew":
             self._manual_command = BREW_COMMAND
         else:
             self._manual_command = None
@@ -387,6 +413,12 @@ class UpdateManager:
             with self._lock:
                 self._state = "error"
                 self._error = str(error)
+                # `install()` cleared `_manual_command` on the way in. A brew
+                # user whose automatic install just failed still has a working
+                # way to update, so give it back — the badge's error panel
+                # renders "Automatic update failed. Run this in your terminal:"
+                # off exactly this field.
+                self._sync_manual_command()
             return
         # The terminal row is also the completion NOTICE: `ActivityDock`'s
         # `onJobsReported` -> `terminalNotifications` already carries every
@@ -497,10 +529,22 @@ class UpdateManager:
             pass
 
     def _install_dmg(self, manifest: dict) -> None:
-        bundle = self._bundle
-        if bundle is None:
+        if self._bundle is None:
             raise RuntimeError("not running from an installed bundle")
+        # realpath, not the stored path: `bundle_path()` only abspaths, so a
+        # bundle reached through a symlink (a /Applications/FusedRender.app
+        # link into a Caskroom artifact, say) would otherwise have its LINK
+        # renamed by the swap below — leaving the real bundle untouched and the
+        # link pointing at a name that no longer exists.
+        bundle = os.path.realpath(self._bundle)
         parent = os.path.dirname(bundle)
+        # For a Homebrew cask installed as an artifact rather than a copy, that
+        # resolved parent is `…/Caskroom/fused-render/<oldversion>/`. It is
+        # writable, so the swap lands there and brew's receipt goes on pointing
+        # at a directory whose contents are now the NEW version — an accepted
+        # desync (see the module docstring): the badge's secondary brew button
+        # realigns it, and until then the app on disk is simply newer than
+        # `brew list --versions` says.
         if not os.access(parent, os.W_OK):
             raise RuntimeError(
                 f"cannot write to {parent} — update by downloading the DMG manually")
@@ -601,10 +645,14 @@ class UpdateManager:
             beat_stop.set()
             beat.join(timeout=INSTALL_HEARTBEAT_S + 5)
         # Old bundle: best-effort removal on a worker; open files keep working
-        # on the unlinked inodes until this process exits.
+        # on the unlinked inodes until this process exits. `rmtree` REFUSES a
+        # symlink (and would follow it if it didn't), so the link case unlinks
+        # instead — `bundle` is realpath'd above, but an .app that is itself a
+        # symlink on the resolved path is cheap to survive rather than leave a
+        # dangling `.FusedRender-old-<pid>.app` behind forever.
         if old is not None:
-            threading.Thread(target=shutil.rmtree, args=(old,),
-                             kwargs={"ignore_errors": True}, daemon=True).start()
+            threading.Thread(target=_discard_old_bundle, args=(old,),
+                             daemon=True).start()
 
     def _check_disk_space(self, updates: str) -> None:
         stat = os.statvfs(updates)

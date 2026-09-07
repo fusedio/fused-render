@@ -1,11 +1,12 @@
 // Sidebar self-update affordance. Renders nothing until /api/config's
 // `update` field says a newer version exists (packaged mac app only — the
 // field is absent everywhere else), then shows an "Update available" row that
-// expands into a small panel. DMG installs get an install button, and once it
-// is pressed the panel only points at the Activity dock — the bytes, the phase
-// and the Cancel are on the dock's `sys:update:<version>` row, never here (see
-// INSTALLING_TEXT below); brew-managed installs get the exact `brew upgrade`
-// command to run by hand — the app never runs brew itself.
+// expands into a small panel. Every install gets the same install button, and
+// once it is pressed the panel only points at the Activity dock — the bytes,
+// the phase and the Cancel are on the dock's `sys:update:<version>` row, never
+// here (see INSTALLING_TEXT below). A brew-managed install additionally offers
+// the `brew upgrade` command as a SECONDARY way: the in-app button swaps the
+// same bundle, and running brew instead keeps Homebrew's own receipt in step.
 //
 // The poll itself lives in platform/lib/update-status.ts, shared with the
 // collapsed rail's dot and the Settings popover's own row — see that file's
@@ -100,6 +101,16 @@ export default function UpdateBadge() {
               <div className="update-badge-text">
                 Downloads and installs the new version.
               </div>
+              {/* Only for a Homebrew-managed bundle — `manual_command` is the
+                  signal (see api.ts's UpdateStatus). Says why a second button
+                  is there at all, so the secondary Copy is not a bare mystery
+                  beside the primary action. */}
+              {status.manual_command && (
+                <div className="update-badge-text">
+                  Installed with Homebrew — updating with brew instead keeps its
+                  receipt in step.
+                </div>
+              )}
               <div className="update-badge-actions">
                 <button type="button" className="update-badge-action" onClick={install}>
                   Update to v{status.latest_version}

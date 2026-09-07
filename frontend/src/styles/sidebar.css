@@ -1084,13 +1084,6 @@ a.bookmark-name::after {
   gap: 6px;
 }
 
-.update-badge-action--secondary,
-.update-badge-action--secondary:hover {
-  background: transparent;
-  color: var(--fg);
-  border-color: var(--border);
-}
-
 .update-badge-action {
   /* A <button> or an <a> (the installed state's Restart is a link to
      fused-render://relaunch) — same box either way. */
@@ -1104,6 +1097,20 @@ a.bookmark-name::after {
   color: var(--bg);
   font-size: 12px;
   cursor: pointer;
+}
+
+/* The brew command's Copy sits beside the primary Update button — quieter, so
+   the accent fill stays on the one action that actually installs. AFTER the
+   base rule and at two-class specificity: at equal specificity and declared
+   first, the base rule's accent fill won at rest. */
+.update-badge-action.update-badge-action--secondary {
+  background: transparent;
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.update-badge-action.update-badge-action--secondary:hover {
+  border-color: var(--fg-muted);
 }
 
 .update-badge-command {

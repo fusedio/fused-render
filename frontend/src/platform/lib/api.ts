@@ -430,8 +430,9 @@ export function runClaudeDoctor(): Promise<{
 export interface UpdateStatus {
   // idle | checking | available | installing | installed | error
   state: string;
-  // brew: the user runs `brew upgrade --cask` themselves (see manual_command);
-  // dmg: the app downloads and swaps its own bundle; none: not updatable.
+  // brew: a Homebrew-managed bundle — the app installs it the dmg way anyway
+  // and also surfaces the terminal command (see manual_command); dmg: the app
+  // downloads and swaps its own bundle; none: not updatable.
   method: string;
   latest_version: string | null;
   // Bytes downloaded so far (dmg method only).
@@ -441,8 +442,11 @@ export interface UpdateStatus {
   // header, in which case the UI falls back to showing MB downloaded.
   progress_total: number | null;
   error: string | null;
-  // Set when the user must run the update themselves (brew-managed installs,
-  // state "available") — shown with a copy button.
+  // The `brew upgrade` command, set only for a brew-managed bundle in state
+  // "available" or "error" — a secondary way to update that keeps Homebrew's
+  // receipt in step, and the only way left when the automatic install failed.
+  // Shown with a copy button; its presence is also what tells the badge the
+  // bundle came from Homebrew.
   manual_command: string | null;
 }
 

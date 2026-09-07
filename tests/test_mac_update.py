@@ -2,9 +2,9 @@
 
 The signed-manifest crypto path is shared with the Windows updater and covered
 by tests/test_win_supervisor_update.py; these tests cover what's new on mac:
-the brew/dmg method decision, the manager's state machine (including the rule
-that brew-managed installs are never updated by the app — the user runs the
-surfaced `brew upgrade` command themselves), and the /api/update endpoints'
+the brew/dmg method decision, the manager's state machine (including that a
+brew-managed bundle installs down the same DMG path while ALSO carrying the
+`brew upgrade` command as a secondary way), and the /api/update endpoints'
 guards.
 """
 import os
@@ -170,7 +170,7 @@ def test_install_retry_allowed_from_error(monkeypatch):
     assert manager.status()["state"] == "installed"
 
 
-# ---- brew path: the app never runs brew — the user does -----------------------
+# ---- brew path: the app installs it too, the command stays as a second way ----
 
 
 def test_brew_available_carries_manual_command(monkeypatch):
@@ -193,16 +193,56 @@ def test_brew_install_takes_the_dmg_path_and_keeps_the_command(monkeypatch, tmp_
     "show the download button regardless") — and "available" still carries
     the brew command as the secondary way."""
     manager = _dmg_manager(monkeypatch, tmp_path)
-    monkeypatch.setattr(manager, "method", lambda: "brew")
+    manager._method = "brew"
+    # A second check() so the brew method is in force when `_sync_manual_command`
+    # runs: `_dmg_manager` already checked as a dmg manager, which left
+    # `manual_command` None.
     manager.check()
     assert manager.status()["manual_command"] == mac.BREW_COMMAND
-    status = manager.install()
-    assert status["state"] == "installing"
+
+    # Recorded, not real: `_install_dmg` would otherwise download the manifest's
+    # URL. The assertion is that it RAN — a brew install used to be refused
+    # before it got here.
+    ran = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: ran.append(manifest))
+
+    manager.install()
     assert manager._install_thread is not None
     manager._install_thread.join(timeout=5)
-    # The stub bundle cannot complete a swap; what matters is that the DMG path
-    # RAN for a brew install rather than being refused.
-    assert manager.status()["state"] in ("installed", "error")
+    # The recorder returns instantly, so `install()`'s own return may already
+    # say "installed" — the state to assert on is the settled one.
+    assert len(ran) == 1
+    assert ran[0]["version"] == "9.9.9"
+    assert manager.status()["state"] == "installed"
+
+
+def test_a_failed_brew_install_hands_back_the_terminal_command(monkeypatch, tmp_path):
+    """The automatic swap is not a brew user's only way out: an install error
+    puts the brew command back on the status, which is what the badge's
+    "Automatic update failed. Run this in your terminal:" panel renders."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    manager._method = "brew"
+    manager.check()
+    monkeypatch.setattr(manager, "_install_dmg",
+                        lambda manifest: (_ for _ in ()).throw(RuntimeError("boom")))
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    status = manager.status()
+    assert status["state"] == "error"
+    assert status["manual_command"] == mac.BREW_COMMAND
+
+
+def test_a_failed_dmg_install_has_no_terminal_command(monkeypatch, tmp_path):
+    """Same failure on a dmg-managed bundle: there is no brew receipt and no
+    command to offer, so the badge shows the raw error instead."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(manager, "_install_dmg",
+                        lambda manifest: (_ for _ in ()).throw(RuntimeError("boom")))
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    status = manager.status()
+    assert status["state"] == "error"
+    assert status["manual_command"] is None
 
 
 def test_status_notices_external_upgrade_without_a_check(monkeypatch):
