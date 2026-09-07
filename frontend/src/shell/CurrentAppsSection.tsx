@@ -692,6 +692,7 @@ export default function CurrentAppsSection() {
     "separator",
     {
       label: "Mark all tasks as read",
+      icon: MenuIcons.unread,
       onClick: () => {
         readCurrentAppTasks(app.path)
           .catch(() => {})
