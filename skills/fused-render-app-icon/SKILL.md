@@ -15,14 +15,3 @@ Rules:
 - **Plain standalone file**: everything inline — no external images/fonts/CSS imports (favicon fetched standalone), no scripts/animation. Few KB; `svgo` if tool-exported.
 
 Serviceable default: dark rounded `<rect rx>` + one bright glyph (path, or centred `<text>` monogram); swap glyph + colours for app's own.
-
-## Theme-following colour (optional)
-
-Shell cannot tint an `<img>`; so a file may NAME its colour and let the shell resolve it per theme (`frontend/src/platform/lib/icon-color.ts`):
-
-- Root: `data-fused-color="<name>"`, name ∈ `default gray brown yellow orange green blue purple pink red`.
-- Paint with `currentColor` (`stroke`/`fill`). Shell swaps it for that name's light/dark hex before the `<img>`/favicon loads.
-- Add `<style>svg{color:LIGHT}@media(prefers-color-scheme:dark){svg{color:DARK}}</style>` so standalone viewers (Finder, GitHub) still get a colour — OS theme only there.
-- No marker → drawn as is (hand-authored, emoji). Unknown name → treated as no marker.
-
-Icon picker (sidebar glyph / app-page mark, Icons tab) writes exactly this shape.
