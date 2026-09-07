@@ -638,7 +638,25 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict) -> bool:
         # out in the *viewer's* locale, never this server's.
         "detail": f"{root_display} (estimated)" if prev_total is not None else root_display,
         "kind": "task",
-        "done": float(run.get("files") or 0),
+        # `files` ALONE undercounts against `prev_total`: `Sink.add` (D724's
+        # own `read_manifest` fold, `index/store.py:215-229`) only adds to
+        # `files` for a dir it actually re-walks (`kind != "u"`) — an
+        # unchanged dir's cached file count goes to `reused` instead
+        # (`index/scan.py:78`'s own docstring: "'u' (unchanged; payload =
+        # cached file count)"). `prev_total`, by contrast, is the LAST
+        # compaction's `total_rows` — every row in the merged index, reused
+        # dirs included (`_compact_locked`'s `merged` table unions the old
+        # kept/unchanged rows with the new shard rows before counting,
+        # `index/store.py`'s `compact`). Comparing `files` alone to that would
+        # divide a NEW-ONLY numerator by an EVERYTHING denominator: a rescan
+        # that reuses 95% of a tree (the common case) would crawl to ~5% and
+        # then jump straight to done the instant compaction lands — a bar
+        # that lies with an official look, not an honest one. `files +
+        # reused` is the like-for-like pair: both counters are in the SAME
+        # file-count units (`scan.py:78`, `store.py:219,229`), so their sum is
+        # "every file this run has accounted for so far" — the same
+        # population `prev_total` counts.
+        "done": float((run.get("files") or 0) + (run.get("reused") or 0)),
         "total": prev_total,
         "unit": "files",
         # The run's phase, verbatim — this covers compaction too, which has

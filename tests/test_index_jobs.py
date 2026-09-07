@@ -309,6 +309,21 @@ def test_a_prior_manifest_with_zero_rows_leaves_total_none(monkeypatch, tmp_path
     assert row["total"] is None
 
 
+def test_done_credits_reused_files_alongside_newly_walked_ones(monkeypatch):
+    """`files` alone is only the NEWLY-walked count (`Sink.add`,
+    `index/store.py:215-229`, credits `kind != "u"` dirs only) — an unchanged
+    dir's cached file count lands in `reused` instead (`index/scan.py:78`).
+    The previous scan's stored total (`prev_total`, used as `total` above)
+    counts BOTH, so `done` must too, or a rescan that reuses most of a tree
+    crawls to a few percent on `files` alone and then jumps straight to done
+    the moment compaction lands — a bar that visibly lies while looking
+    official. This has nothing to do with an estimated `total` being present:
+    it is what the LIVE COUNT itself means."""
+    _tick(monkeypatch, [_run("r1", files=200, reused=9800)])
+    row = jobs.list_jobs()[0]
+    assert row["done"] == 10000.0
+
+
 def test_a_grown_tree_does_not_stop_the_estimate_from_being_offered(
         monkeypatch, tmp_path):
     """`done` (this scan's live count) already exceeds the prior scan's
