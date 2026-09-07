@@ -69,6 +69,19 @@ the git sidebar's preview affordance (templates/git/template.html) can gate
 itself on this fact BEFORE a commit is even selected (D701) — the eye offered
 on a file with no enclosing app folder can never resolve into anything, per
 review finding B4.
+
+`GET /api/git/commits?path=<...>&limit=<n>` is the THIRD sibling: a bounded,
+recent-first `git log` scoped to the same enclosing app folder (`_resolve_app_dir`
+again, so all three routes agree on what "the app folder" means and refuse the
+same paths the same way). It backs the app page's version picker
+(shell/AppVersionPicker.tsx) — a dropdown needs a label per commit, not a diff,
+so this is a deliberately smaller reader than `templates/git/log.py`, which
+answers pagination, rename detection and working-tree state. Response:
+`{"ok": true, "commits": [{"sha", "short", "subject", "author", "when"}], "has_more"}`,
+oldest fact last: `when` is the commit's author-date unix timestamp, left for
+the caller to format relatively. `has_more` is truthful because the query asks
+for `limit + 1` and reports whether that many actually came back — never a
+guess from whether `limit` was hit exactly.
 """
 import hashlib
 import logging
@@ -469,6 +482,99 @@ def extract_snapshot(path: str, sha: str) -> dict:
     return {"ok": True, "dir": dest, "entry": entry, "app_dir": app_dir}
 
 
+# `%H`/`%h`/`%s`/`%an`/`%at` (full sha, short sha, subject, author, author-date
+# unix time), NUL-separated within one record — `%s` cannot itself contain a
+# NUL, and neither can any other field, so this splits unambiguously even for
+# a subject that contains a literal newline (git's own `--format` never emits
+# one mid-record; `%s` is always exactly one line). Records themselves are
+# newline-separated, `git log`'s own default between commits.
+_LOG_FORMAT = "%H%x00%h%x00%s%x00%an%x00%at"
+
+
+def _run_log(repo_root: str, app_rel: str, limit: int) -> list[dict]:
+    """The bounded, recent-first log itself, scoped to `app_rel` the same
+    `--` + `:(literal)` pathspec way `_run_archive` scopes its `git archive`.
+    Returns `[]` for a repository with no commits yet (an unborn HEAD) rather
+    than raising — checked FIRST, with its own tiny `rev-parse`, so the
+    `git log` call below never has to tell "no commits" apart from a real
+    failure by parsing its stderr.
+    """
+    try:
+        head = subprocess.Popen(
+            [_git_bin(), "--no-pager", "-C", repo_root, "rev-parse",
+             "--verify", "-q", "HEAD"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            **_popen_kwargs())
+    except FileNotFoundError as exc:
+        raise _Refused("git is not installed, or not on this app's PATH",
+                       status=502) from exc
+    except OSError as exc:
+        raise _Refused(f"git could not be started: {exc}", status=502) from exc
+    try:
+        if head.wait(timeout=TIMEOUT_S) != 0:
+            return []  # no commits yet
+    except subprocess.TimeoutExpired:
+        head.kill()
+        raise _Refused(f"git took longer than {TIMEOUT_S:.0f}s", status=502)
+
+    try:
+        proc: "subprocess.Popen[bytes]" = subprocess.Popen(
+            [_git_bin(), "--no-pager", "-C", repo_root, "log",
+             f"-n{limit}", f"--format={_LOG_FORMAT}",
+             *(["--", f":(literal){app_rel}"] if app_rel else [])],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            **_popen_kwargs())
+    except FileNotFoundError as exc:
+        raise _Refused("git is not installed, or not on this app's PATH",
+                       status=502) from exc
+    except OSError as exc:
+        raise _Refused(f"git could not be started: {exc}", status=502) from exc
+    try:
+        out, err = proc.communicate(timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        raise _Refused(f"git log took longer than {TIMEOUT_S:.0f}s",
+                       status=502)
+    if proc.returncode != 0:
+        detail = err.decode("utf-8", "replace").strip().splitlines()
+        raise _Refused(detail[0] if detail else
+                       f"git exited {proc.returncode}", status=502)
+
+    commits = []
+    for line in out.decode("utf-8", "replace").split("\n"):
+        if not line:
+            continue
+        parts = line.split("\x00")
+        if len(parts) != 5:
+            continue  # a malformed record: skip rather than raise on one bad line
+        sha, short, subject, author, when = parts
+        try:
+            when_i = int(when)
+        except ValueError:
+            when_i = 0
+        commits.append({"sha": sha, "short": short, "subject": subject,
+                        "author": author, "when": when_i})
+    return commits
+
+
+def list_commits(path: str, limit: int = 30) -> dict:
+    """`GET /api/git/commits`, as a plain function — same reason
+    `extract_snapshot` is one: callable from a threadpool and tested with no
+    `TestClient`. Asks for `limit + 1` records so `has_more` is an observed
+    fact (one more commit really exists) rather than an inference from
+    `len(commits) == limit`, which cannot tell "exactly limit commits, total"
+    from "there are more".
+    """
+    limit = max(1, min(limit, 500))  # bounded both ways: a sane default, a sane ceiling
+    repo_root, app_dir = _resolve_app_dir(path)
+    app_dir_real = os.path.realpath(app_dir)
+    app_rel = ("" if app_dir_real == repo_root else
+              os.path.relpath(app_dir_real, repo_root).replace(os.sep, "/"))
+    commits = _run_log(repo_root, app_rel, limit + 1)
+    has_more = len(commits) > limit
+    return {"ok": True, "commits": commits[:limit], "has_more": has_more}
+
+
 @router.api_route("/api/git/snapshot", methods=["GET"])
 async def api_git_snapshot(path: str, sha: str):
     try:
@@ -492,5 +598,13 @@ async def api_git_app_folder(path: str):
     try:
         _repo_root, app_dir = await run_in_threadpool(_resolve_app_dir, path)
         return {"ok": True, "app_dir": app_dir}
+    except _Refused as e:
+        return _error(e.message, status=e.status)
+
+
+@router.api_route("/api/git/commits", methods=["GET"])
+async def api_git_commits(path: str, limit: int = 30):
+    try:
+        return await run_in_threadpool(list_commits, path, limit)
     except _Refused as e:
         return _error(e.message, status=e.status)
