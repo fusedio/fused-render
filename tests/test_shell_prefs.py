@@ -300,12 +300,18 @@ def test_ranked_search_enabled_defaults_on_and_toggles(tmp_path, monkeypatch):
 
 
 def test_put_rejects_bad_ranked_search_enabled(tmp_path, monkeypatch):
+    """`status_code == 400` alone does not discriminate: `put_prefs` also
+    answers 400, with a generic "no known preference" message, for a KEY it
+    does not recognize at all — which is exactly what a request carries once
+    it reaches this branch if the type-validation block above were deleted.
+    Pinning the exact per-field message is what proves the validation itself
+    ran and rejected the value, rather than the key never being matched."""
     client, home = _client(tmp_path, monkeypatch)
-    assert (
-        client.put(
-            "/api/prefs", json={"ranked_search_enabled": "yes"}, headers=FUSED,
-        ).status_code == 400
+    resp = client.put(
+        "/api/prefs", json={"ranked_search_enabled": "yes"}, headers=FUSED,
     )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "'ranked_search_enabled' must be a boolean"
     assert not (home / "prefs.json").exists()
 
 
