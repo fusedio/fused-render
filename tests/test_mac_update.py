@@ -671,10 +671,18 @@ def test_a_row_that_cannot_be_opened_warns_once_and_the_install_carries_on(
 def test_the_heartbeat_never_overwrites_the_finished_row(monkeypatch, tmp_path):
     """The beat is joined before the terminal row is written and re-checks its
     stop flag after every wait (bugbot, PR #1058): with a beat firing every
-    millisecond through a slow swap, the row still ends on the terminal line
-    the install wrote, never on a late "Installing"."""
+    millisecond through a slow swap, no beat report is ever written AFTER the
+    terminal one, so the row ends on the line the install wrote."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     monkeypatch.setattr(mac, "INSTALL_HEARTBEAT_S", 0.001)
+    reports = []
+    real_upsert = jobs.upsert
+
+    def spy(body, **kwargs):
+        reports.append(dict(body))
+        return real_upsert(body, **kwargs)
+
+    monkeypatch.setattr(jobs, "upsert", spy)
 
     def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
         os.makedirs(dir, exist_ok=True)
@@ -692,9 +700,11 @@ def test_the_heartbeat_never_overwrites_the_finished_row(monkeypatch, tmp_path):
     monkeypatch.setattr(manager, "_attach", slow_attach)
     manager.install()
     manager._install_thread.join(timeout=10)
-    # Let any beat that could still be alive have its chance to misfire.
-    time.sleep(0.05)
+    time.sleep(0.05)  # any beat still alive gets its chance to misfire
+
+    terminal = [i for i, b in enumerate(reports) if b.get("state") == "error"]
+    assert terminal, reports
+    beats_after = [b for b in reports[terminal[0] + 1:] if b.get("detail") == mac.PHASE_INSTALLING]
+    assert beats_after == [], beats_after
     row = _row()
-    assert row["state"] == "error", row
-    assert row["detail"] != mac.PHASE_INSTALLING, row
-    assert "swap ended" in row["message"], row
+    assert row["state"] == "error" and "swap ended" in row["message"], row
