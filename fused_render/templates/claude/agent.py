@@ -3841,12 +3841,113 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
     return False
 
 
+def _pending_messages(run_dir: str) -> list:
+    """The user's own words that are written but not yet echoed back by the
+    CLI, in the order `session_host._drain_inbox` will actually deliver
+    them — the queue `_poll`'s live path owns now that `out.jsonl` says
+    nothing about a message until the CLI has echoed it (`_history` cannot
+    see it either: it is not in the persisted transcript yet). Without this,
+    a message sent mid-turn is invisible to every read path a fresh page
+    load uses until that echo lands.
+
+    Only `inbox/` itself (not `inbox/done/`) is read here. `inbox/done/` is
+    never pruned — over a long session it holds every message ever sent,
+    the great majority already long since echoed and on screen as an
+    ordinary turn — and an entry moves there the moment
+    `session_host._drain_inbox` hands its bytes to the CLI's stdin, well
+    before its echo is provable. There is no id linking a drained entry back
+    to its echo, only FIFO order, so reading `done/` too would need to know
+    exactly how far into that ever-growing history the echoes-so-far reach —
+    knowable for the single most recent send (`pending_echo`, below) but not
+    for how many turns further back a long session has accumulated. Reading
+    `inbox/` alone sidesteps that: an entry leaves it, for good, the instant
+    it is drained, so nothing here is ever older than the send that is
+    currently outstanding. The cost is a narrow, accepted race — a message
+    already drained but whose echo has not yet landed briefly reads as not
+    pending — against the alternative of stale entries wrongly resurrected
+    as pending for the life of the session.
+
+    An entry already echoed must not appear twice — once as `pending`, once
+    as ordinary streamed text. Reconciled by COUNTING, anchored on
+    `pending_echo` (`_send`'s own byte offset into `out.jsonl`, taken the
+    instant it queued the newest still-outstanding message): every
+    `_starts_new_turn` row at or past that offset (skipping a subagent's
+    own, exactly as `_read_current_turn` does) is one of this queue's
+    echoes landing, in FIFO order, so that many are dropped off the FRONT of
+    the messages still sitting in `inbox/`. This only needs to reach as far
+    back as the single most recent send, which is exactly what
+    `pending_echo` already anchors — a whole-file count would double-count
+    instead: the run's very first turn (opened by `_start`, not `_send`) is
+    a genuine `_starts_new_turn` row too, and by the time this is read it is
+    no longer sitting in `inbox/` behind it to attribute it to."""
+    inbox = _inbox_dir(run_dir)
+    try:
+        undrained = [n for n in os.listdir(inbox) if n.endswith(".json")]
+    except OSError:
+        undrained = []
+    pending_echo_path = os.path.join(run_dir, "pending_echo")
+    # Cheap gate: nothing sitting in the inbox and no send currently waiting
+    # on its echo means nothing can possibly be outstanding, so the
+    # `out.jsonl` scan below is skipped on the common case (an ordinary poll
+    # with nothing queued).
+    if not undrained and not os.path.exists(pending_echo_path):
+        return []
+    entries = sorted(os.path.join(inbox, n) for n in undrained)
+    messages = []
+    for path in entries:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                row = json.loads(fh.read())
+        except (OSError, ValueError):
+            continue
+        if row.get("type") != "user":
+            continue
+        message = row.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        text = "".join(b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text")
+        messages.append(text)
+    try:
+        with open(pending_echo_path, encoding="utf-8") as fh:
+            pending_offset = int(fh.read().strip())
+    except (OSError, ValueError):
+        # No file: nothing has been queued since the last time a `_poll`
+        # confirmed every outstanding message had echoed — so, per the gate
+        # above (which would already have returned on an empty inbox),
+        # everything currently sitting in `inbox/` predates that
+        # confirmation and is not still outstanding.
+        return []
+    echoed = 0
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            fh.seek(pending_offset)
+            tail = fh.read()
+    except OSError:
+        tail = b""
+    for raw_line in tail.split(b"\n"):
+        if not raw_line:
+            continue
+        try:
+            row = json.loads(raw_line.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        if row.get("parent_tool_use_id"):
+            continue  # a subagent's own echo is not this queue's
+        if _starts_new_turn(row):
+            echoed += 1
+    if echoed:
+        messages = messages[echoed:]
+    return [_strip_app_state(text) for text in messages]
+
+
 def _poll(run_id: str, file: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
                 "permissions": [], "app_state": [], "skills": [], "retry": None,
-                "retry_total": 0, "retry_status": 0, "segments": []}
+                "retry_total": 0, "retry_status": 0, "segments": [], "pending": []}
 
     # A page may only attach to a run about ITS OWN target. Run ids are global
     # (RUNS is one flat dir), and the `run` url param survives some hops the
@@ -3869,7 +3970,7 @@ def _poll(run_id: str, file: str = "") -> dict:
             return {"text": "", "done": True, "session_id": "",
                     "error": "run is for another target",
                     "permissions": [], "app_state": [], "skills": [], "retry": None,
-                    "retry_total": 0, "retry_status": 0, "segments": []}
+                    "retry_total": 0, "retry_status": 0, "segments": [], "pending": []}
 
     text_parts = []
     result_text = None
@@ -4358,7 +4459,13 @@ def _poll(run_id: str, file: str = "") -> dict:
                 "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
                 "agent_rows": agent_rows,
             },
-            "segments": [] if echo_pending else _segments_from_rows(parsed)}
+            "segments": [] if echo_pending else _segments_from_rows(parsed),
+            # The open exchange's own queue, straight off `inbox/` — anything
+            # written but not yet echoed back, so a reload racing the drain
+            # does not lose it the way `_history` and `segments` above both
+            # would (neither one knows about a message until the CLI has
+            # echoed it). See `_pending_messages`.
+            "pending": _pending_messages(run_dir)}
 
 
 # ------------------------------------------------------- sessions & history
