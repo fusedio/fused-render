@@ -216,10 +216,38 @@ def test_search_threads_is_half_the_machine_capped():
     assert got >= store.compaction_threads()
 
 
-def test_every_interactive_read_connection_caps_its_threads(home, tmp_path, monkeypatch):
+@pytest.mark.parametrize("cpu_count", [16, 32, 64])
+def test_search_threads_strictly_exceeds_compaction_threads_on_a_big_machine(
+        monkeypatch, cpu_count):
+    """`got >= compaction_threads()` above passes even when the two caps are
+    EQUAL — exactly what happened when both `MAX_SEARCH_THREADS` and
+    `MAX_COMPACTION_THREADS` were 4: on any machine with >=16 cores both
+    `// 4` and `// 2` clamp to their shared ceiling and the "half, not a
+    quarter" rationale (D701) went inert. Pin strict inequality on machines
+    with enough cores that the two ceilings would otherwise collide, with
+    `os.cpu_count()` monkeypatched so this does not depend on the host."""
+    monkeypatch.setattr(os, "cpu_count", lambda: cpu_count)
+    assert store.search_threads() > store.compaction_threads()
+
+
+def test_query_py_and_guarded_query_read_connections_cap_their_threads(home, tmp_path, monkeypatch):
     """`stats`, `search_under`, `search_ranked` (query.py) and guarded_query's
     `_connect` each open a bare `duckdb.connect()` — this pins that all four
-    apply `search_threads()` rather than defaulting to one thread per core."""
+    apply `search_threads()` rather than defaulting to one thread per core.
+
+    NOT exhaustive over every bare `duckdb.connect()` on the interactive read
+    path (D701 correction / D706) — this repo also has POST /api/search/files
+    (routers/search.py, `_index_entries`) and GET /api/git-repos
+    (routers/git_repos.py, `_repos`), which are covered by their own tests
+    nearer their code (test_search_index.py / test_git_repos_api.py) rather
+    than duplicated here, since exercising them needs a running app and a
+    real index rather than a bare `IndexConfig`. `index/freshness.py`'s
+    `indexed_mtime_ns` is deliberately UNCAPPED and excluded from that claim
+    entirely — it is a single point lookup (`WHERE dir = '...' LIMIT 1`) on a
+    heavily-debounced background housekeeping path (at most once per root
+    every ~110s, see routers/index.py's FRESHNESS_CHECK_S comment), not a
+    per-request interactive query, and DuckDB's thread count buys it nothing
+    a single-row lookup can use."""
     from fused_render.index import guarded_query
     from fused_render.index.query import search_ranked, search_under, stats
 

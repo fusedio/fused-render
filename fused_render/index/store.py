@@ -25,10 +25,11 @@ from fused_render.index.ignore import ignored_for_index
 NT_LOCK_POLL_S = 0.05
 
 # Cores the background compaction's DuckDB may use. It runs inside a scan
-# worker, against an interactive `/api/index/rank` that gets no cap at all
-# (query.py) — a merge on every core starved the query for seconds, and the
-# user is not waiting on the merge. A quarter of the machine, never more than
-# this many.
+# worker, against an interactive `/api/index/rank` that is itself capped by
+# `search_threads()` below (store.py, D701) rather than left uncapped — a
+# merge on every core still starved the query for seconds even against that
+# cap, and the user is not waiting on the merge. A quarter of the machine,
+# never more than this many.
 MAX_COMPACTION_THREADS = 4
 
 
@@ -42,8 +43,12 @@ def compaction_threads() -> int:
 # per-keystroke query is allowed the whole machine — the polite background
 # job was throttled and the impatient interactive one was not. Half rather
 # than a quarter, because a user IS waiting on these; still capped so a burst
-# of typing cannot saturate the box.
-MAX_SEARCH_THREADS = 4
+# of typing cannot saturate the box. Deliberately a HIGHER ceiling than
+# `MAX_COMPACTION_THREADS` (D701 correction, 2026-09-07): at 4 == 4 the two
+# caps collapsed to the same value on any machine with >=16 cores, silently
+# erasing the "half, not a quarter" intent on exactly the machines it was
+# meant to matter on.
+MAX_SEARCH_THREADS = 8
 
 
 def search_threads() -> int:
