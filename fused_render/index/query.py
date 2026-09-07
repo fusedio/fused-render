@@ -125,29 +125,28 @@ def files_src(cfg: IndexConfig, parts) -> str:
     return "read_parquet([" + ",".join(f"'{f}'" for f in files) + "])"
 
 
-def _src_cols(con, src: str, cache: dict | None = None) -> set:
+def _src_cols(con, src: str) -> set:
     """The column names the parquet behind `src` carries.
 
-    DESCRIBE reads footers only, so a single call costs no rows — but
-    `_name_col` and `_depth_col` both used to run their OWN `DESCRIBE` against
-    the same `src` (one footer read each), so `search_ranked`'s files branch
-    paid for the files partitions' footers twice per request for no reason:
-    both questions are answered by the same column list. `cache`, when given,
-    is a dict this call reads and writes under `src` — one lookup per SOURCE
-    per caller rather than per column asked about; passing none (the default)
-    keeps this usable standalone.
+    DESCRIBE reads footers only, so a single call costs no rows. `_name_col`
+    and `_depth_col` both used to run their OWN `DESCRIBE` against the same
+    `src` (one footer read each) — this collapses that into one lookup per
+    caller, since both questions are answered by the same column list.
+    (A `cache: dict` parameter used to let a caller share that one lookup
+    ACROSS sources too, for a caller asking about the same source more than
+    once in one call — D707. Dropped: `search_ranked`'s files branch was the
+    only caller that ever passed one, and D708 removed the dirs branch's own
+    `_src_cols`/`_depth_col` call entirely — the cache's second ask never
+    happened. Re-add it if a caller that actually hits the same source twice
+    shows up; keeping it unused made the "second ask is a dict lookup" claim
+    describe no live call.)
 
     Deciding per SOURCE rather than per file is exact: every partition a
     manifest names was written by one compaction, so a generation's schema is
     uniform (and DuckDB would refuse a mixed-schema read_parquet list
     anyway)."""
-    if cache is not None and src in cache:
-        return cache[src]
-    cols = {r[0] for r in con.execute(
+    return {r[0] for r in con.execute(
         f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
-    if cache is not None:
-        cache[src] = cols
-    return cols
 
 
 def _name_col(cols: set) -> str:
@@ -729,15 +728,13 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # it were nested two levels deep.
         rel_depth = f"({depth_expr('rel')} + 1)"
         branches = []
-        # One `_src_cols` lookup per SOURCE, not per column asked about: the
-        # files branch used to ask `_depth_col` and `_name_col` each their own
-        # `DESCRIBE SELECT * FROM {fsrc} LIMIT 0` — two identical footer reads
-        # of the same partitions on every call. `src_cache` makes the second
-        # ask a dict lookup.
-        src_cache: dict = {}
+        # `_src_cols` (one `DESCRIBE`) is the ONLY column question this
+        # function asks: the dirs branch has no `name` column to reuse
+        # (D708) and derives its basename by regex instead, so only the
+        # files branch, for `_name_col`, ever calls this.
         if hit:
             fsrc = files_src(cfg, hit)
-            fcols = _src_cols(con, fsrc, src_cache)
+            fcols = _src_cols(con, fsrc)
             branches.append(
                 f"SELECT substr(path, {rel_from}) AS rel, size, mtime, "
                 f"false AS is_dir, {_name_col(fcols)} AS nm "
