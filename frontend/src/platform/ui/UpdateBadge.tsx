@@ -59,14 +59,24 @@ export default function UpdateBadge() {
   const label = updateLabel(status);
   const dot = <span className="update-badge-dot" aria-hidden="true" />;
 
-  // The installed state has no panel of its own — ServerStatusBanner's restart
-  // card says the rest — so the row is a status line, not a dead toggle.
+  // The installed state: a status line AND the way out, right here (Akshil,
+  // 2026-09-08: "have the action button there as well so we can restart it
+  // directly above the settings item"). Nothing to expand — the button is
+  // always drawn — and the same `fused-render://relaunch` link the
+  // ServerStatusBanner's restart card uses, so both surfaces restart the same
+  // way: the OS hands the link to the running app, which quits through its
+  // normal teardown and respawns from the bundle now on disk.
   if (status.state === "installed") {
     return (
       <div className="update-badge">
         <div className="update-badge-row update-badge-row-static">
           {dot}
           {label}
+        </div>
+        <div className="update-badge-panel">
+          <a className="update-badge-action" href="fused-render://relaunch">
+            Restart fused-render
+          </a>
         </div>
       </div>
     );

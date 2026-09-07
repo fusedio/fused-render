@@ -457,6 +457,12 @@ class UpdateManager:
         .app bundle can outrun both stale windows in `jobs.py` with nothing to
         say in between."""
         while not stop.wait(INSTALL_HEARTBEAT_S):
+            # Re-checked after the wait: a beat that woke just as the swap
+            # ended must not land after the terminal row (bugbot, PR #1058) —
+            # and the stopper JOINS this thread before writing that row, so a
+            # beat already inside `_job_report` finishes first.
+            if stop.is_set():
+                return
             self._job_report(detail=PHASE_INSTALLING, message="",
                              cancellable=False)
 
@@ -549,9 +555,10 @@ class UpdateManager:
         # swap and its cleanup are over, and is stopped from the `finally`
         # below on every path out — including the ones that raise.
         beat_stop = threading.Event()
-        threading.Thread(target=self._beat_installing, args=(beat_stop,),
-                         daemon=True,
-                         name="fused-render-update-heartbeat").start()
+        beat = threading.Thread(target=self._beat_installing, args=(beat_stop,),
+                                daemon=True,
+                                name="fused-render-update-heartbeat")
+        beat.start()
         mount = None
         old = None
         swap_in = os.path.join(parent, ".FusedRender-update.app")
@@ -586,8 +593,11 @@ class UpdateManager:
             if os.path.exists(swap_in):
                 shutil.rmtree(swap_in, ignore_errors=True)
             # Last, so the row is still being kept alive through the detach and
-            # the cleanup above — `_install`'s terminal report comes next.
+            # the cleanup above — `_install`'s terminal report comes next, and
+            # only once the beat has actually stopped: a beat mid-report could
+            # otherwise overwrite the finished row with "Installing".
             beat_stop.set()
+            beat.join(timeout=INSTALL_HEARTBEAT_S + 5)
         # Old bundle: best-effort removal on a worker; open files keep working
         # on the unlinked inodes until this process exits.
         if old is not None:

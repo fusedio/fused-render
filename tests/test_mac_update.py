@@ -666,3 +666,25 @@ def test_a_row_that_cannot_be_opened_warns_once_and_the_install_carries_on(
     assert len(calls) == 1, calls
     records = [r for r in caplog.records if "could not report update job" in r.message]
     assert len(records) == 1, [r.message for r in caplog.records]
+
+
+def test_the_heartbeat_never_overwrites_the_finished_row(monkeypatch, tmp_path):
+    """The beat is joined before the terminal row is written and re-checks its
+    stop flag after every wait (bugbot, PR #1058): with a beat firing every
+    millisecond through a slow swap, the row still ends on the completion
+    line, not on a late "Installing"."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(mac, "INSTALL_HEARTBEAT_S", 0.001)
+    slow = manager._attach
+
+    def slow_attach(dmg):
+        time.sleep(0.05)
+        return slow(dmg)
+
+    monkeypatch.setattr(manager, "_attach", slow_attach)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    row = _row()
+    assert row["state"] == "done", row
+    assert row["detail"] == "Installed — restart to finish", row
+    assert manager.status()["state"] == "installed"
