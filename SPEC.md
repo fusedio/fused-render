@@ -4706,6 +4706,67 @@ changes make the showcase an ordinary git work tree with an ordinary
   cross-navigation ask rather than `window._fusedAskClaude`, because no
   surface for that repo may be mounted yet.
 
+- **GT-21** **Preview is drawn AT REST, not revealed by hover, and two new
+  write ops let a preview become history (D703).** The eye used to be a bare
+  glyph that only appeared while the pointer sat on its row — nothing on a
+  resting row said a commit could be previewed at all. It is now a labelled
+  pill (`◉ Preview`) drawn on every row `canPreview` allows — that gate is
+  unchanged (D701): a pane to drive AND a confirmed enclosing app folder —
+  with hover/focus staying an emphasis step rather than the presence step.
+  The now-redundant latest-commit dot is gone: it only ever appeared while
+  NOTHING was previewed, where it marked the top row of a list already
+  ordered newest-first — the previewing pill's own dot (unchanged) is the
+  one that answers a real question, "which commit are the files on screen
+  from", and keeps the colour.
+
+  Two write ops join `ops.py`, both `DESTRUCTIVE_OPS` (consent, not
+  recovery — see below) and both gated by a new `_require_clean(root)`
+  predicate shared between them: **any** uncommitted change — staged,
+  unstaged or untracked, repo-wide rather than scoped to the open path —
+  refuses outright with "Commit or stash them first — nothing was changed."
+  before either op forks a mutating git call. Applying the same rule to
+  Checkout costs a little strictness (an edit in an unrelated folder blocks
+  it) in exchange for one rule the user can predict rather than two that
+  differ by which button was pressed.
+
+  **`app_restore`** — Checkout in the view — commits the enclosing APP
+  FOLDER back to an earlier commit: `git checkout <sha> -- <app folder>`
+  (via `_require_app_dir(root, file)`, walking up from the open path to an
+  `entry_html`-marked folder — reached through `shared/app_entry.py`'s own
+  `sys.path` hop, never `fused_render.app_listing`, since a template must
+  not import the package, GT-1), then `git commit` naming the folder and
+  the short sha. HEAD stays on the branch — this is a scoped checkout of a
+  pathspec, not a checkout of a revision — so nothing outside the app
+  folder is touched, and a restore that would produce an empty commit
+  (already at that version) refuses rather than committing nothing. It
+  lives in the previewing banner (the "Files are shown as of…" bar), beside
+  "Back to now", and nowhere
+  else: Checkout is reachable only through an active preview, so there is
+  no way to commit a rollback to a version nobody looked at, and the button
+  needs no label of its own for which version it means — the banner already
+  names it. A successful Checkout clears the preview (the app folder now
+  matches HEAD, so continuing to claim a preview of "an earlier version"
+  would be stale).
+
+  **`revert`** — `git revert --no-edit <sha>`, whole-repository (unlike
+  every scoped write above it, a revert is not a concept that scopes to a
+  folder) — undoes one commit with a new one. A conflicting revert is
+  aborted immediately (`revert --abort`) and refused rather than left
+  mid-operation: `.git/REVERT_HEAD` must never survive a failed attempt,
+  the same "never leave the repository stuck" posture GT-15/GT-16 already
+  hold for everything else here. It appears once, on the identity line of
+  the EXPANDED commit (`commitMeta`, opposite the sha) — never on a
+  collapsed row — and is hidden, not disabled, wherever `canPreview` is
+  false, inheriting the eye's own reasoning: a control that cannot do
+  anything is not a promise worth keeping on screen.
+
+  Neither op rewrites history (GT-15): both **add** a commit, so
+  `test_git_ops.py`'s no-rewrite posture is unchanged, and both are
+  individually addressable through the ordinary confirmation step
+  (GT-16) — Checkout's wording says the change is app-scoped, Revert's
+  says it is repository-wide, because that is the one fact each
+  confirmation actually has to get right.
+
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
 index, i.e. everything git already knows about; that one reads Claude Code's
