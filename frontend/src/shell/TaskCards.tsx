@@ -36,13 +36,22 @@ import { pushToast } from "@platform/lib/toast";
 import { ChatFrame, ChatFramePlaceholder } from "@platform/ui/ChatFrame";
 import { Modal } from "@platform/ui/modal/Modal";
 import { cardFrameSrc, folderHref, peekFrameSrc } from "./schedule-lib";
-import { ICON_ARCHIVE, ICON_UNARCHIVE, IdentityChip, StatusIcon } from "./ScheduleTaskViews";
+import {
+  ICON_ARCHIVE,
+  ICON_TRASH,
+  ICON_UNARCHIVE,
+  IdentityChip,
+  StatusIcon,
+} from "./ScheduleTaskViews";
+import { EraseTaskModal } from "./EraseTaskModal";
 import {
   CARD_PAGE,
   basename,
   cardKey,
   cardsForTasks,
+  ERASE_BLOCKED_HINT,
   emptyPaneText,
+  eraseBlocked,
   filingIntent,
   firstLine,
   opensElsewhere,
@@ -415,6 +424,18 @@ function TaskCard({
   const filing = filingIntent(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
+  // THE DELETE DOOR, on EVERY card (design.md §2's open question, answered:
+  // "all cards", matching the chat's kebab rather than the List's row — the
+  // List's trash is on a folder-missing row because that row has nothing else
+  // left, which is a fact about that row and not about the verb).
+  //
+  // Its guard is the server's own (tasks-lib.eraseBlocked): a run in flight —
+  // in_progress OR a needs_attention turn parked on a permission card — cannot
+  // have its transcript pulled out from under it, so the door greys and its
+  // hint says the only thing that would help. Disabled means the dialog never
+  // opens, so nobody reads the refusal for the first time inside a confirmation.
+  const [erasing, setErasing] = useState(false);
+  const blocked = eraseBlocked(task);
   const refile = async () => {
     if (!filing || acting) return;
     setActing(true);
@@ -515,56 +536,81 @@ function TaskCard({
             it: a press here stops before the head's onClick, so a door never
             also opens the popup. Keys are already the head's concern only when
             pressed on the head itself (onKeyDown above). */}
+        {/* `data-hint=""` is the OPT-OUT (hints.ts): the strip sits over the
+            title, and the hint panel resolves by piercing the stack under the
+            pointer, so without it a door answered with the task's name (Akshil,
+            2026-09-06). Each door carries its own hint instead of a native
+            `title` — the app's panel shows on pointerover, a title after the
+            browser's second, which read as no caption at all.
+
+            Drawn only when it has a door to hold (a card with nothing to file,
+            a folder that opens, and a folder that is not gone has none). */}
         {(filing || explorer || gone) && (
-          // `data-hint=""` is the OPT-OUT (hints.ts): the strip sits over the
-          // title, and the hint panel resolves by piercing the stack under the
-          // pointer, so without it a door answered with the task's name (Akshil,
-          // 2026-09-06). Each door carries its own hint instead of a native
-          // `title` — the app's panel shows on pointerover, a title after the
-          // browser's second, which read as no caption at all.
-          <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
-            {filing && (
-              <button
-                type="button"
-                className="task-card-door"
-                disabled={acting}
-                data-hint={note || filing.label}
-                aria-label={filing.label}
-                onClick={refile}
-              >
-                {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
-              </button>
-            )}
-            {explorer && (
-              <a
-                // A real link with a real href, so ⌘-click and middle-click open
-                // the folder in a tab — the rule every row on this page follows.
-                className="task-card-door"
-                href={explorer}
-                data-hint={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
-                aria-label="Open in Explorer"
-                onClick={(e) => {
-                  if (opensElsewhere(e)) return;
-                  e.preventDefault();
-                  navigateUrl(explorer);
-                }}
-              >
-                {ICON_FOLDER}
-              </a>
-            )}
-            {gone && (
-              <button
-                type="button"
-                className="task-card-door is-disabled"
-                aria-disabled="true"
-                data-hint={MISSING_FOLDER_TOAST}
-                aria-label="Open in Explorer — folder deleted"
-                onClick={toastMissingFolder}
-              >
-                {ICON_FOLDER}
-              </button>
-            )}
-          </span>
+        <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
+          {/* Delete for good — ONLY on a card whose folder is gone (Akshil,
+              2026-09-07: "should only show up if it has a folder missing
+              error"): a task that can still be opened is archived, not
+              deleted, and a trash on every card read as an invitation. It
+              sits LEFT of Archive (Akshil, 2026-09-07), first in the strip,
+              on every surface that has the strip: card, Board, popup. */}
+          {gone && (
+<button
+            type="button"
+            className="task-card-door task-card-door--danger"
+            disabled={blocked || acting}
+            data-hint={blocked ? ERASE_BLOCKED_HINT : "Delete task forever"}
+            aria-label={`Delete ${task.task_id} forever`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (blocked || acting) return;
+              setErasing(true);
+            }}
+          >
+            {ICON_TRASH}
+          </button>
+          )}
+          {filing && (
+            <button
+              type="button"
+              className="task-card-door"
+              disabled={acting}
+              data-hint={note || filing.label}
+              aria-label={filing.label}
+              onClick={refile}
+            >
+              {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
+            </button>
+          )}
+          {explorer && (
+            <a
+              // A real link with a real href, so ⌘-click and middle-click open
+              // the folder in a tab — the rule every row on this page follows.
+              className="task-card-door"
+              href={explorer}
+              data-hint={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
+              aria-label="Open in Explorer"
+              onClick={(e) => {
+                if (opensElsewhere(e)) return;
+                e.preventDefault();
+                navigateUrl(explorer);
+              }}
+            >
+              {ICON_FOLDER}
+            </a>
+          )}
+          {gone && (
+            <button
+              type="button"
+              className="task-card-door is-disabled"
+              aria-disabled="true"
+              data-hint={MISSING_FOLDER_TOAST}
+              aria-label="Open in Explorer — folder deleted"
+              onClick={toastMissingFolder}
+            >
+              {ICON_FOLDER}
+            </button>
+          )}
+        </span>
         )}
       </header>
       <div className="task-card-body">
@@ -591,6 +637,19 @@ function TaskCard({
           </p>
         )}
       </div>
+      {erasing && (
+        <EraseTaskModal
+          task={task}
+          onClose={() => setErasing(false)}
+          onDone={() => {
+            setErasing(false);
+            // The card is about to leave the wall, so the receipt goes to the
+            // page's toast rather than onto the card's own note line.
+            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            onReload?.();
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -634,8 +693,12 @@ function TaskPeek({
   // is gone, when the door goes disabled and says why (the card's rule).
   const explorer = gone ? null : (taskHref(task) ?? folderHref(task));
   const filing = filingIntent(task);
+  // Same guard as the card's door: a live run cannot be erased (409), so the
+  // popup's Delete greys out and says why instead of opening a doomed confirm.
+  const blocked = eraseBlocked(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
+  const [erasing, setErasing] = useState(false);
 
   // ESCAPE FROM INSIDE THE FRAME. The chassis closes on Esc with a listener on
   // THIS document, and the frame is the dialog's first focusable, so the focus
@@ -690,6 +753,7 @@ function TaskPeek({
   };
 
   return (
+    <>
     <Modal
       title={
         <span className="task-peek-title">
@@ -702,7 +766,14 @@ function TaskPeek({
           </span>
         </span>
       }
-      onClose={onClose}
+      // While the confirm is up the popup is INERT to its own closers: the
+      // confirm is a second Modal portaled after this one (so it paints above
+      // and holds focus — the chassis leaves a nested [role="dialog"] alone),
+      // and Escape reaches both document listeners; this one must not also
+      // close the popup, or an Esc on the confirm ends the whole thing. The
+      // popup stays MOUNTED, so the chat frame keeps its draft and its Escape
+      // handler (review, PR #1049: unmounting it reloaded the frame).
+      onClose={erasing ? () => {} : onClose}
       width="54vw"
       dialogClassName="task-peek"
       plainBody
@@ -719,6 +790,20 @@ function TaskPeek({
       // (Akshil, 2026-09-05: "switch archive and open explorer buttons").
       headActions={
         <>
+          {/* Same door, same place as the card's strip: delete for good, only
+              when the folder is gone, LEFT of Archive (Akshil, 2026-09-07). */}
+          {gone && (
+            <button
+              type="button"
+              className="btn btn-secondary modal-head-act modal-head-act--danger"
+              disabled={acting || blocked}
+              title={blocked ? ERASE_BLOCKED_HINT : "Delete task forever"}
+              onClick={() => setErasing(true)}
+            >
+              {ICON_TRASH}
+              Delete
+            </button>
+          )}
           {filing && (
             <button
               type="button"
@@ -792,6 +877,19 @@ function TaskPeek({
         </p>
       )}
     </Modal>
+      {erasing && (
+        <EraseTaskModal
+          task={task}
+          onClose={() => setErasing(false)}
+          onDone={() => {
+            setErasing(false);
+            pushToast({ msg: `Deleted ${task.task_id}`, tone: "info" });
+            onReload?.();
+            onClose();
+          }}
+        />
+      )}
+    </>
   );
 }
 

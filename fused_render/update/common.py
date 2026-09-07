@@ -32,7 +32,12 @@ PUBLIC_KEY = base64.b64decode("u4eiDvccdWmsVCN0nifCEXqmU+xVGIDPe8LP5KRlDns=")
 SIGNING_CONTEXT = "fused-render-update"
 FETCH_TIMEOUT_S = 15.0
 DOWNLOAD_TIMEOUT_S = 300.0
-STARTUP_DELAY_S = 60.0
+# Short — the sidebar's first badge (UpdateBadge, 60s idle poll on top of this)
+# used to be up to ~2 minutes late after launch: 60s startup delay plus up to
+# 60s until the first poll landed. 10s keeps the manifest check off the
+# earliest, busiest moment of startup while getting the badge on screen within
+# about a minute of launch instead of two.
+STARTUP_DELAY_S = 10.0
 CHECK_INTERVAL_S = 6 * 60 * 60
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_BYTES = 600 * 1024 * 1024

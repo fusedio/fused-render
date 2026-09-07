@@ -17,6 +17,15 @@ import UpdateBadge from "@platform/ui/UpdateBadge";
 import VersionChip from "@platform/ui/VersionChip";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
+import { updateInstall } from "@platform/lib/api";
+import {
+  pokeUpdateStatus,
+  setUpdateStatus,
+  updateLabel,
+  updateRelevant,
+  useUpdateStatus,
+} from "@platform/lib/update-status";
+import { pushToast } from "@platform/lib/toast";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
@@ -439,6 +448,49 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // AI Models row itself now that it is primary nav.
   const aiRuntime = useAiRuntime();
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
+
+  // The same self-update poll UpdateBadge reads (platform/lib/update-status) —
+  // one store, so the collapsed rail's dot on Preferences and the popover row
+  // below agree with the expanded badge about what's happening, without a
+  // second timer.
+  const updateStatus = useUpdateStatus();
+  const updateIsRelevant = updateRelevant(updateStatus);
+  // Same action UpdateBadge's own button performs: dmg installs itself, brew
+  // installs are copy-the-command-and-run-it-yourself (the app never shells
+  // out to brew). Reached from the popover row rather than the expanded
+  // badge's own panel, so there's no panel here to flash "Copied" in — a
+  // toast says it instead.
+  const handleUpdatePick = () => {
+    if (!updateStatus) return;
+    if (updateStatus.method === "brew") {
+      if (!updateStatus.manual_command) return;
+      navigator.clipboard.writeText(updateStatus.manual_command);
+      pushToast({ msg: "Copied", tone: "info" });
+      return;
+    }
+    // ONLY AN UPDATE THAT IS WAITING GETS INSTALLED (bugbot, PR #1049): the
+    // row is drawn for every relevant state, but "Updating…" must not start
+    // a second install under the first, and "Ready to restart" is the
+    // ServerStatusBanner's restart card's job — this row is a status line
+    // there, the same as UpdateBadge's installed state.
+    if (updateStatus.state !== "available" && updateStatus.state !== "error") return;
+    // Same order as UpdateBadge.install: the poke comes AFTER the install
+    // answers, so the poll it arms sees "installing" and runs at the busy
+    // interval — poked first it would still read "available" and arm the 60s
+    // idle timer, leaving the rail dot behind for a minute (bugbot, PR #1049).
+    void updateInstall()
+      .then(setUpdateStatus)
+      .catch(() => {
+        // Fall through — the re-armed poll picks up the real state.
+      })
+      .finally(pokeUpdateStatus);
+  };
+  const updateDot = updateIsRelevant ? (
+    <span
+      className="sidebar-rail-dot is-update"
+      title={updateLabel(updateStatus!)}
+    />
+  ) : undefined;
   // `.sidebar-rail-dot`, the SAME dot the Tasks row wears, since 2026-08-24
   // (Akshil: "the dots in left sidebar are not consistent, make dot on ai models
   // page similar to one we have in tasks page"). It wore
@@ -602,11 +654,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the former sidebar entries (Config), then the settings
   // pages. Same gates as before — an entry a machine can't use stays hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
+    // A first row for the same fact the collapsed rail's dot and the expanded
+    // badge both carry — the popover is the only one of the three with room
+    // for the actual verb (install / copy the command), so it gets one here
+    // rather than just a label. `href` is a stable key (see PrefsMenuEntry) —
+    // this row never navigates, it only runs `handleUpdatePick`.
+    ...(updateIsRelevant && updateStatus
+      ? [{ href: "#update", label: updateLabel(updateStatus), onPick: handleUpdatePick }, "separator" as const]
+      : []),
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
       : []),
   ];
-  if (menuEntries.length > 0) menuEntries.push("separator");
+  if (claudeConfigAvailable) menuEntries.push("separator");
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
@@ -752,6 +812,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/Mounts/etc.
       onClick: (e) => togglePrefsMenu(e.currentTarget),
+      // The rail's only signal that an update exists: collapsed, there is no
+      // Settings row for the UpdateBadge to sit above (see design.md §1) — so
+      // the same fact becomes a dot on the one rail icon that leads to it.
+      badge: updateDot,
     },
   ];
 

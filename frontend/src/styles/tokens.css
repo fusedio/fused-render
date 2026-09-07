@@ -31,6 +31,11 @@
    * value is the same in each palette — a token so the no-literals rule holds,
    * not because it varies. */
   --qr-paper: #fff;
+  /* The spinner drawn ON that paper: black at two strengths, the same in both
+   * themes for the same reason the paper is. Tokens so the no-literals rule
+   * holds (tests/test_theme.py), not because they vary. */
+  --qr-ink-soft: rgb(0 0 0 / 12%);
+  --qr-ink: rgb(0 0 0 / 45%);
 
   /* rgb triples for the translucent washes (see the note above). */
   --tint: 255, 255, 255;
@@ -326,6 +331,8 @@
   --success: #1a7f37;
   --warning: #8f6a10;
   --qr-paper: #fff; /* same in both themes — see the dark palette's note */
+  --qr-ink-soft: rgb(0 0 0 / 12%);
+  --qr-ink: rgb(0 0 0 / 45%);
 
   --tint: 0, 0, 0;
   --accent-rgb: 95, 115, 0;
