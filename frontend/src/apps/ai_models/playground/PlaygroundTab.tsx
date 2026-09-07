@@ -275,16 +275,17 @@ export default function PlaygroundTab() {
   // sidebar is the only list of what is on the disk that this tab shows, and a
   // model that silently is not in it reads as a download that failed.
   const unsupported = catalog.status === "ok" ? catalog.unsupported : [];
-  // The apple tier's own state, for the one sentence the rail says when its
-  // ids are NOT merged in: on a Mac that could run them (`relevant`) but has
-  // Apple Intelligence off or the model still downloading. Quiet elsewhere —
-  // "needs macOS" is not advice a Linux user can take.
+  // The apple tier's own state, for the one sentence the rail says while its
+  // ids are STILL COMING: the model is downloading and its rows land when it
+  // does. **An unavailable tier says nothing at all** — the reason line it
+  // used to draw ("Apple Silicon is required", "Apple Intelligence is off")
+  // named a machine the reader cannot change from here, so it was a permanent
+  // sentence in a menu of things you can do. Absence is the honest rendering
+  // of a tier this Mac will never have.
   const apple = catalog.status === "ok" ? catalog.apple : null;
   const appleNote =
-    apple && apple.relevant && !apple.available
-      ? apple.state === "loading"
-        ? "Apple's on-device model is still downloading — its rows appear when it lands."
-        : `Apple on-device model: ${apple.reason || "unavailable"}`
+    apple && apple.relevant && !apple.available && apple.state === "loading"
+      ? "Apple's on-device model is still downloading — its rows appear when it lands."
       : null;
 
   // The RAIL's reading order — text generation leads now (2026-08-24): it is
