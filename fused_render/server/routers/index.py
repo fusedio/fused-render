@@ -329,10 +329,12 @@ WARM_RANK_QUERY = "zqxjv"
 
 
 def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
-               token: CancelToken | None = None) -> dict:
+               token: CancelToken | None = None, ranked: bool = True) -> dict:
     """`search_ranked`, unchanged, under the name the rest of this module and
-    the startup warm call it by. `token`, when given, is forwarded unchanged."""
-    return index_rank(cfg, root, q=q, limit=limit, token=token)
+    the startup warm call it by. `token`, when given, is forwarded unchanged.
+    `ranked`, likewise (D720) — default True, so the startup warm call and
+    every caller that doesn't pass it keeps the scored behavior."""
+    return index_rank(cfg, root, q=q, limit=limit, token=token, ranked=ranked)
 
 
 def _covers(a: str, b: str) -> bool:
@@ -1024,7 +1026,8 @@ async def api_index_search(request: Request, root: str = Query(default=""),
 @router.get("/api/index/rank")
 async def api_index_rank(request: Request, root: str = Query(default=""),
                          q: str = Query(default=""),
-                         limit: int = Query(default=RANK_LIMIT)):
+                         limit: int = Query(default=RANK_LIMIT),
+                         ranked: bool = Query(default=True)):
     """The home search: filtered AND ranked here, top `limit` hits returned.
 
     The corpus route next door hands the client every entry under `root`
@@ -1045,6 +1048,12 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     with a scan in flight is polled. Deciding it here is the point — the mount
     policy is `MountGuard`'s, and a second copy of it in the client would
     drift.
+
+    `ranked` (D720, default True) is the owner's unranked-search preference:
+    `false` orders hits `depth ASC, rel ASC` instead of by score — see
+    `_rank_sql`'s docstring (query.py) for the exact ordering guarantee.
+    Threaded straight through to `search_ranked`; every existing caller omits
+    it and gets the scored behavior unchanged.
 
     `positions` are deliberately NOT returned. The client re-runs `fuzzyMatch`
     over the ~200 rows it gets back to build its highlights, so
@@ -1098,7 +1107,8 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
             if token.cancelled:
                 return Response(status_code=499)
             try:
-                out = await asyncio.to_thread(_rank_body, cfg, root, q, limit, token)
+                out = await asyncio.to_thread(
+                    _rank_body, cfg, root, q, limit, token, ranked)
             except Cancelled:
                 logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
                             q, root, (time.monotonic() - t0) * 1000)

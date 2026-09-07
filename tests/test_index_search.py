@@ -315,7 +315,7 @@ def test_rank_route_preserves_search_ranked_s_order_exactly(
 
     order = ["zzz.txt", "aaa.txt", "mmm.txt"]
 
-    def fake_rank_body(cfg, root, q, limit=None, token=None):
+    def fake_rank_body(cfg, root, q, limit=None, token=None, ranked=True):
         return {"covered": True, "reason": "", "scanned_partitions": 0,
                 "of_partitions": 0,
                 "hits": [{"rel": r, "is_dir": False, "size": 1, "mtime": 1.0,
@@ -363,7 +363,7 @@ def test_rank_route_answers_a_disconnected_client_with_a_quiet_499(
     from fused_render.index.cancel import Cancelled
     from fused_render.server.routers import index as index_router
 
-    def slow_cancellable_rank(cfg, root, q, limit, token=None):
+    def slow_cancellable_rank(cfg, root, q, limit, token=None, ranked=True):
         import time as _time
 
         _time.sleep(0.05)
@@ -410,6 +410,57 @@ def test_rank_route_honours_the_limit(home, tmp_path):
     body = client.get("/api/index/rank",
                       params={"root": root, "q": "alpha", "limit": 3}).json()
     assert len(body["hits"]) == 3 and body["truncated"] is True
+
+
+def test_rank_route_defaults_to_ranked(home, tmp_path, monkeypatch):
+    """No `ranked` param at all — every existing caller and test — must still
+    reach `search_ranked` with `ranked=True`, so behavior is unaffected."""
+    from fused_render.server.routers import index as index_router
+
+    seen = {}
+
+    def fake_rank_body(cfg, root, q, limit=None, token=None, ranked=True):
+        seen["ranked"] = ranked
+        return {"covered": True, "reason": "", "scanned_partitions": 0,
+                "of_partitions": 0, "hits": [], "truncated": False, "total": 0}
+
+    monkeypatch.setattr(index_router, "_rank_body", fake_rank_body)
+    root = str(tmp_path / "proj")
+    os.makedirs(root, exist_ok=True)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    client.get("/api/index/rank", params={"root": root, "q": "x"})
+    assert seen["ranked"] is True
+
+
+def test_rank_route_ranked_false_is_threaded_through_and_answers_unranked_order(
+    home, tmp_path,
+):
+    """`ranked=false` on the wire reaches `search_ranked` and actually
+    changes the order — `depth ASC, rel ASC` instead of scored — and the
+    response still omits the stripped wire fields exactly as ranked mode
+    does."""
+    root = str(tmp_path / "proj")
+    # A deep, high-scoring name match and a shallow, lower-scoring one: ranked
+    # mode would put the deep exact-name match first (name bonus dominates
+    # the depth penalty here); unranked mode must put the shallow one first
+    # purely on depth.
+    client = _ranked_client(
+        tmp_path, root,
+        [root + "/a/b/c/d/alpha.txt", root + "/z-alpha-ish.txt"])
+    ranked_body = client.get(
+        "/api/index/rank", params={"root": root, "q": "alpha"}).json()
+    assert ranked_body["hits"][0]["rel"] == "a/b/c/d/alpha.txt"
+
+    unranked_body = client.get(
+        "/api/index/rank",
+        params={"root": root, "q": "alpha", "ranked": "false"}).json()
+    assert unranked_body["ok"] is True
+    rels = [h["rel"] for h in unranked_body["hits"]]
+    assert rels == sorted(rels, key=lambda r: (r.count("/"), r))
+    assert rels[0] == "z-alpha-ish.txt"
+    for h in unranked_body["hits"]:
+        for k in ("score", "tier", "depth", "longest_run"):
+            assert k not in h
 
 
 def test_search_under_ignores_a_lookalike_underscore_sibling(tmp_path):

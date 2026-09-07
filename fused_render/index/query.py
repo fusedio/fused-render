@@ -468,9 +468,34 @@ def is_hidden_rel(rel: str) -> bool:
     return rel.startswith(".") or "/." in rel
 
 
-def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> str:
+def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int,
+              ranked: bool = True) -> str:
     """The whole rank query: substring filter, scoring, and ORDER BY ... LIMIT,
     all in SQL — no candidate cap, no Python-side pass.
+
+    `ranked=False` (the owner's unranked-results preference, D720) keeps the
+    exact same `WHERE lrel LIKE ...` substring filter and hidden-file handling
+    below, but drops the entire scoring apparatus — no `p0`/`strpos`, no
+    `segment_starts`, no `name_bonus`, no `score`, no `tier` — computed
+    nowhere, not computed-then-discarded. It orders `depth ASC, rel ASC`
+    instead: `depth` here is `rel_depth`, the same ROOT-RELATIVE depth the
+    ranked branch computes in `inner` (see `search_ranked`'s docstring on
+    `rel_depth` for why the parquet's own stored absolute `depth` column would
+    be the wrong one — the ranked branch had a real bug from exactly that mix-
+    up before it was fixed). This mirrors `search_under`'s own `ORDER BY
+    depth, path` above — the ordering the owner's user confirmed is usable.
+    `depth, rel` is a TOTAL order as long as `rel` is unique, which it is: a
+    file and a directory cannot share a path on a real filesystem, and both
+    parquet stores are keyed on that same path uniqueness — the ranked
+    branch's own final tie-break (`rel ASC`, after tier/score/depth/
+    lower(rel)) already leans on this identical fact. No `lower(rel)` ahead of
+    `rel` here — unlike the ranked branch, which needs it as an intermediate
+    tie-break before `rel ASC` because ties can survive tier/score/depth —
+    the unranked branch's ORDER BY has only two keys and `rel` alone already
+    makes it total, so a `lower(rel)` in front would reintroduce a case-
+    insensitive ordering question for no benefit (see D712 on the ranked
+    branch's own `lower(rel)`/`rel` split for the class of bug that guards
+    against, which does not apply to a two-key order that is already total).
 
     `inner` is the UNION ALL of the files/dirs branches (each already carries
     `rel`, `size`, `mtime`, `is_dir`, `depth` — RELATIVE to the search root,
@@ -553,6 +578,15 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> 
     `_group_case_only_ties` helper exists because of it, not because of
     this) and is unaffected by adding `rel ASC` here — it only fixes SQL's
     OWN run-to-run stability, not cross-language agreement."""
+    if not ranked:
+        # No `p0`/`strpos`, no `segment_starts`, no `name_bonus`, no `score`,
+        # no `tier` — the scoring apparatus below is never built for this
+        # branch, not built and then left out of the SELECT list.
+        return (
+            f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
+            f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
+            f"ORDER BY depth ASC, rel ASC "
+            f"LIMIT {limit}")
     # `BETWEEN 'A' AND 'Z'`, not `regexp_matches(c, '^[A-Z]$')`: same ASCII-
     # uppercase test (a single-byte comparison DuckDB can do without spinning
     # up its regex engine), measured ~15-20% faster and byte-for-byte
@@ -585,7 +619,7 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int) -> 
 
 def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                   limit: int = RANK_LIMIT, include_dirs: bool = True,
-                  token=None) -> dict:
+                  token=None, ranked: bool = True) -> dict:
     """Search `root` for `q` — filtered, scored and ordered ENTIRELY in SQL,
     top `limit` returned. No candidate rows cross into Python.
 
@@ -643,6 +677,13 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     missing index or a package directory answers `covered: false` with no hits
     — never an error, because "no index yet", "not covered" and "a scan is
     running" are one condition to a search box.
+
+    `ranked=False` (D720) is the owner's unranked-search preference: same
+    filter, same hidden-file handling, `depth ASC, rel ASC` order instead of
+    a score — see `_rank_sql`'s docstring on that branch for the ordering
+    guarantee and why it's total. Threaded straight into `_rank_sql`; every
+    other piece of this function (coverage, root/prefix resolution, LIMIT,
+    truncation, cancellation) is unchanged by it.
 
     `token` (index/cancel.CancelToken), when given, is bound to the duckdb
     connection the moment it exists and checked immediately before and after
@@ -786,29 +827,42 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # One row past `limit` so "there was more" is known without a count —
         # same trick `search_under` uses for its own LIMIT.
         rows = con.execute(
-            _rank_sql(inner, hidden, ql, qq, n, limit + 1)).fetchall()
+            _rank_sql(inner, hidden, ql, qq, n, limit + 1, ranked=ranked)).fetchall()
         if token is not None:
             token.check()
         logger.debug("index rank: %r under %s: %d row(s) in %.1fms",
                     qs, root, len(rows), (time.monotonic() - t0) * 1000)
         truncated = len(rows) > limit
-        # `score`/`tier`/`depth`/`longest_run` stay on EVERY hit dict this
-        # function returns, even though nothing on the client's index-answered
-        # path reads them any more (see this docstring above, and DECISIONS.md)
-        # — this function's own test suite (test_index_rank.py) pins
-        # `_rank_sql`'s scoring correctness (the depth penalty, both name
-        # bonuses, the tier boundaries, the camelCase segment-start case)
-        # directly off these fields, and that is the only place they still
-        # earn their keep. The HTTP layer (server/routers/index.py's
-        # `api_index_rank`) is where they actually stop reaching the wire —
-        # same pattern already used there to drop `positions`.
-        hits = [{"rel": rel, "is_dir": bool(is_dir),
-                 "size": int(size) if size is not None else None,
-                 "mtime": float(mtime) if mtime is not None else None,
-                 "score": int(score), "longest_run": n, "tier": int(tier),
-                 "depth": int(depth)}
-                for rel, size, mtime, is_dir, depth, score, tier
-                in rows[:limit]]
+        if ranked:
+            # `score`/`tier`/`depth`/`longest_run` stay on EVERY hit dict this
+            # function returns, even though nothing on the client's index-
+            # answered path reads them any more (see this docstring above, and
+            # DECISIONS.md) — this function's own test suite (test_index_rank.py)
+            # pins `_rank_sql`'s scoring correctness (the depth penalty, both
+            # name bonuses, the tier boundaries, the camelCase segment-start
+            # case) directly off these fields, and that is the only place they
+            # still earn their keep. The HTTP layer (server/routers/index.py's
+            # `api_index_rank`) is where they actually stop reaching the wire —
+            # same pattern already used there to drop `positions`.
+            hits = [{"rel": rel, "is_dir": bool(is_dir),
+                     "size": int(size) if size is not None else None,
+                     "mtime": float(mtime) if mtime is not None else None,
+                     "score": int(score), "longest_run": n, "tier": int(tier),
+                     "depth": int(depth)}
+                    for rel, size, mtime, is_dir, depth, score, tier
+                    in rows[:limit]]
+        else:
+            # Unranked (D720): `_rank_sql` emits no score/tier — every hit
+            # still carries those keys as fixed constants (0/0/len(q)) so
+            # existing callers/tests keying off them unconditionally don't
+            # KeyError; the HTTP layer strips all four before the wire either
+            # way (`_WIRE_DROP`, server/routers/index.py).
+            hits = [{"rel": rel, "is_dir": bool(is_dir),
+                     "size": int(size) if size is not None else None,
+                     "mtime": float(mtime) if mtime is not None else None,
+                     "score": 0, "longest_run": n, "tier": 0,
+                     "depth": int(depth)}
+                    for rel, size, mtime, is_dir, depth in rows[:limit]]
         return {**base, "hits": hits, "truncated": truncated,
                 "total": len(hits)}
     except duckdb.InterruptException:

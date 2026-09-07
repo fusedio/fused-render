@@ -387,3 +387,106 @@ def test_a_backslash_in_the_query_does_not_break_the_sql(tmp_path):
     platform including Windows."""
     cfg = _index(tmp_path, "/r", ["/r/back-slash.txt", "/r/backXslash.txt"])
     assert {h["rel"] for h in search_ranked(cfg, "/r", "back\\slash")["hits"]} == set()
+
+
+# -- unranked mode (`ranked=False`) --
+
+def test_unranked_returns_the_same_set_of_rows_ordered_depth_then_rel(tmp_path):
+    """`ranked=False` keeps the exact same substring filter — same rows
+    match — but orders `depth ASC, rel ASC` instead of scoring. Built on the
+    fixture harness like the JS-parity test above: gather the SET of rels
+    the ranked branch returns for a query, then check the unranked branch
+    returns the identical set, just reordered."""
+    cfg = _index_from_fixture(tmp_path)
+    for query in FIXTURE["queries"]:
+        ranked_rels = {h["rel"] for h in search_ranked(cfg, "/r", query, limit=200)["hits"]}
+        out = search_ranked(cfg, "/r", query, limit=200, ranked=False)
+        got = [h["rel"] for h in out["hits"]]
+        assert set(got) == ranked_rels
+        # depth ASC, then rel ASC (byte order) is a TOTAL order over `rel`,
+        # which is unique across the files+dirs union (no file and directory
+        # can share a path on a real filesystem, and the parquet stores are
+        # keyed on that same uniqueness) — so this is the one true order,
+        # not merely "a" valid one.
+        depths = {h["rel"]: h["depth"] for h in out["hits"]}
+        assert got == sorted(got, key=lambda rel: (depths[rel], rel))
+
+
+def test_unranked_sql_has_no_scoring_apparatus(tmp_path):
+    """The unranked branch must not compute score/tier/segment_starts/p0 and
+    then merely discard them — the whole scoring apparatus must be ABSENT
+    from the generated SQL text, so a future refactor that computes-then-
+    ignores fails this test."""
+    from fused_render.index.query import _rank_sql
+
+    sql = _rank_sql("SELECT 1 AS rel, 1 AS size, 1 AS mtime, false AS is_dir, "
+                     "1 AS depth, 'x' AS nm, 'x' AS lrel", "", "q", "q", 1, 10,
+                     ranked=False)
+    lowered = sql.lower()
+    for banned in ("score", "tier", "segment_starts", "p0", "strpos", "name_bonus"):
+        assert banned not in lowered, f"{banned!r} leaked into the unranked SQL"
+    assert "order by depth asc, rel asc" in lowered
+
+
+def test_unranked_mode_still_applies_the_limit_and_reports_truncation(tmp_path):
+    files = [f"/r/alpha-{i}.txt" for i in range(50)]
+    cfg = _index(tmp_path, "/r", files)
+    out = search_ranked(cfg, "/r", "alpha", limit=10, ranked=False)
+    assert len(out["hits"]) == 10
+    assert out["truncated"] is True
+    assert out["total"] == 10
+
+
+def test_unranked_hits_still_carry_placeholder_wire_fields(tmp_path):
+    """`score`/`tier`/`longest_run` are fixed constants in unranked mode
+    (0 / 0 / len(q)) rather than absent — existing callers/tests key off
+    these dict fields unconditionally."""
+    cfg = _index(tmp_path, "/r", ["/r/environment.yml"])
+    [hit] = search_ranked(cfg, "/r", "environment.yml", ranked=False)["hits"]
+    assert hit["rel"] == "environment.yml"
+    assert hit["score"] == 0
+    assert hit["tier"] == 0
+    assert hit["longest_run"] == len("environment.yml")
+    assert hit["depth"] == 1
+
+
+def test_unranked_like_metacharacters_match_only_the_literal_filename(tmp_path):
+    """Mirrors `test_like_metacharacters_in_the_query_match_only_the_literal_filename`
+    for the unranked branch — same escaping, same guarantee."""
+    cfg = _index(tmp_path, "/r", [
+        "/r/100%done.txt", "/r/100xdone.txt", "/r/100done.txt",
+        "/r/a_b.txt", "/r/aXb.txt",
+    ])
+
+    def rels(q):
+        return {h["rel"] for h in search_ranked(cfg, "/r", q, ranked=False)["hits"]}
+
+    assert rels("100%done") == {"100%done.txt"}
+    assert rels("%done") == {"100%done.txt"}
+    assert rels("a_b") == {"a_b.txt"}
+    assert rels("_b") == {"a_b.txt"}
+
+
+def test_unranked_a_quote_in_the_query_does_not_break_the_sql(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/it's.txt", "/r/back-slash.txt"])
+    assert {h["rel"] for h in search_ranked(cfg, "/r", "it's", ranked=False)["hits"]} == \
+        {"it's.txt"}
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a backslash cannot appear in a Windows filename (it's a path "
+           "separator there), so there is no literal `back\\slash.txt` for "
+           "the query to match — this half of the coverage is POSIX-only",
+)
+def test_unranked_a_backslash_filename_is_matched_by_the_same_literal_query(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/it's.txt", "/r/back\\slash.txt"])
+    assert {h["rel"] for h in
+            search_ranked(cfg, "/r", "back\\slash", ranked=False)["hits"]} == \
+        {"back\\slash.txt"}
+
+
+def test_unranked_a_backslash_in_the_query_does_not_break_the_sql(tmp_path):
+    cfg = _index(tmp_path, "/r", ["/r/back-slash.txt", "/r/backXslash.txt"])
+    assert {h["rel"] for h in
+            search_ranked(cfg, "/r", "back\\slash", ranked=False)["hits"]} == set()
