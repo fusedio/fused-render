@@ -47,6 +47,8 @@ import {
   type OnboardingState,
 } from "@platform/lib/api";
 
+import { ONBOARDING_PATH } from "./state";
+
 export type StageStatus = OnboardingStageStatus;
 export type Stages = Record<string, OnboardingStage>;
 
@@ -66,6 +68,12 @@ function set(next: OnboardingState | null) {
   if (next === snapshot) return;
   snapshot = next;
   emit();
+}
+
+/** Adopt a snapshot some other call brought back (the wizard's `opened`
+ *  write, complete, dismiss) — every reply is the whole state. */
+export function setProgress(next: OnboardingState): void {
+  set(next);
 }
 
 /** Seed from the boot config, once — a first paint that does not wait. */
@@ -166,6 +174,27 @@ export function progressPercent(
   // Never round up to 100 over a stage that is only half done.
   const percent = complete === counted ? 100 : Math.min(99, Math.round(raw));
   return { percent, counted, complete, partial };
+}
+
+/** The first stage that still needs doing (not complete, not `n/a`), in
+ *  wizard order — where a click on the meter should land. Null when nothing
+ *  is left. */
+export function firstOpenStage(stages: Stages | undefined): StageId | null {
+  for (const id of STAGE_IDS) {
+    const s = stageStatus(stages, id);
+    if (s !== "complete" && s !== "n/a") return id;
+  }
+  return null;
+}
+
+/** The wizard's URL, open on the first step still to do — what the sidebar
+ *  meter, Help › Setup wizard and the boot auto-show all land on. This
+ *  REPLACED the stored "last open step" resume point: where the user last
+ *  happened to be is a worse answer than what is left to do, and the stages
+ *  already know that. Nothing left (or nothing known) opens at the top. */
+export function onboardingUrl(stages: Stages | undefined): string {
+  const open = firstOpenStage(stages);
+  return open && open !== STAGE_IDS[0] ? `${ONBOARDING_PATH}?step=${encodeURIComponent(open)}` : ONBOARDING_PATH;
 }
 
 /** Whether the sidebar shows the meter at all. Not before anything has been

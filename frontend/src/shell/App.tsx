@@ -52,7 +52,8 @@ import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
-import { ONBOARDING_PATH, onboardingUrl, shouldAutoShow } from "@shell/onboarding/state";
+import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
+import { onboardingUrl } from "@shell/onboarding/progress";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
@@ -657,7 +658,7 @@ export default function App({ config }: { config: Config }) {
     location.pathname === "/home" &&
     shouldAutoShow(config)
   ) {
-    history.replaceState(null, "", onboardingUrl(config));
+    history.replaceState(null, "", onboardingUrl(config.onboarding?.stages));
   }
   autoShowDecided = true;
   // Legacy: the CLAUDE.md explorer ("MD Files") was deleted from the Config

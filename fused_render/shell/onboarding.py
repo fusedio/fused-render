@@ -15,12 +15,14 @@ what lets a later "Setup" entry in the sidebar's Help menu reopen the wizard
 without either write being touched, and what a future version bump could key
 a re-show on (a dismissed user is a different audience from a completed one).
 
-`step` is the third field: the id of the wizard step the user last had open,
-written by the shell on every step change. It is what lets the wizard RESUME —
-after a server restart (the auto-show lands on that step, not the first) and
-after a dismiss (Help › Setup wizard reopens where the user left). `complete`
-clears it, so a finished user who reopens the wizard starts from the top;
-`dismiss` keeps it. Server-side for the same reason as the flags.
+`opened_at` is the third: when the wizard was first on screen, stamped by the
+first write of any kind (a stage report, ✕, the end, or the bare `opened`
+POST the wizard makes on mount). It is the auto-show's third leg — the wizard
+is shown to someone who has NEVER seen it, and however they leave (Back, a
+refresh, the sidebar meter) it is not shown again unasked. (A `step` field, the
+last open step for a resume, was stored by earlier builds; it is gone — the
+wizard now opens on the first step still to do, read off `stages` — and a
+stored one only counts as evidence of an open.)
 
 `stages` is the fourth field, and the one behind the PROGRESS METER (the
 sidebar's "Setup 60%" row and the wizard's top-bar pills): one record per
@@ -220,21 +222,19 @@ def _observe(stages: dict) -> None:
 
 def snapshot() -> dict:
     """The `onboarding` field of /api/config: `{completed_at, dismissed_at,
-    step, stages, version}` — each timestamp epoch seconds or None, `step` the
-    last open step id or None, `stages` the per-step progress records (module
-    docstring). The shell auto-shows when BOTH timestamps are None."""
+    opened_at, stages, version}` — each timestamp epoch seconds or None,
+    `stages` the per-step progress records (module docstring). The shell
+    auto-shows while all three timestamps are None."""
     force = os.environ.get(FORCE_ENV)
     state = _read()
-    step = state.get("step") if state.get("step") in STEPS else None
     stages = _stages(state)
     if force == "1":
-        # The override fakes the FLAGS, not the step: a dev server forced into
-        # the wizard still resumes where it was, which is how this is smoked.
+        # The override fakes the FLAGS, not the stages: a dev server forced into
+        # the wizard still opens on its first open step, which is how this is smoked.
         return {
             "completed_at": None,
             "dismissed_at": None,
             "opened_at": None,
-            "step": step,
             "stages": stages,
             "version": VERSION,
         }
@@ -245,15 +245,14 @@ def snapshot() -> dict:
     return {
         "completed_at": state.get("completed_at"),
         "dismissed_at": state.get("dismissed_at"),
-        # First time the wizard was ever on screen (stamped by the first step
+        # First time the wizard was ever on screen (stamped by any wizard
         # write). The auto-show is for a wizard NEVER seen: once opened, every
         # way out — Back, a refresh, the sidebar meter — is a way out, and the
         # meter row is how one gets back in. Before this, only complete/dismiss
         # stopped the bounce, and a /home reload after Back re-entered forever.
-        # A stored step from a build before this field IS evidence of an open;
-        # 0 = "opened, when unknown", so the upgrade does not bounce once more.
-        "opened_at": state.get("opened_at") if state.get("opened_at") is not None else (0 if step else None),
-        "step": step,
+        # A `step` left by a build that stored the last open step IS evidence
+        # of an open; 0 = "opened, when unknown", so an upgrade does not bounce.
+        "opened_at": state.get("opened_at") if state.get("opened_at") is not None else (0 if state.get("step") else None),
         "stages": stages,
         "version": VERSION,
     }
@@ -298,9 +297,7 @@ def api_onboarding_complete(x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    # Completion resets the resume point: reopening a FINISHED wizard from
-    # Help starts at the top, a dismissed one resumes (see module docstring).
-    _write({"completed_at": time.time(), "step": None})
+    _write({"completed_at": time.time()})
     return snapshot()
 
 
@@ -313,17 +310,15 @@ def api_onboarding_dismiss(x_fused: str | None = Header(default=None)):
     return snapshot()
 
 
-@router.post("/api/onboarding/step")
-def api_onboarding_step(body: dict, x_fused: str | None = Header(default=None)):
-    """Remember the step the user has open, so a restart or a reopen resumes
-    there. Fire-and-forget from the shell; refuses ids it does not know."""
+@router.post("/api/onboarding/opened")
+def api_onboarding_opened(x_fused: str | None = Header(default=None)):
+    """The wizard is on screen. Writes nothing but the `opened_at` stamp every
+    write makes (`_write`) — the auto-show's "never opened" leg, from a visit
+    that may otherwise leave no other mark (opened, looked, pressed Back)."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    step = body.get("step") if isinstance(body, dict) else None
-    if step not in STEPS:
-        return JSONResponse({"error": f"unknown step {step!r}"}, status_code=400)
-    _write({"step": step})
+    _write({})
     return snapshot()
 
 

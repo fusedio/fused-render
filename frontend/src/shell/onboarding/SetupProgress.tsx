@@ -12,13 +12,15 @@ import { useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import type { Config } from "@platform/lib/api";
 
-import { ONBOARDING_PATH } from "./state";
-import { meterVisible, progressPercent, seedProgress, useOnboardingState } from "./progress";
+import { meterVisible, onboardingUrl, progressPercent, seedProgress, useOnboardingState } from "./progress";
 
 export interface SetupMeter {
   percent: number;
   /** "3 of 5 done" — the tooltip's sentence. */
   title: string;
+  /** Where a click lands: the wizard, open on the FIRST step still to do —
+      not the resume point, which is wherever the user last happened to be. */
+  href: string;
 }
 
 /** The meter for the sidebar, or null when the row should not exist. */
@@ -31,6 +33,7 @@ export function useSetupMeter(config: Config): SetupMeter | null {
   return {
     percent: p.percent,
     title: `Setup ${p.percent}% — ${p.complete} of ${p.counted} steps done${half}. Open the setup wizard.`,
+    href: onboardingUrl(state?.stages),
   };
 }
 
@@ -61,13 +64,13 @@ export function SetupProgressRing({ percent }: { percent: number }) {
 export function SetupProgressRow({ meter }: { meter: SetupMeter }) {
   return (
     <a
-      href={ONBOARDING_PATH}
+      href={meter.href}
       id="setup-progress-link"
       className="sidebar-item setup-progress"
       title={meter.title}
       onClick={(e) => {
         e.preventDefault();
-        navigateUrl(ONBOARDING_PATH);
+        navigateUrl(meter.href);
       }}
     >
       <span className="icon">

@@ -9,10 +9,10 @@
 //   4 Models       — local models that fit this machine, downloaded in the background
 //   5 First app    — the Home composer, or a showcase local-AI app
 //
-// Steps 1–3 write nothing but the resume step (which step is open, so a
-// restart or a reopen lands back on it) and their own STAGE STATUS for the
-// progress meter (progress.ts — the sidebar's "Setup N%" row and the pills in
-// the bar above). Step 4 starts model downloads, which
+// Steps 1–3 write nothing but their own STAGE STATUS for the progress meter
+// (progress.ts — the sidebar's "Setup N%" row and the pills in the bar above;
+// a reopen lands on the first step still to do). Step 4 starts model
+// downloads, which
 // are server-owned jobs that outlive the wizard and block nothing in it — a
 // head start, since a model is fetched on first use anyway. Step 5's create
 // (or a showcase open) is the only other durable action and doubles as
@@ -26,7 +26,7 @@ import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 import {
   completeOnboarding,
   dismissOnboarding,
-  setOnboardingStep,
+  openedOnboarding,
   type Config,
 } from "@platform/lib/api";
 import { useClaudeSetup } from "@platform/lib/claude-setup";
@@ -35,8 +35,15 @@ import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
 import { FusedMark } from "@platform/ui/FusedMark";
 
-import { recallStep, rememberStep } from "./state";
-import { reportStage, seedProgress, stageStatus, useOnboardingState } from "./progress";
+import {
+  firstOpenStage,
+  getProgress,
+  reportStage,
+  seedProgress,
+  setProgress,
+  stageStatus,
+  useOnboardingState,
+} from "./progress";
 import { AboutStep } from "./AboutStep";
 import { ClaudeStep } from "./ClaudeStep";
 import { FdaStep } from "./FdaStep";
@@ -80,23 +87,25 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // shift the page under the user. Mirrored with replaceState: steps are not
   // history entries, Back leaves the wizard.
   //
-  // Without a step in the URL (Help › Setup wizard is a plain link, a restart
-  // relaunches on /home) the wizard RESUMES: this page load's memory, then the
-  // server's stored step (shell/onboarding/state), then the first step. Every
-  // step change is written back, fire-and-forget — the write is a courtesy to
-  // the next open, and a failed one must not hold this page. Not once the
-  // wizard has settled (complete / dismiss): a completed wizard's resume point
-  // is cleared, and a step change made while it is still mounted afterwards
-  // (Back after a composer `task_error`, a step pill) must not restore one.
-  const [stepId, setStepId] = useState<StepId>(
-    () => stepFromUrl() ?? asStepId(recallStep(config)) ?? "about",
-  );
+  // Without a step in the URL (Help › Setup wizard is a plain link) the wizard
+  // opens on the FIRST STEP STILL TO DO, read off the stage statuses
+  // (progress.ts firstOpenStage) — the same answer the sidebar meter and the
+  // boot auto-show link to. This replaced a stored "last open step": what is
+  // left to do is a better place to land than wherever the user last was.
+  const [stepId, setStepId] = useState<StepId>(() => {
+    seedProgress(config); // before the first read, and before any subscriber
+    return stepFromUrl() ?? asStepId(firstOpenStage(getProgress()?.stages)) ?? "about";
+  });
   const settled = useRef(false);
+  // Being on screen is the one fact the server needs from a visit: it is the
+  // auto-show's "never opened" leg (shell/onboarding/state). Once per mount.
   useEffect(() => {
-    if (!settled.current) {
-      rememberStep(stepId);
-      setOnboardingStep(stepId).catch(() => undefined);
-    }
+    openedOnboarding().then(
+      (s) => setProgress(s),
+      () => undefined,
+    );
+  }, []);
+  useEffect(() => {
     const url = new URL(location.href);
     if (url.searchParams.get(STEP_PARAM) === stepId) return;
     url.searchParams.set(STEP_PARAM, stepId);
@@ -114,7 +123,6 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // PROGRESS (progress.ts): seeded from the config we hold, then live. The
   // pills read a step's STATUS from it, not its position — a skipped Claude
   // step is not a green tick because the user walked past it.
-  useState(() => seedProgress(config)); // once, before the first subscriber
   const progress = useOnboardingState();
   const stages = progress?.stages;
   // Stages this machine does not have leave the meter: `n/a` once the answer
@@ -174,10 +182,7 @@ export function OnboardingWizard({ config }: { config: Config }) {
     if (via) reportStage("app", "complete", { via });
     if (settled.current) return;
     settled.current = true;
-    // The server clears its resume step on complete; mirror that in this
-    // page load's memory so a reopen starts at the top, not at the last step.
-    rememberStep(null);
-    // Same reason, for the Models step's own across-mount memory: a wizard
+    // The Models step's own across-mount memory: a wizard
     // reopened in this page load should offer a fresh selection, not rows
     // still reporting a download that has since finished.
     forgetModelsStep();

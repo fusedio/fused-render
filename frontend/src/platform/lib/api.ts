@@ -202,9 +202,6 @@ export interface OnboardingState {
   // Third leg of the auto-show rule (shell/onboarding/state): a wizard that
   // has been opened is never auto-shown again. Optional: older server.
   opened_at?: number | null;
-  // The step id the user last had open — the resume point after a server
-  // restart or a dismiss. Optional: an older server does not send it.
-  step?: string | null;
   // Per-step progress (the meter): what each step last reported about itself,
   // overruled server-side where the truth is cheap to see. Optional: an older
   // server does not send it. Rules live in shell/onboarding/progress.ts.
@@ -235,8 +232,10 @@ export function dismissOnboarding(): Promise<OnboardingState> {
   return postJson<OnboardingState>("/api/onboarding/dismiss", {});
 }
 
-export function setOnboardingStep(step: string): Promise<OnboardingState> {
-  return postJson<OnboardingState>("/api/onboarding/step", { step });
+/** The wizard is on screen — stamps `opened_at` (the auto-show's third leg)
+    without saying anything else. */
+export function openedOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/opened", {});
 }
 
 export function setOnboardingStage(
