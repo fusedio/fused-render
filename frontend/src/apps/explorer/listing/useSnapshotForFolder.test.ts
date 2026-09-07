@@ -256,6 +256,58 @@ describe("useSnapshotForFolder", () => {
   );
 
   it(
+    "FINDING 3 (round 3): backToLive tells the git sidebar via " +
+      "_fusedSnapshotCleared, not just Preview.tsx's own back-to-live",
+    async () => {
+      curLoc().search = "?_snapshot=abc1234";
+      let notified = false;
+      (globalThis as Record<string, unknown>).document = {
+        querySelector: (sel: string) =>
+          sel === ".preview-side-frame"
+            ? { contentWindow: { _fusedSnapshotCleared: () => (notified = true) } }
+            : null,
+      };
+      const box = renderHook(useSnapshotForFolder, "/w/myapp", 0);
+      await flush();
+      expect(box.current().resolvedSnapshot?.sha).toBe("abc1234");
+
+      await flush(() => box.current().backToLive());
+
+      expect(notified).toBe(true);
+      box.unmount();
+      delete (globalThis as Record<string, unknown>).document;
+    }
+  );
+
+  it(
+    "FINDING 3 (round 3): a 404 that clears the shared snapshot also tells " +
+      "the git sidebar",
+    async () => {
+      curLoc().search = "?_snapshot=deadbee0";
+      let notified = false;
+      (globalThis as Record<string, unknown>).document = {
+        querySelector: (sel: string) =>
+          sel === ".preview-side-frame"
+            ? { contentWindow: { _fusedSnapshotCleared: () => (notified = true) } }
+            : null,
+      };
+      const box = renderHook(useSnapshotForFolder, "/w/myapp", 0);
+      // Unconditional flushes (not gated on `resolvedSnapshot !== null`,
+      // unlike the pre-existing "resolve failure" test above): this hook's
+      // local `resolvedSnapshot` starts out null AND ends null on a 404, so
+      // a condition of `!== null` would exit the loop on iteration zero
+      // without ever giving the fetch/catch chain a single tick to run.
+      for (let i = 0; i < 8; i++) {
+        await flush();
+      }
+      expect(box.current().resolvedSnapshot).toBe(null);
+      expect(notified).toBe(true);
+      box.unmount();
+      delete (globalThis as Record<string, unknown>).document;
+    }
+  );
+
+  it(
     "a cached resolution for a DIFFERENT app folder is not reused just " +
       "because the sha matches",
     async () => {

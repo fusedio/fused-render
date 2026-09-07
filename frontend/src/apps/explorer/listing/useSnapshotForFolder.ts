@@ -28,8 +28,7 @@
 // `history.replaceState`.
 import { useEffect, useState } from "react";
 import { getGitSnapshot } from "@platform/lib/api";
-import { replaceSearch } from "@platform/lib/router";
-import { writeQueryParam } from "@apps/explorer/lib/preview-side";
+import { clearShellSnapshot } from "@apps/explorer/lib/snapshot-clear";
 import {
   carries,
   getResolvedSnapshot,
@@ -97,10 +96,15 @@ export function useSnapshotForFolder(
           setLocalResolvedSnapshot(null);
           return;
         }
-        setResolvedSnapshot(null);
+        // FINDING 3 (round 3): this used to clear the singleton and the URL
+        // by hand, the same duplicated shape Preview.tsx's own resolve
+        // effect had (finding 2) — neither told the git sidebar, despite
+        // Preview.tsx's own comment claiming THIS case ("Listing.tsx's own"
+        // back to live) was covered. `clearShellSnapshot` is the one place
+        // that hop now lives; every clear path calls it instead of copying
+        // it a third and fourth time.
+        clearShellSnapshot();
         setLocalResolvedSnapshot(null);
-        const search = writeQueryParam(location.search.replace(/^\?/, ""), "_snapshot", null);
-        replaceSearch(location.pathname + (search ? "?" + search : ""));
       });
     return () => {
       alive = false;
@@ -110,13 +114,13 @@ export function useSnapshotForFolder(
   }, [fsPath, urlVersion]);
 
   // The one way back the banner offers: clear the resolution and drop
-  // `_snapshot` from the URL, same shape Preview.tsx's own "back to live"
-  // (triggered by the git sidebar's own control) uses.
+  // `_snapshot` from the URL — `clearShellSnapshot` is now the ONE
+  // implementation of that (singleton, URL, AND the sidebar hop), shared
+  // with Preview.tsx's own "back to live" rather than a second hand-rolled
+  // copy (finding 3).
   const backToLive = () => {
-    setResolvedSnapshot(null);
+    clearShellSnapshot();
     setLocalResolvedSnapshot(null);
-    const search = writeQueryParam(location.search.replace(/^\?/, ""), "_snapshot", null);
-    replaceSearch(location.pathname + (search ? "?" + search : ""));
   };
 
   return { resolvedSnapshot, backToLive };
