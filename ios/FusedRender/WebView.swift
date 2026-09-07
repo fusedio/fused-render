@@ -131,6 +131,12 @@ struct WebView: UIViewRepresentable {
         /// the network watch below reload exactly once after a failure rather
         /// than on every Wi-Fi ⇄ cellular handoff of a page that is fine.
         private var navigationFailed = false
+        /// The main-frame URL the last navigation asked for. What a retry
+        /// reloads when the failed load never committed (`webView.url` is nil
+        /// then): during pairing that is `/pair?t=…`, and falling back to the
+        /// base URL instead would land on the how-to-pair page, which
+        /// didFinish would then take for a pairing that succeeded.
+        private var requestedURL: URL?
         private let network = NWPathMonitor()
 
         init(server: Server, controller: WebController, onGridLoaded: @escaping (String) -> Void) {
@@ -159,8 +165,26 @@ struct WebView: UIViewRepresentable {
             webLog.info("network back; reloading \(web.url?.absoluteString ?? self.baseURL.absoluteString, privacy: .public)")
             // `reload()` on an error page re-requests the URL that failed;
             // with no URL at all (the very first load never landed) there is
-            // nothing to reload, so go to the base.
-            if web.url != nil { web.reload() } else { web.load(URLRequest(url: baseURL)) }
+            // nothing to reload, so ask again for what was requested.
+            if web.url != nil { web.reload() } else { web.load(URLRequest(url: requestedURL ?? baseURL)) }
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.targetFrame?.isMainFrame ?? true, let url = navigationAction.request.url {
+                requestedURL = url
+            }
+            decisionHandler(.allow)
+        }
+
+        /// A navigation WebKit gave up on because another replaced it, or the
+        /// page itself stopped it, is not a page that died on the network —
+        /// reloading for it would interrupt the navigation that replaced it.
+        private static func isRealFailure(_ error: Error) -> Bool {
+            let e = error as NSError
+            if e.domain == NSURLErrorDomain && e.code == NSURLErrorCancelled { return false }
+            if e.domain == "WebKitErrorDomain" && e.code == 102 { return false }  // frame load interrupted
+            return true
         }
 
         @objc func pulled(_ sender: UIRefreshControl) {
@@ -192,12 +216,12 @@ struct WebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             webView.scrollView.refreshControl?.endRefreshing()
-            navigationFailed = true
+            if Self.isRealFailure(error) { navigationFailed = true }
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             webView.scrollView.refreshControl?.endRefreshing()
-            navigationFailed = true
+            if Self.isRealFailure(error) { navigationFailed = true }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

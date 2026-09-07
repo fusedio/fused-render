@@ -1097,7 +1097,7 @@ class _Controller:
                 # with the interface, and zeroconf does not announce again by
                 # itself. (A flap shorter than one interval at an unchanged
                 # address, with the process running, is the gap this leaves.)
-                moved = bool(ips) and (ips != self._ips or self._last_seen is None or slept)
+                moved = bool(ips) and (ips != self._ips or not self._last_seen or slept)
                 self._last_seen = ips
                 if not moved and not (self._want and self._thread is not None
                                       and not self._thread.is_alive()):
