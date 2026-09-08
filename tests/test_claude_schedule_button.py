@@ -139,12 +139,13 @@ def test_the_kebab_no_longer_carries_a_schedule_item(code):
     pop = re.search(r'<div id="kebabpop".*?</div>', code, flags=re.S).group(0)
     assert 'id="terminalopt"' in pop
     # The claim is that SCHEDULING is not in this menu, not that the menu has
-    # exactly one item — it grew a second on 2026-08-23 (archive this task).
-    # Pinned by NAME so a third item has to be added here deliberately, which
-    # is the check that was actually wanted: a menu nobody is watching is how
-    # the schedule item got in the first time.
+    # exactly one item — it grew a second on 2026-08-23 (archive this task) and
+    # a third on 2026-09-07 (delete it for good). Pinned by NAME so a fourth
+    # item has to be added here deliberately, which is the check that was
+    # actually wanted: a menu nobody is watching is how the schedule item got in
+    # the first time.
     assert set(re.findall(r'<button id="(\w+)"', pop)) == {
-        "terminalopt", "archiveopt"}
+        "terminalopt", "archiveopt", "deleteopt"}
 
 
 # ------------------------------------------------------------- the confirm
@@ -385,3 +386,32 @@ def test_a_prefilled_target_does_not_read_as_dirty(modal):
     baseline = modal[modal.index("const [initial, setInitial] = useState(() => ({"):]
     baseline = baseline[:baseline.index("}));")]
     assert "initialTarget" in baseline
+
+
+def test_archive_and_delete_are_disabled_while_the_task_runs(source):
+    """Akshil, 2026-09-07: "if i have a task in progress i shouldn't be able to
+    archive or delete that task, those options should be disabled". Both items
+    read the same listing the archive verb does, and the page's own live turn
+    counts too — the server refuses both on a live run (409), so the menu says
+    so before the press instead of after it."""
+    src = source
+    body = src[src.index("function applyArchiveOpt()"):src.index("async function refreshArchiveOpt()")]
+    assert 'const live = !!taskRunning.get(id) || document.body.classList.contains("running");' in body
+    assert "archiveOpt.disabled = live;" in body
+    assert "deleteOpt.disabled = live;" in body
+    assert body.count('"Stop the run first"') == 2
+    # The word comes from the listing's status, for both running states.
+    assert 'RUNNING_STATES = new Set(["in_progress", "needs_attention"])' in src
+    assert src.count("taskRunning.set(id, !!task && RUNNING_STATES.has(task.status));") == 2
+
+
+def test_an_erase_leaves_the_chat_even_under_a_comment_mode(source):
+    """The Back handler refuses while annNavLocked (a comment mode holds the
+    reader); a successful erase must not be refused that way — the transcript
+    is gone (bugbot, PR #1049) — so the mode is dropped before Back is called."""
+    body = source[source.index('eraseGo.addEventListener("click"'):source.index("function kebabClose()")]
+    at = body.index('document.getElementById("back").onclick();')
+    before = body[:at]
+    assert "if (annOn) annSetMode(false);" in before
+    assert "annBusyHold = false;" in before
+    assert "annNavLock();" in before

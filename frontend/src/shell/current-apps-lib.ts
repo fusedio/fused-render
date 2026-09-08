@@ -138,10 +138,15 @@ export const APP_PAGE_PREFIX = "/apps/";
 /** Tab-strip order; the first is the default. THE list: the type below is
  *  derived from it, and AppPage.tsx's `TAB_DEFS` is a `Record` over that type,
  *  so adding a tab is one string here plus one entry there — the compiler
- *  refuses the second being forgotten. Not every tab is offered on every
- *  folder: `git` shows only inside a work tree (AppPage's `visibleTabs`), so
- *  the ROUTE knows six tabs while the strip may draw five. */
-export const APP_PAGE_TABS = ["overview", "tasks", "files", "api", "git"] as const;
+ *  refuses the second being forgotten. Every tab here is offered on every
+ *  folder — there used to be a sixth, conditional `git` tab (shown only
+ *  inside a work tree); it is GONE
+ *  (docs/app-page-version-dropdown-plan.html), replaced by a page-wide
+ *  version picker (AppVersionPicker.tsx) that is read-only about git and
+ *  never hides a tab. A stale `?_tab=git` deep link falls back to the
+ *  default tab (appPageTabFromSearch's own silent-fallback rule below), the
+ *  same as any other unknown tab. */
+export const APP_PAGE_TABS = ["overview", "tasks", "files", "api"] as const;
 export type AppPageTab = (typeof APP_PAGE_TABS)[number];
 export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 

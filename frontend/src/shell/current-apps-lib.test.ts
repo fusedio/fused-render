@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { CurrentAppEntry } from "@platform/lib/api";
 import {
+  APP_PAGE_TABS,
   assignSequences,
   bySequence,
   moveSlug,
@@ -206,6 +207,11 @@ describe("app page codec", () => {
     expect(appPageTabFromSearch("?view=board")).toBe("overview");
     expect(appPageTabFromSearch("?_tab=bogus")).toBe("overview");
     expect(appPageTabFromSearch("")).toBe("overview");
+  });
+
+  it("the Git tab is gone: APP_PAGE_TABS never offers it, and a stale ?_tab=git deep link falls back to the overview like any other unknown tab", () => {
+    expect(APP_PAGE_TABS).not.toContain("git");
+    expect(appPageTabFromSearch("?_tab=git")).toBe("overview");
   });
 });
 

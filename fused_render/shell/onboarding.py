@@ -219,6 +219,45 @@ def _observe(stages: dict) -> None:
     except Exception:  # noqa: BLE001
         log.debug("onboarding: claude observe failed", exc_info=True)
 
+    # Local models: the wizard's Models step reports only the picks it OFFERED,
+    # and only while it is on screen. A model fetched later from the AI Models
+    # page — or one deleted since — would leave the meter where the wizard left
+    # it. `hub_cache.cached_models()` is memoised on the cache folders' mtimes
+    # (its docstring: ~four stats per repo, a completed download visible on
+    # the very next read), so it is cheap enough for /api/config; the job
+    # registry is in-memory. One model here = complete; none here but a model
+    # download running = partial. Otherwise only a stored complete or partial
+    # is walked back to pending — `n/a` (no engine can serve anything on this
+    # machine) and a never-written stage are left alone, or a Linux box would
+    # find its `n/a` back in the denominator.
+    #
+    # "Here" is the same reading the wizard's tick uses (`hub_cache.
+    # is_downloaded`: the repo is in `cached_models()`, full stop) — not
+    # `loaders`, which is about whether the CURRENT runner opens it: an MLX
+    # repo on a Mac switched to llama.cpp is downloaded, ticked in the step,
+    # and would be walked back to pending here under the stricter test.
+    try:
+        from fused_render import jobs
+        from fused_render.ai import hub_cache, supervisor
+
+        here = [m.repo_id for m in hub_cache.cached_models() if m.capability is not None]
+        if here:
+            put("models", "complete", here=here[:8])
+        else:
+            downloading = [
+                r.get("model") or r["id"]
+                for r in jobs.list_jobs()
+                if str(r.get("id", "")).startswith(supervisor.JOB_PREFIX)
+                and r.get("kind") == "download"
+                and r.get("state") == "running"
+            ]
+            if downloading:
+                put("models", "partial", here=[], downloading=downloading[:8])
+            elif stages.get("models", {}).get("status") in ("complete", "partial"):
+                put("models", "pending", here=[], downloading=[])
+    except Exception:  # noqa: BLE001
+        log.debug("onboarding: models observe failed", exc_info=True)
+
 
 def snapshot() -> dict:
     """The `onboarding` field of /api/config: `{completed_at, dismissed_at,

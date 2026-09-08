@@ -2,8 +2,8 @@
 the git template's "Fix with AI" button uses to hand its prompt to a Claude
 sidebar, and the claude template's own half that collects it.
 
-review #804 round 1 finding 6: `noteRevSelected` (the `_rev` sibling of this
-hop) deliberately calls its hook on EVERY same-origin ancestor that has one,
+review #804 round 1 finding 6: `noteSnapshotSelected` (the `_snapshot` sibling
+of this hop) deliberately calls its hook on EVERY same-origin ancestor that has one,
 because "which commit is previewed" is idempotent to repeat. Sending a prompt
 is not idempotent — each delivery starts a real agent run with write access to
 the repository — so `noteAskClaude` must stop at the FIRST ancestor that can

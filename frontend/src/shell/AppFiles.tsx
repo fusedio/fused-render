@@ -35,6 +35,9 @@ import {
 } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
+import { rewritePathAgainst } from "@platform/lib/snapshot-param";
+import type { AppPageSnapshotState } from "./useAppPageSnapshot";
+import SnapshotError from "./SnapshotError";
 import {
   defaultMode,
   effectiveActive,
@@ -54,6 +57,7 @@ import {
   buildTree,
   contentTemplates,
   fileCount,
+  isAwaitingFile,
   renderSrc,
   safeRel,
   type TreeNode,
@@ -75,12 +79,25 @@ export default function AppFiles({
   dir,
   entry,
   folderHref,
+  snapshot,
 }: {
   /** The app folder, absolute forward-slash. */
   dir: string;
   /** The app's entry page (absolute) — the default selection. */
   entry: string | null;
   folderHref: string;
+  /** The app page's own snapshot resolution (AppPage.tsx). Rewritten against
+   *  directly — never a shared singleton — so under a selected commit this
+   *  tab walks and previews THAT commit's tree instead of the working tree.
+   *  `rel`/`?file=` stay live-relative regardless: only the actual
+   *  fetch/render TARGETS move, mirroring the explorer's own Listing.tsx
+   *  (rows keep the live path, only listPath is rewritten). While
+   *  `snapshot.pending` (a `_snapshot` sha is claimed but not yet resolved),
+   *  `effectiveDir` is null rather than falling back to the live `dir` —
+   *  code review finding 4's shape applied here too: walking/previewing the
+   *  live tree during that window would show the wrong era under a URL that
+   *  already claims a past commit. */
+  snapshot: AppPageSnapshotState;
 }) {
   useUrlVersion();
   const params = new URLSearchParams(location.search);
@@ -88,7 +105,14 @@ export default function AppFiles({
     entry && entry.startsWith(dir + "/") ? entry.slice(dir.length + 1) : null;
   const rel = safeRel(params.get("file")) ?? entryRel;
   const requestedMode = params.get("_mode");
-  const file = rel ? dir + "/" + rel : null;
+  // The actual walk/stat/render target: `dir` itself, unless a snapshot is
+  // active and encloses it, in which case every read below addresses the
+  // extracted tree instead. `null` while pending (see this component's own
+  // prop comment) — every effect below treats a null `effectiveDir`/`file`
+  // as "nothing to fetch yet", the same shape a not-yet-selected file
+  // already takes.
+  const effectiveDir = snapshot.pending ? null : rewritePathAgainst(snapshot.snap, dir);
+  const file = rel && effectiveDir ? effectiveDir + "/" + rel : null;
 
   const [walk, setWalk] = useState<Walk>({ kind: "loading" });
   const [open, setOpen] = useState<Set<string>>(() => new Set(rel ? ancestorsOf(rel) : []));
@@ -96,9 +120,16 @@ export default function AppFiles({
   const [verdicts, setVerdicts] = useState<ConditionVerdicts>(null);
 
   useEffect(() => {
+    // Pending: nothing honest to walk yet (see `effectiveDir`'s own comment)
+    // — stay on the loading skeleton rather than issue a request the
+    // snapshot resolve landing a moment later would immediately replace.
+    if (!effectiveDir) {
+      setWalk({ kind: "loading" });
+      return;
+    }
     let live = true;
     setWalk({ kind: "loading" });
-    walkDir(dir)
+    walkDir(effectiveDir)
       .then((r) => {
         if (live) setWalk({ kind: "ok", nodes: buildTree(r.entries), truncated: r.truncated });
       })
@@ -108,7 +139,7 @@ export default function AppFiles({
     return () => {
       live = false;
     };
-  }, [dir]);
+  }, [effectiveDir]);
 
   // The selected file's templates, and the verdicts for any gated ones (CT-12:
   // stat only marks them; the gates run here, in the background).
@@ -228,6 +259,40 @@ export default function AppFiles({
   const selectedNode = rel ? findNode(nodes, rel) : null;
   const name = rel ? basename(rel) : "";
 
+  // `error` (finding 1, second round): a transient resolve failure leaves
+  // `effectiveDir`/`file` null forever (the same as an ordinary in-flight
+  // resolve, so the walk/stat effects above never fire an honest request
+  // either way) — this must not read as an indefinite pair of skeletons with
+  // no way out. One banner for the whole tab, rather than a separate one per
+  // column: there is nothing useful to show in either half while the commit
+  // itself never resolved.
+  if (snapshot.error) {
+    // Wrapped in the same `.app-files-view` / `.app-files-stage` nesting the
+    // ordinary `stat.kind === "error"` branch below renders its own
+    // `ErrorBanner` inside (`.app-files-stage > .error-banner` is what gives
+    // it its 16px margin) — a bare `SnapshotError` directly under
+    // `.app-files` was a flex item of a `display: flex; align-items:
+    // stretch` row and so stretched to the tab's full height while hugging
+    // its own content width (code review finding 2).
+    return (
+      <div className="app-files">
+        <section className="app-files-view">
+          <div className="app-files-stage">
+            <SnapshotError onRetry={snapshot.retry} />
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  // A file IS selected (`rel`) but the effective read target isn't resolved
+  // yet (`effectiveDir` null while `snapshot.pending`) — finding 2: the right
+  // pane used to fall through to `!file`'s "nothing selected" blank state,
+  // which is a different, wrong claim from "still loading the selected
+  // file". Only reachable while pending, since `snapshot.error` already
+  // returned above.
+  const awaitingFile = isAwaitingFile(rel, file);
+
   return (
     <div className="app-files">
       {/* The tree column: a quieter plate than the view, one rule between. */}
@@ -255,7 +320,8 @@ export default function AppFiles({
       </nav>
 
       <section className="app-files-view">
-        {!file && (
+        {awaitingFile && <SkeletonLines rows={2} label="Loading file" />}
+        {!file && !awaitingFile && (
           <div className="app-files-blank">
             <FileSearch aria-hidden />
             <p>Pick a file to see it here.</p>
@@ -330,7 +396,7 @@ export default function AppFiles({
                 <iframe
                   key={file + "|" + active.mode}
                   className="app-files-frame"
-                  src={renderSrc(file, active)}
+                  src={renderSrc(file, active, snapshot.snap, snapshot.sha) ?? undefined}
                   title={`${rel} — ${modeTitle(active.mode)}`}
                 />
               )}

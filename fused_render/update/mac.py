@@ -25,8 +25,20 @@ Two methods, decided once per process:
   relaunch guard REQUIRES the drift, which is why the swap happens on install
   rather than being deferred to quit.
 
+An install also mirrors itself into the Activity dock as a server-owned job
+(`sys:update:<version>`, the same bridge shape `server/routers/index.py`'s
+`_mirror_one_run_job` uses for a rescan): the dock is where every other
+long-running thing in the app already lives, and it is the surface that can
+show bytes, a phase, and a Cancel without the sidebar badge growing a second
+progress readout. Cancel arrives the way every job cancel does — as a flag on
+the reply to the progress tick this manager was going to send anyway — and is
+honoured only while DOWNLOADING; once the bundle swap starts there is no safe
+point to stop at.
+
 Everything runs on worker threads and never raises out of the manager: a
-failed check leaves state "idle"/"error", never a dead loop.
+failed check leaves state "idle"/"error", never a dead loop. Job reporting is
+best-effort on top of that — an install must never fail because its row could
+not be drawn.
 """
 from __future__ import annotations
 
@@ -40,7 +52,7 @@ import tempfile
 import threading
 import time
 
-from fused_render import __version__
+from fused_render import __version__, jobs
 from fused_render.update import common
 
 logger = logging.getLogger("fused_render.update")
@@ -56,6 +68,25 @@ CASK_NAME = "fused-render"
 # (Apple Silicon, then Intel) rather than through the environment.
 BREW_PATHS = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
 BREW_COMMAND = f"brew update && brew upgrade --cask {CASK_NAME}"
+# The Activity row's id, one per version (`jobs.SERVER_ID_PREFIX`, never the
+# literal "sys:"): deterministic, so a retry after a failure re-attaches to
+# the row the user is already looking at rather than stacking a second one.
+JOB_PREFIX = jobs.SERVER_ID_PREFIX + "update:"
+# The phase words the row shows while running, and the two terminal lines.
+# Kept here rather than inline so the tests assert against the same strings
+# the UI reads (design vocabulary: "Downloading" / "Installing" /
+# "Installed — restart to finish" / "Cancelled").
+PHASE_DOWNLOADING = "Downloading"
+PHASE_INSTALLING = "Installing"
+# How often the swap re-reports itself while it runs. Well under `jobs.py`'s
+# STALE_AFTER_S (30s): a `ditto` of a whole .app bundle has no progress to
+# report, but a row that says nothing for half a minute is shown as "No longer
+# reporting", and one that says nothing for STALE_DROP_S (600s) is dropped
+# outright — after which the final `done` upsert lands on a dismissed id and
+# the "Installed — restart to finish" line is never drawn.
+INSTALL_HEARTBEAT_S = 10.0
+DONE_MESSAGE = "Installed — restart to finish"
+CANCELLED_MESSAGE = "Cancelled"
 _DOWNLOAD_PREFIX = "FusedRender-"
 _DOWNLOAD_SUFFIX = ".dmg"
 # Keep a margin over the DMG itself: the download and the staged .app copy
@@ -136,6 +167,16 @@ class UpdateManager:
         self._progress: float | None = None
         self._progress_total: float | None = None
         self._install_thread: threading.Thread | None = None
+        # The Activity row for the install currently in flight, and whether
+        # its ✕ has been pressed. Both are only ever touched under the lock:
+        # the download runs on the install thread while the cancel arrives on
+        # whichever thread reported the tick that carried it back.
+        self._job_id: str | None = None
+        self._cancel = False
+        # Latched when a report fails: the row could not be drawn at all, and
+        # a download is a report per megabyte — one warning says everything a
+        # thousand identical tracebacks would (see `_job_report`).
+        self._job_broken = False
 
     # -- status ---------------------------------------------------------------
 
@@ -280,10 +321,32 @@ class UpdateManager:
             self._manual_command = None
             self._progress = 0.0
             self._progress_total = None
+            self._job_id = JOB_PREFIX + str(manifest["version"])
+            self._cancel = False
+            self._job_broken = False
             thread = threading.Thread(
                 target=self._install, args=(manifest,), daemon=True,
                 name="fused-render-update-install")
             self._install_thread = thread
+        # Opened here, not on the install thread, so the row exists by the
+        # time the POST that started this returns and the dock's very next
+        # poll draws it.
+        # The phase word goes in `detail`, not `message`: `jobTypeLabel` (the
+        # dock/StatusBar chip) reads `detail` for its leading verb and falls
+        # back to the title — "Update to v9.9.9" has no verb in it — while
+        # `jobStatusLine` joins `message` and `detail` for a running row, so
+        # sending the same word in both would render it twice.
+        self._job_report(
+            title=f"Update to v{manifest['version']}",
+            kind="download", unit="bytes", state=jobs.RUNNING,
+            done=0.0, total=None, detail=PHASE_DOWNLOADING, message="",
+            cancellable=True)
+        # The id is per-version, so a retry after a failed or cancelled
+        # attempt inherits the previous attempt's row — including a
+        # `cancel_requested` flag `upsert` only clears on a transition INTO a
+        # terminal state. Disown it before the download starts, or the new
+        # attempt reads the old attempt's ✕ on its first tick.
+        self._job_clear_cancel()
         thread.start()
         return self.status()
 
@@ -293,16 +356,119 @@ class UpdateManager:
                 self._install_dmg(manifest)
             else:
                 raise RuntimeError("not running from an installed bundle")
+        except common.UpdateCancelled:
+            # Not a failure: the update is still there to install, so the
+            # manager goes back to exactly where the ✕ was pressed from —
+            # "available", `_latest` intact, no error text, and the install
+            # button live again. Only the download path can raise this (see
+            # `_install_dmg`'s `should_abort`), so there is never a
+            # half-swapped bundle to reason about here.
+            logger.info("update install cancelled")
+            # The terminal report goes FIRST, before the state flip: the moment
+            # `_state` leaves "installing" a re-POST is allowed through, and it
+            # would mint a fresh attempt on this same per-version id — onto
+            # which this stale "cancelled" would then land, killing a row whose
+            # download had just started. Reporting first closes that window;
+            # every terminal path below follows the same order.
+            self._job_report(state="cancelled", detail=CANCELLED_MESSAGE,
+                             message=CANCELLED_MESSAGE, cancellable=False)
+            with self._lock:
+                self._state = "available"
+                self._error = None
+                self._progress = None
+                self._progress_total = None
+                self._sync_manual_command()
+            return
         except Exception as error:  # noqa: BLE001 - reported through state, never raised
             logger.exception("update install failed")
+            self._job_report(state="error", message=str(error), cancellable=False)
             with self._lock:
                 self._state = "error"
                 self._error = str(error)
             return
+        # The terminal row is also the completion NOTICE: `ActivityDock`'s
+        # `onJobsReported` -> `terminalNotifications` already carries every
+        # terminal job into Notifications, so saying it once here is the whole
+        # announcement — no second mechanism, and no client-side transition to
+        # watch for. `detail` as well as `message`: `jobStatusLine` reads
+        # `detail` for a `done` row and `message` for an `error` one.
+        self._job_report(state="done", detail=DONE_MESSAGE, message=DONE_MESSAGE,
+                         done=None, total=None, cancellable=False)
         with self._lock:
             self._state = "installed"
             self._progress = None
             self._progress_total = None
+
+    # -- the Activity row ------------------------------------------------------
+
+    def _job_report(self, **fields) -> None:
+        """Report one tick of the install into the job registry, and read a
+        cancel back off the reply.
+
+        Best-effort in both directions, and that asymmetry is the point: a
+        report that fails is logged and dropped (an install must not die
+        because its row could not be drawn), while a cancel can only ever
+        ARRIVE this way — `jobs.request_cancel` sets a flag and leaves it for
+        the reporter to notice on the tick it was going to send anyway (SPEC
+        BG-4, and the same read `_mirror_one_run_job` does).
+
+        The registry's own lock is taken INSIDE this call, so `self._lock` is
+        released first and never held across it: `jobs.py` never calls back
+        into this manager, but holding two locks in one order here and the
+        other order in `status()` is a deadlock waiting for a coincidence.
+        """
+        with self._lock:
+            job_id = self._job_id
+            broken = self._job_broken
+        if job_id is None or broken:
+            return
+        try:
+            result = jobs.upsert({"id": job_id, **fields}, server=True)
+        except Exception:  # noqa: BLE001 - reporting is never load-bearing
+            # Latched, not retried: reporting failed once and there is a tick
+            # per megabyte behind this one, so retrying would fill the log with
+            # the same traceback hundreds of times over a single download while
+            # the row stayed just as undrawn. One line, then silence — and the
+            # install itself carries on, which is the whole rule for this row.
+            with self._lock:
+                self._job_broken = True
+            logger.exception("could not report update job %s — no further "
+                             "progress will be reported for it", job_id)
+            return
+        if result.get("cancel_requested"):
+            with self._lock:
+                self._cancel = True
+
+    def _job_clear_cancel(self) -> None:
+        with self._lock:
+            job_id = self._job_id
+            self._cancel = False
+        if job_id is None:
+            return
+        try:
+            jobs.clear_cancel_requested(job_id)
+        except Exception:  # noqa: BLE001 - same best-effort rule as _job_report
+            logger.exception("could not clear cancel on update job %s", job_id)
+
+    def _beat_installing(self, stop: threading.Event) -> None:
+        """Re-send the Installing phase every `INSTALL_HEARTBEAT_S` until
+        `stop` is set. Nothing but the row's clock changes — same phase, still
+        no numbers, still no ✕ — and that is the point: a `ditto` of a whole
+        .app bundle can outrun both stale windows in `jobs.py` with nothing to
+        say in between."""
+        while not stop.wait(INSTALL_HEARTBEAT_S):
+            # Re-checked after the wait: a beat that woke just as the swap
+            # ended must not land after the terminal row (bugbot, PR #1058) —
+            # and the stopper JOINS this thread before writing that row, so a
+            # beat already inside `_job_report` finishes first.
+            if stop.is_set():
+                return
+            self._job_report(detail=PHASE_INSTALLING, message="",
+                             cancellable=False)
+
+    def _cancel_requested(self) -> bool:
+        with self._lock:
+            return self._cancel
 
     # -- dmg path -------------------------------------------------------------
 
@@ -344,13 +510,55 @@ class UpdateManager:
         # comes from the download response's Content-Length instead, so the
         # UI can show a percentage when the CDN sends that header.
         def on_bytes(done: int, size: int | None) -> None:
+            total = float(size) if size is not None else None
             with self._lock:
                 self._progress = float(done)
-                self._progress_total = float(size) if size is not None else None
+                self._progress_total = total
+            # One report per 1MB chunk — the same tick that carries the bytes
+            # up is the one that carries a pending cancel back down, so the ✕
+            # is honoured within a chunk of being pressed.
+            self._job_report(done=float(done), total=total,
+                             detail=PHASE_DOWNLOADING, cancellable=True)
 
         dmg = common.download_verified(
             manifest, dir=updates, prefix=_DOWNLOAD_PREFIX,
-            suffix=_DOWNLOAD_SUFFIX, progress=on_bytes)
+            suffix=_DOWNLOAD_SUFFIX, progress=on_bytes,
+            should_abort=self._cancel_requested)
+        # A ✕ learned on the LAST byte tick has no next chunk to be honoured
+        # on (bugbot, PR #1058): `should_abort` runs before each chunk, so a
+        # cancel that arrived with the final one lands here, after the loop.
+        # The download is complete but the bundle is untouched, which is still
+        # the point where cancelling costs nothing — so it is honoured, and the
+        # DMG goes the way a mid-stream partial would.
+        #
+        # One more read of the flag before that check, because the last tick is
+        # not the last moment: `download_verified` hashes the whole file after
+        # the final chunk, which on a 300MB DMG is seconds during which the row
+        # still shows a live ✕ and no tick is left to carry the answer back. An
+        # id-only upsert is a legal report on an existing row — it changes
+        # nothing and returns the record, `cancel_requested` included.
+        self._job_report()
+        if self._cancel_requested():
+            common.discard(dmg)
+            raise common.UpdateCancelled("cancelled after download")
+        # Downloading is over: from here on the bundle is being replaced, and
+        # there is no point between the ditto and the two renames where
+        # stopping would leave anything better than finishing does — so the
+        # row drops its Cancel and its numbers (no honest total exists for a
+        # copy-and-swap) and says what it is doing instead.
+        self._job_report(detail=PHASE_INSTALLING, message="", done=None,
+                         total=None, cancellable=False)
+        # …and it has to keep saying it: the swap reports no progress, but a
+        # silent running row is "No longer reporting" after 30s and gone after
+        # ten minutes (see `INSTALL_HEARTBEAT_S`), which would take the final
+        # `done` upsert with it. The watchdog re-sends the same phase until the
+        # swap and its cleanup are over, and is stopped from the `finally`
+        # below on every path out — including the ones that raise.
+        beat_stop = threading.Event()
+        beat = threading.Thread(target=self._beat_installing, args=(beat_stop,),
+                                daemon=True,
+                                name="fused-render-update-heartbeat")
+        beat.start()
         mount = None
         old = None
         swap_in = os.path.join(parent, ".FusedRender-update.app")
@@ -384,6 +592,12 @@ class UpdateManager:
             common.discard(dmg)
             if os.path.exists(swap_in):
                 shutil.rmtree(swap_in, ignore_errors=True)
+            # Last, so the row is still being kept alive through the detach and
+            # the cleanup above — `_install`'s terminal report comes next, and
+            # only once the beat has actually stopped: a beat mid-report could
+            # otherwise overwrite the finished row with "Installing".
+            beat_stop.set()
+            beat.join(timeout=INSTALL_HEARTBEAT_S + 5)
         # Old bundle: best-effort removal on a worker; open files keep working
         # on the unlinked inodes until this process exits.
         if old is not None:

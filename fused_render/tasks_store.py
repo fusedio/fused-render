@@ -533,6 +533,42 @@ def mark_deleted(key: str, now: float | None = None) -> None:
     _update(DELETED_FILE, mutate)
 
 
+def forget_session(session_id: str) -> dict:
+    """Erase what these two stores keep about one session — the erase gesture's
+    share of `POST /api/tasks/erase`, where the transcript itself goes too.
+
+    `read.json`'s record GOES: it is per-message read marks for messages that
+    no longer exist, and there is no thread left for them to be about.
+
+    `task_ids.json`'s record STAYS, deliberately, and this is the one decision
+    in here worth arguing. Allocation is "max n seen for this project, plus
+    one" (`_next_numbers`) read straight off this store, so the record IS the
+    ledger: removing it would hand TASK-007 to the next task somebody starts,
+    and a number the user has quoted in a note or a message must keep meaning
+    the same thing forever. So the mapping is left in place as a RESERVATION
+    and only stamped `erased` — gaps over renumbering, exactly the trade the
+    module docstring makes for deletes. Nothing reads `erased`; it is there so
+    a human reading the store can tell a reserved number from a live one.
+
+    Returns `{"read": bool, "number": bool}` — whether each store changed."""
+    def forget_read(state: dict):
+        if session_id not in state:
+            return False, False
+        state.pop(session_id, None)
+        return True, True
+
+    def reserve_number(store: dict):
+        rec = store.get(session_id)
+        if not isinstance(rec, dict) or rec.get("erased"):
+            return False, False
+        rec["erased"] = True
+        store[session_id] = rec
+        return True, True
+
+    return {"read": _update(READ_FILE, forget_read),
+            "number": _update(TASK_IDS_FILE, reserve_number)}
+
+
 # ------------------------------------------------------------- transcript head
 #
 # Only the head, and only the three facts a backfill needs. The full read of a

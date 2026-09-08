@@ -31,6 +31,11 @@
    * value is the same in each palette — a token so the no-literals rule holds,
    * not because it varies. */
   --qr-paper: #fff;
+  /* The spinner drawn ON that paper: black at two strengths, the same in both
+   * themes for the same reason the paper is. Tokens so the no-literals rule
+   * holds (tests/test_theme.py), not because they vary. */
+  --qr-ink-soft: rgb(0 0 0 / 12%);
+  --qr-ink: rgb(0 0 0 / 45%);
 
   /* rgb triples for the translucent washes (see the note above). */
   --tint: 255, 255, 255;
@@ -254,7 +259,7 @@
   --app-icon-default: #9aa0a6;
   --app-icon-gray: #9b9b9b;
   --app-icon-brown: #ba856f;
-  --app-icon-yellow: #ca9849;
+  --app-icon-yellow: #E5FF44;
   --app-icon-orange: #c77d48;
   --app-icon-green: #529e72;
   --app-icon-blue: #5e87c9;
@@ -325,6 +330,8 @@
   --success: #1a7f37;
   --warning: #8f6a10;
   --qr-paper: #fff; /* same in both themes — see the dark palette's note */
+  --qr-ink-soft: rgb(0 0 0 / 12%);
+  --qr-ink: rgb(0 0 0 / 45%);
 
   --tint: 0, 0, 0;
   --accent-rgb: 95, 115, 0;
@@ -440,7 +447,7 @@
   --app-icon-default: #61656c;
   --app-icon-gray: #787774;
   --app-icon-brown: #9f6b53;
-  --app-icon-yellow: #cb912f;
+  --app-icon-yellow: #5f7300;
   --app-icon-orange: #d9730d;
   --app-icon-green: #448361;
   --app-icon-blue: #337ea9;

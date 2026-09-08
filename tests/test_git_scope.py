@@ -19,7 +19,9 @@ on the universal `/` directory key and on no file extension at all, and its gate
 refuses anything that is not a directory. The per-file question — which commits
 touched THIS path, and what did it look like at one of them — is answered by this
 same view: the commit list is scoped to the open target, and selecting a commit
-renders the file as of it (`/api/git/show`).
+puts the whole shell into `_snapshot=<sha>`, materialising the enclosing app
+folder at that commit (`/api/git/snapshot`) so the open file — and every
+other read the app makes — renders as of it.
 
 `git` did once ride along on file keys, and the reason is gone. The explorer used
 to give a FOLDER no mode switcher of its own — the only mode surface a browsing
@@ -32,6 +34,7 @@ reachable and the workaround is retired.
 import importlib.util
 import json
 import os
+import re
 import subprocess
 
 import pytest
@@ -235,7 +238,16 @@ def test_the_identity_moves_into_the_selected_state(source):
     # a commit selection shows can change without touching how a diff renders.
     assert "function commitMeta(" in source
     assert "function diffPane(title, sub, payload, meta)" in source
-    assert "commitMeta(meta, rev)" in source
+    # The third argument used to be a single `revertBtn`; it is now an
+    # `actions` container holding both Revert and Reset (D745), but the
+    # identity line's own wiring — the selected commit's `meta`/`rev` still
+    # reaching `commitMeta`, with SOME trailing action alongside it — is
+    # exactly what this test protects, so it must still fail if that wiring
+    # breaks.
+    assert re.search(
+        r'const actions = el\("div", \{ className: "meta-action commit-actions" \},\s*'
+        r'\[revertBtn, resetBtn\]\);', source)
+    assert "commitMeta(meta, rev, actions)" in source
     # The placeholder pane is built from the row the user clicked, so the
     # heading does not swap under them when the read lands.
     assert "commitMeta(known, rev)" in source
@@ -314,16 +326,20 @@ def test_the_commit_reaches_the_shell_through_the_ancestor_global(source):
     # Not a param, not a postMessage: the runtime's ancestor-window hop, the same
     # idiom `_fusedFsChanged` uses (D3/D4). Guarded, because a page opened outside
     # the app's shell has no hop and no pane to drive.
-    hop = source[source.index("function hopRev()"):]
+    hop = source[source.index("function hopSnapshot()"):]
     hop = hop[:hop.index("\n}")]
-    assert 'typeof window._fusedSelectRev === "function"' in hop
-    assert "window._fusedSelectRev(previewed)" in hop
+    assert 'typeof window._fusedSelectSnapshot === "function"' in hop
+    assert "window._fusedSelectSnapshot(previewed)" in hop
     # ONE speaker: nothing else in the file may hop, or the pane and the rows
     # would be able to disagree about which commit is driving it.
-    assert source.count("window._fusedSelectRev(") == 1
+    assert source.count("window._fusedSelectSnapshot(") == 1
     # And `previewed` has ONE writer, which is what makes that true.
-    # The declaration, `preview()`'s write, and the poll's clear — nothing else.
-    assert source.count("previewed = ") == 3
+    # The declaration and `preview()`'s own write — nothing else (round 3,
+    # finding 6: the poll used to write `previewed` a THIRD time, directly,
+    # bypassing `preview()` and falsifying this very invariant; it now routes
+    # through `preview()` like every other caller — see
+    # test_the_capability_is_polled_like_the_annotate_target).
+    assert source.count("previewed = ") == 2
 
 
 def test_the_pane_subject_and_the_previewed_commit_are_separate_state(source):
@@ -336,7 +352,7 @@ def test_the_pane_subject_and_the_previewed_commit_are_separate_state(source):
     # `select` no longer speaks to the shell at all.
     setter = source[source.index("function select(kind, value)"):]
     setter = setter[:setter.index("\n/* ---")]
-    assert "_fusedSelectRev" not in setter
+    assert "_fusedSelectSnapshot" not in setter
 
 
 def test_the_preview_control_needs_a_pane_to_drive(source):
@@ -359,15 +375,37 @@ def test_the_preview_control_needs_a_pane_to_drive(source):
     # and nothing else offers one. (It is a span-with-role inside the row button
     # now, because buttons cannot nest; both states still speak only through
     # `preview()`.)
-    row = source[source.index("function commitLine(entry, selected, isLatest)"):]
+    row = source[source.index("function commitLine(entry, selected)"):]
     row = row[:row.index("\nfunction ")]
     assert "if (canPreview && previewingHere) {" in row
     assert "} else if (canPreview) {" in row
     assert "preview(entry.sha);" in row and "preview(null);" in row
     # ...and `preview()` refuses even if something called it anyway.
-    setter = source[source.index("function preview(sha)"):]
+    setter = source[source.index("function preview(sha, silent)"):]
     setter = setter[:setter.index("\n}")]
     assert "const next = (canPreview && sha) ? sha : null;" in setter
+
+
+def test_the_preview_control_also_needs_an_enclosing_app_folder(source):
+    # D742 / code review finding B4: a pane to drive is necessary but not
+    # sufficient. `/api/git/snapshot` can only ever resolve for a path with an
+    # enclosing app folder, so `canPreview` must ALSO require that — offering
+    # the eye anywhere else promises a preview that can never land (the shell
+    # hops the sha through, `getGitSnapshot` 404s, and the sidebar's own
+    # `.catch()` swallows it while the pill still claims a live pane shows
+    # commit X).
+    assert "let hasAppFolder = false;" in source  # fails closed until proven
+    assert '"/api/git/app-folder?path="' in source
+    # Both places `canPreview` is assigned must require it, not just the mark.
+    assert "canPreview = !!revMarkedFrame() && hasAppFolder;" in source
+    poll = source[source.index("function pollRevTarget()"):]
+    poll = poll[:poll.index("\n}")]
+    assert "const has = !!revMarkedFrame() && hasAppFolder;" in poll
+    # The probe re-evaluates the poll once its answer lands, rather than
+    # leaving the eye hidden until the next scheduled tick.
+    probe = source[source.index("async function probeAppFolder()"):]
+    probe = probe[:probe.index("\n}")]
+    assert "pollRevTarget();" in probe
 
 
 def test_the_capability_is_polled_like_the_annotate_target(source):
@@ -383,7 +421,38 @@ def test_the_capability_is_polled_like_the_annotate_target(source):
     poll = source[source.index("function pollRevTarget()"):]
     poll = poll[:poll.index("\n}")]
     assert "if (!has && previewed !== null)" in poll
-    assert "hopRev();" in poll
+    # Round 3, finding 6: this used to assign `previewed = null` and call
+    # `hopSnapshot()` directly here, bypassing `preview()` — the ONE writer
+    # `test_the_commit_reaches_the_shell_through_the_ancestor_global` checks
+    # for. It now routes through `preview()` itself, which already repaints,
+    # so this returns rather than falling into the unconditional repaint
+    # below and drawing twice.
+    assert "preview(null, false);" in poll
+    assert "previewed = null;" not in poll
+    assert "hopSnapshot();" not in poll
+
+
+def test_the_latest_commit_dot_is_gone_but_the_previewing_pills_stays(source):
+    # D744: two dots shared one colour and one stated meaning ("the commit
+    # the files on screen belong to"), but only one of them was ever
+    # informative. The latest-commit dot appeared only when NOTHING was
+    # previewed, where it marked the top row of a newest-first list — a fact
+    # the list's own order already states. The previewing pill's dot is the
+    # one that answers a live question, and it stays.
+    assert "isLatest" not in source, "the dead parameter is still here"
+    assert "const liveDot" not in source, "the latest-commit dot node is still built"
+    # commitLine's own signature dropped the parameter…
+    assert "function commitLine(entry, selected)" in source
+    # …and so did its one call site.
+    assert re.search(r"commits\.map\(\(c[^)]*\)\s*=>\s*commitLine\(c,\s*c\.sha === rev\)\)",
+                     source), source[source.index("commits.map("):source.index("commits.map(") + 200]
+    assert "i === 0" not in source
+    # The previewing pill's OWN dot (the one that stays) is untouched, and so
+    # is the CSS rule it depends on.
+    row = source[source.index("function commitLine(entry, selected)"):]
+    row = row[:row.index("\nfunction ")]
+    assert 'marker.prepend(el("span", { className: "live-dot" }));' in row
+    assert ".row .live-dot {" in source
 
 
 def test_a_reload_of_this_frame_returns_the_pane_to_live(source):
@@ -391,7 +460,7 @@ def test_a_reload_of_this_frame_returns_the_pane_to_live(source):
     # still holding the previous sha would leave the content pane on a revision no
     # row here claims.
     boot = source[source.index("/* Announce the empty preview"):]
-    assert boot.index("hopRev();") < boot.index("draw(true);")
+    assert boot.index("hopSnapshot();") < boot.index("draw(true);")
 
 
 def test_a_selection_change_still_repaints(source):
@@ -431,288 +500,3 @@ def test_the_view_asks_the_reader_for_the_log(source):
     assert 'op: "commit", sha: rev' in source
 
 
-# ------------------------------------------------- the file AS OF a commit
-#
-# Clicking a commit in this sidebar makes the explorer's CONTENT pane render the
-# open file as that commit left it. Three layers hold that up and each is pinned
-# below: the template hands the sha to the shell (above), the shell puts `_rev` on
-# the content frame's src alone, and the injected runtime resolves every read
-# through /api/git/show while refusing every write.
-#
-# Nothing is written to disk for any of it. The predecessor design (a per-path
-# timeline mode, since removed)
-# `git archive`d a snapshot into ~/.fused-render/app-versions/<key>/<sha>/; this
-# resolves on read, so closing the sidebar leaves nothing behind.
-
-
-@pytest.fixture(scope="module")
-def runtime():
-    path = os.path.join(_ROOT, "fused_render", "static", "runtime.js")
-    with open(path, encoding="utf-8") as f:
-        return f.read()
-
-
-def test_the_runtime_reads_rev_off_the_frames_own_query(runtime):
-    # `_file` falls back to an ANCESTOR's query; `_rev` deliberately never does.
-    # An inheritable revision is exactly the leak that keeps this param off the
-    # shell's URL in the first place.
-    assert 'ownQuery("_rev")' in runtime
-    assert "function revUrl(path)" in runtime
-    assert '"/api/git/show?path="' in runtime
-
-
-def test_the_runtime_resolves_reads_through_git_not_the_filesystem(runtime):
-    # rawUrl is the choke point: readFile fetches rawUrl(), and every <img>/<embed>
-    # src a template builds goes through it too. So ONE branch there is what makes
-    # "templates change zero lines" true.
-    raw = runtime[runtime.index("function rawUrl(path)"):]
-    raw = raw[:raw.index("\n  }")]
-    assert "if (revResolves(path)) return revUrl(path);" in raw
-    assert "return fetch(rawUrl(path)" in runtime      # readFile rides on it
-    # ...and a stat reports the size AT that revision, never today's.
-    assert "function revStat(path, live)" in runtime
-    assert 'method: "HEAD"' in runtime
-
-
-def test_a_revision_stat_is_never_writable(runtime):
-    # The field every template checks before it offers an edit UI. An editor that
-    # renders enabled over bytes it cannot write back is the whole failure.
-    stat = runtime[runtime.index("function revStat(path, live)"):]
-    stat = stat[:stat.index("\n  // Write BYTES")]
-    assert "writable: false," in stat
-
-
-def test_the_mutators_refuse_under_a_revision(runtime):
-    # A runtime-level gate, and the code says so: the server has no idea a caller
-    # is looking at the past (the path is the LIVE path), so this is exactly the
-    # promise that the documented helpers cannot silently write today's file.
-    for fn in ("writeFile(path, content, opts)", "uploadFile(path, blob)",
-               "mkdir(path)"):
-        body = runtime[runtime.index("function " + fn):]
-        assert "if (rev !== null) return revRefusal(" in body[:400], fn
-    assert 'err.type = "readonly";' in runtime
-    assert "RUNTIME-LEVEL refusal, not a server-enforced one" in runtime
-
-
-def test_the_python_reader_gap_is_recorded_at_its_seam(runtime):
-    # A deliberate phase-2b deferral, not a bug: `main()` receives the real path
-    # and open()s the live file. The note lives immediately above runPython so the
-    # next reader of that function finds it.
-    head = runtime[:runtime.index("function runPython(pyPath, params, opts)")]
-    assert "KNOWN GAP" in head[-3000:]
-    assert "phase 2b" in head[-3000:]
-
-
-def test_only_the_content_frame_carries_rev():
-    # The shell's half of the constraint: `_rev` is appended to the CONTENT frame's
-    # src and to nothing else — not the sidebar's frame (which must stay live, or
-    # the git view would be reading its own repository as of a past commit) and
-    # never to the address bar.
-    preview = os.path.join(_ROOT, "frontend", "src", "apps", "explorer",
-                           "Preview.tsx")
-    with open(preview, encoding="utf-8") as f:
-        shell = f.read()
-    assert "revSrc(" in shell
-    side = shell[shell.index("const sideSrcFor ="):]
-    side = side[:side.index("\n  };")]
-    assert "_rev" not in side and "revSrc" not in side
-    # And the sha is state, never a param write: nothing in this file may put it
-    # into a search string. `revSrc` is the ONLY producer of the param, and it
-    # appends to a frame src it is handed.
-    for forbidden in ('params.set("_rev"', 'params.get("_rev"', "&_rev="):
-        assert forbidden not in shell, forbidden
-
-
-def test_the_shell_marks_only_a_frame_a_revision_can_be_driven_into():
-    # The other end of the capability handshake. The mark exists ONLY where the
-    # capability does: `splitCapable` (the single-file explorer preview, the one
-    # surface with both a content pane and a git sidebar) AND `m === shown` (the
-    # frame the reader is looking at — the held-frame swap can leave two mounted).
-    # A folder's listing preview pane renders no frame and stamps nothing, which
-    # is how the git template running THERE learns it has nothing to drive.
-    preview = os.path.join(_ROOT, "frontend", "src", "apps", "explorer",
-                           "Preview.tsx")
-    with open(preview, encoding="utf-8") as f:
-        shell = f.read()
-    mark = shell[shell.index("data-fused-rev-target={"):]
-    mark = mark[:mark.index("}\n")]
-    assert "splitCapable && m === shown" in mark
-    # `undefined`, not `false`: an attribute React would still render (`="false"`)
-    # is a mark, and `[data-fused-rev-target]` would match it.
-    assert 'shown ? "" : undefined' in mark
-    # A SECOND mark rather than a second reading of the annotate one: they mean
-    # different things, and inferring one capability from another is wrong the day
-    # either condition moves.
-    assert "data-fused-annotate-target={" in shell
-    assert shell.count("data-fused-rev-target") == 1
-
-
-@pytest.fixture()
-def show_client():
-    """A client over the git_show router ALONE.
-
-    Not `create_app`: the whole app stages the core templates into the test home
-    on import and mounts them as StaticFiles, and building one per test races
-    other workers through that staging (the dir is wiped and swapped). The route
-    is self-contained — nothing it does depends on the rest of the app — so the
-    router is mounted on a bare FastAPI and the REGISTRATION is pinned separately
-    below.
-    """
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from fused_render.server.routers.git_show import router
-
-    app = FastAPI()
-    app.include_router(router)
-    return TestClient(app)
-
-
-def test_the_route_is_registered_with_the_app():
-    # The other half of the fixture above: a route nothing includes is a route
-    # nothing can call, and the fixture would never notice.
-    with open(os.path.join(_ROOT, "fused_render", "server", "app.py"),
-              encoding="utf-8") as f:
-        app_src = f.read()
-    assert "from fused_render.server.routers.git_show import router as git_show_router" \
-        in app_src
-    assert "app.include_router(git_show_router)" in app_src
-
-
-@pytest.fixture()
-def history_tree(work_tree):
-    """`pkg/mod.py` committed twice, plus a file added only in the second commit.
-
-    Returns `(first_sha, second_sha)`.
-    """
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-
-    def sha():
-        out = subprocess.run(["git", "-C", str(work_tree), "rev-parse", "HEAD"],
-                             check=True, capture_output=True, env=env)
-        return out.stdout.decode().strip()
-
-    first = sha()
-    (work_tree / "pkg" / "mod.py").write_text("x = 2\n")
-    (work_tree / "pkg" / "later.py").write_text("later = True\n")
-    subprocess.run(["git", "-C", str(work_tree), "add", "-A"], check=True, env=env)
-    subprocess.run(["git", "-C", str(work_tree), "-c", "user.name=T",
-                    "-c", "user.email=t@e", "commit", "-qm", "second"],
-                   check=True, env=env)
-    return first, sha()
-
-
-def test_show_serves_the_file_as_of_the_commit(show_client, work_tree, history_tree):
-    first, second = history_tree
-    target = str(work_tree / "pkg" / "mod.py")
-    # The working tree says x = 2; the first commit says x = 1, and that is the
-    # whole feature.
-    assert (work_tree / "pkg" / "mod.py").read_text() == "x = 2\n"
-    old = show_client.get("/api/git/show", params={"path": target, "sha": first})
-    assert old.status_code == 200
-    assert old.text == "x = 1\n"
-    new = show_client.get("/api/git/show", params={"path": target, "sha": second})
-    assert new.text == "x = 2\n"
-
-
-def test_show_takes_the_absolute_working_tree_path(show_client, work_tree,
-                                                   history_tree):
-    # The caller forwards the path it already has; the repo root and the
-    # repo-relative path are resolved server-side. A relative path is refused
-    # rather than guessed at, the same check every fs read route makes.
-    first, _ = history_tree
-    r = show_client.get("/api/git/show", params={"path": "pkg/mod.py", "sha": first})
-    assert r.status_code == 400
-    assert "absolute" in r.json()["error"]
-
-
-def test_show_accepts_an_abbreviated_sha(show_client, work_tree, history_tree):
-    first, _ = history_tree
-    r = show_client.get("/api/git/show",
-                        params={"path": str(work_tree / "pkg" / "mod.py"),
-                                "sha": first[:8]})
-    assert r.status_code == 200 and r.text == "x = 1\n"
-
-
-def test_show_refuses_anything_that_is_not_hex(show_client, work_tree,
-                                               history_tree):
-    # No ref names, no revision expressions, no `--upload-pack=`: the value goes
-    # into an argv, and hex-only is what makes it un-option-shaped by construction.
-    target = str(work_tree / "pkg" / "mod.py")
-    for sha in ("HEAD", "HEAD~1", "main", "--upload-pack=x", "", "zzz",
-                ":/second"):
-        r = show_client.get("/api/git/show", params={"path": target, "sha": sha})
-        assert r.status_code == 400, sha
-        assert "hex" in r.json()["error"], sha
-
-
-def test_show_refuses_a_directory(show_client, work_tree, history_tree):
-    # `git show <sha>:<dir>` answers a TREE LISTING, which would be served as if
-    # it were content. Unreachable from the shell (only a file gets a content
-    # pane), and refused anyway rather than allowed to look like an answer.
-    first, _ = history_tree
-    r = show_client.get("/api/git/show",
-                        params={"path": str(work_tree / "pkg"), "sha": first})
-    assert r.status_code == 400
-    assert "not a directory" in r.json()["error"]
-
-
-def test_show_404s_an_unknown_sha(show_client, work_tree, history_tree):
-    r = show_client.get("/api/git/show",
-                        params={"path": str(work_tree / "pkg" / "mod.py"),
-                                "sha": "0" * 40})
-    assert r.status_code == 404
-    # git's own sentence, not a traceback.
-    assert "error" in r.json() and "Traceback" not in r.text
-
-
-def test_show_404s_a_path_that_did_not_exist_at_that_commit(show_client, work_tree,
-                                                            history_tree):
-    first, _ = history_tree
-    r = show_client.get("/api/git/show",
-                        params={"path": str(work_tree / "pkg" / "later.py"),
-                                "sha": first})
-    assert r.status_code == 404
-    assert "Traceback" not in r.text
-
-
-def test_show_404s_a_path_outside_any_work_tree(show_client, tmp_path,
-                                                history_tree):
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    (plain / "a.txt").write_text("hi")
-    r = show_client.get("/api/git/show",
-                        params={"path": str(plain / "a.txt"), "sha": "0" * 40})
-    assert r.status_code == 404
-    assert "work tree" in r.json()["error"]
-
-
-def test_show_bounds_the_response(show_client, work_tree, history_tree,
-                                  monkeypatch):
-    # A blob over the cap is a clean 413, never a truncation: a pane labelled "as
-    # of abc1234" showing the first N bytes would be a subtler lie than showing
-    # nothing. The cap is read through its defining module so this override is the
-    # one production reads see.
-    from fused_render.server.routers import git_show
-
-    first, second = history_tree
-    monkeypatch.setattr(git_show, "MAX_SHOW_BYTES", 3)
-    r = show_client.get("/api/git/show",
-                        params={"path": str(work_tree / "pkg" / "mod.py"),
-                                "sha": second})
-    assert r.status_code == 413
-    assert "larger than" in r.json()["error"]
-
-
-def test_show_answers_head_with_the_size_at_that_revision(show_client, work_tree,
-                                                          history_tree):
-    # This is what `fused.stat()` under `_rev` reads: a live stat would report the
-    # size of TODAY's file, which is the wrong number to guard a past read with.
-    first, _ = history_tree
-    (work_tree / "pkg" / "mod.py").write_text("x = 2\nand more\n")
-    r = show_client.head("/api/git/show",
-                         params={"path": str(work_tree / "pkg" / "mod.py"),
-                                 "sha": first})
-    assert r.status_code == 200
-    assert r.headers["content-length"] == "6"      # len("x = 1\n")
-    assert r.content == b""

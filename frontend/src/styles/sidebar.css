@@ -546,6 +546,18 @@ a.sidebar-rail-btn {
   background: var(--success-bright);
 }
 
+/* AND THE PREFERENCES ROW'S: a self-update waiting/installing/ready-to-restart
+   (platform/lib/update-status, shared with UpdateBadge above the Settings row
+   and the popover's own row). It is the collapsed rail's only signal that one
+   of those states is true — there is no Settings row for the badge to sit
+   above while collapsed. `--accent` rather than one of the status hues above:
+   this isn't a completion or a running-work fact, it's the app's own "there is
+   a new version of me" affordance, the same colour the sidebar already uses
+   for its own chrome (active row highlight). */
+.sidebar-rail-dot.is-update {
+  background: var(--accent);
+}
+
 /* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
    .sidebar-item look — resets the UA button chrome so it sits in the list
    like the <a> rows above it. */
@@ -1067,6 +1079,10 @@ a.bookmark-name::after {
 }
 
 .update-badge-action {
+  /* A <button> or an <a> (the installed state's Restart is a link to
+     fused-render://relaunch) — same box either way. */
+  display: inline-block;
+  text-decoration: none;
   align-self: flex-start;
   padding: 4px 10px;
   border: 1px solid var(--border);

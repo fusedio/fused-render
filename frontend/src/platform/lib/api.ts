@@ -3039,6 +3039,38 @@ export function deleteTask(
   }>("/api/tasks/delete", { key });
 }
 
+// Taking the SESSION away for good (Akshil, 2026-09-07). Delete's older
+// sibling and the one verb on this page that is not undoable: `/api/tasks/delete`
+// writes a tombstone and leaves the conversation on disk (D306), this one
+// removes the transcript itself — `~/.claude/projects/<slug>/<session_id>.jsonl`
+// and the sidecar directory beside it — along with the triage/read/task-id
+// bookkeeping that points at it, then tombstones the row like delete does.
+//
+// `erased_transcript` is therefore TRUE here where delete always answers false,
+// and `removed` counts the files that actually went. The task's NUMBER is still
+// never reallocated: the max-seen rule survives the session it was minted for.
+//
+// Refused with a 409 while the task is running, in delete's own words ("that
+// task is running — stop the run first, then delete"): erasing a transcript out
+// from under a live `claude --resume` is the one thing this verb must never do.
+export function eraseTask(
+  key: string,
+): Promise<{
+  ok: boolean;
+  key: string;
+  cancelled: number;
+  erased_transcript: boolean;
+  removed: number;
+}> {
+  return postJson<{
+    ok: boolean;
+    key: string;
+    cancelled: number;
+    erased_transcript: boolean;
+    removed: number;
+  }>("/api/tasks/erase", { key });
+}
+
 // Every scheduled message in a time window, which is the one question the
 // listing above cannot answer: `Task.messages` holds only the three most recent,
 // and a calendar draws a week. Without this the grid under-draws — a task whose
@@ -4192,6 +4224,68 @@ export interface GitRepos {
 
 export function getGitRepos(): Promise<GitRepos> {
   return getJson<GitRepos>("/api/git-repos");
+}
+
+// -- Git snapshot (GET /api/git/snapshot) -------------------------------------
+// The app folder enclosing `path`, materialised at `sha` (fused_render/server/
+// routers/git_snapshot.py). Backs the shell's `_snapshot=<sha>` URL state: the
+// explorer resolves this once per selection (and once per fresh load that
+// already carries the param) to learn `app_dir` — the live folder the carry
+// rule (platform/lib/snapshot-param.ts) is scoped to — and `entry`/`dir` for
+// whatever needs to open the extracted tree directly.
+export interface GitSnapshot {
+  ok: boolean;
+  dir: string;
+  entry: string | null;
+  app_dir: string;
+}
+
+export function getGitSnapshot(path: string, sha: string): Promise<GitSnapshot> {
+  return getJson<GitSnapshot>(
+    `/api/git/snapshot?path=${encodeURIComponent(path)}&sha=${encodeURIComponent(sha)}`,
+  );
+}
+
+// The cheap, sha-less sibling: does an app folder enclose `path` at all — the
+// same fail-closed probe templates/git/template.html's own `probeAppFolder()`
+// calls before offering its preview eye (D742 / review finding B4). Backs
+// AppVersionPicker's own gate: the picker renders only once this resolves ok.
+export interface GitAppFolder {
+  ok: boolean;
+  app_dir: string;
+}
+
+export function getGitAppFolder(path: string): Promise<GitAppFolder> {
+  return getJson<GitAppFolder>(
+    `/api/git/app-folder?path=${encodeURIComponent(path)}`,
+  );
+}
+
+// A bounded, recent-first log for the app folder enclosing `path` — the
+// version picker's own list. Deliberately smaller than the git template's own
+// reader: a label per commit, not a diff.
+export interface GitCommit {
+  sha: string;
+  short: string;
+  subject: string;
+  author: string;
+  when: number;
+}
+
+export interface GitCommits {
+  ok: boolean;
+  commits: GitCommit[];
+  has_more: boolean;
+  // ALL commits reachable from HEAD touching the app folder, not just the
+  // ones `limit` let through — the version picker needs this to label its
+  // newest row `v<total>` correctly even when the list is capped.
+  total: number;
+}
+
+export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
+  return getJson<GitCommits>(
+    `/api/git/commits?path=${encodeURIComponent(path)}&limit=${limit}`,
+  );
 }
 
 // -- AI completion (POST /api/ai) ---------------------------------------------

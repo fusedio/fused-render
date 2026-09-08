@@ -204,10 +204,12 @@ def test_a_signal_death_is_not_mistaken_for_a_missing_repo(monkeypatch, caplog,
 # --------------------------------------------------- every OTHER git spawn too
 #
 # The same latent bug sat at eight more sites. Two of them matter directly to the
-# feature the user reported: `routers/git_show.py` renders a file as of a commit
-# (GT-17, reached from the same git view) and `server/fs_mutate.py` performs the
-# server's git writes. The rest — app_git, community, deeplink, claude_config,
-# the bundle reader, the claude agent — would fail the same silent way.
+# feature the user reported: `routers/git_show.py` (GT-17, reached from the same
+# git view) rendered a file as of a commit — since replaced by
+# `routers/git_snapshot.py`'s app-folder extraction, which inherits the same
+# posix_spawn discipline — and `server/fs_mutate.py` performs the server's git
+# writes. The rest — app_git, community, deeplink, claude_config, the bundle
+# reader, the claude agent — would fail the same silent way.
 #
 # `app_git.py`'s module docstring records this exact crash being diagnosed in
 # August ("every `git add` died rc=-11 with empty output") and being fixed with

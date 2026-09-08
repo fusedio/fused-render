@@ -1349,7 +1349,7 @@ def test_one_static_turn_renderer_serves_history_and_the_reattach_repair(source)
     # carries segments too — a run that finished while the frame was away
     # used to lose its whole tool timeline here — and is now the ONE branch
     # every repair case funnels through, `matches` and its separate
-    # never-shown arm having been deleted with it, D742), and the poll loop's
+    # never-shown arm having been deleted with it, D748), and the poll loop's
     # typer-less tail (a run whose text only ever arrived on the poll that
     # ENDED it). One function for all three: the tail used to hand-roll
     # `innerHTML = renderMd(data.text)`, so a payload that carried segments
