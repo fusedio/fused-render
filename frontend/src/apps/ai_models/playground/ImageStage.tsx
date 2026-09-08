@@ -35,6 +35,39 @@ import { startImage, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
+import { cn } from "@platform/lib/utils";
+import {
+  AnswerBlock,
+  AnswerLabel,
+  AttachButton,
+  AttachChip,
+  AttachDrop,
+  AttachNote,
+  AttachOpen,
+  AttachRow,
+  ClearButton,
+  Composer,
+  ComposerFoot,
+  ComposerKbd,
+  ComposerSide,
+  composerStackTextareaClass,
+  ConfigChips,
+  copyButtonVariants,
+  Lightbox,
+  lightboxImageClass,
+  LightboxClose,
+  MediaCaption,
+  MediaFrame,
+  MediaReadFailed,
+  MediaResult,
+  MediaWait,
+  mediaClass,
+  ProgressBar,
+  StageButton,
+  StageError,
+  stageWorkCardClass,
+  workGridClass,
+} from "@platform/ui/playground";
 import {
   ConfigPanel,
   useConfigOpen,
@@ -692,8 +725,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     : undefined;
 
   return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
+    <div className={workGridClass(configOpen)}>
+      <Card className={stageWorkCardClass + " flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]"}>
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
@@ -702,10 +735,11 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         onToggleConfig={toggleConfig}
       />
 
-      <div className="pg-composer pg-composer-stack">
+      <Composer layout="stacked">
         <textarea
           ref={boxRef}
           rows={3}
+          className={composerStackTextareaClass}
           value={prompt}
           placeholder={base ? "Describe the change…" : "Describe the picture…"}
           onChange={(e) => setPrompt(e.target.value)}
@@ -723,14 +757,14 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             buttons share ONE row — here they do not). Absolute, so it adds
             none. */}
         {!busy && run && (
-          <button
+          <ClearButton
             type="button"
-            className="pg-ghost-btn pg-clear pg-clear-corner"
+            placement="corner"
             title="Clear the prompt and the picture"
             onClick={clear}
           >
             Clear
-          </button>
+          </ClearButton>
         )}
         {/* The composer's floor: the two ways to attach a picture, then the
             Clear/Generate column — one cluster in the bottom-right corner,
@@ -738,7 +772,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             prompt therefore spans the whole box here rather than sharing its
             row with the button column the other stages use, and Generate stays
             exactly where those stages put it. */}
-        <div className="pg-composer-foot">
+        <ComposerFoot>
           {/* The attached photo, on the floor's own line: the space left of the
               buttons was empty, and the picture belongs beside the controls
               that put it there rather than in a band of its own above them.
@@ -747,83 +781,80 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               12…", nothing at all), and the sentence about editing was a
               caption on a control nobody had asked a question about. */}
           {base && (
-            <span className="pg-attach">
-              <button
+            <AttachChip>
+              <AttachOpen
                 type="button"
-                className="pg-attach-open"
                 title="See this picture"
                 aria-label="See this picture"
                 onClick={() => setShowBase(true)}
               >
                 <img src={rawUrl(base.path)} alt="" />
-              </button>
-              <button
+              </AttachOpen>
+              <AttachDrop
                 type="button"
-                className="pg-attach-drop"
                 title="Remove this image"
                 aria-label="Remove this image"
                 onClick={() => setAttachment(null)}
               >
                 ✕
-              </button>
-            </span>
+              </AttachDrop>
+            </AttachChip>
           )}
           {editable && (
-            <div className="pg-attach-row">
-              <button
+            <AttachRow>
+              <AttachButton
                 type="button"
-                className="pg-attach-btn"
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
                 {StarterIcons.landscape}
                 <span>{base ? "Replace" : "Add an image"}</span>
-              </button>
-              <button
+              </AttachButton>
+              <AttachButton
                 type="button"
-                className={"pg-attach-btn" + (webcam.open ? " active" : "")}
+                active={webcam.open}
                 title="Take one with the webcam"
                 disabled={attaching}
                 onClick={() => (webcam.open ? webcam.stop() : void openCamera())}
               >
                 {StarterIcons.camera}
                 <span>Webcam</span>
-              </button>
-              {attaching && <span className="pg-attach-note">Working…</span>}
-            </div>
+              </AttachButton>
+              {attaching && <AttachNote>Working…</AttachNote>}
+            </AttachRow>
           )}
           {/* Generate alone in this column here: Clear floats in the box's
               top-right corner instead (see above), because on a STACKED
               composer the two stacked vertically made the floor 40px taller —
               a whole row of height for a button that appears only once there
               is something to clear. */}
-          <div className="pg-composer-side">
+          <ComposerSide>
             {busy ? (
-              <button
+              <StageButton
                 type="button"
-                className="btn btn-secondary pg-send"
+                variant="secondary"
                 onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
               >
                 Stop
-              </button>
+              </StageButton>
             ) : (
-              <button
+              <StageButton
                 type="button"
-                className="btn btn-primary pg-send"
+                variant="primary"
                 disabled={!prompt.trim()}
                 title="Enter to run · Shift+Enter for a new line"
                 onClick={() => void generate()}
               >
-                Generate <kbd className="pg-kbd">⏎</kbd>
-              </button>
+                Generate <ComposerKbd>⏎</ComposerKbd>
+              </StageButton>
             )}
-          </div>
-        </div>
-      </div>
+          </ComposerSide>
+        </ComposerFoot>
+      </Composer>
 
       <ConfigPanel open={configOpen} animated={configTouched.current}>
-        <div className="pg-config-chips">
+        <ConfigChips>
           {/* Hidden, not disabled, while the attached image decides the size:
               a chip row where nothing is lit and a slider parked on 480 are
               both controls saying something about a render that will come back
@@ -853,7 +884,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               }}
             />
           )}
-        </div>
+        </ConfigChips>
         {sizeIsTheImages ? (
           <RailField
             label="Size"
@@ -946,24 +977,23 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           the row below already removes it, and this is only here because a
           28px thumbnail cannot be looked at. Click the backdrop or press
           Escape to close, the two things anybody tries. */}
-      {base && showBase && (
-        <div
-          className="pg-lightbox"
-          role="dialog"
-          aria-label="The attached picture"
-          onClick={() => setShowBase(false)}
-        >
-          <img src={rawUrl(base.path)} alt="" onClick={(e) => e.stopPropagation()} />
-          <button
+      {base && (
+        <Lightbox open={showBase} onClose={() => setShowBase(false)} label="The attached picture">
+          <img
+            src={rawUrl(base.path)}
+            alt=""
+            className={lightboxImageClass}
+            onClick={(e) => e.stopPropagation()}
+          />
+          <LightboxClose
             type="button"
-            className="pg-lightbox-close"
             title="Close"
             aria-label="Close"
             onClick={() => setShowBase(false)}
           >
             ✕
-          </button>
-        </div>
+          </LightboxClose>
+        </Lightbox>
       )}
 
       {webcam.open && (
@@ -987,7 +1017,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
       {/* Chips lead the panel; sliders and the seed follow. */}
 
-      {error && <p className="pg-error">{error}</p>}
+      {error && <StageError>{error}</StageError>}
 
         {!run ? (
           <ResultSlot
@@ -1000,23 +1030,24 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             }
           />
         ) : (
-          <div className="pg-answer-block">
-          <p className="pg-answer-label">Result</p>
-          <figure className="pg-image-result">
+          <AnswerBlock>
+          <AnswerLabel>Result</AnswerLabel>
+          <MediaResult>
             {run.done && run.readFailed ? (
               // `watchJob` said done (including a `gone` it reads as done —
               // see the `Run.readFailed` comment) but the file this <img>
               // asked for does not actually exist. Say that plainly rather
               // than leaving a broken-image icon and a save link to nothing.
-              <div className="pg-image-frame" style={shot}>
-                <p className="pg-image-readfailed">
+              <MediaFrame style={shot}>
+                <MediaReadFailed>
                   The image could not be read back — the render may have been
                   interrupted.
-                </p>
-              </div>
+                </MediaReadFailed>
+              </MediaFrame>
             ) : run.done ? (
-              <div className="pg-image-frame" style={shot}>
+              <MediaFrame style={shot}>
                 <img
+                  className={mediaClass}
                   src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
                   alt={run.started.prompt}
                   onError={() =>
@@ -1028,7 +1059,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 {/* A download link, not a clipboard write: ClipboardItem takes
                     image/png only and the render's format is unknown here. */}
                 <a
-                  className="pg-copy-btn pg-image-save"
+                  className={cn(copyButtonVariants({ variant: "scrim" }))}
                   href={rawUrl(run.started.path)}
                   download={run.started.path.split("/").pop() || "picture.png"}
                   title="Save this picture"
@@ -1036,34 +1067,31 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 >
                   {MenuIcons.download}
                 </a>
-              </div>
+              </MediaFrame>
             ) : (
-              <div className="pg-image-frame" style={shot}>
+              <MediaFrame style={shot}>
                 <img
+                  className={mediaClass}
                   src={rawUrl(run.started.previewPath) + "&t=" + previewTick}
                   alt="Render in progress"
                   style={previewLive ? undefined : { display: "none" }}
                   onLoad={() => setPreviewLive(true)}
                   onError={() => setPreviewLive(false)}
                 />
-                {!previewLive && <div className="pg-image-wait" aria-hidden="true" />}
-              </div>
+                {!previewLive && <MediaWait aria-hidden="true" />}
+              </MediaFrame>
             )}
             {/* Progress only. The settled parameters were dropped by request,
                 and D429's seed-reuse button with them; the invented seed is
                 surfaced by pre-filling the Seed box instead. */}
             {busy && (
-              <figcaption className="pg-image-caption">
+              <MediaCaption>
                 <span>{job?.detail || "Starting — a cold model loads first…"}</span>
-                {pct !== null && (
-                  <span className="pg-bar">
-                    <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                  </span>
-                )}
-              </figcaption>
+                {pct !== null && <ProgressBar value={pct} />}
+              </MediaCaption>
             )}
-          </figure>
-          </div>
+          </MediaResult>
+          </AnswerBlock>
         )}
       </Card>
     </div>

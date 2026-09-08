@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { getConfig, mkdir } from "@platform/lib/api";
 import { Button } from "@platform/shadcn/ui/button";
+import { Lightbox, LightboxBox, LightboxClose, webcamVideoClass } from "@platform/ui/playground";
 import { uploadFile } from "./client";
 import type { AttachedImage } from "./imageInput";
 
@@ -135,23 +136,22 @@ export function WebcamOverlay({
   onClose: () => void;
 }) {
   return (
-    <div className="pg-lightbox" role="dialog" aria-label="Webcam" onClick={onClose}>
-      <div className="pg-webcam-box" onClick={(e) => e.stopPropagation()}>
-        <video ref={videoRef} className="pg-webcam-video" playsInline muted />
+    <Lightbox open onClose={onClose} label="Webcam">
+      <LightboxBox onClick={(e) => e.stopPropagation()}>
+        <video ref={videoRef} className={webcamVideoClass} playsInline muted />
         <Button variant="outline" onClick={onCapture}>
           Capture
         </Button>
-      </div>
-      <button
+      </LightboxBox>
+      <LightboxClose
         type="button"
-        className="pg-lightbox-close"
         title="Close without a picture"
         aria-label="Close without a picture"
         onClick={onClose}
       >
         ✕
-      </button>
-    </div>
+      </LightboxClose>
+    </Lightbox>
   );
 }
 

@@ -52,6 +52,36 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import { StarterIcons } from "./starterIcons";
 import { saveToCache, useWebcam, WebcamOverlay } from "./webcam";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
+import {
+  AnswerBlock,
+  AnswerLabel,
+  AnswerCard,
+  AttachButton,
+  AttachChip,
+  AttachDrop,
+  AttachNote,
+  AttachOpen,
+  AttachRow,
+  ClearButton,
+  Composer,
+  ComposerFoot,
+  ComposerKbd,
+  ComposerSide,
+  composerStackTextareaClass,
+  composerTextareaClass,
+  Cursor,
+  Lightbox,
+  LightboxClose,
+  lightboxImageClass,
+  StageButton,
+  StageError,
+  StageStatus,
+  ThinkBlock,
+  ThinkBody,
+  TurnFoot,
+  stageWorkCardClass,
+  workGridClass,
+} from "@platform/ui/playground";
 
 // The three formats `ImageStage`'s own picker restricts to (`ATTACH_EXTENSIONS`
 // there) — kept identical here for one reason only: consistency with the
@@ -399,24 +429,24 @@ export function TextStage({
   // one thing both put in the same place — the bottom-right corner. Written
   // twice it would be two buttons to keep in step.
   const runButton = streaming ? (
-    <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
+    <StageButton type="button" variant="secondary" onClick={stop}>
       Stop
-    </button>
+    </StageButton>
   ) : (
-    <button
+    <StageButton
       type="button"
-      className="btn btn-primary pg-send"
+      variant="primary"
       disabled={!prompt.trim()}
       title="Enter to run · Shift+Enter for a new line"
       onClick={() => void send()}
     >
-      Run <kbd className="pg-kbd">⏎</kbd>
-    </button>
+      Run <ComposerKbd>⏎</ComposerKbd>
+    </StageButton>
   );
 
   return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
+    <div className={workGridClass(configOpen)}>
+      <Card className={stageWorkCardClass + " flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]"}>
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
@@ -435,9 +465,10 @@ export function TextStage({
           box, the placeholder was squeezed into the middle, and neither read as
           belonging to the other. Same classes as the image stage throughout, so
           the two are one feature wearing one layout. */}
-      <div className={"pg-composer" + (attachable ? " pg-composer-stack" : "")}>
+      <Composer layout={attachable ? "stacked" : "row"}>
         <textarea
           ref={boxRef}
+          className={attachable ? composerStackTextareaClass : composerTextareaClass}
           value={prompt}
           rows={3}
           placeholder={
@@ -457,67 +488,64 @@ export function TextStage({
             40px of height for a button that only exists once there is a reply.
             The row shape keeps the stack — see the column below. */}
         {attachable && !streaming && reply && (
-          <button
+          <ClearButton
             type="button"
-            className="pg-ghost-btn pg-clear pg-clear-corner"
+            placement="corner"
             title="Clear the prompt and reply"
             onClick={clear}
           >
             Clear
-          </button>
+          </ClearButton>
         )}
         {attachable ? (
           /* The composer's floor: the way to attach a picture, the picture
              itself once there is one, then Run — one cluster in the
              bottom-right corner, exactly as the image stage arranges its own. */
-          <div className="pg-composer-foot">
+          <ComposerFoot>
             {attachedImage && (
-              <span className="pg-attach">
-                <button
+              <AttachChip>
+                <AttachOpen
                   type="button"
-                  className="pg-attach-open"
                   title="See this picture"
                   aria-label="See this picture"
                   onClick={() => setShowAttachment(true)}
                 >
                   <img src={rawUrl(attachedImage.path)} alt="" />
-                </button>
-                <button
+                </AttachOpen>
+                <AttachDrop
                   type="button"
-                  className="pg-attach-drop"
                   title="Remove this image"
                   aria-label="Remove this image"
                   onClick={() => setAttachment(null)}
                 >
                   ✕
-                </button>
-              </span>
+                </AttachDrop>
+              </AttachChip>
             )}
-            <div className="pg-attach-row">
-              <button
+            <AttachRow>
+              <AttachButton
                 type="button"
-                className="pg-attach-btn"
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
                 {StarterIcons.landscape}
                 <span>{attachedImage ? "Replace" : "Add an image"}</span>
-              </button>
-              <button
+              </AttachButton>
+              <AttachButton
                 type="button"
-                className={"pg-attach-btn" + (webcam.open ? " active" : "")}
+                active={webcam.open}
                 title="Take one with the webcam"
                 disabled={attaching}
                 onClick={() => (webcam.open ? webcam.stop() : void openCamera())}
               >
                 {StarterIcons.camera}
                 <span>Webcam</span>
-              </button>
-              {attaching && <span className="pg-attach-note">Working…</span>}
-            </div>
-            <div className="pg-composer-side">{runButton}</div>
-          </div>
+              </AttachButton>
+              {attaching && <AttachNote>Working…</AttachNote>}
+            </AttachRow>
+            <ComposerSide flat>{runButton}</ComposerSide>
+          </ComposerFoot>
         ) : (
           /* Clear at the top of this column, Run at the bottom — not inline with
              the prompt. Inline, Clear appeared and disappeared BESIDE the text,
@@ -525,21 +553,16 @@ export function TextStage({
              than the height the grow already wrote. The column's width is set by
              Run, the wider of the two, so nothing moves when Clear comes and
              goes. */
-          <div className="pg-composer-side">
+          <ComposerSide>
             {!streaming && reply && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
-                title="Clear the prompt and reply"
-                onClick={clear}
-              >
+              <ClearButton type="button" title="Clear the prompt and reply" onClick={clear}>
                 Clear
-              </button>
+              </ClearButton>
             )}
             {runButton}
-          </div>
+          </ComposerSide>
         )}
-      </div>
+      </Composer>
 
       {/* The attached picture at full size — the whole modal, no title bar, no
           filename, no actions: the ✕ above already removes it, and this only
@@ -551,23 +574,26 @@ export function TextStage({
       )}
 
       {attachedImage && showAttachment && (
-        <div
-          className="pg-lightbox"
-          role="dialog"
-          aria-label="The attached picture"
-          onClick={() => setShowAttachment(false)}
+        <Lightbox
+          open
+          onClose={() => setShowAttachment(false)}
+          label="The attached picture"
         >
-          <img src={rawUrl(attachedImage.path)} alt="" onClick={(e) => e.stopPropagation()} />
-          <button
+          <img
+            className={lightboxImageClass}
+            src={rawUrl(attachedImage.path)}
+            alt=""
+            onClick={(e) => e.stopPropagation()}
+          />
+          <LightboxClose
             type="button"
-            className="pg-lightbox-close"
             title="Close"
             aria-label="Close"
             onClick={() => setShowAttachment(false)}
           >
             ✕
-          </button>
-        </div>
+          </LightboxClose>
+        </Lightbox>
       )}
 
       {/* Every knob is behind the cog; the surface above is prompt and Run. */}
@@ -626,8 +652,8 @@ export function TextStage({
         <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
       )}
 
-      {status && <p className="pg-status">{status}</p>}
-      {error && <p className="pg-error">{error}</p>}
+      {status && <StageStatus>{status}</StageStatus>}
+      {error && <StageError>{error}</StageError>}
 
       {!(reply && shown) ? (
         <ResultSlot
@@ -636,30 +662,30 @@ export function TextStage({
           note="The reply appears here. Ask something above, then Run."
         />
       ) : (
-        <div className="pg-answer-block">
-          <p className="pg-answer-label">Response</p>
-          <div className="pg-answer">
+        <AnswerBlock>
+          <AnswerLabel>Response</AnswerLabel>
+          <AnswerCard>
           {!reply.pending && reply.text && (
             <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
           )}
           {shown.think !== null && (
-            <details className="pg-think">
+            <ThinkBlock>
               <summary>{shown.thinking ? "Thinking…" : "Thought process"}</summary>
-              <div className="pg-think-body">{shown.think}</div>
-            </details>
+              <ThinkBody>{shown.think}</ThinkBody>
+            </ThinkBlock>
           )}
           {shown.answer ? (
             renderMarkdown(shown.answer)
           ) : reply.pending && !shown.thinking ? (
-            <span className="pg-cursor" aria-label="Generating" />
+            <Cursor aria-label="Generating" />
           ) : null}
           {!reply.pending && stats && (
-            <div className="pg-turn-foot">
+            <TurnFoot>
               <span>{stats}</span>
-            </div>
+            </TurnFoot>
           )}
-          </div>
-        </div>
+          </AnswerCard>
+        </AnswerBlock>
       )}
       </Card>
     </div>

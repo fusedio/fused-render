@@ -10,6 +10,7 @@
 // Links open in a new tab with the opener severed; only http(s) hrefs become
 // links at all — a `javascript:` URL in model output stays inert text.
 import { Fragment, type ReactNode } from "react";
+import { markdownClass, markdownCodeClass, markdownCodeHeadClass } from "@platform/ui/playground";
 
 function inline(text: string, keyBase: string): ReactNode[] {
   // One pass, one combined pattern: code spans win over emphasis (backticks
@@ -48,8 +49,8 @@ function inline(text: string, keyBase: string): ReactNode[] {
 
 function CodeBlock({ code, lang }: { code: string; lang: string }) {
   return (
-    <div className="pg-md-code">
-      <div className="pg-md-code-head">
+    <div className={markdownCodeClass}>
+      <div className={markdownCodeHeadClass}>
         <span>{lang || "code"}</span>
         <button
           type="button"
@@ -141,5 +142,5 @@ export function renderMarkdown(text: string): ReactNode {
       </p>,
     );
   }
-  return <div className="pg-md">{blocks}</div>;
+  return <div className={markdownClass}>{blocks}</div>;
 }
