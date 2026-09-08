@@ -80,7 +80,7 @@ def test_a_restored_user_turn_carries_its_transcript_uuid(code, agent):
     later is one the watcher looks straight past.
     """
     assert '"uuid": str(row.get("uuid") or "")' in agent
-    body = code[code.index("function addUser(text, uuid)"):]
+    body = code[code.index("function addUser(text, uuid, pendingId)"):]
     body = body[:body.index("\n}")]
     assert "d.dataset.msg = uuid" in body
     assert body.index("d.dataset.msg") < body.index("log.appendChild")
@@ -178,10 +178,18 @@ def test_only_the_history_restore_can_render_an_anchorable_turn(code):
     This is the assertion that would fail if that stopped being true. Someone
     adding a second uuid-passing caller has to come here and decide, rather than
     getting a feature that silently misses the turn.
+
+    A call passing a THIRD argument (`pendingId` — the id `_send`'s inbox
+    entry rides under, stamped so a later poll can dedup a pending bubble by
+    id instead of by text, see finding 5) is not a uuid-passing call: its
+    second argument is `null`, never a transcript uuid, so it carries nothing
+    an anchor could match and is excluded here the same way a bare, single-
+    argument call already is.
     """
     calls = re.findall(r"(?<!function )addUser\(([^\n]*)\)", code)
     assert calls, "addUser call sites not found"
-    with_uuid = [c for c in calls if "," in c]
+    with_uuid = [c for c in calls
+                 if "," in c and c.split(",")[1].strip() not in ("null", "")]
     assert with_uuid == ["stripBlocks(t.text), t.uuid"], with_uuid
     # And that the restore renders every CLOSED turn synchronously before it
     # looks, so there is no moment where an on-screen turn exists but has not

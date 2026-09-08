@@ -652,7 +652,7 @@ def test_the_watch_attaches_in_quiet_mode(html_pane):
 def test_quiet_prints_a_message_this_transcript_has_never_shown(html_pane):
     """Both render sites, because a turn adopted mid-flight and one adopted
     after it finished are the same question about the same message."""
-    live = _block_between(html_pane, "    if (probeMsg && !(quiet",
+    live = _block_between(html_pane, "} else if (probeMsg && !(quiet",
                           "addUser(probeMsg);")
     assert "onScreen(probeMsg)" in live
     done = _block_between(html_pane, "      if ((!users.length",
