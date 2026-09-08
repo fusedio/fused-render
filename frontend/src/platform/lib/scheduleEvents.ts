@@ -104,7 +104,6 @@ export function useScheduleEvents(onOutcome?: () => void): void {
       const id = pushToast({
         msg: t.msg,
         tone: "error",
-        ttlMs: 0, // persist until acted on / dismissed
         action: {
           label: "Open",
           onClick: () => {

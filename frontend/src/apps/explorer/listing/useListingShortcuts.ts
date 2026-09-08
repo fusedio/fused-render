@@ -135,15 +135,13 @@ export function useListingShortcuts({
       // undo, we simply cannot start a second batch over the same paths — so it
       // is claimed and answered rather than dropped. It used to be
       // preventDefaulted on the stack check alone and then discarded inside
-      // runRelocation's guard, so during a long undo the second and third Cmd+Z
-      // did nothing, said nothing, and read as "undo is broken". Short-lived
-      // toast, since three quick presses should not leave three notices standing.
+      // runRelocation's guard, so a second and third Cmd+Z during a long undo
+      // did nothing, said nothing, and read as "undo is broken".
       if (isFsUndoInFlight()) {
         e.preventDefault();
         pushToast({
           msg: `Still ${action === "undo" ? "undoing" : "redoing"}…`,
           tone: "info",
-          ttlMs: 1200,
         });
         return;
       }

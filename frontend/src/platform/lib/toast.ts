@@ -7,9 +7,10 @@
 // via useSyncExternalStore: mutations (pushToast/dismissToast) update the
 // module array and notify subscribers; the host re-reads on every change.
 //
-// Auto-dismiss mirrors Listing's ~6s cadence. A persistent toast (ttlMs=0) —
-// used for an error carrying an action the user must act on — stays until it's
-// dismissed, either by the user or by the code that raised it.
+// No auto-dismiss (Task 5): a toast stays until the user clears it or the code
+// that raised it dismisses it explicitly. A message that vanished on its own
+// clock could disappear before anyone read it, which is exactly what a toast
+// carrying a failure must never do.
 import { useSyncExternalStore } from "react";
 import type { ToastAction, ToastTone } from "@platform/ui/Toast";
 
@@ -26,19 +27,20 @@ export interface ToastItem {
   leaving: boolean;
 }
 
-const DEFAULT_TTL_MS = 6000;
-
 // How long a dismissed toast stays in the queue so it can fade + collapse
 // (which is also what makes the toasts below it glide up instead of snapping).
 // Must match the .toast/.toast-slot exit transition in shell.css (--dur-med).
 export const TOAST_EXIT_MS = 150;
 
+// The stack holds at most this many toasts at once. A 6th arrival drops the
+// oldest rather than growing the column without bound.
+export const MAX_TOASTS = 5;
+
 let toasts: ToastItem[] = [];
 let nextId = 1;
-const timers = new Map<number, number>();
-// Exit timers, keyed the same way. Separate from `timers`: a toast in its exit
-// window has no TTL left to cancel, and a dismiss landing mid-exit must not
-// restart or shorten the animation.
+// Exit timers, keyed by toast id. A toast in its exit window has no timer to
+// cancel other than this one, and a dismiss landing mid-exit must not restart
+// or shorten the animation.
 const exiting = new Map<number, number>();
 const listeners = new Set<() => void>();
 
@@ -60,20 +62,20 @@ export function getToasts(): ToastItem[] {
   return toasts;
 }
 
-// Queue a toast. ttlMs defaults to ~6s; pass 0 to keep it up until dismissed
-// (the reconnect-failed error, which carries a manual action). Returns the id
-// so callers can dismiss it themselves (e.g. after the action succeeds).
-export function pushToast(t: {
-  msg: string;
-  tone: ToastTone;
-  action?: ToastAction;
-  ttlMs?: number;
-}): number {
+// Queue a toast. Stays until dismissed — by the user's ✕, by a caller
+// dismissing it once its own action succeeds, or automatically once it falls
+// off the back of the MAX_TOASTS stack. Returns the id so callers can dismiss
+// it themselves.
+export function pushToast(t: { msg: string; tone: ToastTone; action?: ToastAction }): number {
   const id = nextId++;
   toasts = [...toasts, { id, msg: t.msg, tone: t.tone, action: t.action, leaving: false }];
-  const ttl = t.ttlMs ?? DEFAULT_TTL_MS;
-  if (ttl > 0) {
-    timers.set(id, window.setTimeout(() => dismissToast(id), ttl));
+  // Cap the stack at MAX_TOASTS by dropping the oldest live (non-leaving)
+  // entries first — a toast already animating out is not what "too many"
+  // means, and forcing it straight to removed would skip its own exit.
+  const live = toasts.filter((x) => !x.leaving);
+  if (live.length > MAX_TOASTS) {
+    const drop = new Set(live.slice(0, live.length - MAX_TOASTS).map((x) => x.id));
+    toasts = toasts.filter((x) => !drop.has(x.id));
   }
   emit();
   return id;
@@ -81,14 +83,9 @@ export function pushToast(t: {
 
 // Dismiss = start the exit animation, not "remove". The toast keeps its slot in
 // the queue (and therefore its place in the column) with `leaving: true` for
-// TOAST_EXIT_MS, then goes. Both dismiss routes land here: the TTL timer above
-// calls this, and so does the ✕ / a caller dismissing its own toast.
+// TOAST_EXIT_MS, then goes. Both dismiss routes land here: the ✕, and a caller
+// dismissing its own toast once its action has succeeded.
 export function dismissToast(id: number): void {
-  const timer = timers.get(id);
-  if (timer !== undefined) {
-    window.clearTimeout(timer);
-    timers.delete(id);
-  }
   if (exiting.has(id)) return; // already animating out — don't restart it
   let found = false;
   const next = toasts.map((t) => {
