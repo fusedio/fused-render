@@ -777,3 +777,125 @@ test("arriving in the narrow CHAT view disarms the mode", async () => {
     win.matchMedia = realMatch;
   }
 });
+
+// ---- the send WINDOW: the capture is async, and it is one door ------------
+//
+// `beginSend` photographs the pane before the wire can be composed, so a send
+// that carries notes is async before the controller has heard of it. Both tests
+// below hold the shutter open by hand and act inside that window, which is
+// where PR #1074's two send-path findings lived.
+
+/** An `attachOverview` that will not answer until the test says so. */
+function heldShutter(): () => void {
+  let open!: () => void;
+  const held = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  patchApi({
+    attachOverview: async () => {
+      overviews += 1;
+      await held;
+      return { id: "ov1", kind: "overview", view: "/shots/overview.png" } satisfies Attachment;
+    },
+  });
+  return open;
+}
+
+function typeInBox(r: Chat, value: string): Promise<void> {
+  return act(async () => {
+    r.root.findByType("textarea").props.onChange({ currentTarget: { value } });
+  });
+}
+
+function pressEnterInBox(r: Chat): Promise<void> {
+  return act(async () => {
+    r.root
+      .findByType("textarea")
+      .props.onKeyDown({ key: "Enter", shiftKey: false, preventDefault() {} });
+  });
+}
+
+async function armedWithANote(content = "this button is too small") {
+  const rig = await mountChat();
+  await act(async () => commentSeat(rig.r).props.onClick());
+  await settle();
+  await act(async () => makeNote(content));
+  await settle();
+  return rig;
+}
+
+test("two rapid submits are ONE send, and the delivered one keeps its notes", async () => {
+  // Nothing used to hold the door while the overview was being taken: the
+  // second Enter started a second `beginSend`, the controller refused ITS
+  // `sendMessage` out loud, and that hand-back was read by the FIRST send —
+  // already delivered — as its own failure. It unmarked the notes the agent had
+  // been given and revoked their picture (Bugbot, PR #1074).
+  const open = heldShutter();
+  const { r } = await armedWithANote();
+  await typeInBox(r, "have a look at this");
+
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  // ...and the second press, INSIDE the first send's capture window.
+  await pressEnterInBox(r);
+  // Nothing has been dispatched yet — which is exactly why the window needs a
+  // door of its own.
+  expect(started()).toHaveLength(0);
+
+  await act(async () => open());
+  await settle(30);
+
+  // ONE start, ONE picture, and the notes went with it: not handed back, not
+  // revoked, and resolved by the run that ended cleanly.
+  expect(started()).toHaveLength(1);
+  expect(overviews).toBe(1);
+  expect(revoked).toHaveLength(0);
+  expect(annChips(r)).toHaveLength(0);
+  expect(annotationsForTests()!.annotations).toHaveLength(0);
+  const message = started()[0]!.params.message;
+  expect(message).toContain("have a look at this");
+  expect(message).toContain("this button is too small");
+});
+
+test("the typed words are in the transcript WHILE the picture is taken, and once", async () => {
+  // The composer clears its box on the keystroke and the controller's own
+  // bubble only goes up inside `sendMessage`, so for the width of the capture
+  // the message was NOWHERE and read as dropped (Bugbot, PR #1074).
+  const open = heldShutter();
+  const { r } = await armedWithANote();
+  await typeInBox(r, "look at the header");
+  const bubbles = () => byClass(r, "bubble").map((n) => String(n.props.children));
+
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+
+  // Mid-capture: the box is empty, and the words are in the log.
+  expect(r.root.findByType("textarea").props.value).toBe("");
+  expect(bubbles()).toEqual(["look at the header"]);
+
+  await act(async () => open());
+  await settle(30);
+
+  // The send's own bubble ADOPTED that row rather than adding a second.
+  expect(bubbles()).toEqual(["look at the header"]);
+  expect(started()).toHaveLength(1);
+});
+
+test("a send that never launched takes its optimistic bubble back down", async () => {
+  startError = "no session";
+  const { r } = await armedWithANote("this one came back");
+  await typeInBox(r, "words with nothing behind them");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(30);
+
+  // The controller drops the row it adopted, so a failed send leaves no bubble
+  // pretending the agent was told anything.
+  expect(byClass(r, "bubble")).toHaveLength(0);
+  // And the round is pending again, exactly as the wordless road already was.
+  expect(annChips(r)).toHaveLength(1);
+  expect(annotationsForTests()!.annotations[0]!.sent).toBe(0);
+});

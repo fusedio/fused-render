@@ -442,10 +442,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     raw?: string,
     attachments?: Receipt[],
     appState = false,
+    /** PR3 `SendOptions.optimisticKey`: fill THAT row instead of adding one. */
+    adopt?: string,
   ): UserTurn => {
+    // ADOPTION IS A REPLACE IN PLACE, and it has to be: the optimistic row is
+    // already the last bubble in the log, and pushing a second one would leave
+    // the reader looking at their message twice while the first send is still
+    // out. A key that is no longer in the log (a Back mid-capture) is not
+    // adopted — the row it named is gone, so this send posts its own.
+    const held = !!adopt && state.turns.some((t) => t.key === adopt && t.role === "user");
     const turn: UserTurn = {
       role: "user",
-      key: nextKey("u"),
+      key: held ? (adopt as string) : nextKey("u"),
       text,
       ...(raw ? { raw } : {}),
       // The receipt rides the bubble the send posted, so the row is under the
@@ -458,8 +466,30 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // block and owes no receipt.
       ...(appState ? { appState: true as const } : {}),
     };
-    pushTurn(turn);
+    if (held) emit({ turns: state.turns.map((t) => (t.key === turn.key ? turn : t)) });
+    else pushTurn(turn);
     return turn;
+  };
+
+  /**
+   * PR3 — THE OPTIMISTIC BUBBLE, and the pair that owns it.
+   *
+   * A caller whose send path is async before it can call `sendMessage` (the
+   * annotation round photographs the pane first) posts the typed words here the
+   * moment the composer clears its box, hands the key down as
+   * `SendOptions.optimisticKey`, and the send's own bubble adopts this very row
+   * — one bubble, however long the capture took. A send that never reached the
+   * controller drops it (`dropOptimisticUser`, and `returnSend` for the roads
+   * that refuse inside).
+   */
+  const postOptimisticUser = (text: string): string => {
+    if (disposed || !text) return "";
+    return addUser(text).key;
+  };
+
+  const dropOptimisticUser = (key: string): void => {
+    if (!key || !state.turns.some((t) => t.key === key)) return;
+    dropTurn(key);
   };
 
   /** T:13722 `addNote` — the ◍ / ◆ / ⏹ rows. */
@@ -1244,9 +1274,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * user's pictures, which is the picture disappearing (Bugbot, PR #1064).
    */
   const returnSend = (text: string, opts: SendOptions): void => {
+    // The optimistic bubble goes with it: this send never happened, so the row
+    // its caller put up ahead of the capture has nothing behind it. Dropped
+    // HERE rather than by the caller, because the caller cannot tell a refusal
+    // from a send that got as far as `addUser` — and adoption has already made
+    // the two the same row (Bugbot, PR #1074).
+    if (opts.optimisticKey) dropOptimisticUser(opts.optimisticKey);
     deps.onSendReturned?.({
       text,
       ...(opts.attachments ? { attachments: opts.attachments } : {}),
+      // WHICH send came back. A counter could not tell "this send returned"
+      // from "some send returned while this one was out", and a second submit
+      // inside the first one's capture window made the first roll back a turn
+      // the agent had already taken (`SendOptions.sendId`).
+      ...(opts.sendId ? { sendId: opts.sendId } : {}),
     });
   };
 
@@ -1302,7 +1343,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // `stripBlocks(outgoing)` for a wordless send is unaffected by the block
     // above — `wire.ts` strips every `<live-app-state>` — so a send that is
     // only pictures still reads as pictures.
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing, opts.attachments, !!live);
+    const bubble = addUser(
+      text || stripBlocks(outgoing),
+      outgoing,
+      opts.attachments,
+      !!live,
+      opts.optimisticKey,
+    );
     let started = false;
     try {
       let runId = "";
@@ -1433,7 +1480,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // once the INBOX has taken it. Bumping here left a failed send with a
     // counter pollLoop read as a landed follow-up, and the reply split around
     // the gap where the rolled-back row had been (Bugbot, PR #996).
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing, opts.attachments, !!live);
+    const bubble = addUser(
+      text || stripBlocks(outgoing),
+      outgoing,
+      opts.attachments,
+      !!live,
+      opts.optimisticKey,
+    );
     // KEYED BY A SEQ, not by the text: two identical follow-ups ("again") used
     // to collapse into one entry, and the first ack cleared both — so the second
     // one's hint left the composer while the message was still in flight.
@@ -2159,6 +2212,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     },
     sendMessage,
     sendFollowUp,
+    postOptimisticUser,
+    dropOptimisticUser,
     stopRun,
     decidePermission,
     answerQuestion,

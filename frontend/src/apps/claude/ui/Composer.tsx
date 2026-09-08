@@ -238,8 +238,28 @@ export interface ComposerCardProps {
    * handed out instead — filled while this composer is mounted, nulled when it
    * goes, which is also what makes it honest about WHICH composer is on screen
    * (home or chat, never both).
+   *
+   * SEEDED, and that is finding 3's whole fix: the caller hands the words IN
+   * (`submitRef.current(intro)`) and they are folded into the box's own text
+   * for this one send. They used to be written through the `restore` seat — a
+   * STATE write — and the send pressed from a `setTimeout(0)`, which could run
+   * before React had applied it: the notes went out with an empty box and the
+   * sentence that introduced them was lost (Bugbot, PR #1074). The answer says
+   * whether the send happened, so a caller whose send was refused can put the
+   * words back in the box instead of dropping them.
    */
-  submitRef?: React.MutableRefObject<(() => void) | null>;
+  submitRef?: React.MutableRefObject<((seed?: string) => boolean) | null>;
+  /**
+   * THE SEND WINDOW'S LATCH, in its two forms.
+   *
+   * `busyRef` is read SYNCHRONOUSLY in `submit`: the parent takes the latch
+   * inside `onSend`, in the same tick as the call below, so a second Enter that
+   * arrives before React has re-rendered still sees it — which is exactly the
+   * race that let two submits into one send window (Bugbot, PR #1074).
+   * `sendBusy` is the same fact as a prop, for the button's `disabled`.
+   */
+  busyRef?: React.MutableRefObject<boolean>;
+  sendBusy?: boolean;
   /** The column whose width the ladder measures against. */
   columnRef?: React.RefObject<HTMLElement | null>;
   /** Chips above the box: attachments (PR2), annotations (PR3). */
@@ -291,6 +311,8 @@ export function ComposerCard({
   restore,
   boxRef: hostBoxRef,
   submitRef,
+  busyRef,
+  sendBusy,
   columnRef,
   chips,
   onPaste,
@@ -356,17 +378,25 @@ export function ComposerCard({
   const attaching = !!attachPending;
   const canSend = !attaching && (text.trim().length > 0 || !!hasAttachments);
 
-  const submit = useCallback(() => {
+  const submit = useCallback((seed?: string): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
     // typed line, not a follow-up (T:17871).
-    if (blocked) return;
+    if (blocked) return false;
     // ... nor while a chip is still attaching, on EITHER road: both of them
     // empty the tray, and both would leave the pending files behind. The box
     // KEEPS its words (the `setText("")` below is past this door), so the same
     // Enter a moment later sends the message the user actually wrote.
-    if (attaching) return;
-    const message = text.trim();
-    if (!message && !hasAttachments) return;
+    if (attaching) return false;
+    // ONE SEND AT A TIME. Checked BEFORE the box is cleared, so a keystroke
+    // this refuses costs the user nothing.
+    if (busyRef?.current || sendBusy) return false;
+    // The programmatic send's seed, appended on the `restore` seat's own join
+    // rule (a newline, and only when there is something to join to) — the box
+    // may hold words the walkthrough's intro is being added to.
+    const extra = typeof seed === "string" ? seed.trim() : "";
+    const typed = text.trim();
+    const message = extra ? (typed ? typed.replace(/\s*$/, "\n") + extra : extra) : typed;
+    if (!message && !hasAttachments) return false;
     setText("");
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
@@ -378,7 +408,8 @@ export function ComposerCard({
         permission: controls.permission,
       });
     }
-  }, [blocked, attaching, text, hasAttachments, running, onFollowUp, onSend, controls]);
+    return true;
+  }, [blocked, attaching, busyRef, sendBusy, text, hasAttachments, running, onFollowUp, onSend, controls]);
 
   // The seat for the programmatic send. In an EFFECT so a render React throws
   // away (StrictMode's double invoke, a concurrent attempt that loses) cannot
@@ -486,7 +517,7 @@ export function ComposerCard({
           type="submit"
           aria-label={running ? "Stop" : "Send"}
           title={running ? "Stop" : attaching ? "Attaching…" : "Send"}
-          disabled={blocked || (!running && !canSend)}
+          disabled={blocked || (!running && (!canSend || !!sendBusy))}
         >
           {running ? (
             <svg

@@ -225,3 +225,93 @@ test("queued follow-ups are named under the box, singular and plural", () => {
   ]);
   expect(hint(mount())).toEqual([]);
 });
+
+// ---- the programmatic send, and the latch around the send window ----------
+//
+// Both are PR #1074's answers, and both live here because this is the only
+// component that can read the box: the walkthrough's intro is handed IN as an
+// argument (it used to be staged through `restore` — a state write — and the
+// send pressed from a `setTimeout(0)` that could beat it), and the door is held
+// shut by a ref the parent takes in the same tick this component calls `onSend`.
+
+type Seat = { current: ((seed?: string) => boolean) | null };
+
+test("the programmatic send takes its words as an ARGUMENT, never through the box", () => {
+  const seat: Seat = { current: null };
+  const c = mount({ submitRef: seat });
+  let answered = false;
+  act(() => {
+    answered = seat.current!("walk me through the header");
+  });
+  // It sent, and it sent the words it was handed — with no render in between
+  // for a timer to lose them in.
+  expect(answered).toBe(true);
+  expect(c.sent.map((s) => s.text)).toEqual(["walk me through the header"]);
+});
+
+test("a seeded send JOINS what the reader had already typed", () => {
+  const seat: Seat = { current: null };
+  const c = mount({ submitRef: seat });
+  c.type("here is the task");
+  act(() => {
+    seat.current!("and here is the walkthrough");
+  });
+  expect(c.sent.map((s) => s.text)).toEqual([
+    "here is the task\nand here is the walkthrough",
+  ]);
+  expect(c.box().props.value).toBe("");
+});
+
+test("the seat with NO seed is ✓ Done: notes alone, and a refusal says so", () => {
+  const seat: Seat = { current: null };
+  const done = mount({ submitRef: seat, hasAttachments: true });
+  act(() => {
+    seat.current!();
+  });
+  expect(done.sent.map((s) => s.text)).toEqual([""]);
+
+  // A composer that cannot send answers `false`, which is what lets the caller
+  // put the words back in the box instead of dropping them.
+  const shut: Seat = { current: null };
+  mount({ submitRef: shut, blocked: true });
+  let answered = true;
+  act(() => {
+    answered = shut.current!("nowhere to put this");
+  });
+  expect(answered).toBe(false);
+});
+
+test("the send window's latch refuses the second submit and KEEPS its words", () => {
+  // The parent takes the latch inside `onSend`, in the very tick this call is
+  // made — which is the race: a second Enter arriving before React has
+  // re-rendered used to start a second send window.
+  const busyRef = { current: false };
+  const sent: string[] = [];
+  const c = mount({
+    busyRef,
+    onSend: (text: string) => {
+      busyRef.current = true;
+      sent.push(text);
+    },
+  });
+  c.type("ship it");
+  c.press("Enter");
+  c.type("and again");
+  c.press("Enter");
+  expect(sent).toEqual(["ship it"]);
+  // Refused BEFORE the box was cleared: the keystroke cost the user nothing.
+  expect(c.box().props.value).toBe("and again");
+});
+
+test("a latched composer dims Send — but never disarms Stop", () => {
+  const send = (c: ReturnType<typeof mount>) =>
+    c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
+  const latched = mount({ sendBusy: true });
+  latched.type("hi");
+  expect(send(latched).props.disabled).toBe(true);
+  // A live run's button is the only way to stop it (T:17909-17914): a latch on
+  // the way in must not take that away.
+  const live = mount({ sendBusy: true, status: "running" });
+  expect(send(live).props["aria-label"]).toBe("Stop");
+  expect(send(live).props.disabled).toBe(false);
+});

@@ -639,8 +639,20 @@ function ChatBody(props: ChatBodyProps) {
   // reference to release.
   useEffect(() => dropSpent, [dropSpent]);
   const attachBack = useRef<((items: readonly Attachment[]) => void) | null>(null);
-  /** How many sends have come BACK — see `onSendReturned` below. */
-  const returned = useRef(0);
+  /** WHICH sends have come BACK, by `SendOptions.sendId` — see
+   *  `onSendReturned` below, and `sendId`'s own note in controller-api. */
+  const returnedSends = useRef(new Set<string>());
+  const sendSeq = useRef(0);
+  /** THE SEND WINDOW'S LATCH. A ref rather than state, because the composer
+   *  reads it in the very tick it calls `onSend` — before React can re-render
+   *  with a new prop (`dispatchSend`). */
+  const sendBusy = useRef(false);
+  /** The same fact as state, for the send button's `disabled`. */
+  const [sendLocked, setSendLocked] = useState(false);
+  const releaseSend = useCallback(() => {
+    sendBusy.current = false;
+    setSendLocked(false);
+  }, []);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
 
@@ -694,13 +706,15 @@ function ChatBody(props: ChatBodyProps) {
         // The agent saw none of it, so the pictures come back to the tray —
         // never revoked on this road, because those very thumbnails are what the
         // returned chips show (T:16693-16720).
-        onSendReturned: ({ attachments }) => {
-          // T:16068 — THE ROLL-BACK SIGNAL, counted rather than flagged: the
-          // agent saw none of this send, which is what the notes' `sent = 0`
-          // and the overview's revoke both hang off. A counter, because a
-          // boolean cannot tell "this send came back" from "a send came back
-          // while this one was still out".
-          returned.current += 1;
+        onSendReturned: ({ attachments, sendId }) => {
+          // T:16068 — THE ROLL-BACK SIGNAL, and it NAMES ITS SEND: the agent saw
+          // none of THAT message, which is what its notes' `sent = 0` and its
+          // overview's revoke hang off. It used to be a counter, and a counter
+          // cannot tell "my send came back" from "a send came back while mine
+          // was still out" — a second submit inside the first send's capture
+          // window bumped it, and the first send rolled back a turn the agent
+          // had already taken (Bugbot, PR #1074).
+          if (sendId) returnedSends.current.add(sendId);
           if (!attachments) return;
           const back = inFlight.current.get(attachments);
           if (!back) return;
@@ -791,7 +805,7 @@ function ChatBody(props: ChatBodyProps) {
   statusRef.current = state.status;
   /** T:8505 `annAutoSubmit` — the composer that is actually mounted (home or
    *  chat, never both) hands its own send in here. */
-  const submitBox = useRef<(() => void) | null>(null);
+  const submitBox = useRef<((seed?: string) => boolean) | null>(null);
   /** `.c-leftview`, from the pane. The pins, the ring and every popover
    *  coordinate are measured against this box and not against `.c-left`
    *  (T:6888). */
@@ -863,23 +877,32 @@ function ChatBody(props: ChatBodyProps) {
       },
       /**
        * T:8289 — everything said BEFORE the first click is the message's own
-       * prompt, so it seeds the box; then the walkthrough sends itself.
+       * prompt, so it rides the walkthrough's own send.
        *
-       * The seed goes through the composer's `restore` seat, which is a STATE
-       * write — so the send waits a turn for it. T's `requestSubmit` had the
-       * text in the DOM already and could send on the next line; here sending
-       * synchronously would send the box as it was before the words landed.
+       * SYNCHRONOUS, AND THE INTRO TRAVELS WITH THE PRESS. It used to be
+       * written into the box through the composer's `restore` seat — a STATE
+       * write — and the send pressed from a `setTimeout(0)`, on the assumption
+       * that one macrotask is enough for React to have applied it. It is not a
+       * guarantee: the timer could run first, `submit` then read an empty box,
+       * and the notes went to the agent without the sentence that introduced
+       * them (Bugbot, PR #1074). The seat takes the words as an argument
+       * instead, so there is no window to lose them in.
        */
       deliver: (intro, spoke) => {
-        if (intro) {
+        if (!spoke && !intro) return;
+        // `canSend`'s own gate (T:7720 `activeRun || !sending`): only the width
+        // of a start request is a moment with nowhere to put them.
+        const sent =
+          statusRef.current === "starting"
+            ? false
+            : (submitBox.current?.(intro || undefined) ?? false);
+        // REFUSED — no composer mounted, a scheduled message pending, the send
+        // window latched. The words are not dropped: they go back to the box,
+        // which is the one place the reader can act on them.
+        if (!sent && intro) {
           strandSeq.current += 1;
           setStranded({ text: intro, seq: strandSeq.current });
         }
-        if (!spoke && !intro) return;
-        setTimeout(() => {
-          if (statusRef.current === "starting") return; // `activeRun || !sending`
-          submitBox.current?.();
-        }, 0);
       },
     }),
   );
@@ -922,7 +945,7 @@ function ChatBody(props: ChatBodyProps) {
     // and only the width of a start request is a moment with nowhere to put
     // them.
     canSend: () => statusRef.current !== "starting",
-    autoSubmit: () => submitBox.current?.(),
+    autoSubmit: () => void submitBox.current?.(),
     // T:7670 — arming over a cross-origin target is the natural moment for the
     // ONE tab-share prompt, and only where the native screen shot is off: with
     // it there is no prompt at all, and raising one here would be the prompt
@@ -1562,6 +1585,79 @@ function ChatBody(props: ChatBodyProps) {
     [controller, takeAttachments, takeAnnotations],
   );
 
+  /**
+   * THE SEND WINDOW, SERIALIZED — one road, both kinds of send.
+   *
+   * `beginSend` is AWAITED (a round of notes has its pane photographed before
+   * the wire can be composed) and nothing used to hold the door while it ran: a
+   * second Enter started a second `beginSend`, the controller refused its
+   * `sendMessage` out loud, and the hand-back that refusal emits was read by
+   * the FIRST send — still out, about to land — as its own failure. It unmarked
+   * notes the agent had already been given and revoked their overview (Bugbot,
+   * PR #1074). Three things answer it, and all three are needed:
+   *
+   *   * THE LATCH (`sendBusy`, a ref the composer reads in the same tick it
+   *     calls in here) closes the door from the first keystroke until the
+   *     controller has TAKEN the message. Taken is when `sendMessage` hands
+   *     back its promise, not when that promise settles: it awaits the whole
+   *     turn (`pollLoop`), and a follow-up has to be typeable inside one.
+   *   * THE HAND-BACK IS KEYED (`sendId`), so "a send came back" can never be
+   *     mistaken for "my send came back" again.
+   *   * THE BUBBLE GOES UP FIRST (`postOptimisticUser`) and the controller's
+   *     own bubble ADOPTS that row, so the typed words are never briefly
+   *     nowhere — the composer clears its box on the keystroke, and the whole
+   *     capture used to happen with an empty box and an empty transcript.
+   */
+  const dispatchSend = useCallback(
+    (text: string, opts: SendOptions, followUp: boolean): void => {
+      // The composer refuses this too, from the same ref — this is the guard
+      // for every OTHER caller of the seat (✓ Done, the walkthrough).
+      if (sendBusy.current) return;
+      sendBusy.current = true;
+      setSendLocked(true);
+      const sendId = `s${++sendSeq.current}`;
+      // A WORDLESS send (notes or pictures alone) posts no optimistic row: its
+      // bubble is the markers `stripBlocks` builds out of the composed wire,
+      // and only the controller can write those.
+      const optimisticKey = text ? controller.postOptimisticUser(text) : "";
+      void (async () => {
+        let taken = false;
+        try {
+          const { merged, done } = await beginSend(opts);
+          const wire: SendOptions = {
+            ...merged,
+            sendId,
+            ...(optimisticKey ? { optimisticKey } : {}),
+          };
+          let ok = true;
+          try {
+            const sent = followUp
+              ? controller.sendFollowUp(text, wire)
+              : controller.sendMessage(text, wire);
+            // The controller has taken it: its own `sending` gate is set and
+            // its bubble is up, both before its first await. The door opens
+            // here, and the turn is the composer's Stop button from now on.
+            taken = true;
+            releaseSend();
+            await sent;
+          } catch {
+            ok = false;
+          }
+          // MY send, asked of my own id — and spent, whichever way it went.
+          done(ok && !returnedSends.current.delete(sendId));
+        } finally {
+          // `beginSend` itself threw, so nothing was ever dispatched: the row
+          // has nothing behind it and the door is still shut.
+          if (!taken) {
+            if (optimisticKey) controller.dropOptimisticUser(optimisticKey);
+            releaseSend();
+          }
+        }
+      })();
+    },
+    [controller, beginSend, releaseSend],
+  );
+
   const onSend = useCallback(
     (text: string, opts: SendOptions) => {
       // OPTIMISTIC, and synchronously BEFORE the dispatch — exactly where T puts
@@ -1570,53 +1666,30 @@ function ChatBody(props: ChatBodyProps) {
       // !!state.sessionId` and nothing on this path set `entered`, so the
       // landing stayed up until a POLL reported a session id: one `start`
       // round-trip plus a 400 ms lap, which is the 1-2 s stall the QA measured
-      // against :1777. The controller puts the user bubble up before anything
-      // slow on its own path (`addUser`), so the view this switches to already
-      // has the message and the working line in it. Set before the await below,
-      // not inside it: a note's picture is taken on the send path and the view
-      // must not wait on it.
+      // against :1777.
       //
       // A REFUSED START DOES NOT COME BACK HERE, and T's `enterChat()` is
       // equally one-way: its rollback (T:16693-16720) drops the bubble and posts
       // the failure INTO the chat, where the reader stays to read it. Back is
       // the way out, the same as for a run that started and then failed.
       setEntered(true);
-      // ASYNC now, because a send that carries notes has to take their picture
-      // first. The promise is deliberately discarded — the composer already
-      // cleared its box and the transcript already has the bubble.
-      void (async () => {
-        const { merged, done } = await beginSend(opts);
-        const seat = returned.current;
-        let ok = true;
-        try {
-          await controller.sendMessage(text, merged);
-        } catch {
-          ok = false;
-        }
-        done(ok && returned.current === seat);
-      })();
+      dispatchSend(text, opts, false);
     },
-    [controller, beginSend],
+    [dispatchSend],
   );
   const onFollowUp = useCallback(
     (text: string) => {
-      void (async () => {
-        const { merged, done } = await beginSend({
+      dispatchSend(
+        text,
+        {
           model: defaults.model,
           effort: defaults.effort,
           permission: defaults.permission,
-        });
-        const seat = returned.current;
-        let ok = true;
-        try {
-          await controller.sendFollowUp(text, merged);
-        } catch {
-          ok = false;
-        }
-        done(ok && returned.current === seat);
-      })();
+        },
+        true,
+      );
     },
-    [controller, defaults.model, defaults.effort, defaults.permission, beginSend],
+    [dispatchSend, defaults.model, defaults.effort, defaults.permission],
   );
   const onStop = useCallback(() => void controller.stopRun(), [controller]);
   const onBack = useCallback(() => {
@@ -1880,6 +1953,11 @@ function ChatBody(props: ChatBodyProps) {
       // T:8505 — whichever composer is mounted hands its send in, for the
       // walkthrough's auto-submit and for ✓ Done.
       submitRef: submitBox,
+      // THE SEND WINDOW'S LATCH, in both its forms: the ref is read in the tick
+      // the composer calls `onSend`, the flag dims the button on the next paint
+      // (`dispatchSend`).
+      busyRef: sendBusy,
+      sendBusy: sendLocked,
       onPaste,
       // The chip row is ABOVE the control row and changes the composer's height,
       // never the row's width — but T re-measures on exactly this kind of change
@@ -1905,6 +1983,7 @@ function ChatBody(props: ChatBodyProps) {
       boxRef,
       stranded,
       entered,
+      sendLocked,
       urlTick,
       attach.items,
       attach.remove,
