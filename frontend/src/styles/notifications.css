@@ -1182,7 +1182,17 @@
    rather than holding an empty progress track. `align-items: center` keeps
    the 11px glyph centred against the text's own line-height; `flex: none` on
    the svg (the child selector below) stops it being squeezed by a long
-   status sentence next to it. */
+   status sentence next to it.
+
+   This `display: flex` sits on `.dl-status.with-glyph` itself, not on
+   `.dl-status` — putting it there instead would replace the `-webkit-box`
+   display `-webkit-line-clamp: 3` above depends on, so a long failure
+   message next to the glyph would lose its three-line clamp and grow
+   without bound. The glyph still has to share the text's first line (an
+   explicit requirement), so the flex row stays; the clamp lives on
+   `.dl-status-text` below instead, the span wrapping the status text alone,
+   which gets its own `-webkit-box` display independent of the flex row
+   around it. */
 .dl-status.with-glyph {
   display: flex;
   align-items: center;
@@ -1191,6 +1201,14 @@
 
 .dl-status.with-glyph svg {
   flex: none;
+}
+
+.dl-status.with-glyph .dl-status-text {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  word-break: break-word;
 }
 
 /* THE ROW THAT IS ITSELF THE ACTION. A waiting task's row has exactly one

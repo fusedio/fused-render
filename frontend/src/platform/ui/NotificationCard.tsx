@@ -257,7 +257,7 @@ export default function NotificationCard({
           {terminal ? (
             <>
               <TerminalGlyph state={terminal} />
-              <span>{status}</span>
+              <span className="dl-status-text">{status}</span>
             </>
           ) : (
             status

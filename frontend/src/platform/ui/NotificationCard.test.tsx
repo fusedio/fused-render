@@ -1,7 +1,7 @@
 // The shared row's own contract, independent of any of its six callers:
 // every optional part renders (or doesn't) exactly off its own prop, and the
 // two action families stay on their own classes.
-import { expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import { create } from "react-test-renderer";
 import type { ReactTestRendererJSON } from "react-test-renderer";
 
@@ -62,6 +62,18 @@ test("terminal renders the glyph beside the status text, on one line", () => {
   const line = findAll(tree, "dl-status")[0];
   expect((line.props.className as string).split(" ")).toContain("with-glyph");
   expect(findAll(tree, "dl-status")).toHaveLength(1);
+});
+
+// `.dl-status.with-glyph` is a flex row (glyph + text on one line), which
+// would collide with `-webkit-line-clamp`'s own `-webkit-box` display
+// requirement if the clamp sat on the same element. The status text lives
+// in its own `.dl-status-text` span so the clamp has a `-webkit-box`
+// element to apply to, independent of the flex row around it.
+test("terminal status wraps its text in its own clamp span, separate from the flex row", () => {
+  const tree = render({ title: "a", status: "a long failure message", terminal: "error" });
+  const clampSpans = findAll(tree, "dl-status-text");
+  expect(clampSpans).toHaveLength(1);
+  expect(clampSpans[0].children).toEqual(["a long failure message"]);
 });
 
 test("liveAction and navAction render as distinct classes, never merged", () => {
@@ -130,6 +142,30 @@ test("rowClick's Enter/Space handler ignores a keydown that bubbled up from a ne
   });
   expect(rowClickSpy.calls).toBe(1);
   expect(preventDefault.called).toBe(true);
+});
+
+describe("notifications.css: with-glyph keeps the line-clamp alive on its text span", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+  const CSS = readFileSync(join(import.meta.dir, "../../styles/notifications.css"), "utf8");
+
+  function block(css: string, selector: string): string {
+    const at = css.indexOf(selector + " {");
+    expect(at).toBeGreaterThan(-1);
+    return css.slice(at, css.indexOf("}", at));
+  }
+
+  it("with-glyph itself is the flex row and carries no clamp declaration", () => {
+    const withGlyph = block(CSS, ".dl-status.with-glyph");
+    expect(withGlyph).toContain("display: flex;");
+    expect(withGlyph).not.toContain("-webkit-line-clamp");
+  });
+
+  it("the inner text span is the -webkit-box clamp target", () => {
+    const textSpan = block(CSS, ".dl-status.with-glyph .dl-status-text");
+    expect(textSpan).toContain("display: -webkit-box;");
+    expect(textSpan).toContain("-webkit-line-clamp: 3;");
+  });
 });
 
 test("onDismiss's disabled prop reaches the ✕ button, so a request in flight can lock it", () => {
