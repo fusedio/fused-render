@@ -422,6 +422,56 @@ test("pressing Clear all dismisses the visible repo rows and clears the terminal
   }
 });
 
+// ------------------------------------------------- Task 3: the volume cap
+//
+// Only TERMINAL jobs ever fold — a repo row, a pairing and a waiting task
+// are always drawn in full below, uncounted by the cap, because none of
+// them pile up the way a machine that has finished many jobs does.
+test("five or fewer terminal jobs draw with no fold row at all", () => {
+  const terminal = Array.from({ length: 5 }, (_, i) => doneJob({ id: `j${i}` }));
+  const tree = renderView({ rows: [], terminal });
+  expect(findAll(tree, "dl-row").length).toBe(5);
+  expect(findAll(tree, "dl-panel-more")).toHaveLength(0);
+});
+
+test("a 6th terminal job folds behind an 'N older notifications' row — nothing is dropped", () => {
+  const terminal = Array.from({ length: 7 }, (_, i) => doneJob({ id: `j${i}` }));
+  const tree = renderView({ rows: [], terminal });
+  expect(findAll(tree, "dl-row").length).toBe(5);
+  const more = findAll(tree, "dl-panel-more");
+  expect(more).toHaveLength(1);
+  expect(text(more[0])).toBe("2 older notifications");
+  // Nothing was deleted — the chip's own count still reads every one of them.
+  expect(numeral(tree)).toBe("7");
+});
+
+test("clicking the fold row reveals every job, and the row itself is gone", () => {
+  const terminal = Array.from({ length: 7 }, (_, i) => doneJob({ id: `j${i}` }));
+  const renderer = renderInstance({ rows: [], terminal });
+  const before = renderer.toJSON() as ReactTestRendererJSON;
+  const more = findAll(before, "dl-panel-more")[0];
+  act(() => {
+    (more.props as { onClick: () => void }).onClick();
+  });
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-row").length).toBe(7);
+  expect(findAll(after, "dl-panel-more")).toHaveLength(0);
+});
+
+test("repo rows, pairings and a waiting task are never folded, however many terminal jobs there are", () => {
+  const terminal = Array.from({ length: 8 }, (_, i) => doneJob({ id: `j${i}` }));
+  const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
+  const tree = renderView({
+    rows,
+    terminal,
+    pairings: [{ id: "p1", name: "Suryas iPhone", at: 1000 }],
+    attention: [asking()],
+  });
+  // 2 repo rows + 1 pairing + 1 attention row + 5 shown terminal jobs.
+  expect(findAll(tree, "dl-row").length).toBe(9);
+  expect(text(findAll(tree, "dl-panel-more")[0])).toBe("3 older notifications");
+});
+
 // -------------------------------- nothing opens or closes on its own (D673)
 //
 // "we can make the notifications 'un collapse' when a new one comes" (D562

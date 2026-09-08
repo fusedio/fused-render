@@ -80,6 +80,11 @@ const NOOP = () => {};
  *  fixed `terminal` list (the tests). A real one comes from the shell, which
  *  owns the state these rows are drawn from (D586). */
 const NOOP_PATCH = () => {};
+// THE VOLUME CAP (Task 3): how many terminal jobs draw before the rest fold
+// behind "N older notifications". Nothing is ever deleted by this — the
+// full list is still there, one click away — it only bounds how tall the
+// panel gets on a machine that has finished a great many jobs.
+const TERMINAL_VISIBLE_CAP = 5;
 const POLL_MS = 6000;
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
@@ -493,6 +498,13 @@ export function RepoUpdatesCardView({
   onDone: (result: MutationResult) => void;
 }) {
   const visible = visibleRepoRows(rows, dismissed);
+  // ONLY TERMINAL JOBS FOLD (Task 3) — a waiting task, a repo row and a
+  // pairing are always shown in full below, never counted toward this cap.
+  // `olderShown` is local UI state, not a prop: once the reader opens the
+  // fold there is no reason for anything outside this view to know or care.
+  const [olderShown, setOlderShown] = useState(false);
+  const shownTerminal = olderShown ? terminal : terminal.slice(0, TERMINAL_VISIBLE_CAP);
+  const olderTerminalCount = terminal.length - shownTerminal.length;
   // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
   // The count on the chip, the idle predicate and the empty state all read
   // this one total, so none of them can disagree about what this section
@@ -585,7 +597,7 @@ export function RepoUpdatesCardView({
                     onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
                   />
                 ))}
-                {terminal.map((job) => (
+                {shownTerminal.map((job) => (
                   <JobRow
                     key={job.id}
                     job={job}
@@ -601,6 +613,25 @@ export function RepoUpdatesCardView({
                   />
                 ))}
               </div>
+              {/* THE VOLUME CAP (Task 3): only TERMINAL jobs ever collapse —
+                  a waiting task, a repo row and a pairing are always drawn in
+                  full, uncounted by `TERMINAL_VISIBLE_CAP`, because none of
+                  them pile up the way a finished job does (a repo stays
+                  behind until fixed, one row; a pairing is dismissed the
+                  moment it is read). Nothing is dropped, only folded: the
+                  count names exactly how many more `JobRow`s are one click
+                  away, and clicking it is the only thing that changes
+                  `olderShown` — a fresh terminal job arriving never
+                  re-collapses a panel the user already opened wide. */}
+              {olderTerminalCount > 0 && (
+                <button
+                  type="button"
+                  className="dl-panel-more"
+                  onClick={() => setOlderShown(true)}
+                >
+                  {olderTerminalCount} older notification{olderTerminalCount === 1 ? "" : "s"}
+                </button>
+              )}
               {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed
                   up"). These bulk actions used to render ABOVE the rows, where
                   a full-width padded band holding one small right-aligned

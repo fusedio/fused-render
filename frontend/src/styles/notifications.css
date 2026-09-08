@@ -667,6 +667,28 @@
   color: var(--fg-muted);
 }
 
+/* THE VOLUME CAP'S OWN ROW (Task 3): a plain, full-width button between the
+   row list and the footer, naming how many older terminal jobs are folded
+   rather than drawn. Text-only and centred, the same weight `.dl-panel-empty`
+   wears, because it is reporting a fact about the panel rather than offering
+   a distinct action the way `.dl-clear` does. */
+.dl-panel-more {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-align: center;
+  cursor: pointer;
+}
+
+.dl-panel-more:hover {
+  color: var(--fg);
+}
+
 /* IDLE CHIP TEXT: the section has nothing in it (D573) — the chip is still a
    real button (hover wash, opens the panel above to show the empty state),
    only its text goes muted. This is now the ONLY signal in the bar that a
@@ -1280,6 +1302,7 @@ button.dl-row:hover {
    keyboard user loses. Every control in the card, one list means one tab order. */
 .dl-toggle:focus-visible,
 .dl-clear:focus-visible,
+.dl-panel-more:focus-visible,
 .dl-row-cancel:focus-visible,
 .dl-x:focus-visible,
 .q-all:focus-visible {
