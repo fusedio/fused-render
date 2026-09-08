@@ -108,9 +108,21 @@
   color: var(--fg-muted);
 }
 
+/* `flex: 1 1 auto` (not the default `0 1 auto`) so this grows to fill the
+ * row's full width rather than shrink-wrapping to its own widest line. Without
+ * it, a row whose detail text happens to be short renders a narrow text
+ * block, and `.appdoc-row-actions` — which sits inside it, at the trailing
+ * edge of the first line — rides that narrow edge instead of the row's own
+ * right edge. Two rows with different detail-text lengths would then show
+ * their Fix buttons at two different horizontal positions, which defeats the
+ * one-column scan `.appdoc-row-actions` exists for. `min-width: 0` stays
+ * alongside the grow so a long unbroken word still wraps (`.appdoc-label`'s
+ * own `overflow-wrap`) instead of forcing the row — and the 620px dialog —
+ * wider. */
 .appdoc-text {
   display: flex;
   min-width: 0;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 2px;
 }
