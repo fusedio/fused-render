@@ -16015,30 +16015,10 @@ async function sendFollowUp(text) {
   const pending = annPending();
   const pics = shotAttached;
   if (pics.length) { shotAttached = []; renderAnn(); }
-  let bareTurn = null;
-  if (text) {
-    addUser(text);
-  } else if (pending.length || pics.length) {
-    // annotation- or screenshot-only follow-up: no words, but still a turn.
-    // Same ordering discipline as addUser above — insert before the live
-    // status line rather than appending after it.
-    const bare = document.createElement("div");
-    bareTurn = bare;
-    bare.className = "turn user";
-    const working = log.querySelector(".turn.working");
-    if (working) log.insertBefore(bare, working);
-    else log.appendChild(bare);
-  }
-  // The follow-up's bubble is above; the `followupSeq` bump that tells a
-  // streaming pollLoop to start a NEW assistant bubble after it happens only
-  // once the inbox has taken the message (below). Bumping here, before the
-  // send was known to land, left a failed send with a counter that pollLoop
-  // read as a landed follow-up: the reply split around the gap where the
-  // rolled-back row had been, and nothing could safely un-bump it (Bugbot,
-  // PR #996). Text that streams during the short wait for the ack belongs to
-  // what the claude was saying before the follow-up reached it, so it stays
-  // in the bubble above.
-  scrollBottom();
+  // Computed before the turn is drawn: a wordless follow-up's bubble shows
+  // the SAME marker label stripBlocks derives from this exact wire text, not
+  // a hand-built stand-in that could drift from what a reload or another
+  // tab's poll shows for the identical message.
   pending.forEach((c) => { c.label = annLabelFor(annotations.indexOf(c)); });
   const wireViews = pics.map((s) => {
     const wire = { kind: s.kind || "pane", view: s.view || null };
@@ -16050,6 +16030,30 @@ async function sendFollowUp(text) {
     return wire;
   });
   const outgoing = composeOutgoing(text, pending, null, wireViews);
+  let bareTurn = null;
+  if (text) {
+    addUser(text);
+  } else if (pending.length || pics.length) {
+    // annotation- or screenshot-only follow-up: no typed words, but still a
+    // turn — drawn with the marker label stripBlocks gives this wire text,
+    // so the bubble already on screen is the one thing another tab's poll
+    // (or this tab's own pollLoop, once the CLI echoes it back) finds
+    // through the ordinary `.user .bubble` textContent dedup, rather than
+    // drawing a second, separate turn for the same send.
+    addUser(stripBlocks(outgoing));
+    const turns = log.querySelectorAll(".turn.user");
+    bareTurn = turns[turns.length - 1];
+  }
+  // The follow-up's bubble is above; the `followupSeq` bump that tells a
+  // streaming pollLoop to start a NEW assistant bubble after it happens only
+  // once the inbox has taken the message (below). Bumping here, before the
+  // send was known to land, left a failed send with a counter that pollLoop
+  // read as a landed follow-up: the reply split around the gap where the
+  // rolled-back row had been, and nothing could safely un-bump it (Bugbot,
+  // PR #996). Text that streams during the short wait for the ack belongs to
+  // what the claude was saying before the follow-up reached it, so it stays
+  // in the bubble above.
+  scrollBottom();
   if (pending.length) {
     for (const c of pending) c.sent = 1;
     annSave();

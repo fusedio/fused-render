@@ -169,6 +169,44 @@ def _run(html, body):
     return json.loads(out.stdout)
 
 
+def _node_fns(html, fn_names):
+    """Extract named top-level functions/consts out of template.html verbatim
+    — same extraction `test_claude_shots.py`'s own `_node` uses. Kept as its
+    own copy rather than imported across test modules, same reason as that
+    one: independent suites, no shared harness to keep in sync."""
+    chunks = []
+    for name in fn_names:
+        start = html.index(name)
+        if name.startswith("function") or name.startswith("async function"):
+            end = html.index("\n}\n", start) + 3
+            chunks.append(html[start:end])
+            continue
+        taken = []
+        for line in html[start:].split("\n"):
+            taken.append(line)
+            if line.split("//")[0].rstrip().endswith(";"):
+                break
+        chunks.append("\n".join(taken))
+    return "\n".join(chunks)
+
+
+# The wire's writer and reader (composeOutgoing/stripBlocks and everything
+# they call) — the real thing, not a stand-in, because the point of the
+# acceptance test below is that the bubble sendFollowUp draws is the SAME
+# marker stripBlocks would give this exact wire text on a reload.
+_WIRE_FNS = ["let targetNoun", "let paneNoun", "const ANN_TAG", "const ANN_NO_WORDS",
+             "function annClock(", "function annStanza(", "function formatAnnotations(",
+             "function stripAnnBlock(",
+             "function stripAppStateBlock(", "function stripBlocks(",
+             "const APP_STATE_TAG", "function appStateBlock(",
+             "const PANE_SHOT_TAG", "function paneShotBlock(",
+             "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_IMG",
+             "const MARKER_FILE",
+             "const MARKERS", "const MARKER_JOIN",
+             "function stripPaneBlock(", "function paneShotIn(",
+             "function composeOutgoing("]
+
+
 _RESERVED_TURNS = (
     '[{ role: "user", text: "still open", uuid: "u1" }, '
     '{ role: "assistant", text: "reply", segments: [] }]'
@@ -553,3 +591,73 @@ scriptProbes([{ done: false, message: "still open", pending: [] }]);
     assert out["pendingOpenTurnsAfter"] is None, \
         "the attach drawing this exchange must spend the reservation, or a " \
         "fallback call elsewhere would draw it a second time"
+
+
+# Everything sendFollowUp needs besides the DOM stub, addUser, and the real
+# wire functions (_WIRE_FNS) above: a scriptable send, and everything else it
+# touches stubbed to a no-op or a call counter.
+_FOLLOWUP_STUB = """
+let logGen = 0;
+let followupSeq = 0;
+let activeRun = "r1";
+const AGENT = "agent.py";
+let annotations = [];
+const annPending = () => annotations.filter((c) => !c.sent);
+function annLabelFor(i) { return String.fromCharCode(65 + i); }
+function annSave() {}
+function sentPopWire() {}
+function shotReceipt() {}
+function annReceiptRow() { return document.createElement("div"); }
+function shotReadDirs() { return []; }
+function curModel() { return ""; }
+function curEffort() { return ""; }
+const DEFAULT_PERMISSION = "default";
+const errors = [];
+function addError(msg) { errors.push(msg); }
+const fused = {
+  params: { get: () => "" },
+  runPython: async () => ({ sent: true }),
+};
+"""
+
+
+def test_a_wordless_screenshot_only_follow_up_draws_one_bubble(html):
+    """SPEC.md PR-7, acceptance test 11: a wordless follow-up whose text is
+    only a marker block draws exactly one bubble showing the marker label,
+    never the raw `<pane-shot>` block and never two bubbles.
+
+    Before this, a wordless follow-up (annotations or pictures with no typed
+    words) drew a "turn user" div carrying nothing but the receipt — no
+    `.bubble` at all, so nothing here matched what `pollLoop`'s pending dedup
+    or a reload's history restore later compare against, and either could go
+    on to draw a SECOND, separate turn for the same send once the CLI echoed
+    it back or the page reloaded. `sendFollowUp` now draws the turn with the
+    same marker `stripBlocks` derives from the exact wire text sent, so that
+    bubble is the one thing later readers find already on screen."""
+    # The real stripBlocks/composeOutgoing declare `function stripBlocks`,
+    # which would collide with the DOM stub's own `let stripBlocks` shadow
+    # (module-scope `let` and `function` of the same name is a SyntaxError,
+    # not a redeclaration this suite could otherwise rely on) — an inner
+    # function scope sidesteps that: `addUser`/`log`/`errors` above are still
+    # reachable by closure, and `stripBlocks`/`composeOutgoing` declared
+    # inside shadow the outer stub cleanly.
+    src = _node_fns(html, _WIRE_FNS) + "\n" + _addUser_src(html) + "\n" \
+        + _block(html, "async function sendFollowUp(text) {", "\n}\n")
+    out = _run(html, _FOLLOWUP_STUB + f"""
+(async () => {{
+{src}
+let shotAttached = [{{ kind: "pane", view: "/tmp/fr/shots/x.png" }}];
+function renderAnn() {{}}
+  await sendFollowUp("");
+  console.log(JSON.stringify({{
+    turns: [...log.querySelectorAll(".turn.user")].length,
+    bubbles: [...log.querySelectorAll(".user .bubble")].map((b) => b.textContent),
+    errors,
+  }}));
+}})();
+""")
+    assert out["errors"] == []
+    assert out["turns"] == 1, "the wordless send must draw exactly one turn"
+    assert out["bubbles"] == ["🖼 pane screenshot"], \
+        "exactly one bubble, showing the marker label — never the raw " \
+        "<pane-shot> block and never a second, bubble-less turn"
