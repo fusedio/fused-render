@@ -7854,6 +7854,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   target are untouched and still tested — the removal is of a UI that asked a
   reader to think in git commits about a folder whose only real question is what
   it costs.
+- **AI-7j** **Every suggestion list carries TWO models minimum and FIVE
+  maximum, per ENGINE.** `catalog.SUGGESTIONS` is keyed by runner (AI-7f), and
+  the bound is per key rather than per capability or in total, because a list
+  is what ONE machine sees: a total would let a one-row engine hide behind a
+  well-stocked sibling. The two ends fail differently, which is why neither is
+  left to editorial judgement. A ONE-ROW list is a mandate wearing a
+  shortlist's clothes — the reader whose first answer is not good enough has
+  nothing else to click and no way to tell whether the model or the prompt was
+  at fault. A SIXTH row costs the thing the list is FOR: these cards are swept,
+  not studied, and a page of them is a research task rather than a pick. **The
+  bounds are a budget, not a target** — a fifth row that only restates a
+  neighbour a size class away is worse than four rows, and adding one to a list
+  of five means arguing which existing row it beats. A model already curated
+  for a DIFFERENT engine is not coverage for this one: the lists serve
+  different machines, and no user sees both. `tests/test_ai_runtime.py` asserts
+  both ends per runner code, beside the ordering rule (AI-7d) and the
+  single-`recommended` rule.
 
 - **AI-7h** **The card's own surface states the disk facts, and one hue per engine
   states the identity** (D436). **Have and not-have are one NEUTRAL axis with two
@@ -11718,7 +11735,7 @@ the rules around it.
 
 ---
 
-## 48. App Doctor — The Share-Readiness Checklist (D301, D548, D751)
+## 48. App Doctor — The Share-Readiness Checklist (D301, D548, D767)
 
 Goal: sharing an app is the moment its folder stops being private, and most of
 what could go wrong is deterministic to check. One button, on the app page's
@@ -11745,7 +11762,7 @@ per-row fix.
   (`app_doctor._CHECK_META`, mirrored by `ci/app_check.py`'s own `CHECK_META`
   for the two ids it computes) — `CHECK_ORDER`/`SECTIONS`/`SEVERITIES` are
   read off that table, never hardcoded a second time by the modal. `kind` is
-  MEASURED, not assumed (D751): a run of the floor engine over 8 real apps
+  MEASURED, not assumed (D767): a run of the floor engine over 8 real apps
   found every one of 40 content findings from the `secrets`/`device-paths`
   families was a false positive, so those two are `"candidate"` — a pattern
   match that only LOCATES something to look at — while every other row (a
@@ -11764,7 +11781,7 @@ per-row fix.
   (critical, fact), `pyproject` (warning, fact), `readme` (warning, fact),
   `icon` (warning, fact) — then `device-paths` (warning, candidate), `git`
   (warning, fact), `pushed` (warning, fact), `generated` (warning, fact),
-  `preview` (warning, fact). `pushed` (new, D751) reads ahead-of-upstream
+  `preview` (warning, fact). `pushed` (new, D767) reads ahead-of-upstream
   commits via `git rev-list --count @{upstream}..HEAD` — no network call,
   ever — and skips with no upstream/remote configured rather than failing a
   folder that was never pushed anywhere. Every label is a complete statement
@@ -11803,7 +11820,7 @@ per-row fix.
   lands), but creating a fix task navigates away and closes the dialog, so
   that moment never occurs and the client helper that would have called it
   had no caller; both were removed rather than left as untested surface
-  (review finding, post-D751). A row's `task` is EITHER its own live fix
+  (review finding, post-D767). A row's `task` is EITHER its own live fix
   session or a live "Fix all" session (`app_doctor.ALL`) — `GET`'s response
   attaches the Fix-all task to every row, not just a row literally named
   `"all"` (no row ever is), so the modal's per-row buttons and its footer
@@ -11815,7 +11832,7 @@ per-row fix.
   the routing table to the sibling API skills, the CI setup procedure, the
   masking rule, and a short whole-app path for a direct invocation with no
   panel in front of the session. The two candidate sections lead with triage,
-  using D751's own false positives (a repeated path across committed run
+  using D767's own false positives (a repeated path across committed run
   logs, a vendored stdlib docstring, markdown code spans, a deliberate
   system-path constant, a test fixture) as worked examples.
 - **AD-7** The CI floor's exit code (`ci/app_check.py`'s `main`, wired up by

@@ -2639,7 +2639,6 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
         pushToast({
           msg: `Your template registry could not be read, so your own view bindings are not applying: ${error}`,
           tone: "error",
-          ttlMs: 0,
           action: {
             label: "Copy details",
             onClick: () => {

@@ -132,6 +132,45 @@ test("a cancelled job still draws — only a success clears itself", () => {
   expect(findAll(root, "dl-row").length).toBeGreaterThan(0);
 });
 
+// ---- terminal jobs lose the bar and gain an inline glyph -----------------
+
+test("a done job draws no bar at all — the tick sits on the status line instead", () => {
+  const root = renderRow({ ...BASE, state: "done", detail: "4.6 GB", done: null, total: null });
+  expect(findAll(root, "dl-bar")).toHaveLength(0);
+  const status = findAll(root, "dl-status");
+  expect(status).toHaveLength(1);
+  expect(status[0].props.className).toContain("with-glyph");
+  expect(text(status[0])).toBe("4.6 GB");
+});
+
+test("an error job draws no bar and its status line carries the cross", () => {
+  const root = renderRow({
+    ...BASE,
+    state: "error",
+    message: "Authentication failed",
+    done: null,
+    total: null,
+  });
+  expect(findAll(root, "dl-bar")).toHaveLength(0);
+  const status = findAll(root, "dl-status");
+  expect(status).toHaveLength(1);
+  expect(status[0].props.className).toContain("with-glyph");
+  expect(text(status[0])).toBe("Authentication failed");
+});
+
+test("a cancelled job draws no bar either", () => {
+  const root = renderRow({ ...BASE, state: "cancelled" });
+  expect(findAll(root, "dl-bar")).toHaveLength(0);
+  const status = findAll(root, "dl-status")[0];
+  expect(status.props.className).toContain("with-glyph");
+});
+
+test("a running job keeps its plain status line — no glyph, no with-glyph class", () => {
+  const root = renderRow({ ...BASE, state: "running" });
+  const status = findAll(root, "dl-status")[0];
+  expect(status.props.className).toBe("dl-status");
+});
+
 // ---- a rejected Cancel/Dismiss must say so, not go quiet (D572) ----------------
 // User: "the cancel button also doesn't seem to be doing anything?" — a click
 // against a request that never lands (404/500/offline) used to hit an empty
@@ -223,6 +262,41 @@ test("a successful Cancel shows no failure line", async () => {
   // this test fail for the right behaviour.
   const after = tree.toJSON() as ReactTestRendererJSON;
   expect(text(after)).not.toContain("Could not cancel");
+});
+
+test("the dismiss control disables while its own request is in flight, so a second click can't fire another", async () => {
+  // A dismiss whose promise never settles during this assertion — `busy` only
+  // clears in `dismissFn`'s `finally`, so the button has to read `disabled`
+  // while the request is still outstanding, not just before/after it.
+  let resolveFn: (v: { dismissed: string }) => void = () => {};
+  const dismissFn = () => new Promise<{ dismissed: string }>((resolve) => (resolveFn = resolve));
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "running", stalled: true }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
+    />,
+  );
+  const before = tree.toJSON() as ReactTestRendererJSON;
+  expect(findAll(before, "dl-x")[0].props.disabled).toBeFalsy();
+
+  const button = findAll(before, "dl-x")[0];
+  const onClick = (button.props as { onClick: () => Promise<void> }).onClick;
+  let clickDone = false;
+  const clicked = act(async () => {
+    await onClick();
+  }).then(() => {
+    clickDone = true;
+  });
+
+  // The request is still outstanding — the ✕ must already be disabled.
+  const mid = tree.toJSON() as ReactTestRendererJSON;
+  expect(findAll(mid, "dl-x")[0].props.disabled).toBe(true);
+  expect(clickDone).toBe(false);
+
+  resolveFn({ dismissed: BASE.id });
+  await clicked;
 });
 
 test("a bare running row's fallback status measures against the caller's clock, not the browser's (C4)", () => {
