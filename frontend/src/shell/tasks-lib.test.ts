@@ -6732,25 +6732,27 @@ describe("sortByLane", () => {
 const CARDS = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
 const CARDS_CSS = readFileSync(join(SHELL, "../styles/task-cards.css"), "utf8");
 
-/** A task in a lane, with a START clock — `started`, which is what the wall
- *  orders by (see `cardsForTasks`), not `last_active`, which is what it used to
- *  order by and what this argument used to set.
+/** A task in a lane, with a LAST-RUN clock — `ran_at` on its one message,
+ *  which is what `taskWhen` prints on the card's head and what `sortByLane`
+ *  orders by, so the wall's order and its labels come off one clock.
  *
- *  `last_active` is deliberately pinned to something ELSE and identical across
- *  these rows: every test below would still pass if the sort quietly went back
- *  to reading it, and pinning it to a constant is what makes them notice.
+ *  `started` and `last_active` are deliberately pinned to something ELSE and
+ *  identical across these rows: the wall ordered by each of them in turn, every
+ *  test below would still pass if the sort quietly went back to either, and
+ *  pinning them to constants is what makes the tests notice.
  *
  *  `task_id` is derived from the key rather than left at the fixture's default,
- *  because the wall's identity is `cardKey` — project plus number — and three
- *  rows all called TASK-002 in one project are, correctly, one card. */
+ *  because the wall's identity is `cardKey` and two rows with one key are,
+ *  correctly, one card. */
 function running(key: string, at: number, over: Partial<Task> = {}): Task {
   return task({
     key,
     session_id: key,
     task_id: `TASK-${key}`,
     status: "in_progress",
-    started: at,
+    started: 7_777,
     last_active: 9_999,
+    messages: [msg({ at, ran_at: at, state: "sending", turn: "idle" })],
     ...over,
   });
 }
@@ -6763,10 +6765,10 @@ function asking(key: string, at: number, over: Partial<Task> = {}): Task {
 describe("cardsForTasks", () => {
   it("draws every lane, Archive included, in the List's own rank order", () => {
     // Akshil, 2026-09-05: "show all status tasks in cards even archived ones"
-    // (that morning it was every lane but Archive). CARD_LANES is both the
-    // membership test and the rank order, and it is LIST_ORDER itself rather
-    // than a second list — so the wall and the List can never disagree about
-    // which lane comes first. Every name in it is still a real board column.
+    // (that morning it was every lane but Archive). CARD_LANES is the membership
+    // test, and it is LIST_ORDER itself rather than a second list — so the wall
+    // and the List can never disagree about which lane comes first. Every name
+    // in it is still a real board column.
     expect(CARD_LANES).toEqual(LIST_ORDER);
     expect(CARD_LANES).toEqual(["needs_attention", "blocked", "upcoming", "in_progress", "done", "archived"]);
     for (const key of CARD_LANES) expect(BOARD_COLUMNS.map((c) => c.key)).toContain(key);
@@ -6781,6 +6783,37 @@ describe("cardsForTasks", () => {
     // "f" is OLDER than "a" and still comes first: the lane outranks the clock.
     // "e" — archived — is drawn too, in the bottom lane.
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["f", "d", "c", "a", "b", "e"]);
+  });
+
+  it("is the List's order, exactly — sortByLane, not a second opinion", () => {
+    // Akshil, 2026-09-08: "for list as a reference in order the cards". The wall
+    // used to share the List's RANK and keep a clock of its own inside a lane
+    // (`started`, when the task was created) while every card's head printed
+    // the List's stamp (`taskWhen`, the last run) — so a Done card reading
+    // "2h ago" sat above one reading "10m ago", and a recurring task created
+    // weeks ago that had just run was top of Done in the List and bottom of
+    // Done on the wall. Same rows, same order, in both views.
+    const S = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+    const done = (key: string, ran: string, started: number) =>
+      task({
+        key,
+        task_id: `TASK-${key}`,
+        status: "done",
+        started,
+        messages: [msg({ at: S(ran), ran_at: S(ran), state: "sent" })],
+      });
+    const rows = [
+      // Created first, ran LAST — the recurring task. Top of Done.
+      done("weekly", "2026-09-08T09:00:00", 1_000),
+      // Created last, ran a day ago. Below it, whatever `started` says.
+      done("oneoff", "2026-09-07T09:00:00", 5_000),
+      running("run-a", 200),
+      running("run-b", 300),
+      asking("ask", 10),
+    ];
+    const cards = cardsForTasks(rows).cards.map((t) => t.key);
+    expect(cards).toEqual(sortByLane(rows).map((t) => t.key));
+    expect(cards).toEqual(["ask", "run-b", "run-a", "weekly", "oneoff"]);
   });
 
   it("groups by lane before it sorts, blocked first, then in progress", () => {
@@ -6802,18 +6835,36 @@ describe("cardsForTasks", () => {
     ]);
   });
 
-  it("orders by when the task STARTED, newest first, inside one lane", () => {
+  it("orders by the time the card PRINTS — its last run — newest first, inside one lane", () => {
     const rows = [running("old", 100), running("new", 300), running("mid", 200)];
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["new", "mid", "old"]);
   });
 
-  it("does not re-sort when a run merely writes — the whole point of `started`", () => {
+  it("runs Upcoming soonest first, overdue at the very top — the List's rule", () => {
+    // The old clock ran every lane newest-created first, which on Upcoming put
+    // the run due in ten minutes under one due in October if it was scheduled
+    // later. The List sorts that lane by the run ahead, ascending; so does this.
+    const NOW_S = Math.floor(NOW / 1000);
+    const soon = (key: string, at: number) =>
+      task({
+        key,
+        task_id: `TASK-${key}`,
+        status: "upcoming",
+        next_run: at,
+        messages: [msg({ at, ran_at: 0, state: "pending" })],
+      });
+    const rows = [soon("october", NOW_S + 30 * 86_400), soon("tenmin", NOW_S + 600), soon("late", NOW_S - 600)];
+    expect(cardsForTasks(rows, CARD_PAGE, NOW).cards.map((t) => t.key)).toEqual(["late", "tenmin", "october"]);
+  });
+
+  it("does not re-sort when a run merely writes", () => {
     // THE BUG (Akshil, 2026-09-03: "when i create a new task the layout shifts
     // multiple times"). The wall sorted by `last_active`, which climbs on every
     // write and reaches this page within a second (the /api/tasks/changes fast
-    // lane), so cards traded places for as long as anything was talking. Measured
-    // on this branch before the fix: a new card dropped a slot nine seconds after
-    // it appeared because an unrelated run had written in the meantime.
+    // lane), so cards traded places for as long as anything was talking. The
+    // List's key — a message's `ran_at` — is written once when the turn begins
+    // and does not tick while it streams, so this still holds without a clock
+    // of the wall's own.
     const before = [running("older", 100), running("newer", 200)];
     const order = cardsForTasks(before).cards.map((t) => t.key);
     expect(order).toEqual(["newer", "older"]);
@@ -6862,18 +6913,15 @@ describe("cardsForTasks", () => {
   });
 
   it("sends a task with no clock to the end, never to 1970", () => {
-    // `started` is 0.0 when the server could not name a start, and an older
-    // server sends no field at all. Either way the card belongs at the end, by
-    // decision rather than by what 0 coerces to.
-    const rows = [running("none", 0), running("has", 100)];
+    // No run in the window, `last_active` 0.0 for "never": the card prints an
+    // em dash and belongs at the end of its lane, by decision rather than by
+    // what 0 coerces to (sortRank's null bucket).
+    const none = running("none", 0, { messages: [], last_active: 0 });
+    const rows = [none, running("has", 100)];
     expect(cardsForTasks(rows).cards.map((t) => t.key)).toEqual(["has", "none"]);
-
-    const older = [
-      { ...running("a", 0), started: undefined },
-      { ...running("b", 0), started: undefined },
-    ];
-    // Every card in the null bucket: the wall keeps the server's listing order
-    // rather than inventing one.
+    // Every card clockless: the wall keeps the server's listing order rather
+    // than inventing one.
+    const older = [running("a", 0, { messages: [], last_active: 0 }), running("b", 0, { messages: [], last_active: 0 })];
     expect(cardsForTasks(older).cards.map((t) => t.key)).toEqual(["a", "b"]);
   });
 

@@ -667,6 +667,31 @@
   color: var(--fg-muted);
 }
 
+/* THE VOLUME CAP'S OWN ROW: a plain, full-width button pinned above
+   `.dl-rows`, naming how many older terminal jobs are folded rather than
+   drawn. Text-only and centred, the same weight `.dl-panel-empty` wears,
+   because it is reporting a fact about the panel rather than offering a
+   distinct action the way `.dl-clear` does. `border-bottom`, not `border-top`
+   (D762): sitting directly under `.dl-panel`'s own top edge, a `border-top`
+   here would draw a line where none belongs — the bottom edge reads as a
+   caption dividing this line from the row list below it. */
+.dl-panel-more {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-align: center;
+  cursor: pointer;
+}
+
+.dl-panel-more:hover {
+  color: var(--fg);
+}
+
 /* IDLE CHIP TEXT: the section has nothing in it (D573) — the chip is still a
    real button (hover wash, opens the panel above to show the empty state),
    only its text goes muted. This is now the ONLY signal in the bar that a
@@ -695,13 +720,9 @@
   background: rgba(var(--error-rgb), 0.14);
 }
 
-/* `.dl-jobs-clear` (Part A item 2, D663) is the terminal-jobs sibling of
-   `.dl-clear` — a separate class, not a shared one, because the two buttons
-   can render side by side in the same `.dl-head` band (a repo row and a
-   terminal job can both be present at once) and each needs its own click
-   target even though they read identically. */
-.dl-clear,
-.dl-jobs-clear {
+/* `.dl-clear` — ONE "Clear all" button, whatever mix of repo rows and
+   terminal jobs it acts on. */
+.dl-clear {
   flex: 0 0 auto;
   padding: 2px 8px;
   font-size: 11px;
@@ -712,8 +733,7 @@
   cursor: pointer;
 }
 
-.dl-clear:hover,
-.dl-jobs-clear:hover {
+.dl-clear:hover {
   color: var(--fg);
   border-color: var(--fg-muted);
 }
@@ -1157,28 +1177,55 @@
   word-break: normal;
 }
 
-/* THE ROW THAT IS ITSELF THE ACTION (2026-09-03). A waiting task's row has
-   exactly one thing to do — open the conversation and answer — so the whole row
-   is the control rather than a small button parked in its corner. A real
-   `<button>`, so it is focusable and announced as an action; this rule takes the
-   UA chrome back off it so it sits in `.dl-rows` exactly like the `<div>` rows
-   around it, the same reset `button.sidebar-prefs-trigger` does for the sidebar.
+/* THE TERMINAL GLYPH'S OWN LINE: a tick or cross rides inline with the
+   status text, so a finished row is one line shorter than a running one
+   rather than holding an empty progress track. `align-items: center` keeps
+   the 11px glyph centred against the text's own line-height; `flex: none` on
+   the svg (the child selector below) stops it being squeezed by a long
+   status sentence next to it.
+
+   This `display: flex` sits on `.dl-status.with-glyph` itself, not on
+   `.dl-status` — putting it there instead would replace the `-webkit-box`
+   display `-webkit-line-clamp: 3` above depends on, so a long failure
+   message next to the glyph would lose its three-line clamp and grow
+   without bound. The glyph still has to share the text's first line (an
+   explicit requirement), so the flex row stays; the clamp lives on
+   `.dl-status-text` below instead, the span wrapping the status text alone,
+   which gets its own `-webkit-box` display independent of the flex row
+   around it. */
+.dl-status.with-glyph {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dl-status.with-glyph svg {
+  flex: none;
+}
+
+.dl-status.with-glyph .dl-status-text {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  word-break: break-word;
+}
+
+/* THE ROW THAT IS ITSELF THE ACTION. A waiting task's row has exactly one
+   thing to do — open the conversation and answer — so the whole row is the
+   control rather than a small button parked in its corner. `role="button"`
+   plus a keydown handler (`NotificationCard`'s `rowClick`), not a real
+   `<button>` element: the row also carries a genuine `<button>` for its own
+   ✕ dismiss, and a button cannot nest inside a button.
 
    The hover wash is the list's own (`--row-bg-hover`), not the status bar's
    (`--status-item-hover`, which is for the chip): this is a row in a list, and
    it should feel like the file rows and menu items that use that token. */
-button.dl-row {
-  display: block;
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  background: none;
-  border: 0;
+.dl-row.dl-row-open {
   cursor: pointer;
 }
 
-button.dl-row:hover {
+.dl-row.dl-row-open:hover {
   background: var(--row-bg-hover);
 }
 
@@ -1265,7 +1312,7 @@ button.dl-row:hover {
    keyboard user loses. Every control in the card, one list means one tab order. */
 .dl-toggle:focus-visible,
 .dl-clear:focus-visible,
-.dl-jobs-clear:focus-visible,
+.dl-panel-more:focus-visible,
 .dl-row-cancel:focus-visible,
 .dl-x:focus-visible,
 .q-all:focus-visible {

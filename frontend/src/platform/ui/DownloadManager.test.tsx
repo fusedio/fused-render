@@ -1019,7 +1019,6 @@ describe("two sections sharing one Activity panel", () => {
       <DownloadManagerView
         reported={[]}
         engines={{ engines: [], onStop: async () => {} }}
-        ready
         refresh={() => {}}
         patch={() => {}}
       />,
@@ -1030,7 +1029,6 @@ describe("two sections sharing one Activity panel", () => {
         <DownloadManagerView
           reported={[]}
           engines={{ engines: [runningEngine()], onStop: async () => {} }}
-          ready
           refresh={() => {}}
           patch={() => {}}
         />,

@@ -35,16 +35,15 @@
 // this section and hands it to `StatusBar` as `models`, same as before the
 // merge.
 //
-// `ModelRow`/`MemoryCell`/`memoryBand` are NOT shared with
-// `platform/ui/DownloadManager.tsx` any more — they moved there and back
-// during the merge/split, and each now has its own copy shaped for its own
-// row family (a model row's figures are a two-line memory readout with an
-// Unload button, unrelated to a job row's progress bar or an engine row's
-// Stop button). Duplicating this little rather than threading a shared
-// export between shell and platform keeps `check-boundaries.mjs` simple: this
-// file only needs `AiLoadedModel` (platform/lib/api, a type) and
-// `unloadAiModel` (platform/lib/api, a call), nothing shell-only leaks into
-// platform.
+// `ModelRow` draws through `platform/ui/NotificationCard.tsx`, the row shape
+// every status-bar panel shares (Models, Engines, Jobs, repo updates,
+// waiting tasks, LAN pairings). `MemoryCell`/`memoryBand` stay local to this
+// file — they are the row's `figures` content, not part of the shared shape
+// — and this file otherwise only needs `AiLoadedModel` (platform/lib/api, a
+// type) and `unloadAiModel` (platform/lib/api, a call); nothing shell-only
+// leaks into platform (`check-boundaries.mjs` enforces `platform` never
+// importing `shell`, which is why the shared card lives under `platform/ui/`
+// and this file imports it, not the other way around).
 //
 // SPLIT INTO A PURE VIEW (`ModelsCardView`) AND A STATEFUL WRAPPER
 // (`ModelsDock`, default export) — the same split DownloadManagerView/
@@ -57,6 +56,7 @@ import { formatSize, repoName } from "@platform/lib/format";
 import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
+import NotificationCard from "@platform/ui/NotificationCard";
 
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
@@ -72,15 +72,13 @@ import StatusChip from "@platform/ui/StatusChip";
 // The transient `autoOpen`/`autoClose` overrides are untouched; opening is an
 // explicit click within the session.
 
-// Reuses `.dl-row`/`.dl-row-head`/`.dl-title`/`.dl-amount`/`.dl-status` —
-// the job row's own classes (notifications.css) — rather than a parallel
-// `m-` set: a model row is shaped exactly like a job row (a name, a number,
-// an action, an optional status line under it), and notifications.css
-// already draws that shape correctly in both themes. `.dl-row-cancel` is
-// Unload's, the same "text, not a ✕" control JobRow's own Cancel wears
-// (round 1: two controls, one meaning each) — Unload is a distinct verb
-// from Cancel, but the same visual language: a row-scoped, quietly-styled
-// text button, not a glyph.
+// Drawn through `NotificationCard` (`liveAction` for Unload, `figures` for
+// the memory readout) — a model row is shaped exactly like a job row (a
+// name, a number, an action, an optional status line under it), and the
+// shared card already draws that shape correctly in both themes.
+// `.dl-row-cancel` is Unload's, the same "text, not a ✕" control JobRow's
+// own Cancel wears — Unload is a distinct verb from Cancel, but the same
+// visual language: a row-scoped, quietly-styled text button, not a glyph.
 /** THE ROW'S MEMORY FIGURES. Both are INSTANTANEOUS now, and one is a genuine
  *  subset of the other, which is what makes the pair readable at all (D600 —
  *  the user's own pick from three spelled-out options): `1.8 GB now (24 GB
@@ -253,39 +251,37 @@ function ModelRow({
     }
   };
 
+  // The MODEL name only, not the whole `owner/model` repo id — the same trim
+  // `.dl-model` uses on the job row, for the same reason: the owner never
+  // distinguishes anything and eats width a narrow bar has none of. Full id
+  // stays on hover. `titleMode="id"` is what keeps this on ONE line instead
+  // of inheriting the wrap-anywhere job-row rule — a model id is a single
+  // unbreakable token, not a prompt.
+  //
+  // The figures, on their own line (`figures`, `.dl-row-figures`). A
+  // non-ready worker holds no weights yet, so there is no cost to report —
+  // its STATE is the honest thing to show here instead, and the bring-up's
+  // real progress (percentage, cancel) is a job row in Jobs/Activity,
+  // reported by `supervisor._report` (D588).
   return (
-    <div className="dl-row">
-      {/* NAME + ACTION ONLY — the figures are on their own line below (see
-          `.dl-row-figures`'s comment in notifications.css). */}
-      <div className="dl-row-head">
-        {/* The MODEL name only, not the whole `owner/model` repo id — the
-            same trim `.dl-model` uses on the job row, for the same reason:
-            the owner never distinguishes anything and eats width a narrow
-            bar has none of. Full id stays on hover.
-            `dl-title-id` (notifications.css) is what keeps this on ONE line
-            instead of inheriting `.dl-title`'s two-line, wrap-anywhere job-row
-            rule — a model id is a single unbreakable token, not a prompt. */}
-        <span className="dl-title dl-title-id" title={model.model}>
-          {repoName(model.model)}
-        </span>
-        <button className="dl-row-cancel" onClick={unload} disabled={busy}>
-          {busy ? "Unloading…" : "Unload"}
-        </button>
-      </div>
-      {/* The figures, on their own line — `.dl-row-figures` in
-          notifications.css. A non-ready worker holds no weights yet, so there
-          is no cost to report — its STATE is the honest thing to show here
-          instead, and the bring-up's real progress (percentage, cancel) is a
-          job row in Jobs/Activity, reported by `supervisor._report` (D588). */}
-      <div className="dl-row-figures">
-        {model.state === "ready" ? (
+    <NotificationCard
+      title={repoName(model.model)}
+      titleMode="id"
+      titleTooltip={model.model}
+      liveAction={{
+        label: busy ? "Unloading…" : "Unload",
+        onClick: unload,
+        disabled: busy,
+      }}
+      figures={
+        model.state === "ready" ? (
           <MemoryCell model={model} ceilingBytes={ceilingBytes} />
         ) : (
           <span className="dl-amount">{model.state}</span>
-        )}
-      </div>
-      {failure && <div className="dl-status">{failure}</div>}
-    </div>
+        )
+      }
+      status={failure || undefined}
+    />
   );
 }
 
