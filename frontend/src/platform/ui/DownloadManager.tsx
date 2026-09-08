@@ -84,6 +84,7 @@ import {
   engineDuration,
   fetchJobs,
   isRunning,
+  isTerminal,
   jobAmount,
   jobDetail,
   jobFraction,
@@ -266,16 +267,48 @@ function useJobs(): {
   return { jobs, now, settled, refresh, patch };
 }
 
+// The tick and cross that replace the bar once a job is terminal — 11×11
+// inline SVG, the exact paths and stroke the mockups draw, coloured by the
+// status tokens (`--success`/`--error`) rather than a hardcoded hex so
+// `tests/test_theme.py` stays green.
+function TerminalGlyph({ state }: { state: "done" | "error" | "cancelled" }) {
+  if (state === "done") {
+    return (
+      <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+        <path
+          d="M2.2 6.3 4.7 8.8 9.8 3.4"
+          fill="none"
+          stroke="var(--success)"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+      <path
+        d="M3.1 3.1 8.9 8.9M8.9 3.1 3.1 8.9"
+        fill="none"
+        stroke="var(--error)"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function Bar({ job }: { job: Job }) {
+  // A terminal job draws no bar at all (Task 2): success, failure and
+  // cancellation are all told by the glyph on the status line now, not by a
+  // bar frozen at whatever fraction the job happened to be at when it
+  // stopped. `jobFraction` is not even consulted here any more for a
+  // terminal job — this is the one place that decides "no bar", so nothing
+  // downstream has to re-derive it.
+  if (!isRunning(job) && !job.stalled) return null;
   const fraction = jobFraction(job);
-  const tone =
-    job.state === "error"
-      ? " is-error"
-      : job.state === "done"
-        ? " is-done"
-        : job.stalled
-          ? " is-stalled"
-          : "";
+  const tone = job.stalled ? " is-stalled" : "";
   // No fraction to draw and still running = indeterminate: a narrow fill that
   // travels, rather than a width that grows. The alternative — parking a real
   // bar at some invented percentage — is what makes a live download read as
@@ -650,7 +683,15 @@ export function JobRow({
           very button the user just pressed. `status` (the server's report)
           comes back once a later poll succeeds or the row's own next action
           clears `failure`. */}
-      {statusLine && <div className="dl-status">{statusLine}</div>}
+      {statusLine &&
+        (isTerminal(job) ? (
+          <div className="dl-status with-glyph">
+            <TerminalGlyph state={job.state as "done" | "error" | "cancelled"} />
+            <span>{statusLine}</span>
+          </div>
+        ) : (
+          <div className="dl-status">{statusLine}</div>
+        ))}
     </div>
   );
 }

@@ -132,6 +132,45 @@ test("a cancelled job still draws — only a success clears itself", () => {
   expect(findAll(root, "dl-row").length).toBeGreaterThan(0);
 });
 
+// ---- terminal jobs lose the bar and gain an inline glyph (Task 2) --------
+
+test("a done job draws no bar at all — the tick sits on the status line instead", () => {
+  const root = renderRow({ ...BASE, state: "done", detail: "4.6 GB", done: null, total: null });
+  expect(findAll(root, "dl-bar")).toHaveLength(0);
+  const status = findAll(root, "dl-status");
+  expect(status).toHaveLength(1);
+  expect(status[0].props.className).toContain("with-glyph");
+  expect(text(status[0])).toBe("4.6 GB");
+});
+
+test("an error job draws no bar and its status line carries the cross", () => {
+  const root = renderRow({
+    ...BASE,
+    state: "error",
+    message: "Authentication failed",
+    done: null,
+    total: null,
+  });
+  expect(findAll(root, "dl-bar")).toHaveLength(0);
+  const status = findAll(root, "dl-status");
+  expect(status).toHaveLength(1);
+  expect(status[0].props.className).toContain("with-glyph");
+  expect(text(status[0])).toBe("Authentication failed");
+});
+
+test("a cancelled job draws no bar either", () => {
+  const root = renderRow({ ...BASE, state: "cancelled" });
+  expect(findAll(root, "dl-bar")).toHaveLength(0);
+  const status = findAll(root, "dl-status")[0];
+  expect(status.props.className).toContain("with-glyph");
+});
+
+test("a running job keeps its plain status line — no glyph, no with-glyph class", () => {
+  const root = renderRow({ ...BASE, state: "running" });
+  const status = findAll(root, "dl-status")[0];
+  expect(status.props.className).toBe("dl-status");
+});
+
 // ---- a rejected Cancel/Dismiss must say so, not go quiet (D572) ----------------
 // User: "the cancel button also doesn't seem to be doing anything?" — a click
 // against a request that never lands (404/500/offline) used to hit an empty

@@ -1157,6 +1157,23 @@
   word-break: normal;
 }
 
+/* THE TERMINAL GLYPH'S OWN LINE (Task 2, statusbar card unification): a tick
+   or cross rides inline with the status text rather than owning the bar's
+   old slot, so a finished row is one line shorter than a running one rather
+   than holding an empty track. `align-items: center` keeps the 11px glyph
+   centred against the text's own line-height; `flex: none` on the svg (the
+   child selector below) stops it being squeezed by a long status sentence
+   next to it. */
+.dl-status.with-glyph {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dl-status.with-glyph svg {
+  flex: none;
+}
+
 /* THE ROW THAT IS ITSELF THE ACTION (2026-09-03). A waiting task's row has
    exactly one thing to do — open the conversation and answer — so the whole row
    is the control rather than a small button parked in its corner. A real
