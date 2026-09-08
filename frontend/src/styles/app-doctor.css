@@ -1,6 +1,11 @@
-/* App Doctor's dialog (platform/ui/AppDoctorModal.tsx). The chassis, the head
- * and the footer buttons are the shared modal's (deploy.css / buttons-modal.css);
- * everything here is the checklist inside it.
+/* App Doctor's dialog (platform/ui/AppDoctorModal.tsx). The chassis (dialog,
+ * section cards, buttons) is shadcn's — platform/shadcn/ui/{dialog,card,button}
+ * — and the geometry scale that ties the cards to the rows inside them is
+ * Tailwind classes on those elements, spelled out in AppDoctorModal.tsx's
+ * header comment. What is left here is the part with no utility equivalent:
+ * the semantic severity palette, the findings list, and the two 20px
+ * line-box reference boxes that align a row's mark and action to its label's
+ * first line.
  *
  * The STATES are told by COLOUR AND SHAPE together — a ✓, a fail mark and a
  * "–" — never by colour alone, so the list survives a monochrome or
@@ -8,161 +13,34 @@
  *
  * A FAILING row also carries a SEVERITY (critical/warning), and that is its
  * own axis, told apart the same disciplined way: its own hue for the row's
- * ground and state mark, its own SHAPE for the state mark (a filled alert
- * circle for critical, a triangle for warning), and a severity-hued rail down
- * the row's left edge — so the two tiers are told apart by position and
- * weight as well as hue. Every failing row gets a tinted ground and rail —
- * a row worth listing is worth the same urgency treatment. Colours are the
+ * ground and state mark, its own SHAPE for the state mark (an alert circle
+ * for critical, a triangle for warning), and a severity-hued rail down the
+ * row's left edge — so the two tiers are told apart by position and weight
+ * as well as hue. Every failing row gets a tinted ground and rail — a row
+ * worth listing is worth the same urgency treatment. Colours are the
  * palette's own semantic tokens (tokens.css), so both themes come for free.
  *
- * A FAILING row's action (Fix/Review, `.appdoc-fix-btn`) is `.appdoc-row-actions`,
- * a ROW-LEVEL column — a sibling of `.appdoc-text` (the state mark, the text
- * block and the action are the row's three columns) — not something nested
- * inside `.appdoc-label-row` or `.appdoc-text`. It reads at the trailing edge,
- * top-aligned with the label's first line via the same 20px-line-box trick
- * `.appdoc-state` uses, and its right edge lines up with the row's own
- * padding edge, so every row's action forms one scannable column regardless
- * of how long any row's label, detail text or findings list is. Two earlier
- * builds nested it one level lower to chase that same alignment and both
- * regressed: nested in `.appdoc-label-row`, the button's 32px height (`.btn`)
- * inflated the label row's own line box past the label's 20px one, so a
- * failing row's label-to-detail gap read up to ~12px wider than a passing
- * row's and no two rows shared a vertical rhythm; nested in `.appdoc-text`
- * (a flex column that shrink-wraps to its own widest line unless forced to
- * grow), the action rode each row's own per-row right edge instead of the
- * row's. Making it a row-level flex-none column sidesteps both: its height
- * never touches the label row's line box, and its position is set by the
- * row's own flex layout, not by any per-row content width. It is also
- * coloured to the row's own severity (critical/warning), not neutral grey,
- * so it reads as the row's action rather than as inert chrome sitting on an
- * alarmed ground — see the rule's own comment below for the contrast math
- * that shape required. */
+ * The ground and the rail are the ONLY things a failing row adds: its box —
+ * radius, padding, inset — is the same box every other row wears, which is
+ * why the rail is an inset box-shadow rather than a border (a border would
+ * shove the row's own padding around and break that). */
 
 .appdoc-summary {
-  margin: 0 0 12px;
+  margin: 0;
   color: var(--fg-muted);
 }
 
-/* Each section is a card: a hairline and a raised ground, so "essentials"
- * and "sharing" separate by edge rather than by a gap the reader has to
- * measure. The card clips its own corners, which is what lets the header
- * button run edge to edge and still sit inside the radius. */
-.appdoc-section {
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-alt);
-}
-
-.appdoc-section + .appdoc-section {
-  margin-top: 10px;
-}
-
-.appdoc-section-title {
-  margin: 0;
-}
-
-/* An OPEN card's header is a lid over its rows, so it takes the hairline
- * that divides the two. Closed, the header IS the card and needs none. */
-.appdoc-section-open .appdoc-section-title {
-  border-bottom: 1px solid var(--border);
-}
-
-/* The header is a disclosure control: a full-width button carrying
- * `aria-expanded`/`aria-controls` (AppDoctorModal.tsx) so the section's own
- * `<ul>` can be toggled. `border: none; background: transparent` strips the
- * browser's own button chrome, leaving the heading treatment — uppercase,
- * weight, tracking — to carry it. It spans the card's full width so the whole
- * top edge is the hit target. */
-.appdoc-section-btn {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
-  border: none;
-  background: transparent;
-  color: var(--fg);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-}
-
-/* The whole header lightens on hover — a plate behind it would be the
- * loudest thing in a dialog whose actual signal is a severity rail two rows
- * down, and the card already draws every edge this control needs. */
-.appdoc-section-btn:hover {
-  background: rgba(var(--tint), 0.04);
-}
-
-/* Inset, because the button meets the card's own edge on three sides — an
- * offset ring would be drawn outside the radius that clips it. */
-.appdoc-section-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.appdoc-section-name {
-  flex: none;
-}
-
-.appdoc-section-summary {
-  overflow: hidden;
-  flex: 1 1 auto;
-  color: var(--fg-muted);
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: normal;
-}
-
-/* The chevron takes the header's own colour rather than a dimmer one of its
- * own: it is part of the heading, not a second element beside it. Rotation is
- * a transform, not a redraw, so it composites cheaply; `reduced-motion.css`'s
- * blanket `transition-duration: 0.01ms` already collapses it for anyone who
- * asked for that, so there is no local `prefers-reduced-motion` block to
- * duplicate here. */
-.appdoc-chevron {
-  flex: none;
-  transition: transform 0.15s ease;
-}
-
-.appdoc-chevron-open {
-  transform: rotate(90deg);
-}
-
-.appdoc-list {
-  display: flex;
-  padding: 6px;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  list-style: none;
-}
-
-.appdoc-row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 8px 10px;
-  border-radius: 6px;
-}
-
-/* Both severities get a ground AND a rail — see the header comment. The
- * rail is an inset box-shadow rather than a border so it doesn't shove the
- * row's own padding around. */
-.appdoc-row.appdoc-fail.appdoc-row-sev-critical {
-  background: rgba(var(--error-rgb), 0.08);
+/* A failing row is marked by its rail and its state mark, and by nothing
+ * else: it keeps the card's own ground, so every row in a section shares one
+ * surface, one radius and one inset. A tinted plate behind the row reads as a
+ * second card nested inside the first, at a different geometry from its
+ * neighbours. The rail is an inset box-shadow rather than a border because a
+ * border would shove the row's padding around and break that. */
+.appdoc-row-sev-critical {
   box-shadow: inset 2px 0 0 var(--error);
 }
 
-.appdoc-row.appdoc-fail.appdoc-row-sev-warning {
-  background: rgba(var(--warning-rgb), 0.08);
+.appdoc-row-sev-warning {
   box-shadow: inset 2px 0 0 var(--warning);
 }
 
@@ -175,6 +53,7 @@
 
 .appdoc-pass .appdoc-state {
   color: var(--success);
+  opacity: 0.7;
 }
 
 .appdoc-row-sev-critical .appdoc-state {
@@ -195,14 +74,13 @@
  * and the action column don't need, rather than shrink-wrapping to its own
  * widest line. A row with no action has nothing on its other side to share
  * width with, so the text simply runs the full remaining width — there is no
- * reserved gutter reserved for a button that isn't there. `min-width: 0`
- * stays alongside the grow so a long unbroken word still wraps
- * (`.appdoc-label`'s own `overflow-wrap`) instead of forcing the row — and
- * the 620px dialog — wider. This is also why the action lives OUTSIDE this
- * element rather than inside it: nesting it in here (an earlier build did,
- * to get top-alignment with the label) ties the action's horizontal position
- * to this column's own content width instead of to the row's fixed edge —
- * see `.appdoc-row-actions` below and AppDoctorModal.tsx's header comment. */
+ * gutter reserved for a button that isn't there. `min-width: 0` stays
+ * alongside the grow so a long unbroken word still wraps (`.appdoc-label`'s
+ * own `overflow-wrap`) instead of forcing the row — and the 620px dialog —
+ * wider. This is also why the action lives OUTSIDE this element rather than
+ * inside it: nested in here, the action's horizontal position would be tied
+ * to this column's own content width instead of to the row's fixed padding
+ * edge — see `.appdoc-row-actions` below. */
 .appdoc-text {
   display: flex;
   min-width: 0;
@@ -211,13 +89,11 @@
   gap: 2px;
 }
 
-/* The label is now a plain flow child of `.appdoc-text` (no `.appdoc-label-row`
- * wrapper — that div used to hold the label AND the action side by side; the
- * action moved out to become a row-level sibling of `.appdoc-text` itself,
- * see `.appdoc-row-actions` below, so a wrapper whose only remaining job was
- * "hold one span" had nothing left to do). `min-width: 0` plus
- * `overflow-wrap: break-word` still let a long label wrap within the text
- * column's own width instead of forcing the row wider. */
+/* The label is a plain flow child of `.appdoc-text`. `min-width: 0` plus
+ * `overflow-wrap: break-word` let a long label wrap within the text column's
+ * own width instead of forcing the row wider. `line-height: 20px` is the
+ * reference the two line-box columns (`.appdoc-state`, `.appdoc-row-actions`)
+ * are sized to. */
 .appdoc-label {
   min-width: 0;
   overflow-wrap: break-word;
@@ -232,101 +108,41 @@
 
 /* No severity chip sits next to the label — severity has two OTHER carriers
  * (see this file's header comment and AppDoctorModal.tsx's): the row's
- * ground + rail (`.appdoc-row-sev-*` below), and the state mark's shape. The
+ * ground + rail (`.appdoc-row-sev-*` above), and the state mark's shape. The
  * word itself, for a screen reader, lives in the state mark's own
  * `aria-label`/`title` (`rowStateAccessibleLabel`, appdoctor-lib.ts).
  *
- * One severity palette (the tokens `.appdoc-row-sev-*` and `.appdoc-fix-btn`
- * below key off) reused by the header status dot too (shell/AppPage.tsx,
- * apps/explorer/Preview.tsx) — see appdoctor-lib.ts's
- * `effectiveSeverity`/`worstSeverity` for the one place severity is ranked. */
+ * One severity palette (the tokens `.appdoc-row-sev-*` above key off) reused
+ * by the header status dot too (shell/AppPage.tsx, apps/explorer/Preview.tsx)
+ * — see appdoctor-lib.ts's `effectiveSeverity`/`worstSeverity` for the one
+ * place severity is ranked. */
 
 /* The row's THIRD column — a sibling of `.appdoc-text`, not something nested
  * inside it or inside the label. `flex: none` so `.appdoc-text` (flex: 1 1
  * auto) is the one element that absorbs width pressure; this column never
  * gets squeezed and never wraps. Its right edge is the row's own padding
- * edge for free, because it's a direct child of `.appdoc-row` and inherits
- * that box's padding rather than some inner element's shrink-wrapped one —
- * this is the fix for the misalignment two earlier builds hit by nesting it
- * a level deeper (see this file's header comment).
+ * edge for free, because it's a direct child of the row rather than of some
+ * inner element with a shrink-wrapped width — so every row's action forms
+ * one scannable column regardless of how long any row's label, detail text
+ * or findings list is.
  *
  * `height: 20px` + `align-items: center` is the SAME line-box trick
  * `.appdoc-state` uses above: a 20px reference box matching the label's own
- * `line-height: 20px`, with the (taller, 32px — `.btn` sets `height: 32px`)
- * button centred on it rather than clipped to it (this box has no
- * `overflow`, so the button is free to extend a few px above and below its
- * bounds). That centres the button on the label's first line instead of
- * pinning the button's own top edge to the row's top edge, which is what
- * "aligned to the top of the row" actually means when the two elements are
- * different heights — do NOT stretch the button to fill the row instead;
- * that would make every action as tall as the row's tallest line, findings
- * list included. */
+ * `line-height: 20px`, with the taller (28px, shadcn's `size="sm"`) button
+ * centred on it rather than clipped to it (this box has no `overflow`, so
+ * the button is free to extend a few px above and below its bounds). That
+ * centres the button on the label's first line instead of pinning the
+ * button's own top edge to the row's top edge, which is what "aligned to the
+ * top of the row" actually means when the two elements are different
+ * heights — do NOT stretch the button to fill the row instead; that would
+ * make every action as tall as the row's tallest line, findings list
+ * included. */
 .appdoc-row-actions {
   display: flex;
   align-items: center;
   height: 20px;
   flex: none;
   margin: 0;
-}
-
-/* Scoped override, not a change to .btn-secondary (buttons-modal.css) — many
- * other modals rely on that one staying as-is.
- *
- * BASE (a passing/skip/unrun row draws no button at all, so this is only the
- * fallback if a future non-severity state ever needs one): `--border` (what
- * .btn-secondary uses) against a bare row is 1.10:1 dark / 1.13:1 light —
- * nowhere near the 3:1 a control boundary needs, so the button would
- * visually disappear into the row. `--fg-muted` measures 6.98:1 dark /
- * 5.86:1 light against the bare `--bg` ground and clears the bar; the
- * fill/hover pair is the existing "quiet control chrome" tokens (tokens.css),
- * reused rather than invented. */
-.appdoc-fix-btn {
-  padding: 3px 10px;
-  background: var(--ctl-quiet-bg);
-  border-color: var(--fg-muted);
-  font-size: 12px;
-}
-
-.appdoc-fix-btn:hover:not(:disabled) {
-  background: var(--ctl-quiet-bg-hover);
-  border-color: var(--ctl-quiet-border-hover);
-}
-
-/* CRITICAL / WARNING rows: the action inherits the row's own severity in its
- * BORDER, so it reads as the row's urgency rather than as inert grey chrome
- * sitting on a tinted ground, while staying transparent — it sits on the
- * row's own tinted ground (`appdoc-row-sev-*` above) rather than filling with
- * an opaque colour that would cut a hole out of that ground. The label uses
- * `--fg`, not the severity hue, so it reads as ordinary body text rather than
- * fighting the border for the same colour. Modelled on `.btn-danger`
- * (buttons-modal.css) — severity border — but NOT that class itself (other
- * modals depend on it staying as-is). Measured (contrast2.py, both themes):
- * the severity border against the ROW's own tinted ground clears the 3:1
- * control-boundary bar at 6.02 dark / 4.96 light (critical) and 6.53 dark /
- * 4.47 light (warning); `--fg` on that same ground is ordinary body-text
- * contrast. Hover is a 6% wash of the row's own hue over `--bg` — checked at
- * 6% specifically, not 8%, because 8% drops light-theme warning's border
- * contrast under the bar. */
-.appdoc-row-sev-critical .appdoc-fix-btn {
-  background: transparent;
-  border-color: var(--error);
-  color: var(--fg);
-}
-
-.appdoc-row-sev-critical .appdoc-fix-btn:hover:not(:disabled) {
-  background: rgba(var(--error-rgb), 0.06);
-  border-color: var(--error);
-}
-
-.appdoc-row-sev-warning .appdoc-fix-btn {
-  background: transparent;
-  border-color: var(--warning);
-  color: var(--fg);
-}
-
-.appdoc-row-sev-warning .appdoc-fix-btn:hover:not(:disabled) {
-  background: rgba(var(--warning-rgb), 0.06);
-  border-color: var(--warning);
 }
 
 /* The header status dot (shell/AppPage.tsx, apps/explorer/Preview.tsx): the
@@ -372,12 +188,11 @@
  * findings from dominating the dialog, not about protecting the action's
  * visibility.
  *
- * `var(--ctl-quiet-bg)`, not `--bg`: a failing row already sits on a
- * severity wash over `--bg` (`appdoc-row-sev-*` above), so an opaque `--bg`
- * fill here would cut a hole back down to the dialog's own ground instead of
- * reading as a surface of the row. The translucent quiet-control ground
- * (tokens.css) reads as an inset surface regardless of what wash the row
- * underneath it carries. */
+ * `var(--ctl-quiet-bg)`, not `--bg`: an opaque `--bg` fill would cut a hole
+ * back down to the dialog's own ground instead of reading as a surface of the
+ * row. The translucent quiet-control ground (tokens.css) sits on whatever is
+ * under it. Its 6px radius is the innermost step of the dialog's one geometry
+ * scale (14px card, 10px row, 6px here). */
 .appdoc-findings {
   display: flex;
   max-height: 120px;
@@ -388,7 +203,7 @@
   padding: 6px 8px;
   list-style: none;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   background: var(--ctl-quiet-bg);
   font-size: 12px;
 }
