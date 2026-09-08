@@ -11,7 +11,7 @@
 // app mid-upgrade — see fused_render/update/mac.py). Once the button is
 // pressed the panel only points at the Activity dock — the bytes, the phase
 // and the Cancel are on the dock's `sys:update:<version>` row, never here
-// (see INSTALLING_TEXT below).
+// (one word: Downloading… / Installing…).
 //
 // The poll itself lives in platform/lib/update-status.ts, shared with the
 // collapsed rail's dot and the Settings popover's own row — see that file's
@@ -36,7 +36,6 @@ import {
 // look and stops there: a second counter here would be the same download
 // counted twice, in two places, by two different pollers — and only one of
 // them can offer the ✕.
-const INSTALLING_TEXT = "Updating — progress is in Activity";
 
 // The accordion's disclosure mark: the row is a toggle, and a chevron is what
 // says so before it is clicked. One glyph, not two states of markup — CSS
@@ -124,7 +123,11 @@ export default function UpdateBadge() {
             </>
           )}
           {status.state === "installing" && (
-            <div className="update-badge-text">{INSTALLING_TEXT}</div>
+            // One word for where the install is (Akshil, 2026-09-08: "just words
+            // that give status quickly"); the numbers stay on the Activity row.
+            <div className="update-badge-text">
+              {status.phase === "installing" ? "Installing…" : "Downloading…"}
+            </div>
           )}
           {status.state === "error" && (
             <>

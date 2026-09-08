@@ -1284,3 +1284,22 @@ a.bookmark-name::after {
     transition: none;
   }
 }
+
+/* The popover's update row while an install runs: a turning ring in the icon
+   slot, sized to the icon box so the row does not move. Colour split matches
+   the LAN spinner (preferences.css) so every ring in the app is one ring. */
+.update-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--fg-muted);
+  border-radius: 50%;
+  animation: update-spin 0.7s linear infinite;
+}
+
+@keyframes update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

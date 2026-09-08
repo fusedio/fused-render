@@ -757,3 +757,31 @@ def test_the_heartbeat_never_overwrites_the_finished_row(monkeypatch, tmp_path):
     assert beats_after == [], beats_after
     row = _row()
     assert row["state"] == "error" and "swap ended" in row["message"], row
+
+
+def test_status_says_which_half_of_the_install_is_running(monkeypatch, tmp_path):
+    """The badge's one word comes from `phase`: "downloading" from the click,
+    "installing" once the DMG is mounted, None outside an install."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    assert manager.status()["phase"] is None
+    seen = []
+
+    def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
+        seen.append(manager.status()["phase"])
+        os.makedirs(dir, exist_ok=True)
+        path = os.path.join(dir, prefix + "done" + suffix)
+        with open(path, "wb") as f:
+            f.write(b"x" * 8)
+        return path
+
+    monkeypatch.setattr(common, "download_verified", fake_download)
+
+    def attach(dmg):
+        seen.append(manager.status()["phase"])
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(manager, "_attach", attach)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    assert seen == ["downloading", "installing"]
+    assert manager.status()["phase"] is None

@@ -15,7 +15,7 @@ import { ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import type { Config } from "@platform/lib/api";
+import type { Config, UpdateStatus } from "@platform/lib/api";
 import { updateInstall } from "@platform/lib/api";
 import {
   pokeUpdateStatus,
@@ -126,6 +126,21 @@ const PREFERENCES_ICON = (
 // swap, and every one of its siblings in this popover wears a glyph — a lone
 // text row at the top of the list read as a stray status line rather than the
 // thing you click.
+// The install-in-flight glyph for the popover row: a ring that turns
+// (styles/sidebar.css `.update-spinner`), in the icon slot the download arrow
+// otherwise fills — same box, so the row does not shift.
+const UPDATE_SPINNER = <span className="update-spinner" aria-hidden="true" />;
+
+/** The popover row's word. Same as the badge's label except mid-install,
+ *  where the badge heading stays "Updating…" and this row names the half that
+ *  is running instead (Akshil, 2026-09-08: "downloading, installing, etc."). */
+function updateRowLabel(status: UpdateStatus): string {
+  if (status.state === "installing") {
+    return status.phase === "installing" ? "Installing…" : "Downloading…";
+  }
+  return updateLabel(status);
+}
+
 const UPDATE_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M12 3v12" />
@@ -157,6 +172,9 @@ interface PrefsMenuEntry {
   /** Run this instead of navigating to `href` — the tour entries replay a
       walkthrough in place rather than going anywhere. */
   onPick?: () => void;
+  /** Drawn but inert — the update row while an install runs (Akshil,
+      2026-09-08): it says which half is running and takes no press. */
+  disabled?: boolean;
   /** A one-level flyout hung off this row (Tours). Its own entries never carry
       a `submenu` of their own — one level, like ContextMenu's. */
   submenu?: PrefsMenuEntry[];
@@ -277,6 +295,7 @@ function PrefsRow({
     "context-menu-item" +
     (hasSub ? " has-submenu" : "") +
     (open ? " open" : "") +
+    (entry.disabled ? " disabled" : "") +
     // A flyout parent is never "the page you are on": it has no page.
     (!hasSub && !entry.onPick && location.pathname === entry.href ? " active" : "");
   const content = (
@@ -327,8 +346,9 @@ function PrefsRow({
       role="menuitem"
       aria-haspopup={hasSub ? "menu" : undefined}
       aria-expanded={hasSub ? open : undefined}
+      aria-disabled={entry.disabled || undefined}
       className={className}
-      onClick={onActivate}
+      onClick={entry.disabled ? undefined : onActivate}
     >
       {content}
     </div>
@@ -660,8 +680,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ...(updateIsRelevant && updateStatus
       ? [{
           href: "#update",
-          label: updateLabel(updateStatus),
-          icon: UPDATE_ICON,
+          // ONE WORD while the install runs (Akshil, 2026-09-08): which half is
+          // running, and the row takes no press — a spinner where the download
+          // arrow was says the same thing without words.
+          label: updateRowLabel(updateStatus),
+          icon: updateStatus.state === "installing" ? UPDATE_SPINNER : UPDATE_ICON,
+          disabled: updateStatus.state === "installing",
           onPick: handleUpdatePick,
         }, "separator" as const]
       : []),

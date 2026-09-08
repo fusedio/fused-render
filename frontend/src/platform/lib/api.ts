@@ -442,6 +442,9 @@ export interface UpdateStatus {
   // the manifest itself carries no size field. Null when the CDN omits that
   // header, in which case the UI falls back to showing MB downloaded.
   progress_total: number | null;
+  // Which half of an install is running: "downloading" while the DMG streams,
+  // "installing" from the mount to the swap; null outside state "installing".
+  phase?: "downloading" | "installing" | null;
   error: string | null;
   // Always null since D746; kept for wire compatibility. There is one install
   // path for every install type and no terminal command to hand the user, so

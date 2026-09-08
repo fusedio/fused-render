@@ -191,6 +191,7 @@ class UpdateManager:
         self._error: str | None = None
         self._progress: float | None = None
         self._progress_total: float | None = None
+        self._phase: str | None = None
         self._install_thread: threading.Thread | None = None
         # The Activity row for the install currently in flight, and whether
         # its ✕ has been pressed. Both are only ever touched under the lock:
@@ -228,6 +229,11 @@ class UpdateManager:
                 # UpdateStatus shape is unchanged. There is no terminal
                 # command to offer for any method (see the class docstring).
                 "manual_command": None,
+                # Which half of an install is running — "downloading" while the
+                # DMG streams, "installing" from the mount to the swap — so the
+                # badge can say the one word that matters (Akshil, 2026-09-08:
+                # "no longer phrases, just words"). None outside "installing".
+                "phase": self._phase if self._state == "installing" else None,
             }
 
     def method(self) -> str:
@@ -345,6 +351,7 @@ class UpdateManager:
             self._error = None
             self._progress = 0.0
             self._progress_total = None
+            self._phase = "downloading"
             self._job_id = JOB_PREFIX + str(manifest["version"])
             self._cancel = False
             self._job_broken = False
@@ -584,6 +591,8 @@ class UpdateManager:
         # stopping would leave anything better than finishing does — so the
         # row drops its Cancel and its numbers (no honest total exists for a
         # copy-and-swap) and says what it is doing instead.
+        with self._lock:
+            self._phase = "installing"
         self._job_report(detail=PHASE_INSTALLING, message="", done=None,
                          total=None, cancellable=False)
         # …and it has to keep saying it: the swap reports no progress, but a
