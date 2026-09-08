@@ -107,10 +107,15 @@ function StateIcon({ state }: { state: AppCheckState }) {
 function CheckRow({
   check,
   busy,
+  otherTaskLive,
   onFix,
 }: {
   check: AppCheck;
   busy: boolean;
+  /** Some OTHER row (or "Fix all") already has a live task — the server
+   *  allows exactly one at a time, so pressing this row's own button would
+   *  just 409. Disabled rather than hidden, with a title saying why. */
+  otherTaskLive: boolean;
   onFix: (check: AppCheck) => void;
 }) {
   const { shown, hidden } = splitFindings(check.findings);
@@ -169,7 +174,12 @@ function CheckRow({
               <button
                 type="button"
                 className="btn btn-secondary appdoc-fix-btn"
-                disabled={busy}
+                disabled={busy || otherTaskLive}
+                title={
+                  otherTaskLive
+                    ? "An App Doctor task for this app is already running on another row — listed under the app's Tasks tab"
+                    : undefined
+                }
                 onClick={() => onFix(check)}
               >
                 {rowActionLabel(check)}
@@ -313,7 +323,13 @@ export function AppDoctorModal({
               </h3>
               <ul className="appdoc-list">
                 {group.checks.map((c) => (
-                  <CheckRow key={c.id} check={c} busy={busy} onFix={fixRow} />
+                  <CheckRow
+                    key={c.id}
+                    check={c}
+                    busy={busy}
+                    otherTaskLive={!!liveTask && !c.task}
+                    onFix={fixRow}
+                  />
                 ))}
               </ul>
             </div>
