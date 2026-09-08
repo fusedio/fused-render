@@ -329,7 +329,12 @@ export default function IconPicker({
 }: IconPickerProps) {
   const [tab, setTab] = useState<IconPickerTab>(tabs[0] ?? "icon");
   const [query, setQuery] = useState("");
-  const [active, setActive] = useState(0);
+  // The keyboard highlight. null until an arrow key moves it: the picker
+  // opens with NO cell marked — a ring on the first cell read as "this is the
+  // current icon", which it never was (the picker doesn't know the current
+  // icon). Typing or switching tabs drops back to null; Enter with nothing
+  // highlighted takes the first match, so type-and-Enter still works.
+  const [active, setActive] = useState<number | null>(null);
   const [color, setColor] = useState<IconColor>(readColor);
   const [colorOpen, setColorOpen] = useState(false);
   const baseId = useId();
@@ -421,7 +426,8 @@ export default function IconPicker({
   // cell via aria-activedescendant. Sections start each grid row fresh, but a
   // single flat ±GRID_COLS Up/Down is predictable enough across them.
   const flat = useMemo(() => visible.flatMap((s) => s.cells), [visible]);
-  const activeIdx = Math.min(active, Math.max(0, flat.length - 1));
+  const activeIdx =
+    active === null || flat.length === 0 ? null : Math.min(active, flat.length - 1);
   const cellId = (i: number) => `${baseId}-cell-${i}`;
 
   const pick = useCallback(
@@ -464,7 +470,10 @@ export default function IconPicker({
 
   const moveActive = (delta: number) => {
     if (flat.length === 0) return;
-    const next = Math.max(0, Math.min(flat.length - 1, activeIdx + delta));
+    // First arrow press lands on the first cell (Right/Down) or stays put
+    // (Left/Up) rather than jumping a row from a phantom origin.
+    const next =
+      activeIdx === null ? 0 : Math.max(0, Math.min(flat.length - 1, activeIdx + delta));
     setActive(next);
     document.getElementById(cellId(next))?.scrollIntoView({ block: "nearest" });
   };
@@ -489,7 +498,10 @@ export default function IconPicker({
         break;
       case "Enter":
         e.preventDefault();
-        if (flat[activeIdx]) pickAndClose(flat[activeIdx]);
+        {
+          const cell = flat[activeIdx ?? 0];
+          if (cell) pickAndClose(cell);
+        }
         break;
       // Escape is handled by the document-level listener (closes the popover).
     }
@@ -498,7 +510,7 @@ export default function IconPicker({
   const switchTab = (next: IconPickerTab) => {
     setTab(next);
     setQuery("");
-    setActive(0);
+    setActive(null);
     setColorOpen(false);
     searchInput()?.focus();
   };
@@ -560,11 +572,11 @@ export default function IconPicker({
             role="combobox"
             aria-expanded="true"
             aria-controls={`${baseId}-grid`}
-            aria-activedescendant={flat.length > 0 ? cellId(activeIdx) : undefined}
+            aria-activedescendant={activeIdx !== null ? cellId(activeIdx) : undefined}
             value={query}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
               setQuery(e.target.value);
-              setActive(0);
+              setActive(null);
             }}
             onKeyDown={onSearchKeyDown}
           />
