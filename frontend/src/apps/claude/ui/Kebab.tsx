@@ -1,7 +1,19 @@
 // More options (⋮) — the chat's one menu (T:4003-4032 markup,
 // T:13120-13470 behaviour, inventory 04 §F).
 //
-// Four items, and every label is decided at OPEN time because each names
+// THREE items, exactly the template's: the terminal hand-off, Archive/Unarchive
+// and Delete this task. "What was sent" was a fourth here for one revision and
+// is gone (Akshil, 2026-09-08): T opens that panel from a RECEIPT ROW under the
+// bubble it belongs to, where "what was sent" names one turn — in a menu that
+// hangs off the whole conversation the same three words name nothing in
+// particular, and the reader has to guess which turn they would get.
+//
+// ON THE LANDING PAGE the menu is REAL and has one item — "New session in
+// terminal" (T's `#kebabpop` home state, T:13415). It was drawn inert here,
+// which is the one thing a control must never be: the item that does exist
+// there needs no session, it hands the FOLDER to a terminal.
+//
+// Every label is decided at OPEN time because each names
 // something that changes without a reload: the session param (the terminal
 // item's verb), and the task behind this chat (whether the archive item exists
 // at all, and which way it reads). `applyArchiveOpt` draws from what the page
@@ -21,6 +33,8 @@ import {
   unarchiveTask,
   type Task,
 } from "@platform/lib/api";
+import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
+import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { runAgent } from "../protocol/agent";
 import type { TerminalCommandResponse } from "../protocol/types";
 
@@ -61,8 +75,9 @@ export function forgetTaskCaches(sessionId: string): void {
   taskRunning.delete(sessionId);
 }
 
-/** One `/api/tasks` read per session id, ever: a task number does not change
- *  once allocated, so a poll would buy nothing (T:12660-12672).
+/** One `/api/tasks` read per session id ONCE THE NUMBER HAS LANDED: a task
+ *  number does not change after it is allocated, so a poll would buy nothing
+ *  (T:12660-12672). Before it lands is the opposite case — see `ASK_AGAIN_MS`.
  *
  *  A SET OF WAITERS, not a bare "in flight" flag. A session really does get
  *  read by two mounts at once — a card and its own TaskPeek are exactly that —
@@ -71,6 +86,31 @@ export function forgetTaskCaches(sessionId: string): void {
  *  re-rendered it. The read is still one read; every mount waiting on it is
  *  woken when it lands. */
 const inflight = new Map<string, Set<() => void>>();
+
+/**
+ * WHEN TO ASK AGAIN, and it is not "never" (R2-9).
+ *
+ * "One read, ever" was right about a number that exists and wrong about the
+ * moment this hook is most often called: a chat that has just started has a
+ * session id seconds before `/api/tasks` has a row for it, so the one read came
+ * back with nothing, nothing was cached, and the header printed a truncated
+ * session hash until the reader reloaded the page (Akshil, 2026-09-08 — "shows
+ * the session id instead of TASK-xxx, and only updates after reload").
+ *
+ * So the read repeats, on a DECAYING schedule and only while the answer is
+ * still missing — four asks over about fifteen seconds, which covers the
+ * scheduler allocating the row, and then it stops. It is not a poll: the moment
+ * a number lands the schedule is torn down and never runs again for that
+ * session, and every other source of an answer (the tasks-changed event, this
+ * document's own chat-activity stamp) short-circuits the wait.
+ */
+export const ASK_AGAIN_MS = [900, 2500, 5000, 8000];
+
+/** ClaudeChat's `CHAT_ACTIVITY_KEY`, restated rather than imported: that module
+ *  imports this one through `ui/index`, and a chat cannot be made to depend on
+ *  its own menu to know the name of a localStorage key. One string, in two
+ *  places, that has not changed since T:16435. */
+const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
 
 /**
  * T:12696 `showSession` + T:12705 `loadTaskId` — THE TASK NUMBER FOR THIS CHAT,
@@ -91,43 +131,78 @@ export function useTaskId(sessionId: string): string {
   useEffect(() => {
     if (!sessionId || taskIds.has(sessionId)) return;
     let live = true;
+    const timers: number[] = [];
     const wake = () => {
       if (live) bump((n) => n + 1);
     };
-    // Someone else is already asking: join their wake-up list rather than
-    // firing a second identical read (and rather than silently going without an
-    // answer, which is what a bare flag did).
-    const joined = inflight.get(sessionId);
-    if (joined) {
-      joined.add(wake);
-      return () => {
-        live = false;
-        joined.delete(wake);
-      };
-    }
-    const waiters = new Set<() => void>([wake]);
-    inflight.set(sessionId, waiters);
-    void getTasks()
-      .then((data) => {
-        const task = (data.tasks || []).find((t) => t && t.key === sessionId);
-        // Recorded BEFORE the number check, and the order matters: a task with
-        // no number allocated yet is still a task the kebab can archive, and
-        // `null` is the real answer "this chat is not a task" (T:12712-12718).
-        remember(archiveStates, sessionId, task ? task.status === "archived" : null);
-        remember(taskRunning, sessionId, !!task && RUNNING_STATES.has(task.status));
-        if (task?.task_id) remember(taskIds, sessionId, String(task.task_id));
-      })
-      .catch(() => {
-        // The hash stands.
-      })
-      .finally(() => {
-        inflight.delete(sessionId);
-        // Every mount that was waiting, not just the one that asked.
-        for (const waiter of [...waiters]) waiter();
+
+    /** One read, shared with any other mount asking for the same session in the
+     *  same window. Resolves when the answer (or the failure) has landed. */
+    const ask = (): Promise<void> => {
+      // Someone else is already asking: join their wake-up list rather than
+      // firing a second identical read (and rather than silently going without
+      // an answer, which is what a bare flag did).
+      const joined = inflight.get(sessionId);
+      if (joined) {
+        joined.add(wake);
+        return Promise.resolve();
+      }
+      const waiters = new Set<() => void>([wake]);
+      inflight.set(sessionId, waiters);
+      return getTasks()
+        .then((data) => {
+          const task = (data.tasks || []).find((t) => t && t.key === sessionId);
+          // Recorded BEFORE the number check, and the order matters: a task with
+          // no number allocated yet is still a task the kebab can archive, and
+          // `null` is the real answer "this chat is not a task" (T:12712-12718).
+          remember(archiveStates, sessionId, task ? task.status === "archived" : null);
+          remember(taskRunning, sessionId, !!task && RUNNING_STATES.has(task.status));
+          if (task?.task_id) remember(taskIds, sessionId, String(task.task_id));
+        })
+        .catch(() => {
+          // The hash stands.
+        })
+        .finally(() => {
+          inflight.delete(sessionId);
+          // Every mount that was waiting, not just the one that asked.
+          for (const waiter of [...waiters]) waiter();
+        });
+    };
+
+    /** Ask, and — while the answer is still missing — arrange to ask again.
+     *  `at` is the index into `ASK_AGAIN_MS`, so the schedule decays and ENDS;
+     *  a session that never becomes a task stops costing reads. */
+    const askThen = (at: number) => {
+      void ask().then(() => {
+        if (!live || taskIds.has(sessionId)) return;
+        const wait = ASK_AGAIN_MS[at];
+        if (wait === undefined) return;
+        timers.push(window.setTimeout(() => askThen(at + 1), wait));
       });
+    };
+    askThen(0);
+
+    // THE TWO PUSHES, either of which beats the timer above. `tasks-changed` is
+    // announced by this document's own run controller the moment a turn starts
+    // (protocol/run-controller.ts), which is the same moment the row is created;
+    // the storage stamp is every OTHER document's chat saying the same thing
+    // (ClaudeChat's CHAT_ACTIVITY_KEY). Both are pokes, not payloads, so both
+    // land on one handler.
+    const poke = () => {
+      if (!live || taskIds.has(sessionId)) return;
+      void ask();
+    };
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key || ev.key === CHAT_ACTIVITY_KEY) poke();
+    };
+    window.addEventListener(TASKS_CHANGED_EVENT, poke);
+    window.addEventListener("storage", onStorage);
     return () => {
       live = false;
-      waiters.delete(wake);
+      for (const id of timers) window.clearTimeout(id);
+      window.removeEventListener(TASKS_CHANGED_EVENT, poke);
+      window.removeEventListener("storage", onStorage);
+      inflight.get(sessionId)?.delete(wake);
     };
   }, [sessionId]);
   if (!sessionId) return "";
@@ -149,18 +224,19 @@ export interface KebabProps {
   /** The trigger, so the erase dialog can put focus back where it came from on
    *  every close path (T:13293, 13319-13321). */
   btnRef?: React.MutableRefObject<HTMLElement | null>;
-  /** The landing has no session, so nothing in this menu can act — but the
-   *  affordance stays where it always was (T's `#kebab` rides `#anntools`,
-   *  which BOTH views keep) rather than appearing out of nowhere on entering a
-   *  chat. Disabled, and saying why. */
-  disabled?: boolean;
+  /** The landing page's menu: ONE item, "New session in terminal", which is
+   *  all T offers there (T:13415) and all that can mean anything without a
+   *  session. The ⋮ rides the same seat in both views (T's `#kebab` is on the
+   *  `#anntools` strip both keep) so it never appears out of nowhere on
+   *  entering a chat. */
+  landing?: boolean;
   /** This page's own turn: `body.running`'s replacement. Live by EITHER clock
    *  — the listing's word or ours (T:13166). */
   running: boolean;
-  /** Open the erase confirm (this item opens it and NOTHING else, T:13315). */
-  onErase(): void;
-  /** Show the raw outgoing text of the last user turn, when there is one. */
-  onWhatWasSent?(): void;
+  /** The session is GONE. Every cache keyed by it is dropped here (this menu
+   *  owns them), so the caller only has to leave the transcript — "Back to
+   *  chats" IS the way out (T:13352-13366). */
+  onErased?(sessionId: string): void;
 }
 
 export function Kebab({
@@ -168,12 +244,12 @@ export function Kebab({
   file,
   sessionId,
   btnRef,
-  disabled,
+  landing,
   running,
-  onErase,
-  onWhatWasSent,
+  onErased,
 }: KebabProps) {
   const [open, setOpen] = useState(false);
+  const [erasing, setErasing] = useState(false);
   /** Bumped whenever a cache write should repaint the items. */
   const [rev, setRev] = useState(0);
   const [terminalLabel, setTerminalLabel] = useState("");
@@ -283,44 +359,50 @@ export function Kebab({
     }
   }, [agentDir, file, sessionId, later]);
 
+  /**
+   * THE MENU GOES FIRST (R2-8). This used to hold the dropdown open through the
+   * whole round trip so the item could report back inside itself — "Archived —
+   * 2 pending runs cancelled", then close on a 1.1s timer. Pressing a menu item
+   * and having the menu STAY reads as the press not having registered (Akshil,
+   * 2026-09-08); a reader who clicks Archive has finished with the menu, and
+   * every millisecond it lingers is the app arguing about that.
+   *
+   * So: close, flip the cached verb OPTIMISTICALLY (the next open reads
+   * `archiveStates`, and the answer that matters is the one the reader just
+   * chose), then run the call. The confirmation the item used to carry is not
+   * lost — it is now redundant, because the Tasks page's own row moves.
+   *
+   * A FAILURE STILL HAS TO LAND SOMEWHERE. The flip is put back and the menu
+   * REOPENS with the error on the item that earned it: silently reverting would
+   * leave the reader believing a task is filed when it is not, which is the one
+   * outcome worse than a menu that came back.
+   */
   const onArchive = useCallback(async () => {
     if (!sessionId || !hasTask) return;
     const wasFiled = !!filed;
-    busy.current = true;
+    // Optimistic, and before the await: `hasTask`/`restingArchive` are read off
+    // this map, so the reopened menu — or the next one — says the new word.
+    remember(archiveStates, sessionId, !wasFiled);
+    setArchiveLabel("");
+    setOpen(false);
+    setRev((n) => n + 1);
+    busy.current = false;
     try {
-      const body = wasFiled
-        ? await unarchiveTask(sessionId)
-        : await archiveTask(sessionId);
-      // Archiving CANCELS this task's pending work as well as filing it, and
-      // the count comes back in the answer — so the confirmation says what
-      // actually happened rather than a bare "done" (T:13236-13243).
-      const off = wasFiled
-        ? 0
-        : Number((body as { cancelled?: number }).cancelled) || 0;
-      setArchiveLabel(
-        wasFiled
-          ? "Unarchived"
-          : off
-            ? `Archived — ${off} pending run${off === 1 ? "" : "s"} cancelled`
-            : "Archived",
-      );
-      // The cached listing is now WRONG for this session, and the next open
-      // would paint the old verb from it (T:13244-13250).
-      remember(archiveStates, sessionId, !wasFiled);
-      later(() => {
-        busy.current = false;
-        setArchiveLabel("");
-        setOpen(false);
-        setRev((n) => n + 1);
-      }, 1100);
+      if (wasFiled) await unarchiveTask(sessionId);
+      else await archiveTask(sessionId);
     } catch (err) {
+      // Put the world back before saying anything about it.
+      remember(archiveStates, sessionId, wasFiled);
+      if (liveSession.current !== sessionId) return;
+      busy.current = true;
       setArchiveLabel(
         `Could not ${wasFiled ? "unarchive" : "archive"} — ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      setOpen(true);
       // `busy` stays UP until the message has had its 2.5s: it is what keeps a
-      // listing read from wiping the failure off the button (T:13268).
+      // listing read from wiping the failure off the item (T:13268).
       later(() => {
         busy.current = false;
         setArchiveLabel("");
@@ -331,30 +413,6 @@ export function Kebab({
 
   // `rev` is read so a cache write repaints the items it decides.
   void rev;
-
-  // THE LANDING'S KEBAB. Nothing in the menu can act on a chat that does not
-  // exist yet, so the control is inert — but it is DRAWN, because in T the
-  // kebab rides the `#anntools` strip that both the landing and the transcript
-  // keep (T:3842, T:4003), and an affordance that appears from nowhere on
-  // entering a chat reads as the header growing a button.
-  if (disabled) {
-    return (
-      <div className="c-kebab">
-        <button
-          type="button"
-          className="c-kebabbtn"
-          aria-label="More options"
-          title="More options"
-          disabled
-          ref={(el) => {
-            if (btnRef) btnRef.current = el;
-          }}
-        >
-          ⋮
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="c-kebab">
@@ -389,19 +447,17 @@ export function Kebab({
             {terminalLabel ||
               (sessionId ? "Continue in terminal" : "New session in terminal")}
           </DropdownMenuItem>
-          {onWhatWasSent ? (
-            <DropdownMenuItem className="c-kebab-opt" onClick={onWhatWasSent}>
-              What was sent
-            </DropdownMenuItem>
-          ) : null}
           {/* HIDDEN, not disabled, when there is no task behind the chat: a
               disabled row invites the reader to work out what would enable it,
               and the answer is not something they can act on from this menu
               (T:13100-13108). */}
-          {hasTask ? (
+          {!landing && hasTask ? (
             <DropdownMenuItem
               className="c-kebab-opt"
-              closeOnClick={false}
+              /* R2-8 — the press closes the menu. `onArchive` closes it too
+                 (the state is ours, and a controlled `open` has to be told),
+                 but leaving this at `false` meant a click landed on a menu that
+                 stayed put for as long as the flip took. */
               disabled={live}
               title={live ? "Stop the run first" : undefined}
               onClick={() => void onArchive()}
@@ -409,18 +465,43 @@ export function Kebab({
               {archiveLabel || restingArchive}
             </DropdownMenuItem>
           ) : null}
-          {hasTask ? (
+          {!landing && hasTask ? (
             <DropdownMenuItem
               className="c-kebab-opt is-danger"
               disabled={live}
               title={live ? "Stop the run first" : undefined}
-              onClick={onErase}
+              onClick={() => setErasing(true)}
             >
               Delete this task
             </DropdownMenuItem>
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
+      {/* THE TASKS PAGE'S OWN DIALOG (Akshil, 2026-09-08). The chat had a
+          confirm of its own with the same two sentences re-typed into it — one
+          irreversible action, two designs, and the copy free to drift. What was
+          in the way was the layering rule (an app may not import from `shell`),
+          so the component moved to `platform/ui` and both surfaces now share
+          it: the title names the task, the body says what goes and that it
+          cannot come back, and the 409 lands verbatim inside the dialog on the
+          button that earned it. */}
+      {erasing ? (
+        <EraseTaskModal
+          task={{ key: sessionId, task_id: taskIds.get(sessionId) || "this task" }}
+          onClose={() => {
+            setErasing(false);
+            // Opened from a menu item rather than a trigger, so nothing gives
+            // focus back on its own (T:13293, 13319-13321).
+            btnRef?.current?.focus();
+          }}
+          onDone={() => {
+            setErasing(false);
+            // Every cache keyed by this session is now a lie (T:13348-13366).
+            forgetTaskCaches(sessionId);
+            onErased?.(sessionId);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

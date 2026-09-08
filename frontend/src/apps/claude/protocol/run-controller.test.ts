@@ -69,13 +69,20 @@ function poll(over: Partial<PollResponse> = {}): PollResponse {
   };
 }
 
-const text = (t: string): Segment => ({ kind: "text", text: t });
+const text = (t: string): Segment & { text: string } => ({ kind: "text", text: t });
+/** The text of a segment the test built, for asserting on a rendered span. */
+const bodyOf = (sg: Segment): string => (sg as { text?: string }).text || "";
 
-function makeController(handlers: Record<string, Handler>, params = createMemoryParamsStore()) {
+function makeController(
+  handlers: Record<string, Handler>,
+  params = createMemoryParamsStore(),
+  over: { appStateBlock?: () => Promise<string> } = {},
+) {
   const agent = fakeAgent(handlers);
   const activity: number[] = [];
   const stranded: string[][] = [];
   const controller = createChatController({
+    ...over,
     file: "/proj/app.py",
     agentDir: "/tpl/claude",
     params,
@@ -395,34 +402,66 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(made.agent.of("send")[0]!.fields.permission_mode).toBe("acceptEdits");
   });
 
-  test("an acked follow-up starts a NEW bubble showing only the continuation", async () => {
+  // ── the mid-stream follow-up, as agent.py actually replays it (feedback #9) ──
+  //
+  // The real sequence, and every step of it is a rule somewhere in agent.py:
+  //
+  //   1. reply A streams.
+  //   2. `send` writes `pending_echo` (the byte offset of `out.jsonl`) and puts
+  //      the message in the inbox. `followupSeq` bumps here.
+  //   3. FOR AS LONG AS THAT FILE EXISTS `_poll` refuses to call the turn
+  //      `done` — it cannot trust a trailing `result` yet. It used to blank
+  //      `text`/`segments` for the whole window too, so A's remainder streamed
+  //      INVISIBLY and then arrived with B in one burst (R2-1). It now blanks
+  //      only when the send was made between turns, where the window's rows are
+  //      a reply the page has already settled; a send made MID-REPLY keeps
+  //      streaming the reply in flight (the test below this one).
+  //   4. The CLI drains the inbox and echoes the follow-up. That poll's window
+  //      still opens at A's own start, so it carries A COMPLETE, plus the seam:
+  //      `turn_breaks: [{segments, text}]`.
+  //   5. Once a `result` closed A, `_read_current_turn` advances the cursor past
+  //      the echo, so from the next poll on the payload is reply B ALONE with no
+  //      seam in it.
+  //
+  // The bug: the loop froze the bases at step 2 and guessed the seam there, so
+  // A's remainder rendered under the follow-up's bubble and B sliced to nothing
+  // ("the reply is cut off and it looks stuck on the queued message"). The seam
+  // now comes from step 4's payload, and step 5 is absorbed by the shrink test.
+  test("both replies land in their own bubbles, in the order a reload shows", async () => {
     let controller!: ChatController;
+    const A1 = text("Reply A, first half. ");
+    const A2 = text("Reply A, second half.");
+    const B1 = text("Reply B.");
     const made = makeController({
       start: () => ({ run_id: "r1" }),
       send: () => ({ sent: true as const }),
       poll: async (_f, n) => {
-        if (n === 0) return poll({ segments: [text("first half")], text: "first half" });
+        // 1 — A streams.
+        if (n === 0) return poll({ segments: [A1], text: A1.text });
+        // 2 — the follow-up lands.
         if (n === 1) {
-          // The follow-up lands between poll 1 and poll 2.
           await controller.sendFollowUp("and also this");
-          // The cursor refuses to advance past the echo: the whole turn is
-          // replayed, first half included.
+          // 3 — `pending_echo` blanks the payload. A's bubble must KEEP what it
+          // already has rather than be wiped by an empty poll.
+          return poll({ segments: [], text: "" });
+        }
+        if (n === 2) return poll({ segments: [], text: "" });
+        // 4 — the echo landed: A complete, and the seam that says so.
+        if (n === 3) {
           return poll({
-            segments: [text("first half"), text("second half")],
-            text: "first halfsecond half",
+            segments: [A1, A2],
+            text: A1.text + A2.text,
+            turn_breaks: [{ segments: 2, text: A1.text.length + A2.text.length }],
           });
         }
-        return poll({
-          done: true,
-          segments: [text("first half"), text("second half")],
-          text: "first halfsecond half",
-        });
+        // 5 — the cursor stepped over the seam; the payload is B alone.
+        if (n === 4) return poll({ segments: [B1], text: B1.text });
+        return poll({ done: true, segments: [B1], text: B1.text });
       },
     });
     controller = made.controller;
     await controller.sendMessage("go");
 
-    // user, assistant(first half), user(follow-up), assistant(second half)
     expect(controller.getState().turns.map((t) => t.role)).toEqual([
       "user",
       "assistant",
@@ -430,16 +469,85 @@ describe("follow-ups (T:16024, D687)", () => {
       "assistant",
     ]);
     const reply = assistants(controller);
-    expect(reply[0].text).toBe("first half");
-    expect(reply[1].text).toBe("second half");
-    expect(reply[1].text).not.toContain("first half");
+    // A is WHOLE — its remainder went into its own bubble, not the follow-up's.
+    expect(reply[0]!.text).toBe(A2.text);
+    expect((reply[0]!.segments || []).map((sg) => bodyOf(sg))).toEqual([
+      A1.text,
+      A2.text,
+    ]);
+    // B is B, and nothing of A leaked into it.
+    expect((reply[1]!.segments || []).map((sg) => bodyOf(sg))).toEqual([
+      B1.text,
+    ]);
+    expect(reply[1]!.text).toBe(B1.text);
+    // Both settled — the older bubble must not be left with a caret on it.
+    expect(reply.map((t) => !!t.streaming)).toEqual([false, false]);
     expect(controller.getState().queued).toEqual([]);
   });
 
-  test("D687 slices the FLAT text too, for a turn with no segments at all", async () => {
-    // The other half of `freezeReplayBase` (T:16283, 16288): every payload in
-    // the test above is segment-shaped, so `textBase` — the legacy flat path a
-    // pre-segments agent.py still replays — was exercised by nothing.
+  // R2-1: the same sequence with agent.py streaming THROUGH the window. Step 3
+  // is no longer a hole — A's remainder arrives poll by poll, into A's own
+  // bubble, and only the seam at step 4 opens B's. What this pins is that the
+  // continued payload extends slot 0 instead of being read as a new reply.
+  test("A's remainder streams into A's own bubble during the follow-up window", async () => {
+    let controller!: ChatController;
+    const A1 = text("Reply A, ");
+    const A2 = text("Reply A, still going. ");
+    const A3 = text("Reply A, still going. Done.");
+    const B1 = text("Reply B.");
+    /** The assistant bubbles as of each poll, to prove ONE grew. */
+    const seen: string[][] = [];
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A1], text: A1.text });
+        if (n === 1) {
+          await controller.sendFollowUp("and also this");
+          // Still inside the window, and the payload is A GROWING.
+          return poll({ segments: [A2], text: A2.text });
+        }
+        if (n === 2) {
+          seen.push(assistants(controller).map((t) => bodyOf((t.segments || [])[0]!)));
+          return poll({ segments: [A3], text: A3.text });
+        }
+        if (n === 3) {
+          seen.push(assistants(controller).map((t) => bodyOf((t.segments || [])[0]!)));
+          // The echo landed: A closed, so the seam appears and B starts.
+          return poll({
+            segments: [A3, B1],
+            text: A3.text + B1.text,
+            turn_breaks: [{ segments: 1, text: A3.text.length }],
+          });
+        }
+        return poll({
+          done: true,
+          segments: [A3, B1],
+          text: A3.text + B1.text,
+          turn_breaks: [{ segments: 1, text: A3.text.length }],
+        });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+
+    // ONE bubble grew across the window — never a second one for the same reply.
+    expect(seen).toEqual([[A2.text], [A3.text]]);
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect((reply[0]!.segments || []).map(bodyOf)).toEqual([A3.text]);
+    expect((reply[1]!.segments || []).map(bodyOf)).toEqual([B1.text]);
+    expect(reply.map((t) => !!t.streaming)).toEqual([false, false]);
+  });
+
+  test("the seam splits the FLAT text too, for a turn with no segments at all", async () => {
+    // The legacy flat path a pre-segments agent.py still replays: the seam's
+    // `text` offset is a string index, and the same split has to happen there.
     let controller!: ChatController;
     const made = makeController({
       start: () => ({ run_id: "r1" }),
@@ -448,16 +556,125 @@ describe("follow-ups (T:16024, D687)", () => {
         if (n === 0) return poll({ text: "first half" });
         if (n === 1) {
           await controller.sendFollowUp("and also this");
-          return poll({ text: "first halfsecond half" });
+          return poll({ text: "" });
         }
-        return poll({ done: true, text: "first halfsecond half" });
+        if (n === 2) {
+          return poll({
+            text: "first halfsecond half",
+            turn_breaks: [{ segments: 0, text: "first halfsecond half".length }],
+          });
+        }
+        if (n === 3) return poll({ text: "answer to the follow-up" });
+        return poll({ done: true, text: "answer to the follow-up" });
       },
     });
     controller = made.controller;
     await controller.sendMessage("go");
     const reply = assistants(controller);
-    expect(reply.map((t) => t.text)).toEqual(["first half", "second half"]);
-    expect(reply[1].segments).toBeUndefined();
+    expect(reply.map((t) => t.text)).toEqual([
+      "first halfsecond half",
+      "answer to the follow-up",
+    ]);
+    expect(reply[1]!.segments).toBeUndefined();
+  });
+
+  test("a payload with a seam IN it renders both spans at once", async () => {
+    // The other shape of step 4/5: the CLI absorbed the follow-up with no
+    // `result` between, so the cursor never advances and ONE payload carries
+    // both replies for the rest of the run.
+    let controller!: ChatController;
+    const A = text("A. ");
+    const B = text("B.");
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A], text: A.text });
+        if (n === 1) {
+          await controller.sendFollowUp("also");
+          return poll({ segments: [], text: "" });
+        }
+        const both = {
+          segments: [A, B],
+          text: A.text + B.text,
+          turn_breaks: [{ segments: 1, text: A.text.length }],
+        };
+        return poll(n === 2 ? both : { ...both, done: true });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect(reply[1]!.text).not.toContain("A.");
+  });
+
+  test("an agent.py with no `turn_breaks` keeps one payload as one reply", async () => {
+    // The compatibility floor: no seam reported, so nothing is split. One
+    // bubble that grows, which is the pre-feedback-#9 rendering minus the
+    // guess — never a bubble sliced against an offset nobody sent.
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("one")], text: "one" });
+        if (n === 1) {
+          await controller.sendFollowUp("also");
+          return poll({ segments: [text("one two")], text: "one two" });
+        }
+        return poll({ done: true, segments: [text("one two")], text: "one two" });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(assistants(controller).map((t) => t.text)).toEqual(["one two"]);
+  });
+
+  // ── feedback #10: the follow-up path is `send`, and only `send` ────────────
+  test("a follow-up goes out as ONE `send` on the live run — never a cancel or a restart", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("read this mid-reply");
+          return poll({ segments: [text("thinking")] });
+        }
+        return poll({ done: true, segments: [text("thinking")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    // The whole request sequence, pinned: the opening `start`, the follow-up's
+    // `send`, and polls. Anything that cancelled or restarted the run would
+    // break Surya's mid-response drain — the CLI reads the queued message
+    // inside the turn it is already running, which a respawn throws away.
+    expect(made.agent.calls.filter((c) => c.action !== "poll").map((c) => c.action)).toEqual([
+      "start",
+      "send",
+    ]);
+    expect(made.agent.of("cancel")).toEqual([]);
+    const sent = made.agent.of("send")[0]!.fields;
+    // The same field set legacy posts (T:16138-16150).
+    expect(Object.keys(sent).sort()).toEqual([
+      "effort",
+      "message",
+      "model",
+      "permission_mode",
+      "read_dirs",
+      "run_id",
+    ]);
+    expect(sent.run_id).toBe("r1");
+    expect(sent.message).toBe("read this mid-reply");
   });
 
   test("a follow-up the inbox refused is rolled back — bubble, queue and all", async () => {
@@ -518,6 +735,215 @@ describe("follow-ups (T:16024, D687)", () => {
 });
 
 // ---- ownership -------------------------------------------------------------
+
+// ── feedback #30: the app-state PUSH channel ────────────────────────────────
+describe("app state rides out with every message (T:16483)", () => {
+  const BLOCK = "<live-app-state>\npane: sine.html\n</live-app-state>";
+
+  test("the block is composed into the wire and the bubble carries the receipt", async () => {
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            await controller.sendFollowUp("and this");
+            return poll({ segments: [text("ok")] });
+          }
+          return poll({ done: true, segments: [text("ok")] });
+        },
+      },
+      createMemoryParamsStore(),
+      { appStateBlock: () => Promise.resolve(BLOCK) },
+    );
+    controller = made.controller;
+    await controller.sendMessage("look at my app");
+
+    // OUT ON THE WIRE, on the opening turn AND on the follow-up.
+    expect(String(made.agent.of("start")[0]!.fields.message)).toContain(BLOCK);
+    expect(String(made.agent.of("send")[0]!.fields.message)).toContain(BLOCK);
+    const posted = users(controller);
+    // The bubble still shows only what the user typed…
+    expect(posted.map((t) => t.text)).toEqual(["look at my app", "and this"]);
+    // …with the whole wire on `raw` for "what was sent"…
+    expect(posted[0]!.raw).toContain(BLOCK);
+    // …and the receipt legacy draws under it.
+    expect(posted.map((t) => t.appState)).toEqual([true, true]);
+  });
+
+  test("nothing to say ⇒ no block, no receipt, and the message is unchanged", async () => {
+    // A chat with no pane, or a pane the watcher has learned nothing from:
+    // `blockForSend` answers "" and this path must add neither markers nor a
+    // caption claiming context the agent never got.
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        poll: () => poll({ done: true, segments: [text("ok")] }),
+      },
+      createMemoryParamsStore(),
+      { appStateBlock: () => Promise.resolve("") },
+    );
+    await made.controller.sendMessage("plain");
+    expect(made.agent.of("start")[0]!.fields.message).toBe("plain");
+    expect(users(made.controller)[0]!.appState).toBeUndefined();
+  });
+
+  test("a failed snapshot never costs the message", async () => {
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        poll: () => poll({ done: true, segments: [text("ok")] }),
+      },
+      createMemoryParamsStore(),
+      { appStateBlock: () => Promise.reject(new Error("offload failed")) },
+    );
+    await made.controller.sendMessage("still goes");
+    expect(made.agent.of("start")[0]!.fields.message).toBe("still goes");
+    expect(made.controller.getState().trouble).toBeNull();
+  });
+});
+
+// ── feedback #25: cards come from the SESSION, not only from `run=` ─────────
+describe("live-run adoption on openSession (T:17506)", () => {
+  const permRowFor = (id: string): PermissionRow => ({
+    id,
+    tool: "Bash",
+    input: { command: "ls" },
+    created_at: 0,
+    decision: "",
+    scope: "",
+    mode: "",
+    answers: {},
+  });
+
+  test("a session opened with no `run` adopts its live turn, and its card arrives", async () => {
+    // The reported shape: a folder → chat with only `session_id`, a run
+    // mid-flight blocked on a permission. Nothing was polling, so the chip said
+    // "waiting for approval" and no card ever came.
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: () => ({ run_id: "r9" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ permissions: [permRowFor("p1")], segments: [text("working")] })
+          : poll({ done: true, permissions: [permRowFor("p1")], segments: [text("working")] }),
+    });
+    await made.controller.openSession("s-abc");
+    // openSession does not wait on the watch, so drain it.
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(made.agent.of("live_run")[0]!.fields.session_id).toBe("s-abc");
+    expect(made.controller.getState().permissions.map((p) => p.id)).toEqual(["p1"]);
+  });
+
+  test("a session with nothing running is left exactly as it restored", async () => {
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: () => ({ run_id: "" }),
+      poll: () => poll({ done: true }),
+    });
+    await made.controller.openSession("s-quiet");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(made.agent.of("poll")).toEqual([]);
+    expect(made.controller.getState().status).toBe("idle");
+    // Every lap asked, and none of them invented a run param.
+    expect(made.agent.of("live_run").length).toBe(8);
+    expect(made.params.get("run") || "").toBe("");
+  });
+
+  // ── feedback R2-11/R2-13: the DOUBLE FLASH ────────────────────────────────
+  // `historyLoading` goes false the instant the transcript lands, so a task
+  // parked on a question painted its prose, scrolled to the bottom, and then
+  // took the card a poll later with a second scroll. On a cards-wall tile that
+  // jump is the whole tile. `adopting` is the renderer's gate: it stays up
+  // across the whole restore-then-adopt window so both paint in one frame.
+  test("`adopting` is up from the first frame and comes down at the first poll", async () => {
+    /** state.adopting as of each step, in order. */
+    const seen: boolean[] = [];
+    let controller!: ChatController;
+    const made = makeController({
+      history: () => {
+        // The very first frame — before the transcript has even arrived.
+        seen.push(controller.getState().adopting);
+        return { turns: [], transcript: null };
+      },
+      live_run: () => {
+        // History has landed and `historyLoading` is already false…
+        seen.push(controller.getState().historyLoading);
+        seen.push(controller.getState().adopting);
+        return { run_id: "r9" };
+      },
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ permissions: [permRowFor("p1")], segments: [text("working")] })
+          : poll({ done: true, permissions: [permRowFor("p1")], segments: [text("working")] }),
+    });
+    controller = made.controller;
+    await controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // first frame adopting, historyLoading already false, still adopting
+    expect(seen).toEqual([true, false, true]);
+    // The poll that carried the card also settled the gate.
+    expect(controller.getState().adopting).toBe(false);
+    expect(controller.getState().permissions.map((p) => p.id)).toEqual(["p1"]);
+  });
+
+  test("`adopting` comes down on the FIRST answer with nothing live", async () => {
+    // Not after the laps run out: waiting them out would hide a reopened idle
+    // conversation for ~3 s. The later laps are for a run that starts after
+    // the paint, which no first paint should be held for.
+    let afterFirst = true;
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: (_f, n) => {
+        if (n === 1) afterFirst = made.controller.getState().adopting;
+        return { run_id: "" };
+      },
+      poll: () => poll({ done: true }),
+    });
+    await made.controller.openSession("s-quiet");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(afterFirst).toBe(false);
+    expect(made.controller.getState().adopting).toBe(false);
+  });
+
+  test("a thrown lookup cannot leave the gate up forever", async () => {
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: () => {
+        throw new Error("agent unreachable");
+      },
+    });
+    await made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(made.controller.getState().adopting).toBe(false);
+  });
+
+  test("a `run` already on the URL leaves the adoption to resumeRun", async () => {
+    const params = createMemoryParamsStore();
+    params.set({ run: "r-from-url" });
+    const made = makeController(
+      { history: () => ({ turns: [], transcript: null }) },
+      params,
+    );
+    await made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(made.agent.of("live_run")).toEqual([]);
+  });
+
+  test("a failed lookup ends the watch rather than retrying into a wiped log", async () => {
+    const made = makeController({
+      history: () => ({ turns: [], transcript: null }),
+      live_run: () => {
+        throw new Error("agent unreachable");
+      },
+    });
+    await made.controller.openSession("s-abc");
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(made.agent.of("live_run").length).toBe(1);
+    expect(made.controller.getState().trouble).toBeNull();
+  });
+});
 
 describe("ownership: only the NEWEST loop owns the chrome (Bugbot PR #653)", () => {
   test("a superseded loop's own `done` clears neither the param nor the Stop chrome", async () => {
@@ -605,6 +1031,39 @@ describe("stop (T:15901)", () => {
     expect(made.stranded).toEqual([["never delivered"]]);
   });
 
+  // R2-12: two messages queued, Stop pressed. agent.py now discards the
+  // undrained inbox itself and folds those messages into `still_queued`
+  // alongside whatever the CLI's own queue was holding — so BOTH come back and
+  // neither is left posted as a bubble the agent never read. Landing matters:
+  // these were acked by the inbox, so `!entry.landed` is not the road that
+  // saves them; the backend naming them is.
+  test("a stop with two messages queued hands both back and un-posts both", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      cancel: () => ({ cancelled: "r1", still_queued: ["msg1", "msg2"] }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("msg1");
+          await controller.sendFollowUp("msg2");
+          // Both acked by the inbox before the stop.
+          expect(controller.getState().queued).toEqual(["msg1", "msg2"]);
+          await controller.stopRun();
+          return poll({ segments: [text("half a thought")] });
+        }
+        return poll({ done: true, error: "killed", segments: [text("half a thought")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.stranded).toEqual([["msg1", "msg2"]]);
+    // Only the opening message is still a user bubble — the two queued rows
+    // were never read, so claiming them in the transcript would be a lie.
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    expect(controller.getState().queued).toEqual([]);
+  });
+
   test("a stop that never reached the backend takes its claim back", async () => {
     let controller!: ChatController;
     const made = makeController({
@@ -639,7 +1098,14 @@ describe("stop (T:15901)", () => {
   // the moment the inbox drains, so by the time the interrupt lands it no longer
   // counts the message as queued. T has nothing else to consult and drops the
   // text; the controller keeps its own record and does not have to.
-  test("a stop hands back the follow-up the CLI does not name, and un-posts its bubble", async () => {
+  // ── feedback #11: WHEN a stop owes the composer the queued text back ────────
+  test("an empty `still_queued` means Claude read it — the bubble stays put", async () => {
+    // The measured behaviour of the held-open stdin: a follow-up is echoed into
+    // `out.jsonl` the moment the inbox drains, so an interrupt landing after
+    // that finds nothing queued and answers `{"still_queued": []}`. Claude READ
+    // the message (Surya's mid-response drain), so yanking it out of the
+    // transcript and back into the box would deny a turn the reader watched
+    // happen. This used to hand the whole queue back on exactly this response.
     let controller!: ChatController;
     const made = makeController({
       start: () => ({ run_id: "r1" }),
@@ -648,13 +1114,13 @@ describe("stop (T:15901)", () => {
       poll: async (_f, n) => {
         if (n === 0) return poll({ segments: [text("working on it")] });
         if (n === 1) {
-          await controller.sendFollowUp("queued text should return");
+          await controller.sendFollowUp("Claude already read this");
           // The bubble is up and the hint is showing, both BEFORE the stop.
           expect(users(controller).map((t) => t.text)).toEqual([
             "go",
-            "queued text should return",
+            "Claude already read this",
           ]);
-          expect(controller.getState().queued).toEqual(["queued text should return"]);
+          expect(controller.getState().queued).toEqual(["Claude already read this"]);
           await controller.stopRun();
           return poll({ segments: [text("working on it")] });
         }
@@ -667,12 +1133,96 @@ describe("stop (T:15901)", () => {
     });
     controller = made.controller;
     await controller.sendMessage("go");
-    // Back in the box…
-    expect(made.stranded).toEqual([["queued text should return"]]);
-    // …and NOT still posted as a turn the agent supposedly read.
-    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    // Nothing owed back…
+    expect(made.stranded).toEqual([]);
+    // …and the bubble is still a turn of the conversation.
+    expect(users(controller).map((t) => t.text)).toEqual(["go", "Claude already read this"]);
+    // Nothing is "queued for this turn" once the turn is over, either way.
     expect(controller.getState().queued).toEqual([]);
     expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
+  });
+
+  test("a send still in flight when Stop lands DOES come back — it never landed", async () => {
+    // The second road: `send` had not yet answered `{sent: true}`, so the inbox
+    // never acknowledged the message and the interrupt is racing that write.
+    // "It did not land" is the honest reading, and handing it back is
+    // recoverable where losing it is not.
+    let controller!: ChatController;
+    let releaseSend: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      releaseSend = r;
+    });
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: async () => {
+        await held;
+        return { sent: true as const };
+      },
+      cancel: () => ({ cancelled: "r1", still_queued: [] }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("working")] });
+        if (n === 1) {
+          // Not awaited: the `send` is parked inside it.
+          void controller.sendFollowUp("never acknowledged");
+          // Let `sendFollowUp` get as far as the held `send`.
+          await Promise.resolve();
+          await Promise.resolve();
+          expect(controller.getState().queued).toEqual(["never acknowledged"]);
+          await controller.stopRun();
+          releaseSend();
+          return poll({ segments: [text("working")] });
+        }
+        return poll({ done: true, error: "claude exited", segments: [text("working")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.stranded).toEqual([["never acknowledged"]]);
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+  });
+
+  // ── feedback #12: the run ENDS across the follow-up boundary ───────────────
+  test("a stop with a queued message still flips the status to idle", async () => {
+    // `_send` writes `pending_echo`, and `_poll` clears it only by SEEING the
+    // echo — which an interrupt guarantees will never come, while leaving the
+    // host alive so the liveness escape never fires either. agent.py's
+    // `_cancel` now retires that file on a landed interrupt; this is the
+    // near end of the same fix: once `done` arrives the chrome goes, whatever
+    // the follow-up did.
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      cancel: () => ({ cancelled: "r1", still_queued: [] }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("A. ")], text: "A. " });
+        if (n === 1) {
+          await controller.sendFollowUp("also");
+          await controller.stopRun();
+          return poll({ segments: [], text: "" });
+        }
+        // The interrupt landed and the echo gate is gone, so the turn can end.
+        return poll({
+          done: true,
+          cancelled: true,
+          error: "claude exited before completing the reply",
+          segments: [text("A. ")],
+          text: "A. ",
+        });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    const state = controller.getState();
+    expect(state.status).toBe("idle");
+    expect(state.runId).toBeNull();
+    expect(state.working).toBeNull();
+    expect(state.queued).toEqual([]);
+    // The stop's own note, not the kill's error.
+    expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
+    expect(state.trouble).toBeNull();
+    // And no bubble left mid-stream.
+    expect(assistants(controller).every((t) => !t.streaming)).toBe(true);
   });
 
   test("a still_queued the CLI DOES name hands back the typed text, not the wire form", async () => {
@@ -772,6 +1322,34 @@ describe("permission cards: pinned open, parked once answered (T:14665-14775)", 
     });
     await controller.sendMessage("go");
     expect(controller.getState().permissions.map((p) => p.id)).toEqual(["a", "c", "b", "d"]);
+  });
+
+  test("the CLI's tool_use_id is stamped through as `toolUseId` (#18)", async () => {
+    // What files a resolved card back against the exact chip it answered
+    // rather than the newest chip of the same tool name.
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () =>
+        poll({
+          done: true,
+          permissions: [{ ...permRow(), tool_use_id: "toolu_42" }],
+          segments: [text("done")],
+        }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().permissions[0]!.toolUseId).toBe("toolu_42");
+  });
+
+  test("a request with no tool_use_id leaves the annotation off entirely", async () => {
+    // The name-and-order fallback in the transcript reads the ABSENCE, so an
+    // empty string must not be stamped as if it were an id.
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () =>
+        poll({ done: true, permissions: [permRow()], segments: [text("done")] }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().permissions[0]!.toolUseId).toBeUndefined();
   });
 
   test("the replay is idempotent: the same list twice changes nothing", async () => {

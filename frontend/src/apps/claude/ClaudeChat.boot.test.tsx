@@ -139,15 +139,21 @@ test("a chat-only mount's first send says has_pane: 0", async () => {
   expect(started()[0].params.message).toContain("fix the chart");
 });
 
-test("an UNRESOLVED pane is not a pane either: has_pane: 0 while it is resolving", async () => {
+test("an UNRESOLVED pane sends has_pane EMPTY and lets agent.py decide", async () => {
   // The split layout, whose target may well end up with a pane — but has not
-  // yet. "resolving" used to count as one, which made the first turn's answer a
-  // guess the model had no way to check.
+  // yet. Neither answer is honest here, and the dishonest one is expensive:
+  // `has_pane` is what agent.py builds the session's MCP roster off, ONCE, at
+  // spawn, and nothing can repair it afterwards — so a `"0"` guessed while the
+  // pane's stat was in flight took `mcp__fused_approvals__app_state` away for
+  // the whole session and the CLI reported the tool as unreachable (R2-10).
+  // The empty string is agent.py's own "you decide": `main` reads it as no
+  // opinion and answers with `_has_pane(file)`, off the filesystem, unraced.
+  // `"1"` is still never guessed — the pane may genuinely not exist.
   holdPaneStat = true;
   await mountChat({ chatOnly: false, initialAsk: "fix the chart" });
   await settle(20);
   expect(started().length).toBe(1);
-  expect(started()[0].params.has_pane).toBe("0");
+  expect(started()[0].params.has_pane).toBe("");
 });
 
 test("an unmount mid-boot sends NOTHING: no run is spawned for a dead mount", async () => {

@@ -45,6 +45,11 @@ export interface CardStackProps {
    *  this turn happens to be the one streaming now, which filed a card answered
    *  in turn 1 under whatever is streaming in turn 4. */
   turnKey?: string;
+  /** Narrow the stack to these row ids, in the list's own order. The parked
+   *  placement uses it to draw ONE position's cards (Transcript's `parkPlan`):
+   *  a resolved card sits after the tool chip it answered, so a turn with three
+   *  approvals has three stacks in three places rather than one at its tail. */
+  ids?: string[];
   liveMode?: PermissionMode;
   /** The picker's `permission` param, for a plan's landing mode. */
   pickerMode?: string;
@@ -54,13 +59,22 @@ export interface CardStackProps {
 /** A question is not a permission — there is nothing to allow, only something to
  *  answer — and a plan is a third thing again. Same row shape for all three; the
  *  difference is entirely in what the card can send (T:13901-13905). */
-export function CardStack({ rows, placement, turnKey, liveMode, pickerMode, actions }: CardStackProps) {
+export function CardStack({
+  rows,
+  placement,
+  turnKey,
+  ids,
+  liveMode,
+  pickerMode,
+  actions,
+}: CardStackProps) {
+  const only = ids ? new Set(ids) : null;
   // T:14732's "no live turn leaves the card where it is": a decision that
   // landed after the run ended, or a card re-attached with its verdict already
   // on disk, has no `parkedIn` — so it stays in the bottom stack, above the
   // open block that `publishPermissions` sorts last.
   const shown = rows.filter((p) =>
-    !p || !p.id
+    !p || !p.id || (only && !only.has(p.id))
       ? false
       : placement === "open"
         ? !p.decision || !p.parkedIn

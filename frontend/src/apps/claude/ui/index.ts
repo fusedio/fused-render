@@ -30,7 +30,8 @@ export {
 export { Topbar } from "./Topbar";
 export type { TopbarProps } from "./Topbar";
 export { Kebab, forgetTaskCaches, knownTaskId, useTaskId } from "./Kebab";
-export { EraseDialog } from "./EraseDialog";
+export { ClaudeMark, CLAUDE_MARK_PATH } from "./ClaudeMark";
+export type { ClaudeMarkProps } from "./ClaudeMark";
 export { SentPop } from "./SentPop";
 export { Home } from "./Home";
 export type { HomeProps } from "./Home";
@@ -41,6 +42,15 @@ export type { ListsProps } from "./Lists";
 export { RecentRow } from "./RecentRow";
 export { useRecentSessions } from "./useRecentSessions";
 export type { RecentRowProps } from "./RecentRow";
+export { ArtifactRow } from "./ArtifactRow";
+export type { ArtifactRowProps } from "./ArtifactRow";
+export { SnapRow } from "./SnapRow";
+export type { SnapRowProps } from "./SnapRow";
+export { Snapshots } from "./Snapshots";
+export type { SnapshotsProps } from "./Snapshots";
+export { useArtifacts } from "./useArtifacts";
+export { useSnapshots } from "./useSnapshots";
+export type { SnapshotsState } from "./useSnapshots";
 export {
   computeLists,
   filledTabs,

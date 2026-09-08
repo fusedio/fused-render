@@ -43,6 +43,36 @@
   --c-scrim: rgba(0, 0, 0, 0.48);
 }
 
+/* ---- the header's two rows (T:163-172 + T:1285-1310) --------------------
+   Row one is the CONTROL strip (T's `#anntools`: the way out at its left end,
+   the menu at its right, and the seat PR2/PR3's screenshot / comment /
+   annotate buttons land in). Row two is the chat's IDENTITY (T's `#topbar`).
+   One row carrying all six things is how a 43px strip in a narrow pane ends up
+   with the file name and the id fighting for the same inch (Akshil,
+   2026-09-08, #7). */
+.c-header {
+  flex-shrink: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.c-hdr-tools {
+  flex-shrink: 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--c-border);
+}
+/* ONE auto margin per row: everything before it sits left, everything after
+   rides the right-hand end with it (T:255-262). Two of them would split the
+   slack and park the kebab mid-strip. */
+.c-hdr-slack {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 /* ---- top bar (T:1285-1310, 3942, 1448-1452) ---------------------------- */
 .c-topbar {
   flex-shrink: 0;
@@ -72,6 +102,7 @@
   min-width: 0;
 }
 .c-session {
+  flex-shrink: 0;
   color: var(--c-faint);
   font-size: 11px;
   letter-spacing: 0.3px;
@@ -577,113 +608,13 @@ select.c-pill {
   overflow: auto;
 }
 
-/* ---- erase confirm (T:1187-1250) --------------------------------------
-   Same chassis as platform/ui/modal/Modal + buttons-modal.css: a 600px panel,
-   a head row with the title and a ✕ over a rule, a 13px body with 12px between
-   its paragraphs, a footer under a rule with 32px buttons. The numbers are
-   copied, not approximated, so the two read as one dialog. */
-.c-erasedlg-box {
-  max-height: 85vh;
-  background: var(--c-panel);
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
-  box-shadow: 0 12px 40px var(--c-shadow);
-  overflow: hidden;
-}
-.c-erasedlg-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--c-border);
-}
-.c-erasedlg-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--c-fg-strong);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.c-erasedlg-x {
-  background: none;
-  border: none;
-  color: var(--c-dim);
-  font: inherit;
-  font-size: 14px;
-  cursor: pointer;
-  padding: 4px 6px;
-}
-.c-erasedlg-x:hover {
-  color: var(--c-fg);
-}
-.c-erasedlg-body {
-  padding: 14px 16px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--c-fg);
-  overflow-y: auto;
-}
-.c-erasedlg-body p {
-  margin: 0;
-}
-.c-erasedlg-err {
-  color: var(--c-error);
-  border: 1px solid var(--c-error);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--c-error) 7%, transparent);
-  padding: 8px 10px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.c-erasedlg-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--c-border);
-}
-.c-erasedlg-btn {
-  font: inherit;
-  font-size: 13px;
-  height: 32px;
-  padding: 0 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--c-border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--c-fg);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.c-erasedlg-btn:hover:not([disabled]) {
-  border-color: var(--c-dim);
-}
-.c-erasedlg-btn[disabled] {
-  opacity: 0.5;
-  cursor: default;
-}
-.c-erasedlg-btn:focus-visible {
-  outline: 2px solid var(--c-accent);
-  outline-offset: 2px;
-}
-.c-erasedlg-danger {
-  border-color: var(--c-error);
-  color: var(--c-error);
-  background-color: color-mix(in srgb, var(--c-error) 10%, transparent);
-}
-.c-erasedlg-danger:hover:not([disabled]) {
-  background-color: color-mix(in srgb, var(--c-error) 18%, transparent);
-}
+/* NO ERASE-CONFIRM SKIN HERE ANY MORE (Akshil, 2026-09-08, #28). The chat's
+   delete confirm used to be a dialog of its own with the Tasks page's two
+   sentences re-typed into it and its whole chassis re-measured against
+   platform/ui/modal — one irreversible action, two designs, and the copy free
+   to drift. The component moved down to `platform/ui/EraseTaskModal` and both
+   surfaces now render THAT, so the styling is the app's shared modal CSS and
+   there is nothing left to keep in step here. */
 
 /* The overlays' own scrim, one value for all three (T:1147, 1189). */
 .c-scrim {

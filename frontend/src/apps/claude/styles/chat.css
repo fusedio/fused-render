@@ -22,6 +22,16 @@
   --c-on-accent: #1a1a1a;
   --c-error: #f26d6d;
   --c-ok: #6cc07a;
+  /* CARD SURFACE, its own pair of tokens (#22). A card is the one box in the
+     transcript that has to read as a THING SITTING ON the page — the run is
+     blocked on it — and at `--c-surface` (#26282f against a #191a1e page, ~4%
+     of lightness apart) it read as a slightly different shade of background.
+     Its own tokens rather than a louder `--c-surface`, because that token is
+     also the avatar disc, a chip's open tint, the copy button and the qhead
+     pill, and not one of those wants to get louder (≤5% drift elsewhere). */
+  --c-card-bg: #2e313a;
+  --c-card-bg-2: #383c47;
+  --c-card-border: #4e525f;
   --c-code-bg: #2a2c33;
   --c-code-fg: #e8c07d;
   --c-pre-bg: #141519;
@@ -57,6 +67,12 @@
   --c-on-accent: #ffffff;
   --c-error: #c62828;
   --c-ok: #2e7d32;
+  /* Light theme's page is pure white, so the card goes DOWN rather than up —
+     the same "sitting on the page" separation, read the other way round — and
+     the border does the rest of the work. */
+  --c-card-bg: #f1f2f5;
+  --c-card-bg-2: #e4e6ec;
+  --c-card-border: #c2c5ce;
   --c-code-bg: #f0f1f3;
   --c-code-fg: #8a5a12;
   --c-pre-bg: #f7f8f9;
@@ -94,6 +110,26 @@
   background: var(--c-bg);
   color: var(--c-fg);
 
+  /* THE READING FRAME — T's `body` rule (T:105-116), which the port had left
+     to whatever the shell's <body> happened to be (#13: "transcript spacing
+     feels compressed"). The shell is a 13px/1.45 application chrome; a
+     transcript is prose, and the two numbers that make it prose are here:
+     14px, and 1.65 line-height. Restated on the root rather than inherited,
+     because this box is mounted inside six different hosts and not one of them
+     is going to hand it a reading line-height by accident.
+
+     `letter-spacing: .003em` is the one value that is NOT T's: at 14px in a
+     720px column the system stack sets a hair tight, and the report asked for
+     air. Three thousandths of an em is ~0.04px per character — below the
+     threshold where it reads as tracking, and enough that a full line of prose
+     gains about half a character of width. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  font-size: var(--c-fs-read);
+  line-height: var(--c-lh-read);
+  letter-spacing: 0.003em;
+  -webkit-font-smoothing: antialiased;
+
   /* The type scale, as tokens, so the compact block below can restate it once
      instead of the card being drawn at 4/3 and `transform: scale(0.75)`d — a
      trick that existed only because the host could not restyle px type inside
@@ -103,6 +139,11 @@
   --c-fs-meta: 12px;
   --c-fs-small: 11px;
   --c-fs-lead: 14px;
+  /* The READING pair, separate from `--c-fs-body` above: `--c-fs-body` is the
+     size the chrome inside a turn is drawn at (a chip's row, a card's head),
+     while these two are the prose itself. The compact cut scales both. */
+  --c-fs-read: 14px;
+  --c-lh-read: 1.65;
 }
 
 /* THE MOUNT BOX (ChatMount's native branch). It stands where the iframe stood
@@ -180,6 +221,7 @@
 
 /* COMPACT (`compact=1`, the cards wall): a read-mostly tile. T hides #topbar,
    #anntools, #inputbox, #home and #footnote and halves #log's top padding. */
+.chat-root.chat-compact .c-header,
 .chat-root.chat-compact .c-topbar,
 .chat-root.chat-compact .c-anntools,
 .chat-root.chat-compact .c-composer-chat,
@@ -198,6 +240,11 @@
   --c-fs-meta: 9px;
   --c-fs-small: 8px;
   --c-fs-lead: 10.5px;
+  /* The reading pair takes the same 0.75. The line-height does NOT: at 10px a
+     1.65 line is 16.5px, which is a lot of empty tile for six lines of glance
+     text, and a wall tile is scanned rather than read. */
+  --c-fs-read: 10px;
+  --c-lh-read: 1.5;
 }
 /* One rule per size, because the sheets these override state px directly and a
    font-size on an ancestor does not reach a descendant that names its own. */
@@ -223,8 +270,25 @@
 .chat-root.chat-compact .toolchip .chip-label {
   font-size: var(--c-fs-meta);
 }
+/* THE QUESTION CARD'S OWN CHROME, which the cut had missed (R2-11). Each of
+   these names a px size in transcript.css, so the token on the root does not
+   reach it — a tile drew 10px prose under a 12px tab bar and a 13px answer
+   line. The tab bar, the Skip/Next row's caption and a resolved card's
+   per-question answers (R2-6) are all card META, at the same size as a chip's
+   path and a card's sub-line. */
+.chat-root.chat-compact .perm .qtab,
+.chat-root.chat-compact .perm .qsend .qsend-left,
+.chat-root.chat-compact .perm .qanswer,
+.chat-root.chat-compact .perm .qopt .qtype {
+  font-size: var(--c-fs-meta);
+}
+.chat-root.chat-compact .perm .qhead {
+  font-size: var(--c-fs-small);
+}
+/* NOT `.chip-marker` any more (R2-7): its box is the chip's own em, so that it
+   and `.chip-body`'s indent are one length resolved once — a font-size here put
+   them 2.4px apart again. The glyph is scaled instead (styles/transcript.css). */
 .chat-root.chat-compact .turn.user .sentbtn,
-.chat-root.chat-compact .toolchip .chip-marker,
 .chat-root.chat-compact .seg-notice-glyph {
   font-size: var(--c-fs-small);
 }
@@ -244,6 +308,12 @@
 .chat-root.chat-compact .turn {
   margin-bottom: 12px;
 }
+/* The tail pin's opaque ground has to reach the tile's own padding, which is
+   12px here rather than the full column's 20px (styles/transcript.css). */
+.chat-root.chat-compact .chat-tailpin.is-pinned {
+  margin: 0 -12px;
+  padding: 8px 12px 0;
+}
 
 /* CHAT ONLY (`chat_only=1`): no pane column and no divider, from the first
    paint. Both are simply not rendered (ClaudeChat's `paneShown`), and the rule
@@ -258,6 +328,7 @@
    HOST draws. The strip and the top bar go; THE COMPOSER STAYS, which is the
    whole difference from compact — answering a question without leaving the wall
    is what the popup exists for (T:1434-1438). */
+.chat-root.chat-peek .c-header,
 .chat-root.chat-peek .c-topbar,
 .chat-root.chat-peek .c-anntools {
   display: none;

@@ -7,13 +7,9 @@ import {
   parseTailKey,
   streamingTailOf,
   tailKey,
-  freezeReplayBase,
-  newReplayBase,
-  noteReplayLengths,
   pollBody,
   reconcileSegments,
   segText,
-  sliceAfter,
   tailIndex,
   viewKind,
 } from "./segments";
@@ -99,27 +95,6 @@ describe("reconcileSegments dedupes the replay", () => {
   });
 });
 
-describe("sliceAfter / D687 replay bases", () => {
-  test("base 0 is the whole list", () => {
-    expect(sliceAfter([1, 2, 3], 0)).toEqual([1, 2, 3]);
-    expect(sliceAfter(undefined, 0)).toEqual([]);
-  });
-  test("base n drops the echo above the follow-up", () => {
-    expect(sliceAfter([1, 2, 3], 2)).toEqual([3]);
-  });
-
-  test("the freeze takes the PREVIOUS poll's lengths, not this one's (T:16279)", () => {
-    const base = newReplayBase();
-    // poll 1: two segments, 5 chars
-    noteReplayLengths(base, [text("a"), text("bcde")], "abcde");
-    // poll 2 grows to four segments — but the follow-up was noticed at the TOP
-    // of poll 2, so the freeze must use poll 1's numbers.
-    freezeReplayBase(base);
-    expect(base.segBase).toBe(2);
-    expect(base.textBase).toBe(5);
-  });
-});
-
 describe("pollBody: segments win over the flat legacy text (T:16255)", () => {
   test("segments present ⇒ the flat text is not rendered as well", () => {
     const body = pollBody([text("real")], "real", 1);
@@ -138,14 +113,18 @@ describe("pollBody: segments win over the flat legacy text (T:16255)", () => {
     expect(pollBody(undefined, undefined, 1).mode).toBe("empty");
   });
 
-  test("after a follow-up, both halves slice back to the frozen base", () => {
+  // The D687 seam used to be applied HERE, from a `segBase`/`textBase` pair the
+  // poll loop froze when a follow-up landed. It is not a decision this file can
+  // make — the seam comes from the poll (`turn_breaks`) and the caller slices
+  // the payload to a span before asking for a body — so all `pollBody` has to
+  // keep proving is that a span behaves like any other payload.
+  test("a sliced span renders as its own body, with no base of its own", () => {
     const segs = [text("before"), tool("t1", "ok"), text("after")];
-    const body = pollBody(segs, "beforeafter", 1, 2, 6);
+    const body = pollBody(segs.slice(2), "beforeafter".slice(6), 1);
     expect(body.mode).toBe("segments");
     expect(body.mode === "segments" && body.view.rows.length).toBe(1);
     expect(body.mode === "segments" && body.view.tailText).toBe("after");
-    // and on the legacy path the same base applies to the string
-    const flat = pollBody([], "beforeafter", 1, 2, 6);
+    const flat = pollBody([], "beforeafter".slice(6), 1);
     expect(flat.mode === "text" && flat.text).toBe("after");
   });
 });

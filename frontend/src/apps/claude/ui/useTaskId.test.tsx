@@ -7,7 +7,10 @@ installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
-const { useTaskId, forgetTaskCaches } = await import("./Kebab");
+const { useTaskId, forgetTaskCaches, ASK_AGAIN_MS } = await import("./Kebab");
+const { TASKS_CHANGED_EVENT } = await import("@platform/lib/tasksChanged");
+const { readFileSync } = await import("node:fs");
+const { join } = await import("node:path");
 
 const SESSION = "abcdef0123456789";
 let calls = 0;
@@ -23,6 +26,42 @@ beforeEach(() => {
     return { ok: true, json: async () => body } as unknown as Response;
   };
 });
+/** The shim's `window` is a no-op for events (platform/lib/testDomShim), and
+ *  the reactive half of R2-9 IS an event listener — so this suite gives the
+ *  global window a real, tiny registry for the length of a test. Not a change
+ *  to the shim: a chat's menu is the wrong reason to give every test in the
+ *  repo a live event bus. */
+function liveWindowEvents(): () => void {
+  const w = globalThis.window as unknown as {
+    addEventListener: unknown;
+    removeEventListener: unknown;
+    dispatchEvent: unknown;
+  };
+  const was = {
+    add: w.addEventListener,
+    remove: w.removeEventListener,
+    fire: w.dispatchEvent,
+  };
+  const bus = new Map<string, Set<(ev: Event) => void>>();
+  w.addEventListener = (type: string, fn: (ev: Event) => void) => {
+    const set = bus.get(type) ?? new Set();
+    set.add(fn);
+    bus.set(type, set);
+  };
+  w.removeEventListener = (type: string, fn: (ev: Event) => void) => {
+    bus.get(type)?.delete(fn);
+  };
+  w.dispatchEvent = (ev: Event) => {
+    for (const fn of [...(bus.get(ev.type) ?? [])]) fn(ev);
+    return true;
+  };
+  return () => {
+    w.addEventListener = was.add;
+    w.removeEventListener = was.remove;
+    w.dispatchEvent = was.fire;
+  };
+}
+
 const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
@@ -75,4 +114,97 @@ test("a failed read leaves both mounts on the hash and does not cache", async ()
   await settle();
   expect(calls).toBe(2);
   expect(third[third.length - 1]).toBe("7");
+});
+
+// ── R2-9: the number arrives without a reload ──────────────────────────────
+
+test("a session with no task row yet is asked about AGAIN, and the number lands", async () => {
+  // The bug: a chat that has just started has a session id seconds before
+  // `/api/tasks` has a row for it. One read, ever, meant the header printed a
+  // truncated session hash until the reader reloaded the page.
+  answer = async () => ({ tasks: [] });
+  const labels = probe();
+  await settle();
+  expect(labels[labels.length - 1]).toBe("abcdef01"); // the hash, for now
+  expect(calls).toBe(1);
+
+  // The row appears, and the retry that was already scheduled picks it up.
+  answer = async () => ({ tasks: [{ key: SESSION, task_id: "TASK-042", status: "done" }] });
+  await act(async () => {
+    await new Promise((done) => setTimeout(done, ASK_AGAIN_MS[0] + 20));
+  });
+  expect(calls).toBe(2);
+  expect(labels[labels.length - 1]).toBe("TASK-042");
+
+  // …and now that it has landed, the schedule is over: nothing else is read.
+  await act(async () => {
+    await new Promise((done) => setTimeout(done, ASK_AGAIN_MS[1] + 20));
+  });
+  expect(calls).toBe(2);
+});
+
+test("a tasks-changed announcement beats the timer", async () => {
+  const restore = liveWindowEvents();
+  try {
+  answer = async () => ({ tasks: [] });
+  const labels = probe();
+  await settle();
+  expect(calls).toBe(1);
+
+  answer = async () => ({ tasks: [{ key: SESSION, task_id: "TASK-007", status: "done" }] });
+  // What the run controller fires the moment a turn starts — which is the same
+  // moment the task row is created (protocol/run-controller.ts).
+  await act(async () => {
+    window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
+    await new Promise((done) => setTimeout(done, 0));
+  });
+  expect(calls).toBe(2);
+  expect(labels[labels.length - 1]).toBe("TASK-007");
+  } finally {
+    restore();
+  }
+});
+
+test("the poke is ignored once the number is known — a number does not change", async () => {
+  const restore = liveWindowEvents();
+  try {
+  answer = async () => ({ tasks: [{ key: SESSION, task_id: 11, status: "done" }] });
+  const labels = probe();
+  await settle();
+  expect(labels[labels.length - 1]).toBe("11");
+  await act(async () => {
+    window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
+    await new Promise((done) => setTimeout(done, ASK_AGAIN_MS[0] + 20));
+  });
+  expect(calls).toBe(1);
+  } finally {
+    restore();
+  }
+});
+
+// ── R2-8: Archive closes the menu before it does anything ──────────────────
+//
+// READ OFF THE SOURCE, and deliberately so. The item lives inside a base-ui
+// `DropdownMenuContent`, which mounts nothing at all until a real pointer event
+// has opened the popup — there is no item to click under a renderer with no DOM
+// (the repo does the same thing for tasksPulse's wiring, shell/sidebar-tasks).
+// What is pinned here is the pair of facts the bug was made of: the item used to
+// opt OUT of closing on click, and the close used to be the LAST thing to
+// happen, 1.1s after the network round trip it waited on.
+test("the Archive item closes the menu on click, before the call (R2-8)", () => {
+  const src = readFileSync(join(import.meta.dir, "Kebab.tsx"), "utf8");
+  const item = src.slice(src.indexOf("onClick={() => void onArchive()}") - 700);
+  const archiveItem = item.slice(0, item.indexOf("onClick={() => void onArchive()}"));
+  expect(archiveItem).not.toContain("closeOnClick={false}");
+
+  const action = src.slice(src.indexOf("const onArchive ="), src.indexOf("// `rev` is read"));
+  // The close, and the optimistic flip that makes the reopened (or next) menu
+  // say the new word, both land BEFORE the first await.
+  const beforeAwait = action.slice(0, action.indexOf("await unarchiveTask"));
+  expect(beforeAwait).toContain("setOpen(false)");
+  expect(beforeAwait).toContain("remember(archiveStates, sessionId, !wasFiled)");
+  // …and a failure puts the world back and says so, rather than reverting in
+  // silence.
+  expect(action).toContain("remember(archiveStates, sessionId, wasFiled)");
+  expect(action).toContain("setOpen(true)");
 });

@@ -49,7 +49,7 @@ import type {
   Working,
 } from "./controller-api";
 import { historyToTurns } from "./history";
-import { freezeReplayBase, newReplayBase, noteReplayLengths, pollBody } from "./segments";
+import { pollBody } from "./segments";
 import { isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
@@ -107,6 +107,10 @@ export const ARTIFACTS_EVERY_TICKS = 8;
 /** T:17781 — `retryUnknown`'s budget for a run dir that is not visible yet. */
 export const UNKNOWN_RUN_RETRIES = 5;
 export const UNKNOWN_RUN_RETRY_MS = 700;
+/** T:17509 — `adoptLiveRun`'s laps. ~3 s of looking at one poll interval each:
+ *  one tick is the common case (the reopen itself), the tail covers the window
+ *  in which a run started elsewhere has not become visible yet. */
+export const ADOPT_LAPS = 8;
 
 // ---- runEnding (pure, T:15871-15900) --------------------------------------
 
@@ -190,6 +194,7 @@ function emptyState(file: string | null): ChatState {
     permissionMode: DEFAULT_PERMISSION,
     queued: [],
     historyLoading: false,
+    adopting: false,
     transcript: null,
     ownRunEndedAt: 0,
     rev: 0,
@@ -223,6 +228,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
   let activeSeat = 0;
   let stoppedSeat = 0;
   let disposed = false;
+  /** A live-run adoption watch is in flight — see `adoptLiveRun`. Separate
+   *  from `state.adopting`, which is the RENDERER's gate: this one is the
+   *  one-watch-at-a-time latch and stays set for as long as the adopted run
+   *  does, while the published flag clears at its first poll. */
+  let adopting = false;
+  /** Publish the renderer's gate, and only on a real change: it is read in a
+   *  layout effect, so a no-op emit is a wasted frame on every poll. */
+  const setAdopting = (value: boolean) => {
+    if (state.adopting !== value) emit({ adopting: value });
+  };
   /** Aborted by `dispose`, so the in-flight poll and its `sleep` do not outlive
    *  the unmount by a lap (agent.ts takes the signal). */
   let life: AbortController | null = typeof AbortController === "function" ? new AbortController() : null;
@@ -262,8 +277,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * `wire` is the outgoing form (what `still_queued` would name); `typed` is
    * what the user actually put in the box, which is what a handback owes them
    * back. `bubble` is the optimistic turn's key, so a strand can un-post it.
+   *
+   * `landed` is WHETHER THE INBOX CONFIRMED THE SEND — set the moment `send`
+   * answers `{sent: true}`, which is also the moment `followupSeq` is bumped.
+   * It is what `stopRun` needs to tell "the CLI never got this" from "the CLI
+   * got it and, on the measured behaviour of the held-open stdin, echoed it
+   * straight away" (feedback #11 — see `stopRun`).
    */
-  const queued: { seq: number; wire: string; typed: string; bubble: string }[] = [];
+  const queued: {
+    seq: number;
+    wire: string;
+    typed: string;
+    bubble: string;
+    landed: boolean;
+  }[] = [];
   let queuedSeq = 0;
   const publishQueued = () => emit({ queued: queued.map((q) => q.typed || q.wire) });
   /** Every entry, gone, published once. The run is over: the CLI has either
@@ -343,8 +370,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** T:13446 `addUser` — the bubble goes up BEFORE anything slow on the send
    *  path: the user's words appearing instantly is worth more than a receipt and
    *  a bubble arriving together (T:16490). */
-  const addUser = (text: string, raw?: string): UserTurn => {
-    const turn: UserTurn = { role: "user", key: nextKey("u"), text, ...(raw ? { raw } : {}) };
+  const addUser = (text: string, raw?: string, appState = false): UserTurn => {
+    const turn: UserTurn = {
+      role: "user",
+      key: nextKey("u"),
+      text,
+      ...(raw ? { raw } : {}),
+      // The receipt legacy hangs under the bubble (T:16588-16596). Set from the
+      // block actually composed into `raw`, never from "is there a pane" — a
+      // pane that has told us nothing produces no block and owes no receipt.
+      ...(appState ? { appState: true as const } : {}),
+    };
     pushTurn(turn);
     return turn;
   };
@@ -477,6 +513,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (prev && prev.decision && !p.decision) continue;
       const next: PermissionRow = {
         ...p,
+        // The CLI's own id for the asking call, in this file's camelCase — what
+        // files a resolved card back against the exact tool chip it answered
+        // instead of the newest chip that happens to share its tool name
+        // (`Transcript.parkPlan`, feedback #18). Stamped once; agent.py never
+        // rewrites the tool_use_id of a request already on disk.
+        ...(p.tool_use_id || prev?.toolUseId
+          ? { toolUseId: p.tool_use_id || (prev?.toolUseId as string) }
+          : {}),
         // The run the card BELONGS to, stamped from the loop that delivered it
         // (T:16325 hands `run_id` to `buildPermCard`) and never re-stamped: a
         // respawn's new run did not ask this question.
@@ -605,21 +649,67 @@ export function createChatController(deps: ControllerDeps): ChatController {
     setStats(0, "thinking", null, null);
     noteChatActivity();
 
-    /** The streaming bubble's key, or null before the turn produced anything. */
-    let bubble: string | null = null;
-    let segMode = false;
-    let tailText: string | null = null;
+    /**
+     * ONE BUBBLE PER REPLY IN THE PAYLOAD, keyed by SLOT.
+     *
+     * A poll payload used to be one reply, and this was a single `bubble` plus
+     * a `segBase`/`textBase` pair frozen when `followupSeq` moved (D687). The
+     * freeze is a GUESS at the seam — "the lengths as of the poll before the
+     * send" — and it is wrong by however much of the first reply streamed
+     * after the send, because agent.py blanks `text`/`segments` for the whole
+     * `pending_echo` window and then hands back the FIRST reply complete on
+     * the poll where the echo lands. So the first reply's remainder rendered
+     * under the follow-up's own bubble, and the follow-up's real answer sliced
+     * to nothing behind it: "the remaining response is cut off and it looks
+     * stuck on the queued message" (QA feedback #9), while a reload looked
+     * right because `_history` splits on the same echo rows with the whole
+     * file to do it with.
+     *
+     * The seam is now REPORTED, not guessed — `poll.turn_breaks`
+     * (`_absorbed_turn_breaks`) — so a payload with N seams is N+1 replies and
+     * each gets its own bubble, in payload order, which is the order the
+     * follow-up bubbles between them already sit in (`sendFollowUp` appends at
+     * the tail). That is the reloaded transcript, live.
+     *
+     * The SLOT, rather than the payload index, is what survives the cursor
+     * moving: `_read_current_turn` advances past a seam once a `result` closed
+     * the reply before it, and from that poll on the payload is only the newer
+     * reply with no seam in it at all. `chunkOffset` absorbs that (see the
+     * shrink test in the loop), so slot 0 stays slot 0's bubble for life.
+     */
+    interface Chunk {
+      /** The transcript row, or null before this reply produced anything. */
+      key: string | null;
+      /** The container number for `cardKey`, allocated once (see below). */
+      seq: number;
+      segMode: boolean;
+      tailText: string | null;
+      /** The legacy flat text as of the last poll that carried any — kept
+       *  apart from the segment tail so a `done` poll with an empty body
+       *  cannot wipe the bubble it already filled. */
+      flatText: string;
+    }
+    const chunks = new Map<number, Chunk>();
+    const chunkAt = (slot: number): Chunk => {
+      let c = chunks.get(slot);
+      if (!c) {
+        c = { key: null, seq: 0, segMode: false, tailText: null, flatText: "" };
+        chunks.set(slot, c);
+      }
+      return c;
+    };
+    /** How many seams the CURSOR has already carried out of the payload. */
+    let chunkOffset = 0;
+    /** The previous poll's payload sizes and seam count, for the shrink test. */
+    let prevSegLen = 0;
+    let prevTextLen = 0;
+    let prevBreaks = 0;
     let seenFollowupSeq = followupSeq;
-    const base = newReplayBase();
-    /** The bubble's container number for `cardKey`. Allocated ONCE per bubble,
-     *  before the first reconcile, so a row's key never changes under the reader
-     *  mid-turn — a changed key re-folds a chip they opened. */
-    let bubbleSeq = 0;
+    /** Set when a follow-up lands, cleared by the first payload that proves the
+     *  seam one way or the other. Only while it is set can a shrink be read as
+     *  the cursor stepping over a seam. */
+    let awaitingSeam = false;
     let tick = 0;
-    /** The legacy flat text as of the last poll that carried any — kept apart
-     *  from the segment tail so a `done` poll with an empty body cannot wipe
-     *  the bubble it already filled. */
-    let flatText = "";
 
     try {
       for (;;) {
@@ -647,7 +737,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           deps.onRunEnded?.();
           deps.onArtifactsTick?.();
           const gone = runEnding({ error: message }, stoppedSeat === seat);
-          if (bubble && !gone.keepText) dropTurn(bubble);
+          if (!gone.keepText) for (const c of chunks.values()) if (c.key) dropTurn(c.key);
           if (gone.error) reportTrouble(troubleOf("unknown-run", gone.error));
           if (loopSeq === seat && gone.note) addNote(gone.note, "⏹");
           break;
@@ -663,73 +753,135 @@ export function createChatController(deps: ControllerDeps): ChatController {
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
 
-        // A follow-up landed mid-turn: the assistant text that streams in from
-        // here on belongs AFTER it, not appended into a bubble the transcript
-        // already has positioned before it (T:16269).
+        const segs = Array.isArray(poll.segments) ? poll.segments : [];
+        const fullText = poll.text || "";
+        const breaks = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
+
+        // A FOLLOW-UP LANDED. All this arms is the shrink test below: the seam
+        // itself comes from the payload, so nothing about the transcript moves
+        // until the payload says where it is (T:16269 froze the bases here and
+        // guessed instead — see `Chunk`).
         if (followupSeq !== seenFollowupSeq) {
           seenFollowupSeq = followupSeq;
-          bubble = null;
-          segMode = false;
-          tailText = null;
-          bubbleSeq = 0; // the next bubble is a new container, with new keys
-          freezeReplayBase(base);
+          awaitingSeam = true;
         }
 
-        // The container number is allocated only once there is something to
-        // number, as T does inside `renderSegments` (T:15642) — a turn whose
-        // first polls are empty used to burn one per tick.
-        const body = pollBody(
-          poll.segments,
-          poll.text,
-          bubbleSeq || cardSeq + 1,
-          base.segBase,
-          base.textBase,
-        );
-        noteReplayLengths(base, poll.segments, poll.text);
-        // The flat body as of THIS poll, whatever mode it came in — T keeps
-        // `fullText.slice(textBase)` per poll (T:16288). Read outside the
-        // `mode === "text"` branch so a turn that flipped text→segments→text
-        // (agent.py replaying without segments) still has a body to restore.
-        const pollFlat = body.mode === "text" ? body.text : flatText;
+        // THE CURSOR STEPPED OVER THE SEAM. `_read_current_turn` advances past
+        // an absorbed echo the moment a `result` closed the reply before it, so
+        // the poll after that one carries ONLY the newer reply, with no
+        // `turn_breaks` entry left to place it — and slot 0 would be the older
+        // reply's bubble, overwritten with the answer to the follow-up.
+        //
+        // A payload only ever GROWS inside one window (that is the whole point
+        // of the cursor rule), so a shrink is the window having moved. Read off
+        // `segments` where there are any: `text` can shorten for an unrelated
+        // reason on a delta-less run, where it falls back to the `result` row
+        // (the LAST assistant message only) — see `_segments_from_rows`. And
+        // only while a follow-up is outstanding, so no ordinary turn boundary
+        // can be mistaken for one.
+        // A BLANK PAYLOAD IS NOT A SHRINK. `pending_echo` makes agent.py return
+        // `text: ""` / `segments: []` for the whole window between the send and
+        // the echo, which is by far the commonest "smaller than last time" and
+        // means the exact opposite of a cursor step: nothing has moved yet.
+        const anyBody = segs.length > 0 || fullText.length > 0;
+        if (awaitingSeam && anyBody) {
+          // A SEAM THE PAYLOAD LOST is the cursor having carried it out of the
+          // window, and it is the reliable read: a window's seam count only
+          // ever drops that way. It is also the only read the flat legacy text
+          // path has, where the newer reply can be LONGER than the pair it
+          // replaced and no length test can see the step.
+          //
+          // The shrink is the fallback, for a step this loop never saw the seam
+          // for at all (the echo and the `result` both landed between two
+          // polls, so the seam was never in a payload it read). Measured on
+          // `segments` where there are any: `text` can shorten for an
+          // unrelated reason on a delta-less run, where it falls back to the
+          // `result` row — the LAST assistant message only.
+          const lost = prevBreaks - breaks.length;
+          const shrank = prevSegLen
+            ? segs.length < prevSegLen
+            : !poll.done && fullText.length < prevTextLen;
+          if (lost > 0 || shrank) {
+            chunkOffset += lost > 0 ? lost : 1;
+            awaitingSeam = false;
+          }
+          // A seam APPEARING is not the answer: it is handled by the loop below
+          // for as long as it stays in the payload, and the cursor may still
+          // step over it later. `awaitingSeam` stays armed until it does.
+        }
+        if (anyBody) {
+          prevSegLen = segs.length;
+          prevTextLen = fullText.length;
+          prevBreaks = breaks.length;
+        }
 
-        if (body.mode !== "empty") {
-          if (!bubbleSeq) bubbleSeq = ++cardSeq;
-          if (!bubble) {
-            bubble = nextKey("a");
+        // One pass per reply the payload holds: N seams is N+1 replies, each
+        // sliced to its own span and rendered into its own slot.
+        for (let j = 0; j <= breaks.length; j++) {
+          const from = j === 0 ? { segments: 0, text: 0 } : breaks[j - 1]!;
+          const to = j < breaks.length ? breaks[j]! : null;
+          const mySegs = to ? segs.slice(from.segments, to.segments) : segs.slice(from.segments);
+          const myText = to
+            ? fullText.slice(from.text, to.text)
+            : fullText.slice(from.text);
+          const slot = chunkOffset + j;
+          const chunk = chunkAt(slot);
+          // The container number is allocated only once there is something to
+          // number, as T does inside `renderSegments` (T:15642) — a turn whose
+          // first polls are empty used to burn one per tick.
+          const body = pollBody(mySegs, myText, chunk.seq || cardSeq + 1);
+          // The flat body as of THIS poll, whatever mode it came in — T keeps
+          // `fullText.slice(textBase)` per poll (T:16288). Read outside the
+          // `mode === "text"` branch so a reply that flipped
+          // text→segments→text (agent.py replaying without segments) still has
+          // a body to restore.
+          const pollFlat = body.mode === "text" ? body.text : chunk.flatText;
+          if (body.mode === "empty") continue;
+          if (!chunk.seq) chunk.seq = ++cardSeq;
+          if (!chunk.key) {
+            chunk.key = nextKey("a");
             pushTurn({
               role: "assistant",
-              key: bubble,
+              key: chunk.key,
               text: "",
               streaming: true,
-              followup: followupSeq,
+              followup: slot,
             });
           }
           if (body.mode === "segments") {
-            if (!segMode) {
-              // A first poll with text but no segments yet started this turn on
+            if (!chunk.segMode) {
+              // A first poll with text but no segments yet started this reply on
               // the legacy path — take it back BEFORE the segments render, or the
               // flat text stays behind them (T:16289).
-              segMode = true;
-              // Published only NOW: from here a resolved card parked into this
-              // turn can never be swept away (T:16297-16301).
-              activeTurnKey = bubble;
+              chunk.segMode = true;
             }
-            tailText = body.view.tailText;
-            replaceTurn(bubble, {
+            chunk.tailText = body.view.tailText;
+            replaceTurn(chunk.key, {
               segments: body.view.rows.map((r) => r.seg),
-              text: tailText || "",
+              text: chunk.tailText || "",
               streaming: true,
             });
           } else {
-            flatText = pollFlat;
-            if (!poll.done) replaceTurn(bubble, { text: flatText, streaming: true });
+            chunk.flatText = pollFlat;
+            if (!poll.done) replaceTurn(chunk.key, { text: chunk.flatText, streaming: true });
           }
+          // THE NEWEST reply's bubble is where a resolved card parks — a card
+          // answered now belongs in the turn now streaming, never in one the
+          // payload has already closed off with a seam (T:16297-16301).
+          if (j === breaks.length && chunk.segMode) activeTurnKey = chunk.key;
         }
 
         // AFTER the reply bubble is guaranteed to exist for anything this poll
         // carried, so an open card lands BELOW the prose it interrupts
         // (T:16305-16311).
         syncPermissions(poll.permissions, runId, poll.mode);
+        // …AND THE ADOPTION IS NOW SETTLED. This is the first moment
+        // `state.permissions` is the truth about the adopted run rather than
+        // the empty list a restore starts with, so it is the earliest point a
+        // renderer can paint the transcript and its open card in ONE frame.
+        // Cleared unconditionally (not only on an adopted run): a poll loop
+        // running at all means there is nothing left to wait for.
+        setAdopting(false);
 
         if (poll.done) {
           // OWNERSHIP-GUARDED: a respawn kills this run and starts a NEW loop
@@ -744,28 +896,50 @@ export function createChatController(deps: ControllerDeps): ChatController {
           deps.onArtifactsTick?.();
 
           const end = runEnding(poll, stoppedSeat === seat);
+          // EVERY bubble this loop opened settles, not just the newest: a run
+          // that absorbed a follow-up has two, and leaving the older one
+          // `streaming: true` parks the caret on a reply that finished minutes
+          // ago.
+          const live = [...chunks.values()].filter((c) => !!c.key);
           if (!end.keepText) {
-            if (bubble) dropTurn(bubble);
-          } else if (bubble && segMode) {
-            replaceTurn(bubble, { streaming: false, text: tailText || "" });
-          } else if (bubble) {
-            // The DONE poll's own text (T:16288/16360), so a poll that
-            // legitimately shortened the body can shrink the bubble and the
-            // typer's clamp fires (T:15075). An empty done poll is the one case
-            // that must not wipe a bubble it already filled, so it keeps what
-            // the last non-empty poll left.
-            replaceTurn(bubble, { streaming: false, text: pollFlat || flatText });
+            for (const c of live) dropTurn(c.key as string);
+          } else if (live.length) {
+            for (const c of live) {
+              if (c.segMode) {
+                replaceTurn(c.key as string, { streaming: false, text: c.tailText || "" });
+              } else {
+                // The DONE poll's own text (T:16288/16360), so a poll that
+                // legitimately shortened the body can shrink the bubble and the
+                // typer's clamp fires (T:15075). An empty done poll is the one
+                // case that must not wipe a bubble it already filled, so it
+                // keeps what the last non-empty poll left.
+                replaceTurn(c.key as string, { streaming: false, text: c.flatText });
+              }
+            }
           } else if (poll.text || (poll.segments || []).length) {
             // A run whose text only ever arrived on the poll that ENDED it, so
-            // nothing was ever streaming (T:16345-16354).
-            const view = pollBody(poll.segments, poll.text, ++cardSeq, base.segBase, base.textBase);
-            pushTurn({
-              role: "assistant",
-              key: nextKey("a"),
-              text: view.mode === "segments" ? view.view.tailText || "" : view.text,
-              ...(view.mode === "segments" ? { segments: view.view.rows.map((r) => r.seg) } : {}),
-              followup: followupSeq,
-            });
+            // nothing was ever streaming (T:16345-16354). Seams still apply:
+            // the payload can be two replies even when none of it streamed.
+            const spans = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
+            const allSegs = Array.isArray(poll.segments) ? poll.segments : [];
+            const allText = poll.text || "";
+            for (let j = 0; j <= spans.length; j++) {
+              const from = j === 0 ? { segments: 0, text: 0 } : spans[j - 1]!;
+              const to = j < spans.length ? spans[j]! : null;
+              const view = pollBody(
+                to ? allSegs.slice(from.segments, to.segments) : allSegs.slice(from.segments),
+                to ? allText.slice(from.text, to.text) : allText.slice(from.text),
+                ++cardSeq,
+              );
+              if (view.mode === "empty") continue;
+              pushTurn({
+                role: "assistant",
+                key: nextKey("a"),
+                text: view.mode === "segments" ? view.view.tailText || "" : view.text,
+                ...(view.mode === "segments" ? { segments: view.view.rows.map((r) => r.seg) } : {}),
+                followup: chunkOffset + j,
+              });
+            }
           }
           if (end.error) addError(end.error);
           // Same guard: a superseded loop's own "Stopped." must not land in the
@@ -783,7 +957,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // A DISPOSED controller says nothing: the poll we aborted ourselves is
       // not a failure of the run, and there is nobody left to read a card.
       if (!disposed) {
-        if (bubble) dropTurn(bubble);
+        for (const c of chunks.values()) if (c.key) dropTurn(c.key);
         reportTrouble(troubleFromError(err));
       }
     } finally {
@@ -829,7 +1003,38 @@ export function createChatController(deps: ControllerDeps): ChatController {
       ? v
       : DEFAULT_PERMISSION;
   };
-  const hasPane = () => (deps.hasPane ? (deps.hasPane() ? "1" : "0") : "0");
+  /** `"1"` / `"0"` / `""` — see `ChatControllerDeps.hasPane`. The empty string
+   *  is not a missing field: agent.py's `main` reads `has_pane == ""` as "the
+   *  page has no opinion" and answers with `_has_pane(file)` itself, which is
+   *  what an undecided pane must send rather than a guess that sticks for the
+   *  life of the session (R2-10). No `deps.hasPane` at all is still `"0"`: a
+   *  caller that does not wire a pane has decided there is none. */
+  const hasPane = () => {
+    if (!deps.hasPane) return "0";
+    const answer = deps.hasPane();
+    return answer === null ? "" : answer ? "1" : "0";
+  };
+  /**
+   * THE PUSH CHANNEL, read once per outgoing message (T:16483 `appStatePush()`
+   * at the top of `sendMessage`).
+   *
+   * `<live-app-state>` used to be sent by nothing at all: the watcher grew
+   * `blockForSend()` and nobody ever called it, so the native chat told the
+   * agent less about the app than legacy did on every single turn — and the
+   * "app state attached" receipt had nothing to report, which is how QA found
+   * it (feedback #30).
+   *
+   * Never throws: a failed offload is not a reason to lose the message, and the
+   * pull channel is still there to answer a tool call that asks.
+   */
+  const appStateBlock = async (): Promise<string> => {
+    if (!deps.appStateBlock) return "";
+    try {
+      return (await deps.appStateBlock()) || "";
+    } catch {
+      return "";
+    }
+  };
 
   async function sendMessage(text: string, opts: SendOptions = {}): Promise<void> {
     // DISPOSED IS A CLOSED DOOR, not a race to lose. `dispose()` is the
@@ -856,10 +1061,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // live mode until a poll reports one, and a card can open on the very first
     // poll (T:16128 `permission_mode`).
     setPermissionMode(opts.permission || curPermissionMode());
-    const outgoing = composeOutgoing(text, blocks);
+    // Read BEFORE the bubble so `raw` is the whole wire from the start — the
+    // "what was sent" popover and the receipt describe one message, and a
+    // bubble patched a tick later would briefly disagree with both. `hasPane`
+    // is not consulted: the watcher answers "" for a pane it has learned
+    // nothing from, which is the same non-answer a missing pane gives.
+    const live = await appStateBlock();
+    const outgoing = composeOutgoing(text, live ? [...blocks, live] : blocks);
     // The bubble shows what the user TYPED (or the markers for a wordless
     // send); the raw wire rides along for the "what was sent" popover.
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing);
+    //
+    // `stripBlocks(outgoing)` for a wordless send is unaffected by the block
+    // above — `wire.ts` strips every `<live-app-state>` — so a send that is
+    // only pictures still reads as pictures.
+    const bubble = addUser(text || stripBlocks(outgoing), outgoing, !!live);
     let started = false;
     try {
       let runId = "";
@@ -960,13 +1175,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const gen = logGen;
     const blocks = opts.blocks || [];
     if (!text && !blocks.length) return;
-    const outgoing = composeOutgoing(text, blocks);
+    // Every send carries the app state, a follow-up included: T calls
+    // `appStatePush()` from `sendFollowUp` too (T:16101), and a message typed
+    // three tool calls into a turn is describing a pane that has moved since
+    // the opening one.
+    const live = await appStateBlock();
+    const outgoing = composeOutgoing(text, live ? [...blocks, live] : blocks);
     // The follow-up's bubble goes up immediately; the `followupSeq` bump that
     // tells a streaming pollLoop to start a NEW bubble after it happens only
     // once the INBOX has taken it. Bumping here left a failed send with a
     // counter pollLoop read as a landed follow-up, and the reply split around
     // the gap where the rolled-back row had been (Bugbot, PR #996).
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing);
+    const bubble = addUser(text || stripBlocks(outgoing), outgoing, !!live);
     // KEYED BY A SEQ, not by the text: two identical follow-ups ("again") used
     // to collapse into one entry, and the first ack cleared both — so the second
     // one's hint left the composer while the message was still in flight.
@@ -975,6 +1195,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       wire: outgoing,
       typed: text,
       bubble: bubble.key,
+      // Flipped below, when the inbox confirms — see `queued`'s own note and
+      // `stopRun`'s handback rule.
+      landed: false,
     };
     queued.push(entry);
     publishQueued();
@@ -1064,6 +1287,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
       //
       // The queue entry is deliberately left standing: the inbox taking the
       // bytes is not the model reading them (see `queued`).
+      //
+      // MARKED LANDED in the same breath as the bump, because they are one
+      // fact: the inbox has the message, so a stop from here on cannot claim
+      // the CLI never received it (`stopRun`).
+      entry.landed = true;
       followupSeq++;
     } catch (err) {
       giveBack();
@@ -1082,57 +1310,70 @@ export function createChatController(deps: ControllerDeps): ChatController {
     emit({ status: "stopping" });
     try {
       const result = (await run(dir, "cancel", { run_id: runId as string }, { key: null })) as CancelResponse;
-      // `still_queued` is the CLI's OWN report of what never reached the model —
-      // text a follow-up sent that the interrupt stranded mid queue. Whatever it
-      // names is handed straight back to the composer (T:15911-15919).
-      const still = (result && (result.still_queued as string[])) || [];
-      const named = still.filter((t): t is string => typeof t === "string" && !!t);
-      // …and THIS PAGE'S OWN RECORD is what fills the gap when the CLI names
-      // nothing, which — measured against CLI 2.1.x on a real stop — is the
-      // usual case, not the edge one: a follow-up fed through the held-open
-      // stdin is echoed into `out.jsonl` the moment the inbox drains, so by the
-      // time the interrupt lands the CLI no longer counts it as queued and
-      // answers `{"still_queued": []}`. T has nothing else to consult and drops
-      // the text on the floor; the run-controller keeps `queued` and does not
-      // have to (QA round 3a, defect 2).
+      // WHAT COMES BACK TO THE COMPOSER, and the rule is deliberately narrow
+      // (feedback #11).
       //
-      // Each stranded text clears ONE entry, so two identical follow-ups both
-      // come back and both leave the hint. Matched against the WIRE form, which
-      // is what `still_queued` would carry; what goes back to the box is the
-      // TYPED form, because that is the text the user owns and would edit —
-      // handing back the composed wire payload would put the app-state and
-      // attachment markers into their box.
+      // Two roads only, because only two are provable:
+      //
+      //  1. `still_queued` — the CLI's OWN report, on the interrupt control
+      //     response, of the follow-ups it dropped out of its queue unread
+      //     (T:15911-15919). Whatever it names never reached the model.
+      //  2. AN UNCONFIRMED SEND (`!entry.landed`) — the `send` POST was still
+      //     in flight when Stop was pressed, so the inbox never acknowledged
+      //     it. The interrupt is racing that write and the message may be
+      //     dropped either side of it; the honest reading is "it did not
+      //     land", and handing it back is recoverable where losing it is not.
+      //
+      // EVERYTHING ELSE STAYS A BUBBLE. A follow-up fed through the held-open
+      // stdin is echoed into `out.jsonl` the moment the inbox drains, so by
+      // the time an interrupt lands the CLI no longer counts it as queued and
+      // answers `{"still_queued": []}` — which used to be read here as "the
+      // CLI told us nothing, so assume everything was stranded" and hand the
+      // whole queue back. That is the WRONG WAY ROUND on the common path:
+      // Claude had already read the message (Surya's mid-response drain), and
+      // yanking it out of the transcript and back into the box denied a turn
+      // the reader had watched happen. An empty `still_queued` from a live
+      // host is now taken at its word: nothing was queued, so nothing is
+      // owed back.
+      //
+      // Either way the ENTRIES go: after a stop nothing is "queued for this
+      // turn" any more, whether it was handed back or left standing.
+      const still = (result && (result.still_queued as string[])) || [];
+      const named = new Set(
+        still.filter((t): t is string => typeof t === "string" && !!t),
+      );
       const stranded: string[] = [];
-      for (const t of named) {
-        const i = queued.findIndex((q) => q.wire === t);
-        if (i >= 0) {
-          stranded.push(queued[i]!.typed || t);
-          dropTurn(queued[i]!.bubble);
-          queued.splice(i, 1);
-        } else {
-          // The CLI named something this page has no entry for (a follow-up from
-          // another viewer of the same session). Hand it back verbatim rather
-          // than lose it — there is no typed form to prefer.
-          stranded.push(t);
-        }
+      for (const entry of queued.slice()) {
+        // Matched against the WIRE form, which is what `still_queued` carries;
+        // what goes BACK to the box is the TYPED form, because that is the text
+        // the user owns and would edit — handing back the composed wire payload
+        // would put the app-state and attachment markers into their box.
+        const back = named.has(entry.wire) || !entry.landed;
+        if (!back) continue;
+        stranded.push(entry.typed || entry.wire);
+        // The optimistic bubble goes with it. A follow-up the interrupt
+        // stranded was never answered, so leaving the row posted claims the
+        // agent read it — and QA saw exactly that: the text committed as a
+        // permanent bubble AND absent from the box, with no way to recover or
+        // edit it. T leaves the row behind (its stop only ever touches
+        // `box.value`); this deliberately does not.
+        dropTurn(entry.bubble);
+        // Each stranded text clears ONE entry, so two identical follow-ups
+        // both come back and both leave the hint.
+        named.delete(entry.wire);
+        const i = queued.indexOf(entry);
+        if (i >= 0) queued.splice(i, 1);
       }
-      if (!stranded.length) {
-        for (const entry of queued) {
-          stranded.push(entry.typed || entry.wire);
-          // The optimistic bubble goes with it. A follow-up the interrupt
-          // stranded was never answered, so leaving the row posted claims the
-          // agent read it — and the QA saw exactly that: the text committed as a
-          // permanent bubble AND absent from the box, with no way to recover or
-          // edit it. T leaves the row behind (its stop only ever touches
-          // `box.value`); this deliberately does not.
-          dropTurn(entry.bubble);
-        }
-        queued.length = 0;
-      }
-      if (stranded.length) {
-        deps.onStranded?.(stranded);
-        publishQueued();
-      }
+      // Anything the CLI named that this page has no entry for (a follow-up
+      // from another viewer of the same session) is handed back verbatim
+      // rather than lost — there is no typed form to prefer.
+      for (const t of named) stranded.push(t);
+      // The turn is over for every entry, handed back or not — so the hint
+      // under the box goes either way, in ONE publish.
+      const cleared = queued.length > 0;
+      queued.length = 0;
+      if (cleared || stranded.length) publishQueued();
+      if (stranded.length) deps.onStranded?.(stranded);
     } catch (err) {
       // The kill never reached the backend, so the run is still going and the
       // loop is still streaming it. Take the claim back: leaving it set would
@@ -1330,6 +1571,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     emit({
       sessionId,
       historyLoading: true,
+      // Set HERE rather than in `adoptLiveRun`, which this function only
+      // reaches after the history round-trip: the gate has to be up before the
+      // first frame, or the transcript paints once without the card and the
+      // flag arrives too late to have prevented it.
+      adopting: true,
       turns: [],
       permissions: [],
       appState: [],
@@ -1362,6 +1608,105 @@ export function createChatController(deps: ControllerDeps): ChatController {
       }
     } finally {
       if (sendSeq === seat) sending = false;
+    }
+    // AND THEN ASK WHETHER THE SESSION IS BUSY. Not awaited: the adoption
+    // watch is up to ~3 s of laps and the caller's next step is painting the
+    // restored transcript and telling its host it is ready — neither of which
+    // should wait on the answer. A `run` already on the URL is `resumeRun`'s
+    // job and the `activeRun` guard inside makes the overlap harmless.
+    if (!deps.params.get("run")) void adoptLiveRun(sessionId);
+  }
+
+  /**
+   * IS ANYTHING STILL RUNNING FOR THIS CHAT? (T:17506-17663 `adoptLiveRun`.)
+   *
+   * A run id lives on the URL, and only there. Opening a conversation from the
+   * session list, a folder listing, the cards wall or Peek hands over a
+   * `session_id` and nothing else — so a turn that was mid-flight rendered as
+   * a finished transcript with no working line, and, the way QA hit it
+   * (feedback #25), a tool call blocked on a permission showed "waiting for
+   * approval" with NO CARD to answer it, because cards only ever arrive on a
+   * poll and nothing was polling.
+   *
+   * So the session is asked directly. `live_run` matches on the target first
+   * and on either of the two ids that can name one chat (the session the run
+   * resumed and the one the CLI minted for it — `--fork-session` makes those
+   * different), and answers `""` when there is nothing going.
+   *
+   * PR1's SUBSET, deliberately: this is the WINDOW around opening a chat. The
+   * standing watch that adopts a turn started later in the life of the page
+   * (T:17553-17663, D415) is PR4.
+   *
+   * Every guard here is one of T's, and each is a way this can adopt into the
+   * wrong transcript:
+   *   * `logGen` — the reader went home; nothing on this page is ours.
+   *   * `activeRun` — somebody attached already (this call, or the user's own
+   *     send). The watch is over, not merely skipped.
+   *   * `sending` — the gate is held THIS tick (history still restoring, a send
+   *     in flight); look again next lap rather than give up.
+   * A failed lookup ends the watch and leaves the transcript exactly as it
+   * rendered: a missing working line is a smaller lie than a run adopted onto
+   * a conversation this is no longer showing.
+   */
+  async function adoptLiveRun(sessionId: string): Promise<void> {
+    if (disposed) return;
+    // ONE WATCH AT A TIME. `openSession` starts one for every restore and the
+    // boot starts one for the path where `openSession` bailed on the gate, so
+    // the ordinary reopen asks twice — two lookups every 400 ms, and two
+    // callers that could each reach `resumeRun` for the same id.
+    if (adopting) return;
+    adopting = true;
+    const gen = logGen;
+    try {
+      await adoptWatch(sessionId, gen);
+    } finally {
+      adopting = false;
+      // THE BACKSTOP, not the ordinary road. Every early exit lands here — a
+      // thrown lookup, a disposed controller, a generation bump, the laps
+      // running out — so the renderer's gate can never be left up by a watch
+      // that simply stopped. The ordinary clears happen earlier and sooner:
+      // the first answer with no run in it, and the adopted run's first poll.
+      setAdopting(false);
+    }
+  }
+
+  async function adoptWatch(sessionId: string, gen: number): Promise<void> {
+    for (let tries = 0; tries < ADOPT_LAPS; tries++) {
+      if (tries) await sleep(POLL_MS);
+      if (logGen !== gen || disposed) return;
+      if (activeRun) return;
+      if (sending) continue;
+      let live: RunIdResponse | null = null;
+      try {
+        live = (await run(
+          dir,
+          "live_run",
+          { file: FILE || "", session_id: sessionId || "" },
+          { key: null },
+        )) as RunIdResponse;
+      } catch {
+        return;
+      }
+      // Both can have changed across the await.
+      if (logGen !== gen || disposed || activeRun) return;
+      const id = live && live.run_id;
+      if (!id) {
+        // NOTHING IS LIVE, AND THAT IS AN ANSWER — the transcript can paint.
+        // The remaining laps exist to catch a run that starts a moment later
+        // (a hand-off, another viewer's send), which is not something a first
+        // paint should be held for: waiting them out would hide a restored
+        // conversation for ~3 s every time it is reopened idle.
+        setAdopting(false);
+        continue;
+      }
+      if (sending) continue;
+      setRunParam(id);
+      await resumeRun(id);
+      // `resumeRun` resolves at the END of the turn, so a completed call means
+      // the run was handled — its own done branch cleared the param. The one
+      // call that resolves with the param still reading `id` is a bail on a
+      // gate grabbed between these two lines, and only that earns another lap.
+      if (deps.params.get("run") !== id) return;
     }
   }
 
@@ -1417,7 +1762,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           addError(poll.error);
           return;
         }
-        const view = pollBody(poll.segments, poll.text, ++cardSeq, 0, 0);
+        const view = pollBody(poll.segments, poll.text, ++cardSeq);
         if (view.mode !== "empty") {
           pushTurn({
             role: "assistant",
@@ -1487,6 +1832,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     answerAppState,
     openSession,
     resumeRun,
+    adoptLiveRun,
     newChat,
     dispose() {
       disposed = true;

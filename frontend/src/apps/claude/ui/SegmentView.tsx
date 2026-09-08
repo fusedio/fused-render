@@ -45,13 +45,22 @@ export interface SegmentViewProps {
   /** Parked (answered) cards and anything else that belongs at the turn's tail,
    *  in chronological position (T:14728 `parkResolvedCard`). */
   children?: React.ReactNode;
+  /** segment index → whatever is drawn immediately AFTER that segment. This is
+   *  how a resolved card gets to sit under the tool chip it answered rather than
+   *  at the end of the turn (#18, Transcript's `parkPlan`). */
+  cardsAfter?: Map<number, React.ReactNode> | null;
 }
 
 /** MEMOIZED for the same reason `Turn` is, and this is where it pays: a settled
  *  turn's segment array is the same object across every poll, so its chips and
  *  its prose are not re-rendered — and `MarkdownView` is not re-parsed — while a
  *  live turn streams above them (T:15545-15554's whole concern). */
-export const SegmentView = memo(function SegmentView({ segments, tail, children }: SegmentViewProps) {
+export const SegmentView = memo(function SegmentView({
+  segments,
+  tail,
+  children,
+  cardsAfter,
+}: SegmentViewProps) {
   const seqRef = useRef<number | null>(null);
   if (seqRef.current === null) seqRef.current = ++segSeq;
   const seq = seqRef.current;
@@ -59,9 +68,24 @@ export const SegmentView = memo(function SegmentView({ segments, tail, children 
     <>
       {segments.map((seg, i) => {
         const key = cardKey(seq, seg, i);
-        if (seg.kind === "tool") return <ToolChip key={key} seg={seg} cardKey={key} />;
-        if (seg.kind === "thinking") return <ThinkingView key={key} cardKey={key} text={seg.text} />;
-        if (seg.kind === "notice") return <NoticeView key={key} text={seg.text} />;
+        // Whatever is filed at this position, wrapped WITH the segment rather
+        // than emitted beside it: the map's node and the segment have to stay
+        // one keyed child or React re-keys the whole list when a card resolves.
+        const filed = cardsAfter?.get(i) ?? null;
+        const withFiled = (node: React.ReactNode) =>
+          filed ? (
+            <Fragment key={key}>
+              {node}
+              {filed}
+            </Fragment>
+          ) : (
+            node
+          );
+        if (seg.kind === "tool")
+          return withFiled(<ToolChip key={key} seg={seg} cardKey={key} />);
+        if (seg.kind === "thinking")
+          return withFiled(<ThinkingView key={key} cardKey={key} text={seg.text} />);
+        if (seg.kind === "notice") return withFiled(<NoticeView key={key} text={seg.text} />);
         // "text", and anything a newer agent.py invents (T:15630-15635).
         const growing = !!tail && tail.index === i;
         if (growing) {
@@ -77,7 +101,9 @@ export const SegmentView = memo(function SegmentView({ segments, tail, children 
             </Fragment>
           );
         }
-        return <MarkdownView key={key} className="seg-text" text={segText(seg)} enhance />;
+        return withFiled(
+          <MarkdownView key={key} className="seg-text" text={segText(seg)} enhance />,
+        );
       })}
       {children}
     </>

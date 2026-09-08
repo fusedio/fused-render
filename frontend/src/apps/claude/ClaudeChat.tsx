@@ -318,6 +318,25 @@ function ChatBody(props: ChatBodyProps) {
   // frame has been swapped for the message (usePaneState's catch).
   const hasPane = useRef(false);
   hasPane.current = !pane.noPane && pane.status === "ready";
+  // …BUT "not ready yet" IS NOT "no pane" for the field that goes on the wire.
+  //
+  // `has_pane` is what agent.py builds the session's MCP roster off, once, at
+  // spawn: `pane=False` writes an `mcp.json` with no app-state channel and an
+  // `--allowed-tools` without `mcp__fused_approvals__app_state`, and there is
+  // no way back — `_send` never touches argv, and `host.json` does not even
+  // record the pane, so nothing can respawn for one appearing. A first message
+  // typed before `statPath`/`runAppEntry` landed therefore cost the WHOLE
+  // session its app-state tool, and the CLI said the tool was not reachable
+  // (feedback R2-10, and the legacy screenshot behind it).
+  //
+  // `null` while the decision is outstanding sends the field empty, which
+  // agent.py reads as "the page has no opinion" and answers with
+  // `_has_pane(file)` — the same fact, off the filesystem, without the race.
+  // "error" still answers false: the frame really has been swapped for a
+  // message, so nothing would respond to an app-state read.
+  const paneAnswer = useRef<() => boolean | null>(() => null);
+  paneAnswer.current = () =>
+    pane.noPane ? false : pane.status === "resolving" ? null : hasPane.current;
 
   // ── the controller ─────────────────────────────────────────────────────────
   // Rebuilt only for a new target: the model / effort / pane answers it reads at
@@ -340,7 +359,7 @@ function ChatBody(props: ChatBodyProps) {
         params,
         model: () => liveModel.current,
         effort: () => liveEffort.current,
-        hasPane: () => hasPane.current,
+        hasPane: () => paneAnswer.current(),
         // The controller already announces on THIS document
         // (`announceTasksChanged`); the stamp is for every OTHER one (T:16435).
         onActivity: stampChatActivity,
@@ -352,6 +371,18 @@ function ChatBody(props: ChatBodyProps) {
           strandSeq.current += 1;
           setStranded({ text, seq: strandSeq.current });
         },
+        // THE PUSH CHANNEL. Read at SEND time from the watcher, which is the
+        // same object the pull channel answers through — `blockForSend` does
+        // push → offload → block, in T's order (T:16483, 5177-5218). Gated on
+        // a pane being ACTUALLY there, the same `hasPane.current` the backend
+        // is told about, so a chat-only mount never claims to describe an app
+        // it cannot see.
+        //
+        // Through a ref, like every other send-time read here: the watcher
+        // outlives a pane reload and rebuilding the controller for it would
+        // restart the run loop.
+        appStateBlock: () =>
+          hasPane.current ? watcher.blockForSend() : Promise.resolve(""),
         // PR4 hangs the artifacts read and the snapshot invalidation here
         // (T:16229, 16321-16330); the ticks already run on T's clock.
         onArtifactsTick: () => {},
@@ -510,9 +541,15 @@ function ChatBody(props: ChatBodyProps) {
         // screen by now: either way this is the moment the host may uncover us.
         markReady();
         if (runId) await controller.resumeRun(runId);
-        // `adoptLiveRun(session_id)` — a live turn with no `run` on the URL — is
-        // PR4 (design.md §8); until then a reopened chat re-attaches on its own
-        // next send.
+        else if (sessionId) {
+          // NO `run` ON THE URL and a session that may well be busy: ask the
+          // session itself. `openSession` above already started this watch, so
+          // this covers the one path that skips it — a boot handed a
+          // `session_id` whose history load was refused or gated. Not awaited:
+          // the watch is up to ~3 s and the host has already been told we are
+          // ready (T:17506, feedback #25).
+          void controller.adoptLiveRun(sessionId);
+        }
       } else {
         // Nothing to restore. The landing paints its card and Recent's skeleton
         // on this very render, so it is ready now (T:19291-19296).
@@ -706,7 +743,24 @@ function ChatBody(props: ChatBodyProps) {
   const recent = useRecentSessions(inChat ? null : agentDir, file);
 
   const onSend = useCallback(
-    (text: string, opts: SendOptions) => void controller.sendMessage(text, opts),
+    (text: string, opts: SendOptions) => {
+      // OPTIMISTIC, and synchronously BEFORE the dispatch — exactly where T puts
+      // it (`enterChat()` in the landing form's own `onsubmit`, T:17935, one line
+      // ahead of its `sendMessage(message)`). `inChat` is `entered ||
+      // !!state.sessionId` and nothing on this path set `entered`, so the
+      // landing stayed up until a POLL reported a session id: one `start`
+      // round-trip plus a 400 ms lap, which is the 1-2 s stall the QA measured
+      // against :1777. The controller puts the user bubble up before anything
+      // slow on its own path (`addUser`), so the view this switches to already
+      // has the message and the working line in it.
+      //
+      // A REFUSED START DOES NOT COME BACK HERE, and T's `enterChat()` is
+      // equally one-way: its rollback (T:16693-16720) drops the bubble and posts
+      // the failure INTO the chat, where the reader stays to read it. Back is
+      // the way out, the same as for a run that started and then failed.
+      setEntered(true);
+      void controller.sendMessage(text, opts);
+    },
     [controller],
   );
   const onFollowUp = useCallback(

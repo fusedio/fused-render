@@ -4099,7 +4099,12 @@ describe("the delete affordance", () => {
   });
 
   it("goes through ONE dialog, which names what it destroys and cannot be undone", () => {
-    const MODAL = readFileSync(join(SHELL, "EraseTaskModal.tsx"), "utf8");
+    // LIFTED to platform/ui so the Claude chat's kebab can use the same dialog
+    // (Akshil, 2026-09-08); shell/EraseTaskModal.tsx is a re-export.
+    const MODAL = readFileSync(
+      join(SHELL, "..", "platform", "ui", "EraseTaskModal.tsx"),
+      "utf8",
+    );
     // One endpoint, called in one place on the client.
     expect(API_TYPES).toContain('"/api/tasks/erase"');
     expect(MODAL).toContain("await eraseTask(task.key);");

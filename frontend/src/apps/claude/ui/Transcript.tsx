@@ -21,9 +21,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { cn } from "@platform/lib/utils";
 
 import type { ChatController, ChatState, UserTurn } from "../protocol/controller-api";
-import type { PermissionMode } from "../protocol/types";
+import type { PermissionMode, Segment } from "../protocol/types";
 import { CardStack, type CardActions } from "./CardStack";
 import { TroubleView } from "./TroubleView";
 import { Turn } from "./Turn";
@@ -180,6 +181,47 @@ export const Transcript = memo(function Transcript({
     if (openCards && port.current) port.current.scrollTop = port.current.scrollHeight;
   }, [openCards]);
 
+  // ── the first paint lands at the bottom (#26) ────────────────────────────
+  //
+  // "Opening a session with an open card flashes the top of the chat then
+  // scrolls down." Every rule above writes `scrollTop` in a LAYOUT effect, which
+  // is before paint — but only for the tree that has already laid out. A
+  // restored session paints its turns first (`historyLoading` false is the frame
+  // the turns arrive in) and the pictures, highlighted code blocks and expanded
+  // chips inside them keep GROWING for several frames after; each of those is
+  // answered by the ResizeObserver, and the reader watches the transcript walk
+  // down to the tail.
+  //
+  // So the log is not painted at all until the first of those writes has landed:
+  // `is-settling` is `visibility: hidden` (it still lays out — that is the point),
+  // and it comes off in the same layout effect that scrolls, so no frame is ever
+  // shown at the top. `settled` starts TRUE where there is no layout to wait for
+  // (a test renderer, SSR): hiding a tree that can never be measured would hide
+  // it for good.
+  //
+  // AND THE SAME RULE COVERS ADOPTION (R2-11). On the cards wall a tile that is
+  // waiting on a question painted its transcript first, scrolled itself to the
+  // bottom, and only then — when `adoptLiveRun` had found the run and its first
+  // poll had delivered the permission row — grew the card, which moved
+  // everything again: two flashes for one open. `state.adopting` is the run
+  // controller saying "there may still be a live run to attach to here", so the
+  // log stays hidden across that window and the card and the turns arrive in the
+  // same frame.
+  //
+  // READ STRUCTURALLY, not off the type: the flag is the protocol layer's to
+  // add and this file must not have to land in the same commit. Absent, it is
+  // `undefined` — which is not `true`, so a controller that never publishes it
+  // behaves exactly as before.
+  const adopting = (state as { adopting?: boolean }).adopting === true;
+  const [settled, setSettled] = useState(() => typeof ResizeObserver === "undefined");
+  const firstBottom = useRef(false);
+  useLayoutEffect(() => {
+    if (firstBottom.current || state.historyLoading || adopting) return;
+    firstBottom.current = true;
+    if (port.current) port.current.scrollTop = port.current.scrollHeight;
+    setSettled(true);
+  }, [state.historyLoading, adopting, state.rev]);
+
   // ── ?msg= anchor ─────────────────────────────────────────────────────────
   // EVERYTHING here degrades to silence: no param, a uuid from another
   // transcript, a uuid whose record this page does not render — each ends with
@@ -218,31 +260,39 @@ export const Transcript = memo(function Transcript({
 
   const onStop = useCallback(() => void actions.stopRun(), [actions]);
 
-  // Which turns have a parked card filed in them. Passing a `<CardStack/>` to
-  // every turn regardless would defeat `Turn`'s own memo — a fresh child
+  // WHERE each parked card sits INSIDE its turn (#18). Passing a `<CardStack/>`
+  // to every turn regardless would defeat `Turn`'s own memo — a fresh child
   // element per render is a changed prop — and most turns never hold one.
-  const parkedIn = useMemo(() => {
-    const keys = new Set<string>();
-    for (const p of state.permissions) if (p && p.decision && p.parkedIn) keys.add(p.parkedIn);
-    return keys;
-  }, [state.permissions]);
-
-  // T:13698 appends a row per failure AND draws the card for the newest one in
-  // the same place; here the card lives at the tail of the log, so the newest
-  // row would say the same thing twice. Suppress that ONE row.
-  const supersededBy = state.trouble ? lastErrorKey(state.turns) : null;
+  const parked = useMemo(() => parkPlan(state.turns, state.permissions), [
+    state.turns,
+    state.permissions,
+  ]);
 
   return (
     <div className="chat-logwrap" ref={port}>
-      <div className="chat-log" ref={log}>
+      <div className={cn("chat-log", !settled && "is-settling")} ref={log}>
         {state.historyLoading ? (
           <HistorySkeleton />
         ) : (
           <>
             {state.turns.map((turn) => {
-              // The failure the trouble card at the tail is already reporting is
-              // NOT also a row: the row is the record of the failures BEFORE it.
-              if (turn.key === supersededBy) return null;
+              const plan = parked.get(turn.key);
+              // A `<CardStack/>` for one position, by id: the same list, the
+              // same three card kinds, restricted to the rows that belong here.
+              const stack = (ids: string[]) => (
+                <CardStack
+                  rows={state.permissions}
+                  ids={ids}
+                  placement="parked"
+                  turnKey={turn.key}
+                  liveMode={liveMode}
+                  pickerMode={pickerMode}
+                  actions={actions}
+                />
+              );
+              const after = plan?.after.size
+                ? new Map(Array.from(plan.after, ([i, ids]) => [i, stack(ids)]))
+                : null;
               return (
                 <Turn
                   key={turn.key}
@@ -250,6 +300,7 @@ export const Transcript = memo(function Transcript({
                   anchored={turn.role === "user" && !!flare && turn.uuid === flare}
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
+                  {...(after ? { cardsAfter: after } : {})}
                 >
                   {/* Parked cards belong to the turn they were answered in —
                       whichever turn that was, streaming or long finished.
@@ -257,40 +308,133 @@ export const Transcript = memo(function Transcript({
                       `runEnding`), so gating on it made every resolved card
                       vanish from the transcript the moment its turn ended; T
                       parks the node into the turn's DOM and it stays
-                      (T:14728-14742). */}
-                  {parkedIn.has(turn.key) ? (
-                    <CardStack
-                      rows={state.permissions}
-                      placement="parked"
-                      turnKey={turn.key}
-                      liveMode={liveMode}
-                      pickerMode={pickerMode}
-                      actions={actions}
-                    />
-                  ) : null}
+                      (T:14728-14742). These are the ones with no tool chip of
+                      their own to sit under, so they go at the turn's tail. */}
+                  {plan?.tail.length ? stack(plan.tail) : null}
                 </Turn>
               );
             })}
+            {/* THE ROW AND THE CARD, both (#27). T appends a red row per failure
+                AND draws the actionable card for the newest one; the port
+                suppressed the row the card duplicated, which left an API error
+                or a session limit with no line at the end of the log saying the
+                turn had stopped — "last line = the error" is the request. The
+                row is the log entry, the card is what the user can act on. */}
             {state.trouble ? (
               <TroubleView trouble={state.trouble} {...(what ? { what } : {})} />
             ) : null}
-            {/* Open cards form one contiguous block ending at the status line. */}
-            <CardStack
-              rows={state.permissions}
-              placement="open"
-              liveMode={liveMode}
-              pickerMode={pickerMode}
-              actions={actions}
-            />
-            {state.working ? (
-              <WorkingLine working={state.working} status={state.status} onStop={onStop} />
-            ) : null}
+            {/* THE TAIL PIN (#17). An OPEN card sticks to the bottom of the
+                scrollport for as long as it is open, because the run cannot
+                continue without it and a reader who has scrolled up to re-read
+                the reply cannot otherwise find it. The working line comes with
+                it — "Waiting for your approval" and the thing to approve are one
+                statement. Answered cards are NOT in here: they have already been
+                parked back into their turn above, at the chip they answered. */}
+            <div className={cn("chat-tailpin", openCards && "is-pinned")}>
+              <CardStack
+                rows={state.permissions}
+                placement="open"
+                liveMode={liveMode}
+                pickerMode={pickerMode}
+                actions={actions}
+              />
+              {state.working ? (
+                <WorkingLine working={state.working} status={state.status} onStop={onStop} />
+              ) : null}
+            </div>
           </>
         )}
       </div>
     </div>
   );
 });
+
+/** One turn's parked cards: which segment each sits AFTER, plus the ones with
+ *  nowhere better to go. */
+export interface ParkPlan {
+  /** segment index → the ids of the cards drawn immediately after it. */
+  after: Map<number, string[]>;
+  /** Card ids for the turn's tail. */
+  tail: string[];
+}
+
+/**
+ * WHERE A RESOLVED CARD PARKS (#18): immediately after the tool chip it
+ * answered, in chronological position, every time.
+ *
+ * The port filed every parked card at the END of its turn, which is right when
+ * the approval was the last thing that happened in the turn and arbitrary the
+ * rest of the time — a Bash approved twenty chips ago showed its receipt under
+ * the final paragraph, and the same conversation reloaded put it somewhere else
+ * again because a later turn had become the live one.
+ *
+ * The chip is found in two steps, and the second is the one that works today:
+ *   1. `row.toolUseId` against the segment's own `tool_use` id — exact, and the
+ *      field the protocol layer is being asked to carry (agent.py already writes
+ *      `tool_use_id` into the permission request; the poll's row shape drops it);
+ *   2. otherwise the LAST not-yet-claimed tool segment of the same tool NAME.
+ *      A turn's approvals arrive in the order the tools do, so walking the cards
+ *      in arrival order and claiming chips left to right reconstructs the
+ *      pairing for the ordinary case (one Bash, one Edit, one Write) and for
+ *      repeats of the same tool.
+ * A card that matches neither — an AskUserQuestion, a plan, an approval whose
+ * chip never made it into the replayed transcript — goes to the turn's tail,
+ * which is where it was before.
+ */
+export function parkPlan(
+  turns: ChatState["turns"],
+  rows: ChatState["permissions"],
+): Map<string, ParkPlan> {
+  const out = new Map<string, ParkPlan>();
+  const claimed = new Map<string, Set<number>>();
+  for (const p of rows) {
+    if (!p || !p.id || !p.decision || !p.parkedIn) continue;
+    const key = p.parkedIn;
+    let plan = out.get(key);
+    if (!plan) out.set(key, (plan = { after: new Map(), tail: [] }));
+    const turn = turns.find((t) => t.key === key);
+    const segs = (turn && turn.role === "assistant" ? turn.segments : null) ?? [];
+    let taken = claimed.get(key);
+    if (!taken) claimed.set(key, (taken = new Set<number>()));
+    const at = chipFor(segs, p, taken);
+    if (at < 0) {
+      plan.tail.push(p.id);
+      continue;
+    }
+    taken.add(at);
+    const list = plan.after.get(at);
+    if (list) list.push(p.id);
+    else plan.after.set(at, [p.id]);
+  }
+  return out;
+}
+
+/** The index of the tool chip a card answered, or -1. See `parkPlan`. */
+function chipFor(
+  segs: readonly Segment[],
+  row: ChatState["permissions"][number],
+  taken: Set<number>,
+): number {
+  // TO WIRE (protocol): `PermissionRow.toolUseId`, from the permission
+  // request's `tool_use_id` — permission_server.py already writes it into the
+  // .req.json, agent.py's poll row just does not forward it. Read structurally
+  // rather than off the type so this file does not have to land in the same
+  // commit as `protocol/types.ts`; the name-match fallback below covers the
+  // ordinary case until it arrives.
+  const wanted = (row as { toolUseId?: string }).toolUseId;
+  if (wanted) {
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      if (seg.kind === "tool" && seg.id === wanted) return i;
+    }
+  }
+  if (!row.tool) return -1;
+  for (let i = segs.length - 1; i >= 0; i--) {
+    const seg = segs[i];
+    if (seg.kind === "tool" && seg.name === row.tool && !taken.has(i)) return i;
+  }
+  return -1;
+}
 
 /** The open cards' ids, in request order, as one string — the dependency for
  *  "a card the run is blocked on appeared". Exported for the test: the rule is

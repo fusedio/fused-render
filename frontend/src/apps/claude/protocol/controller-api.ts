@@ -31,6 +31,14 @@ export interface UserTurn {
   text: string;
   /** Raw outgoing text incl. blocks, for the "what was sent" popover (T:10970). */
   raw?: string;
+  /**
+   * This message carried a `<live-app-state>` description of the app the pane
+   * was showing. The UI draws the receipt legacy draws — "app state attached",
+   * a faint caption under the bubble (T:16588-16596, `.user .attach` at
+   * T:1802) — because the push channel is otherwise invisible and the reader
+   * has no way to know the agent was told what they were looking at.
+   */
+  appState?: true;
   uuid?: string;
 }
 
@@ -157,6 +165,20 @@ export interface ChatState {
   /** Follow-ups typed while a run is live, not yet acknowledged (T:16024 sendFollowUp). */
   queued: string[];
   historyLoading: boolean;
+  /**
+   * A RESTORE IS NOT FINISHED UNTIL ADOPTION HAS SPOKEN. True from the first
+   * frame of a session restore until either nothing turns out to be live or
+   * the adopted run's first poll has landed (cards included).
+   *
+   * `historyLoading` alone goes false the instant the transcript arrives, and
+   * a task parked on an AskUserQuestion then painted twice: the prose first,
+   * scrolled to the bottom, and the card a poll later on top of it with a
+   * second scroll — the "double flash" on the cards wall, where the tile is
+   * small enough that the jump is the whole tile (feedback R2-11/R2-13).
+   * A renderer holds its enter animation (`is-settling`) while this is true so
+   * the transcript and the card paint in ONE frame.
+   */
+  adopting: boolean;
   transcript: TranscriptStat | null;
   /** T:16411 `ownRunEndedAt` — the clock reading at which a run THIS frame was
    *  streaming last ended, or 0 if none has. D415's transcript follower (PR4)
@@ -226,6 +248,22 @@ export interface ChatController {
   openSession(sessionId: string): Promise<void>;
   /** Re-attach to a run id from the URL (T:17792 resumeRun). */
   resumeRun(runId: string): Promise<void>;
+  /**
+   * Ask the SESSION whether a turn is in flight and attach to it if so
+   * (T:17506 `adoptLiveRun`) — the answer for every host that opens a chat by
+   * `session_id` alone: the sidebar, the content mode, the cards wall and
+   * Peek. Without it a live run only ever showed when a `run` param happened
+   * to be on the URL, so an open permission card had nothing polling to
+   * deliver it (feedback #25).
+   *
+   * `openSession` already calls this itself when no `run` param is set, so a
+   * host that restores a conversation gets it for free; it is exported for the
+   * boot paths that attach without going through a history load.
+   *
+   * Resolves when the watch ends — either something was adopted and its turn
+   * finished, or ~3 s of laps found nothing.
+   */
+  adoptLiveRun(sessionId: string): Promise<void>;
   /** Back to home: clear transcript, drop session_id/run params (T:13031 enterChat/back). */
   newChat(): void;
 
@@ -254,7 +292,20 @@ export interface ControllerDeps {
   model?: () => string;
   effort?: () => string;
   /** ADDED: `has_pane` is the PAGE's answer, sent on every turn (T:16609). */
-  hasPane?: () => boolean;
+  /**
+   * The page's answer to `has_pane`, and it is TRI-STATE: `true` a pane is
+   * there, `false` there is provably none, `null` NOT DECIDED YET.
+   *
+   * `null` is the one that matters. `has_pane` is what decides the spawned
+   * session's MCP roster — agent.py builds `mcp.json` and `--allowed-tools`
+   * off it once, at spawn, and `_send` cannot repair a live host afterwards
+   * (`host.json` does not even record the pane) — so a `false` sent while the
+   * pane's stat was still in flight took the `app_state` tool away for the
+   * whole session, and the CLI reported it as unreachable (feedback R2-10).
+   * `null` sends the field EMPTY, which is agent.py's own "you decide": it
+   * falls back to `_has_pane(file)`, the authority that does not race.
+   */
+  hasPane?: () => boolean | null;
   /** ADDED: follow-ups the CLI never delivered, handed back to the composer on
    *  a stop (`still_queued`, T:15911). */
   onStranded?: (texts: string[]) => void;
@@ -264,6 +315,21 @@ export interface ControllerDeps {
   /** ADDED: the run ended — PR2/PR3/PR4 hang `annResolveSent` / `snapInvalidate`
    *  here (T:16321-16330). */
   onRunEnded?: () => void;
+  /**
+   * ADDED: the `<live-app-state>` block for THIS send, or `""` when there is
+   * nothing to say (no pane, or a pane that has told us nothing).
+   *
+   * Read at SEND time, once per outgoing message, exactly where T reads it
+   * (`appStatePush()` at the top of `sendMessage`, T:16483) — the state the
+   * user is describing is the state at the moment they typed, not whatever the
+   * pane has drifted to by the time the run starts. Async because the DOM
+   * outline is offloaded to a file first when it is large enough
+   * (`AppStateWatcher.blockForSend`, T:5177-5218).
+   *
+   * The PULL channel (`answerAppState`) is the other half and is unrelated:
+   * this is what goes out unasked with every message.
+   */
+  appStateBlock?: () => Promise<string>;
 }
 
 export type { HistoryTurn };

@@ -12,6 +12,15 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* A SIZE CONTAINER, for one rule: the sticky tail's ceiling (R2-4) is "most
+     of the scrollport", and there is no other way to say that in CSS. `vh` is
+     the wrong unit here — this box is 380px tall in a cards-wall tile and a
+     third of a screen in Peek, and a viewport fraction is a promise about
+     neither — while a percentage would resolve against `.chat-log`, whose
+     height is its content. Safe on this element specifically because its own
+     height comes from the flex line (`flex: 1` is basis 0) and never from what
+     it contains, which is exactly what `contain: size` asserts. */
+  container-type: size;
 }
 .chat-root .chat-logwrap::-webkit-scrollbar {
   width: 8px;
@@ -29,6 +38,17 @@
 .chat-root.chat-compact .chat-log,
 .chat-root.chat-peek .chat-log {
   padding-top: 12px;
+}
+/* FIRST PAINT LANDS AT THE BOTTOM, or not at all (#26). A restored session is
+   written top-first and the write that takes it to the tail can only happen
+   once there is a layout to measure — so the reader saw the top of the
+   conversation for one frame and then a jump. Hidden, not `opacity: 0`: the box
+   still has to lay out, which is the thing being waited for. Removed in the
+   layout effect that does the scroll, i.e. before the browser has painted a
+   frame either way; a host with no layout at all (a test renderer) never sets
+   the class in the first place. */
+.chat-root .chat-log.is-settling {
+  visibility: hidden;
 }
 
 /* ── a turn (T:1689-1713) ───────────────────────────────────────────────── */
@@ -270,6 +290,13 @@
   font-size: 13px;
 }
 .chat-root .turn.working .star {
+  /* The mark is an inline SVG now, whose baseline is its bottom edge — in a
+     `align-items: baseline` row that dropped it a couple of px below the verb.
+     A flex box of its own puts it back on the optical centre of the line. */
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  align-self: center;
   color: var(--c-accent);
   animation: chat-pulse 1.4s ease-in-out infinite;
 }
@@ -365,13 +392,96 @@
   cursor: default;
 }
 
+/* ── the tail pin: an OPEN card is always on screen (#17) ───────────────────
+   A card the run is blocked on is not a thing to scroll to. T's rule was
+   "mounted last, above the status line" plus one scroll-to-bottom per card, and
+   that is enough right up until the reader scrolls up to re-read the reply —
+   then the status line under the composer says "Waiting for your approval" and
+   the control it means is off screen with no way to find it but the scrollbar.
+
+   So the open block STICKS to the bottom of the scrollport, and it sticks only
+   while it is open: `.is-pinned` is on the wrapper exactly when there is an
+   unanswered card in it. The moment it is answered the card is parked back in
+   its turn at the point it came from (Transcript's `parkedAfter`) and this
+   wrapper goes back to being a plain block holding the working line — a receipt
+   pinned over the transcript for the rest of the session would be worse than
+   the bug.
+
+   Sticky on the WRAPPER and not on the card: the card is one of several open
+   ones, and a per-card sticky box stacks them on top of each other at the same
+   `bottom: 0`. */
+.chat-root .chat-tailpin.is-pinned {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  /* An opaque ground, or the turns scrolling under it read through the card's
+     own translucent tints. The negative side margins let the ground reach the
+     column's padding so nothing shows down the sides; the padding puts it back
+     for the content. */
+  margin: 0 -20px;
+  padding: 10px 20px 0;
+  background: var(--c-bg);
+  /* AT MOST 70% OF THE SCROLLPORT (R2-4). A four-question card with an open
+     "Other" box filled the whole port, so the reply it is asking about was off
+     screen — and the thing a pinned card is FOR is being readable next to the
+     text that prompted it. Past the ceiling the pin itself scrolls; the reply
+     above keeps the other 30% either way.
+     `overscroll-behavior: contain` so reaching the end of the card does not
+     hand the wheel on to the transcript behind it — the reader would lose the
+     card they were reading. */
+  max-height: 70cqh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* THE PIN IS NOW THE SCROLLER, so the card inside it must not be a second one:
+   two nested scrollers on the same axis mean the reader's wheel is answered by
+   whichever box the pointer happens to be over. Same rule the open "Other" row
+   already applies inside the card (`.qscroll:has(.qopt.qother.typing)`). */
+.chat-root .chat-tailpin.is-pinned .perm.ask .qscroll,
+.chat-root .chat-tailpin.is-pinned .perm.ask .qscroll.is-tabbed {
+  max-height: none;
+  overflow: visible;
+}
+/* A hairline of fade above the pin, so a reply scrolling under it ENDS rather
+   than being cut. `::before` on the sticky box itself: it travels with it. */
+.chat-root .chat-tailpin.is-pinned::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 18px;
+  pointer-events: none;
+  background: linear-gradient(to top, var(--c-bg), transparent);
+}
+/* The last turn needs somewhere to go: without this the bottom of the reply
+   sits permanently behind the pin and can never be scrolled into view. */
+.chat-root .chat-log:has(.chat-tailpin.is-pinned) {
+  padding-bottom: 8px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .chat-tailpin.is-pinned {
+    animation: none;
+  }
+}
+
 /* ── permission / question / plan cards (T:2033-2380) ───────────────────── */
+/* THE CARD SURFACE (#22). `--c-card-bg` and not `--c-surface`: the run is
+   BLOCKED on this box, so it is the one thing in the transcript that has to read
+   as sitting on the page rather than as part of it — and at `--c-surface` it was
+   ~4% of lightness off the page and read as a slightly different background.
+   The tokens are its own (styles/chat.css) so raising them here leaves the
+   avatar disc, a chip's open tint and the copy button where they were. */
 .chat-root .perm {
   border: 1px solid color-mix(in srgb, var(--c-accent) 55%, transparent);
   border-radius: 14px;
-  background: var(--c-surface);
+  background: var(--c-card-bg);
   padding: 12px 14px;
-  box-shadow: 0 4px 16px var(--c-shadow);
+  /* The ring is what carries the separation on a light theme, where the card is
+     DARKER than the page and a drop shadow has almost nothing to fall on. */
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--c-card-border) 60%, transparent),
+    0 6px 20px var(--c-shadow);
 }
 /* A resolved card is a RECEIPT, not a question: it keeps its place and gives up
    the fill, the shadow, the accent ring and a chunk of its padding. */
@@ -453,7 +563,7 @@
 }
 .chat-root .perm .perm-btn:hover:not(:disabled) {
   border-color: var(--c-border-strong);
-  background: var(--c-surface-2);
+  background: var(--c-card-bg-2);
 }
 .chat-root .perm .perm-btn.primary {
   background: var(--c-accent);
@@ -540,32 +650,65 @@
 .chat-root .perm .qopts {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 9px;
+  gap: 8px;
+  margin-top: 12px;
 }
+/* AN OPTION ROW (#19/#21). It is a row of [tick | label over description],
+   left-aligned, and every one of those words had to be said again here because
+   the row is drawn by a shadcn control whose own base classes are a CENTRED,
+   nowrap, fixed-height button.
+   `justify-content` is the declaration the port was missing and the whole of the
+   report: this sheet is unlayered and beats Tailwind's `@layer utilities` on
+   every property it NAMES — display, padding, height, font-size, white-space were
+   all already reclaimed — but it never named `justify-content`, so `justify-center`
+   came through unopposed and centred the label of every option. */
 .chat-root .perm .qopt {
   display: flex;
-  gap: 9px;
+  justify-content: flex-start;
+  gap: 12px;
   align-items: flex-start;
   text-align: left;
   width: 100%;
   height: auto;
-  padding: 8px 12px;
+  min-height: 0;
+  padding: 10px 12px;
   border: 1px solid var(--c-border);
   border-radius: 10px;
   background: transparent;
   color: var(--c-fg);
   font: inherit;
   font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: 0;
   white-space: normal;
   cursor: pointer;
   transition:
     background 0.12s ease-out,
     border-color 0.12s ease-out;
 }
+/* The label column, so a two-line description wraps inside the row instead of
+   shoving the tick around. `.qbody` (the Other row) is the same box by another
+   name; both are the row's one growing child. */
+.chat-root .perm .qopt > span:not(.qtick),
+.chat-root .perm .qopt .qbody {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .chat-root .perm .qopt:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
-  background: var(--c-surface-2);
+  background: var(--c-card-bg-2);
+}
+/* THE SELECTED ROW, not just the selected tick. A 14px dot is not enough of an
+   answer to "which one did I pick?" in a list of five; the row itself carries
+   it. `:has()` because the state lives on the control base-ui renders, and the
+   row is its parent — there is no class on the row to key off. */
+.chat-root .perm .qopt:has(.qtick[data-checked]),
+.chat-root .perm .qopt.qother.typing {
+  border-color: color-mix(in srgb, var(--c-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--c-accent) 12%, transparent);
+}
+.chat-root .perm .qopt:has(.qtick[data-checked]) .lbl {
+  color: var(--c-fg-strong);
 }
 .chat-root .perm .qopt .lbl {
   font-weight: 600;
@@ -606,11 +749,35 @@
 .chat-root .perm .qopt .qtick[aria-checked="true"] {
   background: var(--c-accent);
   border-color: var(--c-accent);
-  box-shadow: inset 0 0 0 3px var(--c-surface);
+}
+/* ONE indicator per tick, not two. base-ui draws its own — an 8px
+   `bg-primary-foreground` dot for a radio, a lucide check for a checkbox — and
+   both arrive in SHELL colours (yellow) inside a Claude-orange tick.
+   The radio's dot goes and the ring is punched out of the fill instead, which is
+   the shape the template drew; the checkbox KEEPS its tick mark, recoloured,
+   because a check is what a multi-select row means. */
+.chat-root .perm .qopt .qtick.is-radio[data-checked] {
+  box-shadow: inset 0 0 0 3px var(--c-card-bg);
+}
+.chat-root .perm .qopt .qtick.is-radio > * {
+  display: none;
+}
+.chat-root .perm .qopt .qtick:not(.is-radio) svg {
+  width: 10px;
+  height: 10px;
+  color: var(--c-on-accent);
+  stroke-width: 3;
 }
 .chat-root .perm .qopt .qtick:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
   outline-offset: 2px;
+  /* Tailwind's `focus-visible:ring-3 focus-visible:ring-ring/50` is a
+     box-shadow, and on a checked tick it stacks a shell-coloured halo on top of
+     the outline above. */
+  box-shadow: none;
+}
+.chat-root .perm .qopt .qtick.is-radio[data-checked]:focus-visible {
+  box-shadow: inset 0 0 0 3px var(--c-card-bg);
 }
 /* The one row Claude did not write (D407) — structurally the SAME row as an
    option, with the label receding to say so. */
@@ -645,7 +812,7 @@
   font-size: 13px;
   line-height: 1.4;
   color: var(--c-fg);
-  background: var(--c-surface-2);
+  background: var(--c-card-bg-2);
   border: 1px solid var(--c-border-strong);
   border-radius: 8px;
   cursor: text;
@@ -669,6 +836,157 @@
 }
 .chat-root .perm .qsend {
   margin-top: 12px;
+  align-items: center;
+  gap: 12px;
+}
+/* Why Send is still off, said next to Send. A disabled primary button with no
+   explanation is a dead end; "1 of 3 answered" is the instruction. */
+.chat-root .perm .qsend .qsend-left {
+  color: var(--c-dim);
+  font-size: 12px;
+}
+
+/* ── a multi-question card's tabs (#20) ─────────────────────────────────────
+   FOUR QUESTIONS ARE FOUR SCREENS, not one 40-row scroller. The stacked
+   version pushed its own "Send answer" past the bottom of the pane, so the card
+   grew a `max-height: 46vh` scroller — and then the one control that finishes
+   the card was reachable only by scrolling a box inside a box inside the
+   transcript. Tabs make the card's height the height of its LONGEST question
+   instead of the sum of all of them, and Send is always on screen.
+   ONE tab is never drawn (QuestionCard renders the block bare): a tab bar with
+   one tab is a label pretending to be a control. */
+/* THE APP'S OWN SEGMENTED CONTROL, in the chat's colours (R2-5). This bar was
+   drawn as folder tabs — per-tab radii, a hairline the active tab covered, a
+   fill that joined the panel below — a shape that appears nowhere else in this
+   product. The Tasks page's List / Board / Cards / Calendar switch
+   (`.schedule-form-seg`, styles/schedule.css) is the pattern the reader already
+   knows: ONE outlined pill, borderless halves inside it divided by hairlines,
+   and the selected half carrying a quiet fill. Same rules here, with `--c-*`
+   substituted for the shell's tokens one for one — and, like that control, NO
+   font-weight change on the selected half: the segments are laid out by their
+   text, so bolding one re-measures all four and the bar jitters on every
+   click. */
+.chat-root .perm .qtabs {
+  /* FULL WIDTH, halves sharing it evenly — the shape the app page's own tab
+     bar has (`w-full justify-start`, shell/AppPage.tsx) and the only one that
+     survives a 380px cards-wall tile: four shrink-to-fit tabs overflowed the
+     pill and the fourth was clipped away by the radius. */
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0;
+  margin: 10px 0 2px;
+  padding: 0;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  background: transparent;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.chat-root .perm .qtab {
+  flex: 1 1 0;
+  min-width: 0;
+  height: auto;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  background: transparent;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition:
+    color 0.12s ease-out,
+    background 0.12s ease-out;
+}
+/* The divider belongs to the second half of each pair, so the pill's own
+   outline is never doubled at either end. */
+.chat-root .perm .qtab + .qtab {
+  border-left: 1px solid var(--c-border);
+}
+.chat-root .perm .qtab:hover {
+  color: var(--c-fg);
+  background: color-mix(in srgb, var(--c-card-bg-2) 60%, transparent);
+}
+.chat-root .perm .qtab[data-selected],
+.chat-root .perm .qtab[data-active] {
+  color: var(--c-fg-strong);
+  background: var(--c-card-bg-2);
+  box-shadow: none;
+}
+.chat-root .perm .qtab::after {
+  display: none;
+}
+/* THREE STATES, ONE DOT (R2-5). Accent = still to do, green = answered, a
+   hollow ring = skipped on purpose. The skipped ring is deliberately not a
+   third colour: it is the ABSENCE of an answer, and drawing absence as a filled
+   mark of its own reads as a fourth kind of answer. */
+.chat-root .perm .qtab .qtab-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  vertical-align: 1px;
+}
+.chat-root .perm .qtab.is-done .qtab-dot {
+  background: var(--c-ok);
+}
+.chat-root .perm .qtab.is-skipped .qtab-dot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--c-faint);
+}
+/* Skip is a SECOND action beside the primary, not a competing one: the ghost
+   button's own quiet skin, and pushed to the far side of the row so the eye
+   lands on Next first. */
+.chat-root .perm .qsend .qskip {
+  color: var(--c-dim);
+}
+.chat-root .perm .qsend .qskip:hover:not(:disabled) {
+  color: var(--c-fg);
+}
+/* R2-6 — one question's answer, directly under the question it answers. Indented
+   to the depth an option row sat at, so the receipt occupies the place the
+   controls it replaced did. */
+.chat-root .perm .qanswer {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  padding-left: 2px;
+  font-size: 13px;
+  color: var(--c-fg);
+}
+.chat-root .perm .qanswer .qanswer-mark {
+  flex: none;
+  color: var(--c-ok);
+}
+.chat-root .perm .qanswer .val {
+  min-width: 0;
+  word-break: break-word;
+}
+.chat-root .perm .qanswer.is-skipped {
+  color: var(--c-faint);
+}
+.chat-root .perm .qanswer.is-skipped .qanswer-mark {
+  color: var(--c-faint);
+}
+.chat-root .perm .qpanel {
+  padding-top: 12px;
+  font: inherit;
+}
+/* With one question per panel there is nothing left to scroll: the card is as
+   tall as its tallest question and no taller. Kept as a ceiling for the one
+   pathological case — a single question with twenty options. */
+.chat-root .perm.ask .qscroll.is-tabbed {
+  max-height: 62vh;
 }
 
 .chat-root .perm.plan {
@@ -703,7 +1021,7 @@
   font: inherit;
   font-size: 13px;
   color: var(--c-fg);
-  background: var(--c-surface-2);
+  background: var(--c-card-bg-2);
   border: 1px solid var(--c-border);
   border-radius: 10px;
   resize: vertical;
@@ -735,6 +1053,15 @@
   border-radius: 0;
   margin: 1px 0;
   font-size: 13px;
+  /* ONE GUTTER, NAMED ONCE (R2-7). The disclosure marker's column: the head
+     row's text starts after it, and so does the body — a Read chip whose path
+     sat 1.2em to the right of the full path repeated under it read as two
+     different indents for one chip. T gets this for free (the marker is a
+     `list-item`'s own `::marker`, drawn in the padding of a box the body shares)
+     and the port, which draws the marker as a real span inside the head, had to
+     put it back. An `em` of the CHIP's font, so the compact cut scales the
+     gutter with the type instead of leaving a 15px indent under 10px text. */
+  --c-chip-gutter: 1.2em;
 }
 .chat-root .toolchip.is-open {
   border-left-color: var(--c-border-strong);
@@ -745,6 +1072,8 @@
 }
 .chat-root .toolchip .chip-body {
   padding-right: 10px;
+  /* Aligned to the head row's text, not to the rail (R2-7). */
+  padding-left: var(--c-chip-gutter);
 }
 /* The row clips itself; `text-overflow` is deliberately NOT set here — the row
    below is an atomic inline an ellipsis cannot clip INTO. */
@@ -771,16 +1100,33 @@
   background: none;
 }
 /* The disclosure marker, in the same line box as the row it opens. */
+/* THE GUTTER'S BOX IS THE CHIP'S EM, and the GLYPH is scaled inside it (R2-7).
+   `--c-chip-gutter` is `1.2em`, and a custom property holding an `em` is
+   substituted as a TOKEN and re-resolved against whichever element uses it — so
+   a marker at `font-size: 10px` took 12px of gutter while `.chip-body`, at the
+   chip's own 13px, took 15.6px, and the head row's text sat 3.6px left of the
+   body under it (2.4px the other way in a compact tile, where the cut sizes the
+   two differently again). Measured on :2019, cards wall: head text at x=91.6,
+   body content at x=94.
+   So the marker keeps the chip's font for LAYOUT and shrinks only what is
+   drawn: one length, resolved once, in both places. */
 .chat-root .toolchip > .chip-summary > .chip-marker {
   display: inline-block;
-  width: 1.2em;
+  width: var(--c-chip-gutter);
   flex: none;
+  text-align: left;
+  vertical-align: baseline;
   color: var(--c-faint);
-  font-size: 10px;
+  font-size: inherit;
+  /* ~10px at the chip's 13px, which is the size the glyph was drawn at before —
+     and it now scales with the compact cut instead of needing a rule of its
+     own. */
+  transform: scale(0.78);
+  transform-origin: 20% 50%;
   transition: transform 0.12s ease-out;
 }
 .chat-root .toolchip.is-open > .chip-summary > .chip-marker {
-  transform: rotate(90deg);
+  transform: rotate(90deg) scale(0.78);
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-root .toolchip > .chip-summary > .chip-marker {
@@ -790,7 +1136,20 @@
 .chat-root .toolchip > .chip-summary > .chip-row {
   display: inline-flex;
   align-items: baseline;
-  max-width: calc(100% - 1.2em);
+  /* THE MARKER'S ROOM, TAKEN TWICE — and the second half of it is what the port
+     dropped (R2-7, T:2450-2457). `max-width` is for a chip in a constrained
+     column: an inline-level shrink-to-fit box is sized against the whole
+     containing block with the marker beside it not subtracted, so without the
+     cap the row comes out one marker too wide and the tail of the path falls
+     outside the clip. `margin-right` is for a chip whose container is itself
+     shrink-to-fit — a turn's body is one — where `100%` IS this row's own
+     content: the cap alone then shaves a marker's width off a row that had all
+     the room in the world, which is why a short Read path was being ellipsised
+     for no reason. A margin counts into the width the container asks for, so it
+     buys back exactly what the cap takes. What overflows in the first case is
+     the empty margin, never the text. */
+  max-width: calc(100% - var(--c-chip-gutter));
+  margin-right: var(--c-chip-gutter);
   min-width: 0;
   overflow: hidden;
 }
@@ -900,7 +1259,15 @@
 }
 /* Wraps rather than scrolling sideways: a horizontal scrollbar hides the end of
    every line behind a gesture nobody makes. */
-.chat-root .toolchip .chip-body pre {
+/* Restated with `.assistant` (and `.perm`, for a parked card's chips) for the
+   same reason `.perm pre` above is: a chip lives INSIDE `.assistant .body`,
+   where the reply's own `.assistant pre` rule sits at equal specificity and
+   later in the file — and would hand a command's output `white-space: pre`, no
+   height cap and a horizontal scrollbar. A tool's output is wrapped text, not
+   code. */
+.chat-root .toolchip .chip-body pre,
+.chat-root .assistant .toolchip .chip-body pre,
+.chat-root .perm .toolchip .chip-body pre {
   margin: 6px 0 2px;
   max-height: 260px;
   overflow: auto;
@@ -960,17 +1327,24 @@
   min-height: 0;
   padding: 0;
 }
+/* T:3140-3169's pill, not the 5px chiclet the port shipped: it sits on top of
+   code, so it has to read as a control laid OVER the block rather than as the
+   block's own first token. Hidden until the `pre` is hovered (or the button
+   itself focused — a keyboard-only user gets no hover): a permanently visible
+   button on every code block is noise the eye filters on every message. */
 .chat-root .copybtn {
   position: absolute;
-  top: 4px;
+  top: 6px;
   right: 6px;
-  padding: 1px 6px;
+  padding: 3px 9px;
   font: inherit;
   font-size: 11px;
+  letter-spacing: 0;
+  line-height: 1.2;
   color: var(--c-dim);
   background: var(--c-surface);
-  border: 1px solid var(--c-border);
-  border-radius: 5px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 999px;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s ease-out;
@@ -978,6 +1352,10 @@
 .chat-root pre:hover .copybtn,
 .chat-root .copybtn:focus-visible {
   opacity: 1;
+}
+.chat-root .copybtn:hover {
+  color: var(--c-fg);
+  border-color: var(--c-faint);
 }
 .chat-root .toolchip .chip-todo {
   font-size: 13px;
@@ -1083,26 +1461,170 @@
   }
 }
 
-/* ── markdown body (the reply's own prose) ──────────────────────────────── */
+/* ── markdown body — the reply's own prose (T:3079-3235) ─────────────────────
+   DUALLED `.assistant` / `.perm .plan-body` throughout, for the reason T gives
+   at T:3079-3090: rendered markdown reaches the page through TWO funnels — a
+   reply, and a plan card's body, which goes through the same `renderMd` — and an
+   `.assistant`-only rule left a plan's headings, lists, tables and inline code
+   wearing UA defaults (a 2em h1, a 40px list indent, a borderless table) inside
+   a card that is otherwise 13px prose.
+
+   The port shipped with four of these rules (`:first-child`, `a`, `code`,
+   `pre`), which is what #14 and #15 were: a GFM table came out as UA-default
+   borderless text with no visible grid, every heading level came out the same
+   size, and a blockquote and an `<hr>` came out as browser furniture. */
 .chat-root .seg-text > :first-child,
-.chat-root .assistant .body > :first-child {
+.chat-root .assistant .body > :first-child,
+.chat-root .perm .plan-body > :first-child {
   margin-top: 0;
 }
 .chat-root .seg-text > :last-child,
-.chat-root .assistant .body > :last-child {
+.chat-root .assistant .body > :last-child,
+.chat-root .perm .plan-body > :last-child {
   margin-bottom: 0;
+}
+
+/* THE HEADING LADDER (T:3190-3212). Four steps, not one size four times over:
+   every heading used to be 15px/600, so a reply's h1 and its h3 were the same
+   object and a long answer had no structure to skim. h4 drops to `--c-dim`
+   because by the fourth level the useful signal is "this is a sub-label", not
+   "look here". */
+.chat-root .assistant h1,
+.chat-root .perm .plan-body h1 {
+  color: var(--c-fg-strong);
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  margin: 18px 0 6px;
+}
+.chat-root .assistant h2,
+.chat-root .perm .plan-body h2 {
+  color: var(--c-fg-strong);
+  font-weight: 600;
+  font-size: 15.5px;
+  margin: 18px 0 6px;
+}
+.chat-root .assistant h3,
+.chat-root .perm .plan-body h3 {
+  color: var(--c-fg-strong);
+  font-weight: 600;
+  font-size: 14px;
+  margin: 18px 0 6px;
+}
+.chat-root .assistant h4,
+.chat-root .assistant h5,
+.chat-root .assistant h6,
+.chat-root .perm .plan-body h4,
+.chat-root .perm .plan-body h5,
+.chat-root .perm .plan-body h6 {
+  color: var(--c-dim);
+  font-weight: 600;
+  font-size: 13px;
+  margin: 18px 0 6px;
+}
+/* A heading is a heading whether or not marked put a `<p>` before it, so the
+   FIRST element of a segment loses its top margin too — a turn that opens on a
+   heading was starting 18px down (T:3084-3086). */
+.chat-root .seg-text > h1:first-child,
+.chat-root .seg-text > h2:first-child,
+.chat-root .seg-text > h3:first-child {
+  margin-top: 0;
+}
+
+/* Every paragraph marked emits is a real `<p>`, whose UA default margin is 1em
+   — too much in a 720px column, while the port's inherited 0 was too little for
+   the ladder above to breathe against (T:3213). */
+.chat-root .assistant p,
+.chat-root .perm .plan-body p {
+  margin: 12px 0;
+}
+.chat-root .assistant ul,
+.chat-root .assistant ol,
+.chat-root .perm .plan-body ul,
+.chat-root .perm .plan-body ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+/* A nested list is a continuation of the row above it, not a new block: the UA
+   gives it the same 8px top margin as a top-level list, which opened a gap
+   between a bullet and its own children. */
+.chat-root .assistant li > ul,
+.chat-root .assistant li > ol,
+.chat-root .perm .plan-body li > ul,
+.chat-root .perm .plan-body li > ol {
+  margin: 2px 0;
+}
+.chat-root .assistant li,
+.chat-root .perm .plan-body li {
+  margin: 2px 0;
+}
+/* The bullets are punctuation, not content: in the accent they were fifteen
+   orange dots pulling the eye down the left margin of every list (T:3225). */
+.chat-root .assistant li::marker,
+.chat-root .perm .plan-body li::marker {
+  color: var(--c-faint);
+}
+/* A task list ("- [ ] …") loses the marker the checkbox replaces. */
+.chat-root .assistant li:has(> input[type="checkbox"]),
+.chat-root .perm .plan-body li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -18px;
+}
+.chat-root .assistant blockquote,
+.chat-root .perm .plan-body blockquote {
+  margin: 8px 0;
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--c-border-strong);
+  color: var(--c-dim);
+}
+/* A rule is a section break in prose, so it is a hairline with air around it —
+   the UA's inset ridge reads as a form divider. */
+.chat-root .assistant hr,
+.chat-root .perm .plan-body hr {
+  height: 0;
+  margin: 18px 0;
+  border: 0;
+  border-top: 1px solid var(--c-border);
+}
+.chat-root .assistant b,
+.chat-root .assistant strong,
+.chat-root .perm .plan-body b,
+.chat-root .perm .plan-body strong {
+  color: var(--c-fg-strong);
+  font-weight: 600;
+}
+.chat-root .assistant em,
+.chat-root .perm .plan-body em {
+  font-style: italic;
+}
+/* An image in a reply is a picture the model linked, at whatever intrinsic size
+   it happens to have: capped to the column, and given the box a picture wants
+   (a radius and a hairline) so a transparent PNG does not bleed into the page. */
+.chat-root .assistant .seg-text img,
+.chat-root .perm .plan-body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 8px 0;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
 }
 .chat-root .assistant a,
 .chat-root .perm a {
   color: var(--c-link);
+  text-decoration: none;
+}
+.chat-root .assistant a:hover,
+.chat-root .perm a:hover {
+  text-decoration: underline;
 }
 .chat-root .assistant code,
 .chat-root .perm .plan-body code {
   background: var(--c-code-bg);
   color: var(--c-code-fg);
-  border-radius: 4px;
-  padding: 1px 4px;
-  font-size: 0.92em;
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-size: 13px;
 }
 .chat-root .assistant pre,
 .chat-root .perm .plan-body pre {
@@ -1110,16 +1632,87 @@
   background: var(--c-pre-bg);
   color: var(--c-pre-fg);
   border: 1px solid var(--c-border);
-  border-radius: 10px;
-  padding: 8px 10px;
-  overflow: auto;
-  font-size: 12px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+  /* `pre`, not `pre-wrap`: a code block's own line breaks are the code, and
+     re-wrapping them silently changes what the reader is looking at. The
+     horizontal scroller above is the honest way to show a long line. */
+  white-space: pre;
+  font-size: 13px;
+  line-height: 1.55;
+  letter-spacing: 0;
 }
 .chat-root .assistant pre code,
 .chat-root .perm pre code {
   background: none;
   color: inherit;
   padding: 0;
+  font-size: inherit;
+}
+/* vendor hljs ships `pre code.hljs { padding: 1em; overflow-x: auto }`, which
+   would stack an extra 1em inside a `pre` that already has its own scroller
+   (T:3126-3139). Both funnels, and once more one class richer for the light
+   theme, whose vendor rule is `:root[data-theme="light"] pre code.hljs`. */
+.chat-root .assistant pre code.hljs,
+.chat-root .perm pre code.hljs {
+  padding: 0;
+  overflow-x: visible;
+}
+:root[data-theme="light"] .chat-root .assistant pre code.hljs,
+:root[data-theme="light"] .chat-root .perm pre code.hljs {
+  padding: 0;
+  overflow-x: visible;
+}
+
+/* GFM TABLES (#14). Borders only — the prose column is narrow enough that
+   anything fancier just fights `word-break` — full width, because a
+   shrink-to-fit table in a column of prose reads as a floating fragment, and
+   roomier cells than the UA's, whose 1px of vertical padding put the rows
+   closer together than the text inside them was tall (T:3170-3188).
+
+   The scroller is the WRAPPER (`markdown.ts` `wrapTables`), never the table
+   itself: `overflow-x` on a `<table>` means `display: block`, which takes the
+   box out of table layout and makes `width: 100%` stop meaning anything. */
+.chat-root .md-tablewrap {
+  margin: 10px 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.chat-root .assistant table,
+.chat-root .perm .plan-body table {
+  border-collapse: collapse;
+  /* `min-width: 100%` and not `width`: the table fills the column when it can,
+     and is allowed to be wider than it when its own content needs to be — which
+     is the case the wrapper's scroller exists for. */
+  min-width: 100%;
+  margin: 0;
+  font-size: 13px;
+}
+.chat-root .assistant th,
+.chat-root .assistant td,
+.chat-root .perm .plan-body th,
+.chat-root .perm .plan-body td {
+  border: 1px solid var(--c-border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.chat-root .assistant th,
+.chat-root .perm .plan-body th {
+  color: var(--c-fg-strong);
+  font-weight: 600;
+  background: var(--c-surface);
+  /* A table tall enough to scroll its own wrapper keeps its header row. */
+  position: sticky;
+  top: 0;
+}
+/* Zebra rows, at a tenth of the surface token: enough to follow a row across
+   six columns, quiet enough that a two-row table does not look striped. */
+.chat-root .assistant tbody tr:nth-child(even) > td,
+.chat-root .perm .plan-body tbody tr:nth-child(even) > td {
+  background: color-mix(in srgb, var(--c-surface) 45%, transparent);
 }
 
 /* ── skeleton while history loads ───────────────────────────────────────── */
@@ -1135,3 +1728,6 @@
 .chat-root .chat-skeleton-row.is-user {
   justify-content: flex-end;
 }
+
+/* Push-channel receipt under a user bubble (T:1802). */
+.chat-root .turn.user .attach { margin-top: 4px; font-size: 11px; color: var(--c-faint); text-align: right; }

@@ -8,6 +8,7 @@
 // container query: the thing worth measuring is whether THIS name fits, not how
 // wide the column is.
 import { useLayoutEffect, useRef } from "react";
+import { ClaudeMark } from "./ClaudeMark";
 import { ComposerCard, type ComposerCardProps } from "./Composer";
 import { HOME_TITLE_STEPS, measureTextIn, pickHomeTitleStep } from "./fit";
 
@@ -28,10 +29,15 @@ function useHomeTitleFit(
       // Measured at the BASE size, with any step class off, so the reading is
       // the same one whatever the last verdict was.
       el.classList.remove("c-t-mid", "c-t-min");
+      // The mark is an SVG now, so it is no longer part of `textContent` and
+      // its own box has to be added back — box plus the 10px after it.
       const spark = el.querySelector(".c-spark");
       const need =
         measureTextIn(el, el.textContent || "") +
-        (spark ? parseFloat(getComputedStyle(spark).marginRight) || 0 : 0);
+        (spark
+          ? spark.getBoundingClientRect().width +
+            (parseFloat(getComputedStyle(spark).marginRight) || 0)
+          : 0);
       const base =
         parseFloat(getComputedStyle(el).fontSize) || HOME_TITLE_STEPS[0][0];
       const step = pickHomeTitleStep(need, base, box);
@@ -58,7 +64,10 @@ export function HomeCard({ name, path, ...card }: HomeCardProps) {
   return (
     <>
       <div className="c-home-title" ref={titleRef}>
-        <span className="c-spark">✻</span>
+        {/* The real Claude mark, not the orange asterisk that stood in for it
+            (Akshil, 2026-09-08). `.c-spark` still carries the accent and the
+            10px of air after it, so the measured fit above is unchanged. */}
+        <ClaudeMark className="c-spark" />
         <span>{name}</span>
       </div>
       {path ? <div className="c-home-sub">{path}</div> : null}

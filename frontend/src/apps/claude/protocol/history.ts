@@ -17,6 +17,7 @@
 //     carries as a message `anchor`, which is what makes `?msg=` resolvable
 //     (T:18030). Optional: a payload without it simply cannot be anchored to.
 import type { Turn } from "./controller-api";
+import { troubleFromMessage } from "./trouble";
 import type { HistoryResponse, HistoryTurn, SessionRow } from "./types";
 import {
   ANN_TAG,
@@ -41,6 +42,21 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
         text: stripBlocks(t.text),
         raw: t.text,
         ...(t.uuid ? { uuid: t.uuid } : {}),
+      };
+    }
+    // BEFORE the assistant fallback, which is unconditional: a role this
+    // mapper does not know becomes an assistant turn, so a failed turn used to
+    // render as the model's own prose after a reload while the live run had
+    // shown it in red (feedback R2-3/R2-14). `ErrorTurn.kind` is required, and
+    // `troubleFromMessage` is the same classifier the live path runs the poll's
+    // `error` through — so a restored failure carries the same kind, and the
+    // red row (`Turn.tsx`, which branches on `role`) is identical either way.
+    if (t.role === "error") {
+      return {
+        role: "error" as const,
+        key: "h:" + i,
+        text: t.text || "",
+        kind: troubleFromMessage(t.text || "", true).kind,
       };
     }
     if (t.stopped && i !== last && typeof console !== "undefined") {

@@ -15,9 +15,12 @@
 //   * `segments` is authoritative; `data.text` is the flat legacy field and is
 //     NOT rendered as well when segments exist, or the reply prints twice
 //     (T:16262-16268).
-//   * after a follow-up lands, the cursor deliberately refuses to advance past
-//     the mid-turn echo (D687), so the new bubble slices back to the lengths
-//     frozen at the reset (T:16269-16283).
+//   * a payload can hold MORE THAN ONE reply — a follow-up absorbed mid-turn
+//     leaves both in the same window (D687) — so the SEAMS come from the poll
+//     (`turn_breaks`, agent.py `_absorbed_turn_breaks`) and the caller slices
+//     the payload before handing a span to `pollBody`. Nothing here guesses a
+//     boundary; the old frozen `segBase`/`textBase` pair did, and got it wrong
+//     by however much of the first reply streamed after the send (feedback #9).
 import type { Segment } from "./types";
 
 /** T:15637 — a segment's text, or "" for one that has none. */
@@ -43,13 +46,6 @@ export function viewKind(seg: Segment | undefined | null): SegmentKind {
 export function cardKey(seq: number, seg: Segment | undefined | null, i: number): string {
   const s = seg as { kind?: string; id?: string } | undefined | null;
   return s && s.kind === "tool" && s.id ? "tool:" + s.id : seq + ":" + i;
-}
-
-/** T:16277-16283 (D687) — the continuation of a replayed turn. `base` is the
- *  length frozen when a follow-up landed; 0 before any follow-up. */
-export function sliceAfter<T>(list: T[] | null | undefined, base: number): T[] {
-  const l = Array.isArray(list) ? list : [];
-  return base > 0 ? l.slice(base) : l;
 }
 
 /** T:15664-15667 — the index of the growing tail, or -1 when the turn's last
@@ -169,8 +165,8 @@ export interface SegmentView {
  * `seq` is the container's number (see `cardKey`); pass a value that is stable
  * for as long as the bubble is.
  */
-export function reconcileSegments(seq: number, segments: Segment[] | null | undefined, base = 0): SegmentView {
-  const sliced = sliceAfter(segments, base).filter((s): s is Segment => !!s);
+export function reconcileSegments(seq: number, segments: Segment[] | null | undefined): SegmentView {
+  const sliced = (Array.isArray(segments) ? segments : []).filter((s): s is Segment => !!s);
   // Collapse repeats of one `tool_use` id onto the FIRST position it held, with
   // the LATEST payload: position is chronology, the payload is the current
   // state of the call.
@@ -219,45 +215,10 @@ export function pollBody(
   segments: Segment[] | null | undefined,
   text: string | null | undefined,
   seq: number,
-  segBase = 0,
-  textBase = 0,
 ): Body {
-  const fullText = text || "";
-  const flat = textBase > 0 ? fullText.slice(textBase) : fullText;
-  const view = reconcileSegments(seq, segments, segBase);
+  const flat = text || "";
+  const view = reconcileSegments(seq, segments);
   if (view.rows.length) return { mode: "segments", view, text: "" };
   if (flat) return { mode: "text", view: null, text: flat };
   return { mode: "empty", view: null, text: "" };
-}
-
-/** The lengths a follow-up freezes (T:16233-16237, 16279-16281): the PREVIOUS
- *  iteration's lengths, never this poll's own already-grown ones. */
-export interface ReplayBase {
-  segBase: number;
-  textBase: number;
-  lastSegLen: number;
-  lastTextLen: number;
-}
-
-export function newReplayBase(): ReplayBase {
-  return { segBase: 0, textBase: 0, lastSegLen: 0, lastTextLen: 0 };
-}
-
-/** T:16269-16283 — a follow-up landed: the next bubble shows only the turn's
- *  continuation. Mutates and returns `base` so the loop reads like T's. */
-export function freezeReplayBase(base: ReplayBase): ReplayBase {
-  base.segBase = base.lastSegLen;
-  base.textBase = base.lastTextLen;
-  return base;
-}
-
-/** T:16289-16290 — record this poll's own lengths for the NEXT freeze. */
-export function noteReplayLengths(
-  base: ReplayBase,
-  segments: Segment[] | null | undefined,
-  text: string | null | undefined,
-): ReplayBase {
-  base.lastSegLen = Array.isArray(segments) ? segments.length : 0;
-  base.lastTextLen = (text || "").length;
-  return base;
 }

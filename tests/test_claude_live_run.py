@@ -932,3 +932,49 @@ def test_a_refresh_does_not_move_the_reader(html_pane):
     # ...and a failed refresh keeps the turns it has: blanking a conversation
     # because one stat round trip lost is strictly worse than showing it stale.
     assert "if (!refresh) log.innerHTML = \"\";" in body
+
+
+# ---------------- the folder/entry-file spelling (feedback R2-11/R2-13)
+
+def test_an_app_folders_run_is_adopted_by_a_caller_holding_its_ENTRY_FILE(
+        agent, target, tmp_path):
+    """A chat opened on an APP FOLDER records the folder as its target; the
+    Tasks cards wall mounts a tile on `task.target || task.project`, which for
+    that same chat resolves to the folder's ENTRY FILE. Compared exactly, every
+    lookup answered "" — so no tile ever adopted its live run, and a task
+    parked on an AskUserQuestion showed its transcript and never its card, in
+    the wall and in Peek both."""
+    folder = str(tmp_path / "proj")
+    _run_dir(agent, "20260908-120000-aaa", file=folder, resumed_from="sess-A")
+    assert agent._live_run(target, "sess-A") == {"run_id": "20260908-120000-aaa"}
+
+
+def test_and_the_other_way_round_too(agent, target, tmp_path):
+    """Either surface can be the one holding the folder — a chat opened on the
+    file, asked about by something that knows only the project."""
+    _run_dir(agent, "20260908-120000-bbb", file=target, resumed_from="sess-A")
+    assert agent._live_run(str(tmp_path / "proj"), "sess-A") == {
+        "run_id": "20260908-120000-bbb"}
+
+
+def test_the_widening_stops_at_the_folder_it_does_not_reach_siblings(
+        agent, target, tmp_path):
+    """`test_another_chat_s_run_is_not_adopted`, restated as the RULE: two
+    files in one folder are two chats, so "same parent" is the wrong
+    relaxation. The right one is "one of them IS the folder the other lives
+    in", which is the only pair the wall produces."""
+    sibling = str(tmp_path / "proj" / "other.html")
+    assert agent._folder_and_member(str(tmp_path / "proj"), target) is True
+    assert agent._folder_and_member(target, str(tmp_path / "proj")) is True
+    assert agent._folder_and_member(target, sibling) is False
+    assert agent._folder_and_member(target, target) is False, (
+        "an equal pair is the exact match's job, not this one's")
+
+
+def test_the_widening_needs_a_session_id(agent, target, tmp_path):
+    """Without one there is nothing to tell two conversations on the same
+    folder apart, so the exact target is all the caller has."""
+    folder = str(tmp_path / "proj")
+    _run_dir(agent, "20260908-120000-ccc", file=folder)
+    assert agent._live_run(target) == {"run_id": ""}
+    assert agent._live_run(folder) == {"run_id": "20260908-120000-ccc"}

@@ -12,6 +12,7 @@ import { cn } from "@platform/lib/utils";
 
 import type { RunStatus, Working } from "../protocol/controller-api";
 import type { Activity, RetryInfo } from "../protocol/types";
+import { ClaudeMark } from "./ClaudeMark";
 
 /** T:11803 — the model's turn has no useful noun, so it gets a mood. */
 export const VERBS = [
@@ -182,8 +183,10 @@ export function WorkingLine({ working, status, onStop, now = Date.now }: Working
       className={cn("turn", "working", !stopping && working.phase === "awaiting" && "awaiting")}
       role="status"
     >
+      {/* The pulsing spark is the Claude mark now, not a `✻` (#5/#15) — the
+          same shape the assistant avatar and the header draw. */}
       <span className="star" aria-hidden="true">
-        ✻
+        <ClaudeMark size={0.9} />
       </span>
       <span className="verb">{verb}</span>
       <span className="meta">{" (" + parts.join(" · ") + ")"}</span>

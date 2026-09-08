@@ -49,7 +49,12 @@ export interface StartRequest {
   /** `params.permission || "prompt"` (DEFAULT_PERMISSION, T:11911). */
   permission_mode: string;
   /** "0" | "1" — from `noPane` (T:16108-16118). */
-  has_pane: "0" | "1";
+  /** `""` is "the page has no opinion, decide it yourself" — agent.py `main`
+   *  maps an empty string to `has_pane=None` and falls back to
+   *  `_has_pane(file)`. Sent while the pane is still resolving, because the
+   *  value is what the session's MCP roster is built off and a guess sticks
+   *  for the whole session (R2-10). */
+  has_pane: "0" | "1" | "";
   /** JSON array of folders granted for reading (T:16617). */
   read_dirs: string;
 }
@@ -232,6 +237,17 @@ export interface PermissionRow {
   id: string;
   /** Tool name: "Bash", "Edit", …, "AskUserQuestion", "ExitPlanMode". */
   tool: string;
+  /**
+   * The CLI's own `tool_use_id` for the call that asked — the SAME id a `tool`
+   * segment carries, which is what lets a resolved card be filed back against
+   * the exact chip it answered rather than matched by tool name and arrival
+   * order (`Transcript.parkPlan`, feedback #18).
+   *
+   * Optional and possibly `""`: `permission_server.py` records whatever the CLI
+   * sent, so a request raised without one — or written by an older build — has
+   * nothing here and the name-and-order fallback still applies.
+   */
+  tool_use_id?: string;
   input: Record<string, unknown> | QuestionInput | PlanInput;
   /** 0 when absent. */
   created_at: number;
@@ -242,6 +258,12 @@ export interface PermissionRow {
   answers: Record<string, string>;
 
   // -- CLIENT-ONLY annotations (run-controller.ts). Never sent to agent.py. --
+  /** `tool_use_id` in this file's own camelCase, stamped once by
+   *  `syncPermissions`. The wire field is snake_case because agent.py's is; the
+   *  transcript reads this one because every other annotation here is
+   *  camelCase, and a card-placement rule reading two spellings of one id is
+   *  how the wrong one gets used. */
+  toolUseId?: string;
   /** Where the card sits: `open` cards are pinned last, as one contiguous block
    *  above the status line (T:14680 pinOpenCards); a `parked` one was answered
    *  and belongs where it was answered (T:14728 parkResolvedCard). */
@@ -344,6 +366,27 @@ export interface PollResponse {
   tasks_pending: boolean;
   activity: Activity;
   segments: Segment[];
+  /**
+   * Where a mid-stream follow-up was ABSORBED into the reply already streaming
+   * (agent.py `_absorbed_turn_breaks`). One entry per seam, in file order,
+   * each the `segments` count and the `text` length of everything BEFORE that
+   * seam — so `[]` (every ordinary poll) means the payload is one turn, and
+   * `[{segments: 5, text: 900}]` means `segments.slice(0, 5)` / `text.slice(0,
+   * 900)` answered the previous user message and everything after it answers
+   * the follow-up.
+   *
+   * Optional because an older agent.py does not send it, in which case the
+   * loop falls back to treating the payload as one turn.
+   */
+  turn_breaks?: TurnBreak[];
+}
+
+/** One seam in a poll payload — see `PollResponse.turn_breaks`. */
+export interface TurnBreak {
+  /** Number of `segments` entries before the seam. */
+  segments: number;
+  /** Number of `text` characters before the seam. */
+  text: number;
 }
 
 /** The narrow early-exit body: unknown run_id / another target (agent.py:3802,3824). */
@@ -439,7 +482,15 @@ export interface HistoryAssistantTurn {
   /** Only on the LAST turn and only when true (agent.py:5049-5050). */
   stopped?: true;
 }
-export type HistoryTurn = HistoryUserTurn | HistoryAssistantTurn;
+/** A turn that FAILED — Claude Code's own `isApiErrorMessage` record (no
+ *  network, a 429, an exhausted usage limit), which agent.py `_history` lifts
+ *  out of the assistant stream so a restored conversation shows the failure in
+ *  red exactly as the live run did (agent.py `_is_api_error_row`). */
+export interface HistoryErrorTurn {
+  role: "error";
+  text: string;
+}
+export type HistoryTurn = HistoryUserTurn | HistoryAssistantTurn | HistoryErrorTurn;
 export interface TranscriptStat {
   path: string;
   mtime: number;

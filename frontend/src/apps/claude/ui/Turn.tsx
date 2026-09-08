@@ -8,8 +8,28 @@ import { cn } from "@platform/lib/utils";
 
 import type { Turn as TurnRow, UserTurn } from "../protocol/controller-api";
 import { Caret } from "./Caret";
+import { ClaudeMark } from "./ClaudeMark";
 import { MarkdownView } from "./MarkdownView";
 import { SegmentView } from "./SegmentView";
+
+/** THE CLI'S OWN INTERRUPT MARKER (R2-2). When a turn is cut short the Claude
+ *  Code CLI writes this exact string into the transcript as a USER-ROLE record —
+ *  it is not something the reader typed, and drawn as a user bubble it reads as
+ *  the reader having sent those five words to the model. Matched on the exact
+ *  text, which is the only thing the record carries that tells it apart from a
+ *  real prompt (the role, the uuid and the timestamp are a prompt's).
+ *
+ *  Exported so the tests, and any future history mapper that would rather stamp
+ *  a note row at parse time, name the same string once. */
+export const INTERRUPT_MARK = "[Request interrupted by user]";
+
+/** Is this user row the CLI's interrupt marker rather than a prompt? Trimmed,
+ *  because the record has carried a trailing newline in some CLI builds; NOT
+ *  case-folded or fuzzy — a prompt that happens to talk about interrupts must
+ *  still render as what the reader wrote. */
+export function isInterruptMark(text: string | undefined): boolean {
+  return (text ?? "").trim() === INTERRUPT_MARK;
+}
 
 export interface TurnProps {
   turn: TurnRow;
@@ -25,6 +45,9 @@ export interface TurnProps {
   tail?: { index: number; text: string; cursor: boolean } | null;
   /** Parked cards for the live turn, at its tail (T:14728). */
   children?: React.ReactNode;
+  /** segment index → what is drawn right after that segment: a resolved card
+   *  sitting under the tool chip it answered (#18, Transcript's `parkPlan`). */
+  cardsAfter?: Map<number, React.ReactNode> | null;
 }
 
 /** MEMOIZED. Every 400 ms poll replaces `state.turns`, but a SETTLED turn's own
@@ -32,7 +55,30 @@ export interface TurnProps {
  *  parse included, is skipped. Its props are all stable for such a turn: `tail`
  *  reaches only the streaming one, and `children` (a parked card's stack) is
  *  passed only to the turns that actually hold one (Transcript's `parkedIn`). */
-export const Turn = memo(function Turn({ turn, anchored, onShowSent, tail, children }: TurnProps) {
+export const Turn = memo(function Turn({
+  turn,
+  anchored,
+  onShowSent,
+  tail,
+  children,
+  cardsAfter,
+}: TurnProps) {
+  if (turn.role === "user" && isInterruptMark(turn.text)) {
+    // A STATUS LINE, not a bubble (R2-2). Same shape as a `note` turn — the
+    // muted centred one-liner every other "this happened beside the
+    // conversation" row uses — so the log reads as the reply having been cut
+    // short rather than as the reader having said something odd. Rendered here
+    // rather than mapped in the protocol layer so the live poll and a replayed
+    // history get the identical row with no second detector to keep in step.
+    return (
+      <div className="turn note is-interrupt">
+        <span className="eye" aria-hidden="true">
+          ⏹
+        </span>
+        <span>Interrupted by you</span>
+      </div>
+    );
+  }
   if (turn.role === "user") {
     return (
       <div
@@ -42,6 +88,11 @@ export const Turn = memo(function Turn({ turn, anchored, onShowSent, tail, child
         {...(turn.uuid ? { "data-msg": turn.uuid } : {})}
       >
         <div className="bubble">{turn.text}</div>
+        {turn.appState ? (
+          // The push channel's receipt (T:16588-16596, `.user .attach` T:1802):
+          // this message carried a description of the app the user is looking at.
+          <div className="attach">app state attached</div>
+        ) : null}
         {onShowSent && turn.raw && turn.raw !== turn.text ? (
           <button type="button" className="sentbtn" onClick={() => onShowSent(turn)}>
             what was sent
@@ -73,15 +124,18 @@ export const Turn = memo(function Turn({ turn, anchored, onShowSent, tail, child
   return (
     <>
       <div className={cn("turn", "assistant", anchored && "is-anchored")}>
+        {/* The Claude mark, not the `✻` the port shipped: a six-pointed
+            asterisk at 12px reads as a snowflake, and it was a different shape
+            on every platform font (#5/#15). `ui/ClaudeMark`. */}
         <span className="dot" aria-hidden="true">
-          ✻
+          <ClaudeMark size={0.95} />
         </span>
         <span className="body">
           {/* Never both: the text segments join back to exactly the flat
               `text`, so rendering both would print the reply twice
               (T:13486-13504). */}
           {segments.length ? (
-            <SegmentView segments={segments} tail={tail}>
+            <SegmentView segments={segments} tail={tail} cardsAfter={cardsAfter ?? null}>
               {children}
             </SegmentView>
           ) : (

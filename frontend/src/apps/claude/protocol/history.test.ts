@@ -34,6 +34,37 @@ describe("historyToTurns", () => {
     expect((turns[1] as { segments?: unknown[] }).segments?.length).toBe(1);
   });
 
+  // R2-3/R2-14: the assistant fallback is unconditional, so a role this mapper
+  // did not know became an assistant turn — a failed turn rendered as the
+  // model's own prose after a reload, in normal type, while the live run had
+  // shown the same failure in red.
+  test("a failed turn restores as a red error turn, not as prose", () => {
+    const turns = historyToTurns({
+      turns: [
+        { role: "user", text: "go", uuid: "u1" },
+        { role: "error", text: "API Error: Can't reach the API server (ENOTFOUND)" },
+      ],
+      transcript: stat,
+    });
+    expect(turns[1].role).toBe("error");
+    expect((turns[1] as { text: string }).text).toContain("ENOTFOUND");
+    // `kind` is required on an ErrorTurn and comes from the same classifier the
+    // live path runs the poll's `error` through.
+    expect(typeof (turns[1] as { kind: string }).kind).toBe("string");
+  });
+
+  test("an error turn does not swallow the reply before it", () => {
+    const turns = historyToTurns({
+      turns: [
+        { role: "assistant", text: "here is half an answer" },
+        { role: "error", text: "You've hit your session limit" },
+      ],
+      transcript: stat,
+    });
+    expect(turns.map((t) => t.role)).toEqual(["assistant", "error"]);
+    expect((turns[0] as { text: string }).text).toBe("here is half an answer");
+  });
+
   test("`stopped` lands on the LAST turn only (agent.py:5049)", () => {
     const turns = historyToTurns({
       turns: [

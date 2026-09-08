@@ -14,7 +14,7 @@ import { RadioGroup } from "@platform/shadcn/ui/radio-group";
 
 import { PermCard } from "./PermCard";
 import { PlanCard } from "./PlanCard";
-import { QuestionCard } from "./QuestionCard";
+import { QuestionCard, tabTitle } from "./QuestionCard";
 import type { PermissionRow } from "../protocol/types";
 
 const mounted: Array<ReturnType<typeof create>> = [];
@@ -362,7 +362,43 @@ const twoQ = {
   ],
 };
 
-test("a multi-question card refuses to submit until every question has an answer", async () => {
+test("a multi-question card is TABS, one question per tab, no stacking (#20)", () => {
+  const r = mount(
+    <QuestionCard row={row({ tool: ASK, input: twoQ })} onAnswer={async () => {}} onDismiss={() => {}} />,
+  );
+  // One tab per question, labelled from the question text (tabTitle).
+  const tabs = withClass(r, "qtab");
+  expect(tabs.map((t) => textOf(t))).toEqual(["A?", "B?"]);
+  // …and exactly ONE question's options on screen: the whole point is that the
+  // card is as tall as its longest question, not the sum of all of them.
+  expect(withClass(r, "qtext").map((q) => textOf(q))).toEqual(["A?"]);
+  // Both tabs still need an answer, so neither is marked done.
+  expect(tabs.filter((t) => String(t.props.className).includes("is-done"))).toHaveLength(0);
+});
+
+test("a single question is NOT tabbed: a one-tab bar is a label pretending to be a control", () => {
+  const r = mount(
+    <QuestionCard
+      row={row({ tool: ASK, input: { questions: [twoQ.questions[0]] } })}
+      onAnswer={async () => {}}
+      onDismiss={() => {}}
+    />,
+  );
+  expect(withClass(r, "qtab")).toHaveLength(0);
+});
+
+/** Which tab the card is on. Read off the tab bar, not off the panels: base-ui
+ *  keeps a visited panel mounted (hidden) rather than unmounting it, so counting
+ *  `.qtext` nodes says which questions have been LOOKED at, not which one is on
+ *  screen. */
+function activeTab(r: ReturnType<typeof create>): number {
+  const tabs = withClass(r, "qtab");
+  return tabs.findIndex(
+    (t) => (t.props as Props)["data-selected"] !== undefined || (t.props as Props)["aria-selected"] === true,
+  );
+}
+
+test("a multi-question card walks the reader through it: Next, then Send (R2-5)", async () => {
   const sent: unknown[] = [];
   const r = mount(
     <QuestionCard
@@ -373,22 +409,91 @@ test("a multi-question card refuses to submit until every question has an answer
       onDismiss={() => {}}
     />,
   );
-  expect(labels(r)).toContain("Send answer");
-  press(r, "Send answer");
-  await act(async () => {});
-  expect(sent).toEqual([]);
-  expect(textOf(withClass(r, "perm-status")[0])).toBe("Pick an answer for every question.");
+  const primary = () =>
+    all(r, "button").find((b) => textOf(b) === "Next" || textOf(b) === "Send answer") ?? null;
+  // NEXT, not Send: there is another question after this one, and the control
+  // that finishes the card must not appear until finishing is what it does.
+  expect(textOf(primary())).toBe("Next");
+  // …and off until THIS question has been dealt with.
+  expect(primary()?.props.disabled).toBe(true);
+  expect(textOf(withClass(r, "qsend-left")[0])).toBe("0 of 2 done");
 
-  // Tick one option in each block, through the controls' own handlers.
+  // Answer the first tab (multiSelect → a checkbox).
   act(() => {
     instances(r, Checkbox)[0].props.onCheckedChange(true);
   });
+  expect(textOf(primary())).toBe("Next");
+  expect(primary()?.props.disabled).toBe(false);
+  expect(textOf(withClass(r, "qsend-left")[0])).toBe("1 of 2 done");
+  // The answered tab is marked, so the bar says where the card has got to.
+  expect(String(withClass(r, "qtab")[0].props.className)).toContain("is-done");
+
+  // Next ADVANCES rather than sending — nothing has gone to the model yet.
+  press(r, "Next");
+  expect(sent).toEqual([]);
+  expect(activeTab(r)).toBe(1);
+  // The last tab, so the primary is Send even before this question is answered.
+  expect(textOf(primary())).toBe("Send answer");
+
+  act(() => {
+    instances(r, RadioGroup)[0].props.onValueChange("0");
+  });
+  expect(primary()?.props.disabled).toBe(false);
+  expect(withClass(r, "qsend-left")).toHaveLength(0);
+
+  press(r, "Send answer");
+  await act(async () => {});
+  expect(sent).toEqual([["req-1", { "A?": ["a1"], "B?": ["b1"] }, {}]]);
+});
+
+test("Skip sends NO key for that question, and moves on (R2-5)", async () => {
+  const sent: unknown[] = [];
+  const r = mount(
+    <QuestionCard
+      row={row({ tool: ASK, input: twoQ })}
+      onAnswer={async (...args) => {
+        sent.push(args);
+      }}
+      onDismiss={() => {}}
+    />,
+  );
+  // Skip the first question: the card advances to the second, and the tab it
+  // left wears the skipped mark rather than the answered one.
+  press(r, "Skip");
+  expect(activeTab(r)).toBe(1);
+  const first = String(withClass(r, "qtab")[0].props.className);
+  expect(first).toContain("is-skipped");
+  expect(first).not.toContain("is-done");
+  expect(textOf(withClass(r, "qsend-left")[0])).toBe("1 of 2 done");
+
   act(() => {
     instances(r, RadioGroup)[0].props.onValueChange("0");
   });
   press(r, "Send answer");
   await act(async () => {});
-  expect(sent).toEqual([["req-1", { "A?": ["a1"], "B?": ["b1"] }, {}]]);
+  // "A?" is ABSENT, not empty and not a placeholder: agent.py reads an omitted
+  // question as unanswered, which is exactly what Skip said.
+  expect(sent).toEqual([["req-1", { "B?": ["b1"] }, {}]]);
+});
+
+test("skipping EVERY question is not an answer — it would come back as a deny", () => {
+  const sent: unknown[] = [];
+  const r = mount(
+    <QuestionCard
+      row={row({ tool: ASK, input: twoQ })}
+      onAnswer={async (...args) => {
+        sent.push(args);
+      }}
+      onDismiss={() => {}}
+    />,
+  );
+  press(r, "Skip");
+  press(r, "Skip");
+  press(r, "Send answer");
+  expect(sent).toEqual([]);
+  expect(textOf(withClass(r, "perm-status")[0])).toBe(
+    "Answer at least one question before sending.",
+  );
 });
 
 test("an open, empty Other box is a different mistake from an untouched question", () => {
@@ -427,7 +532,7 @@ test("a payload nothing can answer offers Dismiss and shows what arrived", () =>
   expect(dismissed).toEqual(["req-1"]);
 });
 
-test("a resolved question shows the choice, not an approval", () => {
+test("a resolved question shows the choice under the question it answers (R2-6)", () => {
   const r = mount(
     <QuestionCard
       row={row({ tool: ASK, input: oneQ, decision: "allow", answers: { "Which one?": "First" } })}
@@ -436,8 +541,30 @@ test("a resolved question shows the choice, not an approval", () => {
     />,
   );
   expect(textOf(withClass(r, "perm-head")[0])).toBe("Claude asked you");
-  expect(textOf(withClass(r, "perm-status")[0])).toBe("✓ You chose: First");
-  expect(withClass(r, "perm-status")[0].props.className).toContain("chose");
+  expect(withClass(r, "qanswer").map((a) => textOf(a))).toEqual(["✓First"]);
+  // The joined line is GONE: it named three answers and none of the questions.
+  expect(textOf(withClass(r, "perm-status")[0])).toBe("✓ Answered");
+});
+
+test("a resolved multi-question card pairs every question with its own answer, skips included (R2-6)", () => {
+  const r = mount(
+    <QuestionCard
+      row={row({
+        tool: ASK,
+        input: twoQ,
+        decision: "allow",
+        // "B?" was skipped, so the wire carries no key for it.
+        answers: { "A?": "a1" },
+      })}
+      onAnswer={noop}
+      onDismiss={() => {}}
+    />,
+  );
+  // Every question is on screen — a resolved card is not tabbed — each with its
+  // own outcome directly beneath it.
+  expect(withClass(r, "qtext").map((q) => textOf(q))).toEqual(["A?", "B?"]);
+  expect(withClass(r, "qanswer").map((a) => textOf(a))).toEqual(["✓a1", "◦Skipped"]);
+  expect(String(withClass(r, "qanswer")[1].props.className)).toContain("is-skipped");
 });
 
 // ── PlanCard ──────────────────────────────────────────────────────────────
@@ -583,4 +710,16 @@ test("the open Other row keeps its caption and field in a single .qbody column",
   expect(textOf(body)).toContain("Answer in your own words");
   // And the field is reachable exactly once, from inside the column.
   expect(withClass(r, "qtype")).toHaveLength(1);
+});
+
+test("a tab's label is the header when there is one, else the question, cut at a word", () => {
+  expect(tabTitle({ question: "Which one?", options: [] })).toBe("Which one?");
+  // A header is what a header IS: the model's own short name for the question.
+  expect(tabTitle({ question: "Which one?", header: "Scope", options: [] })).toBe("Scope");
+  // Long questions are cut on a space, never mid-word, and always marked.
+  expect(tabTitle({ question: "Should we delete the old migration files?", options: [] })).toBe(
+    "Should we delete the…",
+  );
+  // No header and no question is still a tab the user can click.
+  expect(tabTitle({ question: "", options: [] })).toBe("Question");
 });

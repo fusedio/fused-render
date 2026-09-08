@@ -10,7 +10,7 @@
 // The counts ARE the state: `null` means the read has not answered yet, which
 // is NOT the same as zero — a skeleton is drawn into Recent while the sessions
 // read is in flight, and it has to be on screen to be a skeleton of anything.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import "../styles/home.css";
 import {
   Tabs,
@@ -18,13 +18,18 @@ import {
   TabsList,
   TabsTrigger,
 } from "@platform/shadcn/ui/tabs";
+import type { Artifact } from "../protocol/artifacts";
 import type { SessionRow } from "../protocol/types";
+import { ArtifactRow } from "./ArtifactRow";
 import {
   computeLists,
   type ListCounts,
   type ListName,
 } from "./lists-visibility";
 import { RecentRow } from "./RecentRow";
+import { sessionTitle } from "./list-rows";
+import { Snapshots } from "./Snapshots";
+import type { SnapshotsState } from "./useSnapshots";
 
 /** T:4269-4283 — the bar's labels, and each section's own heading. */
 export const LIST_LABELS: Record<ListName, string> = {
@@ -56,15 +61,18 @@ export function RecentSkeleton() {
 
 export interface ListsProps {
   file: string | null;
+  /** The template folder holding `agent.py`, for the snapshot plan/revert calls
+   *  the rows make. Without it the snapshots panel does not mount. */
+  agentDir?: string | null;
   /** `null` = the sessions read has not answered; `[]` = it answered empty,
    *  which hides the section entirely — no heading, no empty state, no error
    *  (T:18452-18477). */
   recent: SessionRow[] | null;
-  /** PR4 fills these; PR1 renders the panels so the tab rules are already
-   *  whole. */
-  artifacts?: readonly unknown[] | null;
-  snaps?: readonly unknown[] | null;
-  snapsFailed?: boolean;
+  /** Every page published from this target's working directory
+   *  (`useArtifacts`). Same `null` vs `[]` rule. */
+  artifacts?: Artifact[] | null;
+  /** The file-history timeline and its read state (`useSnapshots`). */
+  snaps?: SnapshotsState;
   onOpen(sessionId: string): void;
   onNavigate?(url: string): void;
   disabled?: boolean;
@@ -72,10 +80,10 @@ export interface ListsProps {
 
 export function Lists({
   file,
+  agentDir,
   recent,
   artifacts = null,
-  snaps = null,
-  snapsFailed = false,
+  snaps,
   onOpen,
   onNavigate,
   disabled,
@@ -85,13 +93,40 @@ export function Lists({
   const [tab, setTab] = useState<ListName>("recent");
   const listRef = useRef<HTMLDivElement | null>(null);
 
+  const timeline = snaps?.timeline;
+  const snapsFailed = !!snaps?.failed;
+  // `undefined` is "this target has no panel" (a folder) and reads as zero;
+  // `null` is "mounted and reading", which keeps the panel standalone so the
+  // note has somewhere to be without yet earning a tab.
+  const snapCount =
+    timeline === undefined
+      ? 0
+      : timeline === null
+        ? null
+        : timeline.available
+          ? timeline.versions.length
+          : 0;
+
   const counts: ListCounts = {
     recent: recent === null ? null : recent.length,
     artifacts: artifacts === null ? null : artifacts.length,
-    snaps: snaps === null ? null : snaps.length,
+    snaps: snapCount,
     snapsFailed,
   };
   const view = computeLists(counts, tab);
+
+  /** sessionId -> the name its chat goes by, so a checkpoint chain is titled by
+   *  what the user asked for in it. Filled from the SAME rows the Recent list
+   *  draws, and it races that read rather than waiting on it: a miss just falls
+   *  back to the session's short id (T:18847-18867). */
+  const names = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of recent || []) {
+      const title = sessionTitle(s);
+      if (title && title !== s.id) map.set(s.id, title);
+    }
+    return map;
+  }, [recent]);
 
   /** Up/Down walk the rows and Enter opens — a keyboard's copy of the pointer's
    *  own reach down the list. */
@@ -126,19 +161,54 @@ export function Lists({
     </div>
   );
 
-  /** Artifacts and Snapshots take their rows as props and say nothing until PR4
-   *  hands them real ones; the SECTIONS exist now so the tab arithmetic above
-   *  is already the finished rule. */
   const panels: Record<ListName, React.ReactNode> = {
     recent: recentPanel,
+    artifacts: (
+      <div>
+        {(artifacts || []).map((a) => (
+          <ArtifactRow
+            key={a.remote_url}
+            artifact={a}
+            {...(disabled ? { disabled } : {})}
+          />
+        ))}
+      </div>
+    ),
+    snaps:
+      agentDir && file && snaps && timeline !== undefined ? (
+        <Snapshots
+          agentDir={agentDir}
+          file={file}
+          timeline={timeline}
+          failed={snapsFailed}
+          error={snaps.error}
+          names={names}
+          onReloaded={(next) => (next ? snaps.adopt(next) : snaps.reload())}
+          {...(disabled ? { disabled } : {})}
+        />
+      ) : null,
+  };
+
+  /** The retry is only ever present after a FAILED read — it IS the retry, and
+   *  a "try again" for something that has not failed is a control for nothing
+   *  (T:3395-3405). It stays on the heading line even in the tabbed dress,
+   *  where the label beside it is the tab's job. */
+  const heads: Partial<Record<ListName, React.ReactNode>> = {
+    // The count sits on the section's OWN heading, next to the rows it counts,
+    // and never on a tab: no sibling tab states its number, so the one that did
+    // read as the odd tab rather than as the informative one (T:4278-4288).
     artifacts:
-      (artifacts?.length ?? 0) > 0 ? (
-        <div className="c-list-empty">…</div>
+      !view.tabbed && artifacts && artifacts.length ? (
+        <span className="c-head-count">· {artifacts.length}</span>
       ) : null,
     snaps: snapsFailed ? (
-      <div className="c-list-empty">Snapshots could not be read.</div>
-    ) : (snaps?.length ?? 0) > 0 ? (
-      <div className="c-list-empty">…</div>
+      <button
+        type="button"
+        className="c-snapsretry"
+        onClick={() => snaps?.reload()}
+      >
+        try again
+      </button>
     ) : null,
   };
 
@@ -155,6 +225,7 @@ export function Lists({
             <div className="c-list-panel" key={name}>
               <div className="c-head">
                 <span>{LIST_LABELS[name]}</span>
+                {heads[name]}
               </div>
               {panels[name]}
             </div>
@@ -193,8 +264,13 @@ export function Lists({
         .filter((name) => view.tabShown[name])
         .map((name) => (
           <TabsContent key={name} value={name} className="c-list-panel">
+            {/* The bar already says the active list's name, so the section's
+                own heading would say it twice — but the snapshots line is also
+                where the retry sits, so what goes is the LABEL, not the row
+                (T:3346-3353). */}
             <div className="c-head">
-              <span>{LIST_LABELS[name]}</span>
+              <span className="c-head-label">{LIST_LABELS[name]}</span>
+              {heads[name]}
             </div>
             {panels[name]}
           </TabsContent>
