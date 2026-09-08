@@ -1151,6 +1151,11 @@
      that already answers "which commit exactly?" rather than opening a new
      row for one button. */
   .pane-meta .meta-action { margin-left: auto; }
+  /* Revert and Reset (D745) share that one trailing slot now, so the wrapper
+     itself needs a row layout — `.meta-action`'s `margin-left: auto` only
+     pushes the WRAPPER to the right edge, it says nothing about the gap
+     between the two buttons inside it. */
+  .commit-actions { display: flex; gap: 6px; }
 
   /* The one place wide content lives: its OWN scroll container, so the page
      body never gains a horizontal scrollbar (a diff line is arbitrarily long). */
@@ -1330,7 +1335,7 @@ const OPS = "./ops.py";
  * the mirroring is the safety property: an op named here gets the inline
  * confirmation step, and one that is not gets called on the first click. */
 const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve",
-                             "app_restore", "revert"]);
+                             "app_restore", "revert", "reset"]);
 
 const file = fused.params.get("_file") || "";
 const skeleton = document.getElementById("skeleton");
@@ -1739,6 +1744,13 @@ const BRANCH_GLYPH = ["M6 6v12", "M18 9a9 9 0 0 1-9 9", "M6 6a2 2 0 1 0 0-4 2 2 
    mail), which is the wrong promise for a control that destroys work; a full
    restore-history loop says "revert" without needing the tooltip. */
 const REVERT_GLYPH = ["M4 9h9.5a4.5 4.5 0 0 1 0 9H9", "M8 5L4 9l4 4"];
+
+/* A clock face with its hand sweeping back past a trailing arc — "the whole
+   repository's history moves back to here", not "undo my last edit" (that is
+   what `REVERT_GLYPH`'s single loop already says). Reset for `Reset history to
+   commit` (below): the shape is deliberately busier than Revert's, matching how
+   much more this button can throw away. */
+const RESET_GLYPH = ["M3 3v5h5", "M3.05 13a9 9 0 1 0 3-7.7L3 8", "M12 7v5l4 2"];
 
 /* The toolbar's remote ops used to wear `⟳`, `↓` and `↑` as text. A glyph set at
    the label's own 12px is a small character next to a word, not an icon, and the
@@ -3858,7 +3870,7 @@ function commitMeta(entry, sha, trailingAction) {
     dotted.push(bit);
   }
   const row = el("div", { className: "pane-meta" }, dotted);
-  /* `trailingAction` is the caller's own control (Revert, task 6) — this
+  /* `trailingAction` is the caller's own control (Revert and Reset, D745) — this
      function renders an identity line and knows nothing about what a commit
      selection can DO, matching `diffPane`'s own `meta` parameter below. */
   if (trailingAction) {
@@ -4053,12 +4065,13 @@ function pendingConfirm(data) {
        so there is no single row to attach it to. */
     return null;
   }
-  if (op === "app_restore" || op === "revert") {
+  if (op === "app_restore" || op === "revert" || op === "reset") {
     /* Answered INLINE, not in a list section, for the same reason `resolve`
        is: the thing each question is about (the previewed version; the
        expanded commit) is not a row in any list here — it is the banner, or
        the pane under the selected row — so that is where the confirm bar
-       renders. See the banner block and `loadDiff`'s `rev` branch. */
+       renders. See the banner block and `loadDiff`'s `rev` branch (Reset,
+       D745, renders beside Revert there). */
     return null;
   }
   if (op === "stash_drop") {
@@ -4507,9 +4520,7 @@ function pendingPane(data) {
   const wt = selectedWt();
   if (rev) {
     const known = (data && data.commits ? data.commits : []).find((c) => c.sha === rev);
-    return diffPane(null,
-                    data && data.repo.rel ? "scoped to " + data.repo.rel : null,
-                    "loading", commitMeta(known, rev));
+    return diffPane(null, null, "loading", commitMeta(known, rev));
   }
   if (wt) return diffPane(null, "reading…", "loading");
   return null;
@@ -4535,6 +4546,7 @@ async function loadDiff(data) {
        answer than a pane titled with a 40-character sha. */
     const known = (data.commits || []).find((c) => c.sha === rev);
     const meta = payload.ok ? payload.commit : known;
+    const shortId = meta && meta.short ? meta.short : rev.slice(0, 7);
     const revertQuestion = "Revert this commit? This adds a new commit "
       + "undoing it across the whole repository — not just this scope. "
       + "This cannot be merged away.";
@@ -4547,23 +4559,47 @@ async function loadDiff(data) {
        unrelated write action either. */
     const revertBtn = canPreview
       ? confirmable("revert:" + rev, [icon(REVERT_GLYPH, 14), btnLabel("Revert")],
-          revertQuestion, { label: "Revert " + (meta && meta.short ? meta.short : rev.slice(0, 7)) })
+          revertQuestion, { label: "Revert " + shortId })
       : null;
+    /* Reset (D745) plainly says what a hard reset means rather than using
+       git's own vocabulary ("detach", "orphan"): every commit made after this
+       one becomes unreachable from any branch, and the reflog — not this
+       view, not a Back button — is the only way back, for a limited time.
+       Whole-repository, same as Revert. Called out separately: unlike every
+       other write this view offers, a branch already pushed needs a
+       force-push afterward, because this is the one action here that is not
+       push-safe. */
+    const resetQuestion = "Reset history to this commit? Every commit made "
+      + "after this one is discarded from the branch, across the whole "
+      + "repository — not just this scope. The only way back is git's "
+      + "reflog, and that fades over time. If this branch has already been "
+      + "pushed anywhere, you will need to force-push after this.";
+    /* NOT gated on `canPreview`: that gate exists because Revert's own
+       confirmation talks about "this commit" as something currently on
+       screen, and because a scope with no enclosing app folder never had a
+       preview to inherit permission from in the first place. Reset has
+       nothing to do with previewing an app at all — it is a plain history
+       operation on the repository — so tying it to the same gate would
+       refuse it in a repository with no app folder for a reason that has
+       nothing to do with resetting. */
+    const resetBtn = confirmable(
+      "reset:" + rev, [icon(RESET_GLYPH, 14), btnLabel("Reset")],
+      resetQuestion, { label: "Reset history to " + shortId });
+    const actions = el("div", { className: "meta-action commit-actions" },
+                       [revertBtn, resetBtn]);
     /* No title: the diff renders inline under the selected row, which already
        says the subject. The identity line (commitMeta) still answers "which
-       commit exactly?", and now carries Revert opposite the sha. */
-    const pane = diffPane(
-      null,
-      data.repo.rel ? "scoped to " + data.repo.rel : null,
-      payload,
-      commitMeta(meta, rev, revertBtn));
+       commit exactly?", and now carries Revert/Reset opposite the sha. */
+    const pane = diffPane(null, null, payload, commitMeta(meta, rev, actions));
     /* Keyed to THIS commit's own sha (finding 4, D703 second review round):
-       `select()` never clears `ask`, so arming Revert on one commit and then
-       expanding a DIFFERENT row left `ask === "revert"` still true — this
+       `select()` never clears `ask`, so arming a button on one commit and
+       then expanding a DIFFERENT row left a stale `ask` still true — this
        pane would render an ARMED confirmation for a commit the user never
        confirmed. Requiring `ask` to still name the commit actually selected
-       closes it; a stale `ask=revert:<oldSha>` left over from a prior
-       selection (or a reload) simply arms nothing here any more. */
+       closes it; a stale `ask=revert:<oldSha>`/`ask=reset:<oldSha>` left
+       over from a prior selection (or a reload) simply arms nothing here any
+       more. Reset follows the identical `reset:<sha>` keying, never a bare
+       `"reset"` — the same discipline, for the same reason. */
     if (param("ask") === "revert:" + rev) {
       pane.append(confirmBar(revertQuestion,
         /* Keyed the same as the `confirmable` button above (finding 5,
@@ -4571,6 +4607,9 @@ async function loadDiff(data) {
            call just above: after `ask` clears, `busy` has to match the
            button that reappears, not the bare op name. */
         () => run("revert:" + rev, { op: "revert", sha: rev }), "Revert"));
+    } else if (param("ask") === "reset:" + rev) {
+      pane.append(confirmBar(resetQuestion,
+        () => run("reset:" + rev, { op: "reset", sha: rev }), "Reset"));
     }
     return pane;
   }
