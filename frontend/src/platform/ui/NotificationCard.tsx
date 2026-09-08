@@ -146,6 +146,14 @@ export default function NotificationCard({
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!rowClick) return;
+    // A waiting-task row also mounts a real `<button>` for its ✕ — Enter/Space
+    // fired on that focused button bubbles up here too. Without this guard,
+    // Enter would fire the row's onClick alongside the button's own, and
+    // Space's `preventDefault` below would eat the button's native
+    // activation outright, so the ✕ would never fire at all. Ignoring any
+    // keydown whose `target` isn't the row itself leaves the nested button
+    // to handle its own Enter/Space exactly as a `<button>` always does.
+    if (e.target !== e.currentTarget) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       rowClick.onClick();

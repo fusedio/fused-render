@@ -88,3 +88,46 @@ test("rowClick makes the row a keyboard-reachable button-role div, not a <button
   expect(row.props.tabIndex).toBe(0);
   expect((row.props.className as string).split(" ")).toContain("dl-row-open");
 });
+
+// A waiting-task row combines `rowClick` (open the conversation) with
+// `onDismiss` (the ✕) — Enter/Space bubbling up from the nested dismiss
+// button must not also fire the row's own navigation.
+test("rowClick's Enter/Space handler ignores a keydown that bubbled up from a nested control", () => {
+  const rowClickSpy = { calls: 0 };
+  const tree = render({
+    title: "a",
+    rowClick: { onClick: () => rowClickSpy.calls++ },
+    onDismiss: { onClick: () => {} },
+  });
+  const row = findAll(tree, "dl-row")[0];
+  const dismissButton = findAll(tree, "dl-x")[0];
+  const onKeyDown = row.props.onKeyDown as (e: unknown) => void;
+
+  // Simulates the keydown as it reaches the row's handler once it has
+  // bubbled from the focused dismiss button: `target` is the button,
+  // `currentTarget` is the row.
+  const preventDefault = { called: false };
+  onKeyDown({
+    key: "Enter",
+    target: dismissButton,
+    currentTarget: row,
+    preventDefault: () => {
+      preventDefault.called = true;
+    },
+  });
+  expect(rowClickSpy.calls).toBe(0);
+  expect(preventDefault.called).toBe(false);
+
+  // A keydown that targets the row itself (no nested control focused) still
+  // activates it.
+  onKeyDown({
+    key: "Enter",
+    target: row,
+    currentTarget: row,
+    preventDefault: () => {
+      preventDefault.called = true;
+    },
+  });
+  expect(rowClickSpy.calls).toBe(1);
+  expect(preventDefault.called).toBe(true);
+});
