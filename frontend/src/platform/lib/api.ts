@@ -65,7 +65,17 @@ export interface FsEntry {
   size: number | null;
   mtime: number | null;
   ignored?: boolean; // matched by .gitignore inside a git repo (dimmed in the UI)
+  // What git says about this entry, when the folder is inside a repo and git
+  // has something to say — the name is tinted with it (styles/explorer.css).
+  // A folder carries the most urgent state anywhere BENEATH it, so a collapsed
+  // subtree can't hide a change; see fused_render/server/git_status.py for the
+  // ranking. Absent means clean, not-in-a-repo, or a server that predates the
+  // field — all three render undecorated, which is the same true statement:
+  // there is nothing to point at.
+  git?: GitEntryStatus;
 }
+
+export type GitEntryStatus = "conflicted" | "modified" | "untracked" | "staged";
 
 export interface ListResult {
   path: string;
@@ -430,8 +440,10 @@ export function runClaudeDoctor(): Promise<{
 export interface UpdateStatus {
   // idle | checking | available | installing | installed | error
   state: string;
-  // brew: the user runs `brew upgrade --cask` themselves (see manual_command);
-  // dmg: the app downloads and swaps its own bundle; none: not updatable.
+  // INFORMATIONAL ONLY — every method takes the same install path (D767): the
+  // app downloads the signed DMG and swaps its own bundle. brew: that bundle
+  // happens to be Homebrew-managed (the app still never runs brew); dmg: it
+  // is not; none: not updatable. Nothing in the UI branches on this.
   method: string;
   latest_version: string | null;
   // Bytes downloaded so far (dmg method only).
@@ -440,9 +452,13 @@ export interface UpdateStatus {
   // the manifest itself carries no size field. Null when the CDN omits that
   // header, in which case the UI falls back to showing MB downloaded.
   progress_total: number | null;
+  // Which half of an install is running: "downloading" while the DMG streams,
+  // "installing" from the mount to the swap; null outside state "installing".
+  phase?: "downloading" | "installing" | null;
   error: string | null;
-  // Set when the user must run the update themselves (brew-managed installs,
-  // state "available") — shown with a copy button.
+  // Always null since D767; kept for wire compatibility. There is one install
+  // path for every install type and no terminal command to hand the user, so
+  // no surface reads this field any more.
   manual_command: string | null;
 }
 
@@ -506,6 +522,14 @@ const listPrefetch = new Map<string, { promise: Promise<ListResult>; ts: number 
 //                              same-origin ancestor chain. This is the only cover
 //                              for a template view of a FILE, which mounts no
 //                              listing and so has no watcher at all.
+//
+// This map only protects a listing that mounts (or re-fetches) AFTER the
+// clear — it says nothing to a listing already sitting on screen, which is
+// why window._fusedFsChanged also calls listing/fsChangeBus.ts's
+// `notifyFsChanged` right alongside `clearListPrefetch`: that is the half
+// that reaches an ALREADY-MOUNTED useDirListing (e.g. an Explorer pane open
+// on a repo while the git template's stage/unstage runs in another pane,
+// which rewrites `.git/index` and so moves no watched directory's mtime).
 export function clearListPrefetch(): void {
   listPrefetch.clear();
 }
@@ -4299,7 +4323,7 @@ export function getGitSnapshot(path: string, sha: string): Promise<GitSnapshot> 
 
 // The cheap, sha-less sibling: does an app folder enclose `path` at all — the
 // same fail-closed probe templates/git/template.html's own `probeAppFolder()`
-// calls before offering its preview eye (D742 / review finding B4). Backs
+// calls before offering its preview eye (D767 / review finding B4). Backs
 // AppVersionPicker's own gate: the picker renders only once this resolves ok.
 export interface GitAppFolder {
   ok: boolean;

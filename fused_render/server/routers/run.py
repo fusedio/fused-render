@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, Header, Request, Response
 from fused_render import calls as shell_calls
 from fused_render.server.common import _require_fused, resolve_py
 from fused_render.executor import dumps_result, run_python
+from fused_render.server import git_status
 from fused_render.shell import prefetch as shell_prefetch
 from fused_render.shell import prefs as shell_prefs
 from fused_render.shell import mounts as shell_mounts
@@ -70,6 +71,19 @@ async def api_run(request: Request, body: dict = Body(...),
         # loop free (the endpoint is async now for the engine's sake).
         work = asyncio.to_thread(run_python, resolved, params)
     result = await work
+    # A script that ran may have written anything, anywhere — including
+    # through the git template's stage/unstage/commit (templates/git/ops.py),
+    # which runs on this same subprocess-per-call path and so cannot reach
+    # into THIS process's `git_status` cache itself (see that cache's own
+    # `invalidate_status_cache` docstring). Dropping it here, unconditionally,
+    # is the in-process mirror of `noteFsChanged()` (static/runtime.js) firing
+    # on every runPython completion — success or failure, since a script that
+    # wrote three files and then raised still changed the disk, and the same
+    # is true of a git op that partially applied before erroring. Without
+    # this, a listing fetched moments before the run — and still within
+    # `_STATUS_CACHE_TTL_S` — would replay its now-stale answer to the very
+    # refresh Job B's dir-watch fix triggers right after this call returns.
+    git_status.invalidate_status_cache()
     # Hand the run's detail to the in-flight call record (calls.py): the
     # resolved .py, the params, the engine, and — on failure — the
     # traceback and output tails a user has since clicked away from. The
