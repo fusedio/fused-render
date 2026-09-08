@@ -1496,7 +1496,7 @@ _WIRE_ALSO = ["let targetNoun", "let paneNoun", "const ANN_TAG", "const ANN_NO_W
               "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_IMG",
               "const MARKER_FILE",
               "const MARKERS", "const MARKER_JOIN",
-              "function isMarkerOnly(", "function paneShotBlock(",
+              "function paneShotBlock(",
               # stripBlocks reads the block back to choose WHICH picture marker
               "function paneShotIn(",
               "function stripBlocks(", "function composeOutgoing("]
@@ -1528,10 +1528,10 @@ const failed = {kind: "pane", view: null,
                 viewNote: "no pane screenshot: it could not be saved"};
 const wire = composeOutgoing("", [], null, [failed]);
 console.log(JSON.stringify({stripped: stripBlocks(wire),
-                            marker: isMarkerOnly(stripBlocks(wire))}));
+                            marker: MARKERS.indexOf(stripBlocks(wire)) !== -1}));
 """)
     assert out["stripped"] == "\U0001f5bc pane screenshot"
-    assert out["marker"] is True, "still non-identifying, so re-attach must refuse it"
+    assert out["marker"] is True, "the strip's fallback text is one of the named markers"
 
 
 def test_a_block_written_before_this_button_existed_still_strips(html):
@@ -1634,7 +1634,6 @@ _WIRE_FNS = ["let targetNoun", "let paneNoun", "const ANN_TAG", "const ANN_NO_WO
              "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_IMG",
              "const MARKER_FILE",
              "const MARKERS", "const MARKER_JOIN",
-             "function isMarkerOnly(",
              "function stripPaneBlock(", "function paneShotIn(",
              "function composeOutgoing("]
 
@@ -1940,18 +1939,17 @@ def test_a_zero_click_walkthrough_sends_its_whole_transcript_as_the_prompt(html)
     assert "ids.length\n      ? annRecAssign(ids, rec.segments)" in body
 
 
-def test_every_marker_a_strip_can_produce_is_known_to_be_non_identifying(html):
-    """D146, and it has already drifted once. `resumeRun` refuses to match a prior
-    turn on a marker because every such send collapses to the SAME text, so it
-    identifies no particular turn and a false match trims another turn's assistant
-    rows. It excluded the annotations marker by literal — then the pane shot added
-    two more marker shapes and the check did not know about them, so a
-    screenshot-only send could match the wrong turn and destroy real transcript
-    content.
+def test_every_marker_a_strip_can_produce_is_a_named_one(html):
+    """D146, and it has already drifted once. `sessionTitle`'s last-resort label
+    for a wordless turn has to be one of the four names `composeOutgoing` can
+    actually produce — it excluded the annotations marker by literal, then the
+    pane shot added two more marker shapes the label did not know about, and a
+    screenshot-only send's chat-list entry stopped matching what the bubble
+    itself showed.
 
-    The markers are DERIVED here from stripBlocks itself rather than listed, so a
-    fourth marker added later without teaching `isMarkerOnly` about it fails this
-    test instead of silently reintroducing the bug."""
+    `MARKERS` is read here rather than listed again, so a fifth marker added
+    later without adding it there fails this test instead of silently drifting
+    a second time."""
     out = _wire(html, """
 const a = {id: "x", content: "here", anchorId: "hdr"};
 const view = {kind: "pane", view: "/tmp/fr/shots/S-view.png"};
@@ -1967,13 +1965,14 @@ const produced = [
   stripBlocks(composeOutgoing("", [], null, [pasted])),
   stripBlocks(composeOutgoing("", [], null, [view, pasted])),
 ];
+const isKnown = (t) => t.split(MARKER_JOIN).every((part) => MARKERS.indexOf(part) !== -1);
 console.log(JSON.stringify({
   produced: produced,
-  verdicts: produced.map(isMarkerOnly),
-  real: ["fix the header", "📌 annotations please", "", "🖼"].map(isMarkerOnly),
+  known: produced.map(isKnown),
+  real: ["fix the header", "📌 annotations please", "", "🖼"].map(isKnown),
 }));
 """)
-    # every marker-only send really does collapse to a non-identifying text...
+    # every marker-only send really does collapse to a named marker...
     assert all(out["produced"]), out["produced"]
     assert len(set(out["produced"])) == 4, out["produced"]
     # a send of nothing but pasted images says IMAGES, not "pane screenshot": the
@@ -1982,21 +1981,11 @@ console.log(JSON.stringify({
     assert out["produced"][4] == "🖼 images"
     # ...while a mixed send is still led by the pane, which is the wider claim
     assert out["produced"][5] == "🖼 pane screenshot"
-    # ...and the predicate recognises every one of them
-    assert out["verdicts"] == [True] * 6, out["produced"]
-    # a real message — including one that merely mentions a marker — is identifying
+    # ...and every one of them is a marker MARKERS actually names
+    assert out["known"] == [True] * 6, out["produced"]
+    # a real typed message — including one that merely mentions a marker word —
+    # is never mistaken for the strip's own fallback text
     assert out["real"] == [False, False, False, False]
-
-
-def test_the_re_attach_check_asks_the_predicate_not_a_literal(html):
-    """Wired where it matters: `resumeRun` must consult the one definition, so a
-    new marker cannot reintroduce the false match. Asserted on the source because
-    the alternative is a literal that drifts, which is the bug."""
-    start = html.index("const probeMsg = stripBlocks(")
-    branch = html[start:html.index("if (probe.done)", start)]
-    assert "isMarkerOnly(probeMsg)" in branch, branch
-    # and the old literal is gone from the comparison
-    assert "probeMsg !== " not in branch, branch
 
 
 def test_a_pane_shot_path_never_reaches_the_transcript_the_user_reads(html, agent):
@@ -2821,14 +2810,16 @@ def test_a_restored_turn_renders_its_picture_from_the_path_in_the_wire(html):
     assert "shotReceipt(sum, " in restore, "the same row as a live send, not a copy"
     assert "for (const shot of shots)" in restore, \
         "every picture the turn carried, not just the first"
-    # wired into the restore loop, on the turn addUser just appended. The end
-    # marker is that loop's `else`, and it is a BLOCK since 2026-08-21 — the
-    # assistant arm grew the stopped-turn note beside its render — so it is
-    # matched as an opening brace rather than as the old one-line
+    # wired into `renderHistoryTurns` — the restore loop's body, pulled out of
+    # `loadHistory` so a reserved open exchange can be drawn through the same
+    # renderer once its own attach settles (see the turn-ownership split). The
+    # end marker is that loop's `else`, and it is a BLOCK since 2026-08-21 —
+    # the assistant arm grew the stopped-turn note beside its render — so it
+    # is matched as an opening brace rather than as the old one-line
     # `} else addAssistantTurn`.
-    load = _between(html, "      if (t.role === \"user\") {", "      } else {")
+    load = _between(html, "    if (t.role === \"user\") {", "    } else {")
     assert "addUser(stripBlocks(t.text), t.uuid);" in load
-    assert "shotRestoreReceipt(turns[turns.length - 1], t.text);" in load
+    assert "shotRestoreReceipt(bubbles[bubbles.length - 1], t.text);" in load
     # a pruned temp file says so instead of showing a broken-image glyph
     receipt = _between(html, "function shotReceipt(sum, shot)", "\n}\n")
     assert "onerror" in receipt and "no longer on disk" in receipt
@@ -4122,9 +4113,9 @@ console.log(JSON.stringify({files: composeOutgoing("", [], null, [doc, zip]),
 def test_a_file_only_send_is_not_described_as_images_or_a_screenshot(html):
     """The bubble is the ONLY record a wordless send leaves, and there are three
     facts it can be reporting: a capture of this pane, pictures the user brought
-    in, files they brought in. One marker each, all of them in MARKERS, so the
-    re-attach predicate learns the new one at the same moment the strip can
-    produce it (the drift that broke this once already)."""
+    in, files they brought in. One marker each, all of them in MARKERS, so
+    `sessionTitle`'s fallback label learns the new one at the same moment the
+    strip can produce it (the drift that broke this once already)."""
     out = _wire(html, """
 const doc = {kind: "file", view: "/tmp/fr/shots/S.csv", name: "rows.csv"};
 const img = {kind: "image", view: "/tmp/fr/shots/S.png", name: "a.png"};
@@ -4133,7 +4124,7 @@ const strip = (list) => stripBlocks(composeOutgoing("", [], null, list));
 console.log(JSON.stringify({file: strip([doc]), both: strip([doc, img]),
                             imgs: strip([img]), pane: strip([pane, doc]),
                             known: [strip([doc]), strip([doc, img])]
-                              .map(isMarkerOnly)}));
+                              .map((t) => MARKERS.indexOf(t) !== -1)}));
 """)
     assert out["file"] == "\U0001f4c4 files"
     assert out["both"] == "\U0001f4c4 files", "one file in the list decides it"
@@ -4141,7 +4132,7 @@ console.log(JSON.stringify({file: strip([doc]), both: strip([doc, img]),
     assert out["pane"] == "\U0001f5bc pane screenshot", \
         "a capture of this pane in the list still wins the marker"
     assert out["known"] == [True, True], \
-        "every marker a strip can produce is in MARKERS, or resumeRun mis-matches"
+        "every marker a strip can produce is in MARKERS"
 
 
 def test_a_drop_that_carries_a_real_path_is_attached_without_a_copy(html):

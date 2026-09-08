@@ -45,10 +45,15 @@ def _addUser_src(html):
 
 def _bare_followup_src(html):
     """The annotation-/screenshot-only branch body inside `sendFollowUp` —
-    the second, easily-forgotten copy of the same ordering discipline."""
+    the second, easily-forgotten copy of the same ordering discipline. Draws
+    through `addUser` itself now (D758) — the bubble shows the same marker a
+    reload would — rather than a hand-built, bubble-less div, so this no
+    longer has its own append call to pin: it delegates entirely to
+    `addUser`'s own ordering (separately tested above) and simply records
+    the turn it drew as `bareTurn`, the same way the real branch does."""
     marker = "// annotation- or screenshot-only follow-up:"
     start = html.index(marker)
-    end = html.index("log.appendChild(bare);", start)
+    end = html.index("bareTurn = turns[turns.length - 1];", start)
     end = html.index("\n", end) + 1
     return html[start:end]
 
@@ -88,6 +93,19 @@ class FakeEl {
       return null;
     };
     return walk(this);
+  }
+  querySelectorAll(sel) {
+    const classes = sel.split(".").filter(Boolean);
+    const matches = (n) => classes.every((c) => n._classes && n._classes.has(c));
+    const out = [];
+    const walk = (n) => {
+      for (const c of n.children) {
+        if (matches(c)) out.push(c);
+        walk(c);
+      }
+    };
+    walk(this);
+    return out;
   }
 }
 const document = { createElement: (tag) => new FakeEl(tag) };
@@ -158,21 +176,38 @@ console.log(JSON.stringify({ followTail, scrollBottomCalls }));
 def test_bare_followup_turn_lands_before_a_live_working_line(html):
     """The annotation-/screenshot-only branch in `sendFollowUp` carries the
     identical defect independently of `addUser` — this is the second call
-    site the fix has to cover in lockstep."""
-    src = _bare_followup_src(html)
+    site the fix has to cover in lockstep. It now draws through `addUser`
+    itself (D758), so this pins that the branch actually calls it (a
+    hand-rolled bypass would either fail the marker extraction above or fail
+    the order assertion here) rather than re-testing `addUser`'s own
+    ordering, already covered above."""
+    src = _addUser_src(html) + "\n" + _bare_followup_src(html)
     out = _run(html, """
 addWorkingLine();
+let stripBlocks = (t) => t;
+const outgoing = "wordless follow-up marker";
+const id = "test-id";
+let bareTurn = null;
 """ + src + """
-console.log(JSON.stringify({ order: classNamesOf(log) }));
+console.log(JSON.stringify({ order: classNamesOf(log), bareTurnSet: bareTurn !== null }));
 """)
     assert out["order"] == ["turn user", "turn working"], (
         "the bare (annotation-only) follow-up landed after the working line"
     )
+    assert out["bareTurnSet"] is True, (
+        "the branch must still record the turn it drew as bareTurn, for the "
+        "error-recovery path to remove on a failed send"
+    )
 
 
 def test_bare_followup_turn_still_plain_appends_with_no_turn_running(html):
-    src = _bare_followup_src(html)
-    out = _run(html, src + """
+    src = _addUser_src(html) + "\n" + _bare_followup_src(html)
+    out = _run(html, """
+let stripBlocks = (t) => t;
+const outgoing = "wordless follow-up marker";
+const id = "test-id";
+let bareTurn = null;
+""" + src + """
 console.log(JSON.stringify({ order: classNamesOf(log) }));
 """)
     assert out["order"] == ["turn user"]

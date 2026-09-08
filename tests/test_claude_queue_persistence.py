@@ -74,7 +74,7 @@ def test_send_follow_up_hands_text_straight_to_the_live_host():
     html = _html()
     assert "async function sendFollowUp(" in html
     body = _fn(html, "async function sendFollowUp(")
-    assert "addUser(text)" in body
+    assert "addUser(text, null, id)" in body
     assert 'action: "send"' in body
     assert "run_id" in body
 

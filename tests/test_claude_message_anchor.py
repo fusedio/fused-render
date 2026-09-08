@@ -80,7 +80,7 @@ def test_a_restored_user_turn_carries_its_transcript_uuid(code, agent):
     later is one the watcher looks straight past.
     """
     assert '"uuid": str(row.get("uuid") or "")' in agent
-    body = code[code.index("function addUser(text, uuid)"):]
+    body = code[code.index("function addUser(text, uuid, pendingId)"):]
     body = body[:body.index("\n}")]
     assert "d.dataset.msg = uuid" in body
     assert body.index("d.dataset.msg") < body.index("log.appendChild")
@@ -91,8 +91,15 @@ def test_a_restored_user_turn_carries_its_transcript_uuid(code, agent):
 def test_a_missing_or_foreign_anchor_still_lands_at_the_bottom(code):
     """`consumeAnchor` reports whether it found anything, and the restore falls
     through to its own scroll when it did not — a uuid from another transcript,
-    or none at all, must leave the chat exactly as it would have been."""
-    assert "if (!consumeAnchor()) scrollBottom();" in code
+    or none at all, must leave the chat exactly as it would have been.
+
+    Only reachable when the transcript ends CLOSED: a load that reserved a
+    still-open exchange (see the turn-ownership split) has nothing on screen
+    yet for the anchor to find, and defers the try to whatever renders that
+    exchange instead (renderReservedOpenTurns) rather than spend it early."""
+    body = code[code.index("} else if (!consumeAnchor())"):]
+    body = body[:body.index("\n  }", body.index("scrollBottom();"))]
+    assert "scrollBottom();" in body
 
 
 def test_the_uuid_is_compared_never_interpolated_into_a_selector(code):
@@ -171,22 +178,37 @@ def test_only_the_history_restore_can_render_an_anchorable_turn(code):
     This is the assertion that would fail if that stopped being true. Someone
     adding a second uuid-passing caller has to come here and decide, rather than
     getting a feature that silently misses the turn.
+
+    A call passing a THIRD argument (`pendingId` — the id `_send`'s inbox
+    entry rides under, stamped so a later poll can dedup a pending bubble by
+    id instead of by text, see finding 5) is not a uuid-passing call: its
+    second argument is `null`, never a transcript uuid, so it carries nothing
+    an anchor could match and is excluded here the same way a bare, single-
+    argument call already is.
     """
     calls = re.findall(r"(?<!function )addUser\(([^\n]*)\)", code)
     assert calls, "addUser call sites not found"
-    with_uuid = [c for c in calls if "," in c]
+    with_uuid = [c for c in calls
+                 if "," in c and c.split(",")[1].strip() not in ("null", "")]
     assert with_uuid == ["stripBlocks(t.text), t.uuid"], with_uuid
-    # And that one restore renders every turn synchronously before it looks, so
-    # there is no moment where the turn exists but has not been looked for.
-    # The restore also destructures the transcript watermark the follower reads
-    # (D415), so this anchors on the call rather than on the shape of what it
-    # unpacks — the next key added there is not this test's business.
+    # And that the restore renders every CLOSED turn synchronously before it
+    # looks, so there is no moment where an on-screen turn exists but has not
+    # been looked for. `renderHistoryTurns` is the render loop itself — pulled
+    # out of `loadHistory` so `renderReservedOpenTurns` can draw the same
+    # shapes for a still-open exchange once ITS attach settles (see the
+    # turn-ownership split) — but the call below is still made with nothing
+    # awaited first. The restore also destructures the transcript watermark
+    # the follower reads (D415), so this anchors on the call rather than on
+    # the shape of what it unpacks — the next key added there is not this
+    # test's business.
     load = code[code.index('await fused.runPython(AGENT, { action: "history"'):]
     load = load[:load.index("} catch (err) {")]
-    assert "for (const t of turns) {" in load
-    assert "await" not in load.split("for (const t of turns) {")[1], \
-        "the render loop must not yield before consumeAnchor runs"
-    assert "if (!consumeAnchor()) scrollBottom();" in load
+    assert "renderHistoryTurns(closed)" in load
+    assert "await" not in load.split("renderHistoryTurns(closed)")[1], \
+        "the render loop must not yield before consumeAnchor (or its deferral) runs"
+    # A transcript that ends CLOSED (no reserved open exchange) still spends
+    # the anchor right here, in the same synchronous stretch.
+    assert "} else if (!consumeAnchor()) {\n      scrollBottom();\n    }" in load
 
 
 def test_the_anchor_holds_its_place_while_the_transcript_settles(code):

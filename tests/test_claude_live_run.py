@@ -652,10 +652,10 @@ def test_the_watch_attaches_in_quiet_mode(html_pane):
 def test_quiet_prints_a_message_this_transcript_has_never_shown(html_pane):
     """Both render sites, because a turn adopted mid-flight and one adopted
     after it finished are the same question about the same message."""
-    live = _block_between(html_pane, "    } else if (probeMsg && !(quiet",
+    live = _block_between(html_pane, "} else if (probeMsg && !(quiet",
                           "addUser(probeMsg);")
     assert "onScreen(probeMsg)" in live
-    done = _block_between(html_pane, "      } else if ((!users.length",
+    done = _block_between(html_pane, "      if ((!users.length",
                           "addUser(probeMsg);")
     assert "quiet && !onScreen(probeMsg)" in done, (
         "a short turn made in another tab is over before the watch looks; "
@@ -664,9 +664,11 @@ def test_quiet_prints_a_message_this_transcript_has_never_shown(html_pane):
 
 
 def test_already_shown_is_asked_of_the_whole_transcript(html_pane):
-    """`matches` asks only the LAST bubble because it also decides whether to
-    STRIP rows. This one only decides whether to PRINT, so it may look wider —
-    which is what stops a woken run re-printing a message further up the log."""
+    """`onScreen` asks the WHOLE transcript, not just the last bubble — it only
+    decides whether to PRINT a turn this page did not start, never whether to
+    strip one (nothing here strips; one owner per region means the still-open
+    exchange is never drawn in the first place). Looking wider is what stops a
+    woken run re-printing a message further up the log."""
     if not shutil.which("node"):
         pytest.skip("node is needed to run the page's own re-attach glue")
     start = html_pane.index("  const onScreen = (msg) =>")

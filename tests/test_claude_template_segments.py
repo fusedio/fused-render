@@ -1344,13 +1344,16 @@ def test_poll_renders_segments_instead_of_the_flat_text_never_both(source):
 
 
 def test_one_static_turn_renderer_serves_history_and_the_reattach_repair(source):
-    # FOUR places render a FINISHED assistant turn: history restore, the two
-    # re-attach repair branches (which work off a poll payload, so they carry
-    # segments too — a run that finished while the frame was away used to lose
-    # its whole tool timeline here), and the poll loop's typer-less tail (a run
-    # whose text only ever arrived on the poll that ENDED it). One function for
-    # all four: the tail used to hand-roll `innerHTML = renderMd(data.text)`, so
-    # a payload that carried segments rendered its flat text instead of them.
+    # THREE places render a FINISHED assistant turn: history restore,
+    # `resumeRun`'s re-attach repair (which works off a poll payload, so it
+    # carries segments too — a run that finished while the frame was away
+    # used to lose its whole tool timeline here — and is now the ONE branch
+    # every repair case funnels through, `matches` and its separate
+    # never-shown arm having been deleted with it, D748), and the poll loop's
+    # typer-less tail (a run whose text only ever arrived on the poll that
+    # ENDED it). One function for all three: the tail used to hand-roll
+    # `innerHTML = renderMd(data.text)`, so a payload that carried segments
+    # rendered its flat text instead of them.
     helper = _block(source, "function addAssistantTurn(text, segments) {",
                     "  return turn;\n}")
     # Optional-key access: history USER turns carry no `segments` key at all.
@@ -1359,13 +1362,13 @@ def test_one_static_turn_renderer_serves_history_and_the_reattach_repair(source)
     assert re.search(r"else[^;]*renderMd\(text", helper), (
         "a transcript recorded before segments existed still renders its text"
     )
-    history = _block(source, "for (const t of turns) {", "attachCodeCopy(log);")
+    history = _block(source, "function renderHistoryTurns(rows) {", "\n}")
     assert "addAssistantTurn(t.text, t.segments)" in history
     assert len(re.findall(r"addAssistantTurn\(probe\.text, probe\.segments\)",
-                          source)) == 2
+                          source)) == 1
     assert "addAssistantTurn(data.text, data.segments)" in source, (
-        "the poll loop's typer-less tail is the fourth finished-turn render, "
-        "and it must go through the same function as the other three"
+        "the poll loop's typer-less tail is the third finished-turn render, "
+        "and it must go through the same function as the other two"
     )
     # ...and nowhere still renders a finished turn's flat text on its own.
     assert "renderMd(probe.text)" not in source

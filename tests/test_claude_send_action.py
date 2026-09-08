@@ -136,7 +136,7 @@ def test_send_writes_an_inbox_entry_the_stub_echoes(agent, monkeypatch, stub_cli
     assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
 
     result = agent._send(run_id, "second", "")
-    assert result == {"sent": True}
+    assert result["sent"] is True
 
     def both_echoed():
         texts = [r["text"] for r in _out_rows(run_dir) if r.get("type") == "echo"]

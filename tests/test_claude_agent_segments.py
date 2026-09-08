@@ -858,4 +858,4 @@ def test_the_watermark_is_stat_ed_before_the_rows_are_read(agent):
     src = open(os.path.join(TEMPLATE_DIR, "agent.py"), encoding="utf-8").read()
     body = src[src.index("def _history(file: str, session_id: str)"):]
     body = body[:body.index("\ndef ")]
-    assert body.index("_transcript_stat(path)") < body.index("for line in open(path")
+    assert body.index("_transcript_stat(path)") < body.index("for raw_line in fh_bin")

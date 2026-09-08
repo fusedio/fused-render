@@ -79,11 +79,14 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
     the common case — a short turn finishing inside the 15s window — still
     invisible, with the composer's note promising otherwise.
 
-    `resumeRun`'s done path repairs only what it can PROVE is missing (an empty log,
-    or a last user bubble that is this run's message) because on the reload path the
-    restored transcript may already hold the turn. A scheduled send is the opposite:
-    it fired after this frame rendered, so the turn cannot be on screen and the
-    caller knows it. Hence an explicit opt-in rather than loosening the default."""
+    `resumeRun`'s done path repairs only what it can PROVE is missing — an empty
+    log, or a turn `loadHistory` never drew because it belongs to the still-open
+    exchange (one owner per region: the saved transcript stops at `open_from`,
+    so there is nothing here for this function to strip, only ever a question
+    of whether to print a turn it did not start). A scheduled send is the
+    opposite: it fired after this frame rendered, so the turn cannot be on
+    screen and the caller knows it. Hence an explicit opt-in rather than
+    loosening the default."""
     assert "neverShown" in code
     assert "{ neverShown: true }" in code
     done = code[code.index("if (probe.done) {"):]
@@ -92,15 +95,15 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
     # append (the live watch finding a short turn made in another tab), so the
     # rule this test owns is that `neverShown` is one of the ways in — beside the
     # empty log — and not that it is the only one.
-    repair = done[done.index("if (matches) {"):]   # past the ERROR branch's own else-if
-    append = repair[repair.index("} else if ("):]
+    append = done[done.index("if ((!users.length"):]
     append = append[:append.index("addUser(probeMsg);")]
     assert "neverShown" in append and "!users.length" in append \
         and "probeMsg" in append, \
         "a finished run must APPEND when the caller says the turn was never shown"
     # a failed turn needs its own user line too, or the error reads as belonging to
-    # whatever the reader last said
-    assert "if (probeMsg) addUser(probeMsg);" in done
+    # whatever the reader last said — but only when it is not already on screen,
+    # which is what `onScreen(probeMsg)` guards against.
+    assert "if (probeMsg && !onScreen(probeMsg)) addUser(probeMsg);" in done
 
     # and the reload caller keeps the conservative default for THIS opt. It no
     # longer passes no opts at all — #610 gave it `{ retryUnknown: true }`, which
@@ -114,28 +117,29 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
         "the reload path must not claim the turn was never shown: " + reload_call
 
 
-def test_never_shown_kills_matching_rather_than_only_adding_a_branch(code):
-    """The second bug in this area, and the reason the flag is not just an extra
-    append branch: with `matches` still preferred, the SAME PROMPT SENT TWICE broke
-    it. Say "run the tests" now, then schedule those same words for later — the
-    earlier identical bubble matched, and the repair stripped everything after it,
-    DELETING that turn's real reply to hang the scheduled answer there.
+def test_resume_run_has_nothing_left_to_strip(code):
+    """`resumeRun` used to guess the open exchange's boundary by matching the
+    last user bubble on screen against the probe's own message (`matches`),
+    then strip everything after a hit — and a SAME PROMPT SENT TWICE broke it:
+    say "run the tests" now, then schedule those same words for later, and the
+    earlier identical bubble matched, deleting that turn's real reply to hang
+    the scheduled answer there.
 
-    The same coincidence hits the live path, which strips partial rows on a match,
-    so the flag has to suppress matching for both — which it does by being folded
-    into `matches` itself, in one place, rather than checked per branch."""
+    One owner per region removed the guess along with the bug it could not be
+    fixed without: `loadHistory` never draws the still-open exchange (it stops
+    at `open_from`), so there is nothing on screen here for `resumeRun` to
+    strip, ever — only ever a question of whether to print a turn it did not
+    start (`quiet`/`onScreen`, which this test leaves alone)."""
     fn = code[code.index("async function resumeRun("):]
     fn = fn[:fn.index("\nfunction submitChat()")]
-    assert "const matches = !neverShown &&" in fn, \
-        "matching must be off entirely when the turn was never on screen"
-    # every destructive strip is reached only through `matches`, so gating it there
-    # covers the live path as well as the done path
-    lines = fn.split("\n")
-    strips = [i for i, l in enumerate(lines) if "lastTurn.nextElementSibling" in l]
-    assert strips, "the strip sites moved — re-check what guards them"
-    for i in strips:
-        guard = next(lines[j] for j in range(i, i - 6, -1) if "if (" in lines[j])
-        assert "if (matches)" in guard, f"unguarded strip near: {lines[i].strip()}"
+    assert "matches" not in fn, "the boundary guess must not come back"
+    assert "lastUser" not in fn and "lastTurn" not in fn, \
+        "no stranded reference to the deleted strip's targets"
+    assert "nextElementSibling" not in fn, "no destructive strip left to guard"
+    # the OTHER decision this function makes — print or stay quiet when
+    # adopting a turn this page never started — is a different question and
+    # must still be here
+    assert "const quiet = " in fn and "const onScreen = " in fn
 
 
 def test_the_baseline_is_taken_at_load_not_one_interval_later(code):

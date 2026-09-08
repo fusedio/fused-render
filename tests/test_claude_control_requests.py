@@ -178,7 +178,7 @@ def test_model_change_writes_a_set_model_control_request(agent, monkeypatch,
     assert _wait_for(lambda: os.path.exists(os.path.join(run_dir, "host.json")))
 
     result = agent._send(run_id, "follow-up", model="claude-haiku-4-5")
-    assert result == {"sent": True}
+    assert result["sent"] is True
 
     def got_it():
         for row in _out_rows(run_dir):
@@ -214,7 +214,7 @@ def test_a_model_change_is_not_repeated_on_the_next_send(agent, monkeypatch,
         for r in _out_rows(run_dir)))
 
     result = agent._send(run_id, "second follow-up", model="claude-haiku-4-5")
-    assert result == {"sent": True}
+    assert result["sent"] is True
     assert _wait_for(lambda: any(
         r.get("type") == "echo" and r.get("text") == "second follow-up"
         for r in _out_rows(run_dir)))

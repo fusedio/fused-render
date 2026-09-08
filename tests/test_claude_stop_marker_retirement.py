@@ -152,7 +152,7 @@ def test_a_stop_does_not_read_as_a_crash_to_a_second_viewer(
     # message — a poll landing while only the error result has appeared
     # must still read `cancelled: true`, not a bare crash.
     sent = agent._send(run_id, "second message", "")
-    assert sent == {"sent": True}
+    assert sent["sent"] is True
 
     def error_landed():
         out = os.path.join(run_dir, "out.jsonl")
@@ -183,7 +183,7 @@ def test_a_later_completed_turn_clears_the_stale_stop_marker(
     assert poll["cancelled"] is True
 
     sent = agent._send(run_id, "second message", "")
-    assert sent == {"sent": True}
+    assert sent["sent"] is True
 
     def second_turn_done():
         p = agent._poll(run_id)

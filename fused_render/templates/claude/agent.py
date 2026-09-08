@@ -2210,7 +2210,7 @@ def _inbox_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "inbox")
 
 
-def _write_inbox_row(run_dir: str, row: dict) -> None:
+def _write_inbox_row(run_dir: str, row: dict) -> str:
     """Queue one raw stream-json row into `run_dir/inbox/` for the session
     host to drain into the CLI's stdin verbatim (`session_host._drain_inbox`
     copies bytes, never parses them, so any row shape the CLI's
@@ -2220,7 +2220,13 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
     nanosecond, not a real id), which is the only order that matters: the
     host drains oldest-first, and this is the one place every inbox writer
     (`_write_inbox_entry`'s user turns, `_write_control_request`'s control
-    requests) writes from."""
+    requests) writes from.
+
+    Returns the filename it wrote — the one thing a caller can stamp on a
+    drawn bubble and later match `_pending_messages`' own entries against by
+    id rather than by text (see `_write_inbox_entry`, `_send`); collision-free
+    by construction, where a text compare is not (a wordless send's marker
+    text is the same for every one, and a verbatim repeat collides too)."""
     inbox = _inbox_dir(run_dir)
     if not os.path.isdir(inbox):
         # `_private_dir`'s leaf create is exclusive (a run-id collision must
@@ -2248,15 +2254,30 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
         json.dump(row, f)
         f.write("\n")
     os.replace(tmp_path, final_path)
+    return name
 
 
-def _write_inbox_entry(run_dir: str, message: str) -> None:
+def _write_inbox_entry(run_dir: str, message: str, client_id: str = "") -> str:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
-    `_send` (every follow-up) write from."""
-    _write_inbox_row(run_dir, {"type": "user", "message": {
+    `_send` (every follow-up) write from.
+
+    `client_id` is the identity the PAGE minted for the bubble it already
+    drew — it stamps `dataset.pendingId` before this entry even exists, so
+    the id has to come from the caller rather than from whatever this
+    function decides to name the file. Carried as its own field in the row
+    (the filename still has to sort in write order, which a client-chosen
+    id has no reason to respect) and echoed straight back as this call's
+    return value, so a caller with no id to offer (none today) still gets
+    something to key on: the entry's own filename, same as before.
+    """
+    row = {"type": "user", "message": {
         "role": "user",
-        "content": [{"type": "text", "text": message}]}})
+        "content": [{"type": "text", "text": message}]}}
+    if client_id:
+        row["client_id"] = client_id
+    name = _write_inbox_row(run_dir, row)
+    return client_id or name
 
 
 def _write_control_request(run_dir: str, subtype: str, **fields) -> str:
@@ -2342,7 +2363,8 @@ def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False,
            has_pane: bool | None = None,
-           extra_read_dirs: list | None = None) -> dict:
+           extra_read_dirs: list | None = None,
+           client_id: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -2404,7 +2426,11 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (a later follow-up) writes the exact same shape into the exact same
     # directory, and the host does not know or care which one started the
     # session versus which one rode in on the CLI's own queue mid-turn.
-    _write_inbox_entry(run_dir, message)
+    # `client_id`: the page mints an id and draws its bubble with it stamped
+    # BEFORE this call even returns (a new chat's first send has no run id
+    # yet to poll with, so the id could not arrive any later than this) —
+    # carried through exactly as `_send` carries it for a follow-up.
+    _write_inbox_entry(run_dir, message, client_id=client_id)
 
     # The session host owns the CLI's stdin pipe for the life of the session
     # — see session_host.py's own module docstring for the fork-safety and
@@ -2643,6 +2669,61 @@ def _session_from_out(run_dir: str) -> str:
     except OSError:
         pass
     return ""
+
+
+def _open_exchange_path(run_dir: str) -> str:
+    return os.path.join(run_dir, "open_exchange.json")
+
+
+def _read_open_exchange(run_dir: str) -> dict | None:
+    """The mark `session_host._mark_open_exchange` wrote, or None when it is
+    absent or unparseable. Never raises — a torn or missing mark reads the
+    same as "nothing recorded", which is the safe default on both the write
+    side (write a fresh one) and the read side (`open_from = None`)."""
+    try:
+        with open(_open_exchange_path(run_dir), encoding="utf-8") as f:
+            mark = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(mark, dict):
+        return None
+    return mark
+
+
+def _write_open_exchange(run_dir: str, mark: dict) -> None:
+    """Write the mark atomically — tmp file plus `os.replace`, the same
+    pattern `_write_inbox_row` uses, so a read racing this write never sees
+    a half-written file."""
+    path = _open_exchange_path(run_dir)
+    tmp_path = path + ".tmp"
+    with _private_open(tmp_path) as f:
+        json.dump(mark, f)
+    os.replace(tmp_path, path)
+
+
+def _out_has_result_since(run_dir: str, out_offset: int) -> bool:
+    """Whether a `type: "result"` row begins at or after byte `out_offset`
+    in `run_dir/out.jsonl` — the pure, two-file test that closes a mark
+    (see `open_exchange.json`'s docstring at its writer). Reads only the
+    tail past `out_offset`, not the whole file."""
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            fh.seek(out_offset)
+            blob = fh.read()
+    except OSError:
+        return False
+    for raw_line in blob.split(b"\n"):
+        if not raw_line:
+            continue
+        try:
+            row = json.loads(raw_line.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        if row.get("parent_tool_use_id"):
+            continue  # a subagent's own row, not the main turn's (see _poll)
+        if row.get("type") == "result":
+            return True
+    return False
 
 
 # How far back a live-run lookup bothers to look. Run dirs are named
@@ -2928,7 +3009,8 @@ def _live_host(file: str, session_id: str = "",
 
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
-         effort: str = "", permission_mode: str = "") -> dict:
+         effort: str = "", permission_mode: str = "",
+         client_id: str = "") -> dict:
     """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
     process for it.
 
@@ -3034,8 +3116,13 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = 0
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
-    _write_inbox_entry(run_dir, message)
-    return {"sent": True}
+    # `client_id` is the id the PAGE minted before this call even landed and
+    # already stamped on the bubble it drew optimistically — passed through
+    # to the inbox entry so `_pending_messages` reports the SAME id back for
+    # this same message. A caller with no id to offer falls back to the
+    # entry's own filename, same as `_write_inbox_entry` always returned.
+    entry_id = _write_inbox_entry(run_dir, message, client_id=client_id)
+    return {"sent": True, "id": entry_id}
 
 
 def _retry_info(row: dict):
@@ -3721,20 +3808,22 @@ def _read_current_turn(run_dir: str) -> tuple:
             line_start = pos
             continue  # a stray blank/garbage line; not this poll's problem
         rows.append(row)
-        # A subagent's own `result` row is not the main turn's — `_poll` and
-        # `_turn_state` both skip it before deciding anything off `type`, and
-        # this cursor needs to agree: otherwise a follow-up echoed back after
-        # a subagent finishes reads as a genuine turn boundary (the row right
-        # before it looks like the "result closed the previous turn" this
-        # rule requires), and the cursor jumps past text the main turn has
-        # already streamed.
-        if row.get("parent_tool_use_id"):
-            pass
-        elif row.get("type") == "result":
-            seen_result = True
-        elif seen_result and _starts_new_turn(row):
-            advance_to = line_start  # the newest genuine turn's own start
-            seen_result = False      # this turn needs its own result too
+        # A subagent's own row (`parent_tool_use_id`) is never the main
+        # turn's — `_poll` and `_turn_state` both skip it before deciding
+        # anything off `type`, and this cursor needs to agree: otherwise a
+        # follow-up echoed back after a subagent finishes reads as a genuine
+        # turn boundary (the row right before it looks like the "result
+        # closed the previous turn" this rule requires), and the cursor
+        # jumps past text the main turn has already streamed. Everything
+        # else about it — closing on `result`, opening on a genuine
+        # `_starts_new_turn` echo, but only once a `result` has closed the
+        # turn before it — passes through untouched.
+        if not row.get("parent_tool_use_id"):
+            if row.get("type") == "result":
+                seen_result = True
+            elif seen_result and _starts_new_turn(row):
+                seen_result = False
+                advance_to = line_start  # the newest genuine turn's own start
         line_start = pos
 
     if tail:
@@ -3796,12 +3885,92 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
     return False
 
 
+def _pending_messages(run_dir: str) -> list:
+    """The user's own words that are written but not yet echoed back by the
+    CLI, in the order `session_host._drain_inbox` will actually deliver
+    them — the queue `_poll`'s live path owns now that `out.jsonl` says
+    nothing about a message until the CLI has echoed it (`_history` cannot
+    see it either: it is not in the persisted transcript yet). Without this,
+    a message sent mid-turn is invisible to every read path a fresh page
+    load uses until that echo lands.
+
+    Only `inbox/` itself (not `inbox/done/`) is read here. `inbox/done/` is
+    never pruned — over a long session it holds every message ever sent,
+    the great majority already long since echoed and on screen as an
+    ordinary turn — and an entry moves there the moment
+    `session_host._drain_inbox` hands its bytes to the CLI's stdin, well
+    before its echo is provable. There is no id linking a drained entry back
+    to its echo, only FIFO order, so reading `done/` too would need to know
+    exactly how far into that ever-growing history the echoes-so-far reach —
+    knowable for the single most recent send (`pending_echo`, below) but not
+    for how many turns further back a long session has accumulated. Reading
+    `inbox/` alone sidesteps that: an entry leaves it, for good, the instant
+    it is drained, so nothing here is ever older than the send that is
+    currently outstanding. The cost is a narrow, accepted race — a message
+    already drained but whose echo has not yet landed briefly reads as not
+    pending — against the alternative of stale entries wrongly resurrected
+    as pending for the life of the session.
+
+    An entry already echoed must not appear twice — once as `pending`, once
+    as ordinary streamed text. Nothing here needs to COUNT echoes to avoid
+    that: `session_host._drain_inbox` always drains an entry into
+    `inbox/done/` before its echo can exist (the CLI has to receive it
+    before it can write it back), so anything still sitting in `inbox/` at
+    the moment this reads it has, by construction, not been echoed yet.
+    Counting echoed rows in `out.jsonl` and trimming that many off the FRONT
+    of `messages` used to run here, on the theory that a drained-but-not-yet-
+    echoed entry could still be in `inbox/` when its echo lands — it cannot,
+    on the real host, so the count was measuring echoes for messages this
+    call's `messages` list never contained: send M1, drain it, send M2
+    (`inbox/` now holds only M2), M1's own echo then lands — the trim saw one
+    echo and dropped M2, the only message actually still outstanding,
+    leaving it invisible until ITS echo lands too.
+
+    Each entry rides back as `{"id": <inbox filename>, "text": <message>}`,
+    not a bare string: the id is the SAME value `_write_inbox_entry` (via
+    `_write_inbox_row`) returned to whichever caller sent it, and is what the
+    page dedups a bubble already on screen against — a text compare drops a
+    genuinely new message whose text collides with one already drawn (every
+    wordless send shares one marker text; a verbatim repeat collides too)."""
+    inbox = _inbox_dir(run_dir)
+    try:
+        undrained = [n for n in os.listdir(inbox) if n.endswith(".json")]
+    except OSError:
+        undrained = []
+    if not undrained:
+        return []
+    entries = sorted(os.path.join(inbox, n) for n in undrained)
+    messages = []
+    for path in entries:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                row = json.loads(fh.read())
+        except (OSError, ValueError):
+            continue
+        if row.get("type") != "user":
+            continue
+        message = row.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        text = "".join(b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text")
+        # `client_id`, when the entry carries one, is the id the page minted
+        # for the bubble it drew before this entry existed — the same value
+        # this queue has to report back so that bubble's dedup matches. Falls
+        # back to the filename for an entry with none (there should not be
+        # one, now that `_send`/`_start` always pass the page's id through).
+        entry_id = row.get("client_id") or os.path.basename(path)
+        messages.append((entry_id, text))
+    return [{"id": name, "text": _strip_app_state(text)} for name, text in messages]
+
+
 def _poll(run_id: str, file: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
                 "permissions": [], "app_state": [], "skills": [], "retry": None,
-                "retry_total": 0, "retry_status": 0, "segments": []}
+                "retry_total": 0, "retry_status": 0, "segments": [], "pending": []}
 
     # A page may only attach to a run about ITS OWN target. Run ids are global
     # (RUNS is one flat dir), and the `run` url param survives some hops the
@@ -3824,7 +3993,7 @@ def _poll(run_id: str, file: str = "") -> dict:
             return {"text": "", "done": True, "session_id": "",
                     "error": "run is for another target",
                     "permissions": [], "app_state": [], "skills": [], "retry": None,
-                    "retry_total": 0, "retry_status": 0, "segments": []}
+                    "retry_total": 0, "retry_status": 0, "segments": [], "pending": []}
 
     text_parts = []
     result_text = None
@@ -4313,7 +4482,13 @@ def _poll(run_id: str, file: str = "") -> dict:
                 "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
                 "agent_rows": agent_rows,
             },
-            "segments": [] if echo_pending else _segments_from_rows(parsed)}
+            "segments": [] if echo_pending else _segments_from_rows(parsed),
+            # The open exchange's own queue, straight off `inbox/` — anything
+            # written but not yet echoed back, so a reload racing the drain
+            # does not lose it the way `_history` and `segments` above both
+            # would (neither one knows about a message until the CLI has
+            # echoed it). See `_pending_messages`.
+            "pending": _pending_messages(run_dir)}
 
 
 # ------------------------------------------------------- sessions & history
@@ -4943,9 +5118,38 @@ def _history(file: str, session_id: str) -> dict:
     list reads the same uuid off the same record (`_prompt`, server/routers/
     tasks.py) and links a message as `?msg=<uuid>`, so the chat can scroll to the
     turn a person clicked instead of to the top of the conversation. "" on a
-    record that has none — the template treats the key as optional throughout."""
+    record that has none — the template treats the key as optional throughout.
+
+    `open_from` is the index into `turns` where the still-open exchange
+    begins, or `None` when the last exchange is closed. Every turn rides back
+    regardless — nothing is trimmed here — because the page still needs the
+    open exchange reachable (a `?msg=` anchor may name a turn inside it) and
+    because a run that finishes between this read and a live poll attaching
+    would otherwise belong to nobody: the page keeps these turns in hand and
+    draws them itself if that attach never happens or comes up empty. What
+    changes here is only that the CALLER now knows where to stop drawing on
+    its own, so the live poll — which owns everything from `open_from`
+    onward, follow-ups still queued included — is never drawing the same
+    words this payload already carries.
+
+    "Where the open exchange begins" is not something this file can answer by
+    reading its own rows: the persisted transcript never carries a `type:
+    "result"` row and never carries `parent_tool_use_id` — measured across
+    real sessions, not assumed — so any rule built on either (correct for
+    `out.jsonl`, `_read_current_turn`'s own file) is silently inert here.
+    Nothing in this file records the boundary either, because nothing reading
+    it afterward can be the one thing that KNOWS when an exchange opens —
+    only `session_host._drain_inbox` does, at the instant it hands a user
+    message to the CLI's stdin, and it writes that down in
+    `run_dir/open_exchange.json` (see `_read_open_exchange`,
+    `_out_has_result_since`, DECISIONS.md D757). `_live_run` says whether
+    anything is open for this file at all; the mark says where, in THIS
+    transcript, it begins. No live run, no mark, a closed mark, or a mark
+    naming a different transcript all mean the same thing here: nothing of
+    this file's own turns is reserved, `open_from = None`, and a finished or
+    abandoned session is untouched by this, exactly as before."""
     if _bad_id(session_id):
-        return {"turns": [], "transcript": _transcript_stat("")}
+        return {"turns": [], "transcript": _transcript_stat(""), "open_from": None}
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
@@ -4961,10 +5165,15 @@ def _history(file: str, session_id: str) -> dict:
     # folder this chat is open on), and the endpoint refuses to do it.
     stat = _transcript_stat(path)
     if not os.path.isfile(path):
-        return {"turns": [], "transcript": stat}
+        return {"turns": [], "transcript": stat, "open_from": None}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
+    # (turns-index, byte offset of the row that created it), one per user
+    # turn — all `open_from` (rule 5, below) needs, and the reason this loop
+    # reads the transcript in BINARY: `tell()` on a text-mode line iterator
+    # is not reliable per-line, so the offset is accumulated by hand.
+    user_turn_offsets = []
 
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
@@ -4989,10 +5198,14 @@ def _history(file: str, session_id: str) -> dict:
         else:
             turns.append({"role": "assistant", "text": "", "segments": segments})
 
-    for line in open(path, encoding="utf-8", errors="replace"):
+    offset = 0
+    fh_bin = open(path, "rb")
+    for raw_line in fh_bin:
+        row_offset = offset
+        offset += len(raw_line)
         try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
+            row = json.loads(raw_line.decode("utf-8", "replace"))
+        except ValueError:
             continue
         if row.get("isMeta") or row.get("isSidechain"):
             continue
@@ -5023,6 +5236,7 @@ def _history(file: str, session_id: str) -> dict:
                 close_stretch()  # before the user turn, or the segments land on it
                 turns.append({"role": "user", "text": text,
                               "uuid": str(row.get("uuid") or "")})
+                user_turn_offsets.append((len(turns) - 1, row_offset))
             else:
                 # Everything else on a `user` row belongs to the assistant's
                 # reply: tool_result blocks are what its tool segments are
@@ -5039,7 +5253,32 @@ def _history(file: str, session_id: str) -> dict:
                     turns[-1]["text"] += "\n\n" + text
                 else:
                     turns.append({"role": "assistant", "text": text})
+    fh_bin.close()
     close_stretch()
+    # `open_from`: ask the run whether anything is open at all, then ask
+    # the mark it wrote where, in THIS transcript, that exchange begins
+    # (see the docstring for why the file itself has nothing to say about
+    # either question). No live run, no mark, a closed mark, or a mark
+    # naming a different transcript all leave this `None`.
+    open_from = None
+    if turns:
+        run_id = _live_run(file, session_id).get("run_id")
+        if run_id:
+            run_dir = os.path.join(RUNS, run_id)
+            mark = _read_open_exchange(run_dir)
+            if mark is not None and not _out_has_result_since(
+                    run_dir, mark.get("out_offset", 0)):
+                mark_transcript = mark.get("transcript")
+                if mark_transcript is None or mark_transcript == path:
+                    mark_offset = mark.get("offset", 0)
+                    # Rule 5: a POSITION, never a count — the index of the
+                    # first user turn created by a row at or after
+                    # `mark_offset`. There is nothing to overcount, and an
+                    # index found in the list cannot exceed it.
+                    for idx, row_offset in user_turn_offsets:
+                        if row_offset >= mark_offset:
+                            open_from = idx
+                            break
     # ...and whether the last of those turns was ENDED BY THE USER. The
     # transcript cannot say — a killed run just stops writing — so it is read
     # off the run dir (`_stopped_last`) and reported on the turn it belongs to,
@@ -5051,7 +5290,7 @@ def _history(file: str, session_id: str) -> dict:
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
-    return {"turns": turns, "transcript": stat}
+    return {"turns": turns, "transcript": stat, "open_from": open_from}
 
 
 def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
@@ -5183,7 +5422,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "", custom: str = "",
-         read_dirs: str = "", path: str = "") -> dict:
+         read_dirs: str = "", path: str = "", id: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -5195,7 +5434,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         # real no, so it must not be read as absence.
         return _start(file, message, session_id, model, effort, permission_mode,
                       has_pane=None if has_pane == "" else has_pane != "0",
-                      extra_read_dirs=_attach_dirs(read_dirs))
+                      extra_read_dirs=_attach_dirs(read_dirs), client_id=id)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
@@ -5289,5 +5528,5 @@ def main(action: str = "start", file: str = "", message: str = "",
         # itself decides which of the three (if any) actually changed, and
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
-                    permission_mode)
+                    permission_mode, client_id=id)
     return {"error": f"unknown action: {action}"}
