@@ -309,8 +309,15 @@ function ChatBody(props: ChatBodyProps) {
   const split = useSplit({ params, narrow: narrowView.narrow, noPane: pane.noPane });
   // `has_pane` is the PAGE's answer and is sent on every turn (T:16609). Read
   // through a ref so a pane resolving does not rebuild the controller.
+  //
+  // TRUE ONLY FOR A PANE THAT IS ACTUALLY THERE — `status === "ready"`, the one
+  // status that means a decision resolved to a real `src`. "resolving" used to
+  // count, which made the answer a GUESS: the first send of a chat-only mount,
+  // or of any target whose stat had not landed yet, told the model it could see
+  // the app when there was nothing to see. "error" does not count either — the
+  // frame has been swapped for the message (usePaneState's catch).
   const hasPane = useRef(false);
-  hasPane.current = !pane.noPane && pane.status !== "none";
+  hasPane.current = !pane.noPane && pane.status === "ready";
 
   // ── the controller ─────────────────────────────────────────────────────────
   // Rebuilt only for a new target: the model / effort / pane answers it reads at
@@ -403,19 +410,38 @@ function ChatBody(props: ChatBodyProps) {
   const inChat = entered || !!state.sessionId;
 
   // ── the ready signal, fired once ───────────────────────────────────────────
-  const onReady = props.onReady;
   const readySent = useRef(false);
+  // STABLE FOREVER, and the prop is read through a ref: `markReady` is a
+  // dependency of the boot effect, and the boot is now cancelled on cleanup —
+  // so a host that passes an inline `onReady={() => …}` would otherwise cancel
+  // and restart the boot on every one of its own renders, which for the ask
+  // branch means restarting the 1.5 s detection wait and never sending at all.
+  const onReadyRef = useRef(props.onReady);
+  onReadyRef.current = props.onReady;
   const markReady = useCallback(() => {
     if (readySent.current) return;
     readySent.current = true;
-    onReady?.();
-  }, [onReady]);
+    onReadyRef.current?.();
+  }, []);
 
   // ── boot (T:19178-19296, inventory 05 §G) ──────────────────────────────────
   const booted = useRef(false);
+  /** The boot's ONE dispatch — the ask, or the restore — the moment it reaches
+   *  the controller. What makes the re-arm below safe: a boot cancelled before
+   *  it dispatched can be run again, one that dispatched never is. */
+  const bootDispatched = useRef(false);
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
+    // CANCELLED ON THE WAY OUT, and checked after every await. The boot is an
+    // async walk over a controller and a piece of React state that both belong
+    // to THIS mount: `agentDir` going back to `undefined` (a new `_file`), a
+    // StrictMode remount, or a card leaving the wall all dispose the controller
+    // under it, and a `sendMessage` / `openSession` / `resumeRun` landing after
+    // that is a run started on a corpse — plus a `setEntered` / `markReady` for
+    // a tree that is gone. The controller no-ops after `dispose()` as well
+    // (run-controller.ts); this is the near end of the same belt.
+    let cancelled = false;
     // THE IDS A HOST HANDED OVER, seeded once and here rather than in the render
     // body. On a memory store a render-body write is inert, but on the URL store
     // it is a HISTORY WRITE from a render React is free to discard (StrictMode, a
@@ -452,6 +478,13 @@ function ChatBody(props: ChatBodyProps) {
         params.set({ session_id: null, run: null }, { history: "replace" });
         setEntered(true);
         await Promise.race([detected.current!.promise, sleep(ASK_DETECTION_TIMEOUT_MS)]);
+        // THE ASK IS SPENT ONCE. The host took its pending ask and cleared it
+        // before this mount existed, so a second dispatch is a second "Fix with
+        // AI" run on the same prompt — which is what an unmount inside the
+        // bounded wait above used to buy (the re-armed boot would find
+        // `initialAsk` still on the props).
+        if (cancelled || bootDispatched.current) return;
+        bootDispatched.current = true;
         // The composer went live the moment we entered chat, so the user can
         // have sent their own message inside that bounded wait. `sendMessage`
         // opens with `if (sending) return`, which here would drop the ask on the
@@ -460,14 +493,18 @@ function ChatBody(props: ChatBodyProps) {
         // to "something wants to send while a turn is live" (T:19250-19266).
         if (controller.getState().status === "idle") await controller.sendMessage(ask);
         else await controller.sendFollowUp(ask);
+        if (cancelled) return;
         markReady();
       } else if (sessionId || runId) {
         // A bare `run` (the frame died before the first poll saw a session id)
         // still means an in-flight conversation — enter chat and re-attach.
+        if (bootDispatched.current) return;
+        bootDispatched.current = true;
         setEntered(true);
         if (sessionId) {
           resetCardPolicy(cardPolicy);
           await controller.openSession(sessionId);
+          if (cancelled) return;
         }
         // A bare `run` has nothing to restore, and a restored session is on
         // screen by now: either way this is the moment the host may uncover us.
@@ -482,6 +519,16 @@ function ChatBody(props: ChatBodyProps) {
         markReady();
       }
     })();
+    return () => {
+      cancelled = true;
+      // RE-ARMED, but only from the window where nothing was dispatched. A
+      // StrictMode remount runs cleanup between the two effect passes and the
+      // guard above would otherwise make the second pass a no-op — the boot
+      // would be cancelled and never redone, and a "Fix with AI" mount would sit
+      // there with the prompt unsent. Once the boot HAS reached the controller
+      // the latch stays: whatever it started is the one thing this mount does.
+      if (!bootDispatched.current) booted.current = false;
+    };
   }, [controller, params, props.initialAsk, markReady, cardPolicy]);
 
   // ── the typewriter (T:15063-15142, drained at T:16336) ─────────────────────

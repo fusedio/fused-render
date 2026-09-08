@@ -832,6 +832,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
   const hasPane = () => (deps.hasPane ? (deps.hasPane() ? "1" : "0") : "0");
 
   async function sendMessage(text: string, opts: SendOptions = {}): Promise<void> {
+    // DISPOSED IS A CLOSED DOOR, not a race to lose. `dispose()` is the
+    // unmount, and every entry point below it emits into a store nobody reads
+    // and writes params for a page that is gone — worse, `sendMessage` would
+    // SPAWN a run. Callers hold the controller across awaits by construction
+    // (ClaudeChat's boot walks it), so refusing here is the one place that can
+    // be sure (Bugbot, PR #1061).
+    if (disposed) return;
     if (sending) return;
     sending = true;
     const seat = ++sendSeq;
@@ -949,6 +956,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- follow-ups (T:16024-16185) ----------------------------------------
 
   async function sendFollowUp(text: string, opts: SendOptions = {}): Promise<void> {
+    if (disposed) return;
     const gen = logGen;
     const blocks = opts.blocks || [];
     if (!text && !blocks.length) return;
@@ -1066,6 +1074,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- stop (T:15901-15926) ----------------------------------------------
 
   async function stopRun(): Promise<void> {
+    if (disposed) return;
     const runId = activeRun;
     const seat: number = activeSeat;
     if (!stopAllowed(runId, seat, stoppedSeat)) return; // nothing live, or already going
@@ -1146,6 +1155,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     id: string,
     optimistic: Record<string, string>,
   ): Promise<DecideResponse | null> => {
+    // The ONE door every card click goes through, so the disposed check lives
+    // here rather than in each of the four callers.
+    if (disposed) return null;
     // THE RUN THE CARD WAS BUILT WITH, not whatever is live now (T:13984 posts
     // the `run_id` closed over by `buildPermCard`). `sendFollowUp`'s respawn
     // re-points `activeRun`, and this click belongs to the process that asked.
@@ -1256,6 +1268,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- app_state (T:15804-15837) -----------------------------------------
 
   async function answerAppState(id: string, block: string): Promise<void> {
+    if (disposed) return;
     // The run that ASKED (T:16260 passes the loop's own `run_id`): a respawn in
     // between must not have this snapshot answered at it for a request it never
     // made.
@@ -1298,6 +1311,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- history / sessions -------------------------------------------------
 
   async function openSession(sessionId: string): Promise<void> {
+    if (disposed) return;
     // Reuse the `sending` gate: a message sent during the await would be
     // appended first and the older history turns dumped after it (T:17994).
     if (sending) return;
@@ -1363,6 +1377,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * history already restored.
    */
   async function resumeRun(runId: string): Promise<void> {
+    if (disposed) return;
     if (sending) return;
     sending = true;
     const seat = ++sendSeq;

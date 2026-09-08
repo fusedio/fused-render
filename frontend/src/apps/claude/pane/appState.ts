@@ -393,12 +393,22 @@ export function createAppStateWatcher(
           return call.apply(win.console, args);
         };
       }
-      win.addEventListener("error", (ev: ErrorEvent) => {
+      // NAMED, and recorded in `undo` alongside the console patches: these two
+      // are the other half of "put the app's own window back". A framed document
+      // outlives this watcher (a held-frame swap, a pane that outlives one chat),
+      // and a listener left behind keeps pushing into a dead watcher's ring
+      // buffer — and keeps the watcher, its buffer and this closure alive with
+      // it, one leak per unmounted chat.
+      const onError = (ev: ErrorEvent) => {
         pushLog("error", (ev && (ev.message || ev.error?.message)) || "script error", ev?.filename, ev?.lineno);
-      });
-      win.addEventListener("unhandledrejection", (ev: PromiseRejectionEvent) => {
+      };
+      const onRejection = (ev: PromiseRejectionEvent) => {
         pushLog("error", "unhandled promise rejection: " + fmtLogArg(ev?.reason));
-      });
+      };
+      undo.push(() => win.removeEventListener("error", onError));
+      undo.push(() => win.removeEventListener("unhandledrejection", onRejection));
+      win.addEventListener("error", onError);
+      win.addEventListener("unhandledrejection", onRejection);
       return true;
     } catch {
       // Cross-origin, navigating, or already torn down. The snapshot simply has

@@ -23,6 +23,7 @@ export function installDomShim(): void {
     HTMLElement?: unknown;
     requestAnimationFrame?: unknown;
     cancelAnimationFrame?: unknown;
+    document?: unknown;
   };
   // React 19's `act` reads `HTMLElement` while it flushes, so a component suite
   // driven by `react-test-renderer` throws before its own assertions run — with
@@ -37,6 +38,20 @@ export function installDomShim(): void {
   g.requestAnimationFrame ??= (cb: (t: number) => void) =>
     globalThis.setTimeout(() => cb(0), 0) as unknown as number;
   g.cancelAnimationFrame ??= (handle: number) => globalThis.clearTimeout(handle);
+  // A COMPONENT THAT TICKS is a component that reads both of these. The chat's
+  // status line redraws its clock on a 1 s `window.setInterval` and repairs it
+  // on `visibilitychange` — with either member missing that effect THREW during
+  // commit, which unmounts the whole tree to the root and takes the suite's own
+  // assertions with it. `hidden: false` is the honest answer for a renderer that
+  // has no window at all: the frame clock's hidden-tab rescue is the exception
+  // path, not the one a test should silently take.
+  g.document ??= {
+    hidden: false,
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
   g.location ??= {
     pathname: "/",
     search: "",
@@ -54,6 +69,8 @@ export function installDomShim(): void {
     removeEventListener() {},
     setTimeout: globalThis.setTimeout.bind(globalThis),
     clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    setInterval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
     // The same class as the global, and it has to be the SAME one: Base UI's
     // `isHTMLElement` tests `value instanceof getWindow(value).HTMLElement`,
     // which throws outright — "right hand side of instanceof is not an object" —

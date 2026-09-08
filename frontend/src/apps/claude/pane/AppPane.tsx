@@ -163,14 +163,23 @@ export interface UsePaneStateOptions {
 
 export function usePaneState(opts: UsePaneStateOptions): PaneState {
   const { file, chatOnly } = opts;
-  const [state, setState] = useState<Omit<PaneState, "ready">>({
-    status: "resolving",
+  // "RESOLVING" IS A CLAIM, and for two targets it is a false one: CHAT_ONLY has
+  // no pane of ours whatever the stat says (`decidePane` answers `kind: "none"`
+  // for every kind there) and a null `file` has no target to stat. Both used to
+  // spend a round-trip in "resolving" — a status the page then read as "a pane
+  // is coming", which is how `has_pane: 1` reached the model on the first send
+  // of a chat that never had one. The one thing still in flight for CHAT_ONLY is
+  // the NOUN (the placeholder and the footnote name the target), and that fills
+  // in below without ever moving the status off "none".
+  const noPaneTarget = chatOnly || !file;
+  const [state, setState] = useState<Omit<PaneState, "ready">>(() => ({
+    status: noPaneTarget ? "none" : "resolving",
     decision: null,
     error: null,
-    noPane: false,
+    noPane: noPaneTarget,
     noun: "",
     paneNoun: "preview",
-  });
+  }));
 
   // One promise per target, resolved exactly once, never rejected.
   const gate = useRef<{ file: string | null; promise: Promise<void>; done: () => void } | null>(null);
@@ -195,18 +204,29 @@ export function usePaneState(opts: UsePaneStateOptions): PaneState {
       const setNoPane = () => {
         flag.current = true;
       };
+      // The LATCH is the "already entered" test, which is what keeps the five
+      // steps to one run: CHAT_ONLY enters no-pane before the stat and the
+      // decision reaches the same branch afterwards, and step 5 (rescue the
+      // portaled composer) must not run twice.
+      const goNoPane = () => {
+        if (!flag.current) enterNoPane({ chatOnly, setNoPane, ...noPaneSteps });
+      };
       if (!file) {
         // No target, no pane. The template threw for a missing `_file` and
         // replaced the body with a message (T:4653-4656); the native shell's
         // hosts pass `null` legitimately (a cards tile with no file), so it is a
         // no-pane layout rather than an error page.
         if (!cancelled) {
-          enterNoPane({ chatOnly, setNoPane, ...noPaneSteps });
+          goNoPane();
           setState({ status: "none", decision: null, error: null, noPane: true, noun: "", paneNoun: "preview" });
           settle();
         }
         return;
       }
+      // Latched BEFORE the round-trip, not after it: `has_pane` is read at SEND
+      // time and the composer is live from the first paint, so a chat-only mount
+      // must already know it has no pane of its own. Only the noun is awaited.
+      if (chatOnly) goNoPane();
       try {
         const stat: StatResult = await statPath(file);
         let appEntry = null;
@@ -220,7 +240,7 @@ export function usePaneState(opts: UsePaneStateOptions): PaneState {
         if (cancelled) return;
         watcher?.setEntry(decision.entry);
         if (decision.src === null) {
-          enterNoPane({ chatOnly, setNoPane, ...noPaneSteps });
+          goNoPane();
           setState({
             status: "none",
             decision,
@@ -245,7 +265,9 @@ export function usePaneState(opts: UsePaneStateOptions): PaneState {
         // The frame is swapped for the message, but NOT the box around it: that
         // box also hosts the annotation layer, and wiping it would leave JS
         // driving detached nodes (T:5865-5868).
-        setState((prev) => ({ ...prev, status: "error", error: message, noPane: false }));
+        // `noPane` is the LATCH's answer, not a constant: a CHAT_ONLY mount has
+        // already entered no-pane above and a failed stat does not give it one.
+        setState((prev) => ({ ...prev, status: "error", error: message, noPane: flag.current }));
         live.current.watcher?.pushLog("error", "the left pane could not open the preview: " + message);
       } finally {
         if (!cancelled) settle();

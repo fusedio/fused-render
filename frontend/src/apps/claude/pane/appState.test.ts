@@ -76,8 +76,32 @@ function windowStub(over: Record<string, unknown> = {}): unknown {
     location: { href: "http://localhost/render", pathname: "/render", search: "?zoom=3" },
     console: { error() {}, warn() {} },
     addEventListener() {},
+    removeEventListener() {},
     ...over,
   };
+}
+
+/** A window that RECORDS what was wired to it — the only way to see the other
+ *  half of `dispose`, since a listener left behind is invisible in the snapshot
+ *  and shows up as a leak instead. */
+function listeningWindow(): {
+  win: unknown;
+  wired: string[];
+  console_: { error: (...a: unknown[]) => void; warn: (...a: unknown[]) => void };
+} {
+  const wired: string[] = [];
+  const console_ = { error(..._a: unknown[]) {}, warn(..._a: unknown[]) {} };
+  const win = windowStub({
+    console: console_,
+    addEventListener(type: string) {
+      wired.push(type);
+    },
+    removeEventListener(type: string) {
+      const i = wired.indexOf(type);
+      if (i >= 0) wired.splice(i, 1);
+    },
+  });
+  return { win, wired, console_ };
 }
 
 // ── clipText / fmtLogArg ─────────────────────────────────────────────────────
@@ -344,6 +368,27 @@ describe("watchApp — the reload is marked IN the buffer, never cleared", () =>
     w.watchApp();
     w.watchApp();
     expect(w.logs()).toEqual([]);
+  });
+
+  test("dispose puts the window back WHOLE: console unwrapped and both listeners off", () => {
+    // The framed document outlives this watcher (a held-frame swap, a pane that
+    // outlives one chat). `console.error` was always restored; `error` and
+    // `unhandledrejection` were not, so a disposed watcher kept collecting into
+    // a ring buffer nobody would ever read — and kept itself alive doing it
+    // (Bugbot, PR #1061).
+    const { win, wired, console_ } = listeningWindow();
+    const ownError = console_.error;
+    const w = createAppStateWatcher(frameStub(win));
+    w.watchApp();
+    expect(wired).toEqual(["error", "unhandledrejection"]);
+    expect(console_.error).not.toBe(ownError);
+    w.dispose();
+    expect(wired).toEqual([]);
+    expect(console_.error).toBe(ownError);
+    // And the document is unclaimed, so a NEXT watcher can wrap the same one.
+    const w2 = createAppStateWatcher(frameStub(win));
+    w2.watchApp();
+    expect(wired).toEqual(["error", "unhandledrejection"]);
   });
 
   test("the app's own console.error is captured AND called through", () => {
