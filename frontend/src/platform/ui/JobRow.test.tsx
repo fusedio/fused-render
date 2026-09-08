@@ -132,7 +132,7 @@ test("a cancelled job still draws — only a success clears itself", () => {
   expect(findAll(root, "dl-row").length).toBeGreaterThan(0);
 });
 
-// ---- terminal jobs lose the bar and gain an inline glyph (Task 2) --------
+// ---- terminal jobs lose the bar and gain an inline glyph -----------------
 
 test("a done job draws no bar at all — the tick sits on the status line instead", () => {
   const root = renderRow({ ...BASE, state: "done", detail: "4.6 GB", done: null, total: null });

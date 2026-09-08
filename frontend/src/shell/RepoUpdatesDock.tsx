@@ -88,7 +88,7 @@ const NOOP = () => {};
  *  fixed `terminal` list (the tests). A real one comes from the shell, which
  *  owns the state these rows are drawn from (D586). */
 const NOOP_PATCH = () => {};
-// THE VOLUME CAP (Task 3): how many terminal jobs draw before the rest fold
+// THE VOLUME CAP: how many terminal jobs draw before the rest fold
 // behind "N older notifications". Nothing is ever deleted by this — the
 // full list is still there, one click away — it only bounds how tall the
 // panel gets on a machine that has finished a great many jobs.
@@ -487,7 +487,7 @@ export function RepoUpdatesCardView({
 }) {
   const visible = visibleRepoRows(rows, dismissed);
   const visibleAttention = visibleAttentionRows(attention, attentionDismissed);
-  // ONLY TERMINAL JOBS FOLD (Task 3) — a waiting task, a repo row and a
+  // ONLY TERMINAL JOBS FOLD — a waiting task, a repo row and a
   // pairing are always shown in full below, never counted toward this cap.
   // `olderShown` is local UI state, not a prop: once the reader opens the
   // fold there is no reason for anything outside this view to know or care.
@@ -608,7 +608,7 @@ export function RepoUpdatesCardView({
                   />
                 ))}
               </div>
-              {/* THE VOLUME CAP (Task 3): only TERMINAL jobs ever collapse —
+              {/* THE VOLUME CAP: only TERMINAL jobs ever collapse —
                   a waiting task, a repo row and a pairing are always drawn in
                   full, uncounted by `TERMINAL_VISIBLE_CAP`, because none of
                   them pile up the way a finished job does (a repo stays
@@ -707,7 +707,7 @@ export function RepoUpdatesCardView({
  * TERMINAL JOBS CANNOT OPEN THIS PANEL: `useStatusChip` has no arrival-driven
  * path at all — `open = pinned || hovered`, full stop — so there is no notion
  * of an "announceable" id for anything to reach here as. They DO count for
- * occupancy, so an emptying repo list no longer closes the panel out from
+ * occupancy, so an emptying repo list does not close the panel out from
  * under them (code review 2026-08-28, finding 1).
  */
 export function RepoUpdatesDockView({

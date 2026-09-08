@@ -667,11 +667,11 @@
   color: var(--fg-muted);
 }
 
-/* THE VOLUME CAP'S OWN ROW (Task 3): a plain, full-width button between the
-   row list and the footer, naming how many older terminal jobs are folded
-   rather than drawn. Text-only and centred, the same weight `.dl-panel-empty`
-   wears, because it is reporting a fact about the panel rather than offering
-   a distinct action the way `.dl-clear` does. */
+/* THE VOLUME CAP'S OWN ROW: a plain, full-width button between the row list
+   and the footer, naming how many older terminal jobs are folded rather than
+   drawn. Text-only and centred, the same weight `.dl-panel-empty` wears,
+   because it is reporting a fact about the panel rather than offering a
+   distinct action the way `.dl-clear` does. */
 .dl-panel-more {
   display: block;
   width: 100%;
@@ -717,11 +717,8 @@
   background: rgba(var(--error-rgb), 0.14);
 }
 
-/* `.dl-clear` — ONE "Clear all" button now (Task 4, statusbar card
-   unification), whatever mix of repo rows and terminal jobs it acts on. It
-   used to have a terminal-jobs-only sibling, `.dl-jobs-clear`, sitting beside
-   it in the same `.dl-head` band; that class is gone along with the second
-   button. */
+/* `.dl-clear` — ONE "Clear all" button, whatever mix of repo rows and
+   terminal jobs it acts on. */
 .dl-clear {
   flex: 0 0 auto;
   padding: 2px 8px;
@@ -1177,13 +1174,12 @@
   word-break: normal;
 }
 
-/* THE TERMINAL GLYPH'S OWN LINE (Task 2, statusbar card unification): a tick
-   or cross rides inline with the status text rather than owning the bar's
-   old slot, so a finished row is one line shorter than a running one rather
-   than holding an empty track. `align-items: center` keeps the 11px glyph
-   centred against the text's own line-height; `flex: none` on the svg (the
-   child selector below) stops it being squeezed by a long status sentence
-   next to it. */
+/* THE TERMINAL GLYPH'S OWN LINE: a tick or cross rides inline with the
+   status text, so a finished row is one line shorter than a running one
+   rather than holding an empty progress track. `align-items: center` keeps
+   the 11px glyph centred against the text's own line-height; `flex: none` on
+   the svg (the child selector below) stops it being squeezed by a long
+   status sentence next to it. */
 .dl-status.with-glyph {
   display: flex;
   align-items: center;

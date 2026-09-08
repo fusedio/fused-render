@@ -1,15 +1,12 @@
 // Global toast store — a queue of transient banners rendered by
 // NotificationHost at the app root, so a toast shows regardless of which view
-// raised it. THE toast surface: Listing and Preview used to keep their own
-// pane-local slot, which meant a second copy of the dismiss timer and the same
-// message appearing in a different place depending on the view. A plain module
-// store subscribed
-// via useSyncExternalStore: mutations (pushToast/dismissToast) update the
-// module array and notify subscribers; the host re-reads on every change.
+// raised it. THE toast surface: a plain module store subscribed via
+// useSyncExternalStore: mutations (pushToast/dismissToast) update the module
+// array and notify subscribers; the host re-reads on every change.
 //
-// No auto-dismiss (Task 5): a toast stays until the user clears it or the code
-// that raised it dismisses it explicitly. A message that vanished on its own
-// clock could disappear before anyone read it, which is exactly what a toast
+// No auto-dismiss: a toast stays until the user clears it or the code that
+// raised it dismisses it explicitly. A message that vanished on its own clock
+// could disappear before anyone read it, which is exactly what a toast
 // carrying a failure must never do.
 import { useSyncExternalStore } from "react";
 import type { ToastAction, ToastTone } from "@platform/ui/Toast";

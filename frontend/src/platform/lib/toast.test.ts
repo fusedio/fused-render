@@ -1,7 +1,7 @@
 // The toast queue's exit path and stack cap. A dismissed toast is not removed
 // from the queue straight away: it is flagged `leaving` for the length of the
 // exit animation so the card can fade + collapse and the toasts below it
-// glide up instead of snapping. There is no TTL any more (Task 5) — a toast
+// glide up instead of snapping. There is no TTL — a toast
 // stays until the ✕ or the code that raised it dismisses it, so the only
 // route into `leaving` is dismissToast itself.
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -74,7 +74,7 @@ test("dismissing an unknown id is a no-op", () => {
   expect(getToasts().map((t) => [t.id, t.leaving])).toEqual([[id, false]]);
 });
 
-// ---- the stack caps at MAX_TOASTS (Task 5) --------------------------------
+// ---- the stack caps at MAX_TOASTS -----------------------------------------
 
 test("a 6th toast drops the oldest live one, keeping the stack at MAX_TOASTS", () => {
   const ids = Array.from({ length: MAX_TOASTS }, (_, i) => pushToast({ msg: `t${i}`, tone: "info" }));

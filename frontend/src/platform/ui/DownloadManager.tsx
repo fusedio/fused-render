@@ -264,10 +264,10 @@ function useJobs(): {
 /** `NotificationCard`'s `progress`: `undefined` draws no bar, `null` draws
  *  the indeterminate sweep, a `number` fills to that fraction.
  *
- *  A terminal job draws no bar at all (Task 2): success, failure and
- *  cancellation are all told by the card's own glyph on the status line now,
- *  not by a bar frozen at whatever fraction the job happened to be at when
- *  it stopped — `jobFraction` is not even consulted for a terminal job.
+ *  A terminal job draws no bar at all: success, failure and cancellation are
+ *  told by the card's own glyph on the status line instead of by a bar frozen
+ *  at whatever fraction the job happened to be at when it stopped —
+ *  `jobFraction` is not even consulted for a terminal job.
  *
  *  No fraction to draw and still running = indeterminate (`null`): a narrow
  *  fill that travels, rather than a width that grows. The alternative —
@@ -577,14 +577,14 @@ export function JobRow({
   // component from there at all.
   // THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
   // the jobs card. why are we truncating stuff instead of placing things
-  // elsewhere?"). It used to be a suffix on the head line, competing with the
-  // title for one line's width — which is how a running FLUX row rendered
+  // elsewhere?"). Drawn as `secondary` rather than a suffix competing with the
+  // title for one line's width, which is what let a running FLUX row render
   // `update picture to be ghibli st…` then a lone `F…`: a field minced to one
-  // character plus an ellipsis, which conveys nothing while still costing
-  // width. `jobs.ts`'s own comment already calls this a redundant
-  // restatement whenever the title names the model, so it is the field that
-  // should be RELEGATED rather than the one that should be minced. As
-  // `secondary` it gets the panel's full width and needs no shrink factor.
+  // character plus an ellipsis conveys nothing while still costing width.
+  // `jobs.ts`'s own comment already calls this a redundant restatement
+  // whenever the title names the model, so it is the field that stays
+  // relegated. As `secondary` it gets the panel's full width and needs no
+  // shrink factor.
   // Suppressed when it just repeats the title (`_start_resident`/`load` set
   // both `title` and `model` to the same model id) — otherwise a model-load
   // row would draw the model name twice. The MODEL name only, not the whole

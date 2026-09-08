@@ -350,16 +350,15 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
   }
 });
 
-// ------------------------------------- Task 4: one "Clear all" (was two)
+// ------------------------------------- One "Clear all"
 //
 // D663 keeps every terminal job until dismissed, and Activity's own `Clear`
 // button was deleted in the same PR (D661) — so once a job's own ✕ has been
-// missed, `POST /api/jobs/clear` needs a reachable UI. It used to be its own
-// second button ("Clear finished") beside the repo rows' ("Clear updates");
-// Task 4 folds both into one "Clear all", present once the COMBINED count of
-// repo rows and terminal jobs passes one — mirroring D604's plurality rule
-// (at exactly one row of either kind, that row's own ✕ already does the
-// identical thing), just no longer scored per kind.
+// missed, `POST /api/jobs/clear` needs a reachable UI. One "Clear all" button
+// covers both repo rows and terminal jobs, present once their COMBINED count
+// passes one — mirroring D604's plurality rule (at exactly one row of either
+// kind, that row's own ✕ already does the identical thing) — scored across
+// both kinds together rather than per kind.
 test("Clear all is absent at one terminal job and present at two", () => {
   const one = renderView({ rows: [], terminal: [doneJob({ id: "a" })] });
   expect(findAll(one, "dl-clear")).toHaveLength(0);
@@ -424,7 +423,7 @@ test("pressing Clear all dismisses the visible repo rows and clears the terminal
   }
 });
 
-// ------------------------------------------------- Task 3: the volume cap
+// ------------------------------------------------- the volume cap
 //
 // Only TERMINAL jobs ever fold — a repo row, a pairing and a waiting task
 // are always drawn in full below, uncounted by the cap, because none of
@@ -447,7 +446,7 @@ test("a 6th terminal job folds behind an 'N older notifications' row — nothing
   expect(numeral(tree)).toBe("7");
 });
 
-test("clicking the fold row reveals every job, and the row itself is gone", () => {
+test("clicking the fold row reveals every job", () => {
   const terminal = Array.from({ length: 7 }, (_, i) => doneJob({ id: `j${i}` }));
   const renderer = renderInstance({ rows: [], terminal });
   const before = renderer.toJSON() as ReactTestRendererJSON;

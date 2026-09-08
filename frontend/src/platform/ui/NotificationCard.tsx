@@ -1,10 +1,9 @@
-// The one row shape every status-bar panel draws (spec: "status bar card
-// unification"). Six call sites — Models, Engines, Jobs, repo updates,
-// waiting tasks, LAN pairings — used to each carry their own copy of the
-// same `.dl-row` anatomy (a title line with trailing figures and actions, an
-// optional secondary line, an optional figures line, an optional progress
-// bar, an optional status line, an optional dismiss). This component is that
-// anatomy, once, reusing the existing `.dl-*` classes from
+// The one row shape every status-bar panel draws. Six call sites — Models,
+// Engines, Jobs, repo updates, waiting tasks, LAN pairings — all render
+// through this single `.dl-row` anatomy (a title line with trailing figures
+// and actions, an optional secondary line, an optional figures line, an
+// optional progress bar, an optional status line, an optional dismiss),
+// reusing the existing `.dl-*` classes from
 // `frontend/src/styles/notifications.css` — no parallel class family. Every
 // caller supplies only the parts its row has; everything here is optional
 // except the title.
