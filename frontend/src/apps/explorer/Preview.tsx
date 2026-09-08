@@ -1853,17 +1853,24 @@ function TemplatePreview({
         />
       )}
       {/* Fullscreen: this same page under the chrome-free embed prefix — no
-          sidebar, no crumb, no header — with the current query carried over so
-          `_mode` survives the hop. A FULL page load rather than `navigate`:
+          sidebar, no crumb, no header — with the current query carried over,
+          and `_mode` stamped explicitly even when the view is on its default
+          (the URL omits it then). A FULL page load rather than `navigate`:
           the view/embed prefix is read once at module init (router.ts), so
           switching it is a new document. The way back is EmbedStrip's "Open
-          in explorer", which the top-level embed shows. */}
+          in explorer", which the top-level embed shows: it carries the query
+          back, and reads the `_mode` stamp as "return to THIS page" rather
+          than hopping a folder to its app entry. */}
       <button
         type="button"
         className="bar-ctl bar-ctl-icon"
         title="Open fullscreen, without the sidebar and toolbar"
         aria-label="Open fullscreen, without the sidebar and toolbar"
-        onClick={() => location.assign(embedUrlForFsPath(fsPath, location.search))}
+        onClick={() => {
+          const q = new URLSearchParams(location.search);
+          q.set("_mode", entry.mode);
+          location.assign(embedUrlForFsPath(fsPath, "?" + q.toString()));
+        }}
       >
         <span className="mode-menu-icon">{MenuIcons.fullscreen}</span>
       </button>

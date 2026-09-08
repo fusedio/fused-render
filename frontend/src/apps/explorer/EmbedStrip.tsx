@@ -47,11 +47,19 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
   const isFused = isDir === false && fsPath.toLowerCase().endsWith(".fused");
   const name = fsPath.split("/").filter(Boolean).pop() || fsPath;
   // Full page load, not `navigate`: the prefix (embed vs view) is read once
-  // at module init, so switching it IS a new document. A folder resolves to
-  // its entry page first; an entry-less or unreadable folder opens as itself.
+  // at module init, so switching it IS a new document. The query rides along
+  // so the explorer opens the SAME page: `_mode`, `_side`, a grid selection —
+  // whatever this embed was showing. Preview's fullscreen button is the main
+  // producer (it stamps the view's query onto the embed URL), and this is its
+  // way back. A folder resolves to its entry page first — the CLI/link case,
+  // where the user was looking at the app — UNLESS the query names a `_mode`:
+  // then the folder was being viewed AS something (its listing, a graph), and
+  // that view is what comes back. An entry-less or unreadable folder opens
+  // as itself.
   const openInExplorer = async () => {
     let target = fsPath;
-    if (isDir) {
+    const search = location.search;
+    if (isDir && !new URLSearchParams(search).has("_mode")) {
       try {
         const info = await getAppEntry(fsPath);
         if (info.entry) target = info.entry;
@@ -59,7 +67,7 @@ export default function EmbedStrip({ fsPath, isDir }: { fsPath: string; isDir: b
         /* no entry answer — the folder itself is still the right place */
       }
     }
-    location.assign(viewUrlForFsPath(target));
+    location.assign(viewUrlForFsPath(target, target === fsPath ? search : ""));
   };
   return (
     <div className="embed-strip" role="toolbar" aria-label="Embedded view">
