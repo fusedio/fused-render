@@ -21,6 +21,9 @@ import type {
   SwitchableMode,
   TranscriptStat,
 } from "./types";
+/** PR2: the attachment pipeline's own contract (`shots/types.ts`). Pure types —
+ *  the protocol layer never calls into it. */
+import type { Receipt } from "../shots/types";
 
 /** One transcript row. History turns and live turns share this shape. */
 export interface UserTurn {
@@ -40,6 +43,19 @@ export interface UserTurn {
    */
   appState?: true;
   uuid?: string;
+  /**
+   * ADDED (PR2): the receipt rows this turn wears — "screenshot attached",
+   * "file attached: notes.csv", or the refusal and its reason (T:10815
+   * `shotReceipt`).
+   *
+   * Set only on a turn THIS page sent, because only this page holds the blob
+   * URLs its thumbnails were drawn from. A turn read back off disk has none and
+   * its receipts are rebuilt from `raw`'s own `<pane-shot>` block instead
+   * (T:10903 `shotRestoreReceipt`, `ui/attachApi.restoreReceipts`) — so the two
+   * roads meet, and a picture visible while the session lasts is still there
+   * when the session is reopened.
+   */
+  attachments?: Receipt[];
 }
 
 export interface AssistantTurn {
@@ -200,6 +216,10 @@ export interface SendOptions {
    *  shots dir the spawn line always allows — one Read rule each, granted for
    *  the SESSION (Task 6, T:16657-16668). JSON-encoded onto the wire. */
   readDirs?: string[];
+  /** ADDED (PR2): the receipts the turn this send posts should wear. The
+   *  controller only carries them onto the bubble — the pipeline builds them,
+   *  and the same list goes back to the tray if the send never lands. */
+  attachments?: Receipt[];
 }
 
 /**
@@ -330,6 +350,21 @@ export interface ControllerDeps {
    * this is what goes out unasked with every message.
    */
   appStateBlock?: () => Promise<string>;
+  /**
+   * ADDED (PR2): a send whose BUBBLE WAS DROPPED — the run never launched, or a
+   * follow-up never reached a live one — so the agent saw none of it and the
+   * composer takes its attachments back (T:16091-16093, 16693-16720).
+   *
+   * The pictures are NOT revoked on this road and must not be: they are handed
+   * back as pending chips showing those very thumbnails. The user attached them
+   * deliberately — a capture of a moment that has passed, or a file they went
+   * and found — and a failed send is not a reason to make them do it again, nor
+   * could they, if what they photographed is gone.
+   *
+   * A DELIVERED follow-up stranded by a stop is not this: `onStranded` hands
+   * those words back, and their pictures are already in the agent's hands.
+   */
+  onSendReturned?: (info: { text: string; attachments?: Receipt[] }) => void;
 }
 
 export type { HistoryTurn };

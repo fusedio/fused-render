@@ -73,6 +73,8 @@ import type {
   SwitchableMode,
 } from "./types";
 import { composeOutgoing, stripBlocks } from "./wire";
+/** PR2: the attachment pipeline's receipt row — carried, never built here. */
+import type { Receipt } from "../shots/types";
 
 
 // ---- constants (all with their T line) -------------------------------------
@@ -401,15 +403,25 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** T:13446 `addUser` — the bubble goes up BEFORE anything slow on the send
    *  path: the user's words appearing instantly is worth more than a receipt and
    *  a bubble arriving together (T:16490). */
-  const addUser = (text: string, raw?: string, appState = false): UserTurn => {
+  const addUser = (
+    text: string,
+    raw?: string,
+    attachments?: Receipt[],
+    appState = false,
+  ): UserTurn => {
     const turn: UserTurn = {
       role: "user",
       key: nextKey("u"),
       text,
       ...(raw ? { raw } : {}),
-      // The receipt legacy hangs under the bubble (T:16588-16596). Set from the
-      // block actually composed into `raw`, never from "is there a pane" — a
-      // pane that has told us nothing produces no block and owes no receipt.
+      // The receipt rides the bubble the send posted, so the row is under the
+      // words from the first paint rather than appended after the start
+      // round-trip (T:16560-16583 appends it to the last `.turn.user`).
+      ...(attachments && attachments.length ? { attachments } : {}),
+      // The push channel's own receipt legacy hangs under the bubble
+      // (T:16588-16596). Set from the block actually composed into `raw`, never
+      // from "is there a pane" — a pane that has told us nothing produces no
+      // block and owes no receipt.
       ...(appState ? { appState: true as const } : {}),
     };
     pushTurn(turn);
@@ -1225,7 +1237,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // `stripBlocks(outgoing)` for a wordless send is unaffected by the block
     // above — `wire.ts` strips every `<live-app-state>` — so a send that is
     // only pictures still reads as pictures.
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing, !!live);
+    const bubble = addUser(text || stripBlocks(outgoing), outgoing, opts.attachments, !!live);
     let started = false;
     try {
       let runId = "";
@@ -1315,7 +1327,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // The run never launched, so the agent never saw any of it: drop the
       // bubble so the composer's own rollback (attachments, notes) matches
       // (T:16693-16720).
-      if (!started) dropTurn(bubble.key);
+      if (!started) {
+        dropTurn(bubble.key);
+        // ... and the attachments go back to the tray with the words, because
+        // the agent never saw either (T:16693-16720).
+        deps.onSendReturned?.({ text, ...(opts.attachments ? { attachments: opts.attachments } : {}) });
+      }
       reportTrouble(troubleFromError(err));
     } finally {
       if (sendSeq === seat) sending = false;
@@ -1340,7 +1357,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // once the INBOX has taken it. Bumping here left a failed send with a
     // counter pollLoop read as a landed follow-up, and the reply split around
     // the gap where the rolled-back row had been (Bugbot, PR #996).
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing, !!live);
+    const bubble = addUser(text || stripBlocks(outgoing), outgoing, opts.attachments, !!live);
     // KEYED BY A SEQ, not by the text: two identical follow-ups ("again") used
     // to collapse into one entry, and the first ack cleared both — so the second
     // one's hint left the composer while the message was still in flight.
@@ -1364,6 +1381,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const giveBack = () => {
       dropTurn(bubble.key);
       drop();
+      // The same road sendMessage takes for a run that never launched: the
+      // usual way a follow-up fails is the session having already ended, and
+      // the pictures the user attached deliberately are owed back (T:16080-16093).
+      deps.onSendReturned?.({ text, ...(opts.attachments ? { attachments: opts.attachments } : {}) });
     };
 
     // `activeRun` is set synchronously the moment pollLoop is entered, but

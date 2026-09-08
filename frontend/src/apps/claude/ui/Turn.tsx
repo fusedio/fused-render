@@ -7,9 +7,11 @@ import { memo } from "react";
 import { cn } from "@platform/lib/utils";
 
 import type { Turn as TurnRow, UserTurn } from "../protocol/controller-api";
+import type { Viewable } from "./attachApi";
 import { Caret } from "./Caret";
 import { ClaudeMark } from "./ClaudeMark";
 import { MarkdownView } from "./MarkdownView";
+import { Receipts } from "./Receipts";
 import { SegmentView } from "./SegmentView";
 import { TroubleMessage } from "./TroubleView";
 
@@ -40,6 +42,11 @@ export interface TurnProps {
    *  Offered only when the turn actually carries one, and reached through the
    *  RECEIPT LINE itself wherever the turn has one (R4-1) — see below. */
   onShowSent?: (turn: UserTurn) => void;
+  /** The receipt rows under a sent user turn (PR2): what this message carried,
+   *  from the turn's own `attachments` or from its `raw` wire (T:10815). */
+  onOpenShot?: (shot: Viewable) => void;
+  /** "preview" / "app" — every noun in a receipt names the pane (T:7073). */
+  paneNoun?: string;
   /** The typer's attachment INSIDE this turn, when it has one: `index` is the
    *  growing segment, or -1 for the flat body of a turn with no segments, and
    *  `text` is the frame's slice (protocol/segments.ts `streamingTailOf`).
@@ -61,6 +68,8 @@ export const Turn = memo(function Turn({
   turn,
   anchored,
   onShowSent,
+  onOpenShot,
+  paneNoun,
   tail,
   children,
   cardsAfter,
@@ -94,6 +103,19 @@ export const Turn = memo(function Turn({
         {...(turn.uuid ? { "data-msg": turn.uuid } : {})}
       >
         <div className="bubble">{turn.text}</div>
+        {/* SIBLINGS of the bubble, not wrappers around it: the re-attach probe
+            matches on `.user .bubble`'s text, and folding a receipt inside
+            would make every such turn stop matching (T:16584-16588). Legacy's
+            order too — the attachment rows first, then the push channel's own
+            line (T:16565-16596). */}
+        {onOpenShot ? (
+          <Receipts
+            turn={turn}
+            paneNoun={paneNoun ?? "preview"}
+            onOpenShot={onOpenShot}
+            {...(onShowSent ? { onShowSent } : {})}
+          />
+        ) : null}
         {turn.appState ? (
           // The push channel's receipt (T:16588-16596, `.user .attach` T:1802):
           // this message carried a description of the app the user is looking at.

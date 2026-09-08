@@ -221,6 +221,30 @@ export interface ComposerCardProps {
   columnRef?: React.RefObject<HTMLElement | null>;
   /** Chips above the box: attachments (PR2), annotations (PR3). */
   chips?: ReactNode;
+  /**
+   * ⌘V of a picture or a file (T:11719 `shotPasteHandler`). The handler decides
+   * whether the paste was an attachment — a paste of WORDS must reach the box,
+   * and stealing an ordinary paste in a composer the user types in all day would
+   * be a far worse bug than never having had the feature.
+   */
+  onPaste?: React.ClipboardEventHandler<HTMLTextAreaElement>;
+  /**
+   * THE CAMERA'S OLD SEAT, immediately left of Schedule (T:4166-4171). The
+   * screenshot button lived here as a pill and moved into the `#anncta` strip on
+   * 2026-08-27 because it acts on the PREVIEW rather than on this draft — so
+   * `ClaudeChat` passes nothing and the seat stands empty. It stays a seat
+   * because the row's fit is MEASURED: a control appearing here changes what
+   * fits, and the revision below is what re-prices the row when it does.
+   */
+  camera?: ReactNode;
+  /**
+   * Anything OUTSIDE this row whose arrival changes the row's geometry — the
+   * chip row growing, the camera seat filling. T watches for those with a
+   * MutationObserver on the rows' subtree `hidden` and on the body/chat classes
+   * (T:12455-12474); in React they arrive as a re-render, so the caller bumps
+   * this instead (inventory 03 §G, and `useRowFit`'s `revision`).
+   */
+  fitRevision?: unknown;
   back: string;
   onNavigate?(url: string): void;
 }
@@ -244,6 +268,9 @@ export function ComposerCard({
   boxRef: hostBoxRef,
   columnRef,
   chips,
+  onPaste,
+  camera,
+  fitRevision,
   back,
   onNavigate,
 }: ComposerCardProps) {
@@ -263,7 +290,13 @@ export function ComposerCard({
   const fit = useRowFit(
     rowRef,
     columnRef,
-    `${controls.model}|${controls.effort}|${controls.permission}|${blocked ? 1 : 0}`,
+    // The camera seat is IN the key and not merely a dependency of it: a seat
+    // appearing or leaving changes `composerRowNeed` by a whole control plus a
+    // gap, which is exactly the kind of change T's MutationObserver existed to
+    // catch (T:12455-12474).
+    `${controls.model}|${controls.effort}|${controls.permission}|${blocked ? 1 : 0}|${
+      camera ? 1 : 0
+    }|${String(fitRevision ?? "")}`,
   );
 
   // THIS IS THE NATIVE `initialFocus`, and it has to be, because a modal's
@@ -374,6 +407,7 @@ export function ComposerCard({
           grow();
         }}
         onKeyDown={onKeyDown}
+        {...(onPaste ? { onPaste } : {})}
       />
       {count > 0 ? (
         <div className="c-queued">
@@ -391,6 +425,7 @@ export function ComposerCard({
           compact={fit !== "full"}
         />
         <span className="c-spacer" />
+        {camera}
         {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two
             are the ways this draft leaves the box — now, or as a task
             (T:4174-4183). The landing card's copy is never blocked. */}

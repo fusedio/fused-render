@@ -150,3 +150,42 @@ export {
   cardOverride,
   type CardPolicy,
 } from "./cardPolicy";
+
+// ---- attachments (PR2, inventory 03) --------------------------------------
+export { AttachTray, ShotThumb } from "./AttachTray";
+export type { AttachTrayProps } from "./AttachTray";
+export { ShotViewer, ShotViewerBody } from "./ShotViewer";
+export type { ShotViewerProps } from "./ShotViewer";
+export { Receipts } from "./Receipts";
+export type { ReceiptsProps } from "./Receipts";
+export { AnnStrip } from "./AnnStrip";
+export type { AnnStripProps } from "./AnnStrip";
+export { useAttachments } from "./useAttachments";
+export { fitStrip, useFitStrip } from "./useFitStrip";
+export { mergeSendOptions } from "./sendMerge";
+export type {
+  Attachments,
+  OutgoingAttachments,
+  UseAttachmentsOptions,
+} from "./useAttachments";
+export {
+  ATTACH_API,
+  failLabel,
+  glyphDoor,
+  prunedLabel,
+  previewSrcFor,
+  receiptFor,
+  receiptsFromWire,
+  receiptViewable,
+  shotAlt,
+  shotGlyph,
+  shotNoun,
+  shownSize,
+  sizeLabel,
+  toViewable,
+  viewerOpens,
+  SHOT_GONE,
+} from "./attachApi";
+export type { AttachApi, Viewable } from "./attachApi";
+export { SentPopBody } from "./SentPop";
+export type { SentPopProps } from "./SentPop";

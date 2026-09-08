@@ -307,6 +307,48 @@ export function annotationsIn(text: string | null | undefined): AnnotationWire[]
 
 // ---- compose / strip -------------------------------------------------------
 
+/**
+ * §D'S WIRE ORDER, IN ONE PLACE. `composeOutgoing` joins whatever list it is
+ * handed, so until now the order was whatever the caller's spread happened to
+ * produce — and `{ ...opts, ...takeAttachments() }` did not produce an order at
+ * all, it REPLACED `opts.blocks` wholesale. Latent while only one owner supplied
+ * blocks; the moment PR3's `<annotations>` and PR4's `<live-app-state>` arrive in
+ * `opts.blocks` they would have been silently dropped.
+ *
+ * So every owner's blocks come through here instead: state, pane-shot,
+ * annotations — the reading order T composes them in (T:10449) — and anything
+ * unrecognised keeps its arrival order at the END rather than being dropped or
+ * pushed in front of the three that have a stated place. The sort is STABLE, so
+ * two blocks of the same kind stay in the order their owner emitted them.
+ */
+export const BLOCK_ORDER: readonly string[] = [APP_STATE_TAG, PANE_SHOT_TAG, ANN_TAG];
+
+/** Which of `BLOCK_ORDER` a composed block opens with; `BLOCK_ORDER.length` for
+ *  anything else, which is what puts it last.
+ *
+ *  ATTRIBUTES ARE ALLOWED on the opening tag. Matching a bare `<tag>` meant the
+ *  first block to carry one — `<live-app-state v="2">`, which is PR4's tag to
+ *  write — would quietly stop recognising its own name and drop to the unranked
+ *  tail, with nothing to say so: the message still goes out, just with the state
+ *  after the pictures. `[^>]*` and not `.*`, so the sniff cannot run past the end
+ *  of the tag it is reading. */
+export function blockRank(block: string): number {
+  const tag = /^<([a-z][a-z0-9-]*)(?:\s[^>]*)?>/i.exec(block.trimStart());
+  const i = tag ? BLOCK_ORDER.indexOf(tag[1].toLowerCase()) : -1;
+  return i === -1 ? BLOCK_ORDER.length : i;
+}
+
+export function composeBlocks(
+  ...groups: (readonly (string | null | undefined)[] | null | undefined)[]
+): string[] {
+  const flat: string[] = [];
+  for (const g of groups) for (const b of g ?? []) if (b) flat.push(b);
+  return flat
+    .map((block, i) => ({ block, i, rank: blockRank(block) }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
+    .map((e) => e.block);
+}
+
 /** T:10449 `composeOutgoing`. The blocks are pre-composed by their owners
  *  (app-state, pictures, annotations — in that order) and joined `"\n\n"` with
  *  the typed message LAST. All three strips are position-independent, so the

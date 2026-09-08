@@ -1,0 +1,148 @@
+// The screenshot + attachment pipeline, PR2 (inventory 03 §A/§E, T:9019-11750).
+// Pure TS: no React, no DOM ownership beyond the transient shutter sheet and the
+// canvases the encoders make. The UI (AttachTray, ShotViewer, SentPop, receipts)
+// reads this and `./types` and nothing deeper.
+export type {
+  Attachment,
+  CaptureResult,
+  PaneBitmap,
+  PaneShotEntry,
+  Receipt,
+  ShotBadge,
+  ShotKind,
+  ShotRect,
+} from "./types";
+export {
+  FUSED_PATH_MIME,
+  SHOT_ATTACH_MAX_BYTES,
+  SHOT_FLASH_MS,
+  SHOT_IMG_MAX,
+  SHOT_IMG_MAX_BYTES,
+  SHOT_IMG_MS,
+  SHOT_MAX_BYTES,
+  SHOT_MAX_EDGE,
+  SHOT_MAX_ELEMENTS,
+  SHOT_MIN_AREA,
+  SHOT_NATIVE_MIN,
+  SHOT_PATH_TYPE,
+  SHOT_STYLE_CHUNK,
+  SHOT_TIMEOUT_MS,
+  SHOT_VIEW_BYTES,
+  SHOT_VIEW_EDGE,
+  SHOT_WEBP_QUALITY,
+} from "./types";
+
+export {
+  SHOT_MIME_EXT,
+  SHOT_SUFFIX_OVERVIEW,
+  SHOT_SUFFIX_VIEW,
+  shotBase,
+  shotDirOf,
+  shotFileExt,
+  shotJoin,
+  shotStamp,
+  shotsDir,
+  shotsDirSeen,
+  resetShotsDirForTests,
+} from "./dir";
+
+export {
+  cropRect,
+  dataUrl,
+  encode,
+  encodeBadged,
+  drawBadge,
+  fit,
+  loadImage,
+  rasterise,
+  readbackIsBlank,
+  setCanvasFactory,
+  shotExt,
+  shotPixels,
+  shrink,
+  shrinkImage,
+  toBlob,
+  webpLatch,
+  resetWebpLatchForTests,
+  type EncodeLimits,
+  type EncodeSize,
+  type ShotPixels,
+} from "./encode";
+
+export {
+  applyScroll,
+  backdrop,
+  blankRegions,
+  captureDom,
+  caveatsOf,
+  imageNote,
+  imagePlaceholder,
+  inlineImages,
+  inlineStyles,
+  paneNote,
+  styleUrls,
+  trustLine,
+  urlAsData,
+  viewNoteFrom,
+  type StyleWalk,
+} from "./dom-capture";
+
+export {
+  SHOOTING_ATTR,
+  captureNative,
+  frameOffset,
+  isNativeOff,
+  learnTopOrigin,
+  screenRect,
+  resetNativeOffForTests,
+  resetTopOriginForTests,
+  topOriginForTests,
+  watchTopOrigin,
+  type NativeCaptureOptions,
+} from "./native-capture";
+
+export {
+  captureXO,
+  currentStream,
+  getStream,
+  stopStream,
+  watchStreamTeardown,
+} from "./xo-capture";
+
+export {
+  capturePane,
+  capturePaneBitmap,
+  captureOverview,
+  flash,
+  type CaptureOptions,
+  type CaptureStrategies,
+} from "./capture";
+
+export {
+  attachFile,
+  attachFiles,
+  attachOverview,
+  attachPane,
+  attachPaths,
+  dragHasAttachment,
+  failLabel,
+  filesFromDrop,
+  filesFromPaste,
+  formatLabel,
+  isImage,
+  kindFor,
+  pathsFromDrop,
+  probePruned,
+  prunedLabel,
+  readDirs,
+  readDirsFor,
+  receiptFor,
+  receiptsFromWire,
+  revoke,
+  saveExt,
+  shotAlt,
+  shotNoun,
+  sizeLabel,
+  toWire,
+  type NamedBlob,
+} from "./attach";
