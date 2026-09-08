@@ -50,7 +50,7 @@ async function poll(): Promise<void> {
 
 // How long until the next look. Busy while an install runs; WARM while the
 // packaged app has an updater but it has not answered yet ("idle"/"checking":
-// the server's first manifest check lands ~10s after boot, and a 60s tick
+// the server's first manifest check lands ~1s after boot, and a 60s tick
 // after that left the badge up to a minute late); the slow idle tick otherwise
 // — including for an unpackaged dev run, where `update` is absent and there is
 // nothing to be quick about.
@@ -59,8 +59,10 @@ export function pollDelay(status: UpdateStatus | null, sinceStartMs = Date.now()
   // WARM ONLY WHILE THE FIRST ANSWER IS PLAUSIBLY STILL COMING (bugbot, PR
   // #1049): "idle" is also the packaged app's resting state after a check that
   // found nothing, so warm-on-idle forever would never settle. The server's
-  // first check lands ~10s after boot and a check takes seconds, so two minutes
-  // after this page started the cadence goes back to the slow tick for good.
+  // first check now starts ~1s after boot, so the warm window is dominated by
+  // how long the check itself takes (a manifest fetch over the network, seconds
+  // rather than sub-second) — two minutes after this page started the cadence
+  // goes back to the slow tick for good.
   const pending = status?.state === "checking" || status?.state === "idle";
   if (status && pending && sinceStartMs < WARM_WINDOW_MS) return POLL_WARM_MS;
   return POLL_IDLE_MS;

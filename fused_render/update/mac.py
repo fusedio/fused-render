@@ -4,19 +4,24 @@ signed manifest and surfaces a newer version only through /api/config's
 `update` field — the shell shows a badge. Downloading and installing happen
 solely on an explicit POST /api/update/install.
 
-Two methods, decided once per process:
+ONE install path for every install type (Akshil, 2026-09-08): the DMG swap
+below. `detect_method()` still reports "brew" | "dmg" | "none" and that word
+still rides along on status(), but it is INFORMATIONAL only — it changes
+nothing about what an install does, and nothing in the UI mentions Homebrew.
 
-- "brew": the running bundle is Homebrew-managed. The app never runs brew
-  itself — swapping the bundle behind brew's back would desync its
-  bookkeeping (Caskroom metadata, `brew list`) permanently. Instead the
-  "available" state carries `manual_command` (`brew update && brew upgrade
-  --cask fused-render`) for the user to run in a terminal; POST
-  /api/update/install is a no-op. The `brew update` is required: the tap's
-  cask (fusedio/homebrew-tap) has no livecheck, so Homebrew only learns of a
-  version bump after refreshing its local clone of the tap — otherwise
-  `brew upgrade` reads the stale cached cask and reports nothing to do. The
-  next check() tick reads the bundle on disk and flips to "installed" once
-  the user's upgrade lands.
+- "brew": the running bundle is Homebrew-managed. It gets the same download,
+  the same version-verified bundle replacement, and no brew command of any
+  kind: THE APP NEVER INVOKES BREW ON ITSELF. It cannot — the tap's cask
+  (fusedio/homebrew-tap) carries `uninstall quit:`, so a `brew upgrade`
+  started from inside the app would quit the app mid-upgrade, which is
+  exactly why running brew is not ours to do and not ours to suggest.
+  Homebrew's receipt lag is the accepted cost, stated plainly: after an
+  in-app swap brew's bookkeeping (Caskroom metadata, `brew list --versions`)
+  still names the OLD version, and a later `brew upgrade` reinstalls the same
+  version over ours (quitting the app as it goes, per that same `uninstall
+  quit:`) — a redundant reinstall, never a broken one. The next check() tick
+  reads the bundle on disk either way and flips to "installed" once a newer
+  bundle has landed, ours or brew's.
 - "dmg": download the signed DMG, verify, and swap the .app bundle in place.
   Replacing the bundle under a running process is the SUPPORTED existing flow
   (a manual DMG drag does exactly this): installed.installed_version() then
@@ -67,7 +72,6 @@ CASK_NAME = "fused-render"
 # GUI apps launch with a bare PATH, so brew is probed at its two fixed homes
 # (Apple Silicon, then Intel) rather than through the environment.
 BREW_PATHS = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
-BREW_COMMAND = f"brew update && brew upgrade --cask {CASK_NAME}"
 # The Activity row's id, one per version (`jobs.SERVER_ID_PREFIX`, never the
 # literal "sys:"): deterministic, so a retry after a failure re-attaches to
 # the row the user is already looking at rather than stacking a second one.
@@ -85,6 +89,14 @@ PHASE_INSTALLING = "Installing"
 # outright — after which the final `done` upsert lands on a dismissed id and
 # the "Installed — restart to finish" line is never drawn.
 INSTALL_HEARTBEAT_S = 10.0
+# The first check runs right after boot, so the sidebar badge (UpdateBadge,
+# 60s idle poll on top of this) appears on the first poll rather than a minute
+# or two into the session. Not `common.STARTUP_DELAY_S`, which the Windows tray
+# updater also drives and wants to keep clear of a whole app launch; here the
+# check loop is a background thread, so it is off the startup path anyway and
+# the delay only keeps the manifest fetch out of a booting process's first
+# tick. Every check after it is CHECK_INTERVAL_S apart as before.
+MAC_STARTUP_DELAY_S = 1.0
 DONE_MESSAGE = "Installed — restart to finish"
 CANCELLED_MESSAGE = "Cancelled"
 _DOWNLOAD_PREFIX = "FusedRender-"
@@ -144,13 +156,27 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
     return "dmg"
 
 
+def _discard_old_bundle(old: str) -> None:
+    """Best-effort removal of the bundle the swap renamed away."""
+    try:
+        shutil.rmtree(old, ignore_errors=True)
+    except OSError:
+        logger.debug("could not remove old bundle %s", old, exc_info=True)
+
+
 class UpdateManager:
     """State machine behind /api/config's `update` field.
 
     states: idle -> checking -> (idle | available) -> installing(progress)
-            -> installed | error(message, manual_command?)
+            -> installed | error(message)
     "installed" means the bundle on disk is the new version; the existing
-    installed_version drift banner drives the restart from there."""
+    installed_version drift banner drives the restart from there.
+    Every method takes the same route through those states: the DMG swap is
+    the one install path, and brew is never invoked — the cask's
+    `uninstall quit:` would quit the app mid-upgrade, so an app that ran brew
+    on itself would be killing itself to finish an install (see the module
+    docstring). There is therefore no terminal command to offer on any state,
+    for any method: status()'s `manual_command` is always None."""
 
     def __init__(self, *, manifest_url: str = MANIFEST_URL, bundle: str | None = None,
                  method: str | None = None):
@@ -163,9 +189,9 @@ class UpdateManager:
         self._state = "idle"
         self._latest: dict | None = None
         self._error: str | None = None
-        self._manual_command: str | None = None
         self._progress: float | None = None
         self._progress_total: float | None = None
+        self._phase: str | None = None
         self._install_thread: threading.Thread | None = None
         # The Activity row for the install currently in flight, and whether
         # its ✕ has been pressed. Both are only ever touched under the lock:
@@ -182,16 +208,16 @@ class UpdateManager:
 
     def status(self) -> dict:
         with self._lock:
-            # A brew-managed update happens in the user's terminal, outside any
-            # state transition here — so "available" re-checks the bundle on
-            # disk on every read (the UI polls this every minute) rather than
-            # waiting out the next CHECK_INTERVAL_S tick to notice the upgrade.
+            # An update can also land from outside this process entirely — a
+            # `brew upgrade` or a manual DMG drag in the user's own hands — so
+            # "available" re-checks the bundle on disk on every read (the UI
+            # polls this every minute) rather than waiting out the next
+            # CHECK_INTERVAL_S tick to notice it.
             if self._state == "available" and self._latest:
                 disk = self._disk_version()
                 if disk is not None and not common.is_newer(
                         self._latest["version"], disk):
                     self._state = "installed"
-                    self._sync_manual_command()
             return {
                 "state": self._state,
                 "method": self.method(),
@@ -199,7 +225,15 @@ class UpdateManager:
                 "progress": self._progress,
                 "progress_total": self._progress_total,
                 "error": self._error,
-                "manual_command": self._manual_command,
+                # Always None since D767 — kept on the wire so the client's
+                # UpdateStatus shape is unchanged. There is no terminal
+                # command to offer for any method (see the class docstring).
+                "manual_command": None,
+                # Which half of an install is running — "downloading" while the
+                # DMG streams, "installing" from the mount to the swap — so the
+                # badge can say the one word that matters (Akshil, 2026-09-08:
+                # "no longer phrases, just words"). None outside "installing".
+                "phase": self._phase if self._state == "installing" else None,
             }
 
     def method(self) -> str:
@@ -217,10 +251,18 @@ class UpdateManager:
             return
 
         def loop():
-            time.sleep(common.STARTUP_DELAY_S)
-            self._sweep_stale_downloads()
+            time.sleep(MAC_STARTUP_DELAY_S)
+            swept = False
             while True:
                 try:
+                    # Inside the try, like the Windows loop's sweep: it walks
+                    # the updates dir, and an OSError there must cost one tick,
+                    # not the whole auto-check thread. Still only once per
+                    # process — the leftovers it clears are a previous
+                    # session's.
+                    if not swept:
+                        self._sweep_stale_downloads()
+                        swept = True
                     self.check()
                 except Exception:  # noqa: BLE001 - a tick must never kill the loop
                     logger.exception("auto update tick failed")
@@ -256,7 +298,6 @@ class UpdateManager:
                         self._state = "available"
                     else:
                         self._state = "idle"
-                    self._sync_manual_command()
             return self.status()
         # The bundle on disk, not the running __version__, decides "already
         # installed": after a successful swap (ours, brew's, or a manual one
@@ -276,17 +317,7 @@ class UpdateManager:
                 else:
                     self._latest = None
                     self._state = "idle"
-                self._sync_manual_command()
         return self.status()
-
-    def _sync_manual_command(self) -> None:
-        """Brew-managed installs are never updated by the app: "available"
-        carries the terminal command for the user to run instead. Called with
-        the lock held after every check() state transition."""
-        if self._state == "available" and self.method() == "brew":
-            self._manual_command = BREW_COMMAND
-        else:
-            self._manual_command = None
 
     def _disk_version(self) -> str | None:
         """CFBundleShortVersionString of the bundle on disk — what would launch
@@ -311,16 +342,16 @@ class UpdateManager:
                 return self.status()
             if self._latest is None or self._state not in ("available", "error"):
                 return self.status()
-            if self.method() == "brew":
-                # Brew-managed: the user runs manual_command themselves; a
-                # stray POST must not put the manager into "installing".
-                return self.status()
+            # One install path for every method (Akshil, 2026-09-08): the
+            # bundle is the bundle whichever tool put it there, and the swap
+            # is version-verified either way. brew is never invoked — see the
+            # module docstring.
             manifest = self._latest
             self._state = "installing"
             self._error = None
-            self._manual_command = None
             self._progress = 0.0
             self._progress_total = None
+            self._phase = "downloading"
             self._job_id = JOB_PREFIX + str(manifest["version"])
             self._cancel = False
             self._job_broken = False
@@ -352,10 +383,13 @@ class UpdateManager:
 
     def _install(self, manifest: dict) -> None:
         try:
-            if self.method() == "dmg":
-                self._install_dmg(manifest)
-            else:
+            # ONE install path for every install type (D767): nothing branches
+            # on `method()` any more, so the only real precondition left is
+            # having a bundle to swap. (`_install_dmg` re-checks it — it is
+            # also reachable on its own.)
+            if self._bundle is None:
                 raise RuntimeError("not running from an installed bundle")
+            self._install_dmg(manifest)
         except common.UpdateCancelled:
             # Not a failure: the update is still there to install, so the
             # manager goes back to exactly where the ✕ was pressed from —
@@ -377,7 +411,6 @@ class UpdateManager:
                 self._error = None
                 self._progress = None
                 self._progress_total = None
-                self._sync_manual_command()
             return
         except Exception as error:  # noqa: BLE001 - reported through state, never raised
             logger.exception("update install failed")
@@ -495,10 +528,22 @@ class UpdateManager:
             pass
 
     def _install_dmg(self, manifest: dict) -> None:
-        bundle = self._bundle
-        if bundle is None:
+        if self._bundle is None:
             raise RuntimeError("not running from an installed bundle")
+        # realpath, not the stored path: `bundle_path()` only abspaths, so a
+        # bundle reached through a symlink (a /Applications/FusedRender.app
+        # link into a Caskroom artifact, say) would otherwise have its LINK
+        # renamed by the swap below — leaving the real bundle untouched and the
+        # link pointing at a name that no longer exists.
+        bundle = os.path.realpath(self._bundle)
         parent = os.path.dirname(bundle)
+        # For a Homebrew cask installed as an artifact rather than a copy, that
+        # resolved parent is `…/Caskroom/fused-render/<oldversion>/`. It is
+        # writable, so the swap lands there and brew's receipt goes on pointing
+        # at a directory whose contents are now the NEW version — the accepted
+        # receipt lag (see the module docstring): the app on disk is simply
+        # newer than `brew list --versions` says until brew next runs, and the
+        # app does not run brew to fix that.
         if not os.access(parent, os.W_OK):
             raise RuntimeError(
                 f"cannot write to {parent} — update by downloading the DMG manually")
@@ -546,6 +591,8 @@ class UpdateManager:
         # stopping would leave anything better than finishing does — so the
         # row drops its Cancel and its numbers (no honest total exists for a
         # copy-and-swap) and says what it is doing instead.
+        with self._lock:
+            self._phase = "installing"
         self._job_report(detail=PHASE_INSTALLING, message="", done=None,
                          total=None, cancellable=False)
         # …and it has to keep saying it: the swap reports no progress, but a
@@ -599,10 +646,12 @@ class UpdateManager:
             beat_stop.set()
             beat.join(timeout=INSTALL_HEARTBEAT_S + 5)
         # Old bundle: best-effort removal on a worker; open files keep working
-        # on the unlinked inodes until this process exits.
+        # on the unlinked inodes until this process exits. `old` is a name this
+        # function just renamed a realpath'd `bundle` to, so it is a real
+        # directory, never a symlink — `rmtree` is the whole story.
         if old is not None:
-            threading.Thread(target=shutil.rmtree, args=(old,),
-                             kwargs={"ignore_errors": True}, daemon=True).start()
+            threading.Thread(target=_discard_old_bundle, args=(old,),
+                             daemon=True).start()
 
     def _check_disk_space(self, updates: str) -> None:
         stat = os.statvfs(updates)

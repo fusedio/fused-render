@@ -2,10 +2,9 @@
 
 The signed-manifest crypto path is shared with the Windows updater and covered
 by tests/test_win_supervisor_update.py; these tests cover what's new on mac:
-the brew/dmg method decision, the manager's state machine (including the rule
-that brew-managed installs are never updated by the app — the user runs the
-surfaced `brew upgrade` command themselves), and the /api/update endpoints'
-guards.
+the brew/dmg method decision, the manager's state machine (including that a
+brew-managed bundle installs down the same DMG path and carries no terminal
+command at all), and the /api/update endpoints' guards.
 """
 import os
 import subprocess
@@ -170,14 +169,18 @@ def test_install_retry_allowed_from_error(monkeypatch):
     assert manager.status()["state"] == "installed"
 
 
-# ---- brew path: the app never runs brew — the user does -----------------------
+# ---- brew path: one install path, and never a brew command anywhere ----------
 
 
-def test_brew_available_carries_manual_command(monkeypatch):
+def test_brew_available_has_no_manual_command_either(monkeypatch):
+    """The method is informational only (D767): a brew-managed bundle gets the
+    same status shape as a dmg one, `manual_command` included — the app never
+    offers a brew command because it never runs brew on itself."""
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     status = manager.check()
     assert status["state"] == "available"
-    assert status["manual_command"] == "brew update && brew upgrade --cask fused-render"
+    assert status["method"] == "brew"
+    assert status["manual_command"] is None
 
 
 def test_dmg_available_has_no_manual_command(monkeypatch):
@@ -187,12 +190,58 @@ def test_dmg_available_has_no_manual_command(monkeypatch):
     assert status["manual_command"] is None
 
 
-def test_brew_install_is_a_noop(monkeypatch):
-    manager = _manager(monkeypatch, method="brew", available="9.9.9")
+def test_brew_install_takes_the_dmg_path(monkeypatch, tmp_path):
+    """A brew-managed install used to be a no-op on POST /install (the user ran
+    the brew command). It now installs exactly like a DMG one — one install
+    path for every install type (D767) — and carries no command with it."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    manager._method = "brew"
     manager.check()
-    status = manager.install()
-    assert status["state"] == "available"
-    assert manager._install_thread is None
+    assert manager.status()["manual_command"] is None
+
+    # Recorded, not real: `_install_dmg` would otherwise download the manifest's
+    # URL. The assertion is that it RAN — a brew install used to be refused
+    # before it got here.
+    ran = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: ran.append(manifest))
+
+    manager.install()
+    assert manager._install_thread is not None
+    manager._install_thread.join(timeout=5)
+    # The recorder returns instantly, so `install()`'s own return may already
+    # say "installed" — the state to assert on is the settled one.
+    assert len(ran) == 1
+    assert ran[0]["version"] == "9.9.9"
+    assert manager.status()["state"] == "installed"
+
+
+def test_a_failed_brew_install_has_no_terminal_command(monkeypatch, tmp_path):
+    """A failed install on a brew-managed bundle offers no way out but "Try
+    again": the app will not hand the user a brew command it would not run
+    itself (the cask's `uninstall quit:` would quit the app mid-upgrade)."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    manager._method = "brew"
+    manager.check()
+    monkeypatch.setattr(manager, "_install_dmg",
+                        lambda manifest: (_ for _ in ()).throw(RuntimeError("boom")))
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    status = manager.status()
+    assert status["state"] == "error"
+    assert status["manual_command"] is None
+
+
+def test_a_failed_dmg_install_has_no_terminal_command(monkeypatch, tmp_path):
+    """Same failure on a dmg-managed bundle: the badge shows the raw error and
+    a "Try again", with no command of any kind."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr(manager, "_install_dmg",
+                        lambda manifest: (_ for _ in ()).throw(RuntimeError("boom")))
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    status = manager.status()
+    assert status["state"] == "error"
+    assert status["manual_command"] is None
 
 
 def test_status_notices_external_upgrade_without_a_check(monkeypatch):
@@ -208,7 +257,7 @@ def test_status_notices_external_upgrade_without_a_check(monkeypatch):
 
 def test_brew_external_upgrade_flips_check_to_installed(monkeypatch):
     """The user runs brew in a terminal; the next check() sees the new bundle
-    on disk, lands on "installed", and drops the manual command."""
+    on disk and lands on "installed"."""
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     assert manager.check()["state"] == "available"
     monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
@@ -708,3 +757,31 @@ def test_the_heartbeat_never_overwrites_the_finished_row(monkeypatch, tmp_path):
     assert beats_after == [], beats_after
     row = _row()
     assert row["state"] == "error" and "swap ended" in row["message"], row
+
+
+def test_status_says_which_half_of_the_install_is_running(monkeypatch, tmp_path):
+    """The badge's one word comes from `phase`: "downloading" from the click,
+    "installing" once the DMG is mounted, None outside an install."""
+    manager = _dmg_manager(monkeypatch, tmp_path)
+    assert manager.status()["phase"] is None
+    seen = []
+
+    def fake_download(manifest, *, dir, prefix, suffix, progress, should_abort):
+        seen.append(manager.status()["phase"])
+        os.makedirs(dir, exist_ok=True)
+        path = os.path.join(dir, prefix + "done" + suffix)
+        with open(path, "wb") as f:
+            f.write(b"x" * 8)
+        return path
+
+    monkeypatch.setattr(common, "download_verified", fake_download)
+
+    def attach(dmg):
+        seen.append(manager.status()["phase"])
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(manager, "_attach", attach)
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    assert seen == ["downloading", "installing"]
+    assert manager.status()["phase"] is None

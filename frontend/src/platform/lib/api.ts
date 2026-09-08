@@ -430,8 +430,10 @@ export function runClaudeDoctor(): Promise<{
 export interface UpdateStatus {
   // idle | checking | available | installing | installed | error
   state: string;
-  // brew: the user runs `brew upgrade --cask` themselves (see manual_command);
-  // dmg: the app downloads and swaps its own bundle; none: not updatable.
+  // INFORMATIONAL ONLY — every method takes the same install path (D767): the
+  // app downloads the signed DMG and swaps its own bundle. brew: that bundle
+  // happens to be Homebrew-managed (the app still never runs brew); dmg: it
+  // is not; none: not updatable. Nothing in the UI branches on this.
   method: string;
   latest_version: string | null;
   // Bytes downloaded so far (dmg method only).
@@ -440,9 +442,13 @@ export interface UpdateStatus {
   // the manifest itself carries no size field. Null when the CDN omits that
   // header, in which case the UI falls back to showing MB downloaded.
   progress_total: number | null;
+  // Which half of an install is running: "downloading" while the DMG streams,
+  // "installing" from the mount to the swap; null outside state "installing".
+  phase?: "downloading" | "installing" | null;
   error: string | null;
-  // Set when the user must run the update themselves (brew-managed installs,
-  // state "available") — shown with a copy button.
+  // Always null since D767; kept for wire compatibility. There is one install
+  // path for every install type and no terminal command to hand the user, so
+  // no surface reads this field any more.
   manual_command: string | null;
 }
 
@@ -4248,7 +4254,7 @@ export function getGitSnapshot(path: string, sha: string): Promise<GitSnapshot> 
 
 // The cheap, sha-less sibling: does an app folder enclose `path` at all — the
 // same fail-closed probe templates/git/template.html's own `probeAppFolder()`
-// calls before offering its preview eye (D742 / review finding B4). Backs
+// calls before offering its preview eye (D767 / review finding B4). Backs
 // AppVersionPicker's own gate: the picker renders only once this resolves ok.
 export interface GitAppFolder {
   ok: boolean;
