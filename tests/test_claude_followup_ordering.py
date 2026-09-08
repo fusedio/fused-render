@@ -186,6 +186,7 @@ def test_bare_followup_turn_lands_before_a_live_working_line(html):
 addWorkingLine();
 let stripBlocks = (t) => t;
 const outgoing = "wordless follow-up marker";
+const id = "test-id";
 let bareTurn = null;
 """ + src + """
 console.log(JSON.stringify({ order: classNamesOf(log), bareTurnSet: bareTurn !== null }));
@@ -204,6 +205,7 @@ def test_bare_followup_turn_still_plain_appends_with_no_turn_running(html):
     out = _run(html, """
 let stripBlocks = (t) => t;
 const outgoing = "wordless follow-up marker";
+const id = "test-id";
 let bareTurn = null;
 """ + src + """
 console.log(JSON.stringify({ order: classNamesOf(log) }));

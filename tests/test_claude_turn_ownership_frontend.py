@@ -574,6 +574,39 @@ scriptProbes([{
         "one already on screen"
 
 
+def test_probe_done_repair_draws_reserved_user_turns_not_just_probe_message(html):
+    """Finding 4: the `probe.done` repair branch (a run finished while this
+    frame was away) used to draw only `probeMsg` — `meta.json`'s message
+    from the run's `_start` call, the exchange's very first send — and
+    discard the reservation outright. A follow-up folded into this SAME
+    exchange before the repair ran lives in `pendingOpenTurns`, not in
+    `probeMsg` and not in `probe.pending` (which reads `inbox/`, i.e.
+    undrained only) — dropping the reservation here lost that second user
+    turn entirely."""
+    src = _addUser_src(html) + "\n" + _render_history_turns_src(html) + "\n" \
+        + _resume_run_src(html)
+    out = _run(html, _RESUME_STUB + src + """
+let pendingOpenTurns = [
+  { role: "user", text: "fix the header", uuid: "u1" },
+  { role: "user", text: "now the footer too", uuid: "u2" },
+];
+// probe.message is the run's FIRST message, stale for this second turn.
+scriptProbes([{ done: true, message: "fix the header", text: "Done.", segments: [] }]);
+(async () => {
+  await resumeRun("r1", {});
+  console.log(JSON.stringify({
+    bubbles: [...log.querySelectorAll(".user .bubble")].map((b) => b.textContent),
+    pendingOpenTurnsAfter: pendingOpenTurns,
+  }));
+})();
+""")
+    assert out["bubbles"] == ["fix the header", "now the footer too"], \
+        "the repair must draw every reserved user turn, not just the run's " \
+        "first message"
+    assert out["pendingOpenTurnsAfter"] is None, \
+        "the repair drew this exchange itself, so the reservation is spent"
+
+
 def test_resume_run_never_draws_its_own_assistant_bubble_on_the_live_path(html):
     """finding 7 ("who draws what"): the still-open exchange's assistant
     text comes from `pollLoop`'s own poll, never from `resumeRun` itself — a
@@ -620,8 +653,16 @@ renderHistoryTurns([
 const afterHistory = classNamesOf(log).length;
 const assistantTurnsAfterHistory = assistantTurnsDrawn;
 
-// loadHistory's own reservation for the still-open exchange, off open_from.
-let pendingOpenTurns = { some: "reservation" };
+// loadHistory's own reservation for the still-open exchange, off open_from:
+// a real array, carrying both the user turn already echoed AND the
+// assistant text already streamed into the SAME still-open exchange (what
+// a real reservation actually looks like) — not an object, which would
+// make `reserved && reserved.length` falsy and silently fall through to
+// the `probeMsg` branch below, testing nothing about the reservation path.
+let pendingOpenTurns = [
+  { role: "user", text: "still open", uuid: "u1" },
+  { role: "assistant", text: "partial reply so far", segments: [] },
+];
 
 // The live attach: a genuine, current run is found, so it draws the open
 // exchange's user turn itself and clears the reservation.
@@ -687,6 +728,40 @@ scriptProbes([{ done: false, message: "fix the header", pending: [] }]);
     assert out["bubbles"] == ["fix the header", "now the footer too"], \
         "every reserved turn must draw, not just the run's first message"
     assert out["pendingOpenTurnsAfter"] is None
+    assert out["pollLoopCalls"] == [["r1", 0]]
+
+
+def test_resume_run_draws_reservation_users_only_never_the_assistant_row(html):
+    """Finding 2: the reserved slice `loadHistory` made also carries this
+    still-open exchange's own assistant text (whatever has streamed into it
+    already), because it is a straight `turns.slice(open_from)` — not a
+    filtered one. `resumeRun`'s live path must draw only the USER rows of
+    that reservation; the assistant text belongs exclusively to `pollLoop`,
+    handed this exchange from its start a few lines below. Drawing the whole
+    slice here is the PR-7 double-print: the same reply prints once from the
+    reservation and again once `pollLoop` re-streams it."""
+    src = _addUser_src(html) + "\n" + _render_history_turns_src(html) + "\n" \
+        + _resume_run_src(html)
+    out = _run(html, _RESUME_STUB + src + """
+let pendingOpenTurns = [
+  { role: "user", text: "fix the header", uuid: "u1" },
+  { role: "assistant", text: "already streamed some of this", segments: [] },
+];
+scriptProbes([{ done: false, message: "fix the header", pending: [] }]);
+(async () => {
+  await resumeRun("r1", {});
+  console.log(JSON.stringify({
+    bubbles: [...log.querySelectorAll(".user .bubble")].map((b) => b.textContent),
+    assistantTurnsDrawn,
+    pollLoopCalls,
+  }));
+})();
+""")
+    assert out["bubbles"] == ["fix the header"], \
+        "the reservation's user row must draw"
+    assert out["assistantTurnsDrawn"] == 0, \
+        "the reservation's assistant row must NOT draw here — pollLoop, " \
+        "handed the exchange below, is its one and only source"
     assert out["pollLoopCalls"] == [["r1", 0]]
 
 
@@ -767,8 +842,9 @@ def test_send_message_draws_a_wordless_turn_with_the_same_marker_a_reload_would_
     receipt on — the lockstep sibling of D758's fix, already applied to
     `sendFollowUp` but not here. Drawn now with the same
     `stripBlocks(outgoing)` marker a reload's history restore or another
-    tab's poll would show, so the ordinary `.user .bubble` textContent dedup
-    finds this turn already on screen instead of drawing a second one."""
+    tab's poll would show, stamped with the id the page minted for this send,
+    so the pending dedup (which matches by id, not text) finds this turn
+    already on screen instead of drawing a second one."""
     src = _node_fns(html, _WIRE_FNS) + "\n" + _addUser_src(html) + "\n" \
         + _block(html, "async function sendMessage(message) {", "\n}\n")
     out = _run(html, _SENDMSG_STUB + f"""
@@ -789,6 +865,79 @@ function renderAnn() {{}}
     assert out["bubbles"] == ["🖼 pane screenshot"], \
         "exactly one bubble, showing the marker label — never a second, " \
         "bubble-less turn nothing later compares against"
+
+
+def test_send_message_mints_the_id_before_sending_and_draws_with_it(html):
+    """Findings 1/3: the page mints the bubble's id itself
+    (`crypto.randomUUID()`) before either the `send` or `start` call, so the
+    bubble is stamped with it at DRAW time rather than left unstamped until
+    the round trip returns. The same id must ride on the outgoing request —
+    `action: "start"` (a brand-new chat's first message) included, which
+    used to carry no id at all."""
+    src = _node_fns(html, _WIRE_FNS) + "\n" + _addUser_src(html) + "\n" \
+        + _block(html, "async function sendMessage(message) {", "\n}\n")
+    out = _run(html, _SENDMSG_STUB.replace(
+        'runPython: async (agent, req) => {\n'
+        '    if (req.action === "start") return { run_id: "r1" };\n'
+        '    return { sent: true };\n'
+        '  },',
+        'runPython: async (agent, req) => {\n'
+        '    requests.push(req);\n'
+        '    if (req.action === "start") return { run_id: "r1" };\n'
+        '    return { sent: true };\n'
+        '  },',
+    ) + f"""
+let requests = [];
+(async () => {{
+{src}
+let shotAttached = [];
+function renderAnn() {{}}
+  await sendMessage("hello there");
+  const turn = [...log.querySelectorAll(".turn.user")][0];
+  console.log(JSON.stringify({{
+    startId: requests.find((r) => r.action === "start").id,
+    bubbleId: turn.dataset.pendingId,
+  }}));
+}})();
+""")
+    assert out["startId"], \
+        "action: \"start\" must carry the page-minted id — a new chat's " \
+        "first message previously named nothing at all"
+    assert out["bubbleId"] == out["startId"], \
+        "the bubble drawn for this send must already carry the same id " \
+        "the start call is sending, not one stamped on afterward"
+
+
+def test_send_message_wordless_draw_is_guarded_by_log_generation(html):
+    """Finding 6: the wordless branch draws its bubble (and the receipt
+    block) after two awaits (`annOverview`, `appStateFile`) with no `logGen`
+    check — a Back press bumping `logGen` (and wiping `log`) during that
+    capture window must not leave a ghost turn appended to whatever the log
+    now shows."""
+    src = _node_fns(html, _WIRE_FNS) + "\n" + _addUser_src(html) + "\n" \
+        + _block(html, "async function sendMessage(message) {", "\n}\n")
+    out = _run(html, _SENDMSG_STUB + f"""
+(async () => {{
+{src}
+let shotAttached = [{{ kind: "pane", view: "/tmp/fr/shots/x.png" }}];
+function renderAnn() {{}}
+// Bumps logGen (simulating a Back press) partway through the capture await
+// window, the same way a real navigation would.
+appStateFile = async (state) => {{
+  logGen++;
+  return state;
+}};
+  await sendMessage("");
+  console.log(JSON.stringify({{
+    turns: [...log.querySelectorAll(".turn.user")].length,
+    errors,
+  }}));
+}})();
+""")
+    assert out["errors"] == []
+    assert out["turns"] == 0, \
+        "a Back press during the capture must leave no ghost turn behind " \
+        "in the wiped log"
 
 
 # Everything sendFollowUp needs besides the DOM stub, addUser, and the real
@@ -817,6 +966,52 @@ const fused = {
   runPython: async () => ({ sent: true }),
 };
 """
+
+
+def test_send_follow_up_respawn_carries_the_same_id_into_the_restarted_run(html):
+    """Findings 1/3: when `_send` reports `{ respawn: true }` (the live
+    session cannot honor this follow-up as-is and has already ended itself),
+    `sendFollowUp` falls through to `action: "start"` for a fresh run — the
+    SAME id already stamped on the bubble on screen must ride along, or the
+    first poll tick against the new run finds no bubble to match and draws a
+    second one."""
+    src = _node_fns(html, _WIRE_FNS) + "\n" + _addUser_src(html) + "\n" \
+        + _block(html, "async function sendFollowUp(text) {", "\n}\n")
+    out = _run(html, _FOLLOWUP_STUB.replace(
+        'const fused = {\n'
+        '  params: { get: () => "" },\n'
+        '  runPython: async () => ({ sent: true }),\n'
+        '};',
+        'let requests = [];\n'
+        'let pollLoopCalls = [];\n'
+        'async function pollLoop(run_id, gen) { pollLoopCalls.push([run_id, gen]); }\n'
+        'const fused = {\n'
+        '  params: { get: () => "", set: () => {} },\n'
+        '  runPython: async (agent, req) => {\n'
+        '    requests.push(req);\n'
+        '    if (req.action === "send") return { respawn: true };\n'
+        '    return { run_id: "r2" };\n'
+        '  },\n'
+        '};',
+    ) + f"""
+(async () => {{
+{src}
+let shotAttached = [];
+const noPane = false;
+const FILE = "/f";
+  await sendFollowUp("fix the footer");
+  console.log(JSON.stringify({{
+    sendId: requests.find((r) => r.action === "send").id,
+    startId: requests.find((r) => r.action === "start").id,
+    pollLoopCalls,
+  }}));
+}})();
+""")
+    assert out["sendId"], "the follow-up's send call must carry an id"
+    assert out["startId"] == out["sendId"], \
+        "the respawn's start call must carry the SAME id the send call " \
+        "already carried, not a fresh one"
+    assert out["pollLoopCalls"] == [["r2", 0]]
 
 
 def test_a_wordless_screenshot_only_follow_up_draws_one_bubble(html):

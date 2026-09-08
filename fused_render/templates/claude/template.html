@@ -13453,9 +13453,13 @@ function addUser(text, uuid, pendingId) {
   const d = document.createElement("div");
   d.className = "turn user";
   if (uuid) d.dataset.msg = uuid;
-  // `pendingId` is the inbox entry's own filename (`_send`'s `id`,
-  // `_pending_messages`'s per-entry `id`) — stamped so a later tick can
-  // dedup THIS bubble against `data.pending`/`probe.pending` by id instead
+  // `pendingId` is the id this page minted for the message — for a turn
+  // drawn from `data.pending`/`probe.pending` it is the same value
+  // `_pending_messages` reported back (`entry.id`); for a turn this page is
+  // about to send, it is stamped BEFORE the inbox entry naming it even
+  // exists (see sendMessage/sendFollowUp), so a poll tick landing in the
+  // gap between the inbox write and the send call's own response still
+  // finds a bubble to match. A later tick dedups against this by id instead
   // of comparing text, which collides for a wordless send (one marker text
   // for every such turn) and for a verbatim repeat.
   if (pendingId) d.dataset.pendingId = pendingId;
@@ -16036,24 +16040,30 @@ async function sendFollowUp(text) {
     return wire;
   });
   const outgoing = composeOutgoing(text, pending, null, wireViews);
+  // Minted here, before anything is sent: the id has to be on the bubble
+  // the instant it is drawn, or a pollLoop tick landing between the inbox
+  // write below and this call's own response finds an unstamped bubble and
+  // draws a second one. Passed into the inbox write itself (`id`, below) so
+  // the entry this page's own poll later reads back carries the SAME id.
+  const id = crypto.randomUUID();
   let bareTurn = null;
-  // The turn this send drew, whichever branch below drew it — stamped with
-  // `res.id` once the inbox write actually lands (below), so a later poll
-  // dedups it by id instead of text (a wordless send shares its marker text
-  // with every other wordless send; the id does not).
+  // The turn this send drew, whichever branch below drew it — already
+  // stamped with `id`, so a later poll dedups it by id instead of text (a
+  // wordless send shares its marker text with every other wordless send;
+  // the id does not).
   let drawnTurn = null;
   if (text) {
-    addUser(text);
+    addUser(text, null, id);
     const turns = log.querySelectorAll(".turn.user");
     drawnTurn = turns[turns.length - 1];
   } else if (pending.length || pics.length) {
     // annotation- or screenshot-only follow-up: no typed words, but still a
     // turn — drawn with the marker label stripBlocks gives this wire text,
-    // so the bubble already on screen is the one thing another tab's poll
-    // (or this tab's own pollLoop, once the CLI echoes it back) finds
-    // through the ordinary `.user .bubble` textContent dedup, rather than
+    // and stamped with `id` immediately, so the bubble already on screen is
+    // the one thing another tab's poll (or this tab's own pollLoop, once
+    // the CLI echoes it back) finds through the id-based dedup, rather than
     // drawing a second, separate turn for the same send.
-    addUser(stripBlocks(outgoing));
+    addUser(stripBlocks(outgoing), null, id);
     const turns = log.querySelectorAll(".turn.user");
     bareTurn = turns[turns.length - 1];
     drawnTurn = bareTurn;
@@ -16129,6 +16139,7 @@ async function sendFollowUp(text) {
       action: "send",
       run_id,
       message: outgoing,
+      id,
       read_dirs: JSON.stringify(shotReadDirs(pics)),
       model: curModel(),
       effort: curEffort(),
@@ -16140,7 +16151,11 @@ async function sendFollowUp(text) {
       // has already ended itself. `sendMessage`'s own live-host branch falls
       // through to `action: "start"` for exactly this response; this does
       // the same, rather than reporting a misleading generic send failure
-      // for a message that was never actually rejected.
+      // for a message that was never actually rejected. The SAME `id` rides
+      // along — the bubble already on screen was stamped with it, and the
+      // fresh session's own inbox entry has to carry it too, or the first
+      // poll tick after this respawn finds no bubble to match and draws a
+      // second one.
       const session_id = fused.params.get("session_id") || "";
       const started = await fused.runPython(AGENT, {
         action: "start",
@@ -16152,6 +16167,7 @@ async function sendFollowUp(text) {
         permission_mode: fused.params.get("permission") || DEFAULT_PERMISSION,
         has_pane: noPane ? "0" : "1",
         read_dirs: JSON.stringify(shotReadDirs(pics)),
+        id,
       }, { key: null });
       if (started.error) throw new Error(started.error);
       if (logGen === gen) {
@@ -16165,7 +16181,6 @@ async function sendFollowUp(text) {
       addError("Could not send: the session ended before this reached it.");
       return;
     }
-    if (drawnTurn && res.id) drawnTurn.dataset.pendingId = res.id;
     // A follow-up landed as its own bubble above — bump so any pollLoop
     // streaming into an OLDER assistant bubble (positioned before this one)
     // knows to start a NEW one after it, rather than keep growing text that
@@ -16520,18 +16535,24 @@ async function sendMessage(message) {
   // describing when they type. `appStatePush`, not the raw snapshot: a pushed
   // block carries the newest console lines rather than the whole buffer.
   const state = appStatePush();
+  // Minted here, before anything is sent: the id has to be on the bubble the
+  // instant it is drawn (below), or a pollLoop tick landing between the
+  // inbox write and the send/start call's own response finds an unstamped
+  // bubble and draws a second one. Carried into both the live-send call and
+  // the fresh-spawn call further down, so a brand-new chat's first message
+  // gets the same coverage a follow-up does.
+  const id = crypto.randomUUID();
   // The bubble goes up BEFORE the screenshot capture below, which is the one slow
   // step on this path: the user's words appearing instantly is worth more than a
   // receipt and a bubble arriving together.
   let bareTurn = null;
-  // The turn this send drew, whichever branch draws it (below, once
-  // `outgoing`/`stripBlocks` are ready) — stamped with the live-send
-  // response's `id` once the inbox write actually lands, so a later poll
-  // dedups it by id instead of text (a wordless send shares its marker text
-  // with every other wordless send; the id does not).
+  // The turn this send drew, whichever branch draws it — already stamped
+  // with `id`, so a later poll dedups it by id instead of text (a wordless
+  // send shares its marker text with every other wordless send; the id does
+  // not).
   let drawnTurn = null;
   if (message) {
-    addUser(message);
+    addUser(message, null, id);
     const turns = log.querySelectorAll(".turn.user");
     drawnTurn = turns[turns.length - 1];
   }
@@ -16588,15 +16609,22 @@ async function sendMessage(message) {
     wireViews.unshift(wire);
   }
   const outgoing = composeOutgoing(message, pending, sentState, wireViews);
-  if (!message) {
-    // annotation- or screenshot-only send: no typed words, but still a turn —
-    // drawn with the marker label stripBlocks gives this exact wire text (D758's
-    // fix to sendFollowUp, mirrored here), so the bubble already on screen is
-    // the one thing another tab's poll (or this tab's own pollLoop, once the
-    // CLI echoes it back) finds through the ordinary `.user .bubble`
-    // textContent dedup, rather than drawing a second, separate turn for the
-    // same send.
-    addUser(stripBlocks(outgoing));
+  // The wordless bubble is drawn AFTER the two awaits above (annOverview,
+  // appStateFile) — unlike the typed-message branch above, which draws
+  // before either — so a Back press during the capture can bump `logGen`
+  // and wipe `log` while this send is still in flight. Guarded the same way
+  // every other post-await renderer in this file is: a wipe means this
+  // page's own turn no longer belongs on screen, whether that screen still
+  // shows nothing (the landing page) or has moved on to a different chat.
+  if (logGen === gen && !message) {
+    // annotation- or screenshot-only send: no typed words, but still a
+    // turn — drawn with the marker label stripBlocks gives this exact wire
+    // text (mirroring sendFollowUp's own wordless draw), and stamped with
+    // `id` immediately, so the bubble already on screen is the one thing
+    // another tab's poll (or this tab's own pollLoop, once the CLI echoes
+    // it back) finds through the id-based dedup, rather than drawing a
+    // second, separate turn for the same send.
+    addUser(stripBlocks(outgoing), null, id);
     const bareTurns = log.querySelectorAll(".turn.user");
     bareTurn = bareTurns[bareTurns.length - 1];
     drawnTurn = bareTurn;
@@ -16607,9 +16635,12 @@ async function sendMessage(message) {
   }
   // Subtle receipt under the bubble: which annotations rode this message, and
   // which pictures did. Built whenever there is EITHER, since a picture-only send
-  // attaches a file too and nothing is attached invisibly.
+  // attaches a file too and nothing is attached invisibly. Guarded the same
+  // way the wordless draw above is: both run after the same two awaits, and
+  // a wipe in between must not append this turn's receipt onto whatever log
+  // is on screen now.
   let receipt = null;
-  if (pending.length || pics.length) {
+  if (logGen === gen && (pending.length || pics.length)) {
     const turns = log.querySelectorAll(".turn.user");
     const turn = turns[turns.length - 1];
     const sum = document.createElement("div");
@@ -16670,6 +16701,7 @@ async function sendMessage(message) {
             action: "send",
             run_id: live.run_id,
             message: outgoing,
+            id,
             read_dirs: JSON.stringify(shotReadDirs(pics)),
             model: curModel(),
             effort: curEffort(),
@@ -16681,10 +16713,7 @@ async function sendMessage(message) {
         // live session cannot honor this message as-is (a new attachment
         // directory, a changed effort — see agent.py `_send`'s docstring) —
         // every one of those means "start fresh", same as no host at all.
-        if (sent && sent.sent) {
-          run_id = live.run_id;
-          if (drawnTurn && sent.id) drawnTurn.dataset.pendingId = sent.id;
-        }
+        if (sent && sent.sent) run_id = live.run_id;
       }
     }
     if (!run_id) {
@@ -16715,6 +16744,11 @@ async function sendMessage(message) {
         // the inbox later too — a follow-up naming a NEW directory instead
         // ends the session and respawns (see `_send`'s docstring).
         read_dirs: JSON.stringify(shotReadDirs(pics)),
+        // The same id already stamped on the bubble above — a brand-new
+        // chat's first message has no run id to poll with until this call
+        // returns, so without this the first pollLoop tick would find that
+        // entry in `pending`, match no bubble, and draw it a second time.
+        id,
         // key:null — all agent calls opt out of default per-file cancellation
         // (D114): start/poll/history/sessions share one file, and superseding
         // an awaited poll would leave it pending and hang the streaming loop.
@@ -17914,7 +17948,18 @@ async function resumeRun(run_id, opts) {
         // second tab's remaining complaint (D415). All three render the whole
         // turn — user line plus the assistant rows and their tool timeline from
         // the poll payload.
-        addUser(probeMsg);
+        //
+        // The reservation's user turns draw here, `probeMsg` only as the
+        // fallback for when nothing was reserved: `probeMsg` is `meta.json`'s
+        // message from the run's `_start` call, the exchange's very first
+        // send, and says nothing about a follow-up already folded into this
+        // SAME exchange before this repair ran — that folded-in turn is
+        // inside `pendingOpenTurns`, not `probeMsg` and not `probe.pending`
+        // (which reads `inbox/`, i.e. undrained only).
+        const reservedUsers = (pendingOpenTurns || [])
+          .filter((t) => t.role === "user");
+        if (reservedUsers.length) renderHistoryTurns(reservedUsers);
+        else addUser(probeMsg);
         renderPending(probe.pending);
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
@@ -17938,10 +17983,19 @@ async function resumeRun(run_id, opts) {
     // slice (`loadHistory`'s `turns.slice(open_from)`) is what actually holds
     // every user turn already echoed for THIS exchange, in order. `probeMsg`
     // is only the fallback for an attach with nothing reserved ahead of it —
-    // `adoptLiveRun`/`pollScheduledRuns` call in without a `loadHistory`
-    // reservation first.
-    const reserved = pendingOpenTurns;
-    if (reserved && reserved.length) {
+    // `pollScheduledRuns` calls in without a `loadHistory` reservation first
+    // (`adoptLiveRun` does not: both its own callers, the session-row open()
+    // and the boot path, `await loadHistory(...)` right before it, so the
+    // reserved branch is what fires there too).
+    //
+    // Only the USER rows of the reservation draw here — never the assistant
+    // ones the same slice can carry. `pollLoop`, handed the exchange from its
+    // start a few lines down, re-streams that exchange's own assistant text;
+    // drawing the whole slice here would print the reply twice. The fallback
+    // above (`renderReservedOpenTurns`) is the only place the whole slice
+    // ever draws, because no poll follows it there.
+    const reserved = (pendingOpenTurns || []).filter((t) => t.role === "user");
+    if (reserved.length) {
       renderHistoryTurns(reserved);
       attachCodeCopy(log);
       // The reservation is on screen now — the earliest a `?msg=` anchor
