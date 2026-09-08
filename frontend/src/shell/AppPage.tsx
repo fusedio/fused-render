@@ -61,12 +61,11 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { embedUrlForFsPath, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import {
   AppWindow,
   Files,
   GitBranch,
-  ExternalLink,
   ListTodo,
   Webhook,
   type LucideIcon,
@@ -419,7 +418,7 @@ export default function AppPage({
   const entry = resolved?.kind === "app" ? resolved.entry : null;
 
   // App Doctor: the share-readiness checklist for this folder, opened from the
-  // header beside "Open app". It stands where the fused-API "Migrate" button
+  // header beside "Open in explorer". It stands where the fused-API "Migrate" button
   // stood, and subsumes it — a stale `fused-api-version` tag is one row of the
   // checklist now, beside the things migrate never covered (a leaked key, a
   // path tied to one machine, stray generated files, an uncommitted tree). The
@@ -465,7 +464,8 @@ export default function AppPage({
           <div className="app-page-name">
             <h1>{slug}</h1>
             {/* Reads as the folder and IS the folder: opens its listing in the
-                explorer. The app itself is the "Open app" button opposite. */}
+                explorer. The app's entry page is the "Open in explorer"
+                button opposite. */}
             <a className="app-page-folder" href={folderHref} title={dir}>
               {tildePath(dir, home)}
             </a>
@@ -484,19 +484,19 @@ export default function AppPage({
             >
               App Doctor
             </Button>
-            {/* The app full-size AS AN APP — its entry page in embed mode,
-                chrome-free — in a new tab so this page and its live frame stay
-                put. The top-level embed's strip (EmbedStrip) is the way back
-                into the explorer from there; the folder link opposite is the
-                explorer route from here. */}
+            {/* The app's entry page in the EXPLORER — sidebar, crumb, header
+                and all. This button used to open the chrome-free embed in a
+                new tab; the explorer's own header now carries a fullscreen
+                control that does that hop, so this page offers one route (the
+                explorer) and the explorer offers the next (the embed). The
+                folder link opposite is the same route one level up. */}
             <Button
               size="sm"
               variant="outline"
               className="app-page-open"
-              onClick={() => window.open(embedUrlForFsPath(entry), "_blank", "noopener")}
+              onClick={() => navigateUrl(urlForFsPath(entry), { isDir: false })}
             >
-              Open app
-              <ExternalLink data-icon="inline-end" />
+              Open in explorer
             </Button>
           </div>
         )}
