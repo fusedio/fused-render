@@ -48,9 +48,9 @@ def agent():
 def _t_user(text):
     # Real shape: the persisted transcript's `user` rows carry the message
     # text as a bare string, not the `_write_inbox_entry` block-list shape
-    # `out.jsonl` echoes carry — measured across real sessions (see
-    # SPEC-turn-ownership-round2.md), and there is no `result` row and no
-    # `parent_tool_use_id` anywhere in that file, ever.
+    # `out.jsonl` echoes carry — measured across real sessions (DECISIONS.md
+    # D750), and there is no `result` row and no `parent_tool_use_id`
+    # anywhere in that file, ever.
     return {"type": "user", "message": {"role": "user", "content": text}}
 
 
@@ -67,7 +67,7 @@ def _t_subagent_user(text):
             "message": {"role": "user", "content": text}}
 
 
-def _write_transcript(agent, tmp_path, monkeypatch, rows):
+def _write_transcript(agent, tmp_path, monkeypatch, rows, return_path=False):
     target = tmp_path / "proj" / "page.html"
     os.makedirs(target.parent, exist_ok=True)
     target.write_text("<html></html>")
@@ -75,43 +75,58 @@ def _write_transcript(agent, tmp_path, monkeypatch, rows):
     monkeypatch.setattr(agent, "PROJECTS", str(projects))
     d = projects / agent._munge(str(target.parent))
     os.makedirs(d, exist_ok=True)
-    with open(d / "sess1.jsonl", "w", encoding="utf-8") as fh:
+    path = d / "sess1.jsonl"
+    with open(path, "w", encoding="utf-8") as fh:
         for row in rows:
             fh.write(json.dumps(row) + "\n")
     # No live run for this file unless a test sets one up (`_setup_live_run`
     # below) — the common case, and the property `open_from` must reduce to
     # `None` for exactly like an ordinary finished/abandoned session.
     monkeypatch.setattr(agent, "_live_run", lambda file, session_id="", limit=None: {"run_id": ""})
+    if return_path:
+        return str(target), str(path)
     return str(target)
 
 
-def _out_start_row(text):
-    """The shape `_write_inbox_entry` puts on the wire and the CLI echoes
-    back into `out.jsonl` — a `_starts_new_turn` row, unlike the persisted
-    transcript's bare-string `user` rows."""
-    return {"type": "user", "message": {"role": "user",
-            "content": [{"type": "text", "text": text}]}}
+def _row_offset(path, index):
+    """The byte offset the transcript row at `index` (0-based) begins at —
+    what a real `open_exchange.json` mark records as `offset`, per row
+    rather than by counting turns."""
+    total = 0
+    with open(path, "rb") as fh:
+        for i, raw_line in enumerate(fh):
+            if i == index:
+                return total
+            total += len(raw_line)
+    raise IndexError(index)
 
 
-def _out_subagent_result():
-    return {"type": "result", "parent_tool_use_id": "tu1", "result": "subagent done"}
-
-
-def _setup_live_run(agent, tmp_path, monkeypatch, target, session_id, out_rows):
-    """A run still going for `target`, with `out.jsonl` carrying `out_rows` —
-    the live signal `_history` now asks instead of reading `open_from` off
-    the persisted transcript's own (nonexistent) `result` rows."""
+def _setup_live_run(agent, tmp_path, monkeypatch, target, session_id,
+                    mark=None, out_rows=()):
+    """A run still going for `target`. `mark`, when given, is written as
+    that run's `open_exchange.json` (see `agent._write_open_exchange`); a
+    `None` `mark["transcript"]` is honored against whatever transcript is
+    being read. `out_rows` seeds `out.jsonl` — used here only to place a
+    trailing `result` row at/after a mark's `out_offset` when a test needs
+    the mark to read as CLOSED."""
     runs = tmp_path / "runs"
     run_dir = runs / "run1"
-    run_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "meta.json").write_text(json.dumps({"file": str(target)}), encoding="utf-8")
     (run_dir / "session").write_text(session_id, encoding="utf-8")
     with open(run_dir / "out.jsonl", "w", encoding="utf-8") as fh:
         for row in out_rows:
             fh.write(json.dumps(row) + "\n")
+    mark_path = run_dir / "open_exchange.json"
+    if mark is not None:
+        with open(mark_path, "w", encoding="utf-8") as fh:
+            json.dump(mark, fh)
+    elif mark_path.exists():
+        mark_path.unlink()
     monkeypatch.setattr(agent, "RUNS", str(runs))
     monkeypatch.setattr(agent, "_live_run",
                         lambda file, session_id="", limit=None: {"run_id": "run1"})
+    return str(run_dir)
 
 
 def test_open_from_is_none_on_a_fully_closed_transcript(agent, tmp_path, monkeypatch):
@@ -125,82 +140,119 @@ def test_open_from_is_none_on_a_fully_closed_transcript(agent, tmp_path, monkeyp
     assert out["open_from"] is None
 
 
-def test_open_from_marks_the_still_streaming_exchange(agent, tmp_path, monkeypatch):
-    target = _write_transcript(agent, tmp_path, monkeypatch, [
+def test_open_from_is_the_index_of_the_first_user_turn_at_the_marks_offset(
+        agent, tmp_path, monkeypatch):
+    """Acceptance test 6: `open_from` is the index of the first user turn
+    created by a transcript row beginning at or after the mark's `offset`,
+    a POSITION, never a count."""
+    target, path = _write_transcript(agent, tmp_path, monkeypatch, [
         _t_user("fix the header"),
         _t_assistant("Fixed."),
         _t_user("now the footer too"),
         _t_assistant("On it."),
-    ])
-    # The live run has echoed exactly one turn's own opening message back —
-    # that one turn is all it owns.
+    ], return_path=True)
+    offset = _row_offset(path, 2)  # the "now the footer too" row
     _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1",
-                    [_out_start_row("now the footer too")])
+                    mark={"transcript": path, "offset": offset, "out_offset": 0})
     out = agent._history(target, "sess1")
     assert out["open_from"] == 2, out["turns"]
     assert out["turns"][2] == {"role": "user", "text": "now the footer too",
                                "uuid": ""}
 
 
-def test_open_from_survives_a_follow_up_folded_into_the_open_turn(agent, tmp_path, monkeypatch):
-    """`_send` folds a follow-up into a turn still streaming — the live run's
-    `out.jsonl` echoes back TWO `_starts_new_turn` rows for the one exchange,
-    so `open_from` reserves both user turns, not just the newest."""
-    target = _write_transcript(agent, tmp_path, monkeypatch, [
+def test_open_from_is_none_without_a_live_run_a_mark_or_a_user_row(
+        agent, tmp_path, monkeypatch):
+    """Acceptance test 7: every way `open_from` collapses to `None` — no
+    live run; no mark; the mark's `out_offset` is followed by a `result`
+    row; the mark names a different transcript; the transcript holds no
+    user row at or after the offset yet."""
+    target, path = _write_transcript(agent, tmp_path, monkeypatch, [
+        _t_user("fix the header"),
+        _t_assistant("Fixed."),
+    ], return_path=True)
+
+    # No live run at all.
+    assert agent._history(target, "sess1")["open_from"] is None
+
+    # Live run, no mark.
+    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1", mark=None)
+    assert agent._history(target, "sess1")["open_from"] is None
+
+    # Mark present, but a `result` row already landed at its `out_offset`.
+    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1",
+                    mark={"transcript": path, "offset": 0, "out_offset": 0},
+                    out_rows=[{"type": "result", "result": "ok"}])
+    assert agent._history(target, "sess1")["open_from"] is None
+
+    # Mark names a different transcript.
+    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1",
+                    mark={"transcript": str(tmp_path / "other.jsonl"),
+                          "offset": 0, "out_offset": 0})
+    assert agent._history(target, "sess1")["open_from"] is None
+
+    # Mark's offset is past every user row (nothing new has landed yet).
+    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1",
+                    mark={"transcript": path, "offset": os.path.getsize(path),
+                          "out_offset": 0})
+    assert agent._history(target, "sess1")["open_from"] is None
+
+
+def test_a_null_transcript_mark_matches_whatever_transcript_is_read(
+        agent, tmp_path, monkeypatch):
+    """Acceptance test 8: a session's very first exchange feeds before the
+    CLI has minted a session id, so the mark records `transcript: null` —
+    honored against whatever transcript `_history` is asked to read,
+    `open_from = 0`."""
+    target, path = _write_transcript(agent, tmp_path, monkeypatch, [
+        _t_user("hello"),
+        _t_assistant("hi"),
+    ], return_path=True)
+    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1",
+                    mark={"transcript": None, "offset": 0, "out_offset": 0})
+    out = agent._history(target, "sess1")
+    assert out["open_from"] == 0
+    assert out["turns"][0] == {"role": "user", "text": "hello", "uuid": ""}
+
+
+def test_a_folded_in_follow_up_falls_inside_the_reserved_region(
+        agent, tmp_path, monkeypatch):
+    """Acceptance test 9: a follow-up echoed into the open exchange (two
+    user turns) still reserves from the FIRST of them, because the mark's
+    offset was taken once, when the exchange opened, and never moves for a
+    follow-up that folds into it."""
+    target, path = _write_transcript(agent, tmp_path, monkeypatch, [
         _t_user("fix the header"),
         _t_assistant("Fixed."),
         _t_user("now the footer too"),
         _t_assistant("Working on it."),
         _t_user("and make it sticky"),
-    ])
-    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1", [
-        _out_start_row("now the footer too"),
-        _out_start_row("and make it sticky"),
-    ])
+    ], return_path=True)
+    offset = _row_offset(path, 2)  # "now the footer too" — where the exchange opened
+    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1",
+                    mark={"transcript": path, "offset": offset, "out_offset": 0})
     out = agent._history(target, "sess1")
     assert out["open_from"] == 2
     assert [t["text"] for t in out["turns"][2:] if t["role"] == "user"] == [
         "now the footer too", "and make it sticky"]
 
 
-def test_a_subagents_own_row_does_not_widen_the_open_exchange(agent, tmp_path, monkeypatch):
-    """A Task/Agent tool call spawns a subagent whose own turn-opening row
-    (`out.jsonl`, `parent_tool_use_id`) must not count toward how many turns
-    the open exchange owns, and whose own prompt on the PERSISTED transcript
-    (`isSidechain`) must not appear as a turn at all."""
-    target = _write_transcript(agent, tmp_path, monkeypatch, [
+def test_a_subagents_own_row_never_appears_as_a_turn(agent, tmp_path, monkeypatch):
+    """A subagent's own prompt on the persisted transcript (`isSidechain`)
+    is never a turn at all, mark or no mark."""
+    target, path = _write_transcript(agent, tmp_path, monkeypatch, [
         _t_user("fix the header"),
         _t_assistant("Fixed."),
         _t_user("delegate this to a subagent"),
         _t_subagent_user("do the subtask"),
         _t_assistant("working"),
-    ])
-    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1", [
-        _out_start_row("delegate this to a subagent"),
-        {"type": "user", "parent_tool_use_id": "tu1", "message": {
-            "role": "user", "content": [{"type": "text", "text": "do the subtask"}]}},
-        _out_subagent_result(),
-    ])
+    ], return_path=True)
+    offset = _row_offset(path, 2)  # "delegate this to a subagent"
+    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1",
+                    mark={"transcript": path, "offset": offset, "out_offset": 0})
     out = agent._history(target, "sess1")
     assert out["open_from"] == 2
     assert out["turns"][2] == {"role": "user", "text": "delegate this to a subagent",
                                "uuid": ""}
-
-
-def test_open_from_reopens_after_a_later_turn_starts(agent, tmp_path, monkeypatch):
-    """Only the run's own turns are reserved — earlier, closed exchanges the
-    run never touched stay outside `open_from` regardless of how many turns
-    the whole transcript holds."""
-    target = _write_transcript(agent, tmp_path, monkeypatch, [
-        _t_user("one"), _t_assistant("a1"),
-        _t_user("two"), _t_assistant("a2"),
-        _t_user("three"), _t_assistant("a3"),
-    ])
-    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1",
-                    [_out_start_row("three")])
-    out = agent._history(target, "sess1")
-    assert out["open_from"] == 4
-    assert out["turns"][4] == {"role": "user", "text": "three", "uuid": ""}
 
 
 # ------------------------------------------------------------------ pending

@@ -5085,30 +5085,22 @@ def _history(file: str, session_id: str) -> dict:
     onward, follow-ups still queued included — is never drawing the same
     words this payload already carries.
 
-    "Is the last exchange still open" is answered by asking the RUN, not by
-    reading it off this file. The persisted transcript the CLI writes here
-    never carries a `type: "result"` row and never carries
-    `parent_tool_use_id` — measured across real sessions, not assumed — so a
-    rule built on either (correct for `out.jsonl`, `_read_current_turn`'s own
-    file) is silently inert on this one: `open_from` would always come back
-    `None`. `_live_run` is the one source that actually knows: a run for this
-    file that is still going, or none. No live run means nothing is open,
-    full stop — a finished or abandoned session is untouched by this, which
-    is the property the wrong rule accidentally had and the reason nothing
-    regressed visibly while it was in place.
-
-    A live run's own `out.jsonl` DOES carry the shapes `_starts_new_turn` and
-    `parent_tool_use_id` mean something for — it is the CLI's live
-    stream-json, not the persisted transcript — so how many turns the open
-    exchange owns is counted there: every `_starts_new_turn` row (skipping a
-    subagent's own), one per user turn this run has echoed back, from its
-    very first (`_start`'s own opening message) through every follow-up
-    `_send` folded in since. That count is exactly how far back into `turns`
-    the open exchange reaches, because `_poll`'s cursor mirrors the same
-    count on a cold attach: a page attaching to an already-multi-turn run for
-    the first time re-streams the WHOLE run, not just its newest turn (see
-    `_read_current_turn`), so `_history` has to reserve the same span or the
-    two would draw different amounts of the same run."""
+    "Where the open exchange begins" is not something this file can answer by
+    reading its own rows: the persisted transcript never carries a `type:
+    "result"` row and never carries `parent_tool_use_id` — measured across
+    real sessions, not assumed — so any rule built on either (correct for
+    `out.jsonl`, `_read_current_turn`'s own file) is silently inert here.
+    Nothing in this file records the boundary either, because nothing reading
+    it afterward can be the one thing that KNOWS when an exchange opens —
+    only `session_host._drain_inbox` does, at the instant it hands a user
+    message to the CLI's stdin, and it writes that down in
+    `run_dir/open_exchange.json` (see `_read_open_exchange`,
+    `_out_has_result_since`, DECISIONS.md D757). `_live_run` says whether
+    anything is open for this file at all; the mark says where, in THIS
+    transcript, it begins. No live run, no mark, a closed mark, or a mark
+    naming a different transcript all mean the same thing here: nothing of
+    this file's own turns is reserved, `open_from = None`, and a finished or
+    abandoned session is untouched by this, exactly as before."""
     if _bad_id(session_id):
         return {"turns": [], "transcript": _transcript_stat(""), "open_from": None}
     file = os.path.abspath(file)
@@ -5130,6 +5122,11 @@ def _history(file: str, session_id: str) -> dict:
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
+    # (turns-index, byte offset of the row that created it), one per user
+    # turn — all `open_from` (rule 5, below) needs, and the reason this loop
+    # reads the transcript in BINARY: `tell()` on a text-mode line iterator
+    # is not reliable per-line, so the offset is accumulated by hand.
+    user_turn_offsets = []
 
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
@@ -5154,10 +5151,14 @@ def _history(file: str, session_id: str) -> dict:
         else:
             turns.append({"role": "assistant", "text": "", "segments": segments})
 
-    for line in open(path, encoding="utf-8", errors="replace"):
+    offset = 0
+    fh_bin = open(path, "rb")
+    for raw_line in fh_bin:
+        row_offset = offset
+        offset += len(raw_line)
         try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
+            row = json.loads(raw_line.decode("utf-8", "replace"))
+        except ValueError:
             continue
         if row.get("isMeta") or row.get("isSidechain"):
             continue
@@ -5188,6 +5189,7 @@ def _history(file: str, session_id: str) -> dict:
                 close_stretch()  # before the user turn, or the segments land on it
                 turns.append({"role": "user", "text": text,
                               "uuid": str(row.get("uuid") or "")})
+                user_turn_offsets.append((len(turns) - 1, row_offset))
             else:
                 # Everything else on a `user` row belongs to the assistant's
                 # reply: tool_result blocks are what its tool segments are
@@ -5204,53 +5206,31 @@ def _history(file: str, session_id: str) -> dict:
                     turns[-1]["text"] += "\n\n" + text
                 else:
                     turns.append({"role": "assistant", "text": text})
+    fh_bin.close()
     close_stretch()
-    # `open_from`: ask the run, not the file (see the docstring for why the
-    # file itself has nothing to say about this). No live run for this file
-    # means nothing is open.
+    # `open_from`: ask the run whether anything is open at all, then ask
+    # the mark it wrote where, in THIS transcript, that exchange begins
+    # (see the docstring for why the file itself has nothing to say about
+    # either question). No live run, no mark, a closed mark, or a mark
+    # naming a different transcript all leave this `None`.
     open_from = None
     if turns:
         run_id = _live_run(file, session_id).get("run_id")
         if run_id:
-            run_out = os.path.join(RUNS, run_id, "out.jsonl")
-            owned = 0
-            try:
-                with open(run_out, "rb") as fh:
-                    blob = fh.read()
-            except OSError:
-                blob = b""
-            for raw_line in blob.split(b"\n"):
-                if not raw_line:
-                    continue
-                try:
-                    out_row = json.loads(raw_line.decode("utf-8", "replace"))
-                except ValueError:
-                    continue
-                if out_row.get("parent_tool_use_id"):
-                    continue  # a subagent's own echo does not open the main exchange
-                if _starts_new_turn(out_row):
-                    owned += 1
-            # `owned` is every USER turn (opening message plus every
-            # folded-in follow-up) this run has ever echoed back, from its
-            # very first — the same span a page cold-attaching to this run
-            # re-streams in full (see `_read_current_turn`), so this
-            # reserves exactly that much rather than guessing at which of
-            # the run's turns are "really" still in flight. `turns` mixes
-            # user and assistant dicts (an assistant reply is its own
-            # entry, not folded into the user turn it answers), so the
-            # boundary is found by walking back from the end and counting
-            # only `role == "user"` entries until `owned` of them have been
-            # seen — the assistant replies in between ride along for free,
-            # since a user turn's own reply always belongs to the same
-            # exchange as the turn it answers.
-            if owned:
-                open_from = 0
-                seen = 0
-                for i in range(len(turns) - 1, -1, -1):
-                    if turns[i]["role"] == "user":
-                        seen += 1
-                        open_from = i
-                        if seen == owned:
+            run_dir = os.path.join(RUNS, run_id)
+            mark = _read_open_exchange(run_dir)
+            if mark is not None and not _out_has_result_since(
+                    run_dir, mark.get("out_offset", 0)):
+                mark_transcript = mark.get("transcript")
+                if mark_transcript is None or mark_transcript == path:
+                    mark_offset = mark.get("offset", 0)
+                    # Rule 5: a POSITION, never a count — the index of the
+                    # first user turn created by a row at or after
+                    # `mark_offset`. There is nothing to overcount, and an
+                    # index found in the list cannot exceed it.
+                    for idx, row_offset in user_turn_offsets:
+                        if row_offset >= mark_offset:
+                            open_from = idx
                             break
     # ...and whether the last of those turns was ENDED BY THE USER. The
     # transcript cannot say — a killed run just stops writing — so it is read
