@@ -168,43 +168,46 @@ function CheckRow({
               {SEVERITY_LABEL[check.severity]}
             </span>
           )}
+          {/* Trailing edge of the FIRST line, same baseline as the label and
+              the chip — not after the detail text or the findings list. Every
+              row's action then lands in the same column, so scanning the
+              list finds every actionable row in one vertical sweep instead of
+              hunting for a button whose height depends on how much detail
+              text or how many findings the row above it happened to have.
+              `flex: none` (appdoc-row-actions) keeps it from being squeezed;
+              the label is the flexible element and wraps instead. */}
+          {failing && (
+            <div className="appdoc-row-actions">
+              {check.task ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary appdoc-fix-btn"
+                  title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
+                  onClick={() => onFix(check)}
+                >
+                  Fix in progress
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-secondary appdoc-fix-btn"
+                  disabled={busy || otherTaskLive}
+                  title={
+                    otherTaskLive
+                      ? "An App Doctor task for this app is already running on another row — listed under the app's Tasks tab"
+                      : undefined
+                  }
+                  onClick={() => onFix(check)}
+                >
+                  {rowActionLabel(check)}
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <span className="appdoc-detail">
           {failing ? rowStateLabel(check) + " — " + check.detail : check.detail}
         </span>
-        {/* Rendered right after the detail line, BEFORE the findings list: a
-            row's own action has to sit in the same place on every row, and a
-            26-finding `device-paths` row previously pushed it below a 160px
-            scroll box, off-screen while the row's own heading was still
-            visible. */}
-        {failing && (
-          <div className="appdoc-row-actions">
-            {check.task ? (
-              <button
-                type="button"
-                className="btn btn-secondary appdoc-fix-btn"
-                title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
-                onClick={() => onFix(check)}
-              >
-                Fix in progress
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn btn-secondary appdoc-fix-btn"
-                disabled={busy || otherTaskLive}
-                title={
-                  otherTaskLive
-                    ? "An App Doctor task for this app is already running on another row — listed under the app's Tasks tab"
-                    : undefined
-                }
-                onClick={() => onFix(check)}
-              >
-                {rowActionLabel(check)}
-              </button>
-            )}
-          </div>
-        )}
         {shown.length > 0 && (
           <ul className="appdoc-findings">
             {shown.map((f, i) => (

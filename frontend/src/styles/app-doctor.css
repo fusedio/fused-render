@@ -16,7 +16,17 @@
  * warning rows get a tinted ground at all: a suggestion is not an alarm, and a
  * list where nearly every row is tinted has no signal left in it. Colours are
  * the palette's own semantic tokens (tokens.css), so both themes come for
- * free. */
+ * free.
+ *
+ * A FAILING row's action (Fix/Review, `.appdoc-fix-btn`) sits at the trailing
+ * edge of the row's FIRST line — same baseline as the label and the severity
+ * chip — not below the detail text or the findings list. A button whose
+ * vertical position differs on every row gives the eye nowhere to land;
+ * pinning it to one column lets scanning the list find every actionable row
+ * in one vertical sweep. It is also coloured to the row's own severity
+ * (critical/warning), not neutral grey, so it reads as the row's action
+ * rather than as inert chrome sitting on an alarmed ground — see the rule's
+ * own comment below for the contrast math that shape required. */
 
 .appdoc-summary {
   margin: 0 0 12px;
@@ -105,13 +115,23 @@
   gap: 2px;
 }
 
+/* align-items: flex-start (not center) so a long label that wraps to a
+ * second line doesn't drag the chip and the action down with it — both stay
+ * pinned to the row's first line, which is the whole point of putting the
+ * action here (see AppDoctorModal.tsx's comment on `.appdoc-row-actions`). */
 .appdoc-label-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
+/* The one flexible element in the row: it grows to fill whatever the chip
+ * and the action don't need and wraps instead of pushing them off the
+ * dialog's edge (or off the dialog entirely below 620px). */
 .appdoc-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: break-word;
   font-weight: 500;
   line-height: 20px;
 }
@@ -161,19 +181,26 @@
   color: var(--fg-muted);
 }
 
+/* Lives in the label row now (F4), on the row's own first line — never
+ * squeezed by the label (which wraps instead, see .appdoc-label) and never
+ * wrapped itself. */
 .appdoc-row-actions {
-  margin: 4px 0 0;
+  flex: none;
+  margin: 0;
 }
 
 /* Scoped override, not a change to .btn-secondary (buttons-modal.css) — many
- * other modals rely on that one staying as-is. Measured: `--border` (what
- * .btn-secondary uses) against this row's tinted ground is 1.10:1 in dark and
- * 1.13:1 in light — nowhere near the 3:1 a control boundary needs, so the
- * button visually disappeared into the row. `--fg-muted` measures 5.74:1 dark
- * / 4.75:1 light against the same ground and clears the bar; the fill/hover
- * pair is the existing "quiet control chrome" tokens (tokens.css), reused
- * rather than invented so this button reads like the rest of the app's quiet
- * chrome instead of a one-off. */
+ * other modals rely on that one staying as-is.
+ *
+ * BASE (suggested rows, and the fallback if a future severity is added): the
+ * same quiet-chrome treatment as before this pass. Measured: `--border`
+ * (what .btn-secondary uses) against a bare row is 1.10:1 dark / 1.13:1
+ * light — nowhere near the 3:1 a control boundary needs, so the button
+ * visually disappeared into the row. `--fg-muted` measures 6.98:1 dark /
+ * 5.86:1 light against the bare `--bg` ground and clears the bar; the
+ * fill/hover pair is the existing "quiet control chrome" tokens (tokens.css),
+ * reused rather than invented. A suggestion carries no urgency, so it keeps
+ * this neutral treatment rather than a severity tint. */
 .appdoc-fix-btn {
   padding: 3px 10px;
   background: var(--ctl-quiet-bg);
@@ -184,6 +211,53 @@
 .appdoc-fix-btn:hover:not(:disabled) {
   background: var(--ctl-quiet-bg-hover);
   border-color: var(--ctl-quiet-border-hover);
+}
+
+/* CRITICAL / WARNING rows: the action inherits the row's own severity, so it
+ * reads as the row's urgency rather than as inert grey chrome sitting on a
+ * tinted ground. Modelled on `.btn-danger` (buttons-modal.css) — severity
+ * border, severity label — but NOT that class itself (other modals depend on
+ * it staying as-is), and with an opaque `--bg` fill rather than `.btn-danger`'s
+ * translucent wash: the row underneath this button is ALREADY a wash of the
+ * same hue (F1's `appdoc-row-sev-*` ground), and stacking a second wash of
+ * the same hue on top pulls the button's own background toward the same hue
+ * as its text — measured worst case (critical, light theme): label 4.27:1,
+ * short of 4.5. An opaque `--bg` fill decouples the button's text contrast
+ * from the row's tint entirely, the same fix F3 already used for the
+ * severity chip. Measured (contrast2.py, both themes, against the tokens
+ * this rule actually uses):
+ *   label vs button's --bg fill      — critical 6.64 dark / 5.62 light
+ *                                       warning  7.30 dark / 4.96 light
+ *   border vs the ROW's tinted ground — critical 6.02 dark / 4.96 light
+ *                                       warning  6.53 dark / 4.47 light
+ * All four clear their bar (label 4.5, border 3.0) in both themes; plain
+ * `--warning` clears 4.5 on this opaque fill, so `--warning-strong` (which
+ * measured WORSE here, 4.73/3.78 — a darker orange pulled further toward the
+ * same warm hue as its own wash) is not needed. Hover keeps the alarm but
+ * stays inside the same bounds: a 6% wash of the row's own hue over `--bg`
+ * (not stacked on the row's tint, since the button's opaque fill already
+ * occludes it) — checked at 6% specifically because 8% drops light-theme
+ * warning's label to 4.47, just under 4.5. */
+.appdoc-row-sev-critical .appdoc-fix-btn {
+  background: var(--bg);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.appdoc-row-sev-critical .appdoc-fix-btn:hover:not(:disabled) {
+  background: rgba(var(--error-rgb), 0.06);
+  border-color: var(--error);
+}
+
+.appdoc-row-sev-warning .appdoc-fix-btn {
+  background: var(--bg);
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.appdoc-row-sev-warning .appdoc-fix-btn:hover:not(:disabled) {
+  background: rgba(var(--warning-rgb), 0.06);
+  border-color: var(--warning);
 }
 
 /* The header status dot (shell/AppPage.tsx, apps/explorer/Preview.tsx): the
@@ -226,9 +300,12 @@
 /* The lines a finding sits on. Its own inset surface (a quiet ground + a
  * hairline) rather than sitting flush on the row's own ground: at up to 26
  * findings on one row (`device-paths`), this needs to read as its own scroll
- * region the row is showing you, not as the dialog clipping content. Capped
- * lower than before (120px, was 160px) so the row's action — rendered above
- * this now, see AppDoctorModal.tsx — never scrolls out of view under it. */
+ * region the row is showing you, not as the dialog clipping content. The
+ * row's own action lives in the label row now (above the detail text
+ * entirely, not just above this box — see AppDoctorModal.tsx), so it can
+ * never scroll out of view under this list regardless of height; the 120px
+ * cap is about keeping one row's findings from dominating the dialog, not
+ * about protecting the action's visibility. */
 .appdoc-findings {
   display: flex;
   max-height: 120px;
