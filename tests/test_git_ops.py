@@ -21,8 +21,10 @@ it could go wrong:
   module's own refusals with readable text, not raw git errors; a
   non-fast-forward pull is a refusal that points at a terminal rather than an
   automatic merge.
-* **No history rewriting.** `-D`, `--force`, `--amend`, `reset --hard` and
-  `rebase` never appear in an argv this module builds.
+* **No history rewriting**, except the one op that exists precisely to do it.
+  `-D`, `--force`, `--amend` and `rebase` never appear in an argv this module
+  builds; `reset --hard` appears in exactly one place (`reset`, D745) and
+  nowhere else, gated behind `_require_clean` like `revert`/`app_restore`.
 * **The mount refusal is the module's** (MD-11 / GT-4), for the write path too: a
   hand-written `?_mode=git` URL must never reach a MUTATING git call across an
   rclone/NFS mount.
@@ -1561,6 +1563,67 @@ def test_revert_refuses_on_a_dirty_repo(ops, repo):
     assert got["ok"] is False and got["reason"] == "dirty", got
 
 
+# --------------------------------------------------------------------- reset
+
+
+def test_reset_moves_head_and_drops_later_commits(ops, repo):
+    seed_sha = git(repo, "rev-parse", "HEAD").strip()
+    seed_top_txt = git(repo, "show", f"{seed_sha}:top.txt")
+
+    write(repo, "top.txt", "second commit\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "second", when="2026-10-01T11:00:00+00:00")
+    second_sha = git(repo, "rev-parse", "HEAD").strip()
+    assert second_sha != seed_sha
+
+    got = ops.main(repo, op="reset", sha=seed_sha)
+
+    assert got["ok"] is True, got
+    assert git(repo, "rev-parse", "HEAD").strip() == seed_sha
+    # The tree is exactly what the seed commit held — read back through git
+    # itself rather than a re-typed literal, so a line-ending quirk in how
+    # `write()` wrote it can never disagree with what this asserts.
+    with open(os.path.join(repo, "top.txt"), "rb") as handle:
+        after_top_txt = handle.read()
+    assert after_top_txt == seed_top_txt.encode("utf-8")
+    assert git(repo, "status", "--porcelain").strip() == ""
+    # The second commit is no longer reachable from any ref.
+    reachable = git(repo, "log", "--format=%H").strip().split("\n")
+    assert second_sha not in reachable
+    assert seed_sha in reachable
+
+
+def test_reset_refuses_on_a_dirty_repo_and_leaves_it_untouched(ops, repo):
+    seed_sha = git(repo, "rev-parse", "HEAD").strip()
+    write(repo, "top.txt", "dirty\n")
+    status_before = git(repo, "status", "--porcelain")
+
+    got = ops.main(repo, op="reset", sha=seed_sha)
+
+    assert got["ok"] is False and got["reason"] == "dirty", got
+    assert git(repo, "rev-parse", "HEAD").strip() == seed_sha
+    assert git(repo, "status", "--porcelain") == status_before
+
+
+def test_reset_refuses_an_unknown_sha_and_leaves_head_untouched(ops, repo):
+    seed_sha = git(repo, "rev-parse", "HEAD").strip()
+
+    got = ops.main(repo, op="reset", sha="deadbeefdead")
+
+    assert got["ok"] is False, got
+    assert git(repo, "rev-parse", "HEAD").strip() == seed_sha
+    assert git(repo, "status", "--porcelain").strip() == ""
+
+
+def test_reset_refuses_a_malformed_sha_before_touching_git(ops, repo):
+    seed_sha = git(repo, "rev-parse", "HEAD").strip()
+
+    got = ops.main(repo, op="reset", sha="not a sha!")
+
+    assert got["ok"] is False and got["reason"] == "bad-sha", got
+    assert git(repo, "rev-parse", "HEAD").strip() == seed_sha
+
+
 def test_a_conflicting_revert_aborts_cleanly_and_leaves_no_in_progress_revert(
         ops, revert_repo):
     root, target_sha = revert_repo
@@ -1960,8 +2023,26 @@ def test_no_op_can_reach_a_history_rewriting_verb(ops):
     # A grep is a blunt instrument, and that is the point: these strings must not
     # be constructible from this module at all, so the file itself must not name
     # them. If a future change needs one, this test is the conversation.
+    #
+    # `"--hard"` is the one exception (D745): `reset` is now a deliberate,
+    # gated, history-rewriting op (`DESTRUCTIVE_OPS`, `_require_clean`), so the
+    # flag that makes it one has to appear SOMEWHERE in the file. What this
+    # test still guards is that it appears NOWHERE ELSE — no other op may ever
+    # reach `--hard` by accident. `"reset"` itself is no longer on the
+    # forbidden list: it is a legitimate op name now (`_OPS`, the dispatch
+    # `if op == "reset":`, the sha-format check), not a git verb this test can
+    # meaningfully forbid as a bare string any more — `"--hard"` is the actual
+    # destructive ingredient, and that stays pinned to one function below.
     with open(OPS, encoding="utf-8") as handle:
-        body = "\n".join(line.split("#", 1)[0] for line in handle)
-    for forbidden in ('"--amend"', '"--hard"', '"rebase"', '"-D"', '"--force"',
-                      '"--force-with-lease"', '"filter-branch"', '"reset"'):
+        lines = [line.split("#", 1)[0] for line in handle]
+    body = "\n".join(lines)
+    for forbidden in ('"--amend"', '"rebase"', '"-D"', '"--force"',
+                      '"--force-with-lease"', '"filter-branch"'):
         assert forbidden not in body, forbidden
+
+    start = body.index("\ndef _reset(root, sha):")
+    end = body.index("\ndef ", start + 1)
+    reset_fn = body[start:end]
+    rest_of_file = body[:start] + body[end:]
+    assert '"--hard"' in reset_fn, "the op meant to hold it does not"
+    assert '"--hard"' not in rest_of_file, "found outside _reset"

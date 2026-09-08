@@ -189,8 +189,16 @@ _SAFE_OPS = (
 # UNCOMMITTED work once `_require_clean` holds, but both write a commit to
 # history on one click — that deserves the same consent step, not because
 # anything could be lost but because both are one-way once done (D744).
+#
+# `reset` is the one op in this list that CAN lose committed work, not just
+# rewrite it forward: `git reset --hard` moves the branch pointer, so every
+# commit after the target becomes unreachable from any ref (recoverable only
+# through the reflog, and only until it expires or is pruned) and any
+# uncommitted change is discarded outright — the exact reason it goes through
+# `_require_clean` too, same as `revert`, even though a clean tree only
+# removes ONE of the two ways this can lose work (D745).
 DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve",
-                   "app_restore", "revert")
+                   "app_restore", "revert", "reset")
 _OPS = _SAFE_OPS + DESTRUCTIVE_OPS
 
 # Ops that take an explicit `paths` list, and ops that operate on the whole open
@@ -636,7 +644,7 @@ def _check_strings(op, paths, message, name, index, content="", email="",
                            "That name or email is not something git would "
                            "accept as one.")
 
-    if op in ("app_restore", "revert"):
+    if op in ("app_restore", "revert", "reset"):
         # Format only — whether the sha names a real, reachable commit is a
         # question only git can answer, at the point the op actually runs it.
         if not _SHA_RE.match(sha or ""):
@@ -1363,6 +1371,32 @@ def _revert(root, sha):
     raise _Refused("revert-conflict", conflict_message)
 
 
+def _reset(root, sha):
+    """DESTRUCTIVE (writes history — and can genuinely lose it, unlike its
+    neighbours). `git reset --hard <sha>` — whole repository, exactly like
+    `revert`: this is not a concept that scopes to a folder either.
+
+    `_require_clean` still gates this even though `--hard` would happily
+    discard uncommitted changes on its own: refusing on a dirty tree, rather
+    than silently taking it along for the ride, means the only thing this op
+    ever discards is COMMITS the user asked to discard, never a change they
+    forgot they had sitting in the working tree (D745).
+
+    No `revert`-style `--abort`-on-failure dance: `reset --hard` is a single
+    atomic ref update with no conflict state of its own to get stuck in. A
+    refusal here is either the sha not existing/not being reachable (git's own
+    words, via `_git_ok`) or git itself not running at all (`_run`'s usual
+    no-git/timeout refusals) — in neither case has anything moved.
+    """
+    _require_clean(root)
+    _git_ok(root, "reset", "--hard", sha)
+    out = _git_ok(root, "log", "-1", "--no-color", f"--format={_COMMIT_FORMAT}")
+    parts = out.decode("utf-8", "replace").strip().split("\0")
+    short, subject = (parts + ["", ""])[:2]
+    return _ok("reset", f"Reset history to {short}.", short=short,
+               subject=subject)
+
+
 def _branch_create(root, name, checkout):
     _check_branch_name(root, name)
     if checkout:
@@ -1716,6 +1750,8 @@ def main(
             return _app_restore(root, file, sha)
         if op == "revert":
             return _revert(root, sha)
+        if op == "reset":
+            return _reset(root, sha)
         if op == "branch_create":
             return _branch_create(root, name, bool(checkout))
         if op == "branch_checkout":
