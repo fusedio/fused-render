@@ -65,7 +65,17 @@ export interface FsEntry {
   size: number | null;
   mtime: number | null;
   ignored?: boolean; // matched by .gitignore inside a git repo (dimmed in the UI)
+  // What git says about this entry, when the folder is inside a repo and git
+  // has something to say — the name is tinted with it (styles/explorer.css).
+  // A folder carries the most urgent state anywhere BENEATH it, so a collapsed
+  // subtree can't hide a change; see fused_render/server/git_status.py for the
+  // ranking. Absent means clean, not-in-a-repo, or a server that predates the
+  // field — all three render undecorated, which is the same true statement:
+  // there is nothing to point at.
+  git?: GitEntryStatus;
 }
+
+export type GitEntryStatus = "conflicted" | "modified" | "untracked" | "staged";
 
 export interface ListResult {
   path: string;

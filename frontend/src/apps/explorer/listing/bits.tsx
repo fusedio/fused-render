@@ -1,7 +1,8 @@
 // Small presentational pieces of the listing: skeleton rows, the clipboard
-// pill, and search-match highlighting.
+// pill, the git status badge, and search-match highlighting.
 import { highlightSegments } from "@platform/lib/fuzzy";
 import { FLIP_KEY_ATTR } from "@platform/lib/flip";
+import { gitMarkFor } from "./git-mark";
 
 // Shimmering placeholder rows shown while the listing fetch is in flight —
 // same column shape as the real rows (icon + name + size + mtime), just with
@@ -36,6 +37,21 @@ export function ClipMark({ cut, copied }: { cut: boolean; copied: boolean }) {
   return (
     <span className={"clip-mark" + (cut ? " cut" : " copied")} title="Press Esc to cancel">
       {cut ? "Cut" : "Copied"}
+    </span>
+  );
+}
+
+// The git status badge in a row's name cell: one letter, tinted the same as the
+// name it follows (styles/explorer.css keys both off the row's `git-*` class).
+// See listing/git-mark.ts for why a letter exists at all rather than colour
+// alone. Renders nothing when git has nothing to say — which is the common case
+// and must cost the row no layout.
+export function GitMark({ status }: { status?: string }) {
+  const mark = gitMarkFor(status);
+  if (!mark) return null;
+  return (
+    <span className="git-mark" title={mark.label} aria-label={mark.label}>
+      {mark.letter}
     </span>
   );
 }
