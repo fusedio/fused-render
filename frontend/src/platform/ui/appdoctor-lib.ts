@@ -230,41 +230,78 @@ export function findingWhere(f: AppCheckFinding): string {
   return f.line ? `${f.path}:${f.line}` : f.path;
 }
 
-/** The sentence above the checklist: severity-first for what failed (a FACT
- *  row — nothing here is "the pattern might be wrong about this"), then how
- *  many candidate rows are still unreviewed, then how many rows the doctor
- *  could not answer at all. Never claims a skipped or unreviewed row as a
- *  pass — the "everything passed" clause requires BOTH failingFacts and
- *  failingCandidates to be empty; gating it on failingFacts alone let an app
- *  with a failing `secrets` row (a candidate, not a fact) read "Every check
- *  this app can answer passed. 1 row to review." — a pass claim sitting
- *  right next to the very row that contradicts it. */
-export function summaryLine(checks: AppCheck[]): string {
-  const failingFacts = checks.filter((c) => c.state === "fail" && c.kind === "fact");
-  const failingCandidates = checks.filter(
-    (c) => c.state === "fail" && c.kind === "candidate",
-  );
-  const skipped = checks.filter((c) => c.state === "skip").length;
+/** The readiness strip's tone for one check (AppDoctorModal.tsx): a failing
+ *  row takes its own severity, a passing row reads as passed, and anything
+ *  that could not be answered — skipped or never asked — reads as neither.
+ *  The strip is drawn in CHECK ORDER, never sorted, so the ticks stay in the
+ *  same places from one open to the next and a row's tick sits above the row
+ *  it belongs to. */
+export type TickTone = Severity | "pass" | "idle";
 
+export function tickTone(check: AppCheck): TickTone {
+  if (check.state === "fail") return effectiveSeverity(check);
+  if (check.state === "pass") return "pass";
+  return "idle";
+}
+
+/** What the strip says to a screen reader, which cannot see a bar of ticks:
+ *  the same counts the ticks encode, worst first, with any zero left out
+ *  rather than printed as "0 critical". */
+export function stripLabel(checks: AppCheck[]): string {
+  const failing = checks.filter((c) => c.state === "fail");
   const parts: string[] = [];
-  if (failingFacts.length === 0 && failingCandidates.length === 0) {
-    parts.push("Every check this app can answer passed.");
-  } else if (failingFacts.length > 0) {
-    const bySeverity = SEVERITY_ORDER.map((sev) => ({
-      sev,
-      n: failingFacts.filter((c) => c.severity === sev).length,
-    })).filter((x) => x.n > 0);
-    parts.push(
-      bySeverity.map((x) => `${x.n} ${severityNoun(x.sev, x.n)}`).join(", ") + ` to fix.`,
-    );
+  for (const sev of SEVERITY_ORDER) {
+    const n = failing.filter((c) => effectiveSeverity(c) === sev).length;
+    if (n > 0) parts.push(`${n} ${severityNoun(sev, n)}`);
   }
-  if (failingCandidates.length > 0) {
-    parts.push(
-      `${failingCandidates.length} row${failingCandidates.length === 1 ? "" : "s"} to review.`,
-    );
+  const passed = checks.filter((c) => c.state === "pass").length;
+  if (passed > 0) parts.push(`${passed} passed`);
+  const notChecked = checks.filter((c) => c.state === "skip" || c.state === "unrun").length;
+  if (notChecked > 0) parts.push(`${notChecked} not checked`);
+  return `${checks.length} checks: ` + parts.join(", ");
+}
+
+/** The strip's reading, split in two so the dialog can set the count apart
+ *  from the sentence around it — the number is the part worth finding again
+ *  on a second look, and it is the only thing in the line drawn at full
+ *  foreground.
+ *
+ *  `readinessCount` counts what wants an answer when anything does, and what
+ *  came back clean when nothing does. It never claims "All N" while a row
+ *  went unanswered: a skipped or unrun row is neither a pass nor a failure,
+ *  so the count says how many of the N actually passed. */
+export function readinessCount(checks: AppCheck[]): string {
+  const failing = checks.filter((c) => c.state === "fail").length;
+  if (failing > 0) return `${failing} of ${checks.length}`;
+  const passed = checks.filter((c) => c.state === "pass").length;
+  if (passed < checks.length) return `${passed} of ${checks.length}`;
+  return `All ${checks.length}`;
+}
+
+export function readinessSentence(checks: AppCheck[]): string {
+  const failing = checks.filter((c) => c.state === "fail").length;
+  const notChecked = checks.filter((c) => c.state === "skip" || c.state === "unrun").length;
+  if (failing > 0) {
+    return notChecked > 0
+      ? `checks need attention before this app is worth sharing, and ${notChecked} could not be answered here.`
+      : "checks need attention before this app is worth sharing.";
   }
-  if (skipped > 0) {
-    parts.push(`${skipped} could not be checked.`);
-  }
-  return parts.join(" ");
+  return notChecked > 0
+    ? "checks passed and the rest could not be answered here — nothing to fix."
+    : "checks passed. This app is ready to share.";
+}
+
+/** The footer's own note, for the one thing its button cannot promise: a
+ *  candidate row is a pattern match, so the task it creates reads those
+ *  findings and decides, rather than rewriting them outright. Empty when no
+ *  candidate is failing — a footer with nothing to qualify says nothing. */
+export function reviewNote(checks: AppCheck[]): string {
+  const n = checks.filter((c) => c.state === "fail" && c.kind === "candidate").length;
+  if (n === 0) return "";
+  return n === 1 ? "1 of these is a match to read, not a fix." : `${n} of these are matches to read, not fixes.`;
+}
+
+/** How many rows the footer's one task would cover. */
+export function failingCount(checks: AppCheck[]): number {
+  return checks.filter((c) => c.state === "fail").length;
 }

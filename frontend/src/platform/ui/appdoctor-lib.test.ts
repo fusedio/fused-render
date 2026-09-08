@@ -31,9 +31,13 @@ for (const key of ["location", "history"] as const) {
 
 const {
   effectiveSeverity,
+  failingCount,
   findingWhere,
   groupBySection,
   MAX_FINDINGS_SHOWN,
+  readinessCount,
+  readinessSentence,
+  reviewNote,
   rowActionLabel,
   rowStateAccessibleLabel,
   rowStateDetailText,
@@ -43,8 +47,9 @@ const {
   sortByAttention,
   splitFindings,
   STATE_LABEL,
-  summaryLine,
+  stripLabel,
   tasksTabUrl,
+  tickTone,
   worstSeverity,
 } = lib;
 
@@ -72,55 +77,83 @@ const finding = (path: string, line = 0): AppCheckFinding => ({
   excerpt: "x",
 });
 
-test("a clean report does not claim to have checked what it skipped", () => {
-  expect(summaryLine([check("a", "pass"), check("b", "pass")])).toBe(
-    "Every check this app can answer passed.",
-  );
-  // The whole point of the wording: two passes and a skip is NOT "all clear".
-  expect(summaryLine([check("a", "pass"), check("b", "skip")])).toBe(
-    "Every check this app can answer passed. 1 could not be checked.",
-  );
-});
+test("the strip's reading counts what wants an answer, and says so only when nothing does", () => {
+  const clean = [check("a", "pass"), check("b", "pass")];
+  expect(readinessCount(clean)).toBe("All 2");
+  expect(readinessSentence(clean)).toBe("checks passed. This app is ready to share.");
 
-test("a failing fact row is counted by severity, not as a flat total", () => {
-  const checks = [
+  // The whole point of the wording: two passes and a skip is NOT "all clear",
+  // and the count must not read "All 3" over a row nothing answered.
+  const skipped = [check("a", "pass"), check("b", "pass"), check("c", "skip")];
+  expect(readinessCount(skipped)).toBe("2 of 3");
+  expect(readinessSentence(skipped)).toBe(
+    "checks passed and the rest could not be answered here — nothing to fix.",
+  );
+
+  const failing = [
     check("a", "fail", { severity: "critical" }),
-    check("b", "pass"),
-    check("c", "fail", { severity: "warning" }),
+    check("b", "fail", { severity: "warning" }),
+    check("c", "pass"),
+    check("d", "unrun"),
   ];
-  expect(summaryLine(checks)).toBe("1 critical, 1 warning to fix.");
+  expect(readinessCount(failing)).toBe("2 of 4");
+  expect(readinessSentence(failing)).toBe(
+    "checks need attention before this app is worth sharing, and 1 could not be answered here.",
+  );
+  expect(failingCount(failing)).toBe(2);
 });
 
-test("summaryLine pluralizes the severity noun when more than one row fails at that severity", () => {
+test("a tick takes its row's severity when failing, and is idle when nothing answered it", () => {
+  expect(tickTone(check("a", "fail", { severity: "critical" }))).toBe("critical");
+  expect(tickTone(check("b", "fail", { severity: "warning" }))).toBe("warning");
+  expect(tickTone(check("c", "pass"))).toBe("pass");
+  expect(tickTone(check("d", "skip"))).toBe("idle");
+  expect(tickTone(check("e", "unrun"))).toBe("idle");
+  // A candidate's severity is its own until reviewed — `effectiveSeverity`
+  // decides, and the tick follows it rather than the raw field.
+  expect(
+    tickTone(
+      check("secrets", "fail", {
+        severity: "critical",
+        kind: "candidate",
+        findings: [finding("a.py", 1)],
+      }),
+    ),
+  ).toBe(effectiveSeverity(
+    check("secrets", "fail", {
+      severity: "critical",
+      kind: "candidate",
+      findings: [finding("a.py", 1)],
+    }),
+  ));
+});
+
+test("the strip's screen-reader label carries the same counts the ticks encode, worst first, with no zero part", () => {
   const checks = [
     check("a", "fail", { severity: "warning" }),
     check("b", "fail", { severity: "warning" }),
-    check("c", "fail", { severity: "warning" }),
-    check("d", "fail", { severity: "critical" }),
+    check("c", "fail", { severity: "critical" }),
+    check("d", "pass"),
+    check("e", "skip"),
   ];
-  expect(summaryLine(checks)).toBe("1 critical, 3 warnings to fix.");
+  expect(stripLabel(checks)).toBe("5 checks: 1 critical, 2 warnings, 1 passed, 1 not checked");
+  expect(stripLabel([check("a", "pass")])).toBe("1 checks: 1 passed");
 });
 
-test("a failing candidate row reads as 'to review', never merged into the fact tally, and never claims a pass", () => {
-  const checks = [
-    check("secrets", "fail", { severity: "critical", kind: "candidate" }),
-    check("readme", "pass"),
-  ];
-  // Regression: gating "Every check this app can answer passed" on failing
-  // FACTS alone let a failing candidate row (secrets, here) coexist with a
-  // claimed pass in the very same sentence.
-  expect(summaryLine(checks)).toBe("1 row to review.");
-});
-
-test("facts, candidates and skips all show up in one summary", () => {
-  const checks = [
-    check("a", "fail", { severity: "warning" }),
-    check("secrets", "fail", { severity: "critical", kind: "candidate" }),
-    check("b", "skip"),
-  ];
-  expect(summaryLine(checks)).toBe(
-    "1 warning to fix. 1 row to review. 1 could not be checked.",
-  );
+test("the footer's note names the candidate rows its task will read rather than rewrite, and says nothing when there are none", () => {
+  expect(reviewNote([check("a", "fail", { severity: "warning" })])).toBe("");
+  expect(
+    reviewNote([
+      check("secrets", "fail", { severity: "critical", kind: "candidate" }),
+      check("a", "fail", { severity: "warning" }),
+    ]),
+  ).toBe("1 of these is a match to read, not a fix.");
+  expect(
+    reviewNote([
+      check("secrets", "fail", { severity: "critical", kind: "candidate" }),
+      check("device-paths", "fail", { severity: "warning", kind: "candidate" }),
+    ]),
+  ).toBe("2 of these are matches to read, not fixes.");
 });
 
 test("a long finding list is capped and the rest counted", () => {

@@ -6,79 +6,109 @@
  * the two 20px line-box reference boxes that align a row's mark and action to
  * its label's first line.
  *
- * The STATES are told by SHAPE — a ✓, a fail mark, a "–" — never by colour
- * alone, so the list survives a monochrome or colour-blind reading. Only a
- * FAILING row is coloured at all: a pass, a skip and an unrun row all take
- * the muted foreground, because a row that wants nothing from the reader
- * should be countable without being looked at, and that leaves the semantic
- * hues to the handful of rows that do want something.
+ * The STATES are told by COLOUR AND SHAPE together — a ✓, a fail mark and a
+ * "–" — never by colour alone, so the list survives a monochrome or
+ * colour-blind reading.
  *
- * A FAILING row also carries a SEVERITY (critical/warning), and that is its
- * own axis, told apart the same disciplined way: the severity WORD in a badge
- * beside the label, its own hue for that badge and for the state mark, and
- * its own SHAPE for the mark (an alert circle for critical, a triangle for
- * warning). Colours are the palette's own semantic tokens (tokens.css), so
- * both themes come for free.
+ * A FAILING row also carries a SEVERITY (critical/warning), told by the state
+ * mark's own hue and by its SHAPE (an alert circle for critical, a triangle
+ * for warning), and named in words for a screen reader by that mark's
+ * `aria-label`. Colours are the palette's own semantic tokens (tokens.css),
+ * so both themes come for free.
  *
  * No row has a ground of its own. A failing row is the same box as a passing
  * one, on the same surface, so the checklist reads as one list rather than as
  * a stack of tinted plates — and the dialog's only fill is the hover wash
  * under the pointer. */
 
-/* The title's second line (the dialog header, AppDoctorModal.tsx): what this
- * report amounts to, in one sentence, at the detail size the rows' own
- * secondary lines use. */
+/* The title's second line (the dialog header, AppDoctorModal.tsx): what was
+ * checked and when, at the detail size the rows' own secondary lines use. */
 .appdoc-summary {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+/* THE READINESS STRIP — one tick per check, in check order, above the list.
+ * It is the summary, and it is the reason nothing below it carries a card, a
+ * tally or a severity tag: the shape of the report is already on screen, so
+ * the list underneath can be plain.
+ *
+ * A tick is a flex child with no width of its own, so N checks always fill
+ * exactly the dialog's width, however many N is. `idle` (skipped, unrun) is
+ * the bare tint, drawn but uncoloured — the check exists and has no answer,
+ * which is different from both a pass and a failure. Colour is the only
+ * carrier inside the strip, which is why the strip is `role="img"` with
+ * `stripLabel`'s counts as its label and never the only place a state is
+ * told: every tick's own row says the same thing in shape and words. */
+.appdoc-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.appdoc-ticks {
+  display: flex;
+  gap: 3px;
+}
+
+.appdoc-tick {
+  height: 6px;
+  flex: 1 1 0;
+  border-radius: 2px;
+  background: rgba(var(--tint), 0.1);
+}
+
+.appdoc-tick-critical {
+  background: var(--error);
+}
+
+.appdoc-tick-warning {
+  background: var(--warning);
+}
+
+/* The pass tick is the success hue held back, so a clean report reads as
+ * quietly clean rather than as a green bar demanding attention. */
+.appdoc-tick-pass {
+  background: color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+.appdoc-strip-read {
   margin: 0;
   color: var(--fg-muted);
   font-size: 12.5px;
 }
 
-/* The section's own heading, muted and at body weight, so it groups the rows
- * under it by alignment instead of by a box.
- *
- * Its left inset is the LABEL column's, not the row's: 12px of row pad + a
- * 16px state mark + the row's 10px gap. The section name therefore starts
- * exactly where every label under it starts, and the marks hang to the left
- * of that shared edge — one text column down the whole dialog, with the
- * marks in its gutter. Change the row's `px-3`, the mark's size or the row's
- * `gap-2.5` (AppDoctorModal.tsx) and this number moves with them. */
+/* The count is the part worth finding again on a second look, so it is the
+ * one thing in the line at full foreground. `tabular-nums` keeps it from
+ * shifting as the numbers change under a re-run. */
+.appdoc-strip-read b {
+  color: var(--fg);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The footer's own note (AppDoctorModal.tsx), left of its buttons. */
+.appdoc-foot-note {
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+
+/* The section's own heading: muted, one step down in size, sharing the row's
+ * left inset (the row's `px-3`) so the section name and the rows under it sit
+ * on one edge. That, plus the space above it, is the whole of what separates
+ * two sections — no box, no rule, no count. */
 .appdoc-section-label {
   margin: 14px 0 2px;
-  padding: 0 12px 0 38px;
+  padding: 0 12px;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
 }
 
 .appdoc-section-label:first-child {
-  margin-top: 2px;
-}
-
-/* The label and its severity badge share one line and wrap together when the
- * dialog is narrow — the label is the flexible half, so it wraps first and
- * the badge never splits off its own row while the label still has width to
- * give. `row-gap` is what keeps the two legible if they do stack. */
-.appdoc-label-line {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 2px 8px;
-}
-
-/* The badge is shadcn's `outline` variant; only the hue is ours. A failing
- * row's severity is the one thing in the row drawn in a semantic colour
- * besides the state mark, which carries the same hue two columns to its
- * left. */
-.appdoc-badge-critical {
-  border-color: rgba(var(--error-rgb), 0.4);
-  color: var(--error);
-}
-
-.appdoc-badge-warning {
-  border-color: rgba(var(--warning-rgb), 0.4);
-  color: var(--warning);
+  margin-top: 0;
 }
 
 .appdoc-state {
@@ -89,8 +119,8 @@
 }
 
 .appdoc-pass .appdoc-state {
-  color: var(--fg-muted);
-  opacity: 0.75;
+  color: var(--success);
+  opacity: 0.7;
 }
 
 .appdoc-row-sev-critical .appdoc-state {
@@ -138,17 +168,24 @@
   line-height: 20px;
 }
 
+/* A settled row is one dim line. It passed, or it could not be answered —
+ * either way there is nothing to do with it, so it drops to the muted colour
+ * and to body weight and stops competing with the rows that do want
+ * something. The label still says what was checked, for anyone reading the
+ * list top to bottom. */
+.appdoc-pass .appdoc-label,
 .appdoc-skip .appdoc-label,
 .appdoc-unrun .appdoc-label {
   color: var(--fg-muted);
+  font-weight: 400;
 }
 
-/* The severity word is on screen for everyone (`.appdoc-badge-*` above), and
- * a screen reader gets it a second way, from the state mark's own
- * `aria-label`/`title` (`rowStateAccessibleLabel`, appdoctor-lib.ts), which
- * also names the state the mark's shape carries visually.
+/* No severity chip sits beside the label — the mark's hue and shape carry
+ * severity, and the word itself reaches a screen reader through that mark's
+ * own `aria-label`/`title` (`rowStateAccessibleLabel`, appdoctor-lib.ts),
+ * which names the state too.
  *
- * One severity palette (the tokens `.appdoc-badge-*` above key off) reused
+ * One severity palette (the tokens `.appdoc-row-sev-*` above key off) reused
  * by the header status dot too (shell/AppPage.tsx, apps/explorer/Preview.tsx)
  * — see appdoctor-lib.ts's `effectiveSeverity`/`worstSeverity` for the one
  * place severity is ranked. */

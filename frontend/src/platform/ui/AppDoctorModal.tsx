@@ -22,12 +22,12 @@
 // `effectiveSeverity`). Judging a candidate is the fix session's job, which is
 // why its button says Review rather than Fix.
 //
-// A FAILING row's SEVERITY (critical/warning) is told by an outline badge
-// beside the label, which prints the severity as a WORD, and by the state
-// mark's SHAPE (an alert circle for critical, a triangle for warning —
-// `StateMark` below). Colour is therefore never the only carrier, and the
-// row's own box never changes: no fill, no edge, no plate behind a failing
-// row, so the checklist reads as one surface from top to bottom.
+// A FAILING row's SEVERITY (critical/warning) is told by the state mark's HUE
+// and its SHAPE together — an alert circle for critical, a triangle for
+// warning (`StateMark` below) — so colour is never the only carrier, and in
+// words by that mark's own `aria-label`. Nothing else in the row changes: no
+// fill, no edge, no plate, no tag, so the checklist reads as one surface from
+// top to bottom.
 //
 // That accessible label is deliberately a SEPARATE helper from
 // `rowStateDetailText`, which feeds `rowVisibleDetailText` below — the
@@ -35,23 +35,33 @@
 // the severity a second time on screen, inside the detail line ("Critical —
 // Failed — <detail>") — see appdoctor-lib.ts's comment on the two functions
 // for why they must stay split. The visible line also drops the bare
-// "Failed" word a settled fact failure would otherwise carry — the badge and
-// the state mark's shape already say a row failed, twice over — and drops
+// "Failed" word a settled fact failure would otherwise carry — the mark's hue
+// and shape already say a row failed — and drops
 // entirely for a passing row, since every checklist label is already a
 // complete statement on its own. `rowVisibleDetailText` only prints
 // `rowStateDetailText`'s output when it is a candidate's "N to review"
 // count, real information the detail sentence does not otherwise carry.
 //
-// A SECTION is a muted label over its rows and nothing else: no card, no
-// disclosure, no tally. There are two sections of five and six rows, so a
-// box drawn around each buys no navigation the label does not already give,
-// and a count above rows the reader can see is the same fact told twice.
-// Every row wears one box — `rounded-lg px-3 py-2`, whatever its state — so
-// the only thing that varies down the list is the mark, the badge and the
-// action.
+// THE READINESS STRIP above the list is the one thing in the dialog that
+// spends anything: one tick per check, in the server's own check order, so
+// the shape of the whole report is legible before a word of it is read (see
+// the strip's own comment below and `.appdoc-strip` in app-doctor.css). It is
+// also what pays for everything under it being plain — a SECTION is a muted
+// label sharing the row's left inset and nothing else (no card, no
+// disclosure, no tally), because the summary is already drawn and a count
+// above rows the reader can see is one fact told twice.
 //
-// Per-row Fix/Review creates ONE task on just that row; the footer's "Fix
-// all" creates one task covering every currently failing row at once. Both
+// A SETTLED row — passed, skipped, or never asked — is one dim line at body
+// weight with 4px less vertical pad, so a run of them reads as a block to
+// skip rather than as items to read. The rows that want something keep the
+// full box, the label's weight, the detail line, the findings and the action.
+// Nothing else about the box differs: one radius, one left inset, one hover
+// wash, whatever the state.
+//
+// Per-row Fix/Review creates ONE task on just that row; the footer's "Fix N
+// issues" creates one task covering every currently failing row at once, and
+// its note names the candidates in that N, since the task reads those rather
+// than rewriting them (`reviewNote`, appdoctor-lib.ts). Both
 // share the same one-live-fix-session-per-app rule server-side (409): two
 // sessions rewriting one folder is a merge nobody asked for.
 //
@@ -78,24 +88,30 @@ import {
   findingWhere,
   groupBySection,
   rowActionLabel,
+  failingCount,
+  readinessCount,
+  readinessSentence,
+  reviewNote,
   rowStateAccessibleLabel,
   rowVisibleDetailText,
   SECTION_LABEL,
   sortByAttention,
   splitFindings,
-  summaryLine,
+  stripLabel,
+  tickTone,
   tasksTabUrl,
 } from "./appdoctor-lib";
 import {
   Dialog,
   DialogClose,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@platform/shadcn/ui/dialog";
-import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
+import { basename } from "@platform/lib/format";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -118,18 +134,12 @@ function StateMark({ state, severity }: { state: AppCheckState; severity?: Sever
   return <CircleMinus {...common} />;
 }
 
-// The one box every row wears, whatever its state — see this file's header
-// comment. The hover wash is the row's only background, and it says "this is
-// the row your pointer is on", not "this row failed".
-const ROW_BOX =
-  "flex items-start gap-2.5 rounded-lg px-3 py-1.5 hover:bg-foreground/[0.04]";
-
-// The severity word the badge prints. Sentence case, because it sits inline
-// beside the label rather than as chrome above it.
-const SEVERITY_WORD: Record<Severity, string> = {
-  critical: "Critical",
-  warning: "Warning",
-};
+// The one box every row wears — same radius, same inset, same hover wash,
+// which says "this is the row your pointer is on" and never "this row
+// failed". Only the vertical pad differs, and only by 4px: a row with
+// something to do gets the fuller box, and a settled row is drawn tighter so
+// a run of them reads as one quiet block the eye can skip.
+const ROW_BOX = "flex items-start gap-2.5 rounded-lg px-3 hover:bg-foreground/[0.04]";
 
 function CheckRow({
   check,
@@ -151,6 +161,7 @@ function CheckRow({
     <li
       className={cn(
         ROW_BOX,
+        failing ? "py-[9px]" : "py-[5px]",
         "appdoc-row appdoc-" + check.state,
         failing && "appdoc-row-sev-" + check.severity,
       )}
@@ -164,19 +175,7 @@ function CheckRow({
         <StateMark state={check.state} severity={failing ? check.severity : undefined} />
       </span>
       <div className="appdoc-text">
-        {/* The badge shares the label's line and wraps under it on a narrow
-            dialog rather than squeezing the label — `.appdoc-label-line`
-            (app-doctor.css). `variant="outline"` because a filled badge at
-            this size competes with the row's own action for the eye; the
-            severity hue is carried by the outline and the text. */}
-        <span className="appdoc-label-line">
-          <span className="appdoc-label">{check.label}</span>
-          {failing && (
-            <Badge variant="outline" className={"appdoc-badge-" + check.severity}>
-              {SEVERITY_WORD[check.severity]}
-            </Badge>
-          )}
-        </span>
+        <span className="appdoc-label">{check.label}</span>
         {rowVisibleDetailText(check) !== "" && (
           <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
         )}
@@ -340,7 +339,7 @@ export function AppDoctorModal({
           `minmax(0, 1fr)` on the middle row is what lets it actually shrink
           to the 80vh cap instead of pushing the footer off-screen. */}
       <DialogContent
-        className="grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden sm:max-w-[620px] max-h-[80vh]"
+        className="grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden p-6 sm:max-w-[620px] max-h-[80vh]"
         showCloseButton={false}
       >
         {/* The close control is rendered here, inside the header row, rather
@@ -348,17 +347,40 @@ export function AppDoctorModal({
             in the header it sits ON the title's line, so the two read as one
             title bar instead of a heading with a button floating over the
             dialog's top corner. */}
-        <DialogHeader className="gap-1">
-          <div className="flex items-center justify-between gap-2">
-            <DialogTitle>App Doctor</DialogTitle>
+        <DialogHeader className="gap-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 flex-col gap-1">
+              <DialogTitle className="font-semibold">App Doctor</DialogTitle>
+              <DialogDescription className="appdoc-summary">
+                {"Checked " + (basename(dir) || dir) + " just now."}
+              </DialogDescription>
+            </div>
             <DialogClose
-              render={<Button variant="ghost" size="icon-sm" className="-my-1 -mr-1" />}
+              render={<Button variant="ghost" size="icon-sm" className="-mt-1 -mr-1" />}
             >
               <X aria-hidden />
               <span className="sr-only">Close</span>
             </DialogClose>
           </div>
-          {report !== null && <p className="appdoc-summary">{summaryLine(report.checks)}</p>}
+          {/* The readiness strip: one tick per check, in the server's own
+              check order, so the shape of the whole report reads before any
+              row does. It is the one thing in the dialog that spends colour
+              on a passing row, and it is why nothing below it needs a card,
+              a tally or a tag — the summary is already drawn. The ticks are
+              decorative on their own, so the strip carries `stripLabel`'s
+              counts for a reader who cannot see them. */}
+          {report !== null && (
+            <div className="appdoc-strip">
+              <div className="appdoc-ticks" role="img" aria-label={stripLabel(report.checks)}>
+                {report.checks.map((c) => (
+                  <span key={c.id} className={"appdoc-tick appdoc-tick-" + tickTone(c)} />
+                ))}
+              </div>
+              <p className="appdoc-strip-read">
+                <b>{readinessCount(report.checks)}</b> {readinessSentence(report.checks)}
+              </p>
+            </div>
+          )}
         </DialogHeader>
         <div className="flex min-h-0 min-w-0 flex-col gap-2 overflow-x-hidden overflow-y-auto">
           <ErrorBanner>{error}</ErrorBanner>
@@ -377,7 +399,7 @@ export function AppDoctorModal({
                   <h3 className="appdoc-section-label">
                     {SECTION_LABEL[group.section] ?? group.section}
                   </h3>
-                  <ul className="m-0 flex list-none flex-col p-0">
+                  <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
                     {sortByAttention(group.checks).map((c) => (
                       <CheckRow
                         key={c.id}
@@ -393,7 +415,14 @@ export function AppDoctorModal({
             </>
           )}
         </div>
-        <DialogFooter className="-mx-4 -mb-4 border-t-0 bg-transparent px-4 py-3">
+        {/* The footer's hairline is the dialog's own border colour, not the
+            button ground's — it separates the list from the action without
+            drawing a bright line across the dialog. */}
+        <DialogFooter className="-mx-6 -mb-6 items-center gap-3 border-t border-t-[var(--border)] bg-transparent px-6 py-4 sm:justify-between">
+          <span className="appdoc-foot-note">
+            {report === null ? "" : reviewNote(report.checks)}
+          </span>
+          <div className="flex flex-none gap-2">
           {liveTask ? (
             <Button
               variant="default"
@@ -423,9 +452,16 @@ export function AppDoctorModal({
                   : "Creates one task on the app's entry page covering every failing row: triages candidates and fixes what is safe to fix"
               }
             >
-              {busy ? "Creating task…" : "Fix all"}
+              {busy
+                ? "Creating task…"
+                : report && failingCount(report.checks) > 0
+                  ? "Fix " +
+                    failingCount(report.checks) +
+                    (failingCount(report.checks) === 1 ? " issue" : " issues")
+                  : "Nothing to fix"}
             </Button>
           )}
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
