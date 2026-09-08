@@ -80,9 +80,18 @@ def empty_repo(root):
 
 
 def write(root, rel, text):
+    """Write `text` to `rel` VERBATIM — `newline=""` so Python's text-mode
+    layer never substitutes `os.linesep` for the `\n`s the caller wrote. Every
+    fixture here builds content with an explicit `\n`, and on Windows the
+    default text-mode write silently turns each one into `\r\n`; that CRLF
+    then gets committed into the blob as-is (this repo runs with no
+    `core.autocrlf`, see `_ENV`/`_IDENTITY` above), so a later byte-identical
+    comparison against the caller's own `\n`-only literal fails for a reason
+    that has nothing to do with the code under test.
+    """
     full = os.path.join(root, rel)
     os.makedirs(os.path.dirname(full), exist_ok=True)
-    with open(full, "w", encoding="utf-8") as handle:
+    with open(full, "w", encoding="utf-8", newline="") as handle:
         handle.write(text)
     return full
 

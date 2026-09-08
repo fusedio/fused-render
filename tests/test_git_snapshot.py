@@ -6,6 +6,7 @@ a mocked one.
 """
 import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -250,6 +251,17 @@ def test_app_folder_probe_404s_with_no_enclosing_app(repo):
 # ---------------------------------------------------- code review B6 (deadlock)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the fake git below is a `#!/bin/sh` script, not a runnable "
+           "Windows executable — CreateProcess refuses it with WinError 193 "
+           "regardless of `_git_bin()`'s own (correct, shutil.which-based) "
+           "resolution, the same reason test_claude_health.py and "
+           "test_github_setup.py skip their own shebang-script fakes on "
+           "win32. The behavior under test (concurrent stderr draining) is "
+           "pure Python, not platform-specific, so nothing Windows-specific "
+           "goes untested by skipping this one.",
+)
 def test_a_chatty_git_archive_does_not_deadlock_against_tar(tmp_path, monkeypatch):
     """Regression for finding B6: `git archive`'s stderr used to be read only
     AFTER `tar`'s `communicate()` returned. A `git` that writes more than one
