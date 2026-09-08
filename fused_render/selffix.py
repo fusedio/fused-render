@@ -490,23 +490,32 @@ def ensure_baseline(*, digest: str = "", now: float | None = None) -> dict:
         existing = _read_json(baseline_path())
         if existing and existing.get("version") == __version__ and existing.get("digest"):
             return existing
+        # THE SHARED RECOVERY, not a second half-copy of it. `_pristine_digest`
+        # already reads the marker's `baseline_digest` and then the session
+        # pointer's, and the pointer is the only one of the three that survives
+        # the state dir being deleted — which is the case this whole branch is
+        # about. Reading only the marker here left the WRITER knowing less than
+        # every reader: a session whose stamp never landed, or one whose marker
+        # was dismissed, took a fresh digest of the PATCHED tree for the
+        # release and wrote it down, and `baseline.json` then shadowed the
+        # pointer that had the right answer all along.
+        recovered = _pristine_digest()
         marker = _read_json(marker_path()) or {}
         modified_here = marker.get("version") == __version__
         # An upgrade is NOT this case: the marker's version is then the old one,
         # the new release really did replace the tree, and `reconcile` discards
         # such a marker on sight anyway.
-        if modified_here:
-            recovered = str(marker.get("baseline_digest") or "")
-            if not recovered:
-                logger.info("self-fix: no baseline and a modified marker with no "
-                            "pristine digest — declining to baseline a patched tree")
-                return {"schema": SCHEMA, "version": __version__, "digest": "",
-                        "at": now}
-            logger.info("self-fix: recovering the lost baseline from the marker")
+        if not recovered and modified_here:
+            logger.info("self-fix: no baseline and a modified marker with no "
+                        "pristine digest — declining to baseline a patched tree")
+            return {"schema": SCHEMA, "version": __version__, "digest": "",
+                    "at": now}
+        if recovered:
+            logger.info("self-fix: recovering the lost baseline")
         record = {
             "schema": SCHEMA,
             "version": __version__,
-            "digest": recovered if modified_here else (digest or tree_digest()),
+            "digest": recovered or digest or tree_digest(),
             "at": now,
         }
         try:
@@ -912,6 +921,20 @@ def clear(*, now: float | None = None) -> bool:
     keeping it means a LATER fix session on the same version still knows what
     pristine looked like without re-walking a tree that is no longer pristine.
 
+    **AND WHEN THE MARKER IS THE ONLY COPY OF IT, THE COPY IS SAVED FIRST.** A
+    fix session can delete `.fused-render-selffix` — the module assumes it
+    throughout — and the stamp that follows recreates the dir with a marker in
+    it and no `baseline.json` beside it. The marker's own `baseline_digest` is
+    then the last record of what this version shipped, and dismissing would
+    take it out with the badge. Nothing notices until much later, which is what
+    makes it worth guarding here: the next session finds no baseline and no
+    marker, takes the PATCHED tree for the release, and the veto that exists to
+    stop a restored installation being stamped as modified is then measuring
+    against the patch. The user who reinstalls to get a clean copy gets a badge
+    for doing it. `settle`'s retraction already keeps this order for the same
+    reason — persist the recovery, then discard the file it came out of — so
+    this is that rule applied to the other path that deletes a marker.
+
     **The dismissal is REMEMBERED, not just applied**, and that is what makes it
     stick. A fix session's watcher re-stamps every few ticks and once more when
     the turn ends, so dismissing mid-session — the likeliest moment, since the
@@ -933,6 +956,27 @@ def clear(*, now: float | None = None) -> bool:
         if not os.path.exists(path):
             return False
         marker = _read_json(path) or {}
+        # BEFORE THE UNLINK, not after: a crash between the two must leave the
+        # digest recorded twice rather than nowhere. Only when the file is
+        # missing or stale — an existing baseline for this version is the
+        # better copy, and rewriting it from a marker would be the round trip
+        # saying nothing.
+        recovered = str(marker.get("baseline_digest") or "")
+        baseline = _read_json(baseline_path()) or {}
+        if recovered and not (baseline.get("version") == __version__
+                              and baseline.get("digest")):
+            try:
+                _write_json(baseline_path(), {"schema": SCHEMA,
+                                              "version": __version__,
+                                              "digest": recovered, "at": now})
+                logger.info("self-fix: kept the release digest the dismissed "
+                            "marker was carrying")
+            except OSError:
+                # The dismissal itself is still worth completing: a badge the
+                # user asked to be rid of outranks a digest they will only miss
+                # if they later restore this installation by hand.
+                logger.info("could not keep the release digest while "
+                            "dismissing", exc_info=True)
         # NOT `_discard`, deliberately. That helper is best-effort and right for
         # the read paths that use it — they retry on the next read, and nobody
         # is waiting on the answer. Here somebody clicked, so the OSError is the

@@ -2353,6 +2353,67 @@ def test_a_badge_that_outlived_its_REPORT_does_not_offer_to_open_it(
     assert state["fixes"][0]["incident"] is None
 
 
+def test_DISMISSING_does_not_take_the_release_digest_with_the_marker(install):
+    """The one copy of what this version shipped must survive the click.
+
+    A fix session can delete `.fused-render-selffix`, and the stamp that
+    follows recreates the dir with a marker and no `baseline.json` beside it —
+    so the marker's own `baseline_digest` is then the only record of the
+    release. Dismissing unlinks that marker. Without keeping the digest first,
+    the next session finds neither file, takes the PATCHED tree for the
+    release, and the veto that stops a RESTORED installation being stamped as
+    modified is then measuring against the patch: the user who reinstalls to
+    get a clean copy is handed a badge for doing it.
+    """
+    before = _pristine()
+    pristine = selffix._pristine_digest()
+    assert pristine
+
+    (install / "jobs.py").write_text("patched\n")
+    assert selffix.settle(before=before, run_id="r1") is True
+    os.unlink(selffix.baseline_path())  # the session took the state dir with it
+    assert selffix._pristine_digest() == pristine, "the marker is the last copy"
+
+    assert selffix.clear() is True
+    assert selffix._pristine_digest() == pristine, (
+        "the dismissal took the release digest with the badge")
+
+    # And the consequence the digest exists to prevent: a session that opens on
+    # the patched tree and PUTS IT BACK raises no badge. `settle` still answers
+    # True — the tree did move, which is the question it is asked — but the
+    # veto is what decides whether that movement is a MODIFICATION, and it can
+    # only decide it against a digest the dismissal did not take away.
+    _, before2 = selffix.begin_session()
+    (install / "jobs.py").write_text("RUNNING = 'running'\n")
+    selffix.settle(before=before2, run_id="r2")
+    assert selffix.status() is None, (
+        "restoring the installation raised a badge — the veto was measuring "
+        "against a release digest taken from the patched tree")
+
+
+def test_a_baseline_lost_WITH_its_marker_is_recovered_from_the_pointer(install):
+    """The writer knows what every reader knows, or it writes down a guess.
+
+    `_pristine_digest` reads three sources and only the third — the session
+    pointer — survives the state dir being deleted. `ensure_baseline` used to
+    read the first two, so the one case where the pointer is the whole point
+    was the case it could not see: it took a fresh digest of the patched tree
+    for the release and WROTE it, and `baseline.json` then shadowed the pointer
+    that had the right answer.
+    """
+    before = _pristine()
+    pristine = selffix._pristine_digest()
+    selffix.note_session("r1", before=before, baseline=pristine)
+
+    (install / "jobs.py").write_text("patched\n")
+    shutil.rmtree(selffix.state_dir())  # baseline and marker both; the pointer
+                                        # is also out of tree and survives
+
+    assert selffix.ensure_baseline()["digest"] == pristine, (
+        "the writer took the patched tree for the release while the pointer "
+        "still knew what this version shipped")
+
+
 def test_a_report_that_COMES_BACK_is_named_again(install):
     """The wire shape describes the disk; it does not edit the marker.
 
