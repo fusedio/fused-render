@@ -128,12 +128,35 @@ export function getProgress(): OnboardingState | null {
   return snapshot;
 }
 
+// WHEN THE STORE RE-READS. The server overrules stored statuses with what it
+// can observe (a grant, a folder under local/, a cached model), but only on a
+// read — and a store that read once at mount would show a download finished
+// an hour ago as still pending. So, while anyone is subscribed: on every
+// return to the tab (the DownloadManager's own pattern), and whenever the
+// Activity dock sees a job reach a terminal state (`noteProgressMayHaveMoved`,
+// called from ActivityDock). No timer of its own: the dock's poll already runs at
+// the right cadence, and finishing a job is the moment a stage can change.
+const onVisible = () => {
+  if (document.visibilityState === "visible") void refreshProgress();
+};
+
 export function subscribeProgress(cb: () => void): () => void {
   listeners.add(cb);
-  if (listeners.size === 1) void refreshProgress();
+  if (listeners.size === 1) {
+    void refreshProgress();
+    document.addEventListener("visibilitychange", onVisible);
+  }
   return () => {
     listeners.delete(cb);
+    if (listeners.size === 0) document.removeEventListener("visibilitychange", onVisible);
   };
+}
+
+/** Something that could move a stage just happened elsewhere in the shell (a
+ *  download finished, a task ended). Re-read if anyone is looking; a store
+ *  with no subscriber re-reads at its next mount anyway. */
+export function noteProgressMayHaveMoved(): void {
+  if (listeners.size > 0) void refreshProgress();
 }
 
 export function useOnboardingState(): OnboardingState | null {
