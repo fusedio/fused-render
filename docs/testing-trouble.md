@@ -70,6 +70,14 @@ It pins the ordering (a signed-out Claude must not classify as a missing one),
 the four deep links, the report's field order, the degraded no-facts report, and
 the install command string.
 
+`install-read-only.render.test.ts` next to it drives the hook that decides which
+verb a failed row's button uses — how many requests N rows make, what a dropped
+request leaves for the next row, and which way absence answers:
+
+```
+cd frontend && bun test src/platform/lib/install-read-only.render.test.ts
+```
+
 The rest of this file is manual, because the failures live in the seam between
 the app and the machine and stubbing them out would test the stub.
 
@@ -94,6 +102,12 @@ env PATH=/usr/bin:/bin .venv/bin/python -m fused_render.cli
   own state instead of prefixing it into the generic error banner.
 - Check the app folder really is there afterwards. A card that says the folder
   exists while it does not would be worse than the red string it replaced.
+- Then the two surfaces self-fix adds. Preferences → **Fix this app** →
+  describe anything → **Start a fix session**: same title, the install command
+  with its own Copy button, the link to `#troubleshooting-notfound`. And a
+  **failed download row's Fix this** button: the compact card — same title,
+  clamped error, Copy + link, no install block, because that surface is a
+  340px notification.
 
 ### 2. Claude is installed but not signed in
 
@@ -164,6 +178,67 @@ echo '{ this is not json' > ~/.fused-render/templates/registry.json
   `curl "localhost:PORT/api/fs/stat?path=<a file>"` carries `template_error`.
 - **Regression to watch:** a *healthy* registry must produce no toast at all.
   Check one ordinary file in the same run, with the broken registry removed.
+
+### 6. The installation is read-only (diagnostic mode)
+
+The one case where both self-fix surfaces have to change their wording before
+anything is clicked (SF-13d). Stage it by taking write permission off the
+installed package — not off a source checkout, which is not what a user has:
+
+```
+chmod a-w "$(.venv/bin/python -c 'import fused_render,os; print(os.path.dirname(fused_render.__file__))')"
+```
+
+- **Preferences → Fix this app**: the muted note *"This installation is
+  read-only, so a session can diagnose but not fix"* above a live button reading
+  **Start a diagnostic session**. Not an error banner and not a disabled button —
+  nothing has gone wrong and the session is still worth starting.
+- **A failed download row**: its button reads **Diagnose this**, and hovering it
+  gives the sentence Preferences has room to print. This is the half that was
+  missed once: a row promising *Fix this* on a copy nobody can patch tells the
+  one user who cannot help themselves that they can.
+- Start it and let it finish. The report must land under `~/.fused-render/selffix`
+  (NOT in the install), and the version chip must stay grey — there is nothing to
+  mark, so a badge here would be a lie.
+- Restore with `chmod u+w` on the same path and reload: both surfaces go back to
+  *Fix this* / *Start a fix session*. The answer is cached per page load, so
+  reload rather than expecting the label to flip under you.
+- **Regression to watch:** a *writable* install must never show either
+  diagnostic wording. Check one ordinary failed row after restoring — a config
+  read that fails should fall back to *Fix this*, not to *Diagnose this*.
+
+### 7. Claude Code is missing, before anything is offered
+
+Case 1 above stages the same machine state; this checks the half that happens
+*before* a click. Hide the CLI from the server's PATH and restart it:
+
+```
+FUSED_RENDER_CLAUDE_BIN=/nonexistent PATH=/usr/bin:/bin scripts/dev.sh
+```
+
+The same state #621's first-run strip reports on Home and /apps — and the same
+snapshot: both read `claude_health`, so if the strip and this button ever
+disagree about one machine, that is the bug to chase.
+
+- **A failed download row** reads **Set up Claude Code**, not *Fix this*.
+  Clicking it still asks the server and shows the `notfound` card from the
+  server's own answer.
+- **Preferences → Fix this app** says a session runs on Claude Code and it isn't
+  installed; its button reads *Set up Claude Code* and needs no description typed
+  first (there is nothing to describe yet). Click it with the box **empty**: you
+  must get the install card, never "say what is wrong" — the machine's answer
+  outranks the request's.
+- The card is the **same** one you get from case 1, necessarily: there is one
+  copy of that sentence (`claude_spawn.CLAUDE_MISSING_ERROR`) and the click goes
+  through it either way.
+- **THE RETRY IS THE CASE THAT MATTERS.** With the app still running, put the CLI
+  back on the PATH (or clear `FUSED_RENDER_CLAUDE_BIN`) and click again **without
+  reloading**. A session must start. This is the trap the label-vs-decision split
+  exists for: the button told the user to install Claude Code, so it must notice
+  when they did. The label catches up on the same click.
+- **Regression to watch:** being signed out must NOT be pre-checked. Sign out
+  with the CLI present and the row must still read *Fix this* — the app cannot
+  know, and a button that guessed would be wrong the moment you signed back in.
 
 ## Cross-cutting checks
 

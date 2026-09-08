@@ -1,0 +1,6 @@
+# `bun test` config. The preload installs the shared DOM shim
+# (src/platform/lib/testDomShim.ts) before the runner loads the first test
+# file, so a module that reads `window`/`location`/`history` at module scope
+# is safe to import statically — see that file's header for the full why.
+[test]
+preload = ["./src/platform/lib/testDomShim.preload.ts"]

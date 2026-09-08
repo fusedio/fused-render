@@ -371,6 +371,31 @@ def _no_schedule_loop_thread(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_selffix_resume_thread(monkeypatch):
+    """No test may start the self-fix resume thread.
+
+    `routers/selffix.resume` runs from the app's STARTUP event like the two
+    threads above, and is the most dangerous of the three to leak because of
+    WHERE it reads: it resolves `selffix.install_root()`, which outside
+    tests/test_selffix.py is not redirected anywhere — it is the DEVELOPER'S
+    REAL PACKAGE. A leaked resume finding a session pointer there would hash
+    that tree and, if it had moved, write a `modified.json` into
+    `fused_render/.fused-render-selffix/`. Gitignored, so it would never show up
+    in `git status`; the tell would be a later test reading a marker it had not
+    written — which is exactly how test_selffix's own `_no_detached_watcher`
+    was arrived at, one layer down.
+
+    Blocking the SPAWN rather than redirecting the root, for the same reason as
+    `_no_schedule_loop_thread`: a redirect moves where things are written, but a
+    daemon nobody joins outlives the redirect and the next tick lands wherever
+    the real function points. The tests that are ABOUT the resume call it
+    directly, under the `install` fixture that does redirect the root."""
+    from fused_render.server.routers import selffix
+
+    monkeypatch.setattr(selffix, "resume", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_tasks_watch_thread(monkeypatch):
     """No test may start the Tasks change-watcher thread.
 

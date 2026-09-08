@@ -111,6 +111,13 @@ export interface NotificationCardProps {
   navAction?: NotificationCardAction;
   /** A second `.q-all`, below the status line — Fix with Claude. */
   extraAction?: NotificationCardAction;
+  /** Anything a row needs UNDER its status line that is not a sentence and
+   *  not a button: today the jobs card's compact `TroubleCard`, for a
+   *  self-fix session that could not start. It is neither `status` (which is
+   *  one line of text, and the row still wants its ordinary one) nor
+   *  `extraAction` (which is a label and an onClick), so it takes the one
+   *  thing those two cannot express — a node the caller renders itself. */
+  footer?: ReactNode;
   /** `.dl-x` (`✕`). Notifications rows only. */
   onDismiss?: NotificationCardDismiss;
   /** The whole row as one click target — see `NotificationCardRowClick`. */
@@ -134,6 +141,7 @@ export default function NotificationCard({
   liveAction,
   navAction,
   extraAction,
+  footer,
   onDismiss,
   rowClick,
 }: NotificationCardProps) {
@@ -278,6 +286,7 @@ export default function NotificationCard({
           {extraAction.label}
         </button>
       )}
+      {footer}
     </div>
   );
 }

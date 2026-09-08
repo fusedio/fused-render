@@ -2,6 +2,7 @@
 // both search boxes (the home page's and the listing's in-folder one), which
 // is why they are tested away from either of them.
 import { describe, expect, it } from "bun:test";
+import { restoreGlobal } from "@platform/lib/testDomShim";
 import {
   INSTANT_DEBOUNCE_MS,
   PENDING_INDICATOR_MS,
@@ -64,8 +65,13 @@ class Clock {
   }
 
   restore(): void {
-    if (this.hadWindow) (globalThis as Record<string, unknown>).window = this.priorWindow;
-    else delete (globalThis as Record<string, unknown>).window;
+    // Through `restoreGlobal`, not an assignment-or-delete of our own: every
+    // file in a `bun test` run shares one process, so a teardown puts back what
+    // it displaced and never deletes — the next file may be one that needs this
+    // global standing when its module graph evaluates
+    // (tests/test_frontend_one_process.py pins the rule). The helper keeps the
+    // "there was nothing here before" case honest.
+    restoreGlobal("window", this.hadWindow ? this.priorWindow : undefined);
     this.timers.clear();
   }
 
