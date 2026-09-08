@@ -1,0 +1,283 @@
+/* The landing page: title, big composer card and the three cross-session
+   lists. Values verbatim from T:3239-3360 (home + lists) and T:3577-3700
+   (rows + skeletons), read through chat.css's `--c-*` aliases. */
+
+/* ---- landing (T:3239-3296) --------------------------------------------- */
+.c-home {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 14vh;
+}
+/* The landing's kebab, in the seat T gives it: the `#anntools` strip is the one
+   row both views keep, and `#kebab` sits at its right end (T:3842, T:522-526).
+   Out of the flow so the headline's 14vh keeps its measurement — the control is
+   chrome, not a block in the column. */
+.c-home-tools {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  z-index: 1;
+}
+/* One 32px here, one margin per block below — the landing used to end each
+   section in its own padding, which added itself to the next one's margin for
+   a 60px gutter that read as three unrelated screens stacked (T:3245-3252). */
+.c-home-inner {
+  width: 100%;
+  max-width: 620px;
+  padding: 0 24px 32px;
+}
+.c-home-title {
+  font-size: 26px;
+  /* These names are paths and slugs with no spaces in them; without this one
+     unbroken name overflows the column instead of wrapping inside it. */
+  overflow-wrap: anywhere;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--c-fg-strong);
+  text-align: center;
+  margin-bottom: 4px;
+}
+/* The steps are the STYLESHEET's; fitHomeTitle only decides WHICH. Two and not
+   a continuum because a headline has a small number of sizes it can be and
+   still look chosen (T:3277-3286). */
+.c-home-title.c-t-mid {
+  font-size: 21px;
+}
+.c-home-title.c-t-min {
+  font-size: 17px;
+}
+.c-home-title .c-spark {
+  color: var(--c-accent);
+  margin-right: 10px;
+  font-weight: 400;
+}
+.c-home-sub {
+  color: var(--c-faint);
+  font-size: 12.5px;
+  text-align: center;
+  margin-bottom: 28px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- the three lists and the bar over them (T:3305-3360) --------------- */
+.c-lists {
+  margin-top: 28px;
+}
+.c-listtabs {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+/* The same micro-type as every section heading, so switching lists never
+   changes the shape of the screen; the only mark on the active one is ink plus
+   a hairline (T:3318-3337). No count on any tab (Akshil, 2026-08-24). */
+.c-list-tab {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--c-faint);
+  background: none;
+  border: 0;
+  border-bottom: 1.5px solid transparent;
+  border-radius: 0;
+  padding: 0 0 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.c-list-tab:hover {
+  color: var(--c-fg);
+}
+.c-list-tab[aria-selected="true"] {
+  color: var(--c-fg);
+  border-bottom-color: var(--c-accent);
+}
+.c-list-tab:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+/* In the tabbed dress the bar already says the active list's name, so the
+   section's own heading would say it twice (T:3348-3353). */
+.c-lists.is-tabbed .c-head {
+  display: none;
+}
+.c-lists.is-tabbed .c-list-panel {
+  margin-top: 0;
+}
+.c-head {
+  color: var(--c-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  padding: 0 4px;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.c-head-count {
+  font-weight: 400;
+  letter-spacing: 0;
+}
+/* A list with nothing in it draws no heading, no empty state and no error —
+   the count is what hides the section (T:18452-18477). This placeholder is
+   PR4's seat for Artifacts / Snapshots, which have real loaders there. */
+.c-list-empty {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--c-faint);
+}
+
+/* ---- one past chat (T:3577-3661) --------------------------------------- */
+.c-chat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  background: transparent;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.c-chat-row:hover {
+  background: var(--c-surface);
+  border-color: var(--c-border-strong);
+}
+.c-chat-row:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+.c-chat-row .c-dot {
+  color: var(--c-accent);
+  flex-shrink: 0;
+  font-size: 10px;
+}
+.c-row-title {
+  color: var(--c-fg);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.c-row-sub {
+  color: var(--c-faint);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+/* The time NEVER LEAVES. At rest a row about another file shows the icon alone
+   beside it; on hover the name opens out BETWEEN them, and the title
+   ellipsises to pay for it. Animated on `max-width` — the same box the text
+   already lives in — so the row opens smoothly and the time is carried, never
+   covered (T:3600-3661). */
+.c-row-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  max-width: 60%;
+}
+.c-row-fileic {
+  display: none;
+  flex: 0 0 auto;
+  color: var(--c-faint);
+  line-height: 0;
+}
+.c-chat-row.has-pane .c-row-fileic {
+  display: block;
+}
+.c-row-file {
+  color: var(--c-faint);
+  font-size: 12px;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c-chat-row.has-pane .c-row-file {
+  transition:
+    max-width 0.2s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.14s ease;
+}
+.c-chat-row.has-pane:hover .c-row-file,
+.c-chat-row.has-pane:focus-visible .c-row-file {
+  max-width: 180px;
+  opacity: 1;
+  transition:
+    max-width 0.24s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.2s ease 0.06s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-chat-row.has-pane .c-row-file,
+  .c-chat-row.has-pane:hover .c-row-file,
+  .c-chat-row.has-pane:focus-visible .c-row-file {
+    transition: none;
+  }
+}
+
+/* ---- skeletons (T:3665-3700) ------------------------------------------- */
+.c-skel-bar {
+  height: 11px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--c-surface) 25%,
+    var(--c-border) 50%,
+    var(--c-surface) 75%
+  );
+  background-size: 200% 100%;
+  animation: c-skel-shimmer 1.2s ease-in-out infinite;
+}
+@keyframes c-skel-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-skel-bar {
+    animation: none;
+  }
+}
+.c-skel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  margin-bottom: 8px;
+}
+.c-skel-row .c-skel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-border);
+  flex-shrink: 0;
+}
+.c-skel-row .c-skel-bar.is-title {
+  flex: 1;
+}
+.c-skel-row .c-skel-bar.is-sub {
+  width: 42px;
+  flex-shrink: 0;
+}

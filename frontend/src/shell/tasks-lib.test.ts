@@ -7345,7 +7345,11 @@ describe("the Cards view's frame", () => {
     expect(CARDS).toContain("setPeek(peekLive);");
     const emptyBranch = CARDS.slice(CARDS.indexOf("if (cards.length === 0) {"), CARDS.indexOf("return (\n    // The SCROLLER"));
     expect(emptyBranch).toContain("{popup}");
-    expect(CARDS).toContain("initialFocus={frameRef}");
+    // FLAG-AWARE since the native chat landed (apps/claude/ChatMount): with the
+    // native chat there is no frame, and the thing worth focusing is the
+    // composer's own textarea — which is where the reader wanted the caret all
+    // along. The legacy branch still hands the chassis the iframe.
+    expect(CARDS).toContain("initialFocus={native ? boxRef : frameRef}");
     expect(readFileSync(join(SHELL, "../platform/ui/modal/Modal.tsx"), "utf8")).toContain("select:not([disabled]),iframe,");
     // The dialog clips its own corners: the frame must not paint over the radius.
     expect(block(CARDS_CSS, ".modal-dialog.task-peek")).toContain("overflow: hidden");
@@ -7360,6 +7364,10 @@ describe("the Cards view's frame", () => {
     // a key pressed inside the frame (measured, 2026-09-05).
     expect(CARDS).toContain('doc?.addEventListener("keydown", onKey);');
     expect(CARDS).toContain('if (e.key === "Escape") onClose();');
+    // ...and that whole hop is LEGACY-ONLY: the native chat is in this document,
+    // so its root hands Escape back up through `onEscape` instead.
+    expect(CARDS).toContain("if (native) return;");
+    expect(CARDS).toContain("onEscape={onClose}");
   });
 });
 

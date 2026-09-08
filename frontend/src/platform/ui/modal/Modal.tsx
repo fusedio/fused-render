@@ -53,6 +53,15 @@ export interface ModalProps {
   width?: number | string;
   footer?: ReactNode;
   initialFocus?: RefObject<HTMLElement | null>;
+  // RE-RUN `initialFocus` WHEN THE REF FILLS LATE. The mount effect below reads
+  // `initialFocus.current` once, during the dialog's own commit — which is the
+  // right moment for a render-time ref (an iframe element) and too early for one
+  // an effect inside a LAZY child fills (TaskPeek's native chat: the composer's
+  // textarea does not exist until the chat chunk resolves, so focus fell back to
+  // the head's ✕). A caller that knows when its ref is ready bumps this, and the
+  // focus is taken then — but only if nothing in the body has the caret yet, so
+  // a reader who has already clicked or typed somewhere is never yanked away.
+  focusSignal?: number;
   // When dirty, the first close attempt is intercepted with an inline hint and
   // the next one actually closes (RowEditorModal). Arming is cleared by
   // interacting with the form again, not by a timeout.
@@ -84,6 +93,7 @@ export function Modal({
   width,
   footer,
   initialFocus,
+  focusSignal = 0,
   dirty = false,
   dialogClassName,
   closeTitle,
@@ -132,6 +142,22 @@ export function Modal({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The late half of the above: `focusSignal` changed, so the ref the caller
+  // handed us may have filled since the mount effect read it. Skipped while the
+  // caret is already on something in the BODY (the reader got there first, or
+  // the ref was live at mount and this is the same element); taken when focus
+  // sits on the chassis' own head — the ✕ the fallback lands on — or nowhere.
+  useEffect(() => {
+    if (!focusSignal) return;
+    const el = initialFocus?.current;
+    if (!el) return;
+    const active = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    if (active && dialog?.contains(active) && !active.closest(".modal-head")) return;
+    el.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSignal]);
 
   // DISARM ON RETURNING TO THE FORM — the other half of the guard.
   //

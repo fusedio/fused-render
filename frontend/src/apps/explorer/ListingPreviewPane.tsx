@@ -29,7 +29,7 @@
 // shows.
 import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
-import { ChatFrame } from "@platform/ui/ChatFrame";
+import { ChatMount, listingPaneSrc } from "@apps/claude";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import { SideCloseButton, SideTabs, paneSideIcon } from "@apps/explorer/SideChrome";
 import { paneChatOnly } from "@apps/explorer/listing/pane-modes";
@@ -52,6 +52,7 @@ export default function ListingPreviewPane({
   sideEntries,
   onSelectSide,
   onClose,
+  initialAsk,
 }: {
   // The pane has NO MODE YET — the folder's companion probes are still out
   // (pane-side's paneSideList answers an empty list, and `side` is then only a
@@ -71,6 +72,10 @@ export default function ListingPreviewPane({
   // per selection — see the module comment.
   sideEntries: PaneSideEntries;
   onSelectSide: (side: PaneSideChoice) => void;
+  // The "Fix with AI" prompt, already pulled-and-cleared by Listing (which owns
+  // `window._fusedClaudeAskTake`), and only when the NATIVE chat is what renders
+  // — flag off, the template pulls it at its own boot and this is null.
+  initialAsk?: string | null;
   // Shuts the pane (`_side=off`). The listing's search row grows the reopening
   // half of the affordance while the pane is down — SideChrome writes the split
   // between the two down.
@@ -155,10 +160,10 @@ export default function ListingPreviewPane({
     // disable `fused.daemon.*` for every app it frames (its own left preview
     // pane included, two levels down). `_noopen=1` says only the one thing this
     // call site actually wants: don't record this render as an app open.
-    const src = withNoFocus(
-      `/render?path=${encodeURIComponent(sideEntry.path)}` +
-        `&_file=${encodeURIComponent(folder)}${chatOnly}&_noopen=1`
-    );
+    // The URL shape itself lives in `apps/claude/legacy-src.ts` with the other
+    // five and the byte-for-byte parity test that pins all six; `withNoFocus`
+    // stays here because it is a fact about this HOST, not about the address.
+    const src = withNoFocus(listingPaneSrc(sideEntry.path, folder, chatOnly));
     // The claude companion is the one whose document restores a transcript
     // before it has anything to show, so it is the one framed behind a cover
     // that waits for `data-chat-ready` (platform/ui/ChatFrame — same as the
@@ -169,7 +174,24 @@ export default function ListingPreviewPane({
       <div className="listing-pane" ref={rootRef} {...guardProps}>
         {strip()}
         {side === "claude" ? (
-          <ChatFrame className="pane-frame" src={src} title={modeTitle(side)} />
+          // FLAG ON the native chat renders here instead, `chat_only` for the
+          // reason `paneChatOnly` gives, and its params live on the SHELL URL
+          // (this pane is the page, not a card). `_nofocus` rides the legacy src
+          // via `withNoFocus`; natively it is `noFocus`, which is what stops the
+          // pane taking the keyboard off the listing.
+          <ChatMount
+            legacySrc={src}
+            className="pane-frame"
+            title={modeTitle(side)}
+            file={folder}
+            // The same one answer the src fragment is built from — asked once
+            // (pane-modes.test pins that: one literal, one call).
+            chatOnly={!!chatOnly}
+            noFocus
+            noOpen
+            paramsSource="url"
+            {...(initialAsk ? { initialAsk } : {})}
+          />
         ) : (
           <iframe className="pane-frame" src={src} title={modeTitle(side)} />
         )}

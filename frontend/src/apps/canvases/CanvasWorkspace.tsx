@@ -17,6 +17,7 @@
 // workbench iframe — the hosted workbench refreshes itself on upstream
 // changes.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ChatMount, canvasChatSrc } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
@@ -332,10 +333,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // The `run` param does NOT ride this src: the template reads it through
   // fused.params, i.e. off THIS page's URL (it sets no param boundary), so a
   // fix run is handed over by writing `run` there — see the effect below.
-  const editorSrc =
-    dir && chatTpl
-      ? `/render?path=${encodeURIComponent(chatTpl)}&_file=${encodeURIComponent(dir)}&chat_only=1`
-      : null;
+  // The URL shape lives in `apps/claude/legacy-src.ts` with the other five and
+  // the byte-for-byte parity test that pins all six.
+  const editorSrc = dir && chatTpl ? canvasChatSrc(chatTpl, dir) : null;
 
   // Hand a fresh fix run to the chat: `run` goes on this page's own URL (where
   // fused.params reads it — the template adopts the session and then clears
@@ -540,23 +540,47 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             pointerEvents: dragging ? "none" : "auto",
           }}
         >
-          {editorSrc ? (
-            <iframe
-              // key forces a REMOUNT when a fix run starts: the template only
-              // reads `run` at boot (it adopts the session and clears the
-              // param), so an already-running chat has to be rebooted to see
-              // it — the "have to reload the page to see the fix session" bug.
+          {editorSrc && dir ? (
+            // key forces a REMOUNT when a fix run starts: the run id is read at
+            // BOOT (the chat adopts the session and clears the param), so an
+            // already-running chat has to be rebooted to see it — the "have to
+            // reload the page to see the fix session" bug.
+            //
+            // NO PARAM BOUNDARY here, flag on or off: `run` and `session_id`
+            // live on the `/canvases/<name>` URL, which is why `paramsSource` is
+            // "url" and why the effect above writes `run` there. It is also
+            // handed over directly as `runId`, so the native mount does not
+            // depend on that write having landed first.
+            //
+            // The annotate target is the SIBLING workbench iframe, which the
+            // template used to find through `window.parent.document`; natively
+            // the host hands the element over. The mark stays on that iframe for
+            // PR3 to read (below).
+            <ChatMount
               key={fixRunId ?? "chat"}
-              src={editorSrc}
-              /* The chat's tab-capture screenshots (template annXO branch,
-                 D355) call getDisplayMedia from inside this frame, and
-                 display capture is gated by Permissions Policy — whether a
-                 same-origin iframe inherits it without an explicit allow
-                 varies by browser, so it is granted here rather than hoped
-                 for. */
-              allow="display-capture"
+              legacySrc={editorSrc}
+              legacy={
+                <iframe
+                  src={editorSrc}
+                  /* The chat's tab-capture screenshots (template annXO branch,
+                     D355) call getDisplayMedia from inside this frame, and
+                     display capture is gated by Permissions Policy — whether a
+                     same-origin iframe inherits it without an explicit allow
+                     varies by browser, so it is granted here rather than hoped
+                     for. Handed over as the flag-off element precisely BECAUSE
+                     of attributes like this one: rebuilding them from props
+                     would be a worse guarantee than the node itself. */
+                  allow="display-capture"
+                  title={`Edit: ${name}`}
+                  style={{ width: "100%", height: "100%", border: 0 }}
+                />
+              }
               title={`Edit: ${name}`}
-              style={{ width: "100%", height: "100%", border: 0 }}
+              file={dir}
+              chatOnly
+              paramsSource="url"
+              {...(fixRunId ? { runId: fixRunId } : {})}
+              annotateTarget={() => frameRef.current}
             />
           ) : (
             !error && <p style={{ padding: 16 }}>Loading editor…</p>

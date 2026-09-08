@@ -176,11 +176,17 @@ export async function getJson<T>(
 // One mutating-request helper for both PUT and POST — they differ only in the
 // method. X-Fused forces a CORS preflight so a foreign page can't write blind
 // (the D3 guard the reveal/write/clone endpoints require).
-async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown): Promise<T> {
+async function mutateJson<T>(
+  method: "PUT" | "POST",
+  url: string,
+  body: unknown,
+  opts?: { signal?: AbortSignal },
+): Promise<T> {
   const res = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json", "X-Fused": "1" },
     body: JSON.stringify(body),
+    signal: opts?.signal,
   });
   const data = await res.json();
   if (!res.ok) throw httpError(data, res.status);
@@ -188,7 +194,8 @@ async function mutateJson<T>(method: "PUT" | "POST", url: string, body: unknown)
 }
 
 const putJson = <T>(url: string, body: unknown) => mutateJson<T>("PUT", url, body);
-export const postJson = <T>(url: string, body: unknown) => mutateJson<T>("POST", url, body);
+export const postJson = <T>(url: string, body: unknown, opts?: { signal?: AbortSignal }) =>
+  mutateJson<T>("POST", url, body, opts);
 
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
@@ -943,10 +950,32 @@ export interface RunResult {
   stderr?: string;
   duration_ms?: number;
   resolved_py?: string;
+  // Pre-flight answer for a project whose venv is not built yet (PY-18 /
+  // D173, engine.py _needs_install_dict). `error` is populated alongside it.
+  needs_install?: NeedsInstall;
 }
 
-export function runPy(py: string, params: Record<string, unknown>): Promise<RunResult> {
-  return postJson<RunResult>("/api/run", { py, params });
+// engine.py `_needs_install_dict`: what the loader needs to title a progress
+// row and drive /api/env/install. Additive fields beyond these are ignored.
+export interface NeedsInstall {
+  key: string;
+  requirements: string[];
+  py: string;
+  project: string;
+  name: string;
+  pyproject: string;
+  // Only when the interpreter itself is the first round (D214).
+  python?: string;
+  // Only when the consent prompt has something to name.
+  nonstandard?: string[];
+}
+
+export function runPy(
+  py: string,
+  params: Record<string, unknown>,
+  opts?: { signal?: AbortSignal },
+): Promise<RunResult> {
+  return postJson<RunResult>("/api/run", { py, params }, opts);
 }
 
 // `signal` matters for callers that stat on a user's behalf and then navigate:
@@ -1116,6 +1145,18 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
+  // Whether chat embeds render the native React chat (beta) instead of the
+  // legacy template iframe. The EFFECTIVE value, and `forced_by` is the env
+  // string deciding it when `FUSED_RENDER_NATIVE_CHAT` is in force — the stored
+  // switch cannot win then, so the UI disables itself and says so
+  // (shell/prefs.py `native_chat_enabled`, same shape as `engine.forced_by`).
+  //
+  // OPTIONAL, because the readers treat it as optional: `feature-flag.ts` reads
+  // `p.chat?.native`, and an older server (or a test fixture built before this
+  // field existed) answers without it. A required field here would only make
+  // every `Prefs` literal in the suites over-constrained while the runtime read
+  // stayed defensive anyway.
+  chat?: { native: boolean; forced_by?: string | null };
   // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
   // the stored switch plus the live listener — `url` once it is serving
   // (http://render.fused.local/), `error` when the bind or mDNS failed.
@@ -1333,6 +1374,10 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
+export function putNativeChatEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { native_chat_enabled: enabled });
+}
+
 export interface LanDevice {
   id: string;
   name: string; // "iPhone · Safari", derived from the user agent at pairing
@@ -1473,6 +1518,43 @@ export function writeFile(path: string, content = "", create = false): Promise<S
     // An overwrite is not re-indexed (the index stores names), so the box must
     // not claim it is. An older server that does not answer `created` is
     // treated as having created something, which errs toward the caption.
+    (out) => out.created !== false,
+  );
+}
+
+// Write BYTES to a path — the shell-side twin of runtime.js's `fused.uploadFile`
+// (R:3182-3190), mirrored down to the transport so a page and the shell cannot
+// disagree about what an upload is:
+//
+//   * MULTIPART, and the Content-Type header is deliberately NOT set — the
+//     browser generates `multipart/form-data; boundary=…`, and setting the
+//     header by hand drops the boundary and makes the body unparseable;
+//   * X-Fused forces the CORS preflight the write guard requires (D3);
+//   * a read-only refusal (403 `{"error":"readonly"}`) reaches the caller as an
+//     ordinary thrown HttpError carrying `status` — there is no optimistic lock
+//     and no `create`, since a freshly serialized blob has no prior version to
+//     conflict with.
+//
+// It goes through `noteAfter` like every other mutation here, which is the
+// shell-side half of runtime.js's `noteFsChanged()` (R:849-865): that walks the
+// same-origin ancestor chain calling `_fusedFsChanged`, which main.tsx wires to
+// `clearListPrefetch` — a listing prefetched before this write must not repaint
+// the folder as it stood before it.
+//
+// First caller: the chat's app-state DOM outline, moved out to a JSON file in
+// the shots dir (apps/claude/pane/appState.ts, T:5177-5218).
+export function uploadFile(path: string, blob: Blob, filename = "upload"): Promise<StatResult> {
+  const form = new FormData();
+  form.append("path", path);
+  form.append("file", blob, filename);
+  return noteAfter(
+    path,
+    fetch("/api/fs/upload", { method: "POST", headers: { "X-Fused": "1" }, body: form })
+      .then((res) => res.json().then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok) throw httpError(data, res.status);
+        return data as StatResult;
+      }),
     (out) => out.created !== false,
   );
 }

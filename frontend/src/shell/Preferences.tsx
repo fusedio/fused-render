@@ -45,6 +45,7 @@ import {
   getHfAuth,
   hfLogout,
   putCanvasesEnabled,
+  putNativeChatEnabled,
   putLanEnabled,
   getLanPairToken,
   getLanDevices,
@@ -56,6 +57,7 @@ import {
 } from "@platform/lib/api";
 import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
+import { publishNativeChatEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -210,6 +212,65 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
           <b>Show Canvases</b> in the sidebar and the Settings menu.
         </span>
       </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Native chat (beta): the React port of the Claude chat, behind a flag while
+// the migration lands PR by PR. Same one-checkbox section shape as Canvases.
+// `FUSED_RENDER_NATIVE_CHAT` beats this switch; the server reports the
+// effective value, so the box shows what the app is actually doing.
+function NativeChatSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.chat?.native ?? false;
+  // `FUSED_RENDER_NATIVE_CHAT` BEATS THE STORED SWITCH (prefs.py
+  // `native_chat_enabled`), so under it a click stores a value the server then
+  // reports back as the other one and the box snaps back with no explanation.
+  // Say which is deciding and take the control out of service, exactly as the
+  // engine section does with `engine.forced_by`.
+  const forcedBy = prefs.chat?.forced_by ?? null;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putNativeChatEnabled(!enabled);
+      onChange(next);
+      publishNativeChatEnabled(next.chat?.native === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Native chat (beta)</h2>
+      <p className="deploy-muted">
+        Render the Claude chat as part of the app instead of an embedded page. Off by default
+        while the port is in beta; every chat embed switches on the next paint.
+      </p>
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={busy || !!forcedBy}
+          onChange={toggle}
+        />
+        <span>
+          <b>Use the native chat</b> in the sidebar, Tasks cards and the canvas workspace.
+        </span>
+      </label>
+      {forcedBy && (
+        <p className="deploy-muted">
+          Set by <code>FUSED_RENDER_NATIVE_CHAT={forcedBy}</code> in this server's environment,
+          which overrides this switch.
+        </p>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
@@ -898,6 +959,7 @@ export default function Preferences() {
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
+                <NativeChatSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}

@@ -1,0 +1,1137 @@
+/* The transcript's own paint: everything Tailwind cannot express (per-line diff
+   bands, an rtl-clipped path, a background-clip shimmer, a mask fade, a sticky
+   zero-height copy wrap) plus the geometry the pixel diff is measured against.
+   Every value is copied from `fused_render/templates/claude/template.html`
+   (`T`) with its palette read through the `--c-*` aliases of chat.css.
+
+   Scoped under `.chat-root` throughout: `.error`, `.user`, `.note` unqualified
+   are magnets, and this sheet ships in the shell bundle beside every other app. */
+
+/* ── scrollport (T:1680-1687) ───────────────────────────────────────────── */
+.chat-root .chat-logwrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.chat-root .chat-logwrap::-webkit-scrollbar {
+  width: 8px;
+}
+.chat-root .chat-logwrap::-webkit-scrollbar-thumb {
+  background: var(--c-scrollbar);
+  border-radius: 4px;
+}
+.chat-root .chat-log {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 20px 12px;
+}
+/* compact (cards wall) and peek both halve the top padding (T:1412-1438). */
+.chat-root.chat-compact .chat-log,
+.chat-root.chat-peek .chat-log {
+  padding-top: 12px;
+}
+
+/* ── a turn (T:1689-1713) ───────────────────────────────────────────────── */
+.chat-root .turn {
+  margin: 0 0 20px;
+  animation: chat-rise 0.18s ease-out;
+}
+@keyframes chat-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn {
+    animation: none;
+  }
+}
+/* The turn a `?msg=` link asked for: a HALO that fades, not a selection state.
+   Drawn entirely with box-shadow so it costs no layout. */
+.chat-root .turn.is-anchored {
+  border-radius: 10px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--c-accent) 28%, transparent);
+  animation: chat-anchor-flare 1.6s ease-out forwards;
+}
+@keyframes chat-anchor-flare {
+  0%,
+  45% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--c-accent) 28%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+/* Higher specificity than the rule above, so the flare switches off on its own
+   and the halo simply holds until the class is stripped. */
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.is-anchored {
+    animation: none;
+  }
+}
+
+/* ── user / assistant (T:1838-1875) ─────────────────────────────────────── */
+.chat-root .turn.user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.chat-root .turn.user .bubble {
+  background: var(--c-bubble-user);
+  border-radius: 18px 18px 4px 18px;
+  padding: 9px 14px;
+  max-width: 82%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* "what was sent": an affordance on the bubble, not a row of its own. */
+.chat-root .turn.user .sentbtn {
+  margin-top: 4px;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--c-faint);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+.chat-root .turn.user:hover .sentbtn,
+.chat-root .turn.user .sentbtn:focus-visible {
+  opacity: 1;
+}
+.chat-root .turn.assistant {
+  display: flex;
+  gap: 10px;
+}
+.chat-root .turn.assistant .dot {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  color: var(--c-accent);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.chat-root .turn.assistant .body {
+  min-width: 0;
+  word-break: break-word;
+  padding-top: 2px;
+}
+/* NOT pre-wrap: everything in here is marked's BLOCK html, and marked
+   separates blocks with a literal newline — under pre-wrap every one of those
+   is a visible blank line, inside lists included (T:1866-1876). */
+.chat-root .turn.assistant .body,
+.chat-root .seg-text {
+  white-space: normal;
+}
+
+/* ── the typer's caret (T:3235-3236) ────────────────────────── */
+/* A step-end blink, not a fade: the caret is a block glyph standing in for a
+   terminal cursor, and an eased opacity reads as a pulsing character rather
+   than a cursor. Named `chat-blink` because this sheet ships in the shell
+   bundle beside every other app and `blink` unqualified is a magnet. */
+.chat-root .cursor {
+  color: var(--c-accent);
+  animation: chat-blink 1s step-end infinite;
+}
+@keyframes chat-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* ── error / trouble (T:1886-1947) ──────────────────────────────────────── */
+.chat-root .turn.error {
+  color: var(--c-error);
+  background: color-mix(in srgb, var(--c-error) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-error) 30%, transparent);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* Warning-toned rather than error-toned, on the same argument the shell's card
+   makes: the app is running, Claude is not. */
+.chat-root .turn.trouble {
+  background: color-mix(in srgb, var(--c-accent) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 30%, transparent);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.chat-root .turn.trouble .trouble-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.chat-root .turn.trouble .trouble-explain {
+  margin: 0 0 8px;
+  color: var(--c-dim);
+}
+.chat-root .turn.trouble .trouble-error {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow: auto;
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-root .turn.trouble .trouble-install {
+  margin-bottom: 6px;
+}
+.chat-root .turn.trouble .trouble-label {
+  color: var(--c-dim);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.chat-root .turn.trouble .update-badge-command,
+.chat-root .turn.trouble .trouble-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.chat-root .turn.trouble code {
+  flex: 1 1 auto;
+  padding: 6px 8px;
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  font-size: 12px;
+  overflow-x: auto;
+}
+.chat-root .turn.trouble .deploy-muted {
+  margin: 0;
+  color: var(--c-faint);
+  font-size: 12px;
+}
+.chat-root .turn.trouble .trouble-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chat-root .turn.trouble .trouble-btn,
+.chat-root .turn.trouble .update-badge-copy,
+.chat-root .turn.trouble .version-panel-link {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--c-fg);
+  background: transparent;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.chat-root .turn.trouble .trouble-btn:hover,
+.chat-root .turn.trouble .update-badge-copy:hover,
+.chat-root .turn.trouble .version-panel-link:hover {
+  border-color: var(--c-border-strong);
+}
+
+/* ── note row (T:2027-2030) ─────────────────────────────────────────────── */
+.chat-root .turn.note {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--c-faint);
+}
+.chat-root .turn.note .eye {
+  color: var(--c-dim);
+}
+
+/* ── working line (T:1949-2025) ─────────────────────────────────────────── */
+.chat-root .turn.working {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--c-dim);
+  font-size: 13px;
+}
+.chat-root .turn.working .star {
+  color: var(--c-accent);
+  animation: chat-pulse 1.4s ease-in-out infinite;
+}
+@keyframes chat-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.working .star {
+    animation: none;
+  }
+}
+/* The verb shimmers for as long as the turn is live — the app's ONE running
+   shimmer, on the same --c-status-progress hue as the top strip's mark (D453).
+   Gradient-over-text, so it costs no layout and no extra element. */
+.chat-root .turn.working .verb {
+  color: var(--c-status-progress);
+  background-image: linear-gradient(
+    100deg,
+    var(--c-status-progress) 30%,
+    color-mix(in srgb, var(--c-status-progress) 65%, var(--c-fg)) 50%,
+    var(--c-status-progress) 70%
+  );
+  background-size: 300% 100%;
+  background-repeat: repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: claude-running-shimmer 2.2s linear infinite;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+/* ONE property animates, and it is the position of the highlight — never
+   opacity, never the fill, never anything that could take a letter away
+   (T:1367-1370, verbatim). */
+@keyframes claude-running-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+/* Awaiting approval is the one phase where nothing is running: the turn is
+   blocked on the user, and a shimmer there would promise progress only their
+   click can produce. Stopping keeps it — the kill is still in flight. */
+.chat-root .turn.working.awaiting .verb {
+  animation: none;
+  background-image: none;
+  -webkit-text-fill-color: var(--c-fg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.working .verb {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: var(--c-status-progress);
+  }
+}
+/* The brackets carry the one part of the line whose length the page does not
+   control, so they give way first: the verb and the stop button keep their
+   width at any pane size. */
+.chat-root .turn.working .meta {
+  color: var(--c-faint);
+  font-size: 12px;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-root .turn.working .stop {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--c-border);
+  border-radius: 5px;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+.chat-root .turn.working .stop:hover:not(:disabled) {
+  color: var(--c-fg);
+  border-color: var(--c-faint);
+}
+.chat-root .turn.working .stop:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ── permission / question / plan cards (T:2033-2380) ───────────────────── */
+.chat-root .perm {
+  border: 1px solid color-mix(in srgb, var(--c-accent) 55%, transparent);
+  border-radius: 14px;
+  background: var(--c-surface);
+  padding: 12px 14px;
+  box-shadow: 0 4px 16px var(--c-shadow);
+}
+/* A resolved card is a RECEIPT, not a question: it keeps its place and gives up
+   the fill, the shadow, the accent ring and a chunk of its padding. */
+.chat-root .perm.resolved {
+  border-color: var(--c-border);
+  box-shadow: none;
+  background: transparent;
+  padding: 8px 12px;
+  border-radius: 10px;
+}
+/* ...and once it IS history it is parked inside the turn it belongs to, where
+   it is a sibling of the segment views rather than a top-level turn. */
+.chat-root .assistant .body > .perm {
+  margin: 8px 0;
+}
+.chat-root .perm.resolved .plan-body,
+.chat-root .perm.resolved .qtext,
+.chat-root .perm.resolved .perm-sub {
+  color: var(--c-dim);
+}
+.chat-root .perm.resolved .qhead {
+  color: var(--c-dim);
+  border-color: var(--c-border);
+  background: transparent;
+}
+.chat-root .perm .perm-head {
+  font-size: 13px;
+  color: var(--c-dim);
+}
+.chat-root .perm .perm-head .tool {
+  color: var(--c-accent-text);
+  font-weight: 600;
+}
+.chat-root .perm .perm-sub {
+  color: var(--c-dim);
+  word-break: break-word;
+  font-size: 12px;
+  margin-top: 2px;
+}
+/* Restated with `.assistant` too: a parked card sits inside `.assistant`, where
+   the reply's own `pre` rule would otherwise win at equal specificity and hand
+   the payload `white-space: pre` and no height cap. */
+.chat-root .perm pre,
+.chat-root .assistant .perm pre {
+  position: relative;
+  background: var(--c-pre-bg);
+  color: var(--c-pre-fg);
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  max-height: 190px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+}
+.chat-root .perm .perm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.chat-root .perm .perm-btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  height: auto;
+  padding: 5px 14px;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--c-fg);
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    filter 0.12s;
+}
+.chat-root .perm .perm-btn:hover:not(:disabled) {
+  border-color: var(--c-border-strong);
+  background: var(--c-surface-2);
+}
+.chat-root .perm .perm-btn.primary {
+  background: var(--c-accent);
+  border-color: var(--c-accent);
+  color: var(--c-on-accent);
+}
+.chat-root .perm .perm-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+  background: var(--c-accent);
+}
+.chat-root .perm .perm-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* :focus-visible, not :focus — a mouse click on a summary should not leave a
+   ring behind. */
+.chat-root .perm .perm-btn:focus-visible,
+.chat-root .perm .qopt:focus-visible,
+.chat-root .toolchip > .chip-summary:focus-visible,
+.chat-root .thinking > .thinking-summary:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: 2px;
+}
+.chat-root .perm .perm-status {
+  margin-top: 10px;
+  font-size: 13px;
+}
+.chat-root .perm .perm-status.allow {
+  color: var(--c-ok);
+}
+.chat-root .perm .perm-status.deny {
+  color: var(--c-error);
+}
+.chat-root .perm .perm-status.expired {
+  color: var(--c-dim);
+}
+/* An answer is not an approval: the label recedes and the choice carries the
+   contrast, because the choice is the fact worth re-reading later. */
+.chat-root .perm .perm-status.chose {
+  color: var(--c-dim);
+}
+.chat-root .perm .perm-status.chose .val {
+  color: var(--c-fg);
+}
+
+.chat-root .perm.ask {
+  border-color: color-mix(in srgb, var(--c-accent) 80%, transparent);
+}
+.chat-root .perm.ask.resolved {
+  border-color: var(--c-border);
+}
+.chat-root .perm.ask .qscroll {
+  max-height: 46vh;
+  overflow: auto;
+}
+/* While an "Other" row is open there is exactly ONE scroller inside the card,
+   and it is the box: two nested scrollers in the same axis take the row the
+   user is typing in out from under them. */
+.chat-root .perm.ask .qscroll:has(.qopt.qother.typing) {
+  max-height: none;
+  overflow: visible;
+}
+.chat-root .perm .qblock + .qblock {
+  margin-top: 14px;
+}
+.chat-root .perm .qhead {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--c-accent-text);
+  border: 1px solid color-mix(in srgb, var(--c-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--c-accent) 10%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-bottom: 6px;
+}
+.chat-root .perm .qtext {
+  font-size: 14px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.chat-root .perm .qopts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 9px;
+}
+.chat-root .perm .qopt {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  text-align: left;
+  width: 100%;
+  height: auto;
+  padding: 8px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--c-fg);
+  font: inherit;
+  font-size: 13px;
+  white-space: normal;
+  cursor: pointer;
+  transition:
+    background 0.12s ease-out,
+    border-color 0.12s ease-out;
+}
+.chat-root .perm .qopt:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
+  background: var(--c-surface-2);
+}
+.chat-root .perm .qopt .lbl {
+  font-weight: 600;
+  display: block;
+}
+.chat-root .perm .qopt .desc {
+  display: block;
+  margin-top: 2px;
+  color: var(--c-dim);
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+/* The tick, drawn from tokens in both themes: empty box = the card's own
+   background, checked = an accent fill with a --c-surface inset punching the
+   middle out. Selected by TYPE, never as "any input in a .qopt" — the Other
+   row puts a text field inside one. */
+.chat-root .perm .qopt .qtick {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  margin: 3px 0 0;
+  flex-shrink: 0;
+  border: 1.5px solid var(--c-border-strong);
+  background: var(--c-bg);
+  border-radius: 4px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease-out,
+    border-color 0.12s ease-out;
+}
+.chat-root .perm .qopt .qtick.is-radio {
+  border-radius: 50%;
+}
+.chat-root .perm .qopt .qtick[data-checked],
+.chat-root .perm .qopt .qtick[aria-checked="true"] {
+  background: var(--c-accent);
+  border-color: var(--c-accent);
+  box-shadow: inset 0 0 0 3px var(--c-surface);
+}
+.chat-root .perm .qopt .qtick:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: 2px;
+}
+/* The one row Claude did not write (D407) — structurally the SAME row as an
+   option, with the label receding to say so. */
+.chat-root .perm .qopt.qother .lbl {
+  font-weight: 600;
+  color: var(--c-dim);
+}
+.chat-root .perm .qopt.qother .qbody {
+  flex: 1;
+  min-width: 0;
+}
+.chat-root .perm .qopt.qother,
+.chat-root .perm .qopt.qother .qbody {
+  overflow: visible;
+}
+.chat-root .perm .qopt.qother.typing {
+  border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
+  cursor: default;
+}
+/* By CLASS only, never `textarea.qtype`, so it cannot lose a specificity race
+   to a rule that selects on the row's contents. */
+.chat-root .perm .qopt .qtype {
+  display: none;
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-height: 0;
+  margin: 7px 0 0;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--c-fg);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 8px;
+  cursor: text;
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.chat-root .perm .qopt.qother.typing .qtype {
+  display: block;
+}
+.chat-root .perm .qopt .qtype::placeholder {
+  color: var(--c-dim);
+}
+.chat-root .perm .qopt .qtype:focus,
+.chat-root .perm .qopt .qtype:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
+}
+.chat-root .perm .qsend {
+  margin-top: 12px;
+}
+
+.chat-root .perm.plan {
+  border-color: color-mix(in srgb, var(--c-accent) 80%, transparent);
+}
+.chat-root .perm.plan.resolved {
+  border-color: var(--c-border);
+}
+/* The body is rendered MARKDOWN, not a monospace payload — a plan is prose
+   Claude wrote to be read — so it gets a reply's type and line height. */
+.chat-root .perm .plan-body {
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 8px;
+  max-height: 420px;
+  overflow: auto;
+  word-break: break-word;
+}
+.chat-root .perm .plan-body > :first-child {
+  margin-top: 0;
+}
+.chat-root .perm .plan-body > :last-child {
+  margin-bottom: 0;
+}
+.chat-root .perm .plan-note {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 0;
+  margin-top: 10px;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--c-fg);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  resize: vertical;
+}
+.chat-root .perm .plan-note:focus,
+.chat-root .perm .plan-note:focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-color: color-mix(in srgb, var(--c-accent) 60%, transparent);
+}
+/* Not a refusal — the other half of a conversation, so it does not read in the
+   deny red. */
+.chat-root .perm.plan .perm-status.deny {
+  color: var(--c-dim);
+}
+
+/* ── tool chips / thinking (T:2382-2693) ────────────────────────────────── */
+.chat-root .toolchip,
+.chat-root .thinking {
+  white-space: normal;
+  margin: 6px 0;
+}
+/* A chip is a receipt for something that already happened: the rail on the left
+   edge and nothing else. Fifteen boxed rows read as fifteen separate things
+   each asking to be considered; fifteen rail lines read as one transcript. */
+.chat-root .toolchip {
+  padding: 2px 0 2px 12px;
+  border-left: 1px solid var(--c-border);
+  border-radius: 0;
+  margin: 1px 0;
+  font-size: 13px;
+}
+.chat-root .toolchip.is-open {
+  border-left-color: var(--c-border-strong);
+  background: color-mix(in srgb, var(--c-surface) 45%, transparent);
+  border-radius: 0 8px 8px 0;
+  margin: 8px 0;
+  padding: 4px 0 6px 12px;
+}
+.chat-root .toolchip .chip-body {
+  padding-right: 10px;
+}
+/* The row clips itself; `text-overflow` is deliberately NOT set here — the row
+   below is an atomic inline an ellipsis cannot clip INTO. */
+.chat-root .toolchip > .chip-summary {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  font: inherit;
+  font-size: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--c-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  transition: color 0.12s ease-out;
+}
+.chat-root .toolchip > .chip-summary:hover {
+  color: var(--c-fg);
+  background: none;
+}
+/* The disclosure marker, in the same line box as the row it opens. */
+.chat-root .toolchip > .chip-summary > .chip-marker {
+  display: inline-block;
+  width: 1.2em;
+  flex: none;
+  color: var(--c-faint);
+  font-size: 10px;
+  transition: transform 0.12s ease-out;
+}
+.chat-root .toolchip.is-open > .chip-summary > .chip-marker {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .toolchip > .chip-summary > .chip-marker {
+    transition: none;
+  }
+}
+.chat-root .toolchip > .chip-summary > .chip-row {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: calc(100% - 1.2em);
+  min-width: 0;
+  overflow: hidden;
+}
+.chat-root .toolchip .chip-sub {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  color: var(--c-dim);
+  margin-left: 6px;
+  font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+  font-size: 12px;
+}
+.chat-root .toolchip .chip-row > .chip-status,
+.chat-root .toolchip .chip-row > .chip-name {
+  flex: 0 0 auto;
+}
+.chat-root .toolchip .chip-sub > .chip-lead {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* With a path present the counts are FIXED and the path absorbs the whole
+   overflow — otherwise flex shrinks both in proportion and "+12 -3" comes out
+   as "+12 …". */
+.chat-root .toolchip .chip-sub.has-path > .chip-lead {
+  flex: 0 0 auto;
+}
+/* `direction: rtl` moves the overflow — and with it the ellipsis — to the LEFT,
+   so the filename survives; the <bdi> inside keeps the path's own characters in
+   logical order. */
+.chat-root .toolchip .chip-sub > .chip-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+/* The gap belongs to the LEAD, and only when there is one: a Read has no lead
+   at all, and a margin on the path would double the space after the name. */
+.chat-root .toolchip .chip-sub > .chip-lead:not(:empty) {
+  margin-right: 6px;
+}
+/* Fixed width whether or not the glyph is drawn, so every chip's name starts at
+   the same x. `is-*` prefixed because a bare `error` collides with .turn.error. */
+.chat-root .toolchip .chip-status {
+  display: inline-block;
+  width: 1.1em;
+  color: var(--c-dim);
+}
+.chat-root .toolchip .chip-status.is-ok {
+  color: var(--c-ok);
+}
+.chat-root .toolchip .chip-status.is-error {
+  color: var(--c-error);
+}
+/* A real 9px circle with one accent arc, rotating about its own centre — a
+   rotated glyph orbits its line box instead, which reads as a glitch. */
+.chat-root .toolchip .chip-status.is-running {
+  width: 9px;
+  height: 9px;
+  margin: 0 4px 0 1px;
+  border: 1.5px solid var(--c-border-strong);
+  border-top-color: var(--c-accent);
+  border-radius: 50%;
+  display: inline-block;
+  vertical-align: -1px;
+  animation: chat-chipspin 0.7s linear infinite;
+}
+@keyframes chat-chipspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .toolchip .chip-status.is-running {
+    animation: none;
+  }
+}
+.chat-root .toolchip .chip-name {
+  color: var(--c-dim);
+  font-weight: 600;
+}
+.chat-root .toolchip .chip-label {
+  color: var(--c-dim);
+  font-size: 12px;
+  margin-top: 6px;
+  word-break: break-word;
+}
+.chat-root .toolchip .chip-label.chip-label-path {
+  font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+  color: var(--c-faint);
+}
+.chat-root .toolchip .chip-flag {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--c-dim);
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+}
+/* Wraps rather than scrolling sideways: a horizontal scrollbar hides the end of
+   every line behind a gesture nobody makes. */
+.chat-root .toolchip .chip-body pre {
+  margin: 6px 0 2px;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--c-pre-bg);
+  color: var(--c-pre-fg);
+  border: 1px solid var(--c-border);
+  padding: 8px 10px;
+  font-size: 12px;
+  position: relative;
+}
+/* The pre gives up its side padding and the lines take it back, so a +/- band
+   runs the full width of the box. Clipped at CHIP_DIFF_CLIP_LINES with a fade
+   — a hard cut with no cue reads as "that was the whole change". */
+.chat-root .toolchip pre.diff {
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 8px 0;
+  max-height: calc(14 * 1.55em);
+}
+.chat-root .toolchip pre.diff.clipped {
+  mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent);
+}
+.chat-root .toolchip pre.diff > span {
+  display: block;
+  padding: 0 12px;
+  min-height: 1.55em;
+}
+.chat-root .diff-add {
+  color: var(--c-diff-add-fg);
+  background: var(--c-diff-add-bg);
+}
+.chat-root .diff-del {
+  color: var(--c-diff-del-fg);
+  background: var(--c-diff-del-bg);
+}
+/* The STICKY box is this zero-height wrapper (first in flow, which is where a
+   sticky box has to start to be held at the top of a scrollport); the button is
+   absolutely positioned inside it. A sticky BUTTON would be confined to a
+   zero-height float and scroll away with the content. */
+.chat-root .assistant .toolchip .chip-body pre .copywrap,
+.chat-root .perm .toolchip .chip-body pre .copywrap {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.chat-root .assistant pre .copywrap,
+.chat-root .perm pre .copywrap {
+  display: block;
+  height: 0;
+  overflow: visible;
+}
+.chat-root .toolchip pre.diff > span.copywrap {
+  min-height: 0;
+  padding: 0;
+}
+.chat-root .copybtn {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  padding: 1px 6px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--c-dim);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+.chat-root pre:hover .copybtn,
+.chat-root .copybtn:focus-visible {
+  opacity: 1;
+}
+.chat-root .toolchip .chip-todo {
+  font-size: 13px;
+}
+.chat-root .toolchip .chip-todo.done {
+  color: var(--c-dim);
+  text-decoration: line-through;
+}
+/* On a restored transcript the plan CARD is gone and this is the only copy, so
+   it borrows the card's own typography and leaves the box furniture behind. */
+.chat-root .toolchip .chip-plan {
+  font-size: 13px;
+  margin-top: 6px;
+}
+.chat-root .toolchip .chip-plan > :first-child {
+  margin-top: 0;
+}
+.chat-root .toolchip .chip-plan > :last-child {
+  margin-bottom: 0;
+}
+/* Option rows keep their leading spaces (`pre-wrap`): the indent is what makes
+   them read as options OF the question above them. */
+.chat-root .toolchip .chip-ask-q {
+  font-size: 13px;
+  margin-top: 10px;
+  word-break: break-word;
+}
+.chat-root .toolchip .chip-ask-o {
+  margin-top: 2px;
+  color: var(--c-dim);
+  font-size: 12px;
+  font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-root .toolchip .chip-img {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+  margin-top: 6px;
+}
+
+.chat-root .thinking > .thinking-summary {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--c-faint);
+  font: inherit;
+  font-size: 12px;
+  font-style: italic;
+  transition: color 0.12s ease-out;
+}
+.chat-root .thinking > .thinking-summary:hover {
+  color: var(--c-dim);
+  background: none;
+}
+.chat-root .thinking .thinking-body {
+  color: var(--c-dim);
+  border-left: 2px solid var(--c-border-strong);
+  padding-left: 10px;
+  margin-top: 4px;
+}
+
+/* A notice is a note about why the next paragraph exists, not a thing to open,
+   so it carries no border, no hover and no pointer. */
+.chat-root .seg-notice {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--c-faint);
+  font-size: 12px;
+  margin: 6px 0;
+  white-space: normal;
+  word-break: break-word;
+}
+.chat-root .seg-notice-glyph {
+  flex: none;
+  font-size: 10px;
+}
+
+/* Opacity + 2px of travel only: <details>-style content has no animatable open
+   height, and faking one janks a 400 ms-repainting transcript. */
+@media (prefers-reduced-motion: no-preference) {
+  .chat-root .toolchip.is-open > .chip-body,
+  .chat-root .thinking.is-open > .thinking-body {
+    animation: chat-reveal 0.14s ease-out;
+  }
+}
+@keyframes chat-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── markdown body (the reply's own prose) ──────────────────────────────── */
+.chat-root .seg-text > :first-child,
+.chat-root .assistant .body > :first-child {
+  margin-top: 0;
+}
+.chat-root .seg-text > :last-child,
+.chat-root .assistant .body > :last-child {
+  margin-bottom: 0;
+}
+.chat-root .assistant a,
+.chat-root .perm a {
+  color: var(--c-link);
+}
+.chat-root .assistant code,
+.chat-root .perm .plan-body code {
+  background: var(--c-code-bg);
+  color: var(--c-code-fg);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 0.92em;
+}
+.chat-root .assistant pre,
+.chat-root .perm .plan-body pre {
+  position: relative;
+  background: var(--c-pre-bg);
+  color: var(--c-pre-fg);
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  overflow: auto;
+  font-size: 12px;
+}
+.chat-root .assistant pre code,
+.chat-root .perm pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+}
+
+/* ── skeleton while history loads ───────────────────────────────────────── */
+.chat-root .chat-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.chat-root .chat-skeleton-row {
+  display: flex;
+  gap: 10px;
+}
+.chat-root .chat-skeleton-row.is-user {
+  justify-content: flex-end;
+}
