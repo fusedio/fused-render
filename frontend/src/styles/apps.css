@@ -403,15 +403,6 @@ body[data-capture-shooting] .app-pcard-export {
   color: var(--fg-muted);
 }
 
-.app-pcard-tag {
-  flex: 0 0 auto;
-  padding: 1px 8px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 10.5px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-}
-
 .app-pcard-name {
   overflow: hidden;
   text-overflow: ellipsis;

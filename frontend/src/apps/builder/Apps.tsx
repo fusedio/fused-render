@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getApps, getBackgroundAppsRunning, getHomeApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
+import { useCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { appCardMenu } from "@platform/lib/appCardMenu";
 import { sortApps } from "@platform/lib/appEntry";
 import { runCommunity } from "@platform/lib/community";
@@ -177,8 +178,12 @@ export default function Apps({ config }: { config: Config }) {
     if (tag !== null) setMode("repo");
     else if (category !== null) setMode("category");
   }, [tag, category]);
-  // Bumped when the panel creates an app: refetches the grid without clearing it.
+  // Bumped when the panel creates an app, and on the desk-changed announcement
+  // (an icon picked from the sidebar's Projects row while the grid is on
+  // screen): refetches the grid without clearing it, so the card's mark
+  // follows the new icon.svg.
   const [nonce, setNonce] = useState(0);
+  useCurrentAppsChanged(() => setNonce((n) => n + 1));
   // One context-menu portal for the whole grid, at the cursor coords — same
   // shape as the explorer listing's (Listing.tsx openRowMenu).
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);

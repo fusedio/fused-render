@@ -1,6 +1,6 @@
-// The app-icon palette: Notion's ten icon colours, each a light/dark pair, so
-// a picked lucide glyph follows the shell's theme the way the generic AppStar
-// (on currentColor) already does.
+// The app-icon palette: five picks (default grey, fused yellow, then blue /
+// green / red), each a light/dark pair, so a picked lucide glyph follows the
+// shell's theme the way the generic AppStar (on currentColor) already does.
 //
 // The problem this solves: `icon.svg` is a static file drawn through `<img>`
 // and `<link rel="icon">`, and neither crosses into the shell's CSS — no
@@ -15,31 +15,28 @@
 // tests can import it.
 import type { Theme } from "@platform/lib/theme";
 
-export const ICON_COLORS = [
-  "default",
-  "gray",
-  "brown",
-  "yellow",
-  "orange",
-  "green",
-  "blue",
-  "purple",
-  "pink",
-  "red",
-] as const;
+/** What the picker offers, in swatch order. */
+export const ICON_COLORS = ["default", "yellow", "blue", "green", "red"] as const;
 
-export type IconColor = (typeof ICON_COLORS)[number];
+/** Names an existing icon.svg may still declare: the five above plus the
+ *  Notion colours the picker used to offer. Kept so those files keep
+ *  following the theme instead of falling back to their baked-in hex. */
+const LEGACY_ICON_COLORS = ["gray", "brown", "orange", "purple", "pink"] as const;
+const ALL_ICON_COLORS: readonly string[] = [...ICON_COLORS, ...LEGACY_ICON_COLORS];
+
+export type IconColor = (typeof ICON_COLORS)[number] | (typeof LEGACY_ICON_COLORS)[number];
 
 /** Hex per theme. `default` is the `--fg-muted` pair (tokens.css) — the tint
  *  the generic AppStar fallback wears, so an uncoloured pick and no pick at
- *  all sit in the same register. The rest are Notion's icon palette. The
+ *  all sit in the same register. `yellow` is the fused accent (`--accent`),
+ *  the rest are Notion's icon palette. The
  *  same values live in tokens.css as `--app-icon-<name>` for the picker's
  *  swatches; the svg needs them as literals. */
 export const ICON_COLOR_HEX: Record<IconColor, { light: string; dark: string }> = {
   default: { light: "#61656c", dark: "#9aa0a6" },
   gray: { light: "#787774", dark: "#9b9b9b" },
   brown: { light: "#9f6b53", dark: "#ba856f" },
-  yellow: { light: "#cb912f", dark: "#ca9849" },
+  yellow: { light: "#5f7300", dark: "#E5FF44" },
   orange: { light: "#d9730d", dark: "#c77d48" },
   green: { light: "#448361", dark: "#529e72" },
   blue: { light: "#337ea9", dark: "#5e87c9" },
@@ -62,7 +59,7 @@ export const ICON_COLOR_LABEL: Record<IconColor, string> = {
 };
 
 export function isIconColor(v: unknown): v is IconColor {
-  return typeof v === "string" && (ICON_COLORS as readonly string[]).includes(v);
+  return typeof v === "string" && ALL_ICON_COLORS.includes(v);
 }
 
 /** The colour name an icon.svg declares on its root, or null for a file with

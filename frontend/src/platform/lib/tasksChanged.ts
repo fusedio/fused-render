@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+
 // "A task just changed" — the platform half of a poke at the shell's shared
 // tasks store (shell/tasksPulse.ts). An APP that creates a task (the Home
 // hero's new-app composer: its prompt becomes a task on the new folder's
@@ -25,4 +27,16 @@ export const CURRENT_APPS_CHANGED_EVENT = "fused-render:current-apps-changed";
 
 export function announceCurrentAppsChanged(): void {
   window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT));
+}
+
+/** Subscribe for the component's lifetime. `cb` is read through a ref so a
+ *  fresh closure each render does not churn the listener. */
+export function useCurrentAppsChanged(cb: () => void): void {
+  const ref = useRef(cb);
+  ref.current = cb;
+  useEffect(() => {
+    const fire = () => ref.current();
+    window.addEventListener(CURRENT_APPS_CHANGED_EVENT, fire);
+    return () => window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, fire);
+  }, []);
 }
