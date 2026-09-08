@@ -89,8 +89,11 @@ export interface NoteTurn {
   role: "note";
   key: string;
   text: string;
-  /** ⏹ a stop, ◍ an app-state read, ◆ a skill (T:13722). */
-  glyph: "\u23f9" | "\u25cd" | "\u25c6";
+  /** ⏹ a stop, ◍ an app-state read, ◆ a skill (T:13722) — and ◷ a scheduled
+   *  message, which is PR4's own row: "Your scheduled message is running now."
+   *  and its foreign-session twin (T:17427-17434). Added to the union rather
+   *  than spelled at the call site so a renderer's glyph switch stays total. */
+  glyph: "\u23f9" | "\u25cd" | "\u25c6" | "\u25f7";
 }
 
 /**
@@ -207,6 +210,18 @@ export interface ChatState {
    *  compares against it so rows this page just wrote are not read back as
    *  somebody else's turn arriving over the top of them. */
   ownRunEndedAt: number;
+  /**
+   * ADDED (PR4): how many times the VISIBLE CONVERSATION has been replaced —
+   * bumped by `openSession` and by nothing else, which is where T calls
+   * `scheduleResetForNewTranscript()` (T:18000, `loadHistory` non-refresh).
+   *
+   * A counter rather than the session id, because the id is not the same fact:
+   * it also changes when the first poll of a brand-new chat reports one
+   * (`noteSessionId`), mid-run, where a reset re-arms the schedule baseline and
+   * the next tick then writes off a scheduled run that fired in that window.
+   * Starts at 0, so a reader can skip the mount.
+   */
+  transcriptGen: number;
   /** Monotonic; bumps on every state change so cheap memo keys work. */
   rev: number;
 }
@@ -271,6 +286,36 @@ export interface SendOptions {
  * protocol-level answer adds the method together with the state it reads.
  */
 
+/** T:17509 — `adoptLiveRun`'s two knobs. The standing watch takes ONE lap
+ *  (it is re-armed every 5 s and by three events, so laps of its own would only
+ *  duplicate the timer) and asks quietly. */
+export interface AdoptOptions {
+  laps?: number;
+  quiet?: boolean;
+}
+
+/** T:17747-17765 — `resumeRun`'s three postures.
+ *
+ *  `neverShown`: this frame has never had THIS run's turn on screen, which is
+ *  something only the caller can know (a scheduled send that fired after the
+ *  render). It turns OFF the `matches` heuristic: with it, identical text is a
+ *  COINCIDENCE — the same prompt sent twice — never this run's own line.
+ *
+ *  `quiet`: print the run's message UNLESS this transcript is already showing
+ *  it. The standing watch adopts turns nobody on this page started, and those
+ *  split two ways — a run whose message IS on screen (re-printing it would be
+ *  the page inventing a turn) and one whose message is NOT (a send made in
+ *  another tab, whose words belong here as much as the reply does).
+ *
+ *  `retryUnknown`: a frame handed a run id by its EMBEDDER can boot before the
+ *  freshly created run dir is visible to the agent — a race, not a stale
+ *  bookmark. Defaults TRUE, which is what PR1 shipped unconditionally. */
+export interface ResumeOptions {
+  neverShown?: boolean;
+  quiet?: boolean;
+  retryUnknown?: boolean;
+}
+
 export interface ChatController {
   getState(): ChatState;
   subscribe(cb: () => void): () => void;
@@ -308,8 +353,10 @@ export interface ChatController {
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
   openSession(sessionId: string): Promise<void>;
-  /** Re-attach to a run id from the URL (T:17792 resumeRun). */
-  resumeRun(runId: string): Promise<void>;
+  /** Re-attach to a run id from the URL (T:17792 resumeRun). `opts` ADDED in
+   *  PR4 — the three postures the standing watch and the scheduled-run poller
+   *  need (see `ResumeOptions`). */
+  resumeRun(runId: string, opts?: ResumeOptions): Promise<void>;
   /**
    * Ask the SESSION whether a turn is in flight and attach to it if so
    * (T:17506 `adoptLiveRun`) — the answer for every host that opens a chat by
@@ -325,7 +372,44 @@ export interface ChatController {
    * Resolves when the watch ends — either something was adopted and its turn
    * finished, or ~3 s of laps found nothing.
    */
-  adoptLiveRun(sessionId: string): Promise<void>;
+  adoptLiveRun(sessionId: string, opts?: AdoptOptions): Promise<void>;
+
+  /**
+   * RE-ASK WHAT THE CONVERSATION IS (T:17972-17987 `loadHistory(id,{refresh:1})`).
+   * ADDED in PR4 for the transcript follower: a turn driven from outside this
+   * app writes no run dir, so the only honest repair is the one the reader was
+   * doing by hand — reload the transcript.
+   *
+   * REFRESH MODE, and the difference from `openSession` is the whole point: no
+   * skeleton, no scroll reset, no card/memo wipe, no `session_id` write. The
+   * turns and the watermark are replaced; everything else about the visible
+   * conversation stays exactly as it was.
+   */
+  refreshHistory(sessionId: string): Promise<void>;
+
+  /**
+   * The working line for a turn happening SOMEWHERE ELSE (T:17715-17732
+   * `setExternalWorking`). Reuses the one the poll loop uses so a reader does
+   * not have to learn a second shape of "busy", minus the two things this page
+   * cannot honestly offer: a stop button (the process is not ours) and a token
+   * count (we are reading a file, not a stream).
+   *
+   * A no-op while a run this frame owns is live: that line is the real one.
+   */
+  setExternalWorking(on: boolean): void;
+
+  /** A ◷ / ⏹ / ◍ / ◆ row in the transcript (T:13722 `addNote`). ADDED so the
+   *  scheduled-run poller can say what it just attached to. */
+  addNote(text: string, glyph?: NoteTurn["glyph"]): void;
+
+  /** `activeRun || sending` — the one question both PR4 watchers ask before
+   *  touching the transcript (T:17429, 17604). Read live, never memoised: it is
+   *  checked adjacent to the call it guards. */
+  isBusy(): boolean;
+  /** `!!activeRun` alone — narrower than `isBusy`, which also counts a send in
+   *  flight. PR4's transcript follower needs the narrow one for the external
+   *  working line's OFF edge (T:17709 gates on `!activeRun`). */
+  hasActiveRun(): boolean;
   /** Back to home: clear transcript, drop session_id/run params (T:13031 enterChat/back). */
   newChat(): void;
 
@@ -386,6 +470,12 @@ export interface ControllerDeps {
   /** ADDED: the run ended — PR2/PR3/PR4 hang `annResolveSent` / `snapInvalidate`
    *  here (T:16321-16330). */
   onRunEnded?: () => void;
+  /** ADDED: the `run` param pointed at a run that does not exist — a bookmarked
+   *  mid-run URL, a pruned tmp. NOT a run ending, so it is deliberately not
+   *  `onRunEnded`: nothing was streamed and nothing on disk changed, so the
+   *  snapshot chain is as fresh as it was. What DOES have to happen is the
+   *  annotation hand-back, which is all T's own branch does (T:17792). */
+  onRunAbandoned?: () => void;
   /**
    * ADDED: the `<live-app-state>` block for THIS send, or `""` when there is
    * nothing to say (no pane, or a pane that has told us nothing).

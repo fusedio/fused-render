@@ -36,6 +36,18 @@ export interface SnapshotsState {
 export function useSnapshots(
   agentDir: string | null,
   file: string | null,
+  /**
+   * T:19078-19082 `snapInvalidate` — A RUN THAT ENDED MAY HAVE EDITED THE FILE,
+   * so the chain this panel drew is stale. Any value that CHANGES re-reads;
+   * `undefined` never does.
+   *
+   * A counter rather than a method because the panel is unmounted while a chat
+   * is on screen (the landing page owns it), so there is nothing to call — what
+   * has to survive the round trip is the FACT that a run ended, and a number
+   * bumped in the chat's own state is that fact. A host that keeps the panel
+   * mounted gets a live re-read out of the same knob.
+   */
+  invalidation?: unknown,
 ): SnapshotsState {
   const [timeline, setTimeline] = useState<SnapshotsTimeline | null | undefined>(
     undefined,
@@ -88,7 +100,7 @@ export function useSnapshots(
     return () => {
       live = false;
     };
-  }, [agentDir, file, nonce]);
+  }, [agentDir, file, nonce, invalidation]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   const adopt = useCallback((next: SnapshotsTimeline) => {

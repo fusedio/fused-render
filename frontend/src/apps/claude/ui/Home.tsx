@@ -17,6 +17,10 @@ export interface HomeProps extends HomeCardProps {
   /** The chat's template folder: the terminal hand-off in the landing kebab,
    *  and the `agent.py` behind the artifacts and snapshots reads below. */
   agentDir?: string | null;
+  /** T:19078 `snapInvalidate` — bumped by the chat every time a run ends, so a
+   *  turn that edited the file leaves a stale checkpoint chain behind it rather
+   *  than a cached one (`useSnapshots`'s third argument). */
+  snapInvalidation?: unknown;
 }
 
 export function Home({
@@ -24,6 +28,7 @@ export function Home({
   onOpenSession,
   listsDisabled,
   agentDir,
+  snapInvalidation,
   ...cardProps
 }: HomeProps) {
   // BOTH READS LIVE HERE, not threaded down from the chat: they are the landing
@@ -32,7 +37,7 @@ export function Home({
   // component is exactly that path. Nothing in the transcript wants either
   // answer, so nothing above needs to hold them.
   const artifacts = useArtifacts(agentDir ?? null, cardProps.file);
-  const snaps = useSnapshots(agentDir ?? null, cardProps.file);
+  const snaps = useSnapshots(agentDir ?? null, cardProps.file, snapInvalidation);
 
   return (
     <div className="c-home">

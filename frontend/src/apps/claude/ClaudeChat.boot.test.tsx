@@ -31,6 +31,9 @@ let holdPrefs = false;
  *  `usePaneState`'s own. */
 let holdPaneStat = false;
 let stats = 0;
+/** Every `/api/schedule` read of this mount — one per watcher tick, which is
+ *  what makes an unwanted `scheduleResetForNewTranscript` visible. */
+let scheduleReads = 0;
 
 const realFetch = globalThis.fetch;
 
@@ -66,6 +69,10 @@ function stubFetch(): void {
     // that never settles is what the real endpoint does (it holds the request
     // open until something changes), so the landing view can be mounted.
     if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
+    if (url === "/api/schedule") {
+      scheduleReads++;
+      return jsonRes({ entries: [] });
+    }
     if (url === "/api/prefs") {
       if (holdPrefs) return new Promise<Response>(() => {});
       return jsonRes({});
@@ -95,6 +102,7 @@ beforeEach(() => {
   holdPrefs = false;
   holdPaneStat = false;
   stats = 0;
+  scheduleReads = 0;
   resetAgentDirCacheForTests();
   stubFetch();
 });
@@ -709,4 +717,20 @@ test("the block says APP, the outline goes to a FILE, and its nodes carry a path
   expect(message).toContain("dom_path");
   expect(message).toContain("The DOM outline is the JSON file at `dom_path`");
   expect(uploads.length).toBeGreaterThan(0);
+});
+
+test("THE SCHEDULE RESET WAITS FOR A TRANSCRIPT REPLACEMENT (T:18000)", async () => {
+  // T calls `scheduleResetForNewTranscript()` from `loadHistory`'s non-refresh
+  // branch and from nowhere else, and each call re-ticks the poller. Keyed on
+  // the session id instead, the reset fires twice for free: once on MOUNT — a
+  // second `/api/schedule` racing the one `watcher.start()` already issues — and
+  // once when the first poll of a brand-new chat reports its id, MID-RUN, where
+  // it re-arms `baselined = false` and the next tick then silently writes off a
+  // scheduled run that fired in that window.
+  await mountChat({ initialAsk: "go" });
+  await settle(20);
+  // ONE read: the watcher's own baseline tick. The mount is not a replacement,
+  // and neither is the session id the run's first poll just reported.
+  expect(started().length).toBe(1);
+  expect(scheduleReads).toBe(1);
 });

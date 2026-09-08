@@ -35,12 +35,14 @@ import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { runAgent } from "./agent";
 import type {
+  AdoptOptions,
   AssistantTurn,
   ChatController,
   ChatState,
   ControllerDeps,
   ErrorTurn,
   NoteTurn,
+  ResumeOptions,
   RunStatus,
   SendOptions,
   Trouble,
@@ -72,7 +74,7 @@ import type {
   StartResponse,
   SwitchableMode,
 } from "./types";
-import { composeBlocks, composeOutgoing, stripBlocks } from "./wire";
+import { composeBlocks, composeOutgoing, isMarkerOnly, stripBlocks } from "./wire";
 /** PR2: the attachment pipeline's receipt row — carried, never built here. */
 import type { Receipt } from "../shots/types";
 
@@ -200,6 +202,7 @@ function emptyState(file: string | null): ChatState {
     adopting: false,
     transcript: null,
     ownRunEndedAt: 0,
+    transcriptGen: 0,
     rev: 0,
   };
 }
@@ -1214,12 +1217,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
         activeRun = null;
         activeSeat = 0;
         activeTurnKey = null;
-        // T:16411 `ownRunEndedAt` — when THIS frame's own run ended, so PR4's
-        // transcript follower can tell rows this page just wrote from somebody
-        // else's turn arriving over the top of them (D415).
-        emit({ ownRunEndedAt: now() });
         setRunningUi(false);
       }
+      // T:16411 `ownRunEndedAt` — when THIS frame's own run ended, so PR4's
+      // transcript follower can tell rows this page just wrote from somebody
+      // else's turn arriving over the top of them (D415). TURN BOUNDARY EITHER
+      // WAY, exactly like `noteChatActivity` below and for the same reason: a
+      // superseded loop still wrote rows into this transcript, and a stamp
+      // older than those rows lets `followDecision`'s own-echo guard read this
+      // page's own turn back as somebody else's.
+      emit({ ownRunEndedAt: now() });
       // Nothing is "queued for this turn" once the turn is over: the CLI drains
       // its queue as part of the run, so whatever is still listed here has
       // either been answered above or died with the process. Guarded on
@@ -1988,6 +1995,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     emit({
       sessionId,
       historyLoading: true,
+      // THE VISIBLE CONVERSATION IS BEING REPLACED, and this counter is how the
+      // React side hears about it — T calls `scheduleResetForNewTranscript()`
+      // here, in `loadHistory`'s non-refresh branch and nowhere else (T:18000).
+      // A counter rather than the session id: the id also changes when the
+      // FIRST poll of a brand-new chat reports one (`noteSessionId`), mid-run,
+      // and a reset there re-arms the schedule baseline so the next tick
+      // silently writes off a scheduled run that fired in the window.
+      transcriptGen: state.transcriptGen + 1,
       // Set HERE rather than in `adoptLiveRun`, which this function only
       // reaches after the history round-trip: the gate has to be up before the
       // first frame, or the transcript paints once without the card and the
@@ -2065,7 +2080,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * rendered: a missing working line is a smaller lie than a run adopted onto
    * a conversation this is no longer showing.
    */
-  async function adoptLiveRun(sessionId: string): Promise<void> {
+  async function adoptLiveRun(sessionId: string, opts: AdoptOptions = {}): Promise<void> {
     if (disposed) return;
     // ONE WATCH AT A TIME. `openSession` starts one for every restore and the
     // boot starts one for the path where `openSession` bailed on the gate, so
@@ -2075,7 +2090,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     adopting = true;
     const gen = logGen;
     try {
-      await adoptWatch(sessionId, gen);
+      await adoptWatch(sessionId, gen, opts);
     } finally {
       adopting = false;
       // THE BACKSTOP, not the ordinary road. Every early exit lands here — a
@@ -2087,8 +2102,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
   }
 
-  async function adoptWatch(sessionId: string, gen: number): Promise<void> {
-    for (let tries = 0; tries < ADOPT_LAPS; tries++) {
+  async function adoptWatch(
+    sessionId: string,
+    gen: number,
+    opts: AdoptOptions,
+  ): Promise<void> {
+    // ONE LAP is the STANDING WATCH's posture (T:17615): it is re-armed every
+    // 5 s and by three events of its own, so laps here would only duplicate a
+    // timer that already exists. The open-a-chat window keeps all eight.
+    const laps = Math.max(1, opts.laps ?? ADOPT_LAPS);
+    for (let tries = 0; tries < laps; tries++) {
       if (tries) await sleep(POLL_MS);
       if (logGen !== gen || disposed) return;
       if (activeRun) return;
@@ -2118,7 +2141,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
       }
       if (sending) continue;
       setRunParam(id);
-      await resumeRun(id);
+      // `quiet` rides through to the reconciliation: the watch may be adopting a
+      // turn whose user line this transcript is already showing (the woken run
+      // whose first turn this frame streamed) or one it has never shown (a send
+      // made in another tab). Only `resumeRun` can tell those apart.
+      await resumeRun(id, { quiet: !!opts.quiet });
       // `resumeRun` resolves at the END of the turn, so a completed call means
       // the run was handled — its own done branch cleared the param. The one
       // call that resolves with the param still reading `id` is a bail on a
@@ -2128,20 +2155,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
   }
 
   /**
-   * Re-attach to a run id from the URL — PR1's SUBSET (design.md §8: live-run
-   * adoption is PR4). It does the three things a boot needs: retry a run dir
-   * that is not visible yet, write off a stale param, and either repair a
-   * finished turn from the probe payload or stream a live one.
+   * Re-attach to a run id — a `run` param at boot, a run the standing watch
+   * found, a scheduled message that just fired. It retries a run dir that is
+   * not visible yet, writes off a stale param, and either repairs a finished
+   * turn from the probe payload or streams a live one.
    *
-   * DEFERRED to PR4 (T:17798-17862): `matches` / partial-row stripping,
-   * `neverShown`, `quiet`, and the transcript-follower's `onScreen` test — all
-   * of which exist to reconcile a run this frame never started against turns
-   * history already restored.
+   * PR4 completes it (T:17798-17862): `matches` / partial-row stripping,
+   * `neverShown`, and the follower's `quiet` / `onScreen` test — all of which
+   * exist to reconcile a run this frame never started against turns history
+   * already restored.
    */
-  async function resumeRun(runId: string): Promise<void> {
+  async function resumeRun(runId: string, opts: ResumeOptions = {}): Promise<void> {
     if (disposed) return;
     try {
-      await resumeAttach(runId);
+      await resumeAttach(runId, opts);
     } finally {
       // THE ADOPTION GATE COMES DOWN ON EVERY ROAD OUT OF HERE (Bugbot PR
       // #1061). `openSession` raises `adopting` before the first frame, and on
@@ -2160,8 +2187,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
   }
 
-  async function resumeAttach(runId: string): Promise<void> {
+  async function resumeAttach(runId: string, opts: ResumeOptions): Promise<void> {
     if (sending) return;
+    const neverShown = !!opts.neverShown;
+    const quiet = !!opts.quiet;
+    // Defaults TRUE: PR1 retried unconditionally, and the embedder race it
+    // exists for is real on every boot path that carries a `run` param.
+    const retryUnknown = opts.retryUnknown !== false;
     sending = true;
     const seat = ++sendSeq;
     const gen = logGen;
@@ -2175,7 +2207,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // A few short retries tell the two apart (T:17777-17787).
       for (
         let i = 0;
-        i < UNKNOWN_RUN_RETRIES && (probe as { error?: string }).error === "unknown run_id";
+        retryUnknown &&
+        i < UNKNOWN_RUN_RETRIES &&
+        (probe as { error?: string }).error === "unknown run_id";
         i++
       ) {
         await sleep(UNKNOWN_RUN_RETRY_MS);
@@ -2185,35 +2219,74 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (logGen !== gen || disposed) return;
       }
       if (isUnknownRun((probe as { error?: string }).error)) {
-        // Stale param — nothing to attach to (T:17788-17796).
+        // Stale param — nothing to attach to (T:17788-17796). NOT `onRunEnded`:
+        // no run of this frame's ended here, so the checkpoint chain is exactly
+        // as fresh as it was. T's own branch calls `annResolveSent()` and
+        // nothing else (T:17792 vs 17812-17814); the annotations still have to
+        // be handed back, because a bookmarked mid-run URL is the one road on
+        // which they would otherwise be stranded `sent` forever.
         clearRunParam();
+        deps.onRunAbandoned?.();
         reportTrouble(troubleOf("unknown-run", String((probe as { error?: string }).error)));
         return;
       }
       const poll = probe as PollResponse;
       if (poll.session_id) noteSessionId(String(poll.session_id));
-      if (poll.done) {
-        // Run finished with no frame attached: repair what the restored
-        // transcript can provably be missing (T:17812-17855).
-        clearRunParam();
-        if (poll.error) {
-          addError(poll.error);
-          return;
+      const probeMsg = stripBlocks(poll.message || "");
+      const users = state.turns.filter((t): t is UserTurn => t.role === "user");
+      const lastUser = users.length ? users[users.length - 1] : null;
+      /**
+       * IS THE LAST BUBBLE THIS RUN'S OWN LINE? (T:17809-17810.)
+       *
+       * A marker-only message never counts as a match: every such send collapses
+       * to the same text, so it cannot identify a specific turn — and a false
+       * match trims another turn's assistant rows. Worst case for refusing is a
+       * duplicated marker row, which is harmless by comparison.
+       *
+       * `neverShown` first: with it, identical text is a COINCIDENCE (the same
+       * prompt sent twice), never this run's own line, so no match is legitimate.
+       */
+      const matches =
+        !neverShown && !!lastUser && !isMarkerOnly(probeMsg) && lastUser.text === probeMsg;
+      /**
+       * `matches` asks the question of the LAST bubble only, because it also
+       * decides whether to STRIP rows. `onScreen` only decides whether to PRINT,
+       * so it may look at the whole transcript — and a message the user sent
+       * twice reads as already-shown and prints nothing, which is the safe
+       * direction and the same coincidence `matches` refuses to resolve
+       * (T:17765-17766).
+       */
+      const onScreen = (msg: string) => !!msg && users.some((u) => u.text === msg);
+      /** Drop the partial assistant rows under a matched user line: `pollLoop`
+       *  re-streams the whole turn, and the done branch re-renders it from the
+       *  probe payload (T:17831 / 17857). */
+      const stripAfterLastUser = () => {
+        if (!lastUser) return;
+        const cut = state.turns.findIndex((t) => t.key === lastUser.key);
+        if (cut >= 0 && cut < state.turns.length - 1) {
+          emit({ turns: state.turns.slice(0, cut + 1) });
         }
-        // SEAMS APPLY TO A REPAIR TOO. A run that absorbed a follow-up and
-        // then finished with no frame attached is TWO replies in one window
+      };
+      /** The assistant rows the probe payload carries. A `poll` response holds
+       *  the turn's SEGMENTS too, so a run that finished while this frame was
+       *  away keeps its whole tool timeline rather than losing it until the next
+       *  history restore (T:17827-17835). */
+      const probeSpans = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
+      const probeSegs = Array.isArray(poll.segments) ? poll.segments : [];
+      const probeText = poll.text || "";
+      const addAssistantFromProbe = () => {
+        // SEAMS APPLY TO A REPAIR TOO. A run that absorbed a follow-up and then
+        // finished with no frame attached is TWO replies in one window
         // (`turn_breaks`), and one `pollBody` over the lot merged them into a
         // single bubble — the same defect `pollLoop`'s own done branch already
-        // slices for.
-        const spans = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
-        const allSegs = Array.isArray(poll.segments) ? poll.segments : [];
-        const allText = poll.text || "";
-        for (let j = 0; j <= spans.length; j++) {
-          const from = j === 0 ? { segments: 0, text: 0 } : spans[j - 1]!;
-          const to = j < spans.length ? spans[j]! : null;
+        // slices for. Sliced HERE rather than at the call sites so every repair
+        // road (matched, appended, watched) gets it the once.
+        for (let j = 0; j <= probeSpans.length; j++) {
+          const from = j === 0 ? { segments: 0, text: 0 } : probeSpans[j - 1]!;
+          const to = j < probeSpans.length ? probeSpans[j]! : null;
           const view = pollBody(
-            to ? allSegs.slice(from.segments, to.segments) : allSegs.slice(from.segments),
-            to ? allText.slice(from.text, to.text) : allText.slice(from.text),
+            to ? probeSegs.slice(from.segments, to.segments) : probeSegs.slice(from.segments),
+            to ? probeText.slice(from.text, to.text) : probeText.slice(from.text),
             ++cardSeq,
           );
           if (view.mode === "empty") continue;
@@ -2225,26 +2298,128 @@ export function createChatController(deps: ControllerDeps): ChatController {
             ...(j > 0 ? { followup: j } : {}),
           });
         }
+      };
+      if (poll.done) {
+        // Run finished with no frame attached: repair only what the restored
+        // transcript can provably be missing (T:17812-17855).
+        clearRunParam();
+        // The run this frame missed still handled its notes, and may have edited
+        // the file while we were away (`annResolveSent` / `snapInvalidate`).
+        deps.onRunEnded?.();
+        if (poll.error) {
+          if (matches || !users.length) {
+            addError(poll.error);
+          } else if (neverShown) {
+            // The turn is not on screen and never was, so the failure needs its
+            // own user line to hang under — otherwise the error reads as
+            // belonging to whatever the reader last said.
+            if (probeMsg) addUser(probeMsg);
+            addError(poll.error);
+          }
+          return;
+        }
+        if (matches) {
+          stripAfterLastUser();
+          addAssistantFromProbe();
+        } else if ((!users.length || neverShown || (quiet && !onScreen(probeMsg))) && probeMsg) {
+          // Appended, never matched: the log is empty, or the caller has told us
+          // this run's turn was never on screen (a scheduled send that fired and
+          // finished between polls), or the watch found a turn made in another
+          // tab that this transcript has never shown — a SHORT turn is over
+          // before the watch's first look, and dropping it silently was the whole
+          // of the second tab's remaining complaint (D415).
+          addUser(probeMsg);
+          addAssistantFromProbe();
+        }
         // AND THE WINDOW IS NOW ON SCREEN, so the next send's loop does not
         // type it a second time (see `landedWindow`). This is the reload road
         // into exactly the R4-3 shape: a finished run, repaired here, then a
         // follow-up into the host that is still holding it open.
-        landedWindow = { runId, segments: allSegs.length, text: allText };
+        landedWindow = { runId, segments: probeSegs.length, text: probeText };
         return;
+      }
+      if (matches) {
+        // In flight and this turn's user line is on screen: keep it, drop the
+        // partial assistant rows.
+        stripAfterLastUser();
+      } else if (probeMsg && !(quiet && onScreen(probeMsg))) {
+        addUser(probeMsg);
       }
       sending = false; // pollLoop is not gated on it, and follow-ups need it free
       await pollLoop(runId, gen);
     } catch (err) {
       // A THROWN PROBE IS A TROUBLE CARD, not an unhandled rejection. Every
-      // road in here is reached as a bare `void` (the boot's, `adoptWatch`'s),
-      // so without this a re-attach that failed — the server gone between
-      // mount and the probe — died silently and the reader was left looking at
-      // a restored transcript with no run and no explanation. T warns in
-      // exactly this place (T:17862); a card is the native surface for it.
+      // road in here is reached as a bare `void` (the boot's, `adoptWatch`'s,
+      // the schedule watcher's), so without this a re-attach that failed — the
+      // server gone between mount and the probe — died silently and the reader
+      // was left looking at a restored transcript with no run and no
+      // explanation. T warns in exactly this place (T:17862-17865); a card is
+      // the native surface for it, and it supersedes the bare warn.
       if (!disposed && logGen === gen) reportTrouble(troubleFromError(err));
     } finally {
       if (sendSeq === seat) sending = false;
     }
+  }
+
+  // ---- the transcript follower's two half-methods (PR4, D415) -------------
+
+  /**
+   * REFRESH MODE (T:17972-17987): re-ask what the conversation IS. No skeleton,
+   * no scroll reset, no card wipe, no `session_id` write — the page does not
+   * decide what is new, and `history` is the one party that knows where the turn
+   * boundaries are.
+   *
+   * Gated on the same two facts every follower read is: a live run owns the
+   * transcript, and a send in flight is about to add to it.
+   */
+  async function refreshHistory(sessionId: string): Promise<void> {
+    if (disposed || !sessionId) return;
+    if (activeRun || sending) return;
+    const gen = logGen;
+    try {
+      const res = (await run(
+        dir,
+        "history",
+        { file: FILE || "", session_id: sessionId },
+        { key: null },
+      )) as HistoryResponse & { error?: string };
+      if (logGen !== gen || disposed) return;
+      // A run that attached across the await owns the log now; its stream is
+      // fresher than this answer.
+      if (activeRun || sending) return;
+      if (res.error) throw new Error(res.error);
+      // THE WATERMARK IS WRITTEN ONLY WHEN THE ANSWER CARRIES ONE
+      // (T:17663-17665 `noteTranscript`): a history answer with no stat leaves
+      // the mark exactly as it rendered. Publish `null` instead and
+      // `followTranscript` bails at "no render to compare against" for the rest
+      // of the session — the standing watch goes deaf on the very refresh it
+      // just performed.
+      emit({
+        turns: historyToTurns(res),
+        ...(res.transcript && res.transcript.path ? { transcript: res.transcript } : {}),
+      });
+    } catch (err) {
+      // The transcript stays exactly as it rendered. The watermark is NOT
+      // advanced, so the next lap tries again.
+      if (typeof console !== "undefined") {
+        console.warn("history refresh failed:", err instanceof Error ? err.message : err);
+      }
+    }
+  }
+
+  /** T:17715-17732 `setExternalWorking`. Idempotent, and it never speaks over a
+   *  run this frame owns: that line is the real one, with a stop button and a
+   *  token count this one cannot honestly offer. */
+  function setExternalWorking(on: boolean): void {
+    if (disposed) return;
+    if (on) {
+      if (activeRun || sending) return;
+      if (state.working && state.working.external) return;
+      workingStartedAt = now();
+      setStats(0, "external", null, null, true);
+      return;
+    }
+    if (state.working && state.working.external) emit({ working: null });
   }
 
   // ---- back to home (T:12972-13077) --------------------------------------
@@ -2302,6 +2477,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     openSession,
     resumeRun,
     adoptLiveRun,
+    refreshHistory,
+    setExternalWorking,
+    addNote: (text: string, glyph: NoteTurn["glyph"] = "\u25f7") => {
+      addNote(text, glyph);
+    },
+    isBusy: () => !!activeRun || sending,
+    hasActiveRun: () => !!activeRun,
     newChat,
     settleAttachments,
     dispose() {

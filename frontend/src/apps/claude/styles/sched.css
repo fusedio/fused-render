@@ -1,0 +1,276 @@
+/* The scheduled-message block and the live artifact strip — T:1472-1671 and
+   T:3018-3051, transcribed onto the chat's own `--c-*` tokens.
+
+   The banner rides the COMPOSER'S column — same 720px measure, same 20px gutter
+   as `.c-composer-chat` below it — so it reads as a lid on that box rather than
+   as a band across the pane. NO ENTRY ANIMATION AND NO RESERVED SPACE: the
+   composer is anchored at the bottom of the chat column and only the transcript
+   grows, so this appears into height the transcript gives up and the box under
+   the reader's cursor does not move (`useSchedule` puts a bottom-pinned
+   transcript back at the bottom). An empty strip above every unblocked composer
+   would be a permanent cost paid for a rare state. */
+.c-schedblock {
+  flex-shrink: 0;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 20px 6px;
+}
+.c-schedblock .sb-card {
+  /* A COLUMN: reason, row, then the one control right-aligned under it. Side by
+     side, the row and the button fought over a pane that is often 340px wide and
+     the row's own right-hand cell — the time, the thing it is for — was the
+     first thing to be squeezed out. */
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, var(--c-accent) 34%, var(--c-border));
+  /* Slightly tighter than the composer's 20px: a lid, not a second box of equal
+     weight. */
+  border-radius: 14px;
+  /* A tint of the accent rather than a solid band: the notice has to read as a
+     state this pane is IN, not as a message in the transcript above it. */
+  background: color-mix(in srgb, var(--c-accent) 8%, var(--c-surface));
+  font-size: 12px;
+  line-height: 1.45;
+}
+.c-schedblock .sb-why {
+  display: flex;
+  gap: 6px;
+  color: var(--c-dim);
+}
+.c-schedblock .sb-ic {
+  color: var(--c-accent-text);
+  flex-shrink: 0;
+}
+
+/* ── the task row ────────────────────────────────────────────────────────────
+   The Tasks LIST view's row, TRANSCRIBED and not linked: the 8px row gap, the
+   ring in the leading cell, TASK-nnn in tabular mono, the ellipsed name, one
+   spacer, and the fixed right-hand cell. Every colour goes through the chat's
+   own tokens, so the row is the shell's shape in the chat's palette rather than
+   a second palette smuggled in. */
+.c-schedblock .sb-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 9px;
+  /* Sits BACK from the accent-tinted card rather than on top of it, which is
+     what makes it read as a row lifted out of the notice. `--c-panel` is the one
+     surface that steps away from `--c-surface` in both themes (down in dark, up
+     in light), so the separation survives the light block. */
+  background: var(--c-panel);
+  border: 1px solid var(--c-border);
+  border-radius: 9px;
+  color: var(--c-fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 0.12s,
+    border-color 0.12s;
+}
+.c-schedblock .sb-row:hover {
+  background: var(--c-surface);
+  border-color: var(--c-border-strong);
+}
+.c-schedblock .sb-row:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+/* THE spacer, and there is exactly one. */
+.c-schedblock .sb-grow {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+.c-schedblock .sb-id {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--c-dim);
+}
+/* An EMPTY id is "/api/tasks could not be read", not "this task has no number". */
+.c-schedblock .sb-id:empty {
+  display: none;
+}
+/* The name is the one thing here allowed to be long — so it is the one thing
+   that gives way. */
+.c-schedblock .sb-name {
+  min-width: 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* State and time, on the right, in one cell: "Upcoming · 14:00 tomorrow". Fixed
+   rather than flexible, because the whole point of the right end of this row is
+   that the time is always readable. */
+.c-schedblock .sb-meta {
+  flex: 0 0 auto;
+  color: var(--c-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* The status ring, drawn the way the shell draws it: a 2px currentColor circle,
+   so the STATE only ever changes the hue. 14px rather than the list's 16 — this
+   row sits at 12.5px inside a banner, not at 13px in a full-width table. */
+.c-schedblock .sb-ring {
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  /* Upcoming, which is what a pending message almost always is. */
+  color: var(--c-accent-text);
+}
+.c-schedblock .sb-ring--in_progress {
+  color: var(--c-code-fg);
+}
+.c-schedblock .sb-ring--done {
+  color: var(--c-ok);
+}
+.c-schedblock .sb-ring--failed {
+  color: var(--c-error);
+}
+.c-schedblock .sb-ring--archived {
+  color: var(--c-faint);
+}
+/* Settled — well or badly — carries the inner dot, so the two terminal states
+   are told apart by more than a hue. */
+.c-schedblock .sb-ring--done::after,
+.c-schedblock .sb-ring--failed::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+/* A refused cancel, in the one colour this page keeps for a loss. `:empty`
+   rather than an unmounted node, so the line costs nothing when there is
+   nothing to say — and the node is written every render, keyed to the entry. */
+.c-schedblock .sb-note {
+  color: var(--c-error);
+}
+.c-schedblock .sb-note:empty {
+  display: none;
+}
+/* Under the row and against its right edge — the last thing read, which is what
+   a control that spends every future run of a task should be. */
+.c-schedblock .sb-acts {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.c-schedblock .sb-acts button {
+  background: transparent;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 8px;
+  color: var(--c-fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color 0.12s,
+    border-color 0.12s,
+    background 0.12s;
+}
+.c-schedblock .sb-acts button:hover:not(:disabled) {
+  border-color: var(--c-accent);
+  color: var(--c-accent-text);
+}
+.c-schedblock .sb-acts button:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+.c-schedblock .sb-acts button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* ARMED — one press in, and the next one cancels every future run of a repeat.
+   The colour changes with the label because the button is now a different
+   question, and this is the chat's only red. */
+.c-schedblock .sb-acts button.armed,
+.c-schedblock .sb-acts button.armed:hover:not(:disabled) {
+  border-color: var(--c-error);
+  color: var(--c-error);
+  background: color-mix(in srgb, var(--c-error) 10%, transparent);
+}
+/* A run in flight BREATHES, and only where motion is welcome — `no-preference`
+   rather than a `reduce` override, so reduced motion is the state that needs no
+   opt-out. The ring's hue already says "in progress" on its own. */
+@keyframes c-sb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .c-schedblock .sb-ring--in_progress {
+    animation: c-sb-pulse 2s ease-in-out infinite;
+  }
+}
+
+/* ---- the live artifact strip (T:3018-3051) ------------------------------
+   ABOVE THE FOOTNOTE and below the composer, so a page appearing never moves
+   the box the user is typing into. Empty renders nothing. */
+.c-artstrip {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 2px 24px 6px;
+}
+.c-artstrip .art-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 3px 9px;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  background: var(--c-surface);
+  color: var(--c-fg);
+  font-size: 11.5px;
+  text-decoration: none;
+}
+.c-artstrip .art-chip:hover {
+  border-color: var(--c-accent);
+  color: var(--c-accent);
+}
+.c-artstrip .art-chip:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+.c-artstrip .art-chip-lbl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c-artstrip .art-chip-go {
+  color: var(--c-faint);
+  flex-shrink: 0;
+}
+.c-artstrip .art-chip:hover .art-chip-go {
+  color: var(--c-accent);
+}

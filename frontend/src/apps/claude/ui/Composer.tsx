@@ -214,6 +214,10 @@ export interface ComposerCardProps {
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
+  /** WHY the box is shut, for the calendar button's tooltip and spoken name —
+   *  ONE sentence with one author, so a reader refused by the button reads the
+   *  same words as the card six pixels above it (T:17232-17250). */
+  blockedReason?: string;
   /**
    * `annNavLocked` — a comment round or a walkthrough owns this page. T guards
    * every `.schedbtn` on `schedBlocked() || annNavLocked()` (T:12075, T:12099,
@@ -322,6 +326,7 @@ export function ComposerCard({
   attachPending,
   blocked,
   blockedPlaceholder,
+  blockedReason,
   navLocked,
   navLockedReason,
   autoFocus,
@@ -576,8 +581,16 @@ export function ComposerCard({
             //     Continue still left for `/tasks`, stranding the notes. That is
             //     the exact failure Bugbot PR #1046 closed, reachable again by
             //     another road. Disabled for the eye, guarded for the hand.
+            //
+            // The block reads the SAME `blocked` the box does — never a second
+            // read of the schedule, because a parallel notion of "is this session
+            // blocked" is two answers to one question (T:17233-17236).
             disabled={(variant === "chat" && !!blocked) || !!navLocked}
-            {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
+            {...(navLocked && navLockedReason
+              ? { disabledReason: navLockedReason }
+              : variant === "chat" && blocked && blockedReason
+                ? { disabledReason: blockedReason }
+                : {})}
             onCancel={focusBox}
             onNavigate={onNavigate}
           />
@@ -671,11 +684,17 @@ export type ComposerProps = Omit<ComposerCardProps, "variant"> & {
   /** The target's kind, as `setTargetNoun` writes it — "files here" by
    *  default, which is the kind-FREE wording the markup ships (T:4205-4213). */
   footnote?: string;
+  /**
+   * The live artifact strip's seat, and it is HERE because T puts it here: below
+   * the composer and above the footnote (T:4203), so a page appearing never
+   * moves the box the user is typing into.
+   */
+  artStrip?: ReactNode;
 };
 
 /** The chat view's composer: the card, plus the footnote whose second sentence
  *  a narrow column drops. */
-export function Composer({ footnote, ...card }: ComposerProps) {
+export function Composer({ footnote, artStrip, ...card }: ComposerProps) {
   const footRef = useRef<HTMLDivElement | null>(null);
   const lead = footnote ?? FOOTNOTE_LEAD;
   useFootnoteFit(footRef, lead);
@@ -684,6 +703,7 @@ export function Composer({ footnote, ...card }: ComposerProps) {
       <div className="c-composer-chat">
         <ComposerCard {...card} variant="chat" />
       </div>
+      {artStrip}
       <div className="c-footnote" ref={footRef}>
         {lead}
         <span className="c-fn-more">{FOOTNOTE_TAIL}</span>

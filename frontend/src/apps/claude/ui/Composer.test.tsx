@@ -279,6 +279,42 @@ test("a blocked composer takes no input by any path (T:17871)", () => {
   expect(c.sent).toEqual([]);
 });
 
+test("A BLOCK NEVER TAKES STOP: the button still ends a live turn (T:17193-17195)", () => {
+  // The block is the PENDENCY of a scheduled message, not the run — and a
+  // pending message landing while an interactive turn streams must not strand
+  // the user with a reply they cannot end. `disabled` may only ever suppress
+  // the SEND half of this one button.
+  const c = mount({
+    status: "running",
+    blocked: true,
+    blockedPlaceholder: "TASK-3 runs at 09:00",
+  });
+  const stop = c.root
+    .findAllByType("button")
+    .find((b) => b.props.className === "c-send")!;
+  expect(stop.props["aria-label"]).toBe("Stop");
+  expect(stop.props.disabled).toBe(false);
+  c.submitForm();
+  expect(c.stops()).toBe(1);
+  // ...and the send half is still shut: the box is dead and nothing leaves it.
+  expect(c.sent).toEqual([]);
+  expect(c.followups).toEqual([]);
+  // NOR THE SEND HALF'S ATTRIBUTE (PR3's B-12/G-4): this button is never
+  // disabled for "there is nothing to send" or for the block — the refusal
+  // lives in `submit`'s own guard, which swallows the press and leaves nothing
+  // sent. The dim is reserved for the two transient windows (`attaching`,
+  // `sendBusy`).
+  const idle = mount({ blocked: true });
+  const send = idle.root
+    .findAllByType("button")
+    .find((b) => b.props.className === "c-send")!;
+  expect(send.props["aria-label"]).toBe("Send");
+  expect(send.props.disabled).toBe(false);
+  idle.type("sneak this in");
+  idle.submitForm();
+  expect(idle.sent).toEqual([]);
+});
+
 test("queued follow-ups are named under the box, singular and plural", () => {
   const hint = (c: ReturnType<typeof mount>) =>
     c.root

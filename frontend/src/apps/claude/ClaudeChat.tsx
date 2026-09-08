@@ -93,6 +93,7 @@ import {
 } from "./pane";
 import {
   AnnStrip,
+  ArtStrip,
   AttachTray,
   Kebab,
   CardPolicyProvider,
@@ -102,6 +103,8 @@ import {
   openCardIds,
   resetCardPolicy,
   liveViewable,
+
+  SchedBlock,
   SentPop,
   settleReceipts,
   ShotViewer,
@@ -112,6 +115,7 @@ import {
   ATTACH_API,
   mergeSendOptions,
   sendBlocks,
+  useArtStrip,
   useAttachments,
   useFitStrip,
   useComposerDefaults,
@@ -120,6 +124,9 @@ import {
   type TranscriptTail,
   type Viewable,
 } from "./ui";
+import { useSchedule } from "./sched/useSchedule";
+import { createLiveWatch } from "./live/watch";
+import { getClaudeSessionLiveness } from "@platform/lib/api";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -662,6 +669,11 @@ function ChatBody(props: ChatBodyProps) {
   // run loop.
   const liveModel = useRef("");
   const liveEffort = useRef("");
+  /** PR4's run-clock seats, filled below once the stores that answer them
+   *  exist. Refs for the reason every other send-time read here is one: the
+   *  controller closes over them and is built first. */
+  const artTick = useRef<(() => void) | null>(null);
+  const snapInvalidate = useRef<(() => void) | null>(null);
   /**
    * PR2's two send-time refs, declared HERE because the controller closes over
    * them and is built before the tray below exists.
@@ -812,15 +824,32 @@ function ChatBody(props: ChatBodyProps) {
         // restart the run loop.
         appStateBlock: () =>
           appFrame() ? watcher.blockForSend() : Promise.resolve(""),
-        // PR4 hangs the artifacts read and the snapshot invalidation here
-        // (T:16229, 16321-16330); the ticks already run on T's clock.
-        onArtifactsTick: () => {},
+        // PR4's two run-clock hooks. Both go through refs: the controller is
+        // built before the strip's store and the landing's counter exist, and
+        // rebuilding it for either would restart the run loop (T:16229,
+        // 16321-16330).
+        onArtifactsTick: () => artTick.current?.(),
         // T:10608/16341 — the run this turn started is over, so the annotations
         // it carried are HANDLED: drop them. Even on error, deliberately (T's
         // own note): an errored run may not have acted on them, but they were
         // already stamped `sent` and folded into the transcript — re-annotating
         // is one click, silently re-sending is not.
-        onRunEnded: () => annRef.current?.resolveSent(),
+        onRunEnded: () => {
+          annRef.current?.resolveSent();
+          // T:19078 `snapInvalidate` — the turn that just ended may have edited
+          // the file, so the checkpoint chain the landing drew is stale. The
+          // panel is unmounted while a chat is on screen, so what survives the
+          // round trip is the FACT of a run ending, counted here and handed to
+          // `useSnapshots` as its invalidation key.
+          snapInvalidate.current?.();
+        },
+        // T:17792 — a stale `run` param is not a turn ending: the annotations
+        // still have to come back (this is the one road on which they would be
+        // stranded `sent` forever), but nothing ran, so the checkpoint chain
+        // the landing drew is exactly as fresh as it was.
+        onRunAbandoned: () => {
+          annRef.current?.resolveSent();
+        },
         // The agent saw none of it, so the pictures come back to the tray —
         // never revoked on this road, because those very thumbnails are what the
         // returned chips show (T:16693-16720).
@@ -2196,6 +2225,93 @@ function ChatBody(props: ChatBodyProps) {
     return liveViewable(viewing, attach.items, sent);
   }, [viewing, attach.items, state.turns]);
 
+  // ── PR4: scheduled runs, the standing watch, the artifact strip ───────────
+
+  /** T:17198-17213 — a bottom-pinned transcript is put back at the bottom when
+   *  the banner appears, because the banner SHRINKS the scrollport. */
+  const followBottom = useCallback(() => {
+    const log = rootRef.current?.querySelector(".chat-logwrap");
+    if (log) log.scrollTop = log.scrollHeight;
+  }, []);
+
+  const sched = useSchedule({
+    controller,
+    file,
+    sessionId: state.sessionId ?? "",
+    inChat,
+    navLocked: ann.locked,
+    followBottom,
+    onNavigate,
+    // T:17437 — `history: "replace"`: a fired scheduled run is not a place
+    // anyone navigated to, so re-attaching from it must buy no Back entry.
+    setRunParam: (runId) => params.set({ run: runId }, { history: "replace" }),
+  });
+  /**
+   * T:16776/18000 — the block and both attach sets belong to the conversation
+   * that WAS on screen, so a REPLACED transcript takes them with it.
+   *
+   * KEYED ON THE REPLACEMENT, not on the session id. T calls
+   * `scheduleResetForNewTranscript()` from `loadHistory`'s non-refresh branch
+   * and from nowhere else, and `openSession` is this port's only such branch.
+   * The id is a different fact: it also changes on MOUNT (a second
+   * `/api/schedule` fetch racing the one `watcher.start()` already issues) and
+   * when the first poll of a brand-new chat reports one, MID-RUN — where the
+   * reset re-arms `baselined = false` and the next tick then silently baselines
+   * away a scheduled run that fired in that window, which is the exact failure
+   * T's "at LOAD, not one interval later" note exists to prevent.
+   *
+   * `transcriptGen` starts at 0, so the mount is skipped by construction.
+   */
+  const schedReset = useRef(sched.reset);
+  schedReset.current = sched.reset;
+  const transcriptGen = state.transcriptGen;
+  useEffect(() => {
+    if (!transcriptGen) return;
+    schedReset.current();
+  }, [transcriptGen]);
+
+  const art = useArtStrip(agentDir ?? null, file, state.sessionId ?? "");
+  artTick.current = art.poll;
+  /** T:13093/13075 `clearArtStrip` — a different conversation's pages are not
+   *  this one's, so the strip is emptied by LEAVING rather than by a turn
+   *  ending. */
+  const artClear = useRef(art.clear);
+  artClear.current = art.clear;
+  useEffect(() => {
+    if (!inChat) artClear.current();
+  }, [inChat]);
+
+  const [snapNonce, setSnapNonce] = useState(0);
+  snapInvalidate.current = () => setSnapNonce((n) => n + 1);
+
+  /**
+   * THE STANDING LIVE WATCH (D415). Armed for the life of a chat that has a
+   * session, disarmed on the way home — the landing page has no conversation to
+   * adopt a turn into, and `live_run` with no session matches on the target
+   * alone, which would drag another chat's run onto this screen.
+   *
+   * `ownRunEndedAt` is milliseconds in `ChatState` (the controller's own clock)
+   * and EPOCH SECONDS in the follower's rule, because that is the unit
+   * `os.stat` reports. Converted here, at the seam, rather than in either.
+   */
+  useEffect(() => {
+    if (!inChat || !state.sessionId) return;
+    const watch = createLiveWatch({
+      sessionId: () => controller.getState().sessionId ?? "",
+      busy: () => controller.isBusy(),
+      // The NARROW one, for the external line's OFF edge only (T:17709).
+      hasActiveRun: () => controller.hasActiveRun(),
+      adopt: (id) => controller.adoptLiveRun(id, { laps: 1, quiet: true }),
+      transcriptMark: () => controller.getState().transcript,
+      ownRunEndedAt: () => controller.getState().ownRunEndedAt / 1000,
+      liveness: (path) => getClaudeSessionLiveness(path),
+      refreshHistory: (id) => controller.refreshHistory(id),
+      setExternalWorking: (on) => controller.setExternalWorking(on),
+      activityKey: CHAT_ACTIVITY_KEY,
+    });
+    return watch.start();
+  }, [controller, inChat, state.sessionId]);
+
   const card = useMemo(
     () => ({
       file,
@@ -2293,6 +2409,14 @@ function ChatBody(props: ChatBodyProps) {
       // (its MutationObserver watches the rows' subtree), and the footnote's
       // two-line budget is measured in the same pass (T:12455-12474).
       fitRevision: attach.items.length + ann.chips.length,
+      // The composer closes for as long as the schedule holds a pending message
+      // for this session — box AND calendar, off the SAME answer (T:17217-17246).
+      // The SEND button is deliberately left alone: while a run is live it is
+      // the STOP button, and a chat that cannot stop its own running turn is a
+      // worse state than the one this feature prevents.
+      blocked: sched.blocked,
+      blockedPlaceholder: sched.placeholder,
+      blockedReason: sched.reason,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
@@ -2337,6 +2461,10 @@ function ChatBody(props: ChatBodyProps) {
       ann.locked,
       ann.editNote,
       ann.removeNote,
+      ann.locked,
+      sched.blocked,
+      sched.placeholder,
+      sched.reason,
     ],
   );
   const onAnchorSpent = useCallback(() => params.set({ msg: null }), [params]);
@@ -2581,14 +2709,41 @@ function ChatBody(props: ChatBodyProps) {
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
             />
+            {/* DIRECTLY ABOVE THE COMPOSER and kept by BOTH host cuts, which is
+                T's own arrangement: `body.chat-compact` and `body.chat-peek`
+                take the topbar, the strip, the box and the footnote and leave
+                this (T:1412-1438). A compact tile whose chat is shut has to be
+                able to say so — it is the only thing in that tile that explains
+                why the wall's own composer refuses. */}
+            <SchedBlock
+              blockers={sched.blockers}
+              rec={sched.rec}
+              armed={sched.armed}
+              refused={sched.refused}
+              stopping={sched.stopping}
+              onStop={sched.onStop}
+              onRow={sched.onRow}
+              cardRef={sched.cardRef}
+            />
             {/* A card is READ, not typed into: compact is the one cut that takes
                 the composer away, which is the whole difference from peek
-                (T:1412-1422). */}
-            {!compact ? <Composer {...card} footnote={footnoteFor(pane.noun)} /> : null}
+                (T:1412-1422). The strip rides INSIDE the composer's own block
+                (between the box and the footnote, T:4203) when there is one,
+                and stands alone in the compact tile that has none. */}
+            {!compact ? (
+              <Composer
+                {...card}
+                footnote={footnoteFor(pane.noun)}
+                artStrip={<ArtStrip items={art.items} />}
+              />
+            ) : (
+              <ArtStrip items={art.items} />
+            )}
           </>
         ) : (
           <Home
             agentDir={agentDir}
+            snapInvalidation={snapNonce}
             {...card}
             name={name}
             {...(file ? { path: file } : {})}
