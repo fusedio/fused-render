@@ -186,45 +186,7 @@ function CheckRow({
         <StateIcon state={check.state} severity={failing ? check.severity : undefined} />
       </span>
       <div className="appdoc-text">
-        <div className="appdoc-label-row">
-          <span className="appdoc-label">{check.label}</span>
-          {/* Trailing edge of the FIRST line, same baseline as the label —
-              not after the detail text or the findings list. Every row's
-              action then lands in the same column, so scanning the list
-              finds every actionable row in one vertical sweep instead of
-              hunting for a button whose height depends on how much detail
-              text or how many findings the row above it happened to have.
-              `flex: none` (appdoc-row-actions) keeps it from being squeezed;
-              the label is the flexible element and wraps instead. */}
-          {failing && (
-            <div className="appdoc-row-actions">
-              {check.task ? (
-                <button
-                  type="button"
-                  className="btn btn-secondary appdoc-fix-btn"
-                  title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
-                  onClick={() => onFix(check)}
-                >
-                  Fix in progress
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-secondary appdoc-fix-btn"
-                  disabled={busy || otherTaskLive}
-                  title={
-                    otherTaskLive
-                      ? "An App Doctor task for this app is already running on another row — listed under the app's Tasks tab"
-                      : undefined
-                  }
-                  onClick={() => onFix(check)}
-                >
-                  {rowActionLabel(check)}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+        <span className="appdoc-label">{check.label}</span>
         <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
         {shown.length > 0 && (
           <ul className="appdoc-findings">
@@ -244,6 +206,49 @@ function CheckRow({
           </ul>
         )}
       </div>
+      {/* Row-level sibling of `.appdoc-text`, NOT nested inside the label (an
+          earlier build nested it there and regressed — see this file's
+          header comment and app-doctor.css's comment on
+          `.appdoc-row-actions` for why: a 32px-tall button inside the
+          label's own 20px line box inflated that line box, so a failing
+          row's label-to-detail gap read wider than a passing row's and no
+          two rows shared a vertical rhythm). As a row-level column its own
+          height never touches the label's line box; `.appdoc-row-actions`'s
+          `height: 20px` + `align-items: center` (app-doctor.css) instead
+          centres the button on the label's first line, the same line-box
+          trick `.appdoc-state` uses. `flex: none` keeps it from being
+          squeezed by `.appdoc-text` (flex: 1 1 auto, the one element that
+          absorbs width pressure and wraps instead — see `.appdoc-label`).
+          A row with no action reserves none of this width: `.appdoc-text`
+          simply grows to fill it. */}
+      {failing && (
+        <div className="appdoc-row-actions">
+          {check.task ? (
+            <button
+              type="button"
+              className="btn btn-secondary appdoc-fix-btn"
+              title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
+              onClick={() => onFix(check)}
+            >
+              Fix in progress
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-secondary appdoc-fix-btn"
+              disabled={busy || otherTaskLive}
+              title={
+                otherTaskLive
+                  ? "An App Doctor task for this app is already running on another row — listed under the app's Tasks tab"
+                  : undefined
+              }
+              onClick={() => onFix(check)}
+            >
+              {rowActionLabel(check)}
+            </button>
+          )}
+        </div>
+      )}
     </li>
   );
 }

@@ -18,15 +18,28 @@
  * the palette's own semantic tokens (tokens.css), so both themes come for
  * free.
  *
- * A FAILING row's action (Fix/Review, `.appdoc-fix-btn`) sits at the trailing
- * edge of the row's FIRST line — same baseline as the label — not below the
- * detail text or the findings list. A button whose
- * vertical position differs on every row gives the eye nowhere to land;
- * pinning it to one column lets scanning the list find every actionable row
- * in one vertical sweep. It is also coloured to the row's own severity
- * (critical/warning), not neutral grey, so it reads as the row's action
- * rather than as inert chrome sitting on an alarmed ground — see the rule's
- * own comment below for the contrast math that shape required. */
+ * A FAILING row's action (Fix/Review, `.appdoc-fix-btn`) is `.appdoc-row-actions`,
+ * a ROW-LEVEL column — a sibling of `.appdoc-text` (the state mark, the text
+ * block and the action are the row's three columns) — not something nested
+ * inside `.appdoc-label-row` or `.appdoc-text`. It reads at the trailing edge,
+ * top-aligned with the label's first line via the same 20px-line-box trick
+ * `.appdoc-state` uses, and its right edge lines up with the row's own
+ * padding edge, so every row's action forms one scannable column regardless
+ * of how long any row's label, detail text or findings list is. Two earlier
+ * builds nested it one level lower to chase that same alignment and both
+ * regressed: nested in `.appdoc-label-row`, the button's 32px height (`.btn`)
+ * inflated the label row's own line box past the label's 20px one, so a
+ * failing row's label-to-detail gap read up to ~12px wider than a passing
+ * row's and no two rows shared a vertical rhythm; nested in `.appdoc-text`
+ * (a flex column that shrink-wraps to its own widest line unless forced to
+ * grow), the action rode each row's own per-row right edge instead of the
+ * row's. Making it a row-level flex-none column sidesteps both: its height
+ * never touches the label row's line box, and its position is set by the
+ * row's own flex layout, not by any per-row content width. It is also
+ * coloured to the row's own severity (critical/warning), not neutral grey,
+ * so it reads as the row's action rather than as inert chrome sitting on an
+ * alarmed ground — see the rule's own comment below for the contrast math
+ * that shape required. */
 
 .appdoc-summary {
   margin: 0 0 12px;
@@ -108,17 +121,19 @@
   color: var(--fg-muted);
 }
 
-/* `flex: 1 1 auto` (not the default `0 1 auto`) so this grows to fill the
- * row's full width rather than shrink-wrapping to its own widest line. Without
- * it, a row whose detail text happens to be short renders a narrow text
- * block, and `.appdoc-row-actions` — which sits inside it, at the trailing
- * edge of the first line — rides that narrow edge instead of the row's own
- * right edge. Two rows with different detail-text lengths would then show
- * their Fix buttons at two different horizontal positions, which defeats the
- * one-column scan `.appdoc-row-actions` exists for. `min-width: 0` stays
- * alongside the grow so a long unbroken word still wraps (`.appdoc-label`'s
- * own `overflow-wrap`) instead of forcing the row — and the 620px dialog —
- * wider. */
+/* `flex: 1 1 auto` (not the default `0 1 auto`) so this — the row's MIDDLE
+ * column (state mark, text, action) — grows to fill whatever the state mark
+ * and the action column don't need, rather than shrink-wrapping to its own
+ * widest line. A row with no action has nothing on its other side to share
+ * width with, so the text simply runs the full remaining width — there is no
+ * reserved gutter reserved for a button that isn't there. `min-width: 0`
+ * stays alongside the grow so a long unbroken word still wraps
+ * (`.appdoc-label`'s own `overflow-wrap`) instead of forcing the row — and
+ * the 620px dialog — wider. This is also why the action lives OUTSIDE this
+ * element rather than inside it: nesting it in here (an earlier build did,
+ * to get top-alignment with the label) ties the action's horizontal position
+ * to this column's own content width instead of to the row's fixed edge —
+ * see `.appdoc-row-actions` below and AppDoctorModal.tsx's header comment. */
 .appdoc-text {
   display: flex;
   min-width: 0;
@@ -127,22 +142,15 @@
   gap: 2px;
 }
 
-/* align-items: flex-start (not center) so a long label that wraps to a
- * second line doesn't drag the action down with it — both stay pinned to the
- * row's first line, which is the whole point of putting the action here (see
- * AppDoctorModal.tsx's comment on `.appdoc-row-actions`). */
-.appdoc-label-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-/* The one flexible element in the label row: it grows to fill whatever the
- * action doesn't need and wraps instead of pushing it off the dialog's edge
- * (or off the dialog entirely below 620px). */
+/* The label is now a plain flow child of `.appdoc-text` (no `.appdoc-label-row`
+ * wrapper — that div used to hold the label AND the action side by side; the
+ * action moved out to become a row-level sibling of `.appdoc-text` itself,
+ * see `.appdoc-row-actions` below, so a wrapper whose only remaining job was
+ * "hold one span" had nothing left to do). `min-width: 0` plus
+ * `overflow-wrap: break-word` still let a long label wrap within the text
+ * column's own width instead of forcing the row wider. */
 .appdoc-label {
   min-width: 0;
-  flex: 1 1 auto;
   overflow-wrap: break-word;
   font-weight: 500;
   line-height: 20px;
@@ -168,10 +176,30 @@
  * apps/explorer/Preview.tsx) — see appdoctor-lib.ts's
  * `effectiveSeverity`/`worstSeverity` for the one place severity is ranked. */
 
-/* Lives in the label row now (F4), on the row's own first line — never
- * squeezed by the label (which wraps instead, see .appdoc-label) and never
- * wrapped itself. */
+/* The row's THIRD column — a sibling of `.appdoc-text`, not something nested
+ * inside it or inside the label. `flex: none` so `.appdoc-text` (flex: 1 1
+ * auto) is the one element that absorbs width pressure; this column never
+ * gets squeezed and never wraps. Its right edge is the row's own padding
+ * edge for free, because it's a direct child of `.appdoc-row` and inherits
+ * that box's padding rather than some inner element's shrink-wrapped one —
+ * this is the fix for the misalignment two earlier builds hit by nesting it
+ * a level deeper (see this file's header comment).
+ *
+ * `height: 20px` + `align-items: center` is the SAME line-box trick
+ * `.appdoc-state` uses above: a 20px reference box matching the label's own
+ * `line-height: 20px`, with the (taller, 32px — `.btn` sets `height: 32px`)
+ * button centred on it rather than clipped to it (this box has no
+ * `overflow`, so the button is free to extend a few px above and below its
+ * bounds). That centres the button on the label's first line instead of
+ * pinning the button's own top edge to the row's top edge, which is what
+ * "aligned to the top of the row" actually means when the two elements are
+ * different heights — do NOT stretch the button to fill the row instead;
+ * that would make every action as tall as the row's tallest line, findings
+ * list included. */
 .appdoc-row-actions {
+  display: flex;
+  align-items: center;
+  height: 20px;
   flex: none;
   margin: 0;
 }
@@ -288,11 +316,11 @@
  * hairline) rather than sitting flush on the row's own ground: at up to 26
  * findings on one row (`device-paths`), this needs to read as its own scroll
  * region the row is showing you, not as the dialog clipping content. The
- * row's own action lives in the label row now (above the detail text
- * entirely, not just above this box — see AppDoctorModal.tsx), so it can
- * never scroll out of view under this list regardless of height; the 120px
- * cap is about keeping one row's findings from dominating the dialog, not
- * about protecting the action's visibility. */
+ * row's own action is a row-level column now (`.appdoc-row-actions`, above),
+ * entirely outside this box, so it can never scroll out of view under this
+ * list regardless of height; the 120px cap is about keeping one row's
+ * findings from dominating the dialog, not about protecting the action's
+ * visibility. */
 .appdoc-findings {
   display: flex;
   max-height: 120px;
