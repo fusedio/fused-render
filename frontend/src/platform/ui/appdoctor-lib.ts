@@ -204,7 +204,11 @@ export function findingWhere(f: AppCheckFinding): string {
  *  row — nothing here is "the pattern might be wrong about this"), then how
  *  many candidate rows are still unreviewed, then how many rows the doctor
  *  could not answer at all. Never claims a skipped or unreviewed row as a
- *  pass. */
+ *  pass — the "everything passed" clause requires BOTH failingFacts and
+ *  failingCandidates to be empty; gating it on failingFacts alone let an app
+ *  with a failing `secrets` row (a candidate, not a fact) read "Every check
+ *  this app can answer passed. 1 row to review." — a pass claim sitting
+ *  right next to the very row that contradicts it. */
 export function summaryLine(checks: AppCheck[]): string {
   const failingFacts = checks.filter((c) => c.state === "fail" && c.kind === "fact");
   const failingCandidates = checks.filter(
@@ -213,9 +217,9 @@ export function summaryLine(checks: AppCheck[]): string {
   const skipped = checks.filter((c) => c.state === "skip").length;
 
   const parts: string[] = [];
-  if (failingFacts.length === 0) {
+  if (failingFacts.length === 0 && failingCandidates.length === 0) {
     parts.push("Every check this app can answer passed.");
-  } else {
+  } else if (failingFacts.length > 0) {
     const bySeverity = SEVERITY_ORDER.map((sev) => ({
       sev,
       n: failingFacts.filter((c) => c.severity === sev).length,

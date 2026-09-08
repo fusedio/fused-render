@@ -90,14 +90,15 @@ test("a failing fact row is counted by severity, not as a flat total", () => {
   expect(summaryLine(checks)).toBe("1 critical, 1 warning to fix.");
 });
 
-test("a failing candidate row reads as 'to review', never merged into the fact tally", () => {
+test("a failing candidate row reads as 'to review', never merged into the fact tally, and never claims a pass", () => {
   const checks = [
     check("secrets", "fail", { severity: "critical", kind: "candidate" }),
     check("readme", "pass"),
   ];
-  expect(summaryLine(checks)).toBe(
-    "Every check this app can answer passed. 1 row to review.",
-  );
+  // Regression: gating "Every check this app can answer passed" on failing
+  // FACTS alone let a failing candidate row (secrets, here) coexist with a
+  // claimed pass in the very same sentence.
+  expect(summaryLine(checks)).toBe("1 row to review.");
 });
 
 test("facts, candidates and skips all show up in one summary", () => {
