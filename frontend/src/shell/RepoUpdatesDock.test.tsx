@@ -348,28 +348,30 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
   }
 });
 
-// ------------------------------------- Part A item 2: a jobs Clear (D663)
+// ------------------------------------- Task 4: one "Clear all" (was two)
 //
 // D663 keeps every terminal job until dismissed, and Activity's own `Clear`
 // button was deleted in the same PR (D661) — so once a job's own ✕ has been
-// missed, `POST /api/jobs/clear` was reachable by no UI at all. "Until
-// dismissed" is only a defensible lifetime if dismissing is possible, so
-// this section gets its own bulk clear, scoped to the terminal jobs it
-// draws — mirroring the repo Clear's own plurality rule (D604): at exactly
-// one row, that row's own ✕ already does the identical thing.
-test("a jobs Clear is absent at one terminal job and present at two, separate from the repo Clear", () => {
+// missed, `POST /api/jobs/clear` needs a reachable UI. It used to be its own
+// second button ("Clear finished") beside the repo rows' ("Clear updates");
+// Task 4 folds both into one "Clear all", present once the COMBINED count of
+// repo rows and terminal jobs passes one — mirroring D604's plurality rule
+// (at exactly one row of either kind, that row's own ✕ already does the
+// identical thing), just no longer scored per kind.
+test("Clear all is absent at one terminal job and present at two", () => {
   const one = renderView({ rows: [], terminal: [doneJob({ id: "a" })] });
-  expect(findAll(one, "dl-jobs-clear")).toHaveLength(0);
+  expect(findAll(one, "dl-clear")).toHaveLength(0);
 
   const two = renderView({ rows: [], terminal: [doneJob({ id: "a" }), doneJob({ id: "b" })] });
-  expect(findAll(two, "dl-jobs-clear")).toHaveLength(1);
-  // Distinct from the repo Clear — clearing jobs must never also promise to
-  // clear repo rows, or vice versa (the same reasoning the repo-only Clear
-  // test above states for the other direction).
-  expect(findAll(two, "dl-clear")).toHaveLength(0);
+  expect(findAll(two, "dl-clear")).toHaveLength(1);
 });
 
-test("pressing the jobs Clear calls POST /api/jobs/clear and patches the terminal list to empty", async () => {
+test("Clear all is present for one repo row plus one failure — the combined count, not either alone", () => {
+  const oneEach = renderView({ rows: repoRows([status()]), terminal: [failedJob()] });
+  expect(findAll(oneEach, "dl-clear")).toHaveLength(1);
+});
+
+test("pressing Clear all dismisses the visible repo rows and clears the terminal jobs together", async () => {
   const originalFetch = globalThis.fetch;
   const pendingFetches: Array<(v: Response) => void> = [];
   globalThis.fetch = (() =>
@@ -377,20 +379,28 @@ test("pressing the jobs Clear calls POST /api/jobs/clear and patches the termina
 
   try {
     let patched: ((jobs: Job[]) => Job[]) | null = null;
+    let dismissedAll: unknown = null;
     const terminal = [doneJob({ id: "a" }), doneJob({ id: "b" })];
+    const rows = repoRows([status({ root: "/a/one" })]);
     const renderer = renderInstance({
-      rows: [],
+      rows,
       terminal,
+      onDismissAll: (visible) => {
+        dismissedAll = visible;
+      },
       onTerminalPatch: (fn) => {
         patched = fn;
       },
     });
 
     const before = renderer.toJSON() as ReactTestRendererJSON;
-    const clear = findAll(before, "dl-jobs-clear")[0];
+    const clear = findAll(before, "dl-clear")[0];
     act(() => {
       (clear.props as { onClick: () => void }).onClick();
     });
+
+    // The repo dismissal fires synchronously, with no request behind it.
+    expect((dismissedAll as { repo: RepoStatus }[]).map((r) => r.repo.root)).toEqual(["/a/one"]);
 
     await act(async () => {
       pendingFetches.pop()?.({
@@ -665,28 +675,18 @@ test("a done job draws a visible, dismissable row here too (C1)", () => {
   expect(text(tree)).toContain("Saved to Downloads/pyramid.png");
 });
 
-test("Clear is offered for repo rows only — a failure is dismissed by its own row", () => {
-  // Two dismissal models, deliberately NOT unified (D586): a repo dismissal is
-  // client-side and expires when the repo moves (D585 finding 3), while a
-  // failure's dismissal is server-side and permanent. One Clear cannot honestly
-  // promise both.
+test("Clear all is absent at exactly one failure — the row's own ✕ already does it", () => {
   const failuresOnly = renderView({ rows: [], terminal: [failedJob()] });
   expect(findAll(failuresOnly, "dl-clear")).toHaveLength(0);
   // The row still carries its own dismiss control.
   expect(findAll(failuresOnly, "dl-x")).toHaveLength(1);
 
-  // TWO repo rows, because a single one no longer earns the footer (D604) —
-  // the point here is that failures do not count toward it either way.
+  // TWO repo rows plus a failure: well past the plurality threshold.
   const withRepos = renderView({
     rows: repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]),
     terminal: [failedJob()],
   });
   expect(findAll(withRepos, "dl-clear")).toHaveLength(1);
-
-  // ...and a plurality made up of one repo row plus one failure does NOT earn
-  // it: Clear only ever acts on repo rows, so only those may be counted.
-  const oneEach = renderView({ rows: repoRows([status()]), terminal: [failedJob()] });
-  expect(findAll(oneEach, "dl-clear")).toHaveLength(0);
 });
 
 // D604, THE BOUNDARY, asserted in both directions: the whole band — hairline

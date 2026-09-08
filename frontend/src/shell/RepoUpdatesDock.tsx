@@ -256,14 +256,40 @@ function AttentionRowView({ row }: { row: AttentionRow }) {
   );
 }
 
-// Held at MODULE level, not component state, so a remount (switching panes
-// or panels tears this component down and back up) does not forget what the
-// user just dismissed — the same reason a page reload is the one case this
-// deliberately does NOT survive: there is no server state backing a
-// dismissal (decision C), only this in-memory map, and a reload starting
-// fresh is an acceptable, documented trade rather than reaching for
-// localStorage for something this ephemeral.
-let moduleDismissed: Record<string, string> = {};
+// Persisted to localStorage (Task 4) — a repo dismissal used to live only in
+// a module-level map, forgotten on reload. Same defensive, best-effort
+// pattern as sidebarstate.ts: a private window, a full quota or malformed
+// JSON all just behave as "nothing dismissed" rather than throwing. Held at
+// MODULE level, not component state, so a remount (switching panes or panels
+// tears this component down and back up) does not forget what the user just
+// dismissed either.
+const DISMISSED_KEY = "fused-render:repo-updates-dismissed";
+
+function loadDismissed(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveDismissed(next: Record<string, string>): void {
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify(next));
+  } catch {
+    // storage unavailable — dismissal is best-effort, so a failed write is fine
+  }
+}
+
+let moduleDismissed: Record<string, string> = loadDismissed();
 
 function useDismissed() {
   const [dismissed, setDismissedState] = useState<Record<string, string>>(moduleDismissed);
@@ -272,6 +298,7 @@ function useDismissed() {
   // a re-check that changes nothing must not resurrect a dismissed row.
   const dismissOne = useCallback((root: string, signature: string) => {
     moduleDismissed = { ...moduleDismissed, [root]: signature };
+    saveDismissed(moduleDismissed);
     setDismissedState(moduleDismissed);
   }, []);
 
@@ -279,6 +306,7 @@ function useDismissed() {
     const next = { ...moduleDismissed };
     for (const row of rows) next[row.repo.root] = repoDismissSignature(row.repo);
     moduleDismissed = next;
+    saveDismissed(next);
     setDismissedState(next);
   }, []);
 
@@ -582,19 +610,13 @@ export function RepoUpdatesCardView({
                   both and left a header with nothing to head. Under the list,
                   the same button reads as acting on what is above it, which is
                   what it does. */}
-              {/* TWO SEPARATE CLEAR BUTTONS, never one: a repo row's dismissal
-                  is client-side and expires when the repo moves
+              {/* ONE "Clear all", not two: a repo row's dismissal is
+                  client-side and expires when the repo moves
                   (`repoDismissSignature`), while a terminal job's is
                   server-side and permanent (`dismissJob`/`clearFinishedJobs`)
-                  — sweeping both under one button would hide two different
-                  promises behind it. Each is omitted entirely when its own
-                  row kind has nothing to clear, rather than offering a
-                  button that would do nothing. Labelled "Clear updates" and
-                  "Clear finished" rather than sharing the word "Clear": the
-                  two buttons sit adjacent in the same band, and with only a
-                  `title` telling them apart, a pointer user has no on-screen
-                  way to know which one is the irreversible, server-side one
-                  before clicking it. */}
+                  — two different promises, but the reader does not need two
+                  buttons to know that; each mechanism just fires for the
+                  row kind it owns, best-effort, behind the one click. */}
               {/* PLURALITY, NOT PRESENCE (D604, user with a screenshot of a
                   one-row panel: "the notification card size is still not
                   done"). Clear is dismiss-ALL, so at exactly one row it is
@@ -602,51 +624,28 @@ export function RepoUpdatesCardView({
                   click, adjacent to the thing it affects — and the band it
                   needs cost 32px of an 88px card, ~36% of the height, most of
                   it empty to the left of one small button with a hairline
-                  making the emptiness look deliberate.
-                  `queue-dock-lib.ts`'s `showCancelAll` ALREADY required two
-                  withdrawable rows for exactly this reason ("for a single one
-                  the row's own ✕ — right there on screen — is the same action
-                  with a better name on it"); this brings the sibling controls
-                  into line with a rule the codebase had already settled. The
-                  jobs Clear (Part A item 2, D663) follows the identical rule
-                  for the identical reason. */}
-              {(visible.length > 1 || terminal.length > 1) && (
+                  making the emptiness look deliberate. The threshold is now
+                  the COMBINED count of repo rows and terminal jobs, not
+                  either counted alone: one stuck repo plus one failed job is
+                  two dismissable rows, and a reader looking at two rows and
+                  no bulk action has the same "did this break" reaction a
+                  count of two of the SAME kind would give them. */}
+              {visible.length + terminal.length > 1 && (
                 <div className="dl-head">
-                  {visible.length > 1 && (
-                    <button
-                      className="dl-clear"
-                      onClick={() => onDismissAll(visible)}
-                      title="Dismiss every visible update"
-                    >
-                      Clear updates
-                    </button>
-                  )}
-                  {/* D663 keeps every terminal job until it is dismissed, and
-                      Activity's own bulk Clear was deleted in the same PR
-                      (D661) — so `POST /api/jobs/clear` had no reachable UI
-                      left at all. "Until dismissed" only earns its keep if
-                      dismissing is possible, so this reuses that endpoint via
-                      `clearFinishedJobs`, patching the shell's own terminal
-                      list through `jobsAfterClear` the instant the server
-                      confirms, the same optimistic-patch pattern `JobRow`'s
-                      own dismiss already uses. Best-effort: a rejected
-                      request leaves the list as it was for the next poll to
-                      reconcile, mirroring every other best-effort mutation in
-                      this card (`PairingRowView`'s dismiss, `useRepoUpdates`'s
-                      poll). */}
-                  {terminal.length > 1 && (
-                    <button
-                      className="dl-jobs-clear"
-                      onClick={() => {
+                  <button
+                    className="dl-clear"
+                    onClick={() => {
+                      if (visible.length > 0) onDismissAll(visible);
+                      if (terminal.length > 0) {
                         clearFinishedJobs()
                           .then(() => onTerminalPatch?.(jobsAfterClear))
                           .catch(() => {});
-                      }}
-                      title="Dismiss every finished job"
-                    >
-                      Clear finished
-                    </button>
-                  )}
+                      }
+                    }}
+                    title="Dismiss every notification"
+                  >
+                    Clear all
+                  </button>
                 </div>
               )}
             </>

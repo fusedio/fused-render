@@ -695,13 +695,12 @@
   background: rgba(var(--error-rgb), 0.14);
 }
 
-/* `.dl-jobs-clear` (Part A item 2, D663) is the terminal-jobs sibling of
-   `.dl-clear` — a separate class, not a shared one, because the two buttons
-   can render side by side in the same `.dl-head` band (a repo row and a
-   terminal job can both be present at once) and each needs its own click
-   target even though they read identically. */
-.dl-clear,
-.dl-jobs-clear {
+/* `.dl-clear` — ONE "Clear all" button now (Task 4, statusbar card
+   unification), whatever mix of repo rows and terminal jobs it acts on. It
+   used to have a terminal-jobs-only sibling, `.dl-jobs-clear`, sitting beside
+   it in the same `.dl-head` band; that class is gone along with the second
+   button. */
+.dl-clear {
   flex: 0 0 auto;
   padding: 2px 8px;
   font-size: 11px;
@@ -712,8 +711,7 @@
   cursor: pointer;
 }
 
-.dl-clear:hover,
-.dl-jobs-clear:hover {
+.dl-clear:hover {
   color: var(--fg);
   border-color: var(--fg-muted);
 }
@@ -1282,7 +1280,6 @@ button.dl-row:hover {
    keyboard user loses. Every control in the card, one list means one tab order. */
 .dl-toggle:focus-visible,
 .dl-clear:focus-visible,
-.dl-jobs-clear:focus-visible,
 .dl-row-cancel:focus-visible,
 .dl-x:focus-visible,
 .q-all:focus-visible {
