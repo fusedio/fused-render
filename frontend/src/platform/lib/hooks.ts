@@ -160,6 +160,10 @@ let defaultHref: string | null = null;
 // server ignores the query, so the bytes are the same file under a new key.
 let faviconSeq = 0;
 function bust(url: string): string {
+  // A data: URL has no query — anything appended lands INSIDE the svg text
+  // (`</svg>?r=1`) and the icon fails to parse. Its content is its identity
+  // (app-icon-src.ts recolours per theme), so it needs no key anyway.
+  if (url.startsWith("data:")) return url;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}r=${++faviconSeq}`;
 }

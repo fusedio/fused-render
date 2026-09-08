@@ -91,6 +91,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   done: null,
   total: null,
   total_scope: "phase",
+  total_estimated: false,
   unit: "",
   message: "GDAL ran out of memory",
   page: "",

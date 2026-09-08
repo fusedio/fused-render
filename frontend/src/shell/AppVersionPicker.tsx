@@ -19,7 +19,7 @@
 //
 // Offered ONLY when `GET /api/git/app-folder` confirms an app folder actually
 // encloses `dir`: the same fail-closed probe templates/git/template.html's own
-// preview eye uses (D701 / review finding B4), so this control never appears
+// preview eye uses (D742 / review finding B4), so this control never appears
 // somewhere `/api/git/snapshot` could never resolve for, regardless of which
 // commit gets picked. Starts hidden (`probe === "checking"`) rather than
 // optimistically shown, for the same fail-closed reason.

@@ -58,6 +58,10 @@
 /* After the whole tasks family: the app page (/apps/<slug>, D488) hosts the
    Tasks page inside its Tasks tab and adds only the header and frame around it. */
 @import "./styles/app-page.css";
+/* After app-page.css: the App Doctor dialog is opened from that header (and
+   from the explorer's entry-page topbar) and layers only its checklist over
+   the shared modal chrome imported far above. */
+@import "./styles/app-doctor.css";
 @import "./styles/setup-modal.css";
 @import "./styles/templates.css";
 @import "./styles/home.css";

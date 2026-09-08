@@ -66,7 +66,7 @@ and the `git archive` pathspec — that copy never leaves this function.
 app folder enclose this path at all" — the same two filesystem walks
 (`_repo_root`, `enclosing_app_dir`), no `git archive`/`tar` fork. It exists so
 the git sidebar's preview affordance (templates/git/template.html) can gate
-itself on this fact BEFORE a commit is even selected (D701) — the eye offered
+itself on this fact BEFORE a commit is even selected (D742) — the eye offered
 on a file with no enclosing app folder can never resolve into anything, per
 review finding B4.
 
@@ -644,7 +644,7 @@ async def api_git_app_folder(path: str):
     (`_repo_root`, `enclosing_app_dir`), never a `git`/`tar` fork.
 
     Backs the git sidebar's preview affordance (templates/git/template.html,
-    D701 / code review finding B4): the eye that lets a user pick a commit to
+    D742 / code review finding B4): the eye that lets a user pick a commit to
     preview must not be offered on a file with no enclosing app folder, since
     `/api/git/snapshot` can never resolve for it regardless of which commit
     gets picked. Response: `{"ok": true, "app_dir": <path's own form>}`.

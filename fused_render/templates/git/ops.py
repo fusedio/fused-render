@@ -188,7 +188,7 @@ _SAFE_OPS = (
 # `app_restore` and `revert` (see below) are both here too: neither can lose
 # UNCOMMITTED work once `_require_clean` holds, but both write a commit to
 # history on one click — that deserves the same consent step, not because
-# anything could be lost but because both are one-way once done (D703).
+# anything could be lost but because both are one-way once done (D744).
 DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve",
                    "app_restore", "revert")
 _OPS = _SAFE_OPS + DESTRUCTIVE_OPS
@@ -793,7 +793,7 @@ def _has_staged(root):
 
 def _require_clean(root):
     """Refuse when the working tree carries ANY change — staged, unstaged or
-    untracked (D703). Repo-wide, not scoped to a file or folder: see
+    untracked (D744). Repo-wide, not scoped to a file or folder: see
     decisions for why the two new write ops below share this one rule rather
     than each getting a narrower version of it.
 

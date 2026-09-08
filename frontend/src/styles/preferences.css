@@ -1553,8 +1553,8 @@
   width: 22px;
   height: 22px;
   border-width: 2px;
-  border-color: rgb(0 0 0 / 12%);
-  border-top-color: rgb(0 0 0 / 45%);
+  border-color: var(--qr-ink-soft);
+  border-top-color: var(--qr-ink);
 }
 
 @keyframes lan-spin {

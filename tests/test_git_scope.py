@@ -378,7 +378,7 @@ def test_the_preview_control_needs_a_pane_to_drive(source):
 
 
 def test_the_preview_control_also_needs_an_enclosing_app_folder(source):
-    # D701 / code review finding B4: a pane to drive is necessary but not
+    # D742 / code review finding B4: a pane to drive is necessary but not
     # sufficient. `/api/git/snapshot` can only ever resolve for a path with an
     # enclosing app folder, so `canPreview` must ALSO require that — offering
     # the eye anywhere else promises a preview that can never land (the shell
@@ -424,7 +424,7 @@ def test_the_capability_is_polled_like_the_annotate_target(source):
 
 
 def test_the_latest_commit_dot_is_gone_but_the_previewing_pills_stays(source):
-    # D703: two dots shared one colour and one stated meaning ("the commit
+    # D744: two dots shared one colour and one stated meaning ("the commit
     # the files on screen belong to"), but only one of them was ever
     # informative. The latest-commit dot appeared only when NOTHING was
     # previewed, where it marked the top row of a newest-first list — a fact

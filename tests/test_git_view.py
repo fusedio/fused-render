@@ -268,7 +268,7 @@ def test_identity_step_focuses_only_once_per_session():
 
 
 def test_checkout_lives_in_the_previewing_banner_and_sends_app_restore():
-    """D703: Checkout is only ever reachable through an active preview — the
+    """D744: Checkout is only ever reachable through an active preview — the
     banner (`if (previewed) { ... }`) is the one place it lives, so a
     rollback can never be committed against a version nobody looked at."""
     body = _function_body(_source(), "if (previewed) ")
@@ -311,7 +311,7 @@ def test_revert_confirmation_says_it_is_repo_wide():
 
 
 def test_the_preview_control_is_never_hover_gated_in_css():
-    """D703: the eye used to be `opacity: 0` at rest and only `opacity: 1`
+    """D744: the eye used to be `opacity: 0` at rest and only `opacity: 1`
     under `.line:hover` / `:focus-visible`. Now it must be visible with no
     hover qualifier on its base rule at all — hover/focus may still change
     its COLOR, but never its presence.

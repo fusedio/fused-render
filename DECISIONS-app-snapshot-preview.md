@@ -298,11 +298,11 @@ its own decision until now). Editing SPEC.md with invented prior content
 would misrepresent what was actually there; noting the gap here instead, per
 the build instructions' own "a pattern that does not exist" guidance.
 
-**DECISIONS.md gained D702** (next number after D701, appended — the file's
+**DECISIONS.md gained D743** (next number after D742, appended — the file's
 last row), recording: the Git tab's deletion and replacement with the
 version picker, the two owner decisions (read-only about git; a selection
 drives all three content tabs), the "no shared singleton" architecture
-(mirroring D701's own consumers' guards even with a single owner), the
+(mirroring D742's own consumers' guards even with a single owner), the
 `GET /api/git/commits` route's existence and scope, and that Execute needs no
 special-casing under a snapshot. Cites every file this round touched.
 
@@ -349,7 +349,7 @@ Four things to fix, in the priority the orchestrator gave them:
 
 **Priority 1 — `test_the_view_reads_the_reader_on_distinct_channels` (real,
 deterministic regression).** `templates/git/template.html` now calls
-`probeAppFolder()` unconditionally at module init (D701's `hasAppFolder` gate,
+`probeAppFolder()` unconditionally at module init (D742's `hasAppFolder` gate,
 this branch's own Review pass) — a real `fetch` the harness's `fetchStub`
 records into the SAME `calls` array `runPython` calls land in, but shaped
 `{fetch, method}`, no `op` key. The test's `[c["op"] for c in out["calls"]]`
@@ -503,7 +503,7 @@ in order:
    (`app_listing.py`'s possibly-unbound `entry`; `git_snapshot.py`'s
    untyped `Popen` kwargs) — A3's Python half.
 2. **`git template: gate the preview eye on an enclosing app folder
-   (D701)`** — B4. `canPreview` required only a pane to drive
+   (D742)`** — B4. `canPreview` required only a pane to drive
    (`revMarkedFrame()`), never whether `/api/git/snapshot` could resolve at
    all; now ANDs in `hasAppFolder`, resolved once via the new endpoint and
    starting `false` (fail closed).
@@ -982,7 +982,7 @@ PT-14's two false claims (`/api/git/show` resolving reads; "neither has a
 producer" for `app-versions/`) were corrected inline, since the surrounding
 prose about `git` being folder-only, the `?snapshot=1` framing, and the
 `mount.py` guard are all still true and didn't need touching. D243 got a
-parenthetical `*(Amendment, 2026-09-07, see D701: ...)*` in the same style
+parenthetical `*(Amendment, 2026-09-07, see D742: ...)*` in the same style
 its own row already uses for later reversals (D236 and D243 itself both do
 this), rather than editing D243's body — the body is what the NEW decision's
 reversal is measured against, so leaving it as the historical record and

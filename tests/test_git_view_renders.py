@@ -141,7 +141,7 @@ def render(reader, repo, tmp_path, params=None, github=None, repo_patch=None,
     `_git_view_probe.mjs` already documents for it.
 
     `preview_capable` opts into the probe's marked ancestor frame AND a
-    confirmed app folder — both halves of `canPreview` (D701) — so the
+    confirmed app folder — both halves of `canPreview` (D742) — so the
     Preview/Checkout/Revert controls actually render; every other test leaves
     it `False` and gets today's capability-off DOM, unchanged.
     `git_app_folder` overrides the app-folder half alone (e.g. a marked pane
@@ -197,7 +197,7 @@ def _assert_painted(out, what):
 
 
 def test_the_preview_control_is_a_labelled_button_drawn_at_rest(reader, tmp_path):
-    """D703: the eye is drawn AT REST, not revealed only by the row's hover —
+    """D744: the eye is drawn AT REST, not revealed only by the row's hover —
     the probe applies no CSS at all, so this can only assert on what the DOM
     ITSELF is: a labelled control present in the markup, always, whenever
     `canPreview` is true — never conditioned on a synthetic ":hover" the
@@ -232,7 +232,7 @@ def test_the_view_reads_the_reader_on_distinct_channels(reader, tmp_path):
     than painting an empty state (see test_git_view.py for the channel rule)."""
     out = render(reader, clean_repo(str(tmp_path / "chan")), tmp_path)
     # `out["calls"]` is no longer uniformly `{py, op}`: boot now also fires
-    # `probeAppFolder()` unconditionally (D701/B4's app-folder gate), which
+    # `probeAppFolder()` unconditionally (D742/B4's app-folder gate), which
     # goes through the harness's `fetchStub` and lands `{fetch, method}`
     # entries in the SAME array (see `_git_view_probe.mjs`'s `calls.push`
     # call sites — one per stub). Filter to the runPython-shaped entries
@@ -414,7 +414,7 @@ def test_the_probe_fails_on_a_template_that_paints_nothing(reader, tmp_path):
 
 # ---------------------------------------------------------- stale-consent keys
 #
-# Findings 4 and 5 (D703 second review round): `ask=revert` and `ask=app_restore`
+# Findings 4 and 5 (D744 second review round): `ask=revert` and `ask=app_restore`
 # carried no subject of their own, so an ARMED confirmation followed the user to
 # a different commit — one click could revert or checkout something they never
 # actually confirmed. Neither `selection` (which row's diff is open) nor

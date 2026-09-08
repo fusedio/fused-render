@@ -546,6 +546,18 @@ a.sidebar-rail-btn {
   background: var(--success-bright);
 }
 
+/* AND THE PREFERENCES ROW'S: a self-update waiting/installing/ready-to-restart
+   (platform/lib/update-status, shared with UpdateBadge above the Settings row
+   and the popover's own row). It is the collapsed rail's only signal that one
+   of those states is true — there is no Settings row for the badge to sit
+   above while collapsed. `--accent` rather than one of the status hues above:
+   this isn't a completion or a running-work fact, it's the app's own "there is
+   a new version of me" affordance, the same colour the sidebar already uses
+   for its own chrome (active row highlight). */
+.sidebar-rail-dot.is-update {
+  background: var(--accent);
+}
+
 /* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
    .sidebar-item look — resets the UA button chrome so it sits in the list
    like the <a> rows above it. */
@@ -1067,6 +1079,10 @@ a.bookmark-name::after {
 }
 
 .update-badge-action {
+  /* A <button> or an <a> (the installed state's Restart is a link to
+     fused-render://relaunch) — same box either way. */
+  display: inline-block;
+  text-decoration: none;
   align-self: flex-start;
   padding: 4px 10px;
   border: 1px solid var(--border);
@@ -1189,4 +1205,46 @@ a.bookmark-name::after {
    masthead and is dead space inside a dialog body. */
 .current-apps-compose .home-composer-wrap {
   margin-bottom: 0;
+}
+
+/* -- The setup meter (shell/onboarding/SetupProgress) --------------------------
+   A `.sidebar-item` row above Settings: ring glyph, "Setup", then a thin bar
+   and the number in the trailing slot. The fill is the accent — this is the
+   one row in the sidebar that is an invitation rather than a destination, and
+   the wizard's own yellow says so. The rail shows the ring alone. */
+.setup-progress-bar {
+  position: relative;
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.1);
+  overflow: hidden;
+}
+
+.setup-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 400ms ease;
+}
+
+.setup-progress-pct {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  min-width: 3ch;
+  text-align: right;
+}
+
+.setup-ring-fill {
+  color: var(--accent);
+  transition: stroke-dasharray 400ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-progress-fill,
+  .setup-ring-fill {
+    transition: none;
+  }
 }

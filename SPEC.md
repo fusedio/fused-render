@@ -4707,11 +4707,11 @@ changes make the showcase an ordinary git work tree with an ordinary
   surface for that repo may be mounted yet.
 
 - **GT-21** **Preview is drawn AT REST, not revealed by hover, and two new
-  write ops let a preview become history (D703).** The eye used to be a bare
+  write ops let a preview become history (D744).** The eye used to be a bare
   glyph that only appeared while the pointer sat on its row — nothing on a
   resting row said a commit could be previewed at all. It is now a labelled
   pill (`◉ Preview`) drawn on every row `canPreview` allows — that gate is
-  unchanged (D701): a pane to drive AND a confirmed enclosing app folder —
+  unchanged (D742): a pane to drive AND a confirmed enclosing app folder —
   with hover/focus staying an emphasis step rather than the presence step.
   The now-redundant latest-commit dot is gone: it only ever appeared while
   NOTHING was previewed, where it marked the top row of a list already

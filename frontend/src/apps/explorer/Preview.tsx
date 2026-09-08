@@ -8,7 +8,6 @@ import { createPortal } from "react-dom";
 import {
   addCurrentApp,
   getAppEntry,
-  migrateApp,
   setAppPreview,
   getAppFileCloneTarget,
   cloneAppFile,
@@ -26,8 +25,8 @@ import {
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
-import { appLandingUrl } from "@platform/lib/appLanding";
-import { announceCurrentAppsChanged, announceTasksChanged } from "@platform/lib/tasksChanged";
+import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
+import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, encodeFsPathSegments, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
@@ -265,35 +264,31 @@ export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?
   );
 }
 
-// The app page's Migrate button, on the explorer topbar: shown only when the
-// previewed page IS its folder's app entry AND declares a fused API version
-// behind the runtime's (both facts from the same /api/apps/entry answer). One
-// click creates the migration task on this page (POST /api/apps/migrate) and
-// lands in the Claude pane on its run; while a task is live — the server says
-// so, across reloads — the button reads "in progress" and opens the app page's
-// Tasks tab instead. Same gate as ExportAppButton beside it, same reason:
-// the server owns the entry rule, the filename says nothing.
-function MigrateAppButton({ fsPath }: { fsPath: string }) {
-  const [info, setInfo] = useState<{
-    behind: boolean;
-    to: number;
-    from: number;
-    live: boolean;
-  } | null>(null);
-  const [busy, setBusy] = useState(false);
+// The App Doctor button, on the explorer topbar: shown whenever the previewed
+// page IS its folder's app entry (the server's own entry rule, asked of
+// /api/apps/entry — same gate as ExportAppButton beside it, same reason: the
+// filename says nothing). One click opens the checklist dialog, which runs the
+// deterministic checks and offers the one task that explains and fixes them
+// (platform/ui/AppDoctorModal).
+//
+// It REPLACES the "Migrate to new version" button that stood here: a stale
+// `fused-api-version` tag is one row of that checklist now, alongside the
+// things it never covered — a leaked key, a device path, stray generated
+// files, an uncommitted tree. That is also why the gate widened: migrate had
+// nothing to say about an app that was already current, and the doctor does.
+function AppDoctorButton({ fsPath }: { fsPath: string }) {
+  const [isEntry, setIsEntry] = useState(false);
+  const [open, setOpen] = useState(false);
   const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
   const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
   useEffect(() => {
     let alive = true;
-    setInfo(null);
+    setIsEntry(false);
+    setOpen(false);
     getAppEntry(dir)
       .then((r) => {
         if (!alive) return;
-        if (r.entry == null || canon(r.entry) !== fsPath) return;
-        const from = r.api_version ?? null;
-        const to = r.current_api_version ?? null;
-        if (from == null || to == null) return;
-        setInfo({ behind: from < to, to, from, live: !!r.migration_task });
+        setIsEntry(r.entry != null && canon(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no button for nothing */
@@ -302,59 +297,23 @@ function MigrateAppButton({ fsPath }: { fsPath: string }) {
       alive = false;
     };
   }, [fsPath, dir]);
-  if (!info || !info.behind) return null;
-  const name = basename(dir);
-  const doMigrate = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const res = await migrateApp(dir);
-      if (res.task) announceTasksChanged();
-      if (res.task_error) throw new Error(res.task_error);
-      // Live now, whatever happens next: a second click must not create a
-      // second task while this one is being sent.
-      setInfo({ ...info, live: true });
-      if (res.task?.run_id) navigateUrl(appLandingUrl(res.entry_html, res.task.run_id));
-    } catch (e) {
-      pushToast({
-        msg: "Could not create the migration task for " + name + ": " + (e as Error).message,
-        tone: "error",
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (info.live) {
-    return (
+  if (!isEntry) return null;
+  return (
+    <>
       <button
         type="button"
         className="bar-ctl bar-ctl-bordered"
-        title={"A migration task for " + name + " is still running — listed under the app's Tasks tab"}
-        // The app page's Tasks tab (`/apps/<folder>?_tab=tasks`, the address
-        // current-apps-lib.appPageUrl builds; spelled here because an app may
-        // not import the shell).
-        onClick={() =>
-          navigateUrl("/apps/" + encodeFsPathSegments(dir) + "?_tab=tasks")
+        title={
+          "Check " + basename(dir) +
+          " before you share it: leaked credentials, paths tied to this machine, " +
+          "stray generated files, uncommitted work, a stale fused API version"
         }
+        onClick={() => setOpen(true)}
       >
-        Migration in progress
+        App Doctor
       </button>
-    );
-  }
-  return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
-      title={
-        name + " declares fused API version " + info.from + "; the runtime is on " + info.to +
-        ". Creates a task that updates the code and the tag."
-      }
-      onClick={doMigrate}
-      disabled={busy}
-    >
-      {busy && <span className="mode-icon-spinner" />}
-      {busy ? "Creating task…" : "Migrate to new version"}
-    </button>
+      {open && <AppDoctorModal dir={dir} onClose={() => setOpen(false)} />}
+    </>
   );
 }
 
@@ -1969,7 +1928,7 @@ function TemplatePreview({
           when this page is its folder's app entry (the component asks the
           server). Embed mode hides the whole header/topbar, so an opened
           .fused app never shows it. */}
-      {!stat.is_dir && <MigrateAppButton fsPath={fsPath} />}
+      {!stat.is_dir && <AppDoctorButton fsPath={fsPath} />}
       {!stat.is_dir && <ExportAppButton fsPath={fsPath} />}
       {/* The folder view's "Open in project", offered on the app's entry page
           too (same server-side entry gate), wearing the same bordered look as

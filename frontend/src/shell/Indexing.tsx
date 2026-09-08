@@ -12,10 +12,12 @@ import {
   getIndexConfig,
   putIndexConfig,
   putIndexingEnabled,
+  putRankedSearchEnabled,
   runIndexQuery,
   startIndexScan,
 } from "@platform/lib/api";
 import type { IndexConfig, Prefs } from "@platform/lib/api";
+import { publishRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { useFda } from "@platform/lib/fda";
@@ -28,6 +30,7 @@ import {
   missingDefaults,
   patternsToText,
   scanErrorLine,
+  scanningLine,
   textToPatterns,
   unionWithDefaults,
 } from "./indexing-lib";
@@ -72,6 +75,54 @@ function IndexingToggle({
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
+  );
+}
+
+// Same pattern as `IndexingToggle` immediately above: local busy/error, a PUT
+// that returns the full Prefs, and the parent re-renders from it. Exported
+// (unlike `IndexingToggle`) so it can be rendered and tested on its own,
+// without the rest of `IndexingPanel`'s config/status fetches.
+export function RankedSearchToggle({
+  prefs,
+  onChange,
+}: {
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ranked = prefs.indexing.ranked;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putRankedSearchEnabled(!ranked);
+      // The explorer's two search boxes read this preference through their
+      // own module-level cache (ranked-search-pref.ts), not through `Prefs`
+      // — publish so a query fired right after this toggle settles doesn't
+      // race a GET that hasn't happened yet.
+      publishRankedSearchEnabled(next.indexing.ranked);
+      onChange(next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={ranked} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Rank search results by relevance.</b> Turning this off lists matches
+          shallowest-first, then alphabetically, instead of best-match-first.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </>
   );
 }
 
@@ -183,6 +234,7 @@ export function IndexingPanel({
           survives restarts. It is rebuilt in the background when the app starts;
           unchanged folders cost one check each, so that is usually a second or two.
         </p>
+        <RankedSearchToggle prefs={prefs} onChange={onChange} />
         {!status && <SkeletonLines rows={2} label="Loading index status" />}
         {status && (
           <p className="deploy-muted">
@@ -198,9 +250,7 @@ export function IndexingPanel({
               <b>No index yet.</b>
             )}{" "}
             {scanning
-              ? `Scanning now — ${status.files.toLocaleString()} files so far${
-                  status.root ? ` under ${status.root}` : ""
-                }.`
+              ? scanningLine(status)
               : config?.roots.length
                 ? `Covers ${config.roots.join(", ")}.`
                 : ""}

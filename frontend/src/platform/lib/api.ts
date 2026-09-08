@@ -198,10 +198,26 @@ export function dismissFdaNudge(): Promise<{ ok: boolean }> {
 export interface OnboardingState {
   completed_at: number | null;
   dismissed_at: number | null;
-  // The step id the user last had open — the resume point after a server
-  // restart or a dismiss. Optional: an older server does not send it.
-  step?: string | null;
+  // When the wizard was first on screen (stamped by the first step write).
+  // Third leg of the auto-show rule (shell/onboarding/state): a wizard that
+  // has been opened is never auto-shown again. Optional: older server.
+  opened_at?: number | null;
+  // Per-step progress (the meter): what each step last reported about itself,
+  // overruled server-side where the truth is cheap to see. Optional: an older
+  // server does not send it. Rules live in shell/onboarding/progress.ts.
+  stages?: Record<string, OnboardingStage>;
   version: number;
+}
+
+/** `n/a` = this machine has no such step; it leaves the denominator. */
+export type OnboardingStageStatus = "pending" | "partial" | "complete" | "n/a";
+
+export interface OnboardingStage {
+  status: OnboardingStageStatus;
+  /** Free-form notes the step left for reference (version found, account,
+      model ids started). Merged on write; never read by a rule. */
+  meta: Record<string, unknown>;
+  updated_at: number | null;
 }
 
 export function getOnboarding(): Promise<OnboardingState> {
@@ -216,8 +232,18 @@ export function dismissOnboarding(): Promise<OnboardingState> {
   return postJson<OnboardingState>("/api/onboarding/dismiss", {});
 }
 
-export function setOnboardingStep(step: string): Promise<OnboardingState> {
-  return postJson<OnboardingState>("/api/onboarding/step", { step });
+/** The wizard is on screen — stamps `opened_at` (the auto-show's third leg)
+    without saying anything else. */
+export function openedOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/opened", {});
+}
+
+export function setOnboardingStage(
+  stage: string,
+  status: OnboardingStageStatus,
+  meta?: Record<string, unknown>,
+): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/stage", { stage, status, meta: meta ?? {} });
 }
 
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
@@ -586,20 +612,18 @@ export async function walkDirStream(
 //
 // `positions` are NOT on the wire: the caller re-runs `fuzzyMatch(q, rel)`
 // over the rows it got back, so platform/lib/fuzzy.ts stays the single source
-// of truth for what highlights (and the server's port of it, index/rank.py,
-// stays free to change its internals). A miss is a normal 200 with
-// covered:false, same as the corpus.
+// of truth for what highlights. A miss is a normal 200 with covered:false,
+// same as the corpus.
+//
+// `score`/`tier`/`depth`/`longest_run` are also NOT on the wire: they drove
+// `_rank_sql`'s ORDER BY server-side, but nothing here re-sorts an already-
+// ranked row (`listing/ranked-hits.ts` returns hits in the order the server
+// sent them), so the server stops at computing them and never returns them.
 export interface IndexRankHit {
   rel: string;
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  // The ranking that produced this order. Carried for debugging and for
-  // callers that want to group by tier; the ORDER is the contract.
-  score: number;
-  longest_run: number;
-  tier: number;
-  depth: number;
 }
 
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
@@ -629,30 +653,39 @@ export type RankReason =
 
 export interface IndexRankResult {
   covered: boolean;
-  fresh: boolean;
   // WHY this answer is what it is — "" when the index answered outright, else
   // "mount" | "package" | "ignored" | "disabled" | "uncovered" | "scanning".
   // The in-folder search picks its source from this (listing/index-source);
   // the client deliberately holds no copy of the rules behind it, because the
   // mount policy is MountGuard's and the ignore list is the scan config's.
   reason: RankReason;
-  root: string;
   hits: IndexRankHit[];
-  // More matched than were returned — either more than `limit` survived
-  // ranking, or the server's candidate cap bit.
+  // More matched than were returned: more than `limit` survived ranking.
+  // (Was ALSO true when the server's candidate cap bit before D708 — that
+  // cap, and `RANK_CANDIDATE_CAP`, are gone; index-backed search scores every
+  // matched row in one SQL statement with no candidate cap to hit.)
   truncated: boolean;
   total: number;
-  updated: number | null;
-  age_s: number | null;
+  // No `fresh`/`age_s`/`updated`/`root`: those are `search_under`'s wire
+  // fields (`IndexCorpus`/the walk-search path), load-bearing there for the
+  // in-folder corpus box's "indexing…" caveat. `search_ranked` used to
+  // compute and return the same three by copy-paste from `search_under`
+  // directly above it, but nothing here ever read them — no caller
+  // destructured `fresh`/`age_s`/`updated`/`root` off an `indexRank()`
+  // response. See DECISIONS.md.
 }
 
 export function indexRank(
   fsPath: string,
   query: string,
-  opts: { signal?: AbortSignal; limit?: number } = {},
+  opts: { signal?: AbortSignal; limit?: number; ranked?: boolean } = {},
 ): Promise<IndexRankResult> {
   const params = new URLSearchParams({ root: fsPath, q: query });
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  // Omitted entirely when unset — the route defaults to `ranked=true`
+  // (D720), so a caller that never passes it (the warm-up/source-selection
+  // probes) gets exactly the same answer it always did.
+  if (opts.ranked !== undefined) params.set("ranked", String(opts.ranked));
   return getJson<IndexRankResult>("/api/index/rank?" + params.toString(), {
     signal: opts.signal,
   });
@@ -674,7 +707,14 @@ export interface IndexStatus {
   root: string | null;
   phase: string;
   dirs: number;
-  files: number; // this run's progress
+  files: number; // this run's NEWLY-walked count — a reused (unchanged) dir's
+  // files are NOT in here, they're in `reused` below (index/store.py's `Sink`
+  // keeps the two separate: `files` credits a dir this run actually re-stat'd,
+  // `reused` credits one it skipped via cache). A live "N files so far" line
+  // has to add the two together to mean the same thing `files_indexed` means
+  // once the scan finishes — `files` alone undercounts by however much of the
+  // tree was unchanged, which is usually most of it on a rescan.
+  reused: number;
   error: string | null;
 }
 
@@ -1093,7 +1133,11 @@ export interface Prefs {
   // opt-OUT, the opposite polarity from `reader`). Turning it off does not
   // delete the on-disk index or stop search from answering it; only new
   // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
-  indexing: { enabled: boolean };
+  // `ranked` (D720, also default ON) is a separate, sibling preference:
+  // whether index-backed search ORDERS its hits by relevance score at all —
+  // off means `/api/index/rank?ranked=false`'s shallowest-then-alphabetical
+  // order instead (`ranked_search_enabled` server-side).
+  indexing: { enabled: boolean; ranked: boolean };
 }
 
 export interface AiIdlePrefs {
@@ -1315,6 +1359,10 @@ export function putLanEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
+}
+
+export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { ranked_search_enabled: enabled });
 }
 
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
@@ -2318,13 +2366,14 @@ export interface AppEntryInfo {
   // The fused page API version the entry declares via
   // `<meta name="fused-api-version">` — 0 when undeclared (every app authored
   // before the tag existed), null when there is no entry. Beside the version
-  // the runtime speaks now; the app page offers "Migrate" when it is behind.
-  // Both optional so an older server (entry only) still types.
+  // the runtime speaks now. No button hangs off these any more: the gap is a
+  // ROW of the App Doctor checklist (`getAppDoctor`), which is what replaced
+  // the standalone Migrate button. Both optional so an older server (entry
+  // only) still types.
   api_version?: number | null;
   current_api_version?: number;
   // A migration task on this entry that has not finished (pending, sending,
-  // or running with no verdict yet) — the button reads "in progress" instead
-  // of offering a second one. Null / absent when none.
+  // or running with no verdict yet). Null / absent when none.
   migration_task?: { id: string; state: string; run_id: string | null } | null;
 }
 
@@ -2338,6 +2387,11 @@ export function getAppEntry(path: string): Promise<AppEntryInfo> {
 // shape /api/apps/new creates, its prompt invoking the fused-render-api-migration
 // skill for the jump from the declared version to the current one. 409 when the
 // app is already current, 404 when the folder has no entry.
+//
+// No UI calls this any longer — the App Doctor button took the place of the
+// Migrate button on both surfaces, and its fix session routes a stale version
+// through the migration skill itself. The endpoint stays as the narrow,
+// single-purpose way to ask for exactly that one task.
 export interface MigrateAppResult extends NewAppResult {
   from_version: number;
   to_version: number;
@@ -2349,6 +2403,60 @@ export function migrateApp(
   effort: SessionEffort = "",
 ): Promise<MigrateAppResult> {
   return postJson<MigrateAppResult>("/api/apps/migrate", { path, model, effort });
+}
+
+// ---- App Doctor (fused_render/app_doctor.py) --------------------------------
+//
+// The share-readiness checklist for one app folder: deterministic checks only —
+// a row is `pass`, `fail`, or `skip` (the check could not run: no entry to read,
+// no git repo, an optional file that isn't there), never a judgment. The
+// judgment is the fix TASK's, which is a Claude session running the
+// fused-render-app-doctor skill (`runAppDoctor` below).
+
+export type AppCheckState = "pass" | "fail" | "skip";
+
+export interface AppCheckFinding {
+  rule: string;
+  path: string;
+  /** 0 for a finding about the folder rather than a line. */
+  line: number;
+  /** Already masked server-side when it came off a secret — safe to render. */
+  excerpt: string;
+}
+
+export interface AppCheck {
+  id: string;
+  label: string;
+  state: AppCheckState;
+  detail: string;
+  findings: AppCheckFinding[];
+}
+
+export interface AppDoctorReport {
+  path: string;
+  entry: string | null;
+  /** Nothing failed. A skipped check is not a pass, but it is not a problem. */
+  ok: boolean;
+  checks: AppCheck[];
+  /** A fix task on the entry that has not finished yet, or null. */
+  task?: { id: string; state: string; run_id: string | null } | null;
+}
+
+export function getAppDoctor(path: string): Promise<AppDoctorReport> {
+  return getJson<AppDoctorReport>(
+    `/api/apps/doctor?path=${encodeURIComponent(path)}`,
+  );
+}
+
+// Create the App Doctor FIX task on the app's entry page — one session for the
+// whole report, its prompt invoking the fused-render-app-doctor skill. 409 when
+// one is already running, 404 when the folder has no entry page.
+export function runAppDoctor(
+  path: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/doctor", { path, model, effort });
 }
 
 // ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------
@@ -2929,6 +3037,38 @@ export function deleteTask(
     cancelled: number;
     erased_transcript: boolean;
   }>("/api/tasks/delete", { key });
+}
+
+// Taking the SESSION away for good (Akshil, 2026-09-07). Delete's older
+// sibling and the one verb on this page that is not undoable: `/api/tasks/delete`
+// writes a tombstone and leaves the conversation on disk (D306), this one
+// removes the transcript itself — `~/.claude/projects/<slug>/<session_id>.jsonl`
+// and the sidecar directory beside it — along with the triage/read/task-id
+// bookkeeping that points at it, then tombstones the row like delete does.
+//
+// `erased_transcript` is therefore TRUE here where delete always answers false,
+// and `removed` counts the files that actually went. The task's NUMBER is still
+// never reallocated: the max-seen rule survives the session it was minted for.
+//
+// Refused with a 409 while the task is running, in delete's own words ("that
+// task is running — stop the run first, then delete"): erasing a transcript out
+// from under a live `claude --resume` is the one thing this verb must never do.
+export function eraseTask(
+  key: string,
+): Promise<{
+  ok: boolean;
+  key: string;
+  cancelled: number;
+  erased_transcript: boolean;
+  removed: number;
+}> {
+  return postJson<{
+    ok: boolean;
+    key: string;
+    cancelled: number;
+    erased_transcript: boolean;
+    removed: number;
+  }>("/api/tasks/erase", { key });
 }
 
 // Every scheduled message in a time window, which is the one question the
@@ -4108,7 +4248,7 @@ export function getGitSnapshot(path: string, sha: string): Promise<GitSnapshot> 
 
 // The cheap, sha-less sibling: does an app folder enclose `path` at all — the
 // same fail-closed probe templates/git/template.html's own `probeAppFolder()`
-// calls before offering its preview eye (D701 / review finding B4). Backs
+// calls before offering its preview eye (D742 / review finding B4). Backs
 // AppVersionPicker's own gate: the picker renders only once this resolves ok.
 export interface GitAppFolder {
   ok: boolean;
