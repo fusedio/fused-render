@@ -9,10 +9,15 @@
 //
 // There is no visible severity chip in the dialog any more (owner request —
 // colour, the row's ground/rail and the state mark's shape already carry
-// severity for a sighted reader). `rowStateLabel` is the one place severity
-// still gets said in words, because it feeds the state mark's `aria-label`/
-// `title` — the only place a screen reader hears "critical"/"warning"/
-// "suggested" at all now.
+// severity for a sighted reader). Severity used to leak back onto the screen
+// once already: the chip's removal folded the word into `rowStateLabel`, and
+// AppDoctorModal.tsx fed that SAME string to both the state mark's
+// `aria-label`/`title` (fine — screen readers should still hear it) AND the
+// row's visible detail line (not fine — the sentence a sighted reader sees
+// then read "Critical — Failed — <detail>", the exact words the chip's
+// removal was supposed to erase). `rowStateAccessibleLabel` and
+// `rowStateDetailText` below are the fix: two names, two callers, so a future
+// reader doesn't fold them back into one and reintroduce the leak.
 import { encodeFsPathSegments } from "@platform/lib/router";
 import type { AppCheck, AppCheckFinding, AppCheckState, Severity } from "@platform/lib/api";
 
@@ -116,25 +121,39 @@ export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
   return check.kind === "candidate" ? "Review" : "Fix";
 }
 
-/** A failing row's own state word: a candidate never reads as a settled
- *  failure ("Failed") — it reads as "N to review", because the pattern that
- *  flagged it has not been judged yet. Every other state reads as
- *  `STATE_LABEL` already does.
+/** A failing row's own state word, for the VISIBLE detail line
+ *  (`.appdoc-detail`, AppDoctorModal.tsx) — never the severity. A candidate
+ *  never reads as a settled failure ("Failed") — it reads as "N to review",
+ *  because the pattern that flagged it has not been judged yet. Every other
+ *  state reads as `STATE_LABEL` already does.
  *
- * A FAILING row also names its own severity here, not just its state. This
- * used to live in a visible chip (`.appdoc-sev`) next to the label; now that
- * the chip is gone (owner request — colour, the rail and the state mark's
- * SHAPE already carry severity for a sighted reader, see AppDoctorModal.tsx's
- * header comment), this string is the ONLY place a screen reader hears the
- * word "critical"/"warning"/"suggested" at all, since it feeds `aria-label`
- * and `title` on `.appdoc-state` (AppDoctorModal.tsx). Uses `check.severity`
- * (the checklist's own severity), not `effectiveSeverity` — that discount
- * only applies to cross-row reductions (the header dot, worstSeverity); a
- * row naming itself always says what the checklist actually found. */
-export function rowStateLabel(check: AppCheck): string {
+ *  This does NOT say the row's severity, on purpose: severity used to live in
+ *  a visible chip (`.appdoc-sev`) next to the label, and when that chip was
+ *  removed (owner request — colour, the rail and the state mark's SHAPE
+ *  already carry severity for a sighted reader) an earlier pass folded the
+ *  severity word into this same string, which put it right back on the
+ *  screen inside the detail line ("Critical — Failed — <detail>") — the exact
+ *  words removing the chip was supposed to get rid of. Severity belongs only
+ *  in `rowStateAccessibleLabel` below, which feeds the state mark's
+ *  `aria-label`/`title`, not this one. */
+export function rowStateDetailText(check: AppCheck): string {
   if (check.state !== "fail") return STATE_LABEL[check.state];
-  const state = check.kind === "candidate" ? `${check.findings.length} to review` : STATE_LABEL.fail;
-  return `${SEVERITY_LABEL[check.severity]} — ${state}`;
+  return check.kind === "candidate" ? `${check.findings.length} to review` : STATE_LABEL.fail;
+}
+
+/** A failing row's ACCESSIBLE name — feeds `.appdoc-state`'s `aria-label`/
+ *  `title` (AppDoctorModal.tsx) only, never the visible detail line. This is
+ *  the one place that still names severity in words at all: with the chip
+ *  gone, this is the only place a screen reader hears
+ *  "critical"/"warning"/"suggested". Built on `rowStateDetailText` so the two
+ *  strings never drift apart on the state half — they differ by exactly the
+ *  severity prefix. Uses `check.severity` (the checklist's own severity), not
+ *  `effectiveSeverity` — that discount only applies to cross-row reductions
+ *  (the header dot, worstSeverity); a row naming itself always says what the
+ *  checklist actually found. */
+export function rowStateAccessibleLabel(check: AppCheck): string {
+  if (check.state !== "fail") return STATE_LABEL[check.state];
+  return `${SEVERITY_LABEL[check.severity]} — ${rowStateDetailText(check)}`;
 }
 
 /** The app's Tasks tab. Spelled here, not imported from the shell's

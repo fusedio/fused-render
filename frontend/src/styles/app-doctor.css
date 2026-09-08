@@ -159,7 +159,7 @@
  * that all stay (see this file's header comment and AppDoctorModal.tsx's):
  * the row's ground + rail (`.appdoc-row-sev-*` below), and the state mark's
  * shape. The word itself, for a screen reader, moved into the state mark's
- * own `aria-label`/`title` (`rowStateLabel`, appdoctor-lib.ts) rather than
+ * own `aria-label`/`title` (`rowStateAccessibleLabel`, appdoctor-lib.ts) rather than
  * disappearing — that is what made deleting the chip safe instead of a
  * regression.
  *

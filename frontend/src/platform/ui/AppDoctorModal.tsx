@@ -30,8 +30,15 @@
 // dot for suggested — StateIcon below). Colour is therefore not the only
 // carrier even without the chip; shape does the work the chip used to. What
 // the chip WAS the only carrier of is the word itself for a screen reader —
-// `rowStateLabel` (appdoctor-lib.ts) now folds severity into the state mark's
-// own `aria-label`/`title` so that doesn't vanish along with the chip.
+// `rowStateAccessibleLabel` (appdoctor-lib.ts) feeds the state mark's own
+// `aria-label`/`title` so that doesn't vanish along with the chip.
+//
+// That accessible label is deliberately a SEPARATE helper from
+// `rowStateDetailText`, which feeds the visible `.appdoc-detail` line below.
+// An earlier pass used one string for both, which put the severity word back
+// on screen inside the detail line ("Critical — Failed — <detail>") — see
+// appdoctor-lib.ts's comment on the two functions for why they must stay
+// split.
 //
 // Per-row Fix/Review creates ONE task on just that row; the footer's "Fix
 // all" creates one task covering every currently failing row at once. Both
@@ -60,7 +67,8 @@ import {
   findingWhere,
   groupBySection,
   rowActionLabel,
-  rowStateLabel,
+  rowStateAccessibleLabel,
+  rowStateDetailText,
   SECTION_LABEL,
   splitFindings,
   summaryLine,
@@ -166,8 +174,8 @@ function CheckRow({
       <span
         className="appdoc-state"
         role="img"
-        aria-label={rowStateLabel(check)}
-        title={rowStateLabel(check)}
+        aria-label={rowStateAccessibleLabel(check)}
+        title={rowStateAccessibleLabel(check)}
       >
         <StateIcon state={check.state} severity={failing ? check.severity : undefined} />
       </span>
@@ -212,7 +220,7 @@ function CheckRow({
           )}
         </div>
         <span className="appdoc-detail">
-          {failing ? rowStateLabel(check) + " — " + check.detail : check.detail}
+          {failing ? rowStateDetailText(check) + " — " + check.detail : check.detail}
         </span>
         {shown.length > 0 && (
           <ul className="appdoc-findings">

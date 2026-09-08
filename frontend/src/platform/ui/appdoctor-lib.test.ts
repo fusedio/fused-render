@@ -35,8 +35,10 @@ const {
   groupBySection,
   MAX_FINDINGS_SHOWN,
   rowActionLabel,
-  rowStateLabel,
+  rowStateAccessibleLabel,
+  rowStateDetailText,
   severityDotLabel,
+  SEVERITY_LABEL,
   splitFindings,
   STATE_LABEL,
   summaryLine,
@@ -215,38 +217,42 @@ test("a candidate's action is Review, a fact's is Fix", () => {
   expect(rowActionLabel(check("readme", "fail", { kind: "fact" }))).toBe("Fix");
 });
 
-test("a failing candidate reads as N to review, never as a settled failure", () => {
+test("a failing candidate's DETAIL text reads as N to review, never as a settled failure", () => {
   const c = check("secrets", "fail", {
     kind: "candidate",
     findings: [finding("app.py", 3), finding("app.py", 9)],
   });
-  // The `check()` helper defaults to "warning" severity.
-  expect(rowStateLabel(c)).toBe("Warning — 2 to review");
+  expect(rowStateDetailText(c)).toBe("2 to review");
 });
 
-test("every other row's state label falls back to STATE_LABEL", () => {
-  expect(rowStateLabel(check("readme", "pass"))).toBe("Passed");
-  expect(rowStateLabel(check("readme", "skip"))).toBe("Not checked");
-  expect(rowStateLabel(check("readme", "unrun"))).toBe("Not run yet");
+test("every other row's detail text falls back to STATE_LABEL", () => {
+  expect(rowStateDetailText(check("readme", "pass"))).toBe("Passed");
+  expect(rowStateDetailText(check("readme", "skip"))).toBe("Not checked");
+  expect(rowStateDetailText(check("readme", "unrun"))).toBe("Not run yet");
 });
 
 // ---------------------------------------------------------- severity in words
 //
 // There is no visible severity chip in the dialog any more (owner request).
-// `rowStateLabel` is now the only place a FAILING row's severity is said in
-// words at all, because it feeds the state mark's own `aria-label`/`title` —
-// this is what keeps severity from vanishing out of the accessible tree.
+// `rowStateAccessibleLabel` is now the only place a FAILING row's severity is
+// said in words at all, because it feeds the state mark's own
+// `aria-label`/`title` — this is what keeps severity from vanishing out of
+// the accessible tree. `rowStateDetailText` (the visible `.appdoc-detail`
+// line's text) must NEVER say the severity word — an earlier pass used one
+// string for both callers and put the severity word right back on screen
+// inside the detail line ("Critical — Failed — <detail>"), the exact words
+// removing the chip was supposed to erase.
 
-test("a failing FACT row's label names both its severity and its state", () => {
-  expect(rowStateLabel(check("readme", "fail", { kind: "fact", severity: "critical" }))).toBe(
-    "Critical — Failed",
-  );
-  expect(rowStateLabel(check("readme", "fail", { kind: "fact", severity: "suggested" }))).toBe(
-    "Suggested — Failed",
-  );
+test("a failing FACT row's accessible label names both its severity and its state", () => {
+  expect(
+    rowStateAccessibleLabel(check("readme", "fail", { kind: "fact", severity: "critical" })),
+  ).toBe("Critical — Failed");
+  expect(
+    rowStateAccessibleLabel(check("readme", "fail", { kind: "fact", severity: "suggested" })),
+  ).toBe("Suggested — Failed");
 });
 
-test("a failing row names its OWN checklist severity, not the discounted effectiveSeverity", () => {
+test("a failing row's accessible label names its OWN checklist severity, not the discounted effectiveSeverity", () => {
   // secrets is "critical" in the checklist even though a candidate's
   // effectiveSeverity is capped at "warning" for cross-row reductions (the
   // header dot). A row naming itself always says what the checklist actually
@@ -256,5 +262,27 @@ test("a failing row names its OWN checklist severity, not the discounted effecti
     severity: "critical",
     findings: [finding("app.py", 3)],
   });
-  expect(rowStateLabel(c)).toBe("Critical — 1 to review");
+  expect(rowStateAccessibleLabel(c)).toBe("Critical — 1 to review");
+});
+
+test("the visible detail text never contains a severity word, only the accessible label does", () => {
+  // Pins the regression: a prior pass folded severity into the one string
+  // both callers used, so the word leaked from the accessible label back
+  // onto the screen via the visible detail line.
+  const severityWords = ["Critical", "Warning", "Suggested"];
+  for (const severity of ["critical", "warning", "suggested"] as const) {
+    for (const kind of ["fact", "candidate"] as const) {
+      const c = check("x", "fail", {
+        kind,
+        severity,
+        findings: kind === "candidate" ? [finding("app.py", 1)] : [],
+      });
+      const detail = rowStateDetailText(c);
+      const accessible = rowStateAccessibleLabel(c);
+      for (const word of severityWords) {
+        expect(detail).not.toContain(word);
+      }
+      expect(accessible).toContain(SEVERITY_LABEL[severity]);
+    }
+  }
 });
