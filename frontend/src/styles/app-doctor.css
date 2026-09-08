@@ -2,21 +2,18 @@
  * and the footer buttons are the shared modal's (deploy.css / buttons-modal.css);
  * everything here is the checklist inside it.
  *
- * The three STATES are told by COLOUR AND SHAPE together — a ✓, a fail mark
- * and a "–" — never by colour alone, so the list survives a monochrome or
+ * The STATES are told by COLOUR AND SHAPE together — a ✓, a fail mark and a
+ * "–" — never by colour alone, so the list survives a monochrome or
  * colour-blind reading.
  *
- * A FAILING row also carries a SEVERITY (critical/warning/suggested), and
- * that is its own axis, told apart the same disciplined way: its own hue for
- * the row's ground and state mark, its own SHAPE for the state mark (a filled
- * alert circle for critical, a triangle for warning, a quieter outline dot for
- * suggested), and a severity-hued rail down the row's left edge — so the three
- * tiers are told apart by position and weight as well as hue, and a critical
- * failure never reads at the same volume as a suggestion. Only critical and
- * warning rows get a tinted ground at all: a suggestion is not an alarm, and a
- * list where nearly every row is tinted has no signal left in it. Colours are
- * the palette's own semantic tokens (tokens.css), so both themes come for
- * free.
+ * A FAILING row also carries a SEVERITY (critical/warning), and that is its
+ * own axis, told apart the same disciplined way: its own hue for the row's
+ * ground and state mark, its own SHAPE for the state mark (a filled alert
+ * circle for critical, a triangle for warning), and a severity-hued rail down
+ * the row's left edge — so the two tiers are told apart by position and
+ * weight as well as hue. Every failing row gets a tinted ground and rail —
+ * a row worth listing is worth the same urgency treatment. Colours are the
+ * palette's own semantic tokens (tokens.css), so both themes come for free.
  *
  * A FAILING row's action (Fix/Review, `.appdoc-fix-btn`) is `.appdoc-row-actions`,
  * a ROW-LEVEL column — a sibling of `.appdoc-text` (the state mark, the text
@@ -52,12 +49,79 @@
 
 .appdoc-section-title {
   margin: 0 0 6px;
-  padding: 0 10px;
+}
+
+/* The section header is now a real disclosure control, not inert text: a
+ * full-width button carrying `aria-expanded`/`aria-controls` (AppDoctorModal.tsx)
+ * so the section's own `<ul>` can be toggled. `background: none; border: none`
+ * strips the browser's own button chrome so it reads as the same header text
+ * the old bare `<h3>` was; the uppercase/weight/tracking treatment moves onto
+ * this button unchanged. The hover ground and radius match `.appdoc-row`
+ * below it, so the whole row reads as one clickable surface consistent with
+ * every other row in the list. */
+.appdoc-section-btn {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
   color: var(--fg);
+  font: inherit;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+/* Hover moves the CHEVRON, not a ground. A filled plate behind a section
+ * header reads as a control bar sitting on the list rather than as the list's
+ * own heading, and at one plate per section it is the loudest thing in a
+ * dialog whose actual signal is a severity rail three rows down. The chevron
+ * brightening from muted to full foreground is affordance enough for a
+ * header whose whole job is to be a heading. */
+.appdoc-section-btn:hover .appdoc-chevron {
+  color: var(--fg);
+}
+
+.appdoc-section-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.appdoc-section-name {
+  flex: none;
+}
+
+.appdoc-section-summary {
+  overflow: hidden;
+  flex: 1 1 auto;
+  color: var(--fg-muted);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* Shared by the section header and the passing-tail fold row inside an open
+ * section (`.appdoc-fold-btn` below) — both are disclosures, both draw the
+ * same chevron. Rotation is a transform, not a redraw, so it composites
+ * cheaply; `reduced-motion.css`'s blanket `transition-duration: 0.01ms`
+ * already collapses it for anyone who asked for that, so there is no local
+ * `prefers-reduced-motion` block to duplicate here. */
+.appdoc-chevron {
+  flex: none;
+  color: var(--fg-muted);
+  transition: transform 0.15s ease;
+}
+
+.appdoc-chevron-open {
+  transform: rotate(90deg);
 }
 
 .appdoc-list {
@@ -77,9 +141,49 @@
   border-radius: 6px;
 }
 
-/* Only critical/warning get a ground AND a rail — see the header comment.
- * The rail is an inset box-shadow rather than a border so it doesn't shove
- * the row's own padding around. */
+/* The passing-tail fold: a `<li>` sibling of the `.appdoc-row`s inside the
+ * same `.appdoc-list`, not a row itself — it carries no state mark or
+ * severity ground, just its own disclosure button. Sits at the list's own
+ * left inset (10px, matching `.appdoc-row`'s own padding) so it reads as
+ * part of the list rather than a second nested panel. */
+.appdoc-fold-btn {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Same as the section header: the text and its chevron brighten, no plate.
+ * This row is the quietest thing in the list on purpose — everything it
+ * hides has already passed. */
+.appdoc-fold-btn:hover {
+  color: var(--fg);
+}
+
+.appdoc-fold-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The revealed passing rows sit in their own nested list rather than flush
+ * with the fold button — `gap` on the OUTER `.appdoc-list` already spaces the
+ * fold row itself from its neighbours; this inner one needs the same
+ * row-to-row rhythm once expanded. */
+.appdoc-fold-list {
+  margin-top: 2px;
+}
+
+/* Both severities get a ground AND a rail — see the header comment. The
+ * rail is an inset box-shadow rather than a border so it doesn't shove the
+ * row's own padding around. */
 .appdoc-row.appdoc-fail.appdoc-row-sev-critical {
   background: rgba(var(--error-rgb), 0.08);
   box-shadow: inset 2px 0 0 var(--error);
@@ -88,12 +192,6 @@
 .appdoc-row.appdoc-fail.appdoc-row-sev-warning {
   background: rgba(var(--warning-rgb), 0.08);
   box-shadow: inset 2px 0 0 var(--warning);
-}
-
-/* A suggestion gets neither ground nor rail — it stays at the list's own
- * resting weight, told apart only by its muted, quieter state mark. */
-.appdoc-row.appdoc-fail.appdoc-row-sev-suggested {
-  background: none;
 }
 
 .appdoc-state {
@@ -115,7 +213,6 @@
   color: var(--warning);
 }
 
-.appdoc-row-sev-suggested .appdoc-state,
 .appdoc-skip .appdoc-state,
 .appdoc-unrun .appdoc-state {
   color: var(--fg-muted);
@@ -161,15 +258,11 @@
   color: var(--fg-muted);
 }
 
-/* There used to be a `.appdoc-sev` chip here spelling out the severity word
- * next to the label. Removed (owner request: "remove the critical/warning
- * labels, just keep the colors") — severity still has three OTHER carriers
- * that all stay (see this file's header comment and AppDoctorModal.tsx's):
- * the row's ground + rail (`.appdoc-row-sev-*` below), and the state mark's
- * shape. The word itself, for a screen reader, moved into the state mark's
- * own `aria-label`/`title` (`rowStateAccessibleLabel`, appdoctor-lib.ts) rather than
- * disappearing — that is what made deleting the chip safe instead of a
- * regression.
+/* No severity chip sits next to the label — severity has two OTHER carriers
+ * (see this file's header comment and AppDoctorModal.tsx's): the row's
+ * ground + rail (`.appdoc-row-sev-*` below), and the state mark's shape. The
+ * word itself, for a screen reader, lives in the state mark's own
+ * `aria-label`/`title` (`rowStateAccessibleLabel`, appdoctor-lib.ts).
  *
  * One severity palette (the tokens `.appdoc-row-sev-*` and `.appdoc-fix-btn`
  * below key off) reused by the header status dot too (shell/AppPage.tsx,
@@ -207,15 +300,14 @@
 /* Scoped override, not a change to .btn-secondary (buttons-modal.css) — many
  * other modals rely on that one staying as-is.
  *
- * BASE (suggested rows, and the fallback if a future severity is added): the
- * same quiet-chrome treatment as before this pass. Measured: `--border`
- * (what .btn-secondary uses) against a bare row is 1.10:1 dark / 1.13:1
- * light — nowhere near the 3:1 a control boundary needs, so the button
- * visually disappeared into the row. `--fg-muted` measures 6.98:1 dark /
+ * BASE (a passing/skip/unrun row draws no button at all, so this is only the
+ * fallback if a future non-severity state ever needs one): `--border` (what
+ * .btn-secondary uses) against a bare row is 1.10:1 dark / 1.13:1 light —
+ * nowhere near the 3:1 a control boundary needs, so the button would
+ * visually disappear into the row. `--fg-muted` measures 6.98:1 dark /
  * 5.86:1 light against the bare `--bg` ground and clears the bar; the
  * fill/hover pair is the existing "quiet control chrome" tokens (tokens.css),
- * reused rather than invented. A suggestion carries no urgency, so it keeps
- * this neutral treatment rather than a severity tint. */
+ * reused rather than invented. */
 .appdoc-fix-btn {
   padding: 3px 10px;
   background: var(--ctl-quiet-bg);
@@ -228,35 +320,25 @@
   border-color: var(--ctl-quiet-border-hover);
 }
 
-/* CRITICAL / WARNING rows: the action inherits the row's own severity, so it
- * reads as the row's urgency rather than as inert grey chrome sitting on a
- * tinted ground. Modelled on `.btn-danger` (buttons-modal.css) — severity
- * border, severity label — but NOT that class itself (other modals depend on
- * it staying as-is), and with an opaque `--bg` fill rather than `.btn-danger`'s
- * translucent wash: the row underneath this button is ALREADY a wash of the
- * same hue (F1's `appdoc-row-sev-*` ground), and stacking a second wash of
- * the same hue on top pulls the button's own background toward the same hue
- * as its text — measured worst case (critical, light theme): label 4.27:1,
- * short of 4.5. An opaque `--bg` fill decouples the button's text contrast
- * from the row's tint entirely, the same fix F3 already used for the
- * severity chip. Measured (contrast2.py, both themes, against the tokens
- * this rule actually uses):
- *   label vs button's --bg fill      — critical 6.64 dark / 5.62 light
- *                                       warning  7.30 dark / 4.96 light
- *   border vs the ROW's tinted ground — critical 6.02 dark / 4.96 light
- *                                       warning  6.53 dark / 4.47 light
- * All four clear their bar (label 4.5, border 3.0) in both themes; plain
- * `--warning` clears 4.5 on this opaque fill, so `--warning-strong` (which
- * measured WORSE here, 4.73/3.78 — a darker orange pulled further toward the
- * same warm hue as its own wash) is not needed. Hover keeps the alarm but
- * stays inside the same bounds: a 6% wash of the row's own hue over `--bg`
- * (not stacked on the row's tint, since the button's opaque fill already
- * occludes it) — checked at 6% specifically because 8% drops light-theme
- * warning's label to 4.47, just under 4.5. */
+/* CRITICAL / WARNING rows: the action inherits the row's own severity in its
+ * BORDER, so it reads as the row's urgency rather than as inert grey chrome
+ * sitting on a tinted ground, while staying transparent — it sits on the
+ * row's own tinted ground (`appdoc-row-sev-*` above) rather than filling with
+ * an opaque colour that would cut a hole out of that ground. The label uses
+ * `--fg`, not the severity hue, so it reads as ordinary body text rather than
+ * fighting the border for the same colour. Modelled on `.btn-danger`
+ * (buttons-modal.css) — severity border — but NOT that class itself (other
+ * modals depend on it staying as-is). Measured (contrast2.py, both themes):
+ * the severity border against the ROW's own tinted ground clears the 3:1
+ * control-boundary bar at 6.02 dark / 4.96 light (critical) and 6.53 dark /
+ * 4.47 light (warning); `--fg` on that same ground is ordinary body-text
+ * contrast. Hover is a 6% wash of the row's own hue over `--bg` — checked at
+ * 6% specifically, not 8%, because 8% drops light-theme warning's border
+ * contrast under the bar. */
 .appdoc-row-sev-critical .appdoc-fix-btn {
-  background: var(--bg);
+  background: transparent;
   border-color: var(--error);
-  color: var(--error);
+  color: var(--fg);
 }
 
 .appdoc-row-sev-critical .appdoc-fix-btn:hover:not(:disabled) {
@@ -265,9 +347,9 @@
 }
 
 .appdoc-row-sev-warning .appdoc-fix-btn {
-  background: var(--bg);
+  background: transparent;
   border-color: var(--warning);
-  color: var(--warning);
+  color: var(--fg);
 }
 
 .appdoc-row-sev-warning .appdoc-fix-btn:hover:not(:disabled) {
@@ -297,10 +379,6 @@
   background: var(--warning);
 }
 
-.appdoc-dot-suggested {
-  background: var(--fg-muted);
-}
-
 .appdoc-dot-neutral {
   background: transparent;
   border: 1px solid var(--fg-muted);
@@ -316,11 +394,18 @@
  * hairline) rather than sitting flush on the row's own ground: at up to 26
  * findings on one row (`device-paths`), this needs to read as its own scroll
  * region the row is showing you, not as the dialog clipping content. The
- * row's own action is a row-level column now (`.appdoc-row-actions`, above),
+ * row's own action is a row-level column (`.appdoc-row-actions`, above),
  * entirely outside this box, so it can never scroll out of view under this
  * list regardless of height; the 120px cap is about keeping one row's
  * findings from dominating the dialog, not about protecting the action's
- * visibility. */
+ * visibility.
+ *
+ * `var(--ctl-quiet-bg)`, not `--bg`: a failing row already sits on a
+ * severity wash over `--bg` (`appdoc-row-sev-*` above), so an opaque `--bg`
+ * fill here would cut a hole back down to the dialog's own ground instead of
+ * reading as a surface of the row. The translucent quiet-control ground
+ * (tokens.css) reads as an inset surface regardless of what wash the row
+ * underneath it carries. */
 .appdoc-findings {
   display: flex;
   max-height: 120px;
@@ -332,7 +417,7 @@
   list-style: none;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg);
+  background: var(--ctl-quiet-bg);
   font-size: 12px;
 }
 

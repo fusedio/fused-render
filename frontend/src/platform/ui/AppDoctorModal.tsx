@@ -1,6 +1,7 @@
 // App Doctor: the share-readiness checklist for one app folder, grouped into
-// sections, each failing row carrying its own severity and its own fix
-// action.
+// sections and, within each section, ordered worst-first (appdoctor-lib.ts's
+// `sortByAttention`) so a failing row never has to be scrolled to. Each
+// failing row carries its own severity and its own fix action.
 //
 // It stands where the "Migrate to new version" button used to (the app page's
 // header, the explorer's entry-page topbar) and it subsumes it: the stale
@@ -21,30 +22,27 @@
 // `effectiveSeverity`). Judging a candidate is the fix session's job, which is
 // why its button says Review rather than Fix.
 //
-// A FAILING row's SEVERITY (critical/warning/suggested) used to be spelled
-// out in a chip next to the label. It no longer is (owner request: "remove
-// the critical/warning labels, just keep the colors") — severity is still
-// told apart three other ways that all stay: the row's left rail and ground
+// A FAILING row's SEVERITY (critical/warning) has no chip next to the
+// label — it is told apart three other ways: the row's left rail and ground
 // tint (app-doctor.css's `.appdoc-row-sev-*`), and the state mark's SHAPE
-// (filled alert circle for critical, triangle for warning, a quieter outline
-// dot for suggested — StateIcon below). Colour is therefore not the only
-// carrier even without the chip; shape does the work the chip used to. What
-// the chip WAS the only carrier of is the word itself for a screen reader —
-// `rowStateAccessibleLabel` (appdoctor-lib.ts) feeds the state mark's own
-// `aria-label`/`title` so that doesn't vanish along with the chip.
+// (filled alert circle for critical, triangle for warning — StateIcon
+// below). Colour is therefore never the only carrier. The word itself, for a
+// screen reader, lives in `rowStateAccessibleLabel` (appdoctor-lib.ts), which
+// feeds the state mark's own `aria-label`/`title`.
 //
 // That accessible label is deliberately a SEPARATE helper from
 // `rowStateDetailText`, which feeds `rowVisibleDetailText` below — the
-// visible `.appdoc-detail` line. An earlier pass used one string for both,
-// which put the severity word back on screen inside the detail line
-// ("Critical — Failed — <detail>") — see appdoctor-lib.ts's comment on the
-// two functions for why they must stay split. A later pass (owner request:
-// "remove the redundant failed prefix") went further and dropped the bare
-// "Failed" word itself from the visible line — the left rail, ground tint
-// and state mark shape already say a row failed, three times over, so
-// `rowVisibleDetailText` only prints `rowStateDetailText`'s output when it is
-// a candidate's "N to review" count, real information the detail sentence
-// does not otherwise carry.
+// visible `.appdoc-detail` line. Folding the two into one string would put
+// the severity word back on screen inside the detail line ("Critical —
+// Failed — <detail>") — see appdoctor-lib.ts's comment on the two functions
+// for why they must stay split. The visible line also drops the bare
+// "Failed" word a settled fact failure would otherwise carry — the left
+// rail, ground tint and state mark shape already say a row failed, three
+// times over — and drops entirely for a passing row, since every checklist
+// label is already a complete statement on its own. `rowVisibleDetailText`
+// only prints `rowStateDetailText`'s output when it is a candidate's "N to
+// review" count, real information the detail sentence does not otherwise
+// carry.
 //
 // Per-row Fix/Review creates ONE task on just that row; the footer's "Fix
 // all" creates one task covering every currently failing row at once. Both
@@ -76,7 +74,11 @@ import {
   rowStateAccessibleLabel,
   rowVisibleDetailText,
   SECTION_LABEL,
+  sectionStartsOpen,
+  sectionSummary,
+  sortByAttention,
   splitFindings,
+  splitPassingTail,
   summaryLine,
   tasksTabUrl,
 } from "./appdoctor-lib";
@@ -92,12 +94,9 @@ import { basename } from "@platform/lib/format";
 // which draws its own icons and imports no icon library.
 //
 // A FAILING state also draws by severity, not just by colour: a critical
-// failure is the filled alert circle this mark has always been, a warning is
-// a triangle (the shape everyone already reads as "caution"), and a
-// suggestion is a quieter outline dot — thinner stroke, no interior mark — so
-// a suggestion never reads as urgently as a settled failure even in
-// monochrome. `severity` is only meaningful (and only passed) for `state ===
-// "fail"`; every other state ignores it.
+// failure is a filled alert circle, a warning is a triangle (the shape
+// everyone already reads as "caution"). `severity` is only meaningful (and
+// only passed) for `state === "fail"`; every other state ignores it.
 function StateIcon({ state, severity }: { state: AppCheckState; severity?: Severity }) {
   const common = {
     width: 16,
@@ -124,13 +123,6 @@ function StateIcon({ state, severity }: { state: AppCheckState; severity?: Sever
           <path d="M12 9.5v4M12 16.5h.01" />
         </svg>
       );
-    if (severity === "suggested")
-      return (
-        <svg {...common} strokeWidth={1.5}>
-          <circle cx="12" cy="12" r="8" />
-          <path d="M12 12h.01" />
-        </svg>
-      );
     return (
       <svg {...common}>
         <circle cx="12" cy="12" r="9" />
@@ -149,6 +141,29 @@ function StateIcon({ state, severity }: { state: AppCheckState; severity?: Sever
     <svg {...common}>
       <circle cx="12" cy="12" r="9" />
       <path d="M8 12h8" />
+    </svg>
+  );
+}
+
+// A disclosure's own chevron — inline for the same reason StateIcon above is:
+// this dialog renders inside the explorer too, which imports no icon
+// library. `open` only changes which CSS class draws the rotation
+// (app-doctor.css's `.appdoc-chevron-open`); the SVG itself never changes.
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={"appdoc-chevron" + (open ? " appdoc-chevron-open" : "")}
+    >
+      <path d="M9 6l6 6-6 6" />
     </svg>
   );
 }
@@ -187,7 +202,9 @@ function CheckRow({
       </span>
       <div className="appdoc-text">
         <span className="appdoc-label">{check.label}</span>
-        <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
+        {rowVisibleDetailText(check) !== "" && (
+          <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
+        )}
         {shown.length > 0 && (
           <ul className="appdoc-findings">
             {shown.map((f, i) => (
@@ -264,6 +281,18 @@ export function AppDoctorModal({
   const [report, setReport] = useState<AppDoctorReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Two independent disclosure levels, both keyed by section id, both plain
+  // component state (no localStorage — the report is fetched fresh on every
+  // open, so there is nothing to restore across opens). `sectionOpen` is
+  // seeded from `sectionStartsOpen` the moment the report lands (below) and
+  // then left alone: the seeding effect only ever fills in a key that isn't
+  // there yet, so a section the user has since toggled by hand keeps that
+  // choice for the life of the dialog instead of being reseeded out from
+  // under them on some later render. `passFoldOpen` needs no seeding — every
+  // passing-tail fold starts collapsed, so a missing key already reads as
+  // closed.
+  const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({});
+  const [passFoldOpen, setPassFoldOpen] = useState<Record<string, boolean>>({});
   const alive = useRef(true);
   useEffect(() => {
     // Re-arm on every mount: a remount (or React's dev double-invoke under
@@ -292,6 +321,24 @@ export function AppDoctorModal({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Seeds `sectionOpen` from the report the moment it lands, filling in only
+  // the sections not already present — see the state declaration above for
+  // why that matters.
+  useEffect(() => {
+    if (!report) return;
+    setSectionOpen((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const group of groupBySection(report.checks)) {
+        if (!(group.section in next)) {
+          next[group.section] = sectionStartsOpen(group.checks);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [report]);
 
   // Any row's live task is the whole app's live task — the server allows
   // exactly one at a time, so whichever row (or "Fix all") is running is the
@@ -330,6 +377,11 @@ export function AppDoctorModal({
   };
 
   const fixAll = () => void runFix(() => runAppDoctorAll(dir));
+
+  const toggleSection = (section: string) =>
+    setSectionOpen((prev) => ({ ...prev, [section]: !prev[section] }));
+  const togglePassFold = (section: string) =>
+    setPassFoldOpen((prev) => ({ ...prev, [section]: !prev[section] }));
 
   return (
     <Modal
@@ -376,24 +428,89 @@ export function AppDoctorModal({
       ) : (
         <>
           <p className="appdoc-summary">{summaryLine(report.checks)}</p>
-          {groupBySection(report.checks).map((group) => (
-            <div className="appdoc-section" key={group.section}>
-              <h3 className="appdoc-section-title">
-                {SECTION_LABEL[group.section] ?? group.section}
-              </h3>
-              <ul className="appdoc-list">
-                {group.checks.map((c) => (
-                  <CheckRow
-                    key={c.id}
-                    check={c}
-                    busy={busy}
-                    otherTaskLive={!!liveTask && !c.task}
-                    onFix={fixRow}
-                  />
-                ))}
-              </ul>
-            </div>
-          ))}
+          {groupBySection(report.checks).map((group) => {
+            const isOpen = sectionOpen[group.section] ?? sectionStartsOpen(group.checks);
+            const listId = "appdoc-list-" + group.section;
+            const sorted = sortByAttention(group.checks);
+            // The trailing run of passes folds behind its own disclosure
+            // ONLY when there is something else in the list for it to fold
+            // behind — a section that is nothing but passes already reads as
+            // one line at the section level (`sectionStartsOpen` keeps it
+            // collapsed by default), so nesting a second "N passed" fold
+            // inside it here would just repeat that same disclosure once
+            // the user opens it by hand.
+            const { rows, passing } = splitPassingTail(sorted);
+            const showFold = rows.length > 0 && passing.length > 0;
+            const foldOpen = passFoldOpen[group.section] ?? false;
+            const foldListId = listId + "-passed";
+            return (
+              <div className="appdoc-section" key={group.section}>
+                <h3 className="appdoc-section-title">
+                  <button
+                    type="button"
+                    className="appdoc-section-btn"
+                    aria-expanded={isOpen}
+                    aria-controls={listId}
+                    onClick={() => toggleSection(group.section)}
+                  >
+                    <ChevronIcon open={isOpen} />
+                    <span className="appdoc-section-name">
+                      {SECTION_LABEL[group.section] ?? group.section}
+                    </span>
+                    {/* Only a COLLAPSED section needs its contents counted —
+                        an open one has the rows themselves right below, and
+                        a count sitting above them is a second telling of
+                        what the reader can already see. */}
+                    {!isOpen && (
+                      <span className="appdoc-section-summary">
+                        {sectionSummary(group.checks)}
+                      </span>
+                    )}
+                  </button>
+                </h3>
+                {isOpen && (
+                  <ul className="appdoc-list" id={listId}>
+                    {(showFold ? rows : sorted).map((c) => (
+                      <CheckRow
+                        key={c.id}
+                        check={c}
+                        busy={busy}
+                        otherTaskLive={!!liveTask && !c.task}
+                        onFix={fixRow}
+                      />
+                    ))}
+                    {showFold && (
+                      <li className="appdoc-fold">
+                        <button
+                          type="button"
+                          className="appdoc-fold-btn"
+                          aria-expanded={foldOpen}
+                          aria-controls={foldListId}
+                          onClick={() => togglePassFold(group.section)}
+                        >
+                          <ChevronIcon open={foldOpen} />
+                          <span>{passing.length} passed</span>
+                        </button>
+                        {foldOpen && (
+                          <ul className="appdoc-list appdoc-fold-list" id={foldListId}>
+                            {passing.map((c) => (
+                              <CheckRow
+                                key={c.id}
+                                check={c}
+                                busy={busy}
+                                otherTaskLive={!!liveTask && !c.task}
+                                onFix={fixRow}
+                              />
+                            ))}
+                          </ul>
+                        )}
+                      </li>
+                    )}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
         </>
       )}
     </Modal>
