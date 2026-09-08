@@ -188,7 +188,7 @@ export default function NotificationCard({
               // A row click on `rowClick` would fire underneath a nested
               // control otherwise — no caller today combines `rowClick` with
               // an action button, but this keeps the two composable.
-              e.stopPropagation();
+              e?.stopPropagation?.();
               liveAction.onClick();
             }}
             disabled={liveAction.disabled}
@@ -203,7 +203,7 @@ export default function NotificationCard({
             type="button"
             className="q-all"
             onClick={(e) => {
-              e.stopPropagation();
+              e?.stopPropagation?.();
               navAction.onClick();
             }}
             disabled={navAction.disabled}
@@ -218,7 +218,7 @@ export default function NotificationCard({
             type="button"
             className="dl-x"
             onClick={(e) => {
-              e.stopPropagation();
+              e?.stopPropagation?.();
               onDismiss.onClick();
             }}
             title={onDismiss.title ?? "Dismiss"}
@@ -254,7 +254,7 @@ export default function NotificationCard({
           type="button"
           className="q-all"
           onClick={(e) => {
-            e.stopPropagation();
+            e?.stopPropagation?.();
             extraAction.onClick();
           }}
           disabled={extraAction.disabled}
