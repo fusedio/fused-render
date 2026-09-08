@@ -1867,9 +1867,15 @@ function TemplatePreview({
         title="Open fullscreen, without the sidebar and toolbar"
         aria-label="Open fullscreen, without the sidebar and toolbar"
         onClick={() => {
-          const q = new URLSearchParams(location.search);
-          q.set("_mode", entry.mode);
-          location.assign(embedUrlForFsPath(fsPath, "?" + q.toString()));
+          // The existing query goes across BYTE FOR BYTE — no URLSearchParams
+          // round trip, which would re-encode every value on the way. Only the
+          // `_mode` stamp is appended, and only when the URL omits it (the
+          // default mode; setMode deletes the param for clean URLs).
+          const search = location.search;
+          const stamped = new URLSearchParams(search).has("_mode")
+            ? search
+            : (search ? search + "&" : "?") + "_mode=" + encodeURIComponent(entry.mode);
+          location.assign(embedUrlForFsPath(fsPath, stamped));
         }}
       >
         <span className="mode-menu-icon">{MenuIcons.fullscreen}</span>
