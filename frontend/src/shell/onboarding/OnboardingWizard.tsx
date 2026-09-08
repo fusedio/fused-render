@@ -214,9 +214,19 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // The FLAG only: this unmount also fires on browser Back from the last
   // step, where nothing was built. The First-app STAGE is claimed by the step
   // itself, which checks the page it landed on (FirstAppStep onShowcaseOpened).
+  //
+  // Any OTHER way out is a close, and a close is dismissed — the ✕ and
+  // Escape said so already, but browser Back, the brand link, the sidebar
+  // meter, a Models row opening the Playground all leave the same way (this
+  // unmount) without a word to the server, and the auto-show then had only
+  // `opened_at` to go on. `settled` keeps a ✕ press from stamping twice.
   useEffect(
     () => () => {
       if (lastRef.current) markComplete();
+      else if (!settled.current) {
+        settled.current = true;
+        dismissOnboarding().catch(() => undefined);
+      }
     },
     [markComplete],
   );
@@ -287,18 +297,35 @@ export function OnboardingWizard({ config }: { config: Config }) {
           the ✕). In flow, so a squeeze shrinks the side tracks instead of
           painting the pills over the wordmark. */}
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 border-b border-border px-5 py-3">
-        <div className="flex min-w-0 items-center gap-2 text-[13.5px] font-semibold tracking-[0.01em]">
+        {/* The sidebar's brand row, verbatim (platform/ui/sidebar/SidebarFrame
+            + styles/sidebar.css .sidebar-brand): same mark, same "Render"
+            title, same 9px gap / 13.5px / 650 weight, one click target that
+            goes Home, title turning --accent-soft on hover. Leaving this way
+            is a CLOSE, so it goes through `finish("dismiss")` like the ✕ —
+            not a bare navigate, which on the last step the unmount would
+            read as completion (a navigation off step 5 is how a built app
+            reports itself; bugbot). */}
+        <a
+          href={EXIT_PATH}
+          title="Home"
+          onClick={(e) => {
+            e.preventDefault();
+            finish("dismiss");
+          }}
+          className="group flex min-w-0 items-center gap-[9px] text-[13.5px] font-[650] tracking-[0.01em] text-foreground no-underline"
+        >
           <span className="flex shrink-0 items-center text-[var(--accent)]">
             <FusedMark size={20} />
           </span>
           {/* Only where the pills are actually competing for the row: from
               `sm` (where they appear) up to 760px (measured as the width at
               which the centred pills stop leaving the side track room for the
-              wordmark) it would truncate to "Fused Rend…", and the mark alone
-              says it better. Under `sm` the pills are hidden, so the wordmark
-              has the row to itself and stays. */}
-          <span className="truncate sm:max-[760px]:hidden">Fused Render</span>
-        </div>
+              wordmark) the mark alone says it better. Under `sm` the pills are
+              hidden, so the wordmark has the row to itself and stays. */}
+          <span className="truncate transition-colors group-hover:text-[var(--accent-soft)] sm:max-[760px]:hidden">
+            Render
+          </span>
+        </a>
 
         {/* Every step is a link, in both directions: nothing before step 4
             gates anything after it, so a user who knows what they want can go
