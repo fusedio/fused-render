@@ -83,9 +83,11 @@ import {
   setResolvedSnapshot,
   shortSha,
   snapshotFrameSrc,
+  type ResolvedSnapshot,
 } from "@platform/lib/snapshot-param";
 import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
+import { useAppVersionLabel } from "@shell/appVersionLabel";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
@@ -369,9 +371,32 @@ function OpenInProjectButton({ fsPath }: { fsPath: string }) {
 // the previewed page IS its folder's app entry — asked of the server (the one
 // shared entry rule, /api/apps/entry) rather than guessed from the filename.
 // You export from the app you're looking at; a plain html file gets nothing.
-function ExportAppButton({ fsPath }: { fsPath: string }) {
+function ExportAppButton({
+  fsPath,
+  snapshotSha,
+  snapshotResolved,
+  snapshotPending,
+  snapshotError,
+}: {
+  fsPath: string;
+  // The pane's own `_snapshot` resolution (`usePreviewSnapshot`, hoisted in
+  // the parent so the picker and this button agree on what "the previewed
+  // version" means) — mirrors AppPage.tsx's `snapshot` (`useAppPageSnapshot`)
+  // and its Export control's use of it, point for point: export the
+  // snapshot's OWN extracted tree, never the live folder, while one is
+  // previewed.
+  snapshotSha: string | null;
+  snapshotResolved: ResolvedSnapshot | null;
+  snapshotPending: boolean;
+  snapshotError: boolean;
+}) {
   const [isEntry, setIsEntry] = useState(false);
   const [busy, setBusy] = useState(false);
+  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+  const name = basename(dir);
+  // Rules-of-hooks: called on every render, before the `!isEntry` early
+  // return below, exactly like every other hook in this component.
+  const versionLabel = useAppVersionLabel(dir, snapshotSha);
   // The server answers os.path.abspath (backslashes on Windows) while fsPath
   // is the shell's canonical forward-slash form — same drive-letter-only
   // normalization rule as the URL codec (a backslash in a POSIX filename must
@@ -380,7 +405,6 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
   useEffect(() => {
     let alive = true;
     setIsEntry(false);
-    const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
     getAppEntry(dir)
       .then((r) => {
         if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
@@ -393,12 +417,23 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
     };
   }, [fsPath]);
   if (!isEntry) return null;
-  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
-  const name = basename(dir);
+  // Mirrors AppPage.tsx's `exportDisabled`: a click landing mid-resolve, before
+  // `snapshotResolved.dir` exists, must not fall through to exporting the LIVE
+  // folder while the pane still shows the version being resolved.
+  const exportDisabled = busy || snapshotPending || snapshotError;
   const doExport = async () => {
-    if (busy) return;
+    if (exportDisabled) return;
     setBusy(true);
     try {
+      const isLive = snapshotSha === null;
+      // The snapshot's OWN extracted tree (`snap.dir`), never `snap.app_dir`
+      // (the LIVE folder the sha resolved from) — exporting that would
+      // silently ship the live app labelled as the picked commit. See
+      // AppPage.tsx's Export control, which this mirrors.
+      const exportPath = snapshotResolved ? snapshotResolved.dir : dir;
+      // The filename carries the version so a v7 export sitting beside a
+      // live export in Downloads is never ambiguous about which is which.
+      const exportName = isLive ? name : `${name}-${versionLabel}`;
       // Same capture-on-export as the /apps card (appShot, D396): the shown
       // preview frame IS the app rendering, so it is the crop source — no
       // navigation, no flash. exportAppFile itself skips capture when the
@@ -411,15 +446,29 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
       // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
       // the app, not a box it may fill): the class rides `shown`, which the
       // frame swap only sets once that frame paints — the same guarantee
-      // `data-fused-annotate-target` below relies on.
-      const authored = await statPath(dir + "/preview.png").then(
-        (s) => !s.is_dir,
-        () => false,
-      );
+      // `data-fused-annotate-target` below relies on. Only checked for a LIVE
+      // export: a snapshot's preview.png (if any) lives under the extracted
+      // tree, and `entry_html` is omitted below for a snapshot anyway, so
+      // there is no on-screen capture source for it to matter.
+      const authored = isLive
+        ? await statPath(dir + "/preview.png").then(
+            (s) => !s.is_dir,
+            () => false,
+          )
+        : false;
       await exportAppFile(
-        { path: dir, name, entry_html: fsPath,
-          preview_image: authored ? dir + "/preview.png" : null },
-        document.querySelector(".preview-frame.is-shown"),
+        {
+          path: exportPath,
+          name: exportName,
+          // Omitted for a snapshot export: with no on-screen capture element
+          // threaded to this button's target folder, `exportAppFile`'s stage
+          // fallback would reload the ENTRY PAGE'S LIVE copy to shoot it — a
+          // present-day screenshot baked into a file labelled as the old
+          // commit. See AppPage.tsx's Export control for the same rule.
+          entry_html: isLive ? fsPath : undefined,
+          preview_image: isLive && authored ? dir + "/preview.png" : null,
+        },
+        isLive ? document.querySelector(".preview-frame.is-shown") : null,
       );
     } catch (e) {
       pushToast({ msg: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
@@ -433,7 +482,7 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
       className="bar-ctl bar-ctl-bordered"
       title={"Export " + name + " as a single .fused app file"}
       onClick={doExport}
-      disabled={busy}
+      disabled={exportDisabled}
     >
       {busy && <span className="mode-icon-spinner" />}
       {busy ? "Exporting…" : "Export App"}
@@ -1929,7 +1978,15 @@ function TemplatePreview({
           server). Embed mode hides the whole header/topbar, so an opened
           .fused app never shows it. */}
       {!stat.is_dir && <AppDoctorButton fsPath={fsPath} />}
-      {!stat.is_dir && <ExportAppButton fsPath={fsPath} />}
+      {!stat.is_dir && (
+        <ExportAppButton
+          fsPath={fsPath}
+          snapshotSha={snapshotSha}
+          snapshotResolved={snapshotResolved}
+          snapshotPending={snapshotPending}
+          snapshotError={snapshotError}
+        />
+      )}
       {/* The folder view's "Open in project", offered on the app's entry page
           too (same server-side entry gate), wearing the same bordered look as
           Export App. Its HOME is the sidebar's header, right before the mode
