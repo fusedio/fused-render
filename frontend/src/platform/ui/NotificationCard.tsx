@@ -245,8 +245,14 @@ export default function NotificationCard({
       )}
       {status != null && (
         <div className={statusClassName} title={statusTooltip}>
-          {terminal && <TerminalGlyph state={terminal} />}
-          <span>{status}</span>
+          {terminal ? (
+            <>
+              <TerminalGlyph state={terminal} />
+              <span>{status}</span>
+            </>
+          ) : (
+            status
+          )}
         </div>
       )}
       {extraAction && (

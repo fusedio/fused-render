@@ -268,69 +268,30 @@ function useJobs(): {
   return { jobs, now, settled, refresh, patch };
 }
 
-// The tick and cross that replace the bar once a job is terminal — 11×11
-// inline SVG, the exact paths and stroke the mockups draw, coloured by the
-// status tokens (`--success`/`--error`) rather than a hardcoded hex so
-// `tests/test_theme.py` stays green.
-function TerminalGlyph({ state }: { state: "done" | "error" | "cancelled" }) {
-  if (state === "done") {
-    return (
-      <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
-        <path
-          d="M2.2 6.3 4.7 8.8 9.8 3.4"
-          fill="none"
-          stroke="var(--success)"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  }
-  return (
-    <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
-      <path
-        d="M3.1 3.1 8.9 8.9M8.9 3.1 3.1 8.9"
-        fill="none"
-        stroke="var(--error)"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function Bar({ job }: { job: Job }) {
-  // A terminal job draws no bar at all (Task 2): success, failure and
-  // cancellation are all told by the glyph on the status line now, not by a
-  // bar frozen at whatever fraction the job happened to be at when it
-  // stopped. `jobFraction` is not even consulted here any more for a
-  // terminal job — this is the one place that decides "no bar", so nothing
-  // downstream has to re-derive it.
-  if (!isRunning(job) && !job.stalled) return null;
+/** `NotificationCard`'s `progress`: `undefined` draws no bar, `null` draws
+ *  the indeterminate sweep, a `number` fills to that fraction.
+ *
+ *  A terminal job draws no bar at all (Task 2): success, failure and
+ *  cancellation are all told by the card's own glyph on the status line now,
+ *  not by a bar frozen at whatever fraction the job happened to be at when
+ *  it stopped — `jobFraction` is not even consulted for a terminal job.
+ *
+ *  No fraction to draw and still running = indeterminate (`null`): a narrow
+ *  fill that travels, rather than a width that grows. The alternative —
+ *  parking a real bar at some invented percentage — is what makes a live
+ *  download read as frozen (the same lesson as the install loader's D213
+ *  sweep).
+ *
+ *  Nothing to say (`undefined`): a job that ended (or stalled) without ever
+ *  reporting a total has no progress to draw, and an empty track under an
+ *  error message is decoration that reads as "0% done" — which is not what
+ *  happened. */
+function jobProgress(job: Job): number | null | undefined {
+  if (!isRunning(job) && !job.stalled) return undefined;
   const fraction = jobFraction(job);
-  const tone = job.stalled ? " is-stalled" : "";
-  // No fraction to draw and still running = indeterminate: a narrow fill that
-  // travels, rather than a width that grows. The alternative — parking a real
-  // bar at some invented percentage — is what makes a live download read as
-  // frozen (the same lesson as the install loader's D213 sweep).
   const indeterminate = fraction === null && isRunning(job) && !job.stalled;
-  // Nothing to say: a job that ended (or stalled) without ever reporting a
-  // total has no progress to draw, and an empty track under an error message is
-  // decoration that reads as "0% done" — which is not what happened.
-  if (fraction === null && !indeterminate) return null;
-  return (
-    <div className={"dl-bar" + tone}>
-      <div
-        className={"dl-bar-fill" + (indeterminate ? " is-indeterminate" : "")}
-        // `data-indeterminate` is the DOM-observable contract (the install
-        // loader's convention): no headless test can see whether an animation
-        // LOOKS right, but it can see which mode the bar is in.
-        data-indeterminate={indeterminate ? "1" : undefined}
-        style={indeterminate ? undefined : { width: `${(fraction as number) * 100}%` }}
-      />
-    </div>
-  );
+  if (fraction === null && !indeterminate) return undefined;
+  return fraction;
 }
 
 // ---- Engine rows (status-bar merge) ----------------------------------------
@@ -621,76 +582,65 @@ export function JobRow({
   // of THIS file's own Jobs section is `DownloadManagerView`'s job — it only
   // ever hands `JobRow` `inFlightJobs`, so a "done" row never reaches this
   // component from there at all.
+  // THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
+  // the jobs card. why are we truncating stuff instead of placing things
+  // elsewhere?"). It used to be a suffix on the head line, competing with the
+  // title for one line's width — which is how a running FLUX row rendered
+  // `update picture to be ghibli st…` then a lone `F…`: a field minced to one
+  // character plus an ellipsis, which conveys nothing while still costing
+  // width. `jobs.ts`'s own comment already calls this a redundant
+  // restatement whenever the title names the model, so it is the field that
+  // should be RELEGATED rather than the one that should be minced. As
+  // `secondary` it gets the panel's full width and needs no shrink factor.
+  // Suppressed when it just repeats the title (`_start_resident`/`load` set
+  // both `title` and `model` to the same model id) — otherwise a model-load
+  // row would draw the model name twice. The MODEL name only, not the whole
+  // `owner/model` repo id: the owner is identical for every row a given
+  // model ever draws. Full id stays on hover, since shortening makes two
+  // owners' same-named models identical.
+  const showModel = job.model && job.model !== job.title;
+
+  // A local action's own failure takes the status line over the job's
+  // ordinary status sentence — it is more urgent and it is about the very
+  // button the user just pressed. `status` (the server's report) comes back
+  // once a later poll succeeds or the row's own next action clears
+  // `failure`.
   return (
-    <div className={"dl-row" + (job.stalled ? " is-stalled" : "")}>
-      <div className="dl-row-head">
-        <span className="dl-title" title={job.page || undefined}>
-          {job.title}
-        </span>
-        {fraction !== null && running && (
+    <NotificationCard
+      title={job.title}
+      titleTooltip={job.page || undefined}
+      stalled={job.stalled}
+      trailing={
+        fraction !== null && running ? (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
-        )}
-        {canCancel && (
-          <button
-            className="dl-row-cancel"
-            onClick={cancel}
-            disabled={busy}
-            title="Cancel"
-            aria-label={`Cancel ${job.title}`}
-          >
-            Cancel
-          </button>
-        )}
-        {canDismiss && (
-          <button
-            className="dl-x"
-            onClick={dismiss}
-            disabled={busy}
-            title="Dismiss"
-            aria-label={`Dismiss ${job.title}`}
-          >
-            ✕
-          </button>
-        )}
-      </div>
-      {/* THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
-          the jobs card. why are we truncating stuff instead of placing things
-          elsewhere?"). It used to be a suffix on the head line, competing with
-          the title for one line's width under D571's shrink ladder — which is
-          how a running FLUX row rendered `update picture to be ghibli st…` then
-          a lone `F…`: a field minced to one character plus an ellipsis, which
-          conveys nothing while still costing width. `jobs.ts`'s own comment
-          already calls this a redundant restatement whenever the title names
-          the model, so it is the field that should be RELEGATED rather than the
-          one that should be minced. Off the head line it gets the panel's full
-          width and needs no shrink factor at all.
-          Suppressed when it just repeats the title (`_start_resident`/`load`
-          set both `title` and `model` to the same model id) — otherwise a
-          model-load row would draw the model name twice. The MODEL name only,
-          not the whole `owner/model` repo id: the owner is identical for every
-          row a given model ever draws. Full id stays on hover, since shortening
-          makes two owners' same-named models identical. */}
-      {job.model && job.model !== job.title && (
-        <div className="dl-model" title={job.model}>
-          {repoName(job.model)}
-        </div>
-      )}
-      <Bar job={job} />
-      {/* A local action's own failure takes this line over the job's
-          ordinary status sentence — it is more urgent and it is about the
-          very button the user just pressed. `status` (the server's report)
-          comes back once a later poll succeeds or the row's own next action
-          clears `failure`. */}
-      {statusLine &&
-        (isTerminal(job) ? (
-          <div className="dl-status with-glyph">
-            <TerminalGlyph state={job.state as "done" | "error" | "cancelled"} />
-            <span>{statusLine}</span>
-          </div>
-        ) : (
-          <div className="dl-status">{statusLine}</div>
-        ))}
-    </div>
+        ) : undefined
+      }
+      liveAction={
+        canCancel
+          ? {
+              label: "Cancel",
+              onClick: cancel,
+              disabled: busy,
+              title: "Cancel",
+              ariaLabel: `Cancel ${job.title}`,
+            }
+          : undefined
+      }
+      onDismiss={
+        canDismiss
+          ? {
+              onClick: dismiss,
+              title: "Dismiss",
+              ariaLabel: `Dismiss ${job.title}`,
+            }
+          : undefined
+      }
+      secondary={showModel ? repoName(job.model) : undefined}
+      secondaryTooltip={showModel ? job.model : undefined}
+      progress={jobProgress(job)}
+      terminal={isTerminal(job) ? (job.state as "done" | "error" | "cancelled") : undefined}
+      status={statusLine || undefined}
+    />
   );
 }
 
