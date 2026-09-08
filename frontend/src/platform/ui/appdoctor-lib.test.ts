@@ -47,9 +47,7 @@ const {
   sortByAttention,
   splitFindings,
   STATE_LABEL,
-  stripLabel,
   tasksTabUrl,
-  tickTone,
   worstSeverity,
 } = lib;
 
@@ -101,43 +99,6 @@ test("the strip's reading counts what wants an answer, and says so only when not
     "checks need attention before this app is worth sharing, and 1 could not be answered here.",
   );
   expect(failingCount(failing)).toBe(2);
-});
-
-test("a tick takes its row's severity when failing, and is idle when nothing answered it", () => {
-  expect(tickTone(check("a", "fail", { severity: "critical" }))).toBe("critical");
-  expect(tickTone(check("b", "fail", { severity: "warning" }))).toBe("warning");
-  expect(tickTone(check("c", "pass"))).toBe("pass");
-  expect(tickTone(check("d", "skip"))).toBe("idle");
-  expect(tickTone(check("e", "unrun"))).toBe("idle");
-  // A candidate's severity is its own until reviewed — `effectiveSeverity`
-  // decides, and the tick follows it rather than the raw field.
-  expect(
-    tickTone(
-      check("secrets", "fail", {
-        severity: "critical",
-        kind: "candidate",
-        findings: [finding("a.py", 1)],
-      }),
-    ),
-  ).toBe(effectiveSeverity(
-    check("secrets", "fail", {
-      severity: "critical",
-      kind: "candidate",
-      findings: [finding("a.py", 1)],
-    }),
-  ));
-});
-
-test("the strip's screen-reader label carries the same counts the ticks encode, worst first, with no zero part", () => {
-  const checks = [
-    check("a", "fail", { severity: "warning" }),
-    check("b", "fail", { severity: "warning" }),
-    check("c", "fail", { severity: "critical" }),
-    check("d", "pass"),
-    check("e", "skip"),
-  ];
-  expect(stripLabel(checks)).toBe("5 checks: 1 critical, 2 warnings, 1 passed, 1 not checked");
-  expect(stripLabel([check("a", "pass")])).toBe("1 checks: 1 passed");
 });
 
 test("the footer's note names the candidate rows its task will read rather than rewrite, and says nothing when there are none", () => {

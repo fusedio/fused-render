@@ -42,14 +42,12 @@
 // `rowStateDetailText`'s output when it is a candidate's "N to review"
 // count, real information the detail sentence does not otherwise carry.
 //
-// THE READINESS STRIP above the list is the one thing in the dialog that
-// spends anything: one tick per check, in the server's own check order, so
-// the shape of the whole report is legible before a word of it is read (see
-// the strip's own comment below and `.appdoc-strip` in app-doctor.css). It is
-// also what pays for everything under it being plain — a SECTION is a muted
-// label sharing the row's left inset and nothing else (no card, no
-// disclosure, no tally), because the summary is already drawn and a count
-// above rows the reader can see is one fact told twice.
+// THE HEADER carries the whole summary in one line (`readinessCount` and
+// `readinessSentence`, appdoctor-lib.ts): how many rows want an answer, out
+// of how many were asked. That is the only tally in the dialog — a SECTION is
+// a muted label sharing the row's left inset and nothing else (no card, no
+// disclosure, no count), because a count above rows the reader can see is one
+// fact told twice.
 //
 // A SETTLED row — passed, skipped, or never asked — is one dim line at body
 // weight with 4px less vertical pad, so a run of them reads as a block to
@@ -97,8 +95,6 @@ import {
   SECTION_LABEL,
   sortByAttention,
   splitFindings,
-  stripLabel,
-  tickTone,
   tasksTabUrl,
 } from "./appdoctor-lib";
 import {
@@ -111,7 +107,6 @@ import {
   DialogTitle,
 } from "@platform/shadcn/ui/dialog";
 import { Button } from "@platform/shadcn/ui/button";
-import { basename } from "@platform/lib/format";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -347,14 +342,9 @@ export function AppDoctorModal({
             in the header it sits ON the title's line, so the two read as one
             title bar instead of a heading with a button floating over the
             dialog's top corner. */}
-        <DialogHeader className="gap-3">
+        <DialogHeader className="gap-2">
           <div className="flex items-start justify-between gap-2">
-            <div className="flex min-w-0 flex-col gap-1">
-              <DialogTitle className="font-semibold">App Doctor</DialogTitle>
-              <DialogDescription className="appdoc-summary">
-                {"Checked " + (basename(dir) || dir) + " just now."}
-              </DialogDescription>
-            </div>
+            <DialogTitle className="font-semibold">App Doctor</DialogTitle>
             <DialogClose
               render={<Button variant="ghost" size="icon-sm" className="-mt-1 -mr-1" />}
             >
@@ -362,39 +352,29 @@ export function AppDoctorModal({
               <span className="sr-only">Close</span>
             </DialogClose>
           </div>
-          {/* The readiness strip: one tick per check, in the server's own
-              check order, so the shape of the whole report reads before any
-              row does. It is the one thing in the dialog that spends colour
-              on a passing row, and it is why nothing below it needs a card,
-              a tally or a tag — the summary is already drawn. The ticks are
-              decorative on their own, so the strip carries `stripLabel`'s
-              counts for a reader who cannot see them. */}
+          {/* What the report amounts to, in one line, with the count at full
+              foreground because it is the part worth finding again on a
+              second look. It is the dialog's description, so a screen reader
+              hears it with the title rather than as the first thing in the
+              list. */}
           {report !== null && (
-            <div className="appdoc-strip">
-              <div className="appdoc-ticks" role="img" aria-label={stripLabel(report.checks)}>
-                {report.checks.map((c) => (
-                  <span key={c.id} className={"appdoc-tick appdoc-tick-" + tickTone(c)} />
-                ))}
-              </div>
-              <p className="appdoc-strip-read">
-                <b>{readinessCount(report.checks)}</b> {readinessSentence(report.checks)}
-              </p>
-            </div>
+            <DialogDescription className="appdoc-summary">
+              <b>{readinessCount(report.checks)}</b> {readinessSentence(report.checks)}
+            </DialogDescription>
           )}
         </DialogHeader>
-        <div className="flex min-h-0 min-w-0 flex-col gap-2 overflow-x-hidden overflow-y-auto">
+        <div className="flex min-h-0 min-w-0 flex-col gap-5 overflow-x-hidden overflow-y-auto">
           <ErrorBanner>{error}</ErrorBanner>
           {report === null ? (
             <SkeletonLines rows={6} />
           ) : (
             <>
               {groupBySection(report.checks).map((group) => (
-                // A heading and its list, nothing around them. The heading is
-                // inset to the LABEL column, not to the row's own edge, so
-                // the section name and every label under it share one left
-                // edge and the state marks hang in the gutter beside them —
-                // that one column is what does the grouping a box would
-                // otherwise be drawn for.
+                // A heading and its list, nothing around them. The heading
+                // shares the row's left inset, so it sits on one edge with
+                // the rows under it, and the gap this list puts between the
+                // sections does the grouping a box would otherwise be drawn
+                // for.
                 <section key={group.section} className="flex min-w-0 flex-col">
                   <h3 className="appdoc-section-label">
                     {SECTION_LABEL[group.section] ?? group.section}

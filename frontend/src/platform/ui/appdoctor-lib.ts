@@ -230,38 +230,7 @@ export function findingWhere(f: AppCheckFinding): string {
   return f.line ? `${f.path}:${f.line}` : f.path;
 }
 
-/** The readiness strip's tone for one check (AppDoctorModal.tsx): a failing
- *  row takes its own severity, a passing row reads as passed, and anything
- *  that could not be answered — skipped or never asked — reads as neither.
- *  The strip is drawn in CHECK ORDER, never sorted, so the ticks stay in the
- *  same places from one open to the next and a row's tick sits above the row
- *  it belongs to. */
-export type TickTone = Severity | "pass" | "idle";
-
-export function tickTone(check: AppCheck): TickTone {
-  if (check.state === "fail") return effectiveSeverity(check);
-  if (check.state === "pass") return "pass";
-  return "idle";
-}
-
-/** What the strip says to a screen reader, which cannot see a bar of ticks:
- *  the same counts the ticks encode, worst first, with any zero left out
- *  rather than printed as "0 critical". */
-export function stripLabel(checks: AppCheck[]): string {
-  const failing = checks.filter((c) => c.state === "fail");
-  const parts: string[] = [];
-  for (const sev of SEVERITY_ORDER) {
-    const n = failing.filter((c) => effectiveSeverity(c) === sev).length;
-    if (n > 0) parts.push(`${n} ${severityNoun(sev, n)}`);
-  }
-  const passed = checks.filter((c) => c.state === "pass").length;
-  if (passed > 0) parts.push(`${passed} passed`);
-  const notChecked = checks.filter((c) => c.state === "skip" || c.state === "unrun").length;
-  if (notChecked > 0) parts.push(`${notChecked} not checked`);
-  return `${checks.length} checks: ` + parts.join(", ");
-}
-
-/** The strip's reading, split in two so the dialog can set the count apart
+/** The header's reading, split in two so the dialog can set the count apart
  *  from the sentence around it — the number is the part worth finding again
  *  on a second look, and it is the only thing in the line drawn at full
  *  foreground.

@@ -21,68 +21,18 @@
  * a stack of tinted plates — and the dialog's only fill is the hover wash
  * under the pointer. */
 
-/* The title's second line (the dialog header, AppDoctorModal.tsx): what was
- * checked and when, at the detail size the rows' own secondary lines use. */
+/* The title's second line (the dialog header, AppDoctorModal.tsx): what the
+ * report amounts to, at the detail size the rows' own secondary lines use. */
 .appdoc-summary {
   margin: 0;
   color: var(--fg-muted);
   font-size: 13px;
 }
 
-/* THE READINESS STRIP — one tick per check, in check order, above the list.
- * It is the summary, and it is the reason nothing below it carries a card, a
- * tally or a severity tag: the shape of the report is already on screen, so
- * the list underneath can be plain.
- *
- * A tick is a flex child with no width of its own, so N checks always fill
- * exactly the dialog's width, however many N is. `idle` (skipped, unrun) is
- * the bare tint, drawn but uncoloured — the check exists and has no answer,
- * which is different from both a pass and a failure. Colour is the only
- * carrier inside the strip, which is why the strip is `role="img"` with
- * `stripLabel`'s counts as its label and never the only place a state is
- * told: every tick's own row says the same thing in shape and words. */
-.appdoc-strip {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.appdoc-ticks {
-  display: flex;
-  gap: 3px;
-}
-
-.appdoc-tick {
-  height: 6px;
-  flex: 1 1 0;
-  border-radius: 2px;
-  background: rgba(var(--tint), 0.1);
-}
-
-.appdoc-tick-critical {
-  background: var(--error);
-}
-
-.appdoc-tick-warning {
-  background: var(--warning);
-}
-
-/* The pass tick is the success hue held back, so a clean report reads as
- * quietly clean rather than as a green bar demanding attention. */
-.appdoc-tick-pass {
-  background: color-mix(in srgb, var(--success) 55%, transparent);
-}
-
-.appdoc-strip-read {
-  margin: 0;
-  color: var(--fg-muted);
-  font-size: 12.5px;
-}
-
 /* The count is the part worth finding again on a second look, so it is the
  * one thing in the line at full foreground. `tabular-nums` keeps it from
  * shifting as the numbers change under a re-run. */
-.appdoc-strip-read b {
+.appdoc-summary b {
   color: var(--fg);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -97,18 +47,15 @@
 
 /* The section's own heading: muted, one step down in size, sharing the row's
  * left inset (the row's `px-3`) so the section name and the rows under it sit
- * on one edge. That, plus the space above it, is the whole of what separates
- * two sections — no box, no rule, no count. */
+ * on one edge. That, plus the gap the list puts between the sections
+ * themselves, is the whole of what separates two — no box, no rule, no
+ * count. */
 .appdoc-section-label {
-  margin: 14px 0 2px;
+  margin: 0 0 2px;
   padding: 0 12px;
   color: var(--fg-muted);
   font-size: 12.5px;
   font-weight: 500;
-}
-
-.appdoc-section-label:first-child {
-  margin-top: 0;
 }
 
 .appdoc-state {
