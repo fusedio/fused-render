@@ -340,20 +340,36 @@ def _drain(run_dir):
             os.replace(inbox / name, done / name)
 
 
+def _pending_texts(poll):
+    """`pending` entries are `{"id": ..., "text": ...}` dicts — the id is
+    what the page dedups a drawn bubble against (finding 5: a text compare
+    drops a genuinely new message whose text collides with one already on
+    screen, e.g. every wordless send sharing one marker text). Most of these
+    tests only care about the text; pull it out for the assertion."""
+    return [entry["text"] for entry in poll["pending"]]
+
+
 def test_a_prompt_queued_mid_turn_survives_a_reload_and_is_not_duplicated(agent, run_dir):
     # An assistant turn is mid-stream (no `result` yet).
     _write_out(run_dir, [_out_user_row("turn one"), _out_text_row("Working")])
     _setup_run(agent, run_dir)
 
     sent = agent._send("run", "and also fix the footer", "")
-    assert sent == {"sent": True}
+    assert sent["sent"] is True
+    assert isinstance(sent["id"], str) and sent["id"], (
+        "_send must hand back the inbox entry's own filename as `id`, so the "
+        "page can stamp it on the bubble it draws immediately and match "
+        "against it later instead of comparing bubble text")
 
     # The host has not drained the inbox and the CLI has not echoed it back —
     # exactly what a fresh page load races against.
     poll = agent._poll("run")
-    assert poll["pending"] == ["and also fix the footer"], (
+    assert _pending_texts(poll) == ["and also fix the footer"], (
         "a written-but-unechoed message must be reachable through `pending` "
         "so a reload does not lose it")
+    assert poll["pending"][0]["id"] == sent["id"], (
+        "the id reported through `pending` must be the same one `_send` "
+        "already handed back for this message")
 
     # Once the CLI echoes it and replies, a later poll must not repeat it —
     # the echoed message now belongs to `text`/`segments`, not `pending`.
@@ -364,10 +380,10 @@ def test_a_prompt_queued_mid_turn_survives_a_reload_and_is_not_duplicated(agent,
     _append_out(run_dir, [_out_user_row("and also fix the footer"),
                           _out_text_row("Done.")])
     later = agent._poll("run")
-    assert later["pending"] == []
+    assert _pending_texts(later) == []
     _append_out(run_dir, [_out_result_row("Working\n\nDone.")])
     done = agent._poll("run")
-    assert done["pending"] == []
+    assert _pending_texts(done) == []
     assert done["done"] is True
 
 
@@ -388,7 +404,7 @@ def test_a_second_follow_up_sent_before_the_first_echoes_stays_pending(agent, ru
     # M1's echo lands. M2's has not, and M2 was never drained either.
     _append_out(run_dir, [_out_user_row("M1"), _out_text_row("on M1")])
     poll = agent._poll("run")
-    assert poll["pending"] == ["M2"]
+    assert _pending_texts(poll) == ["M2"]
 
 
 def test_pending_is_empty_when_nothing_is_queued(agent, run_dir):
@@ -408,7 +424,7 @@ def test_an_already_echoed_message_does_not_appear_in_pending(agent, run_dir):
     _drain(run_dir)
     _append_out(run_dir, [_out_user_row("follow-up")])
     poll = agent._poll("run")
-    assert poll["pending"] == []
+    assert _pending_texts(poll) == []
 
 
 def test_pending_strips_the_app_state_block(agent, run_dir):
@@ -417,4 +433,4 @@ def test_pending_strips_the_app_state_block(agent, run_dir):
     from_tag = "<%s>ignored</%s>" % (agent.APP_STATE_TAG, agent.APP_STATE_TAG)
     agent._send("run", from_tag + "fix the footer", "")
     poll = agent._poll("run")
-    assert poll["pending"] == ["fix the footer"]
+    assert _pending_texts(poll) == ["fix the footer"]

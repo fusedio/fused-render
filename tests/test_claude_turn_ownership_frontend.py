@@ -71,7 +71,7 @@ def _pending_block_src(html):
     5 names."""
     marker = "// One owner per region: anything of the user's still queued"
     start = html.index(marker)
-    end = html.index("for (const raw of data.pending || []) {", start)
+    end = html.index("for (const entry of data.pending || []) {", start)
     end = html.index("\n      }\n", end) + len("\n      }\n")
     return html[start:end]
 
@@ -382,16 +382,22 @@ def test_pending_bubbles_in_poll_loop_are_stripped_before_render_and_dedup(html)
     own render of `data.pending` compared and drew that raw wire text
     directly — a follow-up already drawn stripped (by `sendFollowUp` or
     `resumeRun`'s own `renderPending`) never matches it, and a second bubble
-    appears carrying the raw `<pane-shot>` block and its path."""
+    appears carrying the raw `<pane-shot>` block and its path.
+
+    Dedup here is by id, not text (finding 5) — the bubble already on
+    screen carries the SAME id (`dataset.pendingId`) the poll's own
+    `data.pending` entry names, exactly what `sendFollowUp`/`sendMessage`
+    stamp on it the moment the send lands."""
     src = _addUser_src(html) + "\n" + _pending_block_src(html)
     out = _run(html, """
 stripBlocks = (t) => t.includes("<pane-shot>") ? "🖼 pane screenshot" : t;
 let followupSeq = 0;
 
-// Already on screen, stripped — exactly what sendFollowUp/resumeRun draw.
-addUser("🖼 pane screenshot");
+// Already on screen, stripped, with the id this send landed under —
+// exactly what sendFollowUp/sendMessage stamp.
+addUser("🖼 pane screenshot", null, "entry-1.json");
 
-const data = { pending: ["<pane-shot>/tmp/fr/shots/x.png</pane-shot>"] };
+const data = { pending: [{ id: "entry-1.json", text: "<pane-shot>/tmp/fr/shots/x.png</pane-shot>" }] };
 """ + src + """
 console.log(JSON.stringify({
   bubbles: [...log.querySelectorAll(".user .bubble")].map((b) => b.textContent),
@@ -400,7 +406,7 @@ console.log(JSON.stringify({
 """)
     assert out["bubbles"] == ["🖼 pane screenshot"], \
         "the raw wire text must never reach the transcript, and a bubble " \
-        "already up (stripped) must dedup against the stripped pending text"
+        "already up (by id) must dedup against the matching pending entry"
     assert out["followupSeq"] == 0, \
         "a message already on screen is not a NEW follow-up landing — " \
         "nothing here should reset the streaming reply bubble"
@@ -415,7 +421,7 @@ def test_a_genuinely_new_pending_bubble_bumps_followup_seq(html):
     src = _addUser_src(html) + "\n" + _pending_block_src(html)
     out = _run(html, """
 let followupSeq = 0;
-const data = { pending: ["a second message, sent from another tab"] };
+const data = { pending: [{ id: "entry-2.json", text: "a second message, sent from another tab" }] };
 """ + src + """
 console.log(JSON.stringify({
   bubbles: [...log.querySelectorAll(".user .bubble")].map((b) => b.textContent),
@@ -426,6 +432,34 @@ console.log(JSON.stringify({
     assert out["followupSeq"] == 1, \
         "drawing a genuinely new pending bubble must bump followupSeq, " \
         "the same signal sendFollowUp's own bump gives pollLoop"
+
+
+def test_a_pending_bubble_whose_text_collides_is_not_dropped(html):
+    """finding 5, the exact collision case: two wordless sends share ONE
+    marker text (`stripBlocks` collapses every screenshot-only send to the
+    same string) — a text-compare dedup would mistake the second, genuinely
+    new message for the first and silently drop it. Two different ids with
+    the same text must both land."""
+    src = _addUser_src(html) + "\n" + _pending_block_src(html)
+    out = _run(html, """
+stripBlocks = (t) => t.includes("<pane-shot>") ? "🖼 pane screenshot" : t;
+let followupSeq = 0;
+addUser("🖼 pane screenshot", null, "entry-1.json");
+const data = { pending: [
+  { id: "entry-1.json", text: "<pane-shot>/tmp/fr/shots/x.png</pane-shot>" },
+  { id: "entry-2.json", text: "<pane-shot>/tmp/fr/shots/y.png</pane-shot>" },
+] };
+""" + src + """
+console.log(JSON.stringify({
+  bubbles: [...log.querySelectorAll(".user .bubble")].map((b) => b.textContent),
+  followupSeq,
+}));
+""")
+    assert out["bubbles"] == ["🖼 pane screenshot", "🖼 pane screenshot"], \
+        "a genuinely new message must not be dropped for sharing text with " \
+        "one already on screen"
+    assert out["followupSeq"] == 1, \
+        "only the genuinely new one (entry-2) should bump followupSeq"
 
 
 # Everything `resumeRun` needs besides the DOM stub and `addUser`/`stripBlocks`
@@ -485,18 +519,20 @@ scriptProbes([{ done: true, error: "claude exited unexpectedly" }]);
 
 def test_resume_run_pending_texts_are_stripped_for_render_and_dedup(html):
     """finding 5 (the other site): `renderPending` inside `resumeRun` must
-    run `stripBlocks` before it draws OR dedups a queued message, the same
-    as `probeMsg` above it — otherwise a follow-up sent with a screenshot
-    reaches this transcript as a second, raw `<pane-shot>…` bubble."""
+    run `stripBlocks` before it draws a queued message, and dedup it by id
+    (`onScreenId`) the same as `probeMsg`'s own text-based `onScreen` does
+    for the message that has no id — otherwise a follow-up sent with a
+    screenshot reaches this transcript as a second, raw `<pane-shot>…`
+    bubble."""
     src = _addUser_src(html) + "\n" + _resume_run_src(html)
     out = _run(html, _RESUME_STUB + src + """
 let pendingOpenTurns = null;
 stripBlocks = (t) => t.includes("<pane-shot>") ? "🖼 pane screenshot" : t;
-// Already on screen, stripped.
-addUser("🖼 pane screenshot");
+// Already on screen, stripped, under the id this send landed as.
+addUser("🖼 pane screenshot", null, "entry-1.json");
 scriptProbes([{
   done: false, message: "",
-  pending: ["<pane-shot>/tmp/fr/shots/x.png</pane-shot>"],
+  pending: [{ id: "entry-1.json", text: "<pane-shot>/tmp/fr/shots/x.png</pane-shot>" }],
 }]);
 (async () => {
   await resumeRun("r1", {});
@@ -507,7 +543,35 @@ scriptProbes([{
 """)
     assert out["bubbles"] == ["🖼 pane screenshot"], \
         "the raw wire text must never reach the transcript, and a bubble " \
-        "already up (stripped) must dedup against the stripped pending text"
+        "already up (by id) must dedup against the matching pending entry"
+
+
+def test_resume_run_pending_bubble_whose_text_collides_is_not_dropped(html):
+    """finding 5, the exact collision case on the `resumeRun` side: two
+    wordless sends share one marker text — a text-compare dedup would
+    mistake the second, genuinely new message for the first and drop it."""
+    src = _addUser_src(html) + "\n" + _resume_run_src(html)
+    out = _run(html, _RESUME_STUB + src + """
+let pendingOpenTurns = null;
+stripBlocks = (t) => t.includes("<pane-shot>") ? "🖼 pane screenshot" : t;
+addUser("🖼 pane screenshot", null, "entry-1.json");
+scriptProbes([{
+  done: false, message: "",
+  pending: [
+    { id: "entry-1.json", text: "<pane-shot>/tmp/fr/shots/x.png</pane-shot>" },
+    { id: "entry-2.json", text: "<pane-shot>/tmp/fr/shots/y.png</pane-shot>" },
+  ],
+}]);
+(async () => {
+  await resumeRun("r1", {});
+  console.log(JSON.stringify({
+    bubbles: [...log.querySelectorAll(".user .bubble")].map((b) => b.textContent),
+  }));
+})();
+""")
+    assert out["bubbles"] == ["🖼 pane screenshot", "🖼 pane screenshot"], \
+        "a genuinely new message must not be dropped for sharing text with " \
+        "one already on screen"
 
 
 def test_resume_run_never_draws_its_own_assistant_bubble_on_the_live_path(html):

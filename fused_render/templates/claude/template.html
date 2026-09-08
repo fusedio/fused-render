@@ -13449,10 +13449,16 @@ terminalOpt.addEventListener("click", async () => {
 // yet). It is what a `?msg=` link addresses, so it goes on the element BEFORE
 // the append: the anchor watcher fires on that append, and a turn whose id
 // lands a tick later is a turn the watcher looks straight past.
-function addUser(text, uuid) {
+function addUser(text, uuid, pendingId) {
   const d = document.createElement("div");
   d.className = "turn user";
   if (uuid) d.dataset.msg = uuid;
+  // `pendingId` is the inbox entry's own filename (`_send`'s `id`,
+  // `_pending_messages`'s per-entry `id`) — stamped so a later tick can
+  // dedup THIS bubble against `data.pending`/`probe.pending` by id instead
+  // of comparing text, which collides for a wordless send (one marker text
+  // for every such turn) and for a verbatim repeat.
+  if (pendingId) d.dataset.pendingId = pendingId;
   const b = document.createElement("div");
   b.className = "bubble";
   b.textContent = text;
@@ -16031,8 +16037,15 @@ async function sendFollowUp(text) {
   });
   const outgoing = composeOutgoing(text, pending, null, wireViews);
   let bareTurn = null;
+  // The turn this send drew, whichever branch below drew it — stamped with
+  // `res.id` once the inbox write actually lands (below), so a later poll
+  // dedups it by id instead of text (a wordless send shares its marker text
+  // with every other wordless send; the id does not).
+  let drawnTurn = null;
   if (text) {
     addUser(text);
+    const turns = log.querySelectorAll(".turn.user");
+    drawnTurn = turns[turns.length - 1];
   } else if (pending.length || pics.length) {
     // annotation- or screenshot-only follow-up: no typed words, but still a
     // turn — drawn with the marker label stripBlocks gives this wire text,
@@ -16043,6 +16056,7 @@ async function sendFollowUp(text) {
     addUser(stripBlocks(outgoing));
     const turns = log.querySelectorAll(".turn.user");
     bareTurn = turns[turns.length - 1];
+    drawnTurn = bareTurn;
   }
   // The follow-up's bubble is above; the `followupSeq` bump that tells a
   // streaming pollLoop to start a NEW assistant bubble after it happens only
@@ -16151,6 +16165,7 @@ async function sendFollowUp(text) {
       addError("Could not send: the session ended before this reached it.");
       return;
     }
+    if (drawnTurn && res.id) drawnTurn.dataset.pendingId = res.id;
     // A follow-up landed as its own bubble above — bump so any pollLoop
     // streaming into an OLDER assistant bubble (positioned before this one)
     // knows to start a NEW one after it, rather than keep growing text that
@@ -16242,16 +16257,21 @@ async function pollLoop(run_id, gen = logGen) {
       // const pinned by test to that function (D748) — this is its own,
       // identical dedup, so a message this tick sees already up (drawn by
       // `resumeRun`'s own probe, or a previous tick) is never drawn twice.
-      // `_pending_messages` strips only the app-state block — the wire text
-      // still carries `<pane-shot>…</pane-shot>` and the annotations block
-      // (`composeOutgoing`), so both the render and the dedup key run
-      // through `stripBlocks` here, same as every other place a message
-      // reaches the transcript.
-      for (const raw of data.pending || []) {
-        const text = stripBlocks(raw);
-        const already = [...log.querySelectorAll(".user .bubble")].some((b) => b.textContent === text);
+      // Each entry is `{id, text}` — `id` is the inbox entry's own filename,
+      // the same value `sendFollowUp`/`sendMessage` stamped as `pendingId` on
+      // the bubble they drew immediately, so dedup matches by id, not text: a
+      // text compare drops a genuinely new message whose (stripped) text
+      // collides with one already on screen — every wordless send shares one
+      // marker text, and a verbatim repeat collides too. `_pending_messages`
+      // strips only the app-state block — the wire text still carries
+      // `<pane-shot>…</pane-shot>` and the annotations block
+      // (`composeOutgoing`), so the render still runs through `stripBlocks`
+      // here, same as every other place a message reaches the transcript.
+      for (const entry of data.pending || []) {
+        const text = stripBlocks(entry.text);
+        const already = [...log.querySelectorAll(".user")].some((t) => t.dataset.pendingId === entry.id);
         if (!already) {
-          addUser(text);
+          addUser(text, null, entry.id);
           // Adopted from another tab, or from this one before its own
           // `sendFollowUp` bump landed — either way this bubble is brand new
           // on screen, so the streaming reply resets exactly as it would for
@@ -16504,7 +16524,17 @@ async function sendMessage(message) {
   // step on this path: the user's words appearing instantly is worth more than a
   // receipt and a bubble arriving together.
   let bareTurn = null;
-  if (message) addUser(message);
+  // The turn this send drew, whichever branch draws it (below, once
+  // `outgoing`/`stripBlocks` are ready) — stamped with the live-send
+  // response's `id` once the inbox write actually lands, so a later poll
+  // dedups it by id instead of text (a wordless send shares its marker text
+  // with every other wordless send; the id does not).
+  let drawnTurn = null;
+  if (message) {
+    addUser(message);
+    const turns = log.querySelectorAll(".turn.user");
+    drawnTurn = turns[turns.length - 1];
+  }
   // Labels first, THEN the capture: the letter burned into the overview and the
   // `label` the wire carries must be the same string, and annotations.indexOf
   // can shift between now and any later read (notes resolve, notes are added) —
@@ -16569,6 +16599,7 @@ async function sendMessage(message) {
     addUser(stripBlocks(outgoing));
     const bareTurns = log.querySelectorAll(".turn.user");
     bareTurn = bareTurns[bareTurns.length - 1];
+    drawnTurn = bareTurn;
   }
   if (pending.length) {
     for (const c of pending) c.sent = 1;
@@ -16650,7 +16681,10 @@ async function sendMessage(message) {
         // live session cannot honor this message as-is (a new attachment
         // directory, a changed effort — see agent.py `_send`'s docstring) —
         // every one of those means "start fresh", same as no host at all.
-        if (sent && sent.sent) run_id = live.run_id;
+        if (sent && sent.sent) {
+          run_id = live.run_id;
+          if (drawnTurn && sent.id) drawnTurn.dataset.pendingId = sent.id;
+        }
       }
     }
     if (!run_id) {
@@ -17786,6 +17820,14 @@ async function resumeRun(run_id, opts) {
   const quiet = !!(opts && opts.quiet);
   const onScreen = (msg) => !!msg && [...log.querySelectorAll(".user .bubble")]
     .some((b) => b.textContent === msg);
+  // `probeMsg` carries no id (it is `meta.json`'s message, not an inbox
+  // entry), so `onScreen`'s text compare is its only option and stays —
+  // everywhere an id IS available (`renderPending`, below) matches by id
+  // instead, so a genuinely new message never gets dropped for merely
+  // sharing text with one already drawn (a wordless send's shared marker
+  // text; a verbatim repeat).
+  const onScreenId = (id) => !!id && [...log.querySelectorAll(".user")]
+    .some((t) => t.dataset.pendingId === id);
   if (sending) return;
   sending = true;
   const seat = ++sendSeq;
@@ -17820,16 +17862,19 @@ async function resumeRun(run_id, opts) {
     // Anything of the user's still queued when this attaches — a follow-up
     // sent (from this tab or another) before the CLI echoed it back —
     // belongs to this exchange too (agent.py's `_pending_messages`).
-    // Rendered as ordinary user bubbles, in queue order, deduped the same
-    // way `onScreen` already dedupes the exchange's own message. The wire
-    // text carries `<pane-shot>…</pane-shot>` and the annotations block on
-    // top of whatever the user typed — `_pending_messages` strips only the
-    // app-state block — so both the render and the dedup key run through
-    // `stripBlocks` here too, same as `probeMsg` above.
+    // Rendered as ordinary user bubbles, in queue order, deduped by id
+    // (`onScreenId`) — the same value `sendFollowUp`/`sendMessage` stamped
+    // as `pendingId` the instant they drew this bubble, so a message whose
+    // (stripped) text happens to match one already up — every wordless send
+    // shares one marker text, and a verbatim repeat collides too — is never
+    // mistaken for it. The wire text carries `<pane-shot>…</pane-shot>` and
+    // the annotations block on top of whatever the user typed —
+    // `_pending_messages` strips only the app-state block — so the render
+    // still runs through `stripBlocks` here, same as `probeMsg` above.
     const renderPending = (list) => {
-      for (const raw of list || []) {
-        const text = stripBlocks(raw);
-        if (!onScreen(text)) addUser(text);
+      for (const entry of list || []) {
+        const text = stripBlocks(entry.text);
+        if (!onScreenId(entry.id)) addUser(text, null, entry.id);
       }
     };
     if (probe.done) {

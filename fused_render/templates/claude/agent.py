@@ -2210,7 +2210,7 @@ def _inbox_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "inbox")
 
 
-def _write_inbox_row(run_dir: str, row: dict) -> None:
+def _write_inbox_row(run_dir: str, row: dict) -> str:
     """Queue one raw stream-json row into `run_dir/inbox/` for the session
     host to drain into the CLI's stdin verbatim (`session_host._drain_inbox`
     copies bytes, never parses them, so any row shape the CLI's
@@ -2220,7 +2220,13 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
     nanosecond, not a real id), which is the only order that matters: the
     host drains oldest-first, and this is the one place every inbox writer
     (`_write_inbox_entry`'s user turns, `_write_control_request`'s control
-    requests) writes from."""
+    requests) writes from.
+
+    Returns the filename it wrote — the one thing a caller can stamp on a
+    drawn bubble and later match `_pending_messages`' own entries against by
+    id rather than by text (see `_write_inbox_entry`, `_send`); collision-free
+    by construction, where a text compare is not (a wordless send's marker
+    text is the same for every one, and a verbatim repeat collides too)."""
     inbox = _inbox_dir(run_dir)
     if not os.path.isdir(inbox):
         # `_private_dir`'s leaf create is exclusive (a run-id collision must
@@ -2248,13 +2254,15 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
         json.dump(row, f)
         f.write("\n")
     os.replace(tmp_path, final_path)
+    return name
 
 
-def _write_inbox_entry(run_dir: str, message: str) -> None:
+def _write_inbox_entry(run_dir: str, message: str) -> str:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
-    `_send` (every follow-up) write from."""
-    _write_inbox_row(run_dir, {"type": "user", "message": {
+    `_send` (every follow-up) write from. Returns the inbox entry's own
+    filename (see `_write_inbox_row`)."""
+    return _write_inbox_row(run_dir, {"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
 
@@ -3089,8 +3097,14 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = 0
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
-    _write_inbox_entry(run_dir, message)
-    return {"sent": True}
+    name = _write_inbox_entry(run_dir, message)
+    # `id` is the inbox entry's own filename — the same value
+    # `_pending_messages` reports each of its entries under, so the page can
+    # stamp it on the bubble it draws immediately and match against it later
+    # (pollLoop's pending dedup, resumeRun's renderPending) instead of
+    # comparing bubble text, which collides for a wordless send (one marker
+    # text for all of them) and for a verbatim repeat.
+    return {"sent": True, "id": name}
 
 
 def _retry_info(row: dict):
@@ -3892,7 +3906,14 @@ def _pending_messages(run_dir: str) -> list:
     call's `messages` list never contained: send M1, drain it, send M2
     (`inbox/` now holds only M2), M1's own echo then lands — the trim saw one
     echo and dropped M2, the only message actually still outstanding,
-    leaving it invisible until ITS echo lands too."""
+    leaving it invisible until ITS echo lands too.
+
+    Each entry rides back as `{"id": <inbox filename>, "text": <message>}`,
+    not a bare string: the id is the SAME value `_write_inbox_entry` (via
+    `_write_inbox_row`) returned to whichever caller sent it, and is what the
+    page dedups a bubble already on screen against — a text compare drops a
+    genuinely new message whose text collides with one already drawn (every
+    wordless send shares one marker text; a verbatim repeat collides too)."""
     inbox = _inbox_dir(run_dir)
     try:
         undrained = [n for n in os.listdir(inbox) if n.endswith(".json")]
@@ -3916,8 +3937,8 @@ def _pending_messages(run_dir: str) -> list:
             continue
         text = "".join(b.get("text", "") for b in content
                         if isinstance(b, dict) and b.get("type") == "text")
-        messages.append(text)
-    return [_strip_app_state(text) for text in messages]
+        messages.append((os.path.basename(path), text))
+    return [{"id": name, "text": _strip_app_state(text)} for name, text in messages]
 
 
 def _poll(run_id: str, file: str = "") -> dict:

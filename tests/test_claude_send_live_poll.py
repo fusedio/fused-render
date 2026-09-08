@@ -85,7 +85,7 @@ def test_a_send_into_a_live_session_is_not_believed_done_before_its_echo(
     _setup(agent, run_dir)
 
     sent = agent._send("run", "second message", "")
-    assert sent == {"sent": True}
+    assert sent["sent"] is True
 
     # The host has not drained the inbox yet, let alone gotten an echo back
     # from the CLI — out.jsonl is untouched since the send.
@@ -133,7 +133,7 @@ def test_a_dead_process_still_ends_the_poll_even_with_a_pending_echo(
     _setup(agent, run_dir, alive=True)
 
     sent = agent._send("run", "second message", "")
-    assert sent == {"sent": True}
+    assert sent["sent"] is True
 
     agent._alive = lambda _run_dir: False
     poll = agent._poll("run")
