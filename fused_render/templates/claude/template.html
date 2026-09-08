@@ -17877,14 +17877,32 @@ async function resumeRun(run_id, opts) {
       return;
     }
     // Still running: this attach takes ownership of the open exchange from
-    // here on — its user turns (this probe's own message, plus anything
-    // still queued) now, its assistant reply from the poll `pollLoop` is
-    // about to start. `loadHistory`'s reservation for it is no longer
-    // history's to fall back on.
-    pendingOpenTurns = null;
-    if (probeMsg && !(quiet && onScreen(probeMsg))) {
+    // here on — its user turns (every one already echoed to the transcript,
+    // plus anything still queued) now, its assistant reply from the poll
+    // `pollLoop` is about to start. `loadHistory`'s reservation for it is no
+    // longer history's to fall back on.
+    //
+    // The reservation, not `probeMsg`, is what draws this when there is one:
+    // `probeMsg` is `meta.json`'s message from the RUN's `_start` — the
+    // exchange's very first send, never updated by `_send` — so it is stale
+    // the moment a second exchange opens on this same run, and the reserved
+    // slice (`loadHistory`'s `turns.slice(open_from)`) is what actually holds
+    // every user turn already echoed for THIS exchange, in order. `probeMsg`
+    // is only the fallback for an attach with nothing reserved ahead of it —
+    // `adoptLiveRun`/`pollScheduledRuns` call in without a `loadHistory`
+    // reservation first.
+    const reserved = pendingOpenTurns;
+    if (reserved && reserved.length) {
+      renderHistoryTurns(reserved);
+      attachCodeCopy(log);
+      // The reservation is on screen now — the earliest a `?msg=` anchor
+      // naming a turn inside it can be tried, rather than after the whole
+      // poll hand-off below resolves (which can be minutes away).
+      consumeAnchor();
+    } else if (probeMsg && !(quiet && onScreen(probeMsg))) {
       addUser(probeMsg);
     }
+    pendingOpenTurns = null;
     renderPending(probe.pending);
     await pollLoop(run_id, gen);
   } catch (err) {

@@ -593,6 +593,68 @@ scriptProbes([{ done: false, message: "still open", pending: [] }]);
         "fallback call elsewhere would draw it a second time"
 
 
+def test_resume_run_draws_every_reserved_turn_not_just_probes_own_message(html):
+    """Findings 1/2: `probe.message` is `meta.json`'s message from the run's
+    `_start` — the exchange's very first send, never updated by `_send` — so
+    it names only ONE of possibly several user turns already echoed to the
+    transcript for this exchange (a follow-up folded in and then a second
+    one, both drained before this reload). The reserved slice
+    `loadHistory` made (`pendingOpenTurns`) is what actually holds all of
+    them, in order; `resumeRun` must draw THAT, not just `probeMsg`, or a
+    reload mid-reply loses every already-echoed follow-up but the first."""
+    src = _addUser_src(html) + "\n" + _render_history_turns_src(html) + "\n" \
+        + _resume_run_src(html)
+    out = _run(html, _RESUME_STUB + src + """
+let pendingOpenTurns = [
+  { role: "user", text: "fix the header", uuid: "u1" },
+  { role: "user", text: "now the footer too", uuid: "u2" },
+];
+// probe.message is the run's FIRST message, stale for this second exchange.
+scriptProbes([{ done: false, message: "fix the header", pending: [] }]);
+(async () => {
+  await resumeRun("r1", {});
+  console.log(JSON.stringify({
+    bubbles: [...log.querySelectorAll(".user .bubble")].map((b) => b.textContent),
+    pendingOpenTurnsAfter: pendingOpenTurns,
+    pollLoopCalls,
+  }));
+})();
+""")
+    assert out["bubbles"] == ["fix the header", "now the footer too"], \
+        "every reserved turn must draw, not just the run's first message"
+    assert out["pendingOpenTurnsAfter"] is None
+    assert out["pollLoopCalls"] == [["r1", 0]]
+
+
+def test_resume_run_spends_the_anchor_ahead_of_the_poll_hand_off(html):
+    """Finding 7: the `?msg=` anchor must be tried the moment the reservation
+    is drawn, not deferred until `pollLoop` resolves the WHOLE live turn —
+    which can be minutes away. `pollLoop` here never resolves (a promise that
+    never settles), so a `consumeAnchor` call reached only after `await
+    pollLoop(...)` would never happen inside this test at all."""
+    src = _addUser_src(html) + "\n" + _render_history_turns_src(html) + "\n" \
+        + _resume_run_src(html)
+    out = _run(html, _RESUME_STUB.replace(
+        "async function pollLoop(run_id, gen) { pollLoopCalls.push([run_id, gen]); }",
+        "async function pollLoop(run_id, gen) { pollLoopCalls.push([run_id, gen]); "
+        "return new Promise(() => {}); }",
+    ) + src + """
+let pendingOpenTurns = [
+  { role: "user", text: "fix the header", uuid: "u1" },
+];
+scriptProbes([{ done: false, message: "fix the header", pending: [] }]);
+resumeRun("r1", {});
+setTimeout(() => {
+  console.log(JSON.stringify({ anchorCalls, pollLoopCalls }));
+}, 20);
+""")
+    assert out["anchorCalls"] == 1, \
+        "the anchor must be spent as the reservation is drawn, ahead of the " \
+        "poll hand-off — not deferred until pollLoop (which never returns " \
+        "here) resolves"
+    assert out["pollLoopCalls"] == [["r1", 0]]
+
+
 # Everything sendFollowUp needs besides the DOM stub, addUser, and the real
 # wire functions (_WIRE_FNS) above: a scriptable send, and everything else it
 # touches stubbed to a no-op or a call counter.
