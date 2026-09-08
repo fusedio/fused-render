@@ -264,8 +264,14 @@ export function AppPreviewCard({
         <span className="app-pcard-lines">
           <span className="app-pcard-title">{title}</span>
           <span className="app-pcard-meta">
-            <span className="app-pcard-tag">{app.tag}</span>
-            {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
+            {/* Where the app lives, as one path — `local/short-builder` — in
+                place of a bordered tag chip beside the folder name (owner:
+                the chip was visual noise). Always the full path, even when the
+                title is the folder name: the tag alone is only half an
+                address. */}
+            <span className="app-pcard-name">
+              {app.tag}/{app.name}
+            </span>
             {badge && <span className="app-pcard-name">{badge}</span>}
             {ago && <span className="app-pcard-ago">{ago}</span>}
           </span>
