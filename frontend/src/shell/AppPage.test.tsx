@@ -16,15 +16,25 @@
 // listing/hook-harness.ts, inlined here rather than imported across the
 // shell/apps boundary for one small helper).
 //
-// `window`/`location`/`history` are the minimal globals `replaceSearch`
+// `location`/`history` are the minimal globals `replaceSearch`
 // (`history.replaceState`) touches — installed once at file load, mirroring
-// RepoUpdatesDock.test.tsx's own router.ts precedent.
-import { beforeEach, expect, test } from "bun:test";
+// RepoUpdatesDock.test.tsx's own router.ts precedent, AND PUT BACK when the
+// file is done (`platform/lib/testDomShim.ts`). One `bun test` run is one
+// process with one `globalThis` and no reset between files, so a stub left
+// standing is not local to the file that installed it; which files run after
+// this one is bun's walk order, and a merge that only ADDS test files changes
+// it.
+import { afterAll, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement, type ReactElement } from "react";
+import { restoreGlobal } from "@platform/lib/testDomShim";
 
 let currentUrl = { pathname: "/apps/repo/myapp", search: "" };
 let replaced: string[] = [];
+
+const savedLocation = (globalThis as Record<string, unknown>).location;
+const savedHistory = (globalThis as Record<string, unknown>).history;
+const savedFetch = (globalThis as Record<string, unknown>).fetch;
 
 (globalThis as Record<string, unknown>).location = currentUrl;
 (globalThis as Record<string, unknown>).history = {
@@ -36,6 +46,12 @@ let replaced: string[] = [];
     (globalThis as Record<string, unknown>).location = currentUrl;
   },
 };
+
+afterAll(() => {
+  restoreGlobal("location", savedLocation);
+  restoreGlobal("history", savedHistory);
+  restoreGlobal("fetch", savedFetch);
+});
 
 const { useAppPageSnapshot } = await import("@shell/useAppPageSnapshot");
 import type { AppPageSnapshotState } from "@shell/useAppPageSnapshot";

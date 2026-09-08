@@ -8,23 +8,41 @@
 // through (see DECISIONS-app-snapshot-preview.md, round 2): the actual
 // resolve/gate code path has to run for a test to mean anything.
 //
-// `window`/`location`/`history` are the minimal globals this component's own
-// hooks touch (`useUrlVersion`'s `window.addEventListener`, `replaceSearch`'s
+// `window`/`location`/`history` are the globals this component's own hooks
+// touch (`useUrlVersion`'s `window.addEventListener`, `replaceSearch`'s
 // `history.replaceState`) — installed once at file load, mirroring
 // RepoUpdatesDock.test.tsx's own router.ts precedent (a real, unmocked
-// router.ts import needs exactly these), then left in place only for this
-// file's own tests, which reset them per-test instead of tearing them down —
-// unlike that file, this one's tests actually exercise `window`/`history`
-// rather than only needing the module-init pass through.
-import { beforeEach, expect, test } from "bun:test";
+// router.ts import needs exactly these). Unlike that file, this one's tests
+// actually exercise `window`/`history` rather than only needing the
+// module-init pass through, so they are reset per-test rather than per-test
+// torn down.
+//
+// BUT THEY ARE PUT BACK WHEN THE FILE IS DONE, and the stub EXTENDS the shared
+// shim rather than standing in for it (`platform/lib/testDomShim.ts`, which
+// states both rules). One `bun test` run is one process with one `globalThis`
+// and no reset between files, so a stub carrying only the members THIS file
+// needs is not local to this file at all: it hands every file that runs later
+// a `window` that is truthy and half-missing, and `toast.ts`'s
+// `window.setTimeout` and `router.ts`'s `window.dispatchEvent` then fail on
+// code that has nothing to do with version picking. Which files run after this
+// one is not a fact about this file either — it is bun's walk order, and
+// merging a branch that only ADDS test files is enough to change it.
+import { afterAll, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
+import { restoreGlobal } from "@platform/lib/testDomShim";
 
 let currentUrl = { pathname: "/apps/repo/myapp", search: "" };
 let replaced: string[] = [];
 const listeners = new Map<string, Set<() => void>>();
 
+const savedLocation = (globalThis as Record<string, unknown>).location;
+const savedWindow = (globalThis as Record<string, unknown>).window;
+const savedHistory = (globalThis as Record<string, unknown>).history;
+const savedFetch = (globalThis as Record<string, unknown>).fetch;
+
 (globalThis as Record<string, unknown>).location = currentUrl;
 (globalThis as Record<string, unknown>).window = {
+  ...(savedWindow as object),
   addEventListener: (ev: string, fn: () => void) => {
     if (!listeners.has(ev)) listeners.set(ev, new Set());
     listeners.get(ev)!.add(fn);
@@ -46,6 +64,16 @@ const listeners = new Map<string, Set<() => void>>();
     for (const fn of listeners.get("fused:urlchange") ?? []) fn();
   },
 };
+
+// Through `restoreGlobal`, not a bare `delete` and not a bare assignment: a
+// global that was genuinely ABSENT before this file has to go back to absent,
+// and one that was there has to go back to what it was.
+afterAll(() => {
+  restoreGlobal("location", savedLocation);
+  restoreGlobal("window", savedWindow);
+  restoreGlobal("history", savedHistory);
+  restoreGlobal("fetch", savedFetch);
+});
 
 const { default: AppVersionPicker } = await import("@shell/AppVersionPicker");
 
