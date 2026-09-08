@@ -10,8 +10,8 @@
 //   claude   not installed/unknown  runs, but outdated/signed    installed, new
 //                                   out/unknown                  enough, signed in
 //   fda      not granted            granted, relaunch pending    granted
-//   models   none fetched           some here or downloading     every offered
-//                                                                model is here
+//   models   none fetched, none     none here, one or more       one or more
+//            downloading            downloading                  models here
 //   app      nothing built          —                            composer made an
 //                                                                app, or a showcase
 //                                                                app was opened

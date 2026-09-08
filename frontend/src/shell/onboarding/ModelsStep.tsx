@@ -290,15 +290,16 @@ export function ModelsStep({
   // Download is the yellow button while something is selected and not yet
   // fetched; once started (or nothing to do) Next takes the colour.
   useEffect(() => onWork(pending.length > 0), [onWork, pending.length]);
-  // THE STAGE (progress.ts): every offered model here = complete; some here
-  // or any download in flight = partial; nothing = pending. Nothing until the
+  // THE STAGE (progress.ts): ANY offered model here = complete (one local
+  // model is a working machine; the rest are a choice, not a chore); none here
+  // but a download in flight = partial; nothing = pending. Nothing until the
   // catalog has answered (an empty catalog is the wizard's `n/a`, not ours).
   // Keyed on the counts, so the jobs poll does not re-send the same verdict.
   const hereCount = rows.filter((r) => r.here).length;
   const rowCount = rows.length;
   useEffect(() => {
     if (picks === null || rowCount === 0) return;
-    const status = hereCount === rowCount ? "complete" : hereCount > 0 || busyCount > 0 ? "partial" : "pending";
+    const status = hereCount > 0 ? "complete" : busyCount > 0 ? "partial" : "pending";
     reportStage("models", status, {
       offered: rows.map((r) => r.pick.model.id),
       here: rows.filter((r) => r.here).map((r) => r.pick.model.id),
