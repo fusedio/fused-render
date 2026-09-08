@@ -34,11 +34,17 @@
 // `aria-label`/`title` so that doesn't vanish along with the chip.
 //
 // That accessible label is deliberately a SEPARATE helper from
-// `rowStateDetailText`, which feeds the visible `.appdoc-detail` line below.
-// An earlier pass used one string for both, which put the severity word back
-// on screen inside the detail line ("Critical — Failed — <detail>") — see
-// appdoctor-lib.ts's comment on the two functions for why they must stay
-// split.
+// `rowStateDetailText`, which feeds `rowVisibleDetailText` below — the
+// visible `.appdoc-detail` line. An earlier pass used one string for both,
+// which put the severity word back on screen inside the detail line
+// ("Critical — Failed — <detail>") — see appdoctor-lib.ts's comment on the
+// two functions for why they must stay split. A later pass (owner request:
+// "remove the redundant failed prefix") went further and dropped the bare
+// "Failed" word itself from the visible line — the left rail, ground tint
+// and state mark shape already say a row failed, three times over, so
+// `rowVisibleDetailText` only prints `rowStateDetailText`'s output when it is
+// a candidate's "N to review" count, real information the detail sentence
+// does not otherwise carry.
 //
 // Per-row Fix/Review creates ONE task on just that row; the footer's "Fix
 // all" creates one task covering every currently failing row at once. Both
@@ -68,7 +74,7 @@ import {
   groupBySection,
   rowActionLabel,
   rowStateAccessibleLabel,
-  rowStateDetailText,
+  rowVisibleDetailText,
   SECTION_LABEL,
   splitFindings,
   summaryLine,
@@ -219,9 +225,7 @@ function CheckRow({
             </div>
           )}
         </div>
-        <span className="appdoc-detail">
-          {failing ? rowStateDetailText(check) + " — " + check.detail : check.detail}
-        </span>
+        <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
         {shown.length > 0 && (
           <ul className="appdoc-findings">
             {shown.map((f, i) => (

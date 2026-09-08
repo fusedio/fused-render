@@ -37,6 +37,7 @@ const {
   rowActionLabel,
   rowStateAccessibleLabel,
   rowStateDetailText,
+  rowVisibleDetailText,
   severityDotLabel,
   SEVERITY_LABEL,
   splitFindings,
@@ -231,17 +232,49 @@ test("every other row's detail text falls back to STATE_LABEL", () => {
   expect(rowStateDetailText(check("readme", "unrun"))).toBe("Not run yet");
 });
 
+// §16: the visible line no longer prints the bare "Failed" prefix — the left
+// rail, ground tint and state icon shape already say a row failed three
+// other ways, so repeating the word in the sentence was pure noise. The
+// candidate's "N to review" count survives because it is real information
+// (how many findings are unreviewed), not a restatement of the state.
+
+test("a failing FACT row's visible text is just the detail — no Failed prefix", () => {
+  const c = check("fused-api-version", "fail", {
+    kind: "fact",
+    detail: "declares version 0; the runtime is on 1",
+  });
+  expect(rowVisibleDetailText(c)).toBe("declares version 0; the runtime is on 1");
+  expect(rowVisibleDetailText(c)).not.toContain("Failed");
+});
+
+test("a failing CANDIDATE row's visible text keeps the N to review count", () => {
+  const c = check("secrets", "fail", {
+    kind: "candidate",
+    detail: "looks like an API key or token",
+    findings: [finding("app.py", 3), finding("app.py", 9)],
+  });
+  expect(rowVisibleDetailText(c)).toBe("2 to review — looks like an API key or token");
+});
+
+test("a passing/skipped/unrun row's visible text is also just the detail", () => {
+  for (const state of ["pass", "skip", "unrun"] as const) {
+    const c = check("readme", state);
+    expect(rowVisibleDetailText(c)).toBe(c.detail);
+  }
+});
+
 // ---------------------------------------------------------- severity in words
 //
 // There is no visible severity chip in the dialog any more (owner request).
 // `rowStateAccessibleLabel` is now the only place a FAILING row's severity is
 // said in words at all, because it feeds the state mark's own
 // `aria-label`/`title` — this is what keeps severity from vanishing out of
-// the accessible tree. `rowStateDetailText` (the visible `.appdoc-detail`
-// line's text) must NEVER say the severity word — an earlier pass used one
-// string for both callers and put the severity word right back on screen
-// inside the detail line ("Critical — Failed — <detail>"), the exact words
-// removing the chip was supposed to erase.
+// the accessible tree. `rowStateDetailText` (the input to `rowVisibleDetailText`,
+// which builds the visible `.appdoc-detail` line's text) must NEVER say the
+// severity word — an earlier pass used one string for both callers and put
+// the severity word right back on screen inside the detail line ("Critical —
+// Failed — <detail>"), the exact words removing the chip was supposed to
+// erase.
 
 test("a failing FACT row's accessible label names both its severity and its state", () => {
   expect(

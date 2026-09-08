@@ -121,11 +121,15 @@ export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
   return check.kind === "candidate" ? "Review" : "Fix";
 }
 
-/** A failing row's own state word, for the VISIBLE detail line
- *  (`.appdoc-detail`, AppDoctorModal.tsx) — never the severity. A candidate
- *  never reads as a settled failure ("Failed") — it reads as "N to review",
- *  because the pattern that flagged it has not been judged yet. Every other
- *  state reads as `STATE_LABEL` already does.
+/** A failing row's own state word — feeds both `rowStateAccessibleLabel`
+ *  below and, through it, `rowVisibleDetailText`'s prefix for the VISIBLE
+ *  detail line (`.appdoc-detail`, AppDoctorModal.tsx) — never the severity. A
+ *  candidate never reads as a settled failure ("Failed") — it reads as "N to
+ *  review", because the pattern that flagged it has not been judged yet.
+ *  Every other state reads as `STATE_LABEL` already does. Note that a
+ *  settled fact failure's word here IS still "Failed", even though
+ *  `rowVisibleDetailText` chooses not to print it on screen any more — this
+ *  function's job is naming the state, not deciding what is worth showing.
  *
  *  This does NOT say the row's severity, on purpose: severity used to live in
  *  a visible chip (`.appdoc-sev`) next to the label, and when that chip was
@@ -154,6 +158,25 @@ export function rowStateDetailText(check: AppCheck): string {
 export function rowStateAccessibleLabel(check: AppCheck): string {
   if (check.state !== "fail") return STATE_LABEL[check.state];
   return `${SEVERITY_LABEL[check.severity]} — ${rowStateDetailText(check)}`;
+}
+
+/** The visible `.appdoc-detail` line's full text (AppDoctorModal.tsx) — the
+ *  checklist's own detail sentence, prefixed with `rowStateDetailText` only
+ *  when that prefix carries information the sentence does not already: a
+ *  candidate's "N to review" count. A settled fact failure's prefix is just
+ *  `STATE_LABEL.fail` ("Failed"), and printing that added nothing the row
+ *  was not already saying three other ways — the left rail and ground tint
+ *  (app-doctor.css's `.appdoc-row-sev-*`) and the state mark's shape
+ *  (StateIcon) — while stacking a third em dash onto an already
+ *  dash-heavy sentence (owner request: drop it). `rowStateDetailText` itself
+ *  still returns "Failed" for that row, unchanged — `rowStateAccessibleLabel`
+ *  above needs it there to build a screen reader's "Critical — Failed"; only
+ *  this visible-line function chooses not to print it. */
+export function rowVisibleDetailText(check: AppCheck): string {
+  if (check.state === "fail" && check.kind === "candidate") {
+    return `${rowStateDetailText(check)} — ${check.detail}`;
+  }
+  return check.detail;
 }
 
 /** The app's Tasks tab. Spelled here, not imported from the shell's
