@@ -301,13 +301,16 @@ export function OnboardingWizard({ config }: { config: Config }) {
             + styles/sidebar.css .sidebar-brand): same mark, same "Render"
             title, same 9px gap / 13.5px / 650 weight, one click target that
             goes Home, title turning --accent-soft on hover. Leaving this way
-            is a close (the unmount dismisses, below). */}
+            is a CLOSE, so it goes through `finish("dismiss")` like the ✕ —
+            not a bare navigate, which on the last step the unmount would
+            read as completion (a navigation off step 5 is how a built app
+            reports itself; bugbot). */}
         <a
           href={EXIT_PATH}
           title="Home"
           onClick={(e) => {
             e.preventDefault();
-            navigateUrl(EXIT_PATH);
+            finish("dismiss");
           }}
           className="group flex min-w-0 items-center gap-[9px] text-[13.5px] font-[650] tracking-[0.01em] text-foreground no-underline"
         >
