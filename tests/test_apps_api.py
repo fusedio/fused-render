@@ -1269,3 +1269,59 @@ def test_set_preview_refuses_non_apps_non_pngs_and_unguarded_calls(client, works
     # A write route: the X-Fused guard applies.
     assert client.post("/api/apps/preview", data={"path": str(d)}, files=png).status_code != 200
     assert not (d / "preview.png").exists()
+
+
+# ---------------------------------------------------------------- app doctor
+#
+# Full coverage of the report and both per-check verbs lives in
+# tests/test_app_doctor_report.py, right beside app_doctor.py itself. What's
+# here is the apps-router-specific slice: the per-check 400/409 gating and
+# per-check live-task attachment, exercised against this file's own app
+# fixture (_app_dir) rather than app_doctor's.
+
+def test_doctor_post_400s_on_a_missing_or_unknown_check(client, workspace):
+    from fused_render import app_doctor
+
+    d = _app_dir(workspace, "checked")
+    for body in ({"path": str(d)}, {"path": str(d), "check": "nonesuch"}):
+        r = client.post("/api/apps/doctor", json=body, headers={"X-Fused": "1"})
+        assert r.status_code == 400
+        assert "check" in r.json()["error"]
+    r = client.post("/api/apps/doctor", json={"path": str(d), "check": "readme"},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200
+
+
+def test_doctor_post_409s_while_any_row_of_the_same_app_is_live(client, workspace, monkeypatch):
+    from fused_render.server.routers import apps as apps_mod
+
+    d = _app_dir(workspace, "checked")
+    monkeypatch.setattr(
+        apps_mod, "_live_app_task",
+        lambda e, matcher: (
+            {"id": "t1", "state": "sent", "run_id": "r1"}
+            if matcher("Run App Doctor on this fused-render app - check `git` x") else None
+        ),
+    )
+    r = client.post("/api/apps/doctor", json={"path": str(d), "check": "icon"},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 409
+
+
+def test_doctor_get_attaches_a_live_task_to_its_own_row_only(client, workspace, monkeypatch):
+    from fused_render import app_doctor, schedule
+
+    d = _app_dir(workspace, "checked")
+    entry = str(d / "index.html")
+    prompt = app_doctor.doctor_prompt(entry, "icon", [])
+    monkeypatch.setattr(
+        schedule, "list_entries",
+        lambda: [{
+            "id": "t9", "state": schedule.SENT, "turn": None,
+            "message": prompt, "target": entry, "run_id": "r9",
+        }],
+    )
+    body = client.get("/api/apps/doctor", params={"path": str(d)}).json()
+    rows = {c["id"]: c for c in body["checks"]}
+    assert rows["icon"]["task"] == {"id": "t9", "state": "sent", "run_id": "r9"}
+    assert rows["readme"]["task"] is None

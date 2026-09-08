@@ -591,45 +591,107 @@ def _doctor_folder(path) -> tuple[str, JSONResponse | None]:
     return os.path.abspath(path), None
 
 
+def _live_doctor_tasks(entry_html: str | None) -> dict[str, dict]:
+    """`{check_id: task}` for every App Doctor fix task on `entry_html` that
+    is still live — the per-check version of `_live_app_task`, since the fix
+    task is now one per ROW rather than one for the whole report. Reuses the
+    same schedule scan `_live_app_task` does rather than calling it once per
+    row: a report has up to eleven rows, and eleven passes over the same
+    entries table would be eleven times the cost for the same answer."""
+    from fused_render import app_doctor
+
+    if not entry_html:
+        return {}
+    want = os.path.realpath(entry_html)
+    try:
+        entries = schedule.list_entries()
+    except Exception:  # noqa: BLE001 — a store that cannot be read is "none live"
+        return {}
+    out: dict[str, dict] = {}
+    for e in entries:
+        if e.get("state") not in (schedule.PENDING, schedule.SENDING, schedule.SENT):
+            continue
+        if e.get("turn"):
+            continue
+        message = str(e.get("message") or "")
+        if not app_doctor.is_doctor_prompt(message):
+            continue
+        target = str(e.get("target") or "")
+        if not target or os.path.realpath(target) != want:
+            continue
+        check_id = app_doctor.doctor_task_check_id(message)
+        if not check_id:
+            continue
+        out[check_id] = {
+            "id": str(e.get("id") or ""),
+            "state": str(e.get("state") or ""),
+            "run_id": e.get("run_id") or None,
+        }
+    return out
+
+
 @router.get("/api/apps/doctor")
-def api_app_doctor(path: str):
+def api_app_doctor(path: str, check: str | None = None):
     """The App Doctor report for one folder: the deterministic checklist the
     modal draws (`app_doctor.report` — what it checks and why lives there),
-    beside the live fix task if one is already running.
+    each row carrying its own live fix task if one is already running.
+
+    `check`, when given, re-runs just that ONE row instead of the whole
+    report — `{"path", "checks": [<that one row>]}` — so a row can refresh
+    itself after its fix lands without re-walking the tree for every other
+    row too. 400 for an id `app_doctor` does not know.
 
     Read-only and cheap enough for a button press: a bounded walk of the
-    folder plus one `git status`. Nothing here forms a judgment about a
-    finding — that is the fix task's job, and the fix task is a Claude session
-    running the skill (POST, below)."""
+    folder plus one `git status` (or, with `check`, just the one row's own
+    cost). Nothing here forms a judgment about a finding — that is the fix
+    task's job, and the fix task is a Claude session running the skill
+    (POST, below)."""
     from fused_render import app_doctor
 
     folder, err = _doctor_folder(path)
     if err is not None:
         return err
+
+    try:
+        entry_html = app_listing.app_entry(folder)
+    except OSError:
+        entry_html = None
+    live = _live_doctor_tasks(entry_html)
+
+    if check is not None:
+        row = app_doctor.report_one(folder, check)
+        if row is None:
+            return _error(f"'check' must be one of: {', '.join(app_doctor.CHECK_ORDER)}")
+        row["task"] = live.get(row["id"])
+        return {"path": folder, "checks": [row]}
+
     report = app_doctor.report(folder)
-    entry = report.get("entry")
-    # The same key shape /api/apps/entry uses for its migration task, and for
-    # the same reason: the button reads "in progress" instead of offering a
-    # second session over the same files.
-    report["task"] = (_live_app_task(entry, app_doctor.is_doctor_prompt)
-                      if entry else None)
+    for c in report["checks"]:
+        c["task"] = live.get(c["id"])
     return report
 
 
 @router.post("/api/apps/doctor")
 def api_app_doctor_fix(body: dict = Body(...),
                        x_fused: str | None = Header(default=None)):
-    """Create the FIX task: one session that explains every App Doctor finding
-    and fixes what is safe to fix. The prompt is one line invoking the
-    `fused-render-app-doctor` skill (`app_doctor.doctor_prompt`) — the skill
-    owns the checks, the judgment about which hits are real, and where each
-    kind of fix belongs.
+    """Create the FIX task for ONE row: a session that triages (for a
+    candidate row) and fixes what is safe to fix in that row alone. The
+    prompt is one line invoking the `fused-render-app-doctor` skill, pointed
+    at that check's own section (`app_doctor.doctor_prompt`) — the skill owns
+    the judgment about which hits are real and where each kind of fix
+    belongs. `check: "all"` is "Fix all": one session over every currently
+    FAILING row, section order, each with its own findings inline
+    (`app_doctor.doctor_prompt_all`) — the footer's one button, the per-row
+    Fix/Review buttons' bulk sibling.
 
-    One task for the whole report, not one per finding: the findings are about
-    the same folder and often the same file, and two sessions rewriting one
-    app at once is a merge nobody asked for. Same shape and same seam as the
-    scaffolding task `/api/apps/new` creates, so the app's Tasks tab lists it
-    and the Claude pane can attach to its run."""
+    `check` in the body selects the row (or `"all"`): 400 for anything else.
+    Still ONE LIVE TASK PER APP, not per row: two sessions rewriting the same
+    folder at once — even over different rows, even "Fix all" alongside a
+    single row — is a merge nobody asked for, so the 409 gate is the same
+    whole-app scan `_live_app_task` always ran, just reused here rather than
+    duplicated. Same shape and same seam as the scaffolding task
+    `/api/apps/new` creates, so the app's Tasks tab lists it and the Claude
+    pane can attach to its run."""
     from fused_render import app_doctor
 
     guard = _require_fused(x_fused)
@@ -639,6 +701,10 @@ def api_app_doctor_fix(body: dict = Body(...),
     folder, err = _doctor_folder(body.get("path"))
     if err is not None:
         return err
+    check_id = body.get("check")
+    valid_checks = (app_doctor.ALL,) + app_doctor.CHECK_ORDER
+    if not isinstance(check_id, str) or check_id not in valid_checks:
+        return _error(f"'check' must be one of: {', '.join(valid_checks)}")
     model = body.get("model", "")
     effort = body.get("effort", "")
     for field, value, allowed in (("model", model, VALID_DEFAULT_MODELS),
@@ -661,11 +727,18 @@ def api_app_doctor_fix(body: dict = Body(...),
         return _error("an App Doctor task for this app is already in progress",
                       status=409)
 
-    prompt = app_doctor.doctor_prompt(entry_html)
+    if check_id == app_doctor.ALL:
+        prompt = app_doctor.doctor_prompt_all(
+            entry_html, app_doctor.report(folder)["checks"])
+    else:
+        row = app_doctor.report_one(folder, check_id)
+        findings = row["findings"] if row else []
+        prompt = app_doctor.doctor_prompt(entry_html, check_id, findings)
     task, task_error = _create_app_task(entry_html, prompt, model, effort)
     return {
         "path": folder,
         "entry_html": entry_html,
+        "check": check_id,
         # Same two keys as /api/apps/new, same meaning: the stored entry with
         # its `run_id` once the send resolved, and why no entry was stored.
         "task": task,
@@ -963,7 +1036,7 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     name_err = _app_name_error(name)
     if name_err is not None:
         return _error(name_err)
-    name = name.strip()
+    name = str(name).strip()
 
     prompt = body.get("prompt", "")
     if not isinstance(prompt, str):
