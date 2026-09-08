@@ -7,7 +7,8 @@
 // and this bottom-right card — which between them meant the same "Path copied"
 // appeared in two different places depending on which view raised it, and a
 // toast could sit next to (or under) an unrelated card in the other corner.
-// One stack, one set of stacking rules, one auto-dismiss timer (the store's).
+// One stack, one set of stacking rules, no auto-dismiss — a toast stays until
+// the ✕ or the code that raised it clears it (lib/toast).
 //
 // Order is oldest → newest top to bottom, so the newest message is nearest the
 // bottom edge where the eye already is, and the server card sits below all of
