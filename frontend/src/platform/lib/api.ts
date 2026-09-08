@@ -516,6 +516,14 @@ const listPrefetch = new Map<string, { promise: Promise<ListResult>; ts: number 
 //                              same-origin ancestor chain. This is the only cover
 //                              for a template view of a FILE, which mounts no
 //                              listing and so has no watcher at all.
+//
+// This map only protects a listing that mounts (or re-fetches) AFTER the
+// clear — it says nothing to a listing already sitting on screen, which is
+// why window._fusedFsChanged also calls listing/fsChangeBus.ts's
+// `notifyFsChanged` right alongside `clearListPrefetch`: that is the half
+// that reaches an ALREADY-MOUNTED useDirListing (e.g. an Explorer pane open
+// on a repo while the git template's stage/unstage runs in another pane,
+// which rewrites `.git/index` and so moves no watched directory's mtime).
 export function clearListPrefetch(): void {
   listPrefetch.clear();
 }
