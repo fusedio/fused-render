@@ -2693,6 +2693,8 @@ def _out_has_result_since(run_dir: str, out_offset: int) -> bool:
             row = json.loads(raw_line.decode("utf-8", "replace"))
         except ValueError:
             continue
+        if row.get("parent_tool_use_id"):
+            continue  # a subagent's own row, not the main turn's (see _poll)
         if row.get("type") == "result":
             return True
     return False

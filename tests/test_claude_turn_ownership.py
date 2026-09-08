@@ -197,6 +197,29 @@ def test_open_from_is_none_without_a_live_run_a_mark_or_a_user_row(
     assert agent._history(target, "sess1")["open_from"] is None
 
 
+def test_a_subagents_own_result_row_does_not_close_the_mark(
+        agent, tmp_path, monkeypatch):
+    """A subagent's own `result` row (`parent_tool_use_id` set) on
+    `out.jsonl` belongs to a Task-tool call, not the main turn — it must not
+    read as the main exchange having finished. Every other reader of this
+    file (`_read_current_turn`, `_turn_state`, `_poll`) already skips such a
+    row before deciding anything off `type`; `_out_has_result_since` is the
+    one holdout `_history`'s `open_from` relies on."""
+    target, path = _write_transcript(agent, tmp_path, monkeypatch, [
+        _t_user("fix the header"),
+        _t_assistant("Fixed."),
+        _t_user("delegate this to a subagent"),
+    ], return_path=True)
+    offset = _row_offset(path, 2)  # "delegate this to a subagent"
+    _setup_live_run(agent, tmp_path, monkeypatch, target, "sess1",
+                    mark={"transcript": path, "offset": offset, "out_offset": 0},
+                    out_rows=[{"type": "result", "result": "subtask done",
+                               "parent_tool_use_id": "toolu_1"}])
+    out = agent._history(target, "sess1")
+    assert out["open_from"] == 2, (
+        "a subagent's own result row must not close the mark")
+
+
 def test_a_null_transcript_mark_matches_whatever_transcript_is_read(
         agent, tmp_path, monkeypatch):
     """Acceptance test 8: a session's very first exchange feeds before the

@@ -165,7 +165,22 @@ def _drain_inbox(agent, run_dir: str, cli_stdin, req: dict) -> None:
         except ValueError:
             entry = {}
         if isinstance(entry, dict) and entry.get("type") == "user":
-            _mark_open_exchange(agent, run_dir, req)
+            try:
+                _mark_open_exchange(agent, run_dir, req)
+            except Exception as exc:
+                # A mark write is not worth losing the session over — the
+                # caller (`_reap_loop`) wraps its whole cycle in a bare
+                # `except Exception` that would otherwise tear down an
+                # otherwise-healthy host over this alone. The message still
+                # has to reach the CLI below either way; only the mark is
+                # skipped for this entry. Logged, not silent, same pattern
+                # `_reap_loop` itself uses for its own catch-all.
+                try:
+                    with _append_private(os.path.join(run_dir, "err.log")) as f:
+                        f.write(("\nsession_host: mark write failed: %r\n"
+                                 % (exc,)).encode("utf-8"))
+                except OSError:
+                    pass
         cli_stdin.write(data)
         cli_stdin.flush()
         os.replace(src, os.path.join(done, name))

@@ -528,3 +528,30 @@ def test_a_brand_new_session_records_a_null_transcript_and_zero_offset(
     mark = _read_mark(str(run_dir))
     assert mark["transcript"] is None
     assert mark["offset"] == 0
+
+
+def test_a_mark_write_failure_never_stops_the_message_reaching_the_cli(
+        agent, tmp_path, monkeypatch):
+    """A raise out of `_mark_open_exchange` (a bad stat, a permissions
+    error, anything) must not propagate out of `_drain_inbox` — the caller
+    is `_reap_loop`, whose own `except Exception` would tear down an
+    otherwise-healthy session over a mark write. The message still has to
+    reach the CLI's stdin (that write is not the mark's to guard), and the
+    failure is logged to `err.log` rather than swallowed silently."""
+    host = _load_host()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text("")
+
+    def _boom(agent, run_dir, req):
+        raise OSError("disk on fire")
+    monkeypatch.setattr(host, "_mark_open_exchange", _boom)
+
+    agent._write_inbox_entry(str(run_dir), "hello")
+    req = {"session_id": "sess1", "file": str(tmp_path / "page.html")}
+    stdin = _MarkFakeStdin()
+    host._drain_inbox(agent, str(run_dir), stdin, req)  # must not raise
+
+    assert stdin.written, "the message must still reach the CLI's stdin"
+    err = (run_dir / "err.log")
+    assert err.exists() and "disk on fire" in err.read_text(encoding="utf-8")
