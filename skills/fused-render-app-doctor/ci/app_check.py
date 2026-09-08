@@ -52,13 +52,26 @@ exits 1 only when a fact finding fired; a run with candidates only prints them
 and exits 0, so someone still sees them without a push getting blocked over
 a maybe.
 
+BUT NOT EVERY FACT SHOULD BLOCK EITHER. A missing `preview.png`
+(`structure:missing-thumbnail`) is a fact — `os.path.isfile` said so with no
+ambiguity — yet its severity is `suggested`: the share still opens and works
+without a thumbnail, it just looks worse in a listing. Gating the exit code
+on `kind == "fact"` alone made that cosmetic gap fail the same build a leaked
+AWS key (`secrets`, `severity: "critical"`, but `kind: "candidate"` so it
+never blocked) would exit 0 on — inverted urgency, not merely inconsistent.
+`main` now exits 1 only for a FACT finding whose severity is `critical` or
+`warning`; a `suggested` fact still prints (it is real and worth fixing) but
+never reddens the build on its own, and a candidate — any severity — never
+blocks, per the paragraph above.
+
 WORKING TREE ONLY. No history scan — a secret already committed is a job for
 whatever gates publishing, not this script, and scanning history would make
 every run as slow as the app's oldest commit.
 
 Run as `python app_check.py [path]` (path defaults to `.`): prints one
 `path:line: rule: excerpt` line per finding, then exits 1 if any FACT finding
-fired and 0 otherwise (a clean folder, or one with candidates only).
+of severity `critical` or `warning` fired, 0 otherwise (a clean folder, only
+candidates, or only `suggested` facts).
 """
 import fnmatch
 import os
@@ -756,11 +769,16 @@ def main(argv: list[str] | None = None) -> int:
     bytes in the same order. Every finding prints, candidate and fact alike —
     only the exit code tells them apart.
 
-    Fails on a FACT finding, never on a candidate alone: see the module
-    docstring for why (a real workspace measurement where every candidate
-    finding was a false positive). Returns the process exit code rather than
-    calling `sys.exit` itself, so a caller in the same process can inspect
-    it."""
+    Fails on a FACT finding of severity `critical` or `warning`, never on a
+    candidate alone: see the module docstring for why (a real workspace
+    measurement where every candidate finding was a false positive). A
+    `suggested` fact (a missing `preview.png`, say) still prints — it is
+    real, worth fixing, and worth surfacing in CI logs — but it must not
+    redden a push on its own; `suggested` is, by definition (see
+    `CHECK_META`/`_STRUCTURE_META` above), the severity for a finding that
+    costs an app polish, not correctness. Returns the process exit code
+    rather than calling `sys.exit` itself, so a caller in the same process
+    can inspect it."""
     argv = sys.argv[1:] if argv is None else argv
     path = argv[0] if argv else "."
     path = os.path.abspath(path)
@@ -777,7 +795,8 @@ def main(argv: list[str] | None = None) -> int:
         where = f["path"] if not f["line"] else f"{f['path']}:{f['line']}"
         print(f"{where}: {f['rule']}: {f['excerpt']}")
     print(f"{len(findings)} finding" + ("" if len(findings) == 1 else "s"))
-    return 1 if any(f.get("kind") == "fact" for f in findings) else 0
+    return 1 if any(f.get("kind") == "fact" and f.get("severity") in ("critical", "warning")
+                    for f in findings) else 0
 
 
 if __name__ == "__main__":

@@ -11801,3 +11801,13 @@ per-row fix.
   using D751's own false positives (a repeated path across committed run
   logs, a vendored stdlib docstring, markdown code spans, a deliberate
   system-path constant, a test fixture) as worked examples.
+- **AD-7** The CI floor's exit code (`ci/app_check.py`'s `main`, wired up by
+  `.github/workflows/app-check.yml` on every push) gates on `kind == "fact"`
+  **and** `severity in ("critical", "warning")` — not `kind == "fact"` alone.
+  A `suggested` fact (a missing `preview.png`) still prints, since it is a
+  real, worth-fixing gap, but it must not redden a push the way a `critical`
+  candidate correctly does not either: gating on `kind` alone briefly had a
+  missing thumbnail failing a build while a leaked AWS key printed and exited
+  0, the exact inverted urgency AD-2's severity table exists to prevent.
+  Every finding still prints regardless of whether it blocks — only the exit
+  code changes.

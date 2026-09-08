@@ -82,27 +82,41 @@ def test_findings_across_files_and_families_print_one_pinned_line_each_in_sorted
     ]
 
 
-def test_a_missing_thumbnail_exits_nonzero(tmp_path):
+def test_a_missing_thumbnail_prints_but_does_not_redden_the_run(tmp_path):
     """A missing preview.png is a structure finding — a FACT, not a pattern
-    match — so it fails the run on its own even though a leaked-key-shaped
-    candidate would not."""
+    match — but its severity is `suggested` (`_STRUCTURE_META`): the share
+    still opens and works without a thumbnail, it just looks worse in a
+    listing. `kind == "fact"` alone used to be enough to fail the build over
+    this cosmetic gap while a `critical` candidate (see the test above) exited
+    0 — inverted urgency. The finding still prints; it must not block."""
     _clean_app(tmp_path)
     (tmp_path / "preview.png").unlink()
     r = _run(str(tmp_path), cwd=tmp_path)
-    assert r.returncode != 0
+    assert r.returncode == 0
     assert "preview.png" in r.stdout
 
 
-def test_a_candidate_and_a_fact_together_still_redden_the_run(tmp_path):
-    """One fact finding is enough to fail the run even alongside candidates
-    that, alone, would not."""
+def test_a_missing_index_exits_nonzero(tmp_path):
+    """A missing index.html is a structure finding whose severity is
+    `critical` (`_STRUCTURE_META`) — the app cannot even open — so unlike the
+    missing-thumbnail case above, this fact finding does fail the run."""
+    _clean_app(tmp_path)
+    (tmp_path / "index.html").unlink()
+    r = _run(str(tmp_path), cwd=tmp_path)
+    assert r.returncode != 0
+    assert "structure:missing-index" in r.stdout
+
+
+def test_a_candidate_and_a_blocking_fact_together_still_redden_the_run(tmp_path):
+    """One fact finding of severity critical/warning is enough to fail the
+    run even alongside candidates that, alone, would not."""
     _clean_app(tmp_path)
     _write(tmp_path, "app.py", 'AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
-    (tmp_path / "preview.png").unlink()
+    (tmp_path / "index.html").unlink()
     r = _run(str(tmp_path), cwd=tmp_path)
     assert r.returncode != 0
     assert "secrets:aws-access-key" in r.stdout
-    assert "structure:missing-thumbnail" in r.stdout
+    assert "structure:missing-index" in r.stdout
 
 
 def test_a_path_that_does_not_exist_fails_loudly(tmp_path):
