@@ -1325,3 +1325,30 @@ def test_doctor_get_attaches_a_live_task_to_its_own_row_only(client, workspace, 
     rows = {c["id"]: c for c in body["checks"]}
     assert rows["icon"]["task"] == {"id": "t9", "state": "sent", "run_id": "r9"}
     assert rows["readme"]["task"] is None
+
+
+def test_doctor_get_attaches_a_live_fix_all_task_to_every_row(client, workspace, monkeypatch):
+    """A live "Fix all" task is stored with `check `all`` — "all" is never a
+    real row id, so `_live_doctor_tasks` used to key it under a slot no row's
+    `c["id"]` ever matches, and every row's `task` came back null while the
+    session was running. The modal derives its whole "Fix in progress" state
+    (footer AND every row's own Fix/Review button) from `report.checks.find(c
+    => c.task)`, so a null task on every row meant the modal showed an
+    ENABLED footer and ENABLED per-row buttons during a live Fix-all session
+    — pressing any of them would 409. Every row must carry the Fix-all task
+    now, the same way a per-row task attaches to just its own row above."""
+    from fused_render import app_doctor, schedule
+
+    d = _app_dir(workspace, "checked")
+    entry = str(d / "index.html")
+    prompt = app_doctor.doctor_prompt_all(entry, [])
+    monkeypatch.setattr(
+        schedule, "list_entries",
+        lambda: [{
+            "id": "t9", "state": schedule.SENT, "turn": None,
+            "message": prompt, "target": entry, "run_id": "r9",
+        }],
+    )
+    body = client.get("/api/apps/doctor", params={"path": str(d)}).json()
+    task = {"id": "t9", "state": "sent", "run_id": "r9"}
+    assert all(c["task"] == task for c in body["checks"])

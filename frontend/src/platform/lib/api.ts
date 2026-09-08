@@ -2471,29 +2471,9 @@ export interface AppDoctorReport {
   severities: Severity[];
 }
 
-/** The response to a `check`-scoped GET: just the one row, not a whole report
- *  (no `ok`, no `entry` — the caller already has those from its last full
- *  fetch, or does not need them to redraw one row). */
-export interface AppDoctorCheckResult {
-  path: string;
-  checks: AppCheck[];
-}
-
 export function getAppDoctor(path: string): Promise<AppDoctorReport> {
   return getJson<AppDoctorReport>(
     `/api/apps/doctor?path=${encodeURIComponent(path)}`,
-  );
-}
-
-/** Re-run just ONE row (a row refreshing itself after its own fix task
- *  lands) rather than the whole folder walk. 400 for a `check` id the server
- *  does not know. */
-export function getAppDoctorCheck(
-  path: string,
-  check: string,
-): Promise<AppDoctorCheckResult> {
-  return getJson<AppDoctorCheckResult>(
-    `/api/apps/doctor?path=${encodeURIComponent(path)}&check=${encodeURIComponent(check)}`,
   );
 }
 

@@ -589,23 +589,19 @@ def test_post_rejects_an_unknown_model_or_effort(client, workspace):
         assert field in r.json()["error"]
 
 
-# ----------------------------------------------------- per-check GET and task
-
-
-def test_get_with_check_reruns_just_that_row(client, workspace):
-    d = _app(workspace, readme=False)
-    r = client.get("/api/apps/doctor", params={"path": str(d), "check": "readme"})
-    assert r.status_code == 200
-    body = r.json()
-    assert list(body.keys()) == ["path", "checks"]
-    assert [c["id"] for c in body["checks"]] == ["readme"]
-    assert body["checks"][0]["state"] == "fail"
-
-
-def test_get_with_an_unknown_check_is_a_400(client, workspace):
-    d = _app(workspace)
-    r = client.get("/api/apps/doctor", params={"path": str(d), "check": "nonesuch"})
-    assert r.status_code == 400
+# ------------------------------------------------------------- per-check task
+#
+# GET /api/apps/doctor used to take an optional `check` query param that
+# re-ran just one row (`app_doctor.report_one`), for "a row refreshing itself
+# after its own fix task lands". That moment never occurs — creating a fix
+# task navigates away and closes the dialog — and `getAppDoctorCheck`
+# (frontend/src/platform/lib/api.ts) had no caller anywhere in
+# frontend/src, so the branch and its client helper were removed together
+# rather than shipping untested surface (the two tests that lived here,
+# test_get_with_check_reruns_just_that_row and
+# test_get_with_an_unknown_check_is_a_400, went with them). `report_one`
+# itself stays: the POST fix task below still uses it to gather one row's
+# findings without paying for a full report.
 
 
 def test_doctor_prompt_reads_kind_from_the_engine_not_the_fallback_table(monkeypatch):

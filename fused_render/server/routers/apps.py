@@ -631,21 +631,35 @@ def _live_doctor_tasks(entry_html: str | None) -> dict[str, dict]:
 
 
 @router.get("/api/apps/doctor")
-def api_app_doctor(path: str, check: str | None = None):
+def api_app_doctor(path: str):
     """The App Doctor report for one folder: the deterministic checklist the
     modal draws (`app_doctor.report` — what it checks and why lives there),
     each row carrying its own live fix task if one is already running.
 
-    `check`, when given, re-runs just that ONE row instead of the whole
-    report — `{"path", "checks": [<that one row>]}` — so a row can refresh
-    itself after its fix lands without re-walking the tree for every other
-    row too. 400 for an id `app_doctor` does not know.
+    No `check`-scoped variant here — an earlier build had one (re-run just
+    one row, cheaper than the whole walk), meant for "a row refreshing
+    itself after its own fix task lands". That moment never actually occurs:
+    creating a fix task navigates away and closes the dialog, so the only
+    refresh path is closing and reopening it, which already re-runs the
+    whole report. `frontend/src/platform/lib/api.ts`'s `getAppDoctorCheck`
+    had no caller anywhere in `frontend/src`, so both it and this branch were
+    removed together rather than shipping untested surface. `app_doctor.
+    report_one` itself stays — the per-check POST fix task below still uses
+    it to gather one row's findings without paying for the rest.
 
     Read-only and cheap enough for a button press: a bounded walk of the
-    folder plus one `git status` (or, with `check`, just the one row's own
-    cost). Nothing here forms a judgment about a finding — that is the fix
-    task's job, and the fix task is a Claude session running the skill
-    (POST, below)."""
+    folder plus one `git status`/`git rev-list`. Nothing here forms a
+    judgment about a finding — that is the fix task's job, and the fix task
+    is a Claude session running the skill (POST, below).
+
+    A row's own `task` reflects EITHER a fix session on that one row OR a
+    live "Fix all" session (`app_doctor.ALL`) — the server allows only one
+    fix session per app at a time, so while "Fix all" is running every
+    failing row is just as much "already being worked on" as a row with its
+    own task, and the modal's per-row Fix/Review button and its footer must
+    both read that as in-progress rather than idle (see `_live_doctor_tasks`:
+    `"all"` is never a real check id, so a naive `live.get(c["id"])` would
+    silently drop a live Fix-all session for every row)."""
     from fused_render import app_doctor
 
     folder, err = _doctor_folder(path)
@@ -657,17 +671,11 @@ def api_app_doctor(path: str, check: str | None = None):
     except OSError:
         entry_html = None
     live = _live_doctor_tasks(entry_html)
-
-    if check is not None:
-        row = app_doctor.report_one(folder, check)
-        if row is None:
-            return _error(f"'check' must be one of: {', '.join(app_doctor.CHECK_ORDER)}")
-        row["task"] = live.get(row["id"])
-        return {"path": folder, "checks": [row]}
+    all_task = live.get(app_doctor.ALL)
 
     report = app_doctor.report(folder)
     for c in report["checks"]:
-        c["task"] = live.get(c["id"])
+        c["task"] = live.get(c["id"]) or all_task
     return report
 
 

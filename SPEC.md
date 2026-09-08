@@ -11785,12 +11785,21 @@ per-row fix.
   exactly. A candidate row's prompt asks for triage first: judge each finding
   real or not, say which and why, then fix only the real ones.
   `doctor_prompt_all` builds the "Fix all" prompt the same way, one block per
-  currently failing row. `GET /api/apps/doctor` takes an optional `check`
-  query param to re-run just that row (`app_doctor.report_one`, cheaper than
-  a full report for most ids); `POST /api/apps/doctor` takes `check` in the
-  body (400 for an unknown id, `"all"` included) and 404/409 exactly as
-  before — one live fix session per APP, not per row, since two sessions
-  rewriting one folder is a merge nobody asked for.
+  currently failing row. `POST /api/apps/doctor` takes `check` in the body
+  (400 for an unknown id, `"all"` included) and 404/409 exactly as before —
+  one live fix session per APP, not per row, since two sessions rewriting one
+  folder is a merge nobody asked for. `app_doctor.report_one` still exists —
+  the POST handler uses it to gather one row's findings without paying for a
+  full report — but `GET /api/apps/doctor` no longer takes a `check` query
+  param: an earlier build had one (re-run just one row after its own fix task
+  lands), but creating a fix task navigates away and closes the dialog, so
+  that moment never occurs and the client helper that would have called it
+  had no caller; both were removed rather than left as untested surface
+  (review finding, post-D751). A row's `task` is EITHER its own live fix
+  session or a live "Fix all" session (`app_doctor.ALL`) — `GET`'s response
+  attaches the Fix-all task to every row, not just a row literally named
+  `"all"` (no row ever is), so the modal's per-row buttons and its footer
+  both read a live Fix-all session as in-progress rather than idle.
 - **AD-6** `skills/fused-render-app-doctor/SKILL.md` does not re-derive any of
   the above: the panel already computed and displays it. The skill is one
   anchored playbook section per check id — how to judge a hit, what is safe
