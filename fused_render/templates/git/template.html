@@ -909,16 +909,6 @@
     font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
-  /* Present on every row (see commitLine()), not just the selected one, so
-     the space it occupies is identical whether or not the row is selected —
-     only VISIBILITY toggles. `visibility: hidden` (not `display: none`)
-     keeps the slot's width in the flex layout, which is the whole point: a
-     row going from unselected to selected must not narrow `.subject` by the
-     sha's width and shove every sibling after it (the marker, `.when`) to
-     the left. */
-  .row .sha.sha-hidden {
-    visibility: hidden;
-  }
   .row .subject, .row .path {
     min-width: 0;
     overflow: hidden;
@@ -930,15 +920,20 @@
      which optional children are present. The marker slot is null whenever
      `canPreview` is false (the folder-listing preview pane, which has no
      content pane for a marker to drive — see THE MARKER SLOT below), so an
-     auto margin on the marker cannot be what pins the sha/when cluster to
+     auto margin on the marker cannot be what pins the marker/when cluster to
      the right edge: with no marker in the row, nothing would carry it. Growing
-     the subject instead means marker + sha + when pack against the right
-     edge in every combination — marker present or absent, sha present or
-     absent — because the cluster's left edge is wherever the (possibly
-     zero-width) subject stops, not a margin on one of the cluster's own
-     members. `.path` stays shrink-only: change rows don't carry this
-     sha/when cluster, and growing `.path` would shift the "moved" tag that
-     can follow it for no reason tied to this fix. */
+     the subject instead means marker + when pack against the right edge in
+     every combination — marker present or absent — because the cluster's
+     left edge is wherever the (possibly zero-width) subject stops, not a
+     margin on one of the cluster's own members. The sha (selected row only,
+     see commitLine()) sits between `.subject` and the marker rather than
+     beside `.when`: it is flex:none like everything else here, so on the
+     rows where it exists it just eats into `.subject`'s flexible width —
+     the marker/when cluster after it never moves, because `.subject` is
+     still the only child whose width responds to what else is on the row.
+     `.path` stays shrink-only: change rows don't carry this marker/when
+     cluster, and growing `.path` would shift the "moved" tag that can
+     follow it for no reason tied to this fix. */
   .row .subject {
     flex: 1 1 auto;
   }
@@ -3601,7 +3596,7 @@ function commitLine(entry, selected) {
   const line = el("div", { className: "line" });
   const previewingHere = previewed === entry.sha;
 
-  /* THE MARKER SLOT, right-aligned with the sha/when cluster regardless of
+  /* THE MARKER SLOT, right-aligned with `.when` regardless of
      how long the subject is (`.subject` growing to absorb the row's slack
      does the pushing — see the CSS — rather than a margin on the marker
      itself, since this slot is null below whenever `canPreview` is false and
@@ -3654,19 +3649,19 @@ function commitLine(entry, selected) {
            + " — " + entry.relative + " (" + entry.date + ")",
   },
     el("span", { className: "subject", textContent: entry.subject || "(no subject)" }),
+    /* The short id is rendered only on the selected row (only there — on
+       every row it turned the list into a table), and it sits on the LEFT of
+       the marker/when cluster, not the right: it is one of `.subject`'s
+       neighbors, not a member of the right-pinned cluster, so it eats into
+       `.subject`'s flexible width instead of reserving a slot beside
+       `.when`. Once a commit is picked, the row and the pane say the same
+       identity. Because it is absent entirely (not merely hidden) on every
+       other row, the marker + `.when` cluster's position never moves —
+       `.subject` is the one flexible child, so removing or adding the sha
+       only changes how much of `.subject`'s width it eats, never where the
+       cluster after it starts. */
+    selected ? el("span", { className: "sha", textContent: entry.short }) : null,
     marker,
-    /* The short id is VISIBLE only on the selected row (only there — on every
-       row it turned the list into a table), on the RIGHT, out of the reading
-       line. Once a commit is picked, the row and the pane say the same
-       identity. The element itself, though, is always in the DOM — only
-       `sha-hidden` toggles — so the space it reserves never changes when a
-       row is selected or deselected; only its visibility does. Without that,
-       selecting a row would narrow `.subject` by the sha's width and shove
-       the marker beside it to the left of every other row's. */
-    el("span", {
-      className: selected ? "sha" : "sha sha-hidden",
-      textContent: entry.short,
-    }),
     el("span", { className: "when", textContent: shortWhen(entry), title: entry.relative }));
   if (selected) line.setAttribute("aria-current", "true");
   /* The FULL object name, never the abbreviation the row displays: this value is
