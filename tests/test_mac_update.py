@@ -170,14 +170,18 @@ def test_install_retry_allowed_from_error(monkeypatch):
     assert manager.status()["state"] == "installed"
 
 
-# ---- brew path: the app installs it too, the command stays as a second way ----
+# ---- brew path: one install path, and never a brew command anywhere ----------
 
 
-def test_brew_available_carries_manual_command(monkeypatch):
+def test_brew_available_has_no_manual_command_either(monkeypatch):
+    """The method is informational only (D742): a brew-managed bundle gets the
+    same status shape as a dmg one, `manual_command` included — the app never
+    offers a brew command because it never runs brew on itself."""
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     status = manager.check()
     assert status["state"] == "available"
-    assert status["manual_command"] == "brew update && brew upgrade --cask fused-render"
+    assert status["method"] == "brew"
+    assert status["manual_command"] is None
 
 
 def test_dmg_available_has_no_manual_command(monkeypatch):
@@ -187,18 +191,14 @@ def test_dmg_available_has_no_manual_command(monkeypatch):
     assert status["manual_command"] is None
 
 
-def test_brew_install_takes_the_dmg_path_and_keeps_the_command(monkeypatch, tmp_path):
+def test_brew_install_takes_the_dmg_path(monkeypatch, tmp_path):
     """A brew-managed install used to be a no-op on POST /install (the user ran
-    the brew command). It now installs like a DMG one (Akshil, 2026-09-08:
-    "show the download button regardless") — and "available" still carries
-    the brew command as the secondary way."""
+    the brew command). It now installs exactly like a DMG one — one install
+    path for every install type (D742) — and carries no command with it."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     manager._method = "brew"
-    # A second check() so the brew method is in force when `_sync_manual_command`
-    # runs: `_dmg_manager` already checked as a dmg manager, which left
-    # `manual_command` None.
     manager.check()
-    assert manager.status()["manual_command"] == mac.BREW_COMMAND
+    assert manager.status()["manual_command"] is None
 
     # Recorded, not real: `_install_dmg` would otherwise download the manifest's
     # URL. The assertion is that it RAN — a brew install used to be refused
@@ -216,10 +216,10 @@ def test_brew_install_takes_the_dmg_path_and_keeps_the_command(monkeypatch, tmp_
     assert manager.status()["state"] == "installed"
 
 
-def test_a_failed_brew_install_hands_back_the_terminal_command(monkeypatch, tmp_path):
-    """The automatic swap is not a brew user's only way out: an install error
-    puts the brew command back on the status, which is what the badge's
-    "Automatic update failed. Run this in your terminal:" panel renders."""
+def test_a_failed_brew_install_has_no_terminal_command(monkeypatch, tmp_path):
+    """A failed install on a brew-managed bundle offers no way out but "Try
+    again": the app will not hand the user a brew command it would not run
+    itself (the cask's `uninstall quit:` would quit the app mid-upgrade)."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     manager._method = "brew"
     manager.check()
@@ -229,12 +229,12 @@ def test_a_failed_brew_install_hands_back_the_terminal_command(monkeypatch, tmp_
     manager._install_thread.join(timeout=5)
     status = manager.status()
     assert status["state"] == "error"
-    assert status["manual_command"] == mac.BREW_COMMAND
+    assert status["manual_command"] is None
 
 
 def test_a_failed_dmg_install_has_no_terminal_command(monkeypatch, tmp_path):
-    """Same failure on a dmg-managed bundle: there is no brew receipt and no
-    command to offer, so the badge shows the raw error instead."""
+    """Same failure on a dmg-managed bundle: the badge shows the raw error and
+    a "Try again", with no command of any kind."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     monkeypatch.setattr(manager, "_install_dmg",
                         lambda manifest: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -258,7 +258,7 @@ def test_status_notices_external_upgrade_without_a_check(monkeypatch):
 
 def test_brew_external_upgrade_flips_check_to_installed(monkeypatch):
     """The user runs brew in a terminal; the next check() sees the new bundle
-    on disk, lands on "installed", and drops the manual command."""
+    on disk and lands on "installed"."""
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     assert manager.check()["state"] == "available"
     monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")

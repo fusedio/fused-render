@@ -430,9 +430,10 @@ export function runClaudeDoctor(): Promise<{
 export interface UpdateStatus {
   // idle | checking | available | installing | installed | error
   state: string;
-  // brew: a Homebrew-managed bundle — the app installs it the dmg way anyway
-  // and also surfaces the terminal command (see manual_command); dmg: the app
-  // downloads and swaps its own bundle; none: not updatable.
+  // INFORMATIONAL ONLY — every method takes the same install path (D742): the
+  // app downloads the signed DMG and swaps its own bundle. brew: that bundle
+  // happens to be Homebrew-managed (the app still never runs brew); dmg: it
+  // is not; none: not updatable. Nothing in the UI branches on this.
   method: string;
   latest_version: string | null;
   // Bytes downloaded so far (dmg method only).
@@ -442,11 +443,9 @@ export interface UpdateStatus {
   // header, in which case the UI falls back to showing MB downloaded.
   progress_total: number | null;
   error: string | null;
-  // The `brew upgrade` command, set only for a brew-managed bundle in state
-  // "available" or "error" — a secondary way to update that keeps Homebrew's
-  // receipt in step, and the only way left when the automatic install failed.
-  // Shown with a copy button; its presence is also what tells the badge the
-  // bundle came from Homebrew.
+  // Always null since D742; kept for wire compatibility. There is one install
+  // path for every install type and no terminal command to hand the user, so
+  // no surface reads this field any more.
   manual_command: string | null;
 }
 

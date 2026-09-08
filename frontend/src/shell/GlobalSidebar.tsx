@@ -122,6 +122,18 @@ const PREFERENCES_ICON = (
   </svg>
 );
 
+// A download arrow into a tray: the update row's action IS a download and a
+// swap, and every one of its siblings in this popover wears a glyph — a lone
+// text row at the top of the list read as a stray status line rather than the
+// thing you click.
+const UPDATE_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 3v12" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M4 18.5V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-.5" />
+  </svg>
+);
+
 // A circled question mark — the app's one help affordance, and what a reader
 // looks for when they want the walkthrough back.
 const TOURS_ICON = (
@@ -440,9 +452,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const updateStatus = useUpdateStatus();
   const updateIsRelevant = updateRelevant(updateStatus);
   // Same action UpdateBadge's own button performs: the install downloads and
-  // swaps the bundle, whichever tool put it there (brew included). Reached
-  // from the popover row rather than the expanded badge's own panel, so
-  // there's no panel here to flash a result in — a toast says it instead.
+  // swaps the bundle, whichever tool put it there — one install path for
+  // every install type (D742). Reached from the popover row rather than the
+  // expanded badge's own panel, so there's no panel here to flash a result in
+  // — a toast says it instead.
   const handleUpdatePick = () => {
     if (!updateStatus) return;
     // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the
@@ -639,11 +652,17 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
     // A first row for the same fact the collapsed rail's dot and the expanded
     // badge both carry — the popover is the only one of the three with room
-    // for the actual verb (install / copy the command), so it gets one here
-    // rather than just a label. `href` is a stable key (see PrefsMenuEntry) —
-    // this row never navigates, it only runs `handleUpdatePick`.
+    // for the actual action, so it gets one here rather than just a label,
+    // and an icon like every other row in the list. `href` is a stable key
+    // (see PrefsMenuEntry) — this row never navigates, it only runs
+    // `handleUpdatePick`.
     ...(updateIsRelevant && updateStatus
-      ? [{ href: "#update", label: updateLabel(updateStatus), onPick: handleUpdatePick }, "separator" as const]
+      ? [{
+          href: "#update",
+          label: updateLabel(updateStatus),
+          icon: UPDATE_ICON,
+          onPick: handleUpdatePick,
+        }, "separator" as const]
       : []),
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]

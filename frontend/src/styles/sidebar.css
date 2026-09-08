@@ -1023,9 +1023,17 @@ a.bookmark-name::after {
 
 /* -- Self-update badge (platform/ui/UpdateBadge, packaged mac app only) ----- */
 
+/* An accordion: the toggle row and the panel it opens share ONE border and
+   one radius, so an open badge reads as a single group rather than a button
+   with a loose slab under it. `overflow: hidden` is what lets the row's own
+   tinted fill stop at the rounded corners — the row has no radius of its own
+   any more, this container owns it. */
 .update-badge {
   margin: 2px 8px;
   font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .update-badge-row {
@@ -1035,7 +1043,6 @@ a.bookmark-name::after {
   width: 100%;
   padding: 6px 8px;
   border: none;
-  border-radius: 6px;
   background: rgba(var(--tint), 0.07);
   color: var(--fg);
   font-size: 12px;
@@ -1062,11 +1069,35 @@ a.bookmark-name::after {
   flex: none;
 }
 
+/* Trailing, and it points down when shut and up when open. Driven off the
+   row's own `aria-expanded` rather than a second class, so the accessible
+   state and the drawn one cannot disagree. */
+.update-badge-chev {
+  display: flex;
+  margin-left: auto;
+  flex: none;
+  color: var(--fg-muted);
+  transition: transform 140ms ease;
+}
+
+.update-badge-row[aria-expanded="true"] .update-badge-chev {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-badge-chev {
+    transition: none;
+  }
+}
+
+/* The seam between the row and the panel — the container's border draws the
+   outside, this draws the fold. */
 .update-badge-panel {
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  border-top: 1px solid var(--border);
 }
 
 .update-badge-text {
@@ -1076,12 +1107,6 @@ a.bookmark-name::after {
 
 .update-badge-error {
   color: var(--fg);
-}
-
-.update-badge-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 
 .update-badge-action {
@@ -1099,20 +1124,8 @@ a.bookmark-name::after {
   cursor: pointer;
 }
 
-/* The brew command's Copy sits beside the primary Update button — quieter, so
-   the accent fill stays on the one action that actually installs. AFTER the
-   base rule and at two-class specificity: at equal specificity and declared
-   first, the base rule's accent fill won at rest. */
-.update-badge-action.update-badge-action--secondary {
-  background: transparent;
-  color: var(--fg);
-  border-color: var(--border);
-}
-
-.update-badge-action.update-badge-action--secondary:hover {
-  border-color: var(--fg-muted);
-}
-
+/* Still in use, but no longer by the badge: TroubleCard and ClaudeHealthStrip
+   render a copyable command plate off these two classes. */
 .update-badge-command {
   display: flex;
   align-items: center;
