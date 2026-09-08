@@ -38,8 +38,6 @@ const {
   rowStateAccessibleLabel,
   rowStateDetailText,
   rowVisibleDetailText,
-  sectionStartsOpen,
-  sectionSummary,
   severityDotLabel,
   SEVERITY_LABEL,
   sortByAttention,
@@ -391,33 +389,3 @@ test("the visible detail text never contains a severity word, only the accessibl
     }
   }
 });
-
-// ------------------------------------------------------------ section disclosure
-
-test("sectionSummary joins the parts that apply and drops the rest, with no zero-count part", () => {
-  expect(sectionSummary([check("a", "pass"), check("b", "pass")])).toBe("2 passed");
-  expect(
-    sectionSummary([
-      check("a", "fail"),
-      check("b", "pass"),
-      check("c", "pass"),
-      check("d", "pass"),
-      check("e", "pass"),
-      check("f", "pass"),
-    ]),
-  ).toBe("1 to fix · 5 passed");
-  expect(
-    sectionSummary([check("a", "skip"), check("b", "unrun"), check("c", "pass")]),
-  ).toBe("2 not checked · 1 passed");
-  // A section with nothing of a given kind prints no part for it at all —
-  // never "0 to fix".
-  expect(sectionSummary([check("a", "pass")])).toBe("1 passed");
-});
-
-test("sectionStartsOpen opens a section with anything left to look at, collapses an all-pass one", () => {
-  expect(sectionStartsOpen([check("a", "pass"), check("b", "pass")])).toBe(false);
-  expect(sectionStartsOpen([check("a", "pass"), check("b", "fail")])).toBe(true);
-  expect(sectionStartsOpen([check("a", "skip")])).toBe(true);
-  expect(sectionStartsOpen([check("a", "unrun")])).toBe(true);
-});
-

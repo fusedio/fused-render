@@ -1,47 +1,71 @@
 /* App Doctor's dialog (platform/ui/AppDoctorModal.tsx). The chassis (dialog,
- * section cards, buttons) is shadcn's — platform/shadcn/ui/{dialog,card,button}
- * — and the geometry scale that ties the cards to the rows inside them is
- * Tailwind classes on those elements, spelled out in AppDoctorModal.tsx's
- * header comment. What is left here is the part with no utility equivalent:
- * the semantic severity palette, the findings list, and the two 20px
- * line-box reference boxes that align a row's mark and action to its label's
- * first line.
+ * badges, buttons) is shadcn's — platform/shadcn/ui/{dialog,badge,button} —
+ * and the row geometry is Tailwind classes on those elements, spelled out in
+ * AppDoctorModal.tsx's header comment. What is left here is the part with no
+ * utility equivalent: the semantic severity palette, the findings list, and
+ * the two 20px line-box reference boxes that align a row's mark and action to
+ * its label's first line.
  *
  * The STATES are told by COLOUR AND SHAPE together — a ✓, a fail mark and a
  * "–" — never by colour alone, so the list survives a monochrome or
  * colour-blind reading.
  *
  * A FAILING row also carries a SEVERITY (critical/warning), and that is its
- * own axis, told apart the same disciplined way: its own hue for the row's
- * ground and state mark, its own SHAPE for the state mark (an alert circle
- * for critical, a triangle for warning), and a severity-hued rail down the
- * row's left edge — so the two tiers are told apart by position and weight
- * as well as hue. Every failing row gets a tinted ground and rail — a row
- * worth listing is worth the same urgency treatment. Colours are the
- * palette's own semantic tokens (tokens.css), so both themes come for free.
+ * own axis, told apart the same disciplined way: the severity WORD in a badge
+ * beside the label, its own hue for that badge and for the state mark, and
+ * its own SHAPE for the mark (an alert circle for critical, a triangle for
+ * warning). Colours are the palette's own semantic tokens (tokens.css), so
+ * both themes come for free.
  *
- * The ground and the rail are the ONLY things a failing row adds: its box —
- * radius, padding, inset — is the same box every other row wears, which is
- * why the rail is an inset box-shadow rather than a border (a border would
- * shove the row's own padding around and break that). */
+ * No row has a ground of its own. A failing row is the same box as a passing
+ * one, on the same surface, so the checklist reads as one list rather than as
+ * a stack of tinted plates — and the dialog's only fill is the hover wash
+ * under the pointer. */
 
 .appdoc-summary {
   margin: 0;
   color: var(--fg-muted);
 }
 
-/* A failing row is marked by its rail and its state mark, and by nothing
- * else: it keeps the card's own ground, so every row in a section shares one
- * surface, one radius and one inset. A tinted plate behind the row reads as a
- * second card nested inside the first, at a different geometry from its
- * neighbours. The rail is an inset box-shadow rather than a border because a
- * border would shove the row's padding around and break that. */
-.appdoc-row-sev-critical {
-  box-shadow: inset 2px 0 0 var(--error);
+/* The section's own heading: the same left inset as a row's label (the row's
+ * `px-3`), muted and at body weight, so it groups the rows under it by
+ * alignment instead of by a box. */
+.appdoc-section-label {
+  margin: 10px 0 2px;
+  padding: 0 12px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-weight: 500;
 }
 
-.appdoc-row-sev-warning {
-  box-shadow: inset 2px 0 0 var(--warning);
+.appdoc-section-label:first-child {
+  margin-top: 0;
+}
+
+/* The label and its severity badge share one line and wrap together when the
+ * dialog is narrow — the label is the flexible half, so it wraps first and
+ * the badge never splits off its own row while the label still has width to
+ * give. `row-gap` is what keeps the two legible if they do stack. */
+.appdoc-label-line {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+/* The badge is shadcn's `outline` variant; only the hue is ours. A failing
+ * row's severity is the one thing in the row drawn in a semantic colour
+ * besides the state mark, which carries the same hue two columns to its
+ * left. */
+.appdoc-badge-critical {
+  border-color: rgba(var(--error-rgb), 0.4);
+  color: var(--error);
+}
+
+.appdoc-badge-warning {
+  border-color: rgba(var(--warning-rgb), 0.4);
+  color: var(--warning);
 }
 
 .appdoc-state {
@@ -106,13 +130,12 @@
   color: var(--fg-muted);
 }
 
-/* No severity chip sits next to the label — severity has two OTHER carriers
- * (see this file's header comment and AppDoctorModal.tsx's): the row's
- * ground + rail (`.appdoc-row-sev-*` above), and the state mark's shape. The
- * word itself, for a screen reader, lives in the state mark's own
- * `aria-label`/`title` (`rowStateAccessibleLabel`, appdoctor-lib.ts).
+/* The severity word is on screen for everyone (`.appdoc-badge-*` above), and
+ * a screen reader gets it a second way, from the state mark's own
+ * `aria-label`/`title` (`rowStateAccessibleLabel`, appdoctor-lib.ts), which
+ * also names the state the mark's shape carries visually.
  *
- * One severity palette (the tokens `.appdoc-row-sev-*` above key off) reused
+ * One severity palette (the tokens `.appdoc-badge-*` above key off) reused
  * by the header status dot too (shell/AppPage.tsx, apps/explorer/Preview.tsx)
  * — see appdoctor-lib.ts's `effectiveSeverity`/`worstSeverity` for the one
  * place severity is ranked. */
@@ -191,10 +214,11 @@
  * `var(--ctl-quiet-bg)`, not `--bg`: an opaque `--bg` fill would cut a hole
  * back down to the dialog's own ground instead of reading as a surface of the
  * row. The translucent quiet-control ground (tokens.css) sits on whatever is
- * under it. Its 6px radius is the innermost step of the dialog's one geometry
- * scale (14px card, 10px row, 6px here). */
+ * under it, including the row's hover wash. Its 6px radius is the inner step
+ * of the dialog's geometry scale (14px dialog, 10px row, 6px here). */
 .appdoc-findings {
   display: flex;
+  min-width: 0;
   max-height: 120px;
   flex-direction: column;
   gap: 2px;

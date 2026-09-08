@@ -22,36 +22,33 @@
 // `effectiveSeverity`). Judging a candidate is the fix session's job, which is
 // why its button says Review rather than Fix.
 //
-// A FAILING row's SEVERITY (critical/warning) has no chip next to the
-// label — it is told apart three other ways: the row's left rail and ground
-// tint (app-doctor.css's `.appdoc-row-sev-*`), and the state mark's SHAPE
-// (an alert circle for critical, a triangle for warning — `StateMark`
-// below). Colour is therefore never the only carrier. The word itself, for a
-// screen reader, lives in `rowStateAccessibleLabel` (appdoctor-lib.ts), which
-// feeds the state mark's own `aria-label`/`title`.
+// A FAILING row's SEVERITY (critical/warning) is told by an outline badge
+// beside the label, which prints the severity as a WORD, and by the state
+// mark's SHAPE (an alert circle for critical, a triangle for warning —
+// `StateMark` below). Colour is therefore never the only carrier, and the
+// row's own box never changes: no fill, no edge, no plate behind a failing
+// row, so the checklist reads as one surface from top to bottom.
 //
 // That accessible label is deliberately a SEPARATE helper from
 // `rowStateDetailText`, which feeds `rowVisibleDetailText` below — the
-// visible `.appdoc-detail` line. Folding the two into one string would put
-// the severity word back on screen inside the detail line ("Critical —
+// visible `.appdoc-detail` line. Folding the two into one string would print
+// the severity a second time on screen, inside the detail line ("Critical —
 // Failed — <detail>") — see appdoctor-lib.ts's comment on the two functions
 // for why they must stay split. The visible line also drops the bare
-// "Failed" word a settled fact failure would otherwise carry — the left
-// rail, ground tint and state mark shape already say a row failed, three
-// times over — and drops entirely for a passing row, since every checklist
-// label is already a complete statement on its own. `rowVisibleDetailText`
-// only prints `rowStateDetailText`'s output when it is a candidate's "N to
-// review" count, real information the detail sentence does not otherwise
-// carry.
+// "Failed" word a settled fact failure would otherwise carry — the badge and
+// the state mark's shape already say a row failed, twice over — and drops
+// entirely for a passing row, since every checklist label is already a
+// complete statement on its own. `rowVisibleDetailText` only prints
+// `rowStateDetailText`'s output when it is a candidate's "N to review"
+// count, real information the detail sentence does not otherwise carry.
 //
-// ONE GEOMETRY SCALE, shared by the section cards and the rows inside them:
-// the card is `rounded-xl` (14px) and clips its own corners, its content pad
-// is `p-1` (4px), and every row — passing, failing or skipped — is
-// `rounded-lg px-3 py-2` (10px). 4 + 10 = 14, so a row's corner is
-// concentric with the card's, and no row's box differs from its neighbours'.
-// A failing row differs from a passing one ONLY by its ground tint and its
-// left severity rail (app-doctor.css's `.appdoc-row-sev-*`), both drawn
-// inside that same box — never by a different radius, pad or inset.
+// A SECTION is a muted label over its rows and nothing else: no card, no
+// disclosure, no tally. There are two sections of five and six rows, so a
+// box drawn around each buys no navigation the label does not already give,
+// and a count above rows the reader can see is the same fact told twice.
+// Every row wears one box — `rounded-lg px-3 py-2`, whatever its state — so
+// the only thing that varies down the list is the mark, the badge and the
+// action.
 //
 // Per-row Fix/Review creates ONE task on just that row; the footer's "Fix
 // all" creates one task covering every currently failing row at once. Both
@@ -84,8 +81,6 @@ import {
   rowStateAccessibleLabel,
   rowVisibleDetailText,
   SECTION_LABEL,
-  sectionStartsOpen,
-  sectionSummary,
   sortByAttention,
   splitFindings,
   summaryLine,
@@ -98,7 +93,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@platform/shadcn/ui/dialog";
-import { Card, CardContent } from "@platform/shadcn/ui/card";
+import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -124,8 +119,17 @@ function StateMark({ state, severity }: { state: AppCheckState; severity?: Sever
 }
 
 // The one box every row wears, whatever its state — see this file's header
-// comment on the shared geometry scale.
-const ROW_BOX = "flex items-start gap-2.5 rounded-lg px-3 py-2";
+// comment. The hover wash is the row's only background, and it says "this is
+// the row your pointer is on", not "this row failed".
+const ROW_BOX =
+  "flex items-start gap-2.5 rounded-lg px-3 py-2 hover:bg-foreground/[0.04]";
+
+// The severity word the badge prints. Sentence case, because it sits inline
+// beside the label rather than as chrome above it.
+const SEVERITY_WORD: Record<Severity, string> = {
+  critical: "Critical",
+  warning: "Warning",
+};
 
 function CheckRow({
   check,
@@ -160,7 +164,19 @@ function CheckRow({
         <StateMark state={check.state} severity={failing ? check.severity : undefined} />
       </span>
       <div className="appdoc-text">
-        <span className="appdoc-label">{check.label}</span>
+        {/* The badge shares the label's line and wraps under it on a narrow
+            dialog rather than squeezing the label — `.appdoc-label-line`
+            (app-doctor.css). `variant="outline"` because a filled badge at
+            this size competes with the row's own action for the eye; the
+            severity hue is carried by the outline and the text. */}
+        <span className="appdoc-label-line">
+          <span className="appdoc-label">{check.label}</span>
+          {failing && (
+            <Badge variant="outline" className={"appdoc-badge-" + check.severity}>
+              {SEVERITY_WORD[check.severity]}
+            </Badge>
+          )}
+        </span>
         {rowVisibleDetailText(check) !== "" && (
           <span className="appdoc-detail">{rowVisibleDetailText(check)}</span>
         )}
@@ -202,7 +218,7 @@ function CheckRow({
         <div className="appdoc-row-actions">
           {check.task ? (
             <Button
-              variant="outline"
+              variant="secondary"
               size="sm"
               title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
               onClick={() => onFix(check)}
@@ -211,7 +227,7 @@ function CheckRow({
             </Button>
           ) : (
             <Button
-              variant="outline"
+              variant="secondary"
               size="sm"
               disabled={busy || otherTaskLive}
               title={
@@ -241,14 +257,6 @@ export function AppDoctorModal({
   const [report, setReport] = useState<AppDoctorReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // One disclosure level, keyed by section id, in plain component state (no
-  // localStorage — the report is fetched fresh on every open, so there is
-  // nothing to restore across opens). Seeded from `sectionStartsOpen` the
-  // moment the report lands (below) and then left alone: the seeding effect
-  // only ever fills in a key that isn't there yet, so a section the user has
-  // since toggled by hand keeps that choice for the life of the dialog
-  // instead of being reseeded out from under them on some later render.
-  const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({});
   const alive = useRef(true);
   useEffect(() => {
     // Re-arm on every mount: a remount (or React's dev double-invoke under
@@ -277,24 +285,6 @@ export function AppDoctorModal({
   useEffect(() => {
     void load();
   }, [load]);
-
-  // Seeds `sectionOpen` from the report the moment it lands, filling in only
-  // the sections not already present — see the state declaration above for
-  // why that matters.
-  useEffect(() => {
-    if (!report) return;
-    setSectionOpen((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const group of groupBySection(report.checks)) {
-        if (!(group.section in next)) {
-          next[group.section] = sectionStartsOpen(group.checks);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [report]);
 
   // Any row's live task is the whole app's live task — the server allows
   // exactly one at a time, so whichever row (or "Fix all") is running is the
@@ -334,9 +324,6 @@ export function AppDoctorModal({
 
   const fixAll = () => void runFix(() => runAppDoctorAll(dir));
 
-  const toggleSection = (section: string) =>
-    setSectionOpen((prev) => ({ ...prev, [section]: !prev[section] }));
-
   return (
     // Always open while mounted: the caller renders this behind
     // `{open && …}`, so the only close this dialog can report is the user's.
@@ -356,78 +343,43 @@ export function AppDoctorModal({
         <DialogHeader>
           <DialogTitle>{"App Doctor — " + (basename(dir) || dir)}</DialogTitle>
         </DialogHeader>
-        <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
+        <div className="flex min-h-0 min-w-0 flex-col gap-2 overflow-x-hidden overflow-y-auto">
           <ErrorBanner>{error}</ErrorBanner>
           {report === null ? (
             <SkeletonLines rows={6} />
           ) : (
             <>
               <p className="appdoc-summary">{summaryLine(report.checks)}</p>
-              {groupBySection(report.checks).map((group) => {
-                const isOpen = sectionOpen[group.section] ?? sectionStartsOpen(group.checks);
-                const listId = "appdoc-list-" + group.section;
-                const sorted = sortByAttention(group.checks);
-                return (
-                  // `gap-0 py-0` because the header button and the row list
-                  // carry their own pads; the card contributes the edge, the
-                  // ground and the 14px radius its rows are cut to fit.
-                  <Card key={group.section} className="gap-0 bg-muted/40 py-0">
-                    <h3 className="m-0">
-                      {/* The disclosure control: a full-width button carrying
-                          `aria-expanded`/`aria-controls` so the section's own
-                          `<ul>` can be toggled. It spans the card's full
-                          width so the whole top edge is the hit target, and
-                          its text indent (px-4) matches a row's own (the
-                          card's p-1 content pad plus the row's px-3), so the
-                          heading and the labels under it share one left edge.
-                          The focus ring is inset, because the button meets
-                          the card's clipped edge on three sides. */}
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-[13px] font-medium text-foreground [font-family:inherit] hover:bg-foreground/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"
-                        aria-expanded={isOpen}
-                        aria-controls={listId}
-                        onClick={() => toggleSection(group.section)}
-                      >
-                        <span className="flex-none">
-                          {SECTION_LABEL[group.section] ?? group.section}
-                        </span>
-                        {/* Only a COLLAPSED section needs its contents counted —
-                            an open one has the rows themselves right below, and
-                            a count sitting above them is a second telling of
-                            what the reader can already see. */}
-                        {!isOpen && (
-                          <span className="min-w-0 flex-1 truncate text-right text-xs font-normal text-muted-foreground">
-                            {sectionSummary(group.checks)}
-                          </span>
-                        )}
-                      </button>
-                    </h3>
-                    {isOpen && (
-                      <CardContent className="p-1">
-                        <ul className="m-0 flex list-none flex-col gap-0.5 p-0" id={listId}>
-                          {sorted.map((c) => (
-                            <CheckRow
-                              key={c.id}
-                              check={c}
-                              busy={busy}
-                              otherTaskLive={!!liveTask && !c.task}
-                              onFix={fixRow}
-                            />
-                          ))}
-                        </ul>
-                      </CardContent>
-                    )}
-                  </Card>
-                );
-              })}
+              {groupBySection(report.checks).map((group) => (
+                // A heading and its list, nothing around them. The heading's
+                // left inset (px-3) is the row's own, so the section name and
+                // every label under it share one left edge — the alignment
+                // does the grouping a box would otherwise be drawn for.
+                <section key={group.section} className="flex min-w-0 flex-col">
+                  <h3 className="appdoc-section-label">
+                    {SECTION_LABEL[group.section] ?? group.section}
+                  </h3>
+                  <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
+                    {sortByAttention(group.checks).map((c) => (
+                      <CheckRow
+                        key={c.id}
+                        check={c}
+                        busy={busy}
+                        otherTaskLive={!!liveTask && !c.task}
+                        onFix={fixRow}
+                      />
+                    ))}
+                  </ul>
+                </section>
+              ))}
             </>
           )}
         </div>
-        <DialogFooter>
+        <DialogFooter className="-mx-4 -mb-4 border-t bg-transparent px-4 py-3">
           {liveTask ? (
             <Button
-              variant="accent"
+              variant="default"
+              size="sm"
               title="An App Doctor task for this app is still running — listed under the app's Tasks tab"
               onClick={() => {
                 navigateUrl(tasksTabUrl(dir));
@@ -438,7 +390,8 @@ export function AppDoctorModal({
             </Button>
           ) : (
             <Button
-              variant="accent"
+              variant="default"
+              size="sm"
               onClick={fixAll}
               disabled={
                 busy ||

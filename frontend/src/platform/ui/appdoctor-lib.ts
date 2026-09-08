@@ -140,33 +140,6 @@ export const SECTION_LABEL: Record<string, string> = {
   sharing: "Sharing",
 };
 
-/** The section header's right-aligned summary (AppDoctorModal.tsx's section
- *  disclosure button) — the parts that apply, joined with " · ", so a clean
- *  section reads "6 passed" and a mixed one "1 to fix · 5 passed". A part is
- *  left out entirely when its count is 0, never printed as "0 …". Counts by
- *  raw `state`, not `effectiveSeverity` — this is "what does this section
- *  contain", not a cross-row severity reduction. */
-export function sectionSummary(checks: AppCheck[]): string {
-  const toFix = checks.filter((c) => c.state === "fail").length;
-  const notChecked = checks.filter((c) => c.state === "skip" || c.state === "unrun").length;
-  const passed = checks.filter((c) => c.state === "pass").length;
-  const parts: string[] = [];
-  if (toFix > 0) parts.push(`${toFix} to fix`);
-  if (notChecked > 0) parts.push(`${notChecked} not checked`);
-  if (passed > 0) parts.push(`${passed} passed`);
-  return parts.join(" · ");
-}
-
-/** A section's default disclosure state: open when it has anything worth
- *  looking at (any row that is not `pass`), collapsed when every row in it
- *  passed — a collapsed section is one line, and `sectionSummary` above
- *  already says everything it contains. AppDoctorModal.tsx seeds its
- *  per-section open state from this once, on load, and never calls it again
- *  for a section the user has since toggled by hand. */
-export function sectionStartsOpen(checks: AppCheck[]): boolean {
-  return checks.some((c) => c.state !== "pass");
-}
-
 /** The per-row action button's label: a CANDIDATE row asks the session to
  *  judge each finding first (Review), a FACT row asks it to fix outright
  *  (Fix) — see app_doctor.doctor_prompt's own triage-vs-fix split. */
