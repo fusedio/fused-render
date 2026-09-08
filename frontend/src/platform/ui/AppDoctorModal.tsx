@@ -1,5 +1,6 @@
-// App Doctor: the share-readiness checklist for one app folder, and the one
-// button that hands the whole report to a Claude session.
+// App Doctor: the share-readiness checklist for one app folder, grouped into
+// sections, each failing row carrying its own severity and its own fix
+// action.
 //
 // It stands where the "Migrate to new version" button used to (the app page's
 // header, the explorer's entry-page topbar) and it subsumes it: the stale
@@ -11,12 +12,24 @@
 //
 // EVERY ROW IS DETERMINISTIC (fused_render/app_doctor.py, which is the
 // authority on what each check means): a row passed, failed, or could not run.
-// Nothing in this dialog decides whether a finding matters. That judgment
-// belongs to the `fused-render-app-doctor` skill, and "Explain and fix" is how
-// you get it — one task on the app's entry page, whose session runs the skill
-// end to end and lands in the Claude pane. One task for the whole report, not
-// one per row: the findings are about the same folder and often the same file,
-// and two sessions rewriting one app at once is a merge nobody asked for.
+// A FAILING row is not all the same kind of finding, though — `kind: "fact"`
+// (a file exists or it does not) is a settled failure with a Fix button;
+// `kind: "candidate"` (`secrets`, `device-paths`: a pattern match that only
+// LOCATES something to look at, never decides — see app_doctor.py's own
+// measurement) reads as "N to review" with a Review button, and never counts
+// toward the header dot above warning on its own (appdoctor-lib.ts's
+// `effectiveSeverity`). Judging a candidate is the fix session's job, which is
+// why its button says Review rather than Fix.
+//
+// Per-row Fix/Review creates ONE task on just that row; the footer's "Fix
+// all" creates one task covering every currently failing row at once. Both
+// share the same one-live-fix-session-per-app rule server-side (409): two
+// sessions rewriting one folder is a merge nobody asked for.
+//
+// THE REPORT IS FETCHED FRESH ON EVERY OPEN. There is no cached report inside
+// this component to refresh, which is why there is no Re-run button — closing
+// and reopening the dialog (the caller mounts this behind `{open && …}`) is
+// itself the re-run.
 //
 // Shared by the shell and the explorer, so it spells its own routes rather than
 // importing either app's helpers (an app may not import the shell — the same
@@ -24,15 +37,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getAppDoctor,
-  runAppDoctor,
+  runAppDoctorAll,
+  runAppDoctorCheck,
   type AppCheck,
   type AppCheckState,
   type AppDoctorReport,
 } from "@platform/lib/api";
 import {
   findingWhere,
+  groupBySection,
+  rowActionLabel,
+  rowStateLabel,
+  SECTION_LABEL,
+  SEVERITY_LABEL,
   splitFindings,
-  STATE_LABEL,
   summaryLine,
   tasksTabUrl,
 } from "./appdoctor-lib";
@@ -71,6 +89,13 @@ function StateIcon({ state }: { state: AppCheckState }) {
         <path d="M12 8v4M12 16h.01" />
       </svg>
     );
+  if (state === "unrun")
+    return (
+      <svg {...common}>
+        <circle cx="12" cy="12" r="9" strokeDasharray="3 3" />
+        <path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none" />
+      </svg>
+    );
   return (
     <svg {...common}>
       <circle cx="12" cy="12" r="9" />
@@ -79,21 +104,39 @@ function StateIcon({ state }: { state: AppCheckState }) {
   );
 }
 
-function CheckRow({ check }: { check: AppCheck }) {
+function CheckRow({
+  check,
+  busy,
+  onFix,
+}: {
+  check: AppCheck;
+  busy: boolean;
+  onFix: (check: AppCheck) => void;
+}) {
   const { shown, hidden } = splitFindings(check.findings);
+  const failing = check.state === "fail";
   return (
     <li className={"appdoc-row appdoc-" + check.state}>
       <span
         className="appdoc-state"
         role="img"
-        aria-label={STATE_LABEL[check.state]}
-        title={STATE_LABEL[check.state]}
+        aria-label={rowStateLabel(check)}
+        title={rowStateLabel(check)}
       >
         <StateIcon state={check.state} />
       </span>
       <div className="appdoc-text">
-        <span className="appdoc-label">{check.label}</span>
-        <span className="appdoc-detail">{check.detail}</span>
+        <div className="appdoc-label-row">
+          <span className="appdoc-label">{check.label}</span>
+          {failing && (
+            <span className={"appdoc-sev appdoc-sev-" + check.severity}>
+              {SEVERITY_LABEL[check.severity]}
+            </span>
+          )}
+        </div>
+        <span className="appdoc-detail">
+          {failing ? rowStateLabel(check) + " — " + check.detail : check.detail}
+        </span>
         {shown.length > 0 && (
           <ul className="appdoc-findings">
             {shown.map((f, i) => (
@@ -110,6 +153,29 @@ function CheckRow({ check }: { check: AppCheck }) {
               </li>
             )}
           </ul>
+        )}
+        {failing && (
+          <div className="appdoc-row-actions">
+            {check.task ? (
+              <button
+                type="button"
+                className="btn btn-secondary appdoc-fix-btn"
+                title="An App Doctor task for this row is already running — listed under the app's Tasks tab"
+                onClick={() => onFix(check)}
+              >
+                Fix in progress
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-secondary appdoc-fix-btn"
+                disabled={busy}
+                onClick={() => onFix(check)}
+              >
+                {rowActionLabel(check)}
+              </button>
+            )}
+          </div>
         )}
       </div>
     </li>
@@ -139,6 +205,9 @@ export function AppDoctorModal({
     };
   }, []);
 
+  // Fetched fresh every time this component mounts — the caller renders it
+  // behind `{open && <AppDoctorModal …/>}`, so opening the dialog again is
+  // itself the re-run; there is no cached report in here to go stale.
   const load = useCallback(async () => {
     setError(null);
     try {
@@ -153,22 +222,23 @@ export function AppDoctorModal({
     void load();
   }, [load]);
 
-  const live = report?.task ?? null;
+  // Any row's live task is the whole app's live task — the server allows
+  // exactly one at a time, so whichever row (or "Fix all") is running is the
+  // one the footer and every idle row's button must defer to.
+  const liveTask = report?.checks.find((c) => c.task)?.task ?? null;
 
-  const fix = async () => {
+  const runFix = async (action: () => ReturnType<typeof runAppDoctorAll>) => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await runAppDoctor(dir);
+      const res = await action();
       if (res.task) announceTasksChanged();
       if (res.task_error) throw new Error(res.task_error);
       // The Claude pane can only attach to a run it has the id of; without one
       // the task is stored but not yet running, and the Tasks tab lists it.
       navigateUrl(
-        res.task?.run_id
-          ? appLandingUrl(res.entry_html, res.task.run_id)
-          : tasksTabUrl(dir),
+        res.task?.run_id ? appLandingUrl(res.entry_html, res.task.run_id) : tasksTabUrl(dir),
       );
       onClose();
     } catch (e) {
@@ -178,6 +248,17 @@ export function AppDoctorModal({
       }
     }
   };
+
+  const fixRow = (check: AppCheck) => {
+    if (check.task || liveTask) {
+      navigateUrl(tasksTabUrl(dir));
+      onClose();
+      return;
+    }
+    void runFix(() => runAppDoctorCheck(dir, check.id));
+  };
+
+  const fixAll = () => void runFix(() => runAppDoctorAll(dir));
 
   return (
     <Modal
@@ -189,46 +270,34 @@ export function AppDoctorModal({
       dialogClassName="appdoc-modal"
       width={620}
       footer={
-        <>
+        liveTask ? (
           <button
             type="button"
-            className="btn btn-secondary"
+            className="btn btn-primary"
+            title="An App Doctor task for this app is still running — listed under the app's Tasks tab"
             onClick={() => {
-              setReport(null);
-              void load();
+              navigateUrl(tasksTabUrl(dir));
+              onClose();
             }}
-            disabled={busy || report === null}
           >
-            Re-run
+            Fix in progress
           </button>
-          {live ? (
-            <button
-              type="button"
-              className="btn btn-primary"
-              title="An App Doctor task for this app is still running — listed under the app's Tasks tab"
-              onClick={() => {
-                navigateUrl(tasksTabUrl(dir));
-                onClose();
-              }}
-            >
-              Fix in progress
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={fix}
-              disabled={busy || report === null || !report.entry}
-              title={
-                report && !report.entry
-                  ? "A task has to land on a page, and this folder has no entry page yet"
-                  : "Creates one task on the app's entry page: a session that runs the App Doctor skill, explains every finding and fixes what is safe to fix"
-              }
-            >
-              {busy ? "Creating task…" : "Explain and fix"}
-            </button>
-          )}
-        </>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={fixAll}
+            disabled={busy || report === null || !report.entry ||
+              !report.checks.some((c) => c.state === "fail")}
+            title={
+              report && !report.entry
+                ? "A task has to land on a page, and this folder has no entry page yet"
+                : "Creates one task on the app's entry page covering every failing row: triages candidates and fixes what is safe to fix"
+            }
+          >
+            {busy ? "Creating task…" : "Fix all"}
+          </button>
+        )
       }
     >
       <ErrorBanner>{error}</ErrorBanner>
@@ -237,11 +306,18 @@ export function AppDoctorModal({
       ) : (
         <>
           <p className="appdoc-summary">{summaryLine(report.checks)}</p>
-          <ul className="appdoc-list">
-            {report.checks.map((c) => (
-              <CheckRow key={c.id} check={c} />
-            ))}
-          </ul>
+          {groupBySection(report.checks).map((group) => (
+            <div className="appdoc-section" key={group.section}>
+              <h3 className="appdoc-section-title">
+                {SECTION_LABEL[group.section] ?? group.section}
+              </h3>
+              <ul className="appdoc-list">
+                {group.checks.map((c) => (
+                  <CheckRow key={c.id} check={c} busy={busy} onFix={fixRow} />
+                ))}
+              </ul>
+            </div>
+          ))}
         </>
       )}
     </Modal>

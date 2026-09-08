@@ -12,6 +12,20 @@
   color: var(--fg-muted);
 }
 
+.appdoc-section + .appdoc-section {
+  margin-top: 14px;
+}
+
+.appdoc-section-title {
+  margin: 0 0 4px;
+  padding: 0 10px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .appdoc-list {
   display: flex;
   flex-direction: column;
@@ -50,7 +64,8 @@
   color: var(--error);
 }
 
-.appdoc-skip .appdoc-state {
+.appdoc-skip .appdoc-state,
+.appdoc-unrun .appdoc-state {
   color: var(--fg-muted);
 }
 
@@ -61,13 +76,91 @@
   gap: 2px;
 }
 
+.appdoc-label-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .appdoc-label {
   font-weight: 500;
   line-height: 20px;
 }
 
-.appdoc-skip .appdoc-label {
+.appdoc-skip .appdoc-label,
+.appdoc-unrun .appdoc-label {
   color: var(--fg-muted);
+}
+
+/* One severity palette, reused by the row chip here AND the header status
+ * dot (shell/AppPage.tsx, apps/explorer/Preview.tsx) — see appdoctor-lib.ts's
+ * `effectiveSeverity`/`worstSeverity` for the one place severity is ranked. */
+.appdoc-sev {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.appdoc-sev-critical {
+  color: var(--error);
+  background: rgba(var(--error-rgb), 0.14);
+}
+
+.appdoc-sev-warning {
+  color: var(--warning);
+  background: rgba(var(--warning-rgb), 0.14);
+}
+
+.appdoc-sev-suggested {
+  color: var(--fg-muted);
+  background: rgba(var(--fg-muted-rgb), 0.14);
+}
+
+.appdoc-row-actions {
+  margin-top: 4px;
+}
+
+.appdoc-fix-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+/* The header status dot (shell/AppPage.tsx, apps/explorer/Preview.tsx): the
+ * worst FAILING severity in the report, or neutral while unknown/clean. Sits
+ * beside the "App Doctor" label rather than replacing it — colour is never
+ * the only carrier, and the button's own title/aria-label name the state in
+ * words (appdoctor-lib.ts's `severityDotLabel`). */
+.appdoc-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  margin-left: 6px;
+}
+
+.appdoc-dot-critical {
+  background: var(--error);
+}
+
+.appdoc-dot-warning {
+  background: var(--warning);
+}
+
+.appdoc-dot-suggested {
+  background: var(--fg-muted);
+}
+
+.appdoc-dot-neutral {
+  background: transparent;
+  border: 1px solid var(--fg-muted);
 }
 
 .appdoc-detail {

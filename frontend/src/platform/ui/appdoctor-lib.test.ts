@@ -30,20 +30,35 @@ for (const key of ["location", "history"] as const) {
 }
 
 const {
+  effectiveSeverity,
   findingWhere,
+  groupBySection,
   MAX_FINDINGS_SHOWN,
+  rowActionLabel,
+  rowStateLabel,
+  severityDotLabel,
   splitFindings,
   STATE_LABEL,
   summaryLine,
   tasksTabUrl,
+  worstSeverity,
 } = lib;
 
-const check = (id: string, state: AppCheck["state"]): AppCheck => ({
+const check = (
+  id: string,
+  state: AppCheck["state"],
+  extra: Partial<AppCheck> = {},
+): AppCheck => ({
   id,
+  section: "essentials",
+  severity: "warning",
+  kind: "fact",
   label: id,
   state,
   detail: "",
   findings: [],
+  task: null,
+  ...extra,
 });
 
 const finding = (path: string, line = 0): AppCheckFinding => ({
@@ -63,14 +78,34 @@ test("a clean report does not claim to have checked what it skipped", () => {
   );
 });
 
-test("a failing report counts the failures against every row", () => {
-  const checks = [check("a", "fail"), check("b", "pass"), check("c", "fail")];
-  expect(summaryLine(checks)).toBe("2 of 3 checks failed.");
+test("a failing fact row is counted by severity, not as a flat total", () => {
+  const checks = [
+    check("a", "fail", { severity: "critical" }),
+    check("b", "pass"),
+    check("c", "fail", { severity: "warning" }),
+  ];
+  expect(summaryLine(checks)).toBe("1 critical, 1 warning to fix.");
 });
 
-test("failures and skips are counted separately", () => {
-  const checks = [check("a", "fail"), check("b", "skip"), check("c", "skip")];
-  expect(summaryLine(checks)).toBe("1 of 3 checks failed. 2 could not be checked.");
+test("a failing candidate row reads as 'to review', never merged into the fact tally", () => {
+  const checks = [
+    check("secrets", "fail", { severity: "critical", kind: "candidate" }),
+    check("readme", "pass"),
+  ];
+  expect(summaryLine(checks)).toBe(
+    "Every check this app can answer passed. 1 row to review.",
+  );
+});
+
+test("facts, candidates and skips all show up in one summary", () => {
+  const checks = [
+    check("a", "fail", { severity: "warning" }),
+    check("secrets", "fail", { severity: "critical", kind: "candidate" }),
+    check("b", "skip"),
+  ];
+  expect(summaryLine(checks)).toBe(
+    "1 warning to fix. 1 row to review. 1 could not be checked.",
+  );
 });
 
 test("a long finding list is capped and the rest counted", () => {
@@ -101,6 +136,96 @@ test("the tasks tab is the app page's own address, path-encoded", () => {
 });
 
 test("every state has a label, so no row renders a bare icon", () => {
-  expect(Object.keys(STATE_LABEL).sort()).toEqual(["fail", "pass", "skip"]);
+  expect(Object.keys(STATE_LABEL).sort()).toEqual(["fail", "pass", "skip", "unrun"]);
   expect(Object.values(STATE_LABEL).every((v) => v.length > 0)).toBe(true);
+});
+
+// ------------------------------------------------------------- section grouping
+
+test("rows group into their sections in server order, without sorting", () => {
+  const checks = [
+    check("secrets", "pass", { section: "essentials" }),
+    check("entry", "pass", { section: "essentials" }),
+    check("git", "pass", { section: "sharing" }),
+    check("pushed", "pass", { section: "sharing" }),
+  ];
+  expect(groupBySection(checks)).toEqual([
+    { section: "essentials", checks: [checks[0], checks[1]] },
+    { section: "sharing", checks: [checks[2], checks[3]] },
+  ]);
+});
+
+// ------------------------------------------------------------------ severity
+
+test("worstSeverity is null when nothing failed", () => {
+  expect(worstSeverity([check("a", "pass"), check("b", "skip")])).toBeNull();
+});
+
+test("worstSeverity picks the worst FAILING severity, ignoring passes and skips", () => {
+  const checks = [
+    check("a", "fail", { severity: "suggested" }),
+    check("b", "pass", { severity: "critical" }),
+    check("c", "fail", { severity: "warning" }),
+  ];
+  expect(worstSeverity(checks)).toBe("warning");
+});
+
+test("a failing candidate row never drives the worst severity above warning", () => {
+  // secrets is "critical" in the checklist, but it is unreviewed by
+  // definition — the dot must read "warning", not "critical", until a
+  // session has triaged it.
+  const checks = [check("secrets", "fail", { severity: "critical", kind: "candidate" })];
+  expect(effectiveSeverity(checks[0])).toBe("warning");
+  expect(worstSeverity(checks)).toBe("warning");
+});
+
+test("a failing FACT row at critical still reads as critical", () => {
+  const checks = [check("entry", "fail", { severity: "critical", kind: "fact" })];
+  expect(worstSeverity(checks)).toBe("critical");
+});
+
+test("a real critical fact outranks an unreviewed candidate", () => {
+  const checks = [
+    check("secrets", "fail", { severity: "critical", kind: "candidate" }),
+    check("entry", "fail", { severity: "critical", kind: "fact" }),
+  ];
+  expect(worstSeverity(checks)).toBe("critical");
+});
+
+test("severityDotLabel names the state in words for every case", () => {
+  expect(severityDotLabel(null)).toContain("not checked yet");
+  expect(severityDotLabel([check("a", "pass")])).toContain("nothing to fix");
+  expect(
+    severityDotLabel([
+      check("a", "fail", { severity: "critical" }),
+      check("b", "fail", { severity: "warning" }),
+    ]),
+  ).toBe("App Doctor: 1 critical, 1 warning");
+  // The candidate discount applies here too — the label is built off
+  // effectiveSeverity, not the raw checklist severity.
+  expect(
+    severityDotLabel([check("secrets", "fail", { severity: "critical", kind: "candidate" })]),
+  ).toBe("App Doctor: 1 warning");
+});
+
+// --------------------------------------------------------------- row wording
+
+test("a candidate's action is Review, a fact's is Fix", () => {
+  expect(rowActionLabel(check("secrets", "fail", { kind: "candidate" }))).toBe("Review");
+  expect(rowActionLabel(check("readme", "fail", { kind: "fact" }))).toBe("Fix");
+});
+
+test("a failing candidate reads as N to review, never as a settled failure", () => {
+  const c = check("secrets", "fail", {
+    kind: "candidate",
+    findings: [finding("app.py", 3), finding("app.py", 9)],
+  });
+  expect(rowStateLabel(c)).toBe("2 to review");
+});
+
+test("every other row's state label falls back to STATE_LABEL", () => {
+  expect(rowStateLabel(check("readme", "fail", { kind: "fact" }))).toBe("Failed");
+  expect(rowStateLabel(check("readme", "pass"))).toBe("Passed");
+  expect(rowStateLabel(check("readme", "skip"))).toBe("Not checked");
+  expect(rowStateLabel(check("readme", "unrun"))).toBe("Not run yet");
 });
