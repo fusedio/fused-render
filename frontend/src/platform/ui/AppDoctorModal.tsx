@@ -64,7 +64,7 @@
 // importing either app's helpers (an app may not import the shell — the same
 // reason Preview.tsx spells `/apps/<folder>?_tab=tasks` by hand).
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, CircleAlert, CircleMinus, CirclePlay, TriangleAlert } from "lucide-react";
+import { Check, CircleAlert, CircleMinus, CirclePlay, TriangleAlert, X } from "lucide-react";
 import {
   getAppDoctor,
   runAppDoctorAll,
@@ -88,6 +88,7 @@ import {
 } from "./appdoctor-lib";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogFooter,
   DialogHeader,
@@ -101,7 +102,6 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { appLandingUrl } from "@platform/lib/appLanding";
 import { navigateUrl } from "@platform/lib/router";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
-import { basename } from "@platform/lib/format";
 
 // A FAILING state draws by severity, not just by colour: a critical failure
 // is an alert circle, a warning is a triangle (the shape everyone already
@@ -339,9 +339,23 @@ export function AppDoctorModal({
           and "Fix all" stay put while a long report scrolls between them.
           `minmax(0, 1fr)` on the middle row is what lets it actually shrink
           to the 80vh cap instead of pushing the footer off-screen. */}
-      <DialogContent className="grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-[620px] max-h-[80vh]">
-        <DialogHeader>
-          <DialogTitle>{"App Doctor — " + (basename(dir) || dir)}</DialogTitle>
+      <DialogContent
+        className="grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-[620px] max-h-[80vh]"
+        showCloseButton={false}
+      >
+        {/* The close control is rendered here, inside the header row, rather
+            than taken from `DialogContent`'s own absolutely-positioned one:
+            in the header it sits ON the title's line, so the two read as one
+            title bar instead of a heading with a button floating over the
+            dialog's top corner. */}
+        <DialogHeader className="flex-row items-center justify-between gap-2">
+          <DialogTitle>App Doctor</DialogTitle>
+          <DialogClose
+            render={<Button variant="ghost" size="icon-sm" className="-my-1 -mr-1" />}
+          >
+            <X aria-hidden />
+            <span className="sr-only">Close</span>
+          </DialogClose>
         </DialogHeader>
         <div className="flex min-h-0 min-w-0 flex-col gap-2 overflow-x-hidden overflow-y-auto">
           <ErrorBanner>{error}</ErrorBanner>
@@ -375,7 +389,7 @@ export function AppDoctorModal({
             </>
           )}
         </div>
-        <DialogFooter className="-mx-4 -mb-4 border-t bg-transparent px-4 py-3">
+        <DialogFooter className="-mx-4 -mb-4 border-t-0 bg-transparent px-4 py-3">
           {liveTask ? (
             <Button
               variant="default"
