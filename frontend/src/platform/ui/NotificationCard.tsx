@@ -61,6 +61,7 @@ export interface NotificationCardAction {
 
 export interface NotificationCardDismiss {
   onClick: () => void;
+  disabled?: boolean;
   title?: string;
   ariaLabel?: string;
 }
@@ -228,6 +229,7 @@ export default function NotificationCard({
               e?.stopPropagation?.();
               onDismiss.onClick();
             }}
+            disabled={onDismiss.disabled}
             title={onDismiss.title ?? "Dismiss"}
             aria-label={onDismiss.ariaLabel ?? "Dismiss"}
           >

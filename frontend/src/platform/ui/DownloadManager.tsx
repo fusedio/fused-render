@@ -623,6 +623,7 @@ export function JobRow({
         canDismiss
           ? {
               onClick: dismiss,
+              disabled: busy,
               title: "Dismiss",
               ariaLabel: `Dismiss ${job.title}`,
             }

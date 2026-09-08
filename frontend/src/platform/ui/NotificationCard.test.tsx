@@ -131,3 +131,11 @@ test("rowClick's Enter/Space handler ignores a keydown that bubbled up from a ne
   expect(rowClickSpy.calls).toBe(1);
   expect(preventDefault.called).toBe(true);
 });
+
+test("onDismiss's disabled prop reaches the ✕ button, so a request in flight can lock it", () => {
+  const idle = render({ title: "a", onDismiss: { onClick: () => {} } });
+  expect(findAll(idle, "dl-x")[0].props.disabled).toBeFalsy();
+
+  const busy = render({ title: "a", onDismiss: { onClick: () => {}, disabled: true } });
+  expect(findAll(busy, "dl-x")[0].props.disabled).toBe(true);
+});

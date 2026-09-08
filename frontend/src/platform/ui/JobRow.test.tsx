@@ -264,6 +264,41 @@ test("a successful Cancel shows no failure line", async () => {
   expect(text(after)).not.toContain("Could not cancel");
 });
 
+test("the dismiss control disables while its own request is in flight, so a second click can't fire another", async () => {
+  // A dismiss whose promise never settles during this assertion — `busy` only
+  // clears in `dismissFn`'s `finally`, so the button has to read `disabled`
+  // while the request is still outstanding, not just before/after it.
+  let resolveFn: (v: { dismissed: string }) => void = () => {};
+  const dismissFn = () => new Promise<{ dismissed: string }>((resolve) => (resolveFn = resolve));
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "running", stalled: true }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
+    />,
+  );
+  const before = tree.toJSON() as ReactTestRendererJSON;
+  expect(findAll(before, "dl-x")[0].props.disabled).toBeFalsy();
+
+  const button = findAll(before, "dl-x")[0];
+  const onClick = (button.props as { onClick: () => Promise<void> }).onClick;
+  let clickDone = false;
+  const clicked = act(async () => {
+    await onClick();
+  }).then(() => {
+    clickDone = true;
+  });
+
+  // The request is still outstanding — the ✕ must already be disabled.
+  const mid = tree.toJSON() as ReactTestRendererJSON;
+  expect(findAll(mid, "dl-x")[0].props.disabled).toBe(true);
+  expect(clickDone).toBe(false);
+
+  resolveFn({ dismissed: BASE.id });
+  await clicked;
+});
+
 test("a bare running row's fallback status measures against the caller's clock, not the browser's (C4)", () => {
   // No status text (no `detail`, no `message`) and no amount (`unit: ""`,
   // both `done`/`total` null): this is D665's fallback case, `jobDetail`,
