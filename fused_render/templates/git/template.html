@@ -994,15 +994,24 @@
     white-space: nowrap;
   }
   /* A fixed floor, not just `tabular-nums` (which only equalises DIGITS):
-     `shortWhen()`'s widest real output is "11mo" (4 characters, and letters —
-     "mo" is far wider than a lone "d" or "now"'s three letters), so every
-     shorter result is right-aligned into the same column instead of shifting
-     the Preview button beside it. 40px comfortably fits "11mo"/"12mo" in this
-     11px proportional font with room to spare; nothing `shortWhen` emits
-     (`now`, `Nm`, `Nh`, `Nd`, `Nw`, `Nmo`, `Ny`) is wider. */
+     `shortWhen()`'s widest real outputs are "11mo" (4 characters, and letters —
+     "mo" is far wider than a lone "d" or "now"'s three letters — the ceiling in
+     the unit table below tops months out at "11mo"; a floor sized for digits
+     alone, like "9999", would undershoot the actual widest letterform) and
+     "now" itself (3 letters, no digits to help it). 30px fits both in this
+     11px proportional font with a few px of margin to spare — nothing
+     `shortWhen` emits (`now`, `Nm`, `Nh`, `Nd`, `Nw`, `Nmo`, `Ny`) is wider.
+     This used to be 40px, which is comfortably more room than "11mo" needs and
+     is exactly the dead space that showed up to the LEFT of ordinary short
+     values like "40m" — the gap the button-to-timestamp spacing bug was.
+     The negative margin-left claws back part of the row's 10px gap for this
+     one pair — marker/sha to `.when` — without shrinking the gap between
+     `.subject`, the optional `.sha`, and the marker, which still want the
+     full 10px; see the row-wide `gap` above. */
   .row .when {
     flex: none;
-    min-width: 40px;
+    min-width: 30px;
+    margin-left: -6px;
     text-align: right;
     color: var(--ink-3);
     font-size: 11px;
