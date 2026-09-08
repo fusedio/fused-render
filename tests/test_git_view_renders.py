@@ -84,6 +84,27 @@ def clean_repo(root):
     return root
 
 
+def scoped_repo(root):
+    """A repo whose changes exercise three shapes at once, scoped to
+    `openindex/`: a plain change INSIDE the scope, a rename that crosses the
+    scope's boundary (one side in, one side out), and a SIBLING folder that
+    merely shares the scope's name as a plain string prefix (`openindex-old`
+    beside `openindex`) — the case a bare `startsWith` would mangle into
+    `-old/sibling.py`."""
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q", root)
+    _put(root, "openindex/index.html", "one\n")
+    _put(root, "openindex/moved.py", "one\n")
+    _put(root, "openindex-old/sibling.py", "one\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    _put(root, "openindex/index.html", "one\ntwo\n")             # in scope
+    os.makedirs(os.path.join(root, "elsewhere"), exist_ok=True)
+    git(root, "mv", "openindex/moved.py", "elsewhere/moved.py")  # crosses OUT
+    _put(root, "openindex-old/sibling.py", "one\ntwo\n")         # sibling, not scope
+    return root
+
+
 def empty_repo(root):
     """Initialized, but nobody has committed here yet — the "no commits"
     prerequisite `publishModal` shows AHEAD of the ready state, because
@@ -484,3 +505,95 @@ def test_checkout_confirm_bar_only_shows_for_the_previewed_commit_it_was_armed_o
     assert CHECKOUT_QUESTION not in retargeted["viewHTML"], (
         "an armed Checkout confirmation followed the user to a preview they "
         f"never confirmed it against:\n{retargeted['viewHTML']}")
+
+
+def test_changed_rows_drop_the_redundant_scope_prefix(reader, tmp_path):
+    """A row in a view scoped to `openindex/` already lives under that
+    folder — the toolbar says so once — so printing `openindex/` on every
+    single row is noise, not information. Only the row's VISIBLE line loses
+    it; the row's own tooltip keeps the whole repo-relative form, so the full
+    path is never more than a hover away. (`title` is a plain DOM property on
+    this probe's stub, never a `setAttribute` — see the probe's own comment —
+    so it cannot be asserted from `viewHTML`; the `titleIncludes` action is
+    the documented way to prove one is still there: it finds nothing, and
+    lands in `unhandled`, unless the full path is still on the row.)"""
+    root = scoped_repo(str(tmp_path / "scoped"))
+    scope = os.path.join(root, "openindex")
+    out = render(reader, scope, tmp_path,
+                 actions=[{"titleIncludes": "openindex/index.html"},
+                          {"titleIncludes": "openindex/moved.py -> elsewhere/moved.py"}])
+    _assert_painted(out, "scoped repo")
+    assert out["unhandled"] == [], (
+        "a row's tooltip lost the full repo-relative path it must still "
+        f"carry:\n{out['unhandled']}")
+    html = out["viewHTML"]
+
+    # The plain in-scope change: the visible row drops the "openindex/"
+    # prefix...
+    assert ">index.html<" in html, html
+    assert ">openindex/index.html<" not in html, html
+
+    # The rename crossed OUT of the scope (`openindex/moved.py` ->
+    # `elsewhere/moved.py`): its far side is genuinely outside the scope, so
+    # it must still read in full, or the row stops explaining where the file
+    # went. Only the near side (still under the scope) is shortened.
+    assert ">moved.py -> elsewhere/moved.py<" in html, html
+    assert ">openindex/moved.py -> elsewhere/moved.py<" not in html, html
+
+
+def test_scope_relative_strips_only_a_genuine_boundary():
+    """The helper itself, exercised directly rather than through a rendered
+    view: a real `git status` scoped to `openindex/` can never hand it a
+    sibling row like `openindex-old/sibling.py` in the first place (log.py's
+    own `_in_scope` already excludes it), so the boundary discipline that
+    guards against mangling one has no path through the rendered DOM to be
+    proven from."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required to run the git view")
+    with open(TEMPLATE, encoding="utf-8") as f:
+        source = f.read()
+    start = source.index("function scopeRelative(")
+    end = source.index("\nfunction ", start + 1)
+    fn_src = source[start:end]
+    script = fn_src + r"""
+const cases = [
+  // [rel, path, expected]
+  ["openindex", "openindex/index.html", "index.html"],
+  // A sibling that merely shares the scope's name as a string prefix must
+  // NOT be cut into "-old/sibling.py" by a bare `startsWith`.
+  ["openindex", "openindex-old/sibling.py", "openindex-old/sibling.py"],
+  // A path genuinely outside the scope stays full.
+  ["openindex", "elsewhere/moved.py", "elsewhere/moved.py"],
+  // The scope folder's own row (no trailing content after the boundary)
+  // must not be stripped down to an empty label.
+  ["openindex", "openindex", "openindex"],
+  ["openindex", "openindex/", "openindex/"],
+  // A nested scope's own ancestor row (the collapsed-`dir/`-is-an-ancestor
+  // case `_in_scope` documents) is not under the scope either.
+  ["openindex/pkg", "openindex/", "openindex/"],
+];
+let failures = [];
+for (const [rel, path, expected] of cases) {
+  const got = scopeRelative({ rel }, path);
+  if (got !== expected) {
+    failures.push(rel + " + " + path + " -> " + JSON.stringify(got)
+      + " (expected " + JSON.stringify(expected) + ")");
+  }
+}
+// An empty/null scope (the view opened on the repo root) changes nothing.
+if (scopeRelative({ rel: "" }, "openindex/index.html") !== "openindex/index.html") {
+  failures.push("empty rel must change nothing");
+}
+if (scopeRelative(null, "openindex/index.html") !== "openindex/index.html") {
+  failures.push("a missing repo must change nothing, not throw");
+}
+if (failures.length) {
+  console.error(failures.join("\n"));
+  process.exit(1);
+}
+console.log("OK");
+"""
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0 and "OK" in proc.stdout, (
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")

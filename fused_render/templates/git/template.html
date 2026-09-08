@@ -2285,15 +2285,15 @@ function stashModal(data) {
   const fresh = data.changes.filter((c) => c.untracked);
   for (const c of tracked) {
     rows.append(el("div", { className: "line" },
-      el("div", { className: "row" },
+      el("div", { className: "row", title: c.path },
         el("span", { className: "code", textContent: c.label || c.status }),
-        el("span", { className: "path", textContent: c.path }))));
+        el("span", { className: "path", textContent: scopeRelative(data.repo, c.path) }))));
   }
   for (const c of fresh) {
     const line = el("div", { className: "line" },
-      el("div", { className: "row" },
+      el("div", { className: "row", title: c.path },
         el("span", { className: "code", textContent: "New" }),
-        el("span", { className: "path", textContent: c.path }),
+        el("span", { className: "path", textContent: scopeRelative(data.repo, c.path) }),
         el("span", { className: "where", textContent: "only if new files are included" })));
     rows.append(line);
   }
@@ -3485,6 +3485,33 @@ function writable(repo, path) {
   return repo.is_dir && rel.startsWith(repo.rel + "/");
 }
 
+/* Repo-relative -> scope-relative, for a row's VISIBLE text only. Every row
+   here already prints "scoped to <rel>" nowhere near it (the toolbar says it
+   once), so a repeated `<rel>/` on every single path is noise the reader does
+   not need — but only the printed line loses it. The operational path
+   (`change.path`, passed to stage/unstage/discard/select), every tooltip
+   `title`, and every aria-label stay on the full repo-relative form, so the
+   whole path is never more than a hover or a screen reader away.
+
+   The boundary is `rel + "/"`, never a bare `startsWith(rel)`: a sibling
+   folder that happens to share the prefix (`openindex-old/x` next to a scope
+   of `openindex`) must keep its whole name, not lose "openindex" out of the
+   middle of its own. And a path the scope does not actually contain — an
+   out-of-scope row (GT-14's staged-elsewhere case), or the far side of a
+   rename that moved OUT of the scope (see `change.moved` in `changeLine`) —
+   is returned unchanged rather than mangled: stripping a prefix that is not
+   there would either do nothing (safe) or, for `rel` itself with no
+   trailing content after it, produce an empty label (not safe), which the
+   length check below rules out. */
+function scopeRelative(repo, path) {
+  const rel = repo && repo.rel;
+  if (!rel) return path;                          // the whole repo is the scope
+  const prefix = rel + "/";
+  return path.startsWith(prefix) && path.length > prefix.length
+    ? path.slice(prefix.length)
+    : path;
+}
+
 /* ONE row per changed path, whatever its index state. The staged/unstaged/
    untracked triple was git's model rendered at people who do not have it; the
    CHECKBOX is the model everyone already has — ticked goes into the next
@@ -3495,6 +3522,15 @@ function changeLine(repo, change, selected) {
   const letter = change.untracked ? "?" : (change.x !== " " ? change.x : change.y);
   const label = change.orig ? change.orig + " -> " + change.path : change.path;
   const path = change.path;
+  /* The row's VISIBLE line only — `label` above (full, repo-relative) still
+     feeds the `title` a few lines down, so the whole path stays one hover
+     away. Each side of a rename is stripped independently, because a rename
+     with only one side in scope needs the OTHER side's full path to still say
+     where the file went (`change.moved` renders the direction right next to
+     it). */
+  const displayLabel = change.orig
+    ? scopeRelative(repo, change.orig) + " -> " + scopeRelative(repo, change.path)
+    : scopeRelative(repo, change.path);
   const line = el("div", { className: "line" });
   const canAct = writable(repo, path);
 
@@ -3538,7 +3574,7 @@ function changeLine(repo, change, selected) {
     title: (change.label || "change") + " (" + change.status + ") — " + label,
   },
     el("span", { className: "code is-" + letter, textContent: word }),
-    el("span", { className: "path", textContent: label }),
+    el("span", { className: "path", textContent: displayLabel }),
     /* A rename with only one side in the open scope is a MOVE relative to it,
        and the direction is the fact worth reading — "renamed" says nothing about
        a file that left the folder you are looking at. */
@@ -3942,10 +3978,11 @@ function diffPane(title, sub, payload, meta) {
       return pane;
     }
     const rows = el("div", { className: "rows" });
+    const repo = snapshot && snapshot.data && snapshot.data.repo;
     for (const name of payload.files) {
       const row = el("button", { className: "row", type: "button", title: name },
         el("span", { className: "code", textContent: "New" }),
-        el("span", { className: "path", textContent: name }));
+        el("span", { className: "path", textContent: scopeRelative(repo, name) }));
       row.addEventListener("click", () => select("wt", name));
       rows.append(el("div", { className: "line" }, row));
     }
