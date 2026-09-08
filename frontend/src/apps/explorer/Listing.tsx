@@ -45,7 +45,10 @@ import {
   replaceSearch,
 } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
+import { useUrlVersion } from "@platform/lib/hooks";
 import { addCurrentApp, getAppEntry } from "@platform/lib/api";
+import { shortSha, snapshotListing } from "@platform/lib/snapshot-param";
+import { useSnapshotForFolder } from "@apps/explorer/listing/useSnapshotForFolder";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
@@ -172,8 +175,32 @@ export default function Listing({
   // its own `···`.
   barChrome?: boolean;
 }) {
+  // --- browsing this folder under a git snapshot (`_snapshot`) --------------
+  // The resolution itself lives in useSnapshotForFolder (listing/), extracted
+  // there so it can be driven through the listing's own hook harness rather
+  // than only through this 2100-line component. `useUrlVersion()` is passed
+  // in as a caller-supplied number, not read by the hook itself — see that
+  // hook's own comment for why (code review finding B5: a commit selection
+  // is a `replaceSearch`, which does not dispatch `fused:navigate`, only
+  // `fused:urlchange`; keyed on `[fsPath]` alone, the resolution never
+  // re-ran for a selection made while `fsPath` itself stayed put). This
+  // closes the gap in both directions: Preview.tsx's own `backToLive`/
+  // selection writes reach a mounted Listing even though neither writer is
+  // Listing's own state, and Listing's own `backToLive` reaches a mounted
+  // Preview the same way.
+  const urlVersion = useUrlVersion();
+  const { resolvedSnapshot, backToLive } = useSnapshotForFolder(fsPath, urlVersion);
+  // Under an active snapshot whose app folder actually ENCLOSES this folder,
+  // list the extracted tree instead of the live one — the same rewrite rule
+  // static/runtime.js applies to every template read, so the two cannot
+  // disagree about what a snapshotted read means. Elsewhere (this folder is
+  // outside the app, or nothing has resolved) `listPath` is just `fsPath`.
+  // The decision itself is `snapshotListing`, a pure function tested directly
+  // (Listing.test.tsx) rather than only through this component.
+  const { inSnapshot, listPath } = snapshotListing(fsPath);
+
   const { state, refresh, refetch, loadMore, loadingMore, newNames } =
-    useDirListing(fsPath);
+    useDirListing(fsPath, listPath);
 
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
@@ -1746,6 +1773,27 @@ export default function Listing({
               down. `display: contents`, so the bar is a flex item of
               .listing-main exactly as it was of #main. */}
           {ownsBarChrome && <div className="listing-crumb-slot" ref={crumbSlotRef} />}
+          {/* The one piece of chrome `_snapshot` adds: everywhere else the
+              state is invisible by design (the plan's decisions log), but a
+              listing has no per-row "as of" heading the way a content pane's
+              template does, so silently showing a frozen tree with no
+              explanation would read as a bug, not a feature. */}
+          {inSnapshot && resolvedSnapshot && (
+            <div className="listing-snapshot-banner">
+              Showing this folder as of commit{" "}
+              <span className="listing-snapshot-sha">
+                {shortSha(resolvedSnapshot.sha)}
+              </span>
+              .
+              <button
+                type="button"
+                className="listing-snapshot-back"
+                onClick={backToLive}
+              >
+                Back to live
+              </button>
+            </div>
+          )}
           {inSearchSlot(barSearchSlot,
             /* `searching` (a non-empty query) is what tells the crumb bar to
                stand the crumbs down and give the row its whole width — see

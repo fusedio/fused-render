@@ -1,6 +1,6 @@
 // The app page — `/apps/<folder path>` (D488, widened 2026-08-26): one app
 // folder — a workspace app under any shelf, or a linked app anywhere on disk —
-// as a place rather than as a folder. Six tabs, named by the `_tab` query
+// as a place rather than as a folder. Five tabs, named by the `_tab` query
 // param (absent = overview; `?_tab=tasks`, `?_tab=files`, `?_tab=api` —
 // current-apps-lib):
 //
@@ -17,15 +17,20 @@
 //   API       every .py in the folder as an endpoint, Swagger-style
 //             (shell/AppApi.tsx): entrypoint, parameters as a form, Execute,
 //             response — the api template's view, for the whole app at once.
-//   Git       the folder's `git` template (templates/git) in a frame — the
-//             working-tree view. Offered ONLY when the folder is inside a
-//             work tree (the template's condition.py verdict, CT-12), so a
-//             plain folder never shows a Git tab that could only say "no".
 //
-// The Git tab renders the EXISTING template rather than a second panel of
-// its own: the template is the git contract's one UI, and a rebuild here
-// would be a second one to keep in step. (An MCP tab framed templates/mcp the
-// same way until 2026-08-27; the owner dropped it.)
+// A VERSION PICKER (AppVersionPicker.tsx), not a sixth Git tab: this page used
+// to frame the folder's `git` template as a Git tab, offered only inside a
+// work tree. That is GONE (docs/app-page-version-dropdown-plan.html) —
+// staging, committing, branches and push/pull are not this page's job; they
+// stay in the explorer's folder view, where the `git` template still lives.
+// What replaces it is read-only and page-wide: a dropdown beside the tab
+// strip puts ALL THREE tabs above (Overview/Files/API — Tasks is unaffected,
+// it has no notion of a commit) on a past commit of the app folder, via the
+// same `_snapshot` shell URL param and extraction machinery
+// (`fused_render/server/routers/git_snapshot.py`) the explorer's own snapshot
+// preview already uses. `useAppPageSnapshot.ts` holds this page's own
+// resolution of that param; every read below rewrites against it directly
+// (`rewritePathAgainst`), never a shared singleton.
 //
 // Opened from the sidebar's "Current apps" rows and NOWHERE ELSE (owner's
 // brief): the hub's cards and the explorer keep opening the entry page as they
@@ -34,7 +39,8 @@
 // Not the explorer. The explorer answers "what is in this folder"; this page
 // answers "how is this app going" — the app, its work and its pieces side by
 // side. The folder is one caption-click away for the operations (rename, move,
-// new file) this page deliberately does not offer.
+// new file) this page deliberately does not offer — including, now, every git
+// write action: this page is read-only about git.
 //
 // Mounted per FOLDER, not per nav epoch (App.tsx): the Overview frame holds live
 // app state, and a tab switch — a navigation, since the tab is in the path —
@@ -53,23 +59,23 @@ import {
   appIconUrl,
   getAppEntry,
   getAppIcon,
-  resolveConditions,
   statPath,
   type Config,
-  type TemplateEntry,
 } from "@platform/lib/api";
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
   Files,
-  GitBranch,
+  Download,
   ListTodo,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
+import { exportAppFile } from "@platform/lib/appShot";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -91,6 +97,10 @@ import {
 import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
 import AppApi from "./AppApi";
+import AppVersionPicker from "./AppVersionPicker";
+import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
+import SnapshotError from "./SnapshotError";
+import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnapshot";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -108,24 +118,18 @@ type TabCtx = {
   dir: string;
   entry: string | null;
   folderHref: string;
-  /** The folder's `git` template entry, when offered (null = not). */
-  gitTpl: TemplateEntry | null;
+  /** This page's OWN resolution of the URL's `_snapshot` sha, including the
+   *  PENDING window a caller must refuse to render live content into (code
+   *  review finding 4: the old shape returned null for "live" and "still
+   *  resolving" alike, and a first paint of `/apps/<dir>?_snapshot=<sha>`
+   *  read `null` as live and booted the live app before the resolve landed).
+   *  Rewrite every read against `snapshot.snap`, never a shared singleton
+   *  (code review finding 1, round 2: two apps in one repo share shas, and a
+   *  singleton written by whichever view resolves last can hold another
+   *  view's resolution by the time a caller reads it — there is no such
+   *  singleton here at all, deliberately). */
+  snapshot: AppPageSnapshotState;
 };
-
-/** A folder template in a frame — the explorer's folder-peek shape
- *  (`/render?path=<template>&_file=<folder>`), no `_preview`: a real open. */
-function templateFrame(dir: string, tpl: TemplateEntry, title: string) {
-  return (
-    <iframe
-      className="app-page-frame"
-      src={
-        `/render?path=${encodeURIComponent(tpl.path as string)}` +
-        `&_file=${encodeURIComponent(dir)}`
-      }
-      title={title}
-    />
-  );
-}
 
 type TabDef = {
   label: string;
@@ -139,21 +143,66 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     label: "Overview",
     Icon: AppWindow,
     keepMounted: true,
-    render: ({ slug, entry, folderHref }) =>
-      entry ? (
+    // Routed through the shared `snapshotFrameSrc` (platform/lib/snapshot-param.ts,
+    // the same helper Preview.tsx's own `_render` sentinel now uses) rather
+    // than a hand-rolled src string — that hand-rolled version is what
+    // findings 1 and 4 trace to: it rewrote `path` but never appended
+    // `_snapshot`/`_snapshot_dir`/`_snapshot_app` (so the framed runtime had
+    // no snapshot awareness of its own — `snapshotWritable()` saw
+    // `snapshotSha === null` and left the write gate open for an absolute
+    // live path), and it built a src unconditionally instead of refusing to
+    // during the pending window (a bookmarked `?_snapshot=<sha>` booted the
+    // LIVE app first, then swapped).
+    //
+    // `entryPath` is `snapshot.snap.entry` when resolved — the snapshot's OWN
+    // entry page, already resolved by the server against the extracted tree
+    // (finding 3) — not `entry` (the LIVE tree's) rewritten by directory
+    // prefix alone, which gets the wrong FILENAME whenever the app's entry
+    // was renamed since that commit.
+    render: ({ slug, entry, folderHref, snapshot }) => {
+      if (snapshot.pending) {
+        // `error` (finding 1, second round): a transient resolve failure
+        // stays `pending` forever — nothing re-runs the resolve on its own —
+        // so this must not be an indefinite skeleton. `SnapshotError` gives
+        // the user a real way out (retry, or back to Live) instead.
+        if (snapshot.error) {
+          return <SnapshotError onRetry={snapshot.retry} />;
+        }
+        return <SkeletonLines rows={2} label="Loading app" />;
+      }
+      const entryPath = snapshot.snap ? snapshot.snap.entry ?? null : entry;
+      // `snapshotFrameSrc` returns `null` exactly when `sha` is claimed but
+      // `snap` is not yet resolved — a case the `snapshot.pending` return
+      // above already rules out here. Checked explicitly rather than
+      // asserted away with `as string` (code review finding 5, second
+      // round): that cast was only ever correct BECAUSE of the early
+      // `pending` return above it, and gave up the null contract
+      // `snapshotFrameSrc` was extracted to enforce — a future edit that
+      // moves or loosens that gate would silently produce `src="null"` on
+      // the iframe instead of a type error surfacing the mistake.
+      const frameSrc = entryPath
+        ? snapshotFrameSrc({ snap: snapshot.snap, sha: snapshot.sha, path: entryPath })
+        : null;
+      return frameSrc ? (
         <div className="app-page-frame-wrap">
           <iframe
             className="app-page-frame"
-            src={`/render?path=${encodeURIComponent(entry)}`}
+            src={frameSrc}
             title={`App: ${slug}`}
           />
         </div>
+      ) : entryPath ? (
+        // `entryPath` is set but `snapshotFrameSrc` still returned null — the
+        // pending gate above should make this unreachable; fall back to the
+        // loading state rather than an iframe with no src.
+        <SkeletonLines rows={2} label="Loading app" />
       ) : (
         <p className="app-page-empty">
           This folder has no entry page yet.{" "}
           <a href={folderHref}>Open the folder</a> to see what is there.
         </p>
-      ),
+      );
+    },
   },
   tasks: {
     label: "Tasks",
@@ -165,8 +214,13 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Files,
     // Not keepMounted: the selection is in the URL, so a return costs one walk
     // and one stat — cheaper than a hidden frame that keeps running.
-    render: ({ dir, entry, folderHref }) => (
-      <AppFiles dir={dir} entry={entry} folderHref={folderHref} />
+    render: ({ dir, entry, folderHref, snapshot }) => (
+      <AppFiles
+        dir={dir}
+        entry={entry}
+        folderHref={folderHref}
+        snapshot={snapshot}
+      />
     ),
   },
   api: {
@@ -174,20 +228,9 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Webhook,
     // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
     // one folder inspection — form values and responses are session scratch.
-    render: ({ dir, folderHref }) => <AppApi dir={dir} folderHref={folderHref} />,
-  },
-  git: {
-    label: "Git",
-    Icon: GitBranch,
-    // Not keepMounted: a fresh `git status` on return is the point.
-    render: ({ dir, slug, gitTpl }) =>
-      gitTpl ? (
-        templateFrame(dir, gitTpl, `Git: ${slug}`)
-      ) : (
-        <p className="app-page-empty">
-          This folder is not inside a git repository.
-        </p>
-      ),
+    render: ({ dir, folderHref, snapshot }) => (
+      <AppApi dir={dir} folderHref={folderHref} snapshot={snapshot} />
+    ),
   },
 };
 
@@ -210,17 +253,18 @@ export default function AppPage({
 }) {
   const slug = useMemo(() => basename(dir) || dir, [dir]);
   const [resolved, setResolved] = useState<Resolved | undefined>(undefined);
-  // The folder's templates (from the same stat that checks it is a folder)
-  // and the gate verdicts for the conditional ones (CT-12: stat only marks
-  // them; the gates run on demand). `null` verdicts = still asking.
-  const [tpls, setTpls] = useState<TemplateEntry[]>([]);
-  const [verdicts, setVerdicts] = useState<Record<string, boolean> | null>(
-    null,
-  );
   // The tab is the `_tab` query param, re-read on every URL event so
   // back/forward between the two tabs lands on the right one.
-  useUrlVersion();
+  const urlVersion = useUrlVersion();
   const tab = appPageTabFromSearch(location.search);
+
+  // This page's OWN resolution of the URL's `_snapshot` sha — extracted into
+  // useAppPageSnapshot.ts, which has its own header comment for why this is
+  // a hook and not a shared singleton. Passed straight through to every tab
+  // (`snapshotFrameSrc`/`rewritePathAgainst` at each read site), including
+  // the `pending` flag a tab must gate its own frame/fetch on rather than
+  // treat as "live" (finding 4).
+  const snapshot = useAppPageSnapshot(dir, urlVersion);
 
   // The app's optional icon.svg (`/api/apps/icon`; the same file the Projects
   // row draws) — the header's mark AND, through useFavicon, the tab icon while
@@ -298,27 +342,12 @@ export default function AppPage({
   useEffect(() => {
     let live = true;
     setResolved(undefined);
-    setTpls([]);
-    setVerdicts(null);
     (async () => {
       try {
         const st = await statPath(dir);
         if (!st.is_dir) {
           if (live) setResolved({ kind: "missing" });
           return;
-        }
-        if (live) {
-          const templates = st.templates ?? [];
-          setTpls(templates);
-          if (templates.some((t) => t.conditional)) {
-            // Shared in flight per path with any other asker (api.ts), so
-            // this costs nothing extra when the explorer asked first.
-            resolveConditions(dir)
-              .then((r) => live && setVerdicts(r.conditions))
-              .catch(() => live && setVerdicts({}));
-          } else {
-            setVerdicts({});
-          }
         }
       } catch {
         // A stat that fails is a folder that is not there (404) or a server
@@ -340,28 +369,6 @@ export default function AppPage({
       live = false;
     };
   }, [dir]);
-
-  const gitTplRaw = tpls.find((t) => t.mode === "git" && t.path) ?? null;
-  // Git is offered only where its gate says yes: a `conditional` entry waits
-  // for the verdict (pending reads as "not yet"), an unconditional one is in.
-  const gitAllowed =
-    !!gitTplRaw && (!gitTplRaw.conditional || verdicts?.git === true);
-  const gitTpl = gitAllowed ? gitTplRaw : null;
-  // The strip draws THESE; the route knows APP_PAGE_TABS. A tab that is not
-  // offered is still a valid address (a `?_tab=git` deep link opened before
-  // the verdict lands must not be rewritten away), so the panel logic below
-  // tolerates `tab` being outside this list and renders that tab's own
-  // empty state.
-  const visibleTabs = useMemo(
-    () =>
-      APP_PAGE_TABS.filter((id) => {
-        if (id === "git") return gitAllowed;
-        return true;
-      }),
-    [gitAllowed],
-  );
-  const visibleRef = useRef(visibleTabs);
-  visibleRef.current = visibleTabs;
 
   // Left/Right step the tabs (owner, 2026-08-26), the sibling of the sidebar's
   // Up/Down over its rows (sidebarArrowNav.ts): together the two axes make the
@@ -389,14 +396,13 @@ export default function AppPage({
         !el || el === document.body || el === document.documentElement;
       const inSidebar = !!el && !!document.getElementById("sidebar")?.contains(el);
       if (!onBody && !inSidebar) return;
-      // Over the VISIBLE tabs, through a ref so this [dir]-scoped listener
-      // never steps onto a hidden Git tab from a stale closure.
-      const tabs = visibleRef.current;
+      // Every tab is always offered now (no more conditional Git tab to
+      // skip), so this steps over the route's own static list directly.
       const cur = appPageTabFromSearch(location.search);
-      const i = tabs.indexOf(cur) + (e.key === "ArrowRight" ? 1 : -1);
+      const i = APP_PAGE_TABS.indexOf(cur) + (e.key === "ArrowRight" ? 1 : -1);
       e.preventDefault();
-      if (i < 0 || i >= tabs.length) return;
-      navigateUrl(appPageUrl(dir, tabs[i], location.search));
+      if (i < 0 || i >= APP_PAGE_TABS.length) return;
+      navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], location.search));
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -429,6 +435,60 @@ export default function AppPage({
   useEffect(() => {
     setDoctorOpen(false);
   }, [dir]);
+
+  // ---- export "at the selected version" -------------------------------------
+  //
+  // The picker only ever writes/reads `_snapshot`; this is the one place that
+  // turns "which version is selected" into "which folder to export" — a
+  // resolved snapshot's OWN extracted tree (`snap.dir`, never `snap.app_dir`:
+  // that is the LIVE folder the sha resolved FROM, and exporting it would
+  // silently ship the live app labelled as the picked commit) when one is
+  // picked, the live app folder otherwise.
+  //
+  // Gated on `snapshot.pending`/`snapshot.error` (not just disabled — the
+  // click handler also refuses) for the same reason every frame/fetch on this
+  // page already gates on them (useAppPageSnapshot's own header comment): a
+  // click that lands mid-resolve, before `snap.dir` exists, must not fall
+  // through to exporting the LIVE folder while the picker still shows the
+  // version being resolved — that is exactly the class of bug this branch
+  // has already had several of.
+  const versionLabel = useAppVersionLabel(dir, snapshot.sha);
+  const [exporting, setExporting] = useState(false);
+  const exportDisabled = exporting || snapshot.pending || snapshot.error;
+  const handleExport = async () => {
+    if (exportDisabled) return;
+    setExporting(true);
+    try {
+      const isLive = snapshot.sha === null;
+      const exportPath = snapshot.snap ? snapshot.snap.dir : dir;
+      // The filename carries the version so an exported v7 sitting beside a
+      // live export in Downloads is never ambiguous about which is which.
+      const exportName = isLive ? slug : `${slug}-${versionLabel}`;
+      await exportAppFile(
+        {
+          path: exportPath,
+          name: exportName,
+          // A preview capture is only attempted for a LIVE export. For a
+          // snapshot, `exportAppFile`'s stage fallback (no on-screen capture
+          // element is threaded to this page) would reload the ENTRY PAGE'S
+          // LIVE copy to shoot it — a screenshot of the wrong era baked into
+          // a file labelled as the old commit. Omitting `entry_html` here
+          // skips preview capture entirely rather than risk that; the
+          // snapshot export ships with no preview.png, which
+          // `downloadAppFile` already handles.
+          entry_html: isLive ? entry ?? undefined : undefined,
+        },
+        null,
+      );
+    } catch (e) {
+      pushToast({
+        msg: "Could not export " + slug + ": " + (e as Error).message,
+        tone: "error",
+      });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div className="app-page">
@@ -498,6 +558,31 @@ export default function AppPage({
             >
               Open in explorer
             </Button>
+            {/* Exports the folder AT THE PICKER'S SELECTED VERSION — the live
+                folder for "Live", the resolved snapshot's own extracted tree
+                for a commit (see the `handleExport` comment above). Disabled
+                through the same pending/error window every other read on
+                this page already gates on, so a click mid-resolve can never
+                silently export the wrong era. */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="app-page-export"
+              disabled={exportDisabled}
+              title={
+                snapshot.pending
+                  ? "Waiting for this version to finish loading"
+                  : snapshot.error
+                    ? "This version failed to load; retry it from the version picker"
+                    : versionLabel === "Live"
+                      ? "Export the live app as a .fused file"
+                      : `Export the app as of ${versionLabel} as a .fused file`
+              }
+              onClick={handleExport}
+            >
+              {exporting ? "Exporting…" : "Export"}
+              <Download data-icon="inline-end" />
+            </Button>
           </div>
         )}
       </header>
@@ -518,41 +603,48 @@ export default function AppPage({
       )}
 
       <div className="app-page-body">
-        {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
-            ctrl/middle-click on a trigger opens the address elsewhere without
-            also switching this page. Real anchors under the triggers (base-ui's
-            `render`), same reason as before — a tab is an address (D420). */}
-        <Tabs value={tab} className="app-page-tabs flex-none">
-          <TabsList
-            variant="line"
-            aria-label="App page"
-            className="h-auto w-full justify-start rounded-none border-b border-border p-0 pb-1"
-          >
-            {visibleTabs.map((id) => {
-              const { label, Icon } = TAB_DEFS[id];
-              return (
-                <TabsTrigger
-                  key={id}
-                  value={id}
-                  className="flex-none px-4 py-2.5"
-                  // Base UI assumes a native <button> unless told otherwise:
-                  // without this the anchor gets type="button" and Space
-                  // does not activate it (Bugbot on #851).
-                  nativeButton={false}
-                  render={
-                    <a
-                      href={appPageUrl(dir, id, location.search)}
-                      onClick={(e) => pickTab(e, id)}
-                    />
-                  }
-                >
-                  <Icon data-icon="inline-start" />
-                  {label}
-                </TabsTrigger>
-              );
-            })}
-          </TabsList>
-        </Tabs>
+        {/* The tab strip and the version picker share one row: the picker is
+            page-wide state (task 3 puts all three visible tabs on the
+            selected commit), so it sits beside the strip rather than inside
+            any one panel. */}
+        <div className="app-page-tabbar flex-none">
+          {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
+              ctrl/middle-click on a trigger opens the address elsewhere without
+              also switching this page. Real anchors under the triggers (base-ui's
+              `render`), same reason as before — a tab is an address (D420). */}
+          <Tabs value={tab} className="app-page-tabs flex-none">
+            <TabsList
+              variant="line"
+              aria-label="App page"
+              className="h-auto w-full justify-start rounded-none border-b-0 p-0 pb-1"
+            >
+              {APP_PAGE_TABS.map((id) => {
+                const { label, Icon } = TAB_DEFS[id];
+                return (
+                  <TabsTrigger
+                    key={id}
+                    value={id}
+                    className="flex-none px-4 py-2.5"
+                    // Base UI assumes a native <button> unless told otherwise:
+                    // without this the anchor gets type="button" and Space
+                    // does not activate it (Bugbot on #851).
+                    nativeButton={false}
+                    render={
+                      <a
+                        href={appPageUrl(dir, id, location.search)}
+                        onClick={(e) => pickTab(e, id)}
+                      />
+                    }
+                  >
+                    <Icon data-icon="inline-start" />
+                    {label}
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+          </Tabs>
+          <AppVersionPicker dir={dir} />
+        </div>
 
         {resolved === undefined && (
           <SkeletonLines rows={2} label="Loading app" />
@@ -582,7 +674,7 @@ export default function AppPage({
                 role="tabpanel"
                 aria-hidden={!active}
               >
-                {def.render({ slug, dir, entry, folderHref, gitTpl })}
+                {def.render({ slug, dir, entry, folderHref, snapshot })}
               </section>
             );
           })}

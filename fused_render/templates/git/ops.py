@@ -184,7 +184,21 @@ _SAFE_OPS = (
 # left me", and once it is replaced the only way back is `git checkout --merge`.
 # So it gets the confirmation step every other work-losing op gets, and the
 # proposed-resolution panel in front of it is a review surface, not the consent.
-DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve")
+#
+# `app_restore` and `revert` (see below) are both here too: neither can lose
+# UNCOMMITTED work once `_require_clean` holds, but both write a commit to
+# history on one click — that deserves the same consent step, not because
+# anything could be lost but because both are one-way once done (D744).
+#
+# `reset` is the one op in this list that CAN lose committed work, not just
+# rewrite it forward: `git reset --hard` moves the branch pointer, so every
+# commit after the target becomes unreachable from any ref (recoverable only
+# through the reflog, and only until it expires or is pruned) and any
+# uncommitted change is discarded outright — the exact reason it goes through
+# `_require_clean` too, same as `revert`, even though a clean tree only
+# removes ONE of the two ways this can lose work (D745).
+DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve",
+                   "app_restore", "revert", "reset")
 _OPS = _SAFE_OPS + DESTRUCTIVE_OPS
 
 # Ops that take an explicit `paths` list, and ops that operate on the whole open
@@ -550,7 +564,8 @@ def _resolve(root, rel, content):
                path=rel)
 
 
-def _check_strings(op, paths, message, name, index, content="", email="", url=""):
+def _check_strings(op, paths, message, name, index, content="", email="",
+                    url="", sha=""):
     """Everything that can be decided WITHOUT touching the filesystem or git.
 
     Ordering, not just validation. `_locate` is itself a git call, so validating
@@ -628,6 +643,12 @@ def _check_strings(op, paths, message, name, index, content="", email="", url=""
             raise _Refused("bad-identity",
                            "That name or email is not something git would "
                            "accept as one.")
+
+    if op in ("app_restore", "revert", "reset"):
+        # Format only — whether the sha names a real, reachable commit is a
+        # question only git can answer, at the point the op actually runs it.
+        if not _SHA_RE.match(sha or ""):
+            raise _Refused("bad-sha", "That request did not name a commit.")
 
     if op == "remote_add":
         # `url` is REQUIRED — a remote with no URL is not a remote — and `name`
@@ -778,6 +799,66 @@ def _has_staged(root):
     return code == 1
 
 
+def _require_clean(root):
+    """Refuse when the working tree carries ANY change — staged, unstaged or
+    untracked (D744). Repo-wide, not scoped to a file or folder: see
+    decisions for why the two new write ops below share this one rule rather
+    than each getting a narrower version of it.
+
+    `git status --porcelain` is what git itself calls "is there anything to
+    tell you about" — any output line at all means the tree is not clean,
+    regardless of which of the three states produced it.
+    """
+    out = _git_ok(root, "status", "--porcelain")
+    if out.strip():
+        raise _Refused(
+            "dirty",
+            "You have uncommitted changes. Commit or stash them first — "
+            "nothing was changed.")
+
+
+def _require_app_dir(root, file):
+    """Resolve the app folder enclosing `file`, walking up to `root`.
+
+    Returns the folder's path relative to `root` (POSIX, `""` if the app
+    folder IS the repository root). Refuses when no enclosing folder carries
+    the `fused-app` marker — `app_restore` may only ever touch a real app
+    folder, never an arbitrary path a hand-written request happens to name.
+
+    Reaches `shared/app_entry.py` via the module's own `sys.path` hop (see the
+    top of this file) rather than `fused_render.app_listing.enclosing_app_dir`
+    — the server-side twin of the same rule — because a template must not
+    import `fused_render` (SPEC PY-15 / D166). An unreachable `app_entry` is
+    "cannot tell", which reads as a refusal, exactly like `_refuse_mounts`.
+    """
+    try:
+        from app_entry import entry_html
+    except Exception as exc:  # noqa: BLE001 — cannot tell -> refuse
+        raise _Refused(
+            "no-app-dir",
+            f"App folder detection unavailable ({exc}).") from exc
+
+    root_real = os.path.realpath(root)
+    path = os.path.abspath(file)
+    current = path if os.path.isdir(path) else os.path.dirname(path)
+    while True:
+        if entry_html(current) is not None:
+            real = os.path.realpath(current)
+            if real == root_real:
+                return ""
+            return os.path.relpath(real, root_real).replace(os.sep, "/")
+        if os.path.realpath(current) == root_real:
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    raise _Refused(
+        "no-app-dir",
+        "This is not inside an app folder — a folder with an entry page "
+        "carrying the fused-app marker.")
+
+
 def _tracked(root, rels):
     """Split `rels` into `(tracked, untracked)` as git sees them.
 
@@ -792,6 +873,43 @@ def _tracked(root, rels):
     tracked = [rel for rel in rels
                if rel in known or any(k.startswith(rel + "/") for k in known)]
     return tracked, [rel for rel in rels if rel not in tracked]
+
+
+def _decode_names(out):
+    return {chunk.decode("utf-8", "replace") for chunk in out.split(b"\0") if chunk}
+
+
+def _paths_at(root, sha, spec):
+    """The full set of repo-relative paths `sha`'s own tree holds under `spec`.
+
+    `_restore_scope_from` needs this for two things: to refuse BEFORE it
+    touches anything if `sha`'s own tree has nothing under `spec` (finding
+    1) — a commit that deleted the app folder (with a LATER commit
+    re-adding it, so the folder's own scoped log still shows history there
+    and `probeAppFolder`, which is sha-less, arms Checkout regardless) is
+    exactly the case where `checkout <sha> -- <spec>` exits 1 with "did not
+    match any file(s) known to git" — and, separately, to know exactly
+    which currently-tracked paths are NOT part of `sha`'s tree, so a path
+    added since `sha` can be removed by NAME instead of by first wiping the
+    whole scope and trusting the checkout to bring everything back.
+
+    `git ls-tree`, not `git ls-files --with-tree`: the pathspec here can be
+    `:/` (the whole tree, `_scope_spec`'s root case), which `ls-tree`
+    accepts as an ordinary pathspec argument the same way `ls-files` does
+    for the index — and unlike `checkout`, `ls-tree` exits 0 whether or not
+    anything matched, so this is a genuine probe rather than another
+    command whose own error has to be worked around.
+    """
+    out = _git_ok(root, "ls-tree", "-r", "--name-only", "-z", sha, *spec)
+    return _decode_names(out)
+
+
+def _tracked_paths(root, spec):
+    """The full set of repo-relative paths currently tracked under `spec`,
+    by NAME rather than by count — `_restore_scope_from` diffs this against
+    `_paths_at`'s answer for `sha` to find exactly what needs removing."""
+    out = _git_ok(root, "ls-files", "-z", *spec)
+    return _decode_names(out)
 
 
 def _knows_anything(root, spec):
@@ -958,6 +1076,325 @@ def _commit(root, message):
     parts = out.decode("utf-8", "replace").strip().split("\0")
     short, subject = (parts + ["", ""])[:2]
     return _ok("commit", f"Committed {short}.", short=short, subject=subject)
+
+
+def _restore_scope_from(root, spec, sha, *, allow_empty_target=False):
+    """Make everything under `spec` match `sha`'s own tree, EXACTLY —
+    including a path that is at `sha` and gone from HEAD (an ordinary
+    checkout-and-restore) or a path added since `sha` that must not survive
+    (finding 1: `git checkout <sha> -- <spec>` alone only overwrites paths
+    PRESENT at `sha`, so a file added afterwards silently survives, and the
+    resulting tree is neither version).
+
+    `checkout <sha> -- <spec>` FIRST, then `git rm -rf --ignore-unmatch` of
+    only the specific paths `_paths_at` proves are NOT part of `sha`'s tree
+    — round 4's fix for a regression round 3 introduced. Round 3 did the
+    `rm` of the WHOLE scope first and trusted the checkout afterward to
+    bring everything back; if that checkout then failed for a PERSISTENT
+    reason (a leftover `index.lock`, a permission error, a `TIMEOUT_S`
+    expiry that will recur), the recovery below retries with an identical
+    checkout that fails the identical way — but the `rm` had already
+    removed the whole scope by then, so the folder was gone from the
+    working tree AND the index with no step left that could ever bring it
+    back. Checking out first means a failure of EITHER checkout — `sha`'s
+    or, in the recovery below, `HEAD`'s — never removes anything: checkout
+    only ever overwrites or creates paths the target tree holds, so nothing
+    that already existed can vanish because of it. Only the removal step
+    can make a path disappear, and it is scoped to the exact paths that do
+    NOT belong in the target tree, computed by NAME rather than by wiping
+    everything and hoping the checkout is what restores it.
+
+    Two more failure modes, both from the second review round:
+
+    * **`sha` might not hold this scope at all** (finding 1). This is
+      checked (`_paths_at`) BEFORE anything is touched, so it refuses
+      cleanly with nothing done rather than discovering there is nothing
+      to restore after the fact. `allow_empty_target` lifts this refusal
+      for the one caller that means it literally — the recovery below,
+      undoing a restore by going back to `HEAD`, must still remove
+      whatever `sha`'s checkout added even when `HEAD` itself holds
+      NOTHING under `spec` (round 4, the LOW alongside the main finding:
+      reachable when the app folder is gitignored, so `_require_clean` saw
+      a clean tree and the folder existed only at the older `sha` being
+      undone — precisely the case where only the removal is needed, not a
+      checkout).
+    * **the checkout, or the removal that follows it, can still fail for an
+      unrelated reason** — a `TIMEOUT_S` expiry, a permission error, a
+      collision with an existing ignored directory. This restores from
+      `HEAD` before propagating the failure, so a caller-visible failure
+      never leaves the scope holding an uneasy mix of `sha` and whatever
+      came before. `sha != "HEAD"` guards the one caller that already IS
+      "restore from HEAD" (finding 2's own recovery) — retrying the
+      identical call would just fail the same way again.
+    """
+    sha_paths = _paths_at(root, sha, spec)
+    if not sha_paths and not allow_empty_target:
+        raise _Refused(
+            "no-such-version",
+            "This does not exist in that version of the repository — "
+            "nothing was changed.")
+    try:
+        if sha_paths:
+            _git_ok(root, "checkout", sha, *spec)
+        # Whatever is tracked here now that ISN'T part of `sha`'s own tree
+        # is exactly finding-1's "a path added since `sha` must not
+        # survive" — removed by NAME, `-f` because this may be undoing an
+        # earlier, half-applied call to this same function (finding 2),
+        # where the index already holds content that differs from HEAD and
+        # plain `git rm` refuses exactly that ("changes staged in the
+        # index"). Forcing is safe here specifically because every caller
+        # already holds `_require_clean`'s guarantee that nothing OUTSIDE
+        # this function's own writes is being discarded.
+        #
+        # ROUND 5, ITEM C: "safe" above assumes a `checkout sha -- spec`
+        # just ran to put a REPLACEMENT in every extra's place — true
+        # whenever `sha_paths` is non-empty. When `sha_paths` is EMPTY
+        # (only reachable with `allow_empty_target`, i.e. this is the
+        # recovery re-entry and `HEAD` itself holds nothing under `spec` —
+        # a gitignored app folder), there is no checkout, no replacement,
+        # and every "extra" is everything currently tracked here. A plain
+        # `git rm -f` deletes those from the WORKING TREE too, so the
+        # recovery — reached because an unrelated commit failure needed
+        # undoing — would delete the user's files with nothing to put back
+        # in their place: the exact destructive class `allow_empty_target`
+        # was added to close, relocated to this branch instead. `--cached`
+        # untracks without touching disk; `_require_clean` still sees a
+        # clean tree afterward either way, since a gitignored path never
+        # shows in `status --porcelain` whether it is tracked or not.
+        extras = _tracked_paths(root, spec) - sha_paths
+        if extras:
+            rm_args = ["rm", "-r", "-f", "-q", "--ignore-unmatch"]
+            if not sha_paths:
+                rm_args.append("--cached")
+            _git_ok(root, *rm_args, *_spec(sorted(extras)))
+    except _Refused as exc:
+        if sha == "HEAD":
+            raise
+        try:
+            # Recursing into this same function does the checkout-then-
+            # remove the same way this function restores anything else,
+            # allowing an empty target because `HEAD` itself may hold
+            # nothing under `spec` (the LOW above). Safe from infinite
+            # recursion: this recursive call passes `sha="HEAD"`, so if IT
+            # fails the `if sha == "HEAD": raise` guard above fires on
+            # re-entry instead of recursing again.
+            _restore_scope_from(root, spec, "HEAD", allow_empty_target=True)
+        except _Refused as recovery_exc:
+            raise _Refused(
+                exc.payload["reason"],
+                exc.payload["message"] + " The automatic recovery back to "
+                "HEAD also failed (" + recovery_exc.payload["message"] +
+                "); this scope may be left partially restored and need "
+                "manual attention.") from exc
+        raise
+
+
+def _app_restore(root, file, sha):
+    """DESTRUCTIVE (writes history). Commit the app folder back to `sha`.
+
+    Neither this restore nor its own failure path ever moves HEAD or detaches
+    it — `_restore_scope_from`'s `checkout <sha> -- <spec>` form only ever
+    touches the pathspec's own entries, and this function's one commit is an
+    ordinary child of the current HEAD. `_scope_spec`, not `_pathspec`: an
+    app folder that happens to BE the repository root must still mean "the
+    whole tree", not the empty pathspec `_pathspec("")` would build there.
+    """
+    _require_clean(root)
+    app_rel = _require_app_dir(root, file)
+    spec = _scope_spec(app_rel)
+    _restore_scope_from(root, spec, sha)
+    if not _has_staged(root):
+        # The checkout ran but recorded nothing — the app folder already
+        # matched `sha`. An empty commit would just be noise in the log, so
+        # this reads as "nothing to do" rather than paying for a commit.
+        # `_require_clean` already proved the tree was clean before this ran,
+        # so there is nothing to restore here either.
+        raise _Refused(
+            "no-op-restore",
+            "The app folder already matches this version — nothing to "
+            "restore.")
+    short = _git_ok(root, "rev-parse", "--short", sha).decode(
+        "utf-8", "replace").strip()
+    label = app_rel or "the app folder"
+    try:
+        _git_ok(root, "commit", "-m", f"Restore {label} to {short}")
+    except _Refused as commit_exc:
+        # FINDING 2: the checkout above updated the index AND the working
+        # tree for this scope; if the commit that was meant to follow it then
+        # fails (no `user.email`, a rejecting `pre-commit` hook, a gpg
+        # failure), leaving it there is self-perpetuating — `_require_clean`
+        # would refuse every LATER restore on this repo until the user fixes
+        # it by hand, on a tree they never touched themselves. Undo exactly
+        # what this function did, the same way: wipe the scope and restore
+        # it from HEAD instead of `sha` — HEAD is what `_require_clean`
+        # already proved this scope matched before this call started.
+        #
+        # This recovery call can itself raise (git-failed, timeout, a second
+        # hook rejection on the recovery commit-less checkout — no, this is a
+        # checkout, but the same class of failure applies). A bare `raise`
+        # after an unguarded call would let THAT exception replace this one,
+        # so the user would be told "git-failed"/"timeout" instead of the
+        # actual cause (their pre-commit hook), while the folder is left
+        # fully deleted rather than half-restored. Catch it and re-raise the
+        # ORIGINAL refusal, its message extended to say the undo also failed.
+        # `allow_empty_target=True`: HEAD may hold NOTHING under this scope
+        # (an app folder that is gitignored, so `_require_clean` saw a clean
+        # tree and it existed only at `sha`) — that must still remove what
+        # the checkout above added, not refuse with "no-such-version" right
+        # when only the removal is needed (round 4's LOW).
+        try:
+            _restore_scope_from(root, spec, "HEAD", allow_empty_target=True)
+        except _Refused as recovery_exc:
+            raise _Refused(
+                commit_exc.payload["reason"],
+                commit_exc.payload["message"] + " The automatic undo also "
+                "failed (" + recovery_exc.payload["message"] + "); the "
+                "repository may need manual attention.") from commit_exc
+        raise
+    out = _git_ok(root, "log", "-1", "--no-color", f"--format={_COMMIT_FORMAT}")
+    parts = out.decode("utf-8", "replace").strip().split("\0")
+    new_short, subject = (parts + ["", ""])[:2]
+    return _ok("app_restore", f"Restored {label} to {short}.",
+               short=new_short, subject=subject)
+
+
+def _revert_in_progress(root):
+    """Whether git itself considers a revert (or cherry-pick — they share the
+    same sequencer state, `REVERT_HEAD`/`CHERRY_PICK_HEAD`) in progress right
+    now.
+
+    Asked of git (`rev-parse --verify -q REVERT_HEAD`) rather than answered
+    by reading `.git/REVERT_HEAD` off the filesystem directly, so this stays
+    correct regardless of how `.git` resolves for this checkout (a linked
+    worktree's `.git` is a file pointing elsewhere, not a directory) — the
+    same reason this module always asks git rather than parsing its files
+    when a question can be put to git instead.
+    """
+    try:
+        code, _, _ = _run(root, "rev-parse", "--verify", "-q", "REVERT_HEAD")
+    except _Refused:
+        # Can't even ask. Assume the worst so a genuine mid-revert is never
+        # silently missed — the false-alarm case (this fires when nothing
+        # was ever started) is the opposite failure and requires git to be
+        # reachable, which it just proved it is not.
+        return True
+    return code == 0
+
+
+def _safe_abort(root):
+    """`git revert --abort`, best-effort. Used only as cleanup after a
+    failure this function is already about to report — a SECOND failure
+    here (there is nothing in progress to abort; git itself is unavailable)
+    must not replace, or hide behind an unrelated traceback, the original
+    refusal the caller is already raising.
+
+    Returns whether the repository is left NOT mid-revert afterward
+    (FINDING 3, corrected in round 3). This is not the same question as "did
+    the abort command exit 0" — `revert --abort` exits 128 with "no
+    cherry-pick or revert in progress" whenever the revert this is cleaning
+    up after never actually started (a merge commit with no `-m`, a bad
+    sha — refused before any sequencer state is written), and that is
+    success for this function's purpose just as much as a real abort is: in
+    both cases nothing is left in progress. Conflating the two previously
+    made every such refusal claim the repository "may still be mid-revert"
+    when it plainly was not (round 3's own finding). So a non-zero exit here
+    is checked against the actual state via `_revert_in_progress` rather
+    than treated as failure on its own — only a revert genuinely still in
+    progress afterward counts as this function failing.
+
+    On a real timeout, `subprocess.run` SIGKILLs the child git, which
+    typically leaves `.git/index.lock` behind; `revert --abort` then fails
+    ("Unable to create index.lock") while a real revert WAS in progress, so
+    `_revert_in_progress` correctly reports that as still-failed.
+    """
+    try:
+        code, _, _ = _run(root, "revert", "--abort")
+    except _Refused:
+        # git itself couldn't be run (no-git, timeout). Don't assume the
+        # abort failed on that alone — fall through to the state check,
+        # which is the actual question this function answers.
+        code = None
+    if code == 0:
+        return True
+    return not _revert_in_progress(root)
+
+
+def _revert(root, sha):
+    """DESTRUCTIVE (writes history). `git revert --no-edit <sha>` — a new
+    commit undoing that one. Whole-repo: unlike stage/discard/stash, a
+    revert is not a concept that scopes to a folder.
+
+    `--no-edit` is belt and braces: `GIT_EDITOR=false` (module-level `_ENV`)
+    already makes an editor launch fail instantly rather than hang, but
+    `--no-edit` means one is never even attempted.
+
+    A conflicting revert leaves git MID-OPERATION — `.git/REVERT_HEAD` set,
+    conflict markers written into the working tree — with no UI here to
+    finish it. That is the worst outcome a sidebar button could produce, so
+    ANY failure here is followed by `revert --abort` before refusing, the
+    same posture `_pull` takes for a non-fast-forward: point at a terminal
+    rather than leave the repository stuck.
+
+    The abort has to run on EVERY way this can fail, not only a non-zero
+    exit code: `_run` raises `_Refused` itself for a timeout or an OSError
+    (a slow hook, or a large revert — the exact cases this module's own
+    `TIMEOUT_S` comment calls out), and those bypassed the abort entirely
+    before this was wrapped in `try`/`except` — a slow hook could leave
+    `.git/REVERT_HEAD` and conflict markers behind with nobody ever having
+    tried to clean them up.
+    """
+    _require_clean(root)
+    try:
+        code, out, err = _run(root, "revert", "--no-edit", sha)
+    except _Refused as exc:
+        if not _safe_abort(root):
+            raise _Refused(
+                exc.payload["reason"],
+                exc.payload["message"] + " The automatic abort afterwards "
+                "also failed — this repository may still be mid-revert; "
+                "run `git revert --abort` in a terminal.") from exc
+        raise
+    if code == 0:
+        log_out = _git_ok(root, "log", "-1", "--no-color",
+                          f"--format={_COMMIT_FORMAT}")
+        parts = log_out.decode("utf-8", "replace").strip().split("\0")
+        short, subject = (parts + ["", ""])[:2]
+        return _ok("revert", f"Reverted as {short}.", short=short,
+                   subject=subject)
+    conflict_message = (_brief(err) or "That revert conflicts and needs "
+                        "manual resolution — nothing was changed here. "
+                        "Finish it in a terminal.")
+    if not _safe_abort(root):
+        conflict_message += (" The automatic abort afterwards also failed "
+                             "— this repository may still be mid-revert; "
+                             "run `git revert --abort` in a terminal.")
+    raise _Refused("revert-conflict", conflict_message)
+
+
+def _reset(root, sha):
+    """DESTRUCTIVE (writes history — and can genuinely lose it, unlike its
+    neighbours). `git reset --hard <sha>` — whole repository, exactly like
+    `revert`: this is not a concept that scopes to a folder either.
+
+    `_require_clean` still gates this even though `--hard` would happily
+    discard uncommitted changes on its own: refusing on a dirty tree, rather
+    than silently taking it along for the ride, means the only thing this op
+    ever discards is COMMITS the user asked to discard, never a change they
+    forgot they had sitting in the working tree (D745).
+
+    No `revert`-style `--abort`-on-failure dance: `reset --hard` is a single
+    atomic ref update with no conflict state of its own to get stuck in. A
+    refusal here is either the sha not existing/not being reachable (git's own
+    words, via `_git_ok`) or git itself not running at all (`_run`'s usual
+    no-git/timeout refusals) — in neither case has anything moved.
+    """
+    _require_clean(root)
+    _git_ok(root, "reset", "--hard", sha)
+    out = _git_ok(root, "log", "-1", "--no-color", f"--format={_COMMIT_FORMAT}")
+    parts = out.decode("utf-8", "replace").strip().split("\0")
+    short, subject = (parts + ["", ""])[:2]
+    return _ok("reset", f"Reset history to {short}.", short=short,
+               subject=subject)
 
 
 def _branch_create(root, name, checkout):
@@ -1267,7 +1704,7 @@ def main(
     try:
         # Strings first, always — `_locate` forks git, so nothing malformed may
         # get that far.
-        _check_strings(op, paths, message, name, index, content, email, url)
+        _check_strings(op, paths, message, name, index, content, email, url, sha)
         root, scope, scope_is_dir = _locate(file)
 
         if op in _PATH_OPS:
@@ -1309,6 +1746,12 @@ def main(
 
         if op == "commit":
             return _commit(root, message)
+        if op == "app_restore":
+            return _app_restore(root, file, sha)
+        if op == "revert":
+            return _revert(root, sha)
+        if op == "reset":
+            return _reset(root, sha)
         if op == "branch_create":
             return _branch_create(root, name, bool(checkout))
         if op == "branch_checkout":

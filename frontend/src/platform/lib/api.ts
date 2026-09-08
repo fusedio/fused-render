@@ -4226,6 +4226,68 @@ export function getGitRepos(): Promise<GitRepos> {
   return getJson<GitRepos>("/api/git-repos");
 }
 
+// -- Git snapshot (GET /api/git/snapshot) -------------------------------------
+// The app folder enclosing `path`, materialised at `sha` (fused_render/server/
+// routers/git_snapshot.py). Backs the shell's `_snapshot=<sha>` URL state: the
+// explorer resolves this once per selection (and once per fresh load that
+// already carries the param) to learn `app_dir` — the live folder the carry
+// rule (platform/lib/snapshot-param.ts) is scoped to — and `entry`/`dir` for
+// whatever needs to open the extracted tree directly.
+export interface GitSnapshot {
+  ok: boolean;
+  dir: string;
+  entry: string | null;
+  app_dir: string;
+}
+
+export function getGitSnapshot(path: string, sha: string): Promise<GitSnapshot> {
+  return getJson<GitSnapshot>(
+    `/api/git/snapshot?path=${encodeURIComponent(path)}&sha=${encodeURIComponent(sha)}`,
+  );
+}
+
+// The cheap, sha-less sibling: does an app folder enclose `path` at all — the
+// same fail-closed probe templates/git/template.html's own `probeAppFolder()`
+// calls before offering its preview eye (D742 / review finding B4). Backs
+// AppVersionPicker's own gate: the picker renders only once this resolves ok.
+export interface GitAppFolder {
+  ok: boolean;
+  app_dir: string;
+}
+
+export function getGitAppFolder(path: string): Promise<GitAppFolder> {
+  return getJson<GitAppFolder>(
+    `/api/git/app-folder?path=${encodeURIComponent(path)}`,
+  );
+}
+
+// A bounded, recent-first log for the app folder enclosing `path` — the
+// version picker's own list. Deliberately smaller than the git template's own
+// reader: a label per commit, not a diff.
+export interface GitCommit {
+  sha: string;
+  short: string;
+  subject: string;
+  author: string;
+  when: number;
+}
+
+export interface GitCommits {
+  ok: boolean;
+  commits: GitCommit[];
+  has_more: boolean;
+  // ALL commits reachable from HEAD touching the app folder, not just the
+  // ones `limit` let through — the version picker needs this to label its
+  // newest row `v<total>` correctly even when the list is capped.
+  total: number;
+}
+
+export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
+  return getJson<GitCommits>(
+    `/api/git/commits?path=${encodeURIComponent(path)}&limit=${limit}`,
+  );
+}
+
 // -- AI completion (POST /api/ai) ---------------------------------------------
 // The fused.ai relay: one non-streaming completion through the server's warm
 // Claude Code CLI instance (server/ai.py). The shell uses this for small

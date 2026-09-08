@@ -510,10 +510,10 @@ def test_a_confirmed_unavailable_claude_replaces_the_button_not_the_error():
 
 
 def test_the_claude_ask_reaches_the_shell_through_the_ancestor_global():
-    """Same idiom as `_fusedSelectRev` (D3/D4): an ancestor-window global, not a
-    postMessage, and not a param — see test_the_commit_reaches_the_shell_
-    through_the_ancestor_global in test_git_scope.py for the `_rev` sibling of
-    this hop."""
+    """Same idiom as `_fusedSelectSnapshot` (D3/D4): an ancestor-window global,
+    not a postMessage, and not a param — see test_the_commit_reaches_the_shell_
+    through_the_ancestor_global in test_git_scope.py for the `_snapshot`
+    sibling of this hop."""
     src = _view_source()
     assert src.count("window._fusedAskClaude(") == 1
 

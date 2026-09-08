@@ -1516,67 +1516,242 @@
     }
   }
 
-  // ---- revision reads (`_rev`) ---------------------------------------------
+  // ---- git snapshot reads (`_snapshot`) -------------------------------------
   //
-  // A frame whose OWN url carries `_rev=<sha>` is showing the target file AS OF
-  // that commit: every read helper further down (rawUrl, and readFile/stat
-  // through it) resolves through /api/git/show instead of the live filesystem,
-  // and every write is refused. Declared up HERE, beside the other ancestor-hop
-  // plumbing and above the install loader, rather than next to the helpers it
-  // serves: the loader block down there is lifted verbatim into a node harness by
+  // A frame whose OWN url carries `_snapshot=<sha>` sits inside an app folder
+  // materialised at that commit (`/api/git/snapshot`, `git archive` to
+  // ~/.fused-render/app-versions/<key>/<sha>/). Rather than routing reads
+  // through a special endpoint (the deleted `_rev` design's `/api/git/show`),
+  // every read helper below REWRITES a path at or under the live app folder to
+  // the same relative path under the EXTRACTED tree, so the plain, ordinary
+  // filesystem read that follows is reading a real file that happens to be a
+  // past commit's — which is what makes `runPython` no exception any more
+  // (the removed KNOWN GAP: a `.py` reader now opens the commit's own file,
+  // because its path argument was rewritten before the request left this
+  // script). The server backstops writes unconditionally regardless of any
+  // of this (`mount.py::_is_under_snapshot_root` refuses a mutation under
+  // ~/.fused-render/app-versions/ no matter how it got there); the
+  // client-side refusal below (`snapshotWritable`/`snapshotRefusal`) exists
+  // only to give a friendlier, sha-naming message instead of a bare
+  // `readonly`.
+  //
+  // RESOLVED SYNCHRONOUSLY in the common case: this frame's own src carries
+  // `_snapshot_dir`/`_snapshot_app` alongside `_snapshot` — the exact answer
+  // Preview.tsx already got from `/api/git/snapshot` while building this
+  // frame's src in the first place, handed straight down rather than
+  // re-fetched. A `fetch`-based FALLBACK still exists for a frame whose src
+  // did not carry those two params (a manually-typed url, an embedding
+  // context outside Preview.tsx); see `snapshotReady`'s own comment.
+  //
+  // Declared up HERE, beside the other ancestor-hop plumbing and above the
+  // install loader, rather than next to the helpers it serves: the loader
+  // block down there is lifted verbatim into a node harness by
   // tests/test_server_env_install.py, and a module-level read of `ownQuery`
-  // inside that slice is a ReferenceError under node (the same trap noteFsChanged
-  // fell into — see that file's prelude comment). The git sidebar puts a page into
-  // this state by telling the shell which commit was clicked (window
-  // ._fusedSelectRev, below); the shell rebuilds the content frame's src with the
-  // param on it. Reading it HERE is what makes the whole feature cost templates
-  // zero lines: a template still calls fused.readFile(fused.params.get("_file")),
+  // inside that slice is a ReferenceError under node (the same trap
+  // noteFsChanged fell into — see that file's prelude comment). The git
+  // sidebar puts a page into this state by telling the shell which commit was
+  // clicked (window._fusedSelectSnapshot); the shell writes `_snapshot=<sha>`
+  // onto its own URL and forwards it onto every frame's src (Preview.tsx).
+  // Reading it HERE is what makes the whole feature cost templates zero
+  // lines: a template still calls fused.readFile(fused.params.get("_file")),
   // and which bytes that means is decided by the frame's url.
   //
-  // Read once, not per call: `_rev` rides the frame's own URL, and a change to
-  // that url is a navigation — a new document with a fresh copy of this script.
-  // (`_file` is read per call because it can also come from an ANCESTOR's query;
-  // a revision deliberately never does. It must not be inheritable — a sha chosen
-  // for one file's pane leaking into another frame is exactly the bug that keeps
-  // this param off the shell's address bar in the first place.)
+  // Read once, not per call: `_snapshot` rides the frame's own URL, and a
+  // change to that url is a navigation — a new document with a fresh copy of
+  // this script.
   //
   // Hex only, and validated here as well as server-side: the value goes into a
-  // query string this script builds, and a junk `_rev` must read as "no revision"
-  // rather than produce a broken read on every file the page touches.
-  const rev = (function () {
-    const raw = ownQuery("_rev");
+  // query string this script builds, and a junk `_snapshot` must read as "no
+  // snapshot" rather than produce a broken read on every file the page
+  // touches.
+  const snapshotSha = (function () {
+    const raw = ownQuery("_snapshot");
     return raw && /^[0-9a-fA-F]{4,64}$/.test(raw) ? raw : null;
   })();
 
-  function revUrl(path) {
-    return "/api/git/show?path=" + encodeURIComponent(path) +
-      "&sha=" + encodeURIComponent(rev);
+  // Resolved SYNCHRONOUSLY, in the common case, off two more params this
+  // frame's OWN src carries alongside `_snapshot` — `_snapshot_dir` and
+  // `_snapshot_app`, the exact `dir`/`app_dir` a `/api/git/snapshot` call
+  // already produced. Preview.tsx resolves that call itself (to build the
+  // frame's src in the first place — it needs `dir` for the `_render`
+  // sentinel's own `path`, see below) and hands the answer down instead of
+  // making this frame re-resolve it over the network: there is then no
+  // fetch, hence no window in which `readFile`/`stat`/`runPython`/`rawUrl`
+  // can run before a resolve lands (code review finding B1 — the previous
+  // shape started this same fetch here, eagerly, and hoped it usually beat a
+  // template's synchronous boot-time `readFile`; it did not always, and a
+  // template has no way to await it).
+  //
+  // Trusting these two params costs nothing security-wise: every read helper
+  // below (`readFile`, `rawUrl`, `stat`, `runPython`) already accepts ANY
+  // absolute path a page's own script hands it — that is the whole premise
+  // of this local, single-user tool. `_snapshot_dir`/`_snapshot_app` only
+  // decide which of two absolute paths a given read is redirected to; they
+  // grant no capability a page did not already have.
+  const querySnapshotDir = ownQuery("_snapshot_dir");
+  const querySnapshotApp = ownQuery("_snapshot_app");
+  const _isAbsPath = (p) => typeof p === "string" && p.length > 0 && p[0] === "/";
+
+  let resolvedSnapshot = (snapshotSha !== null &&
+                           _isAbsPath(querySnapshotDir) && _isAbsPath(querySnapshotApp))
+    ? { sha: snapshotSha, dir: querySnapshotDir, app_dir: querySnapshotApp }
+    : null;
+
+  // FALLBACK ONLY: reached when `_snapshot` rides this frame's src with no
+  // precomputed `_snapshot_dir`/`_snapshot_app` — a manually-typed url, or an
+  // embedding context that does not go through Preview.tsx. Resolves the
+  // same `/api/git/snapshot` call itself, same as the previous design, but
+  // every caller below now CHAINS off this promise (`snapshotReady`) rather
+  // than reading `resolvedSnapshot` synchronously, so even this fallback path
+  // can no longer race a template's boot-time read.
+  //
+  // `snapshotAnchor` records the path this fallback resolve is climbing from
+  // (`_file`/`path`), for as long as the resolve is unsettled or has settled
+  // to nothing — the ONLY thing `snapshotWritable` (below) has to reason
+  // about a write's plausibility with before `resolvedSnapshot` exists. Left
+  // `null` once a resolve actually lands (`resolvedSnapshot` speaks for
+  // itself then) or never had an anchor to begin with.
+  let snapshotAnchor = null;
+  // Bounded so this promise ALWAYS settles. Previously an unbounded `fetch`
+  // with no timeout: the server's own `git archive` can legitimately run for
+  // the length of ITS OWN `TIMEOUT_S` (20s) on a cold, large app, and a
+  // request that genuinely never answers (a dropped connection, a server
+  // wedged mid-restart) would never even REJECT — every read helper below
+  // chains off this exact promise, so a stuck fetch here hung
+  // `readFile`/`stat`/`runPython` forever for this frame, not just for 20
+  // seconds (finding, round 2 review). `SNAPSHOT_FALLBACK_TIMEOUT_MS` sits
+  // comfortably past the server's own budget so an in-progress extraction is
+  // never aborted out from under itself for no reason; past it, this frame
+  // simply falls back to live the same way any other failed resolve does.
+  const SNAPSHOT_FALLBACK_TIMEOUT_MS = 25000;
+  const snapshotReady = (function () {
+    if (resolvedSnapshot !== null) return Promise.resolve(resolvedSnapshot);
+    if (snapshotSha === null) return Promise.resolve(null);
+    // The anchor this frame resolves the enclosing app folder from: the
+    // target file when this page is previewing one (`_file`, set on content
+    // templates), else this page's own location (`path` — an app rendering
+    // itself under a snapshot, with no wrapping template in between).
+    const anchor = ownQuery("_file") || ownQuery("path");
+    if (!anchor) return Promise.resolve(null);
+    snapshotAnchor = anchor;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SNAPSHOT_FALLBACK_TIMEOUT_MS);
+    return fetch("/api/git/snapshot?path=" + encodeURIComponent(anchor) +
+                 "&sha=" + encodeURIComponent(snapshotSha),
+                 { headers: callHeaders(), signal: controller.signal })
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (!data || !data.ok) return null;
+        const snap = { sha: snapshotSha, dir: data.dir, app_dir: data.app_dir };
+        resolvedSnapshot = snap;
+        snapshotAnchor = null;
+        return snap;
+      })
+      .catch(() => null) // includes the timeout's own abort
+      .then((snap) => {
+        clearTimeout(timeoutId);
+        return snap;
+      });
+  })();
+
+  // The one rewrite rule, applied identically by readFile (through rawUrl),
+  // rawUrl, stat and runPython's params: a path at or under the live app
+  // folder maps to the same relative path under the extracted tree; anything
+  // else — a relative path (resolved against the PAGE's own directory, SPEC
+  // RH-1 — the template's own install-tree assets, never the target repo) or
+  // an absolute path outside the app folder — is left alone.
+  //
+  // Safe to call synchronously in the PRIMARY path (resolvedSnapshot is
+  // already populated by the time this script's first line runs); a caller
+  // in the fallback path that cannot await `snapshotReady` first (`rawUrl`,
+  // used synchronously for <img>/<embed> src attributes) keeps the same
+  // narrow window the previous design had — now provably rare, since it is
+  // reached only when the frame's own src did not carry the precomputed
+  // dir/app_dir at all.
+  function rewritePath(path) {
+    if (!resolvedSnapshot || typeof path !== "string" || path[0] !== "/") return path;
+    const appDir = resolvedSnapshot.app_dir;
+    if (path === appDir) return resolvedSnapshot.dir;
+    if (path.indexOf(appDir + "/") === 0) {
+      return resolvedSnapshot.dir + path.slice(appDir.length);
+    }
+    return path;
   }
 
-  // Whether a path read by this page resolves through git rather than the disk.
-  // ABSOLUTE paths only, deliberately: a relative path is resolved against the
-  // PAGE's own directory (SPEC RH-1) — the template's own assets, which live in
-  // the app's install tree and have nothing to do with the target file's
-  // repository. Those stay live.
-  function revResolves(path) {
-    return rev !== null && typeof path === "string" && path[0] === "/";
+  function _dirname(p) {
+    const i = p.lastIndexOf("/");
+    return i <= 0 ? "/" : p.slice(0, i);
+  }
+
+  function snapshotWritable(path) {
+    // Finding B2 (reopened at round 2 review): a write must be refused for
+    // the length of an UNRESOLVED fallback window — pending, or settled to
+    // nothing (no app folder here, a 404, git trouble, the timeout above) —
+    // not only before it has been TRIED. The previous shape read a separate
+    // `snapshotFallbackPending` flag that the resolve chain reset to `false`
+    // unconditionally once the fallback promise SETTLED, including on
+    // failure, where `resolvedSnapshot` stays `null` forever; `!(null && …)`
+    // is `true`, so every write after that point went through to the LIVE
+    // file for the rest of this frame's life while its own URL — and the
+    // shell's read-only pill — still claimed `_snapshot=<sha>`, silently, no
+    // refusal, nothing surfaced to the caller. Checking `resolvedSnapshot`
+    // together with `snapshotSha` collapses "still resolving" and
+    // "resolved to nothing" onto the same, permanently-refused answer, with
+    // no separate flag to keep in sync.
+    if (snapshotSha !== null && !resolvedSnapshot) {
+      // Narrowed to paths that could plausibly BE the eventual app folder,
+      // not literally every absolute path (finding, round 2): the server's
+      // own `_resolve_app_dir` only ever answers with an app folder found by
+      // climbing UP from `snapshotAnchor`, so refusing a write anywhere else
+      // — a template's own scratch file, an unrelated app's folder — serves
+      // no purpose beyond a confusing message. This is a narrower, honest
+      // heuristic, not an exact one: it catches the anchor itself, any
+      // ancestor of it (every directory the climb could stop at), and a
+      // sibling living in the anchor's own immediate directory (the
+      // INNERMOST candidate app_dir's own contents) — it does NOT catch a
+      // sibling of the anchor sitting under an OUTER ancestor candidate,
+      // which would need `snapshotAnchor` resolved to rule in or out and so
+      // is refused only once the real answer lands.
+      if (!snapshotAnchor || typeof path !== "string" || path[0] !== "/") return true;
+      if (path === snapshotAnchor) return false;
+      if (snapshotAnchor.indexOf(path + "/") === 0) return false;
+      if (_dirname(path) === _dirname(snapshotAnchor)) return false;
+      return true;
+    }
+    // Finding: once resolved, a `_render` frame's OWN `path` is already the
+    // extracted file (Preview.tsx rewrites it itself before ever building
+    // this frame's src — see that file's own comment on the `_render`
+    // sentinel), so it never again matches `resolvedSnapshot.app_dir` here.
+    // Without also checking `resolvedSnapshot.dir`, the client-side gate
+    // silently stopped applying to exactly the one frame shape (`_render`)
+    // that most needs its friendlier, sha-naming message — the server still
+    // refuses (`mount.py::_is_under_snapshot_root`), so nothing was ever
+    // actually AT RISK, but the user saw a bare `readonly` instead.
+    return !(resolvedSnapshot && typeof path === "string" &&
+             (path === resolvedSnapshot.app_dir ||
+              path.indexOf(resolvedSnapshot.app_dir + "/") === 0 ||
+              path === resolvedSnapshot.dir ||
+              path.indexOf(resolvedSnapshot.dir + "/") === 0));
   }
 
   // THE WRITE GATE, AND WHAT IT IS NOT.
   //
-  // This is a RUNTIME-LEVEL refusal, not a server-enforced one. /api/fs/write and
-  // friends have no idea a caller is looking at a past revision — the path a
-  // revision pane holds is the LIVE path — so nothing stops a page that builds its
-  // own fetch() from writing today's file while showing yesterday's bytes. The
-  // guarantee here is exactly: a template that reaches the filesystem through the
-  // documented `fused.*` helpers cannot silently do that. Making it a server
-  // property would mean teaching every mutating route about a UI mode, which is
-  // the wrong place for it; making it a lie would be worse than either.
-  function revRefusal(what) {
+  // This is a RUNTIME-LEVEL refusal, giving a friendlier message than the
+  // server's own — /api/fs/write and friends refuse a path under
+  // ~/.fused-render/app-versions/ unconditionally already
+  // (`mount.py::_is_under_snapshot_root`), because the rewrite above sends a
+  // write there the same as a read. Checked here too so a template's error
+  // handling sees the sha and the word "snapshot" rather than a bare
+  // `readonly` with no context.
+  function snapshotRefusal(what) {
+    // `snapshotSha` (off this frame's own query), not `resolvedSnapshot.sha`:
+    // this can fire while `resolvedSnapshot` is still null (the fallback's
+    // pending, or permanently-unresolved, window), and `resolvedSnapshot.sha`
+    // would throw rather than reject cleanly in exactly that case.
     const err = new Error(
-      what + " is not possible here: this pane is showing the file as of commit " +
-      rev.slice(0, 7) + ", which is read-only. Close the revision to edit the "
-      + "current file.");
+      what + " is not possible here: this pane is showing the app as of commit " +
+      (snapshotSha || "").slice(0, 7) + ", which is read-only. Close the " +
+      "snapshot to edit the current files.");
     // `readonly` is the type the helpers already reject with for a file the
     // filesystem refuses (see writeFile), and a template's existing
     // `err.type === "readonly"` branch is the right handler for this too.
@@ -1591,17 +1766,20 @@
   // it is plumbing between the built-in git template
   // and the shell that ships with it, NOT a documented `fused.*` contract.
   //
-  // Deliberately not a param. `fused.params.set` writes the ancestor's URL, and
-  // the shell's address bar is the one place this value must never appear: a path
-  // change preserves the query verbatim (so a sha picked from file A's commit list
-  // would be carried onto file B), and bookmarks store the search too. `_file` and `chat_only=1` already live on an
-  // iframe src alone for the same reason; `_rev` is the third param of that kind.
-  function noteRevSelected(sha) {
+  // Deliberately not a param ON THIS FRAME's OWN url — a template cannot write
+  // the shell's top-level address bar from inside an iframe, so the hop stays;
+  // what it carries changed. It used to be answered with in-memory component
+  // state (a sha the content pane held only as long as the same file stayed
+  // open); the shell's response is now a URL WRITE — `_snapshot=<sha>` on the
+  // shell's own address bar, which is what lets every OTHER frame under it (the
+  // file explorer's listing included, not only one content pane) see the same
+  // commit.
+  function noteSnapshotSelected(sha) {
     const value = typeof sha === "string" && sha ? sha : null;
     let t = window;
     try {
       for (;;) {
-        if (typeof t._fusedRevSelected === "function") t._fusedRevSelected(value);
+        if (typeof t._fusedSnapshotSelected === "function") t._fusedSnapshotSelected(value);
         if (!t.parent || t.parent === t) break;
         void t.parent.location.href; // throws when cross-origin — chain ends
         t = t.parent;
@@ -1613,11 +1791,11 @@
 
   // Tell the NEAREST same-origin ancestor that owns a Claude sidebar that a
   // prompt is waiting for it, and switch it to Claude. The climbing/try-catch
-  // discipline is noteRevSelected's (D3/D4: a global on the ancestor, not a
+  // discipline is noteSnapshotSelected's (D3/D4: a global on the ancestor, not a
   // postMessage) — underscore-prefixed for the same reason too, plumbing
   // between the built-in git template and the shell that ships with it, NOT a
   // documented `fused.*` contract — but the DELIVERY is deliberately NOT the
-  // same: noteRevSelected calls the hook on EVERY same-origin ancestor that has
+  // same: noteSnapshotSelected calls the hook on EVERY same-origin ancestor that has
   // it, because "which commit is previewed" is idempotent to repeat — two
   // listeners agreeing is harmless. Sending a prompt is not that: each
   // delivery STARTS A REAL AGENT RUN with write access to the repository, so
@@ -1636,7 +1814,7 @@
   // template gets it, whether or not any ancestor is around to act on it, or
   // able to).
   //
-  // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_rev`.
+  // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_snapshot`.
   // A `_fused_ask` query param baked into the claude iframe's URL, one-shot by
   // construction, has a hole no amount of caching fixes: ANY remount of that
   // iframe for ANY reason — toggling the sidebar away and back, closing and
@@ -2511,31 +2689,22 @@
     );
   }
 
-  // KNOWN GAP — `_rev` DOES NOT REACH A PYTHON READER. Deliberate, deferred, not
-  // an oversight; the seam is here because here is where it would have to be
-  // closed.
+  // A `.py` READER IS NO LONGER THE EXCEPTION. This used to be a KNOWN GAP:
+  // the read helpers above resolved a revision (readFile/rawUrl/stat) while a
+  // reader script's `main()` still received the LIVE absolute path and
+  // `open()`d today's file, so a parquet/xlsx/notebook pane showed CURRENT
+  // content under a heading that said otherwise. Closing it needed a change to
+  // the `main()` contract under the deleted `_rev` design (bytes or a
+  // file-like shim over `/api/git/show`), which is why it was deferred rather
+  // than patched.
   //
-  // The read helpers above resolve a revision (fused.readFile / rawUrl / stat all
-  // route through /api/git/show while this frame carries `_rev`), so every
-  // template whose bytes come from those — code, markdown, json, images, media —
-  // renders the past revision truthfully with no change of its own. A template
-  // whose bytes come from a READER `.py` is different: `main()` receives the real
-  // absolute path and `open()`s the LIVE file, so a parquet/xlsx/notebook pane
-  // would show CURRENT content under a heading that says otherwise.
-  //
-  // Closing it means the reader can no longer be handed a path: it needs the bytes
-  // (a temp materialization) or a file-like object over the revision route (a
-  // Python-side shim every reader would have to accept). That is phase 2b, and
-  // it is a change to the `main()` contract rather than a patch here — hence
-  // the deferral.
-  //
-  // WHAT KEEPS IT HONEST MEANWHILE: nothing here silently lies. The shell's
-  // revision indicator names the limitation next to the sha (Preview.tsx —
-  // RevisionPill), so a pane is never labelled as a past revision with no warning
-  // that a Python-backed view may not be one. Reads are not blocked here: refusing
-  // runPython under `_rev` would leave those modes with a broken pane instead of a
-  // qualified one, and the same reader also serves modes that legitimately do not
-  // read the target's bytes at all.
+  // The snapshot design needs no such change: a snapshot is `git archive`d to
+  // a REAL directory, so rewriting `params`' absolute-path values here — the
+  // same `rewritePath` rawUrl/stat apply — is enough. Every value, not a named
+  // key or two: a reader's own param shape is whatever it chose (`file`,
+  // `dir`, `path`, one per template), and `rewritePath` is a no-op on anything
+  // that is not an absolute string under the app folder, so applying it
+  // uniformly costs nothing on a value it does not apply to.
   function runPython(pyPath, params, opts) {
     opts = opts || {};
     // Default channel = the .py path; opts.key === null opts out, a string regroups.
@@ -2570,15 +2739,33 @@
       if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
     };
     const ownPath = new URLSearchParams(window.location.search).get("path");
+    // `pyPath` (the reader SCRIPT) is never rewritten — it is always the
+    // template's own install-tree file, addressed relative to `ownPath`
+    // (SPEC RH-1), and never a path under the target app folder. Only the
+    // DATA it is asked to read, carried in `params`' values, can be.
+    //
+    // Computed INSIDE `attempt` (chained off `snapshotReady`), not once here
+    // synchronously: the fallback resolve path (see `snapshotReady`'s own
+    // comment) can still be in flight at the moment `runPython` is called, so
+    // rewriting `params` before it settles would send today's file under an
+    // active `_snapshot` (code review finding B1). In the ordinary, primary
+    // path `snapshotReady` is already resolved, so this costs nothing beyond
+    // one microtask.
     const attempt = () =>
-      fetch("/api/run", {
-        method: "POST",
-        // X-Fused forces a CORS preflight so a foreign page can't fire this
-        // execute endpoint blind (see server.py _require_fused).
-        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
-                             controller._callId),
-        body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
-        signal: controller.signal,
+      snapshotReady.then(() => {
+        const rewrittenParams = {};
+        if (params) {
+          for (const key of Object.keys(params)) rewrittenParams[key] = rewritePath(params[key]);
+        }
+        return fetch("/api/run", {
+          method: "POST",
+          // X-Fused forces a CORS preflight so a foreign page can't fire this
+          // execute endpoint blind (see server.py _require_fused).
+          headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
+                               controller._callId),
+          body: JSON.stringify({ py: pyPath, html: ownPath, params: rewrittenParams }),
+          signal: controller.signal,
+        });
       })
         .then((res) => res.json())
         .then((data) => {
@@ -3039,10 +3226,10 @@
   // against the bundle's _asset route by the same key. An absolute path needs no
   // base and is sent unchanged.
   function rawUrl(path) {
-    // A revision pane's <img>/<embed>/download URL points at the object database,
-    // not the working tree (see revResolves for why only absolute paths).
-    if (revResolves(path)) return revUrl(path);
-    let url = "/api/fs/raw?path=" + encodeURIComponent(path);
+    // A snapshot's <img>/<embed>/download URL points at the extracted tree,
+    // not the live working copy — see rewritePath.
+    const target = rewritePath(path);
+    let url = "/api/fs/raw?path=" + encodeURIComponent(target);
     if (path && path[0] !== "/") {
       const ownPath = new URLSearchParams(window.location.search).get("path");
       if (ownPath) url += "&base=" + encodeURIComponent(ownPath);
@@ -3052,49 +3239,29 @@
 
   // Fetch file metadata (same shape as /api/fs/stat). Rejects with an Error
   // carrying the server's message, mirroring runPython's rejection style.
+  //
+  // Chained off `snapshotReady` (finding B1): the fallback resolve path can
+  // still be in flight when `stat` is called, and stat-ing the LIVE path
+  // instead of the extracted one would report writable/size/mtime for the
+  // wrong era of the file.
   function stat(path) {
-    return fetch("/api/fs/stat?path=" + encodeURIComponent(path), { headers: callHeaders() })
-      .then((res) => res.json().then((data) => ({ res, data })))
-      .then(({ res, data }) => {
-        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
-        if (!revResolves(path)) return data;
-        return revStat(path, data);
-      });
-  }
-
-  // A stat under `_rev`. The live stat is still the source of everything that is
-  // about the PATH rather than about the bytes (name, is_dir, remote, the mode
-  // list a template may consult) — but two fields would otherwise describe the
-  // wrong file:
-  //
-  //   writable   FALSE, always. This is the field every template checks before it
-  //              offers an edit UI (the code editor's whole save path hangs off
-  //              it), so a revision pane must answer no here or the editor
-  //              renders enabled over bytes it cannot write back.
-  //   size       the blob's size AT THIS REVISION, from a HEAD on the revision
-  //              route. Templates use it as a read guard ("too big to render"),
-  //              and today's size is the wrong number to guard a past read with.
-  //
-  // A failing HEAD is propagated rather than swallowed: "this path did not exist
-  // at that commit" is the honest answer to stat, and a size guard that silently
-  // fell back to the live file's size would be the lying pane again.
-  function revStat(path, live) {
-    return fetch(revUrl(path), { method: "HEAD", headers: callHeaders() })
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error("failed to stat " + path + " at " + rev.slice(0, 7) +
-                          " (HTTP " + res.status + ")");
-        }
-        const length = parseInt(res.headers.get("content-length") || "", 10);
-        return Object.assign({}, live, {
-          writable: false,
-          size: Number.isFinite(length) ? length : live.size,
-          // The sha the numbers above describe. Not part of the documented stat
-          // shape — a template needs no knowledge of revisions — but it is what
-          // makes a logged stat payload readable when one goes wrong.
-          rev: rev,
+    return snapshotReady.then(() => {
+      const target = rewritePath(path);
+      return fetch("/api/fs/stat?path=" + encodeURIComponent(target), { headers: callHeaders() })
+        .then((res) => res.json().then((data) => ({ res, data })))
+        .then(({ res, data }) => {
+          if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+          // `writable`/`size`/`mtime`/`templates` all correctly describe the
+          // EXTRACTED file already (a real stat of a real file — no client-side
+          // patching needed, unlike the deleted `_rev` design's revStat, which
+          // had to fake these fields over a live stat because there was no real
+          // file on disk to ask). Only `path` is an implementation detail of the
+          // snapshot cache: a caller asked about the LIVE path and every other
+          // stat echoes back exactly what it was asked about.
+          if (target !== path) data.path = path;
+          return data;
         });
-      });
+    });
   }
 
   // Read a file's text via the raw endpoint.
@@ -3105,11 +3272,21 @@
   // log. Deliberate: adding a `_page` query param instead would change every
   // raw URL (cache keys, and the hosted runtime's bundle-key resolution in
   // docs/EXPORT.md), which is not worth it for one route's attribution.
+  // Chained off `snapshotReady` before ever calling the SYNCHRONOUS `rawUrl`
+  // (finding B1, the headline case: a template's boot-time
+  // `fused.readFile(fused.params.get("_file"))` runs synchronously right
+  // after this script, i.e. essentially always before the fallback resolve's
+  // network round trip could complete — so a pane opened at commit X used to
+  // render today's file for that entire window). In the primary (precomputed
+  // dir/app_dir) path `snapshotReady` is already resolved, so this costs
+  // nothing beyond one microtask; the fallback path now genuinely waits.
   function readFile(path) {
-    return fetch(rawUrl(path), { headers: callHeaders() }).then((res) => {
-      if (!res.ok) throw new Error("failed to read " + path + " (HTTP " + res.status + ")");
-      return res.text();
-    });
+    return snapshotReady.then(() =>
+      fetch(rawUrl(path), { headers: callHeaders() }).then((res) => {
+        if (!res.ok) throw new Error("failed to read " + path + " (HTTP " + res.status + ")");
+        return res.text();
+      })
+    );
   }
 
   // Write UTF-8 text to a file, returning the fresh stat object. opts:
@@ -3128,7 +3305,7 @@
   // things (this one is "it is already there", the lock's is "it changed"), and
   // a caller that offers overwrite-anyway on a conflict must not offer it here.
   function writeFile(path, content, opts) {
-    if (rev !== null) return revRefusal("Saving");
+    if (!snapshotWritable(path)) return snapshotRefusal("Saving");
     const payload = { path: path, content: content };
     if (opts && opts.expectedMtime !== undefined && opts.expectedMtime !== null) {
       payload.expected_mtime = opts.expectedMtime;
@@ -3180,7 +3357,7 @@
   // no optimistic lock and no `create`: a freshly pasted blob has no prior
   // version to conflict with.
   function uploadFile(path, blob) {
-    if (rev !== null) return revRefusal("Uploading");
+    if (!snapshotWritable(path)) return snapshotRefusal("Uploading");
     const form = new FormData();
     form.append("path", path);
     form.append("file", blob);
@@ -3209,7 +3386,7 @@
   // for the same reason: "it is already there" is a different fact from "it
   // changed", and an ensure-this-directory caller wants to treat it as success.
   function mkdir(path) {
-    if (rev !== null) return revRefusal("Creating a directory");
+    if (!snapshotWritable(path)) return snapshotRefusal("Creating a directory");
     return fetch("/api/fs/mkdir", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
@@ -5542,24 +5719,36 @@
     trackJob,
     watchJob,
     autoReload,
+    // Whether THIS frame is inside a git snapshot, and what it resolved to —
+    // `null` when there is none (no `_snapshot` on this frame's url, or the
+    // resolve failed: no app folder here, a mount-backed path, git trouble),
+    // else `{sha, dir, app_dir}`. A function returning the one resolve this
+    // module already kicked off at init (`snapshotReady`), not a bare value:
+    // the resolve is a network round trip, so there is no synchronous answer
+    // to hand back the first time a template asks. Most templates never need
+    // this at all — `readFile`/`rawUrl`/`stat`/`runPython` already read the
+    // right bytes with no template-side change — it exists for the rare one
+    // that wants to say out loud that it is showing history.
+    snapshot: () => snapshotReady,
     params: { get, getAll, set, onChange },
   };
 
-  // The git sidebar's revision hop, internal plumbing — deliberately not on
-  // `window.fused` (see the file header). Not present in the hosted runtime (see
-  // noteRevSelected): the built-in git template calls this with the sha of the
-  // commit the user clicked, or null to go back to live content, and the shell
-  // rebuilds the CONTENT frame's src with `_rev` on it. A window with no
-  // `_fusedRevSelected` hook is simply not a shell that can show one, and the call
-  // does nothing.
-  window._fusedSelectRev = noteRevSelected;
+  // The git sidebar's snapshot hop, internal plumbing — deliberately not on
+  // `window.fused` (see the file header). Not present in the hosted runtime
+  // (see noteSnapshotSelected): the built-in git template calls this with the
+  // sha of the commit the user clicked, or null to go back to live content,
+  // and the shell writes `_snapshot=<sha>` onto its own address bar — every
+  // frame under it inherits the param from there (Preview.tsx forwards it
+  // onto each frame's src). A window with no `_fusedSnapshotSelected` hook is
+  // simply not a shell that can show one, and the call does nothing.
+  window._fusedSelectSnapshot = noteSnapshotSelected;
 
   // The git sidebar's "fix this error" hop, the same internal plumbing as
-  // `_fusedSelectRev` just above and for the same reason it is not on
+  // `_fusedSelectSnapshot` just above and for the same reason it is not on
   // `window.fused`: the built-in git template calls this with the prompt it
   // built for a failed operation, and the shell (if it has a Claude sidebar to
   // drive) switches to it and remembers the text. Not present in the hosted
-  // runtime, same as `_fusedSelectRev` — a window with no `_fusedClaudeAsk`
+  // runtime, same as `_fusedSelectSnapshot` — a window with no `_fusedClaudeAsk`
   // hook is simply not a shell that can open one, and the call returns `false`
   // rather than doing nothing quietly: the git template uses that to show a
   // real failure instead of a button that looked like it worked.
