@@ -19,6 +19,7 @@ import {
 import { useIndexStatus } from "@platform/lib/index-status";
 import { runCommunity } from "@platform/lib/community";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
+import { useCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
@@ -185,8 +186,7 @@ function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
           <span className="app-pcard-lines">
             <span className="skel-bar" style={{ width: "58%" }} />
             <span className="app-pcard-meta">
-              <span className="skel-bar" style={{ width: "46px" }} />
-              <span className="skel-bar" style={{ width: "64px" }} />
+              <span className="skel-bar" style={{ width: "110px" }} />
             </span>
           </span>
         </span>
@@ -370,6 +370,13 @@ export default function Home({ config }: { config: Config }) {
   // showcase fallback without charging returning visits for an exhaustive walk.
   const [apps, setApps] = useState<AppInfo[] | null>(null);
   const [appsError, setAppsError] = useState<string | null>(null);
+  // Bumped on the desk-changed announcement (an icon picked from the sidebar
+  // while this row is on screen) so the cards redraw with the new icon.svg —
+  // the row's AppInfo carries the icon path + mtime, and nothing else here
+  // would ever refresh it. Refetch in place: `apps` is not cleared, so the
+  // row never flashes back to skeletons.
+  const [appsNonce, setAppsNonce] = useState(0);
+  useCurrentAppsChanged(() => setAppsNonce((n) => n + 1));
   useEffect(() => {
     if (limit === null) return;
     let alive = true;
@@ -426,7 +433,7 @@ export default function Home({ config }: { config: Config }) {
     return () => {
       alive = false;
     };
-  }, [limit]);
+  }, [limit, appsNonce]);
 
   // Claude session folders — Home's endpoint orders transcript mtimes first,
   // then opens only enough newest JSONL files to fill this one row.

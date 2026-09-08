@@ -212,7 +212,14 @@
   /* Icon buttons grow words when there is room: below this width the label
      hides and the glyph + tooltip + aria-label carry the meaning. The
      breakpoint is the pane's own viewport (this document IS the iframe), so
-     unlike the old toolbar query it measures the right box. */
+     unlike the old toolbar query it measures the right box.
+
+     `.row .inline-eye` is deliberately NOT in this list: it is the one
+     always-visible, deliberately-prominent verb in a commit row (drawn AT
+     REST, not hover-revealed like the rest of `.line .acts`/`.sect-acts`),
+     and the git sidebar itself renders narrower than this breakpoint — so
+     without an exemption its label would never show at the width it
+     actually ships at, defeating the point of giving it one at all. */
   @media (max-width: 480px) {
     .sect-acts .btn .btn-label,
     .line .acts .btn .btn-label { display: none; }
@@ -903,38 +910,60 @@
     font-variant-numeric: tabular-nums;
   }
   .row .subject, .row .path {
-    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The when-field is pushed to the row's end by an auto margin, so whatever
-     sits after the title (the eye, the previewing marker, the selected sha)
-     lands where the title ENDS rather than at the far edge. */
-  .row .when { margin-left: auto; }
-  /* The inline eye: revealed by the row's hover exactly like the action
-     cluster's buttons, and standing where the title ends. */
+  /* `.subject` GROWS (unlike `.path` below, which only shrinks): it is the
+     one field in a commit row guaranteed to absorb the row's slack no matter
+     which optional children are present. The marker slot is null whenever
+     `canPreview` is false (the folder-listing preview pane, which has no
+     content pane for a marker to drive — see THE MARKER SLOT below), so an
+     auto margin on the marker cannot be what pins the marker/when cluster to
+     the right edge: with no marker in the row, nothing would carry it. Growing
+     the subject instead means marker + when pack against the right edge in
+     every combination — marker present or absent — because the cluster's
+     left edge is wherever the (possibly zero-width) subject stops, not a
+     margin on one of the cluster's own members. The sha (selected row only,
+     see commitLine()) sits between `.subject` and the marker rather than
+     beside `.when`: it is flex:none like everything else here, so on the
+     rows where it exists it just eats into `.subject`'s flexible width —
+     the marker/when cluster after it never moves, because `.subject` is
+     still the only child whose width responds to what else is on the row.
+     `.path` stays shrink-only: change rows don't carry this marker/when
+     cluster, and growing `.path` would shift the "moved" tag that can
+     follow it for no reason tied to this fix. */
+  .row .subject {
+    flex: 1 1 auto;
+  }
+  .row .path {
+    flex: 0 1 auto;
+  }
+  /* The inline Preview control: drawn AT REST, not revealed by the row's
+     hover (D703) — hover-only meant nothing on screen ever said a commit
+     could be previewed at all until the pointer happened to land on its
+     row. A labelled pill, the same visual family as the previewing marker
+     below (`.where.is-preview.marker`) it swaps places with, so going from
+     "can preview" to "previewing" reads as one control changing state
+     rather than two different things trading places. Hover/focus stays the
+     EMPHASIS step — a border/background/color change — never the presence
+     step. */
   .row .inline-eye {
     flex: none;
     align-self: center;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 6px;
+    gap: 4px;
+    padding: 2px 7px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
     color: var(--ink-3);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+    font-size: 11px;
+    white-space: nowrap;
+    transition: background-color 0.08s ease, color 0.08s ease, border-color 0.08s ease;
   }
-  .line:hover .row .inline-eye,
-  .row .inline-eye:focus-visible {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .row .inline-eye:hover { color: var(--ink); background: var(--surface-2); }
+  .row .inline-eye:hover { color: var(--ink); background: var(--surface-2); border-color: var(--accent-dim); }
   .row .inline-eye:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   /* The previewing marker is the eye's on-state and stays put: dot + word,
      clickable to come back to now. */
@@ -964,8 +993,26 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* A fixed floor, not just `tabular-nums` (which only equalises DIGITS):
+     `shortWhen()`'s widest real outputs are "11mo" (4 characters, and letters —
+     "mo" is far wider than a lone "d" or "now"'s three letters — the ceiling in
+     the unit table below tops months out at "11mo"; a floor sized for digits
+     alone, like "9999", would undershoot the actual widest letterform) and
+     "now" itself (3 letters, no digits to help it). 30px fits both in this
+     11px proportional font with a few px of margin to spare — nothing
+     `shortWhen` emits (`now`, `Nm`, `Nh`, `Nd`, `Nw`, `Nmo`, `Ny`) is wider.
+     This used to be 40px, which is comfortably more room than "11mo" needs and
+     is exactly the dead space that showed up to the LEFT of ordinary short
+     values like "40m" — the gap the button-to-timestamp spacing bug was.
+     The negative margin-left claws back part of the row's 10px gap for this
+     one pair — marker/sha to `.when` — without shrinking the gap between
+     `.subject`, the optional `.sha`, and the marker, which still want the
+     full 10px; see the row-wide `gap` above. */
   .row .when {
     flex: none;
+    min-width: 30px;
+    margin-left: -6px;
+    text-align: right;
     color: var(--ink-3);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
@@ -1000,11 +1047,13 @@
   }
   .row .where.is-current { border-color: var(--accent-dim); color: var(--accent-dim); }
   .row .where.is-preview { border-color: var(--good-line); color: var(--good-fg); }
-  /* The commit list's one status mark: a green dot at the END of the subject.
-     On the newest commit it means "this is what the files show now"; when a
-     commit is previewed the dot travels there and brings the `previewing`
-     pill with it — one colour, one meaning: the commit the files on screen
-     belong to. */
+  /* The previewing pill's own on-state mark (D703). It used to also sit on
+     the newest commit's row, meaning "this is what the files show now" —
+     dropped: that dot only ever appeared while NOTHING was previewed, where
+     it marked the top row of a list already ordered newest-first, so it
+     answered a question the list's own order already had. This one answers
+     a real question — which commit are the files on screen from — and only
+     it needs the colour. */
   .row .live-dot {
     flex: none;
     align-self: center;
@@ -1033,9 +1082,12 @@
   .none { padding: 12px; color: var(--ink-3); font-size: 12px; }
   .hint { color: var(--ink-3); font-size: 11px; }
 
-  /* The "files shown as of <commit>" banner. The eye toggle's state used to
-     live only on a 14px icon somewhere in the commit list; this names the
-     active commit where it cannot be missed and carries the way back. */
+  /* The "Previewing" banner. The eye toggle's state used to live only on a
+     14px icon somewhere in the commit list; this names the active state
+     where it cannot be missed and carries the way back. The exact commit
+     is already named by the row's own "previewing" pill, so this banner
+     no longer repeats it — the sha/subject live in the span's title
+     instead (see the `rev-banner` block in template.html). */
   .rev-banner {
     display: flex;
     align-items: center;
@@ -1049,7 +1101,6 @@
     font-size: 12px;
   }
   .rev-banner .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rev-banner .sha { color: var(--accent-dim); font-variant-numeric: tabular-nums; }
 
   /* A stash entry is ONE line again: message, time, actions. The actions
      hover-reveal (see `.acts` above), so at rest nothing competes with the
@@ -1104,6 +1155,16 @@
   }
   .pane-meta .sha { color: var(--accent-dim); font-variant-numeric: tabular-nums; }
   .pane-meta .who { color: var(--ink-2); }
+  /* Revert (D703) sits opposite the sha on this same identity line — the one
+     control this pane offers for a selected COMMIT, so it rides the line
+     that already answers "which commit exactly?" rather than opening a new
+     row for one button. */
+  .pane-meta .meta-action { margin-left: auto; }
+  /* Revert and Reset (D745) share that one trailing slot now, so the wrapper
+     itself needs a row layout — `.meta-action`'s `margin-left: auto` only
+     pushes the WRAPPER to the right edge, it says nothing about the gap
+     between the two buttons inside it. */
+  .commit-actions { display: flex; gap: 6px; }
 
   /* The one place wide content lives: its OWN scroll container, so the page
      body never gains a horizontal scrollbar (a diff line is arbitrarily long). */
@@ -1253,20 +1314,25 @@
  *   to remember and becomes something they cannot get wrong. Precedent in this
  *   same file: `branchQuery` is module-level and deliberately not a param.
  *
- *   A SHA MUST NOT REACH THE SHELL'S ADDRESS BAR. A param written here mirrors up
- *   into the explorer's URL (that is what makes `?_side=git&panel=branch` a
- *   working deep link), and up there a revision is actively harmful: a path change
- *   preserves the query verbatim, so a sha picked from THIS file's commit list
- *   would be carried onto the next file; bookmarks store the whole query
- *   string and replays it on the next bare open, so it would outlive a restart;
- *   and bookmarks store the search too. So `previewed` travels to the shell as an
- *   ancestor-window call instead (`window._fusedSelectRev`, see `hopRev`), the
- *   same idiom `_fusedFsChanged` uses, and leaves nothing behind.
+ *   THIS FRAME CANNOT WRITE THE SHELL'S ADDRESS BAR ITSELF. `previewed` is a
+ *   fact about what THIS sidebar is showing, and the shell's `_snapshot=<sha>`
+ *   is a fact about what the WHOLE PAGE is showing — they usually agree, but
+ *   only the shell may write its own URL, so `previewed` still travels there
+ *   as an ancestor-window call (`window._fusedSelectSnapshot`, see
+ *   `hopSnapshot`), the same idiom `_fusedFsChanged` uses. What changed is
+ *   what the shell DOES with the call: it used to hold the sha as component
+ *   state, scoped to one content pane and gone the moment the open file
+ *   changed; it now writes `_snapshot=<sha>` onto its own URL, which is what
+ *   lets every frame under it — not only this sidebar's neighbour — read the
+ *   same commit (see the plan's decisions log for why leaking onto the shell's
+ *   URL, once refused, is now the point).
  *
- * The cost, accepted: neither survives a refresh any more. That is the right trade
- * for both — they are READING surfaces, reconstructed in one click, and every
- * piece of state that is expensive to retype (`msg`) or unsafe to lose (`ask`) is
- * still a param.
+ * The cost, accepted: neither survives a refresh of THIS FRAME any more —
+ * `previewed` itself does not persist here, though the shell's own
+ * `_snapshot=<sha>` does (it is a URL, unlike this variable). That is the
+ * right trade for both: they are READING surfaces, reconstructed in one
+ * click, and every piece of state that is expensive to retype (`msg`) or
+ * unsafe to lose (`ask`) is still a param on THIS frame.
  */
 /* One click of "load more" widens the window by this much. It is the reader's
    own DEFAULT_LOG_LIMIT — the page grows `limit`, it does not page. */
@@ -1277,7 +1343,8 @@ const OPS = "./ops.py";
 /* The ops that can lose uncommitted work. Mirrors ops.py's DESTRUCTIVE_OPS, and
  * the mirroring is the safety property: an op named here gets the inline
  * confirmation step, and one that is not gets called on the first click. */
-const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve"]);
+const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve",
+                             "app_restore", "revert", "reset"]);
 
 const file = fused.params.get("_file") || "";
 const skeleton = document.getElementById("skeleton");
@@ -1420,18 +1487,24 @@ function select(kind, value) {
  *
  *   `selection`  what THIS column's right-hand pane shows — a diff.
  *   `previewed`  which commit the EXPLORER's content pane, on the other side of
- *                this sidebar, is rendering the open file as of. Read-only,
- *                resolved out of the object database on read; nothing is written
- *                to disk for it.
+ *                this sidebar, is rendering the open file as of. Read-only: the
+ *                enclosing app folder is materialised at that commit
+ *                (`/api/git/snapshot`) and every read the pane's own template
+ *                makes resolves against that extracted tree instead of today's
+ *                files.
  *
  * They are deliberately not one piece of state. Reading a commit's diff and
  * putting that commit's version of a file in the pane next door are different
  * requests, and collapsing them would mean a click meant for one always performs
  * the other — including on surfaces where the second is not even possible.
  *
- * The sha travels through the runtime's ancestor-window hop (`_fusedSelectRev` —
- * the `_fusedFsChanged` idiom), never through a param, so it cannot reach the
- * shell's address bar or a bookmark. See the state header.
+ * The sha travels through the runtime's ancestor-window hop
+ * (`_fusedSelectSnapshot` — the `_fusedFsChanged` idiom) rather than through a
+ * param on THIS frame — this frame still cannot write the shell's own address
+ * bar directly. The shell's RESPONSE to that hop, unlike the deleted `_rev`
+ * design, IS a param: `_snapshot=<sha>` on the shell's own URL, deliberately,
+ * so every frame under it and a bookmark of the page both see the same
+ * commit. See the state header.
  */
 let previewed = null;
 
@@ -1470,27 +1543,86 @@ function revMarkedFrame() {
 }
 let canPreview = false;
 
+/* THE SECOND HALF OF THE GATE (D701, code review finding B4): a pane to drive
+ * is necessary but not sufficient — `/api/git/snapshot` can only ever resolve
+ * for a path with an enclosing app folder, so offering the eye anywhere else
+ * (a plain repo file, a folder with no app in it) promises a preview that can
+ * never land: the shell hops the sha through anyway, `getGitSnapshot` 404s,
+ * the sidebar's own `.catch()` swallows it, and the "previewing commit X"
+ * pill and dot are left claiming a pane that still shows the live file (and,
+ * per finding B2, would still accept writes had the write gate not also been
+ * fixed).
+ *
+ * Resolved once, against `/api/git/app-folder` — a cheap, sha-less probe (no
+ * git/tar fork, see git_snapshot.py's own comment on why it exists
+ * separately from `/api/git/snapshot`) — and cached for the life of this
+ * frame: `file` is read once at boot and never changes without a full reload
+ * of this frame (a new document, a fresh copy of this script), so there is
+ * nothing to re-probe. Starts `false` (fail closed): the eye stays hidden
+ * until the probe actually confirms an app folder, never the reverse. */
+let hasAppFolder = false;
+async function probeAppFolder() {
+  if (!file) return;
+  try {
+    const res = await fetch("/api/git/app-folder?path=" + encodeURIComponent(file));
+    const data = await res.json().catch(() => null);
+    hasAppFolder = !!(data && data.ok);
+  } catch (err) {
+    hasAppFolder = false;
+  }
+  pollRevTarget(); // re-evaluate canPreview now that hasAppFolder may have changed
+}
+
 /* The ONE writer of `previewed`, and the only thing that speaks to the shell.
  * Refuses while the capability is absent, so the state cannot be set by anything
- * the user cannot see the result of. */
-function preview(sha) {
+ * the user cannot see the result of.
+ *
+ * `silent` (finding 7, second review round) is for exactly one caller,
+ * `_fusedSnapshotCleared` below: the shell calling THIS frame to say its own
+ * `_snapshot` is already gone. Hopping back there would just echo a write
+ * the shell already made — at best redundant, at worst (a shell that has
+ * since moved to a different sha) a stale "and now nothing" landing after a
+ * newer "now THIS commit" and clobbering it. */
+function preview(sha, silent) {
   const next = (canPreview && sha) ? sha : null;
   if (previewed === next) return;
   previewed = next;
-  hopRev();
+  if (!silent) hopSnapshot();
   void draw(true);
 }
 
 /* Guarded: a page opened outside the app's shell — or under the hosted runtime,
-   which has no revision route — simply has no hop, and no pane it would drive. */
-function hopRev() {
-  if (typeof window._fusedSelectRev === "function") {
-    window._fusedSelectRev(previewed);
+   which has no snapshot route — simply has no hop, and no pane it would drive. */
+function hopSnapshot() {
+  if (typeof window._fusedSelectSnapshot === "function") {
+    window._fusedSelectSnapshot(previewed);
   }
 }
 
+/* FINDING 7 (second review round): the reverse of the hop above. The content
+ * pane can drop `_snapshot` on its own — its own "Back to live" banner, or a
+ * sibling Listing.tsx's — with no click ever landing in THIS frame, so
+ * `previewed` (and the banner/Checkout button it draws) would go on
+ * describing a version the pane next door no longer shows. Exposed on this
+ * window for the shell to call directly through the iframe's `contentWindow`
+ * (same-origin), the same idiom `_fusedSelectSnapshot`/`_fusedFsChanged`
+ * already use in the OTHER direction (child frame -> ancestor); this is
+ * ancestor -> child, so it is a plain global the shell reaches into rather
+ * than one this frame calls upward.
+ *
+ * Routed through `preview()`'s own `silent` flag rather than writing
+ * `previewed` here directly — this stays the state's ONE writer, so a
+ * future assignment cannot forget the hop (or forget to skip it here) as
+ * one more scattered site to keep in sync. Fails safe on its own: if
+ * `previewed` is already null (this frame's own "Back to live" beat the
+ * shell here, or there was never anything previewed) `preview()`'s own
+ * early return makes this a no-op rather than a redundant repaint. */
+window._fusedSnapshotCleared = function () {
+  preview(null, true);
+};
+
 function pollRevTarget() {
-  const has = !!revMarkedFrame();
+  const has = !!revMarkedFrame() && hasAppFolder;
   if (has === canPreview) return;
   canPreview = has;
   /* A capability that has GONE takes the preview with it: the frame that was
@@ -1498,8 +1630,16 @@ function pollRevTarget() {
      so continuing to claim one would be describing a pane nobody can see. The
      hop still fires, because the shell may yet be holding the sha. */
   if (!has && previewed !== null) {
-    previewed = null;
-    hopRev();
+    /* Routed through `preview()` itself (round 3, finding 6) — this used to
+       clear `previewed` to null directly and call `hopSnapshot()`, which is
+       exactly the "ONE writer of `previewed`" invariant that function's own
+       comment claims for itself, falsified by the next function down. Doing
+       it here the same way keeps that comment true rather than merely
+       asserted: `preview(null, false)` already repaints (`void draw(true)`),
+       so this returns instead of falling through to the unconditional
+       repaint below and drawing twice. */
+    preview(null, false);
+    return;
   }
   /* Repaint either way: the rows gain or lose their preview control. */
   void draw(true);
@@ -1553,6 +1693,37 @@ const el = (tag, props, ...kids) => {
 
 const plural = (n, one, many) => n + " " + (n === 1 ? one : (many || one + "s"));
 
+/* The row's own age, SHORTENED for a column that is narrow by design (this is
+   a sidebar list, not the pane's identity line — `commitMeta` below still
+   shows the full "%ar" string). This computes its own bucket from `%aI`
+   (`entry.date`, machine-readable ISO 8601) rather than truncating git's
+   human string (`entry.relative`, "%ar") — the log.py docstring's "don't
+   reinvent %ar" rule is about not PARSING git's human output, and parsing a
+   machine timestamp is not that; `%ar` stays in the format and is exactly
+   the fallback used here when the date does not parse, plus the full string
+   this always leaves reachable in the row's tooltip.
+   "mo" and not "m" for months, on purpose: "5mo" cannot be misread as
+   minutes the way "5m" already means them one row up in the same column. */
+function shortWhen(entry) {
+  if (!entry) return "";
+  const when = entry.date ? new Date(entry.date) : null;
+  if (!when || Number.isNaN(when.getTime())) return entry.relative || "";
+  const secs = Math.max(0, (Date.now() - when.getTime()) / 1000);
+  const UNITS = [
+    [60, null, null],
+    [3600, 60, "m"],
+    [86400, 3600, "h"],
+    [604800, 86400, "d"],
+    [2629800, 604800, "w"],
+    [31557600, 2629800, "mo"],
+    [Infinity, 31557600, "y"],
+  ];
+  for (const [ceiling, div, suffix] of UNITS) {
+    if (secs < ceiling) return div ? Math.floor(secs / div) + suffix : "now";
+  }
+  return entry.relative || "";
+}
+
 /* ------------------------------------------------------------------ chrome */
 
 function icon(paths, size) {
@@ -1583,6 +1754,13 @@ const BRANCH_GLYPH = ["M6 6v12", "M18 9a9 9 0 0 1-9 9", "M6 6a2 2 0 1 0 0-4 2 2 
    restore-history loop says "revert" without needing the tooltip. */
 const REVERT_GLYPH = ["M4 9h9.5a4.5 4.5 0 0 1 0 9H9", "M8 5L4 9l4 4"];
 
+/* A clock face with its hand sweeping back past a trailing arc — "the whole
+   repository's history moves back to here", not "undo my last edit" (that is
+   what `REVERT_GLYPH`'s single loop already says). Reset for `Reset history to
+   commit` (below): the shape is deliberately busier than Revert's, matching how
+   much more this button can throw away. */
+const RESET_GLYPH = ["M3 3v5h5", "M3.05 13a9 9 0 1 0 3-7.7L3 8", "M12 7v5l4 2"];
+
 /* The toolbar's remote ops used to wear `⟳`, `↓` and `↑` as text. A glyph set at
    the label's own 12px is a small character next to a word, not an icon, and the
    arrows in particular sat on the baseline looking like punctuation. These are
@@ -1592,6 +1770,12 @@ const FETCH_GLYPH = ["M21 4v6h-6", "M3 20v-6h6",
                      "M18.5 9A8 8 0 0 0 6 6.3L3 9", "M5.5 15A8 8 0 0 0 18 17.7l3-2.7"];
 const PULL_GLYPH = ["M12 3v12", "M7 10l5 5 5-5", "M4 20h16"];
 const PUSH_GLYPH = ["M12 21V9", "M7 14l5-5 5 5", "M4 4h16"];
+
+/* Checkout (D703) shares Pull's own shape on purpose: both are "bring a
+   version down and commit it here", just from a different source — a
+   remote for Pull, an earlier commit for Checkout — and that is the same
+   gesture wearing two different labels rather than two unrelated ideas. */
+const CHECKOUT_GLYPH = PULL_GLYPH;
 
 /* The caret that separates "this opens a panel" from "this does a thing". Only
    the panel toggles carry one; an action button with a caret would be promising
@@ -2101,15 +2285,15 @@ function stashModal(data) {
   const fresh = data.changes.filter((c) => c.untracked);
   for (const c of tracked) {
     rows.append(el("div", { className: "line" },
-      el("div", { className: "row" },
+      el("div", { className: "row", title: c.path },
         el("span", { className: "code", textContent: c.label || c.status }),
-        el("span", { className: "path", textContent: c.path }))));
+        el("span", { className: "path", textContent: scopeRelative(data.repo, c.path) }))));
   }
   for (const c of fresh) {
     const line = el("div", { className: "line" },
-      el("div", { className: "row" },
+      el("div", { className: "row", title: c.path },
         el("span", { className: "code", textContent: "New" }),
-        el("span", { className: "path", textContent: c.path }),
+        el("span", { className: "path", textContent: scopeRelative(data.repo, c.path) }),
         el("span", { className: "where", textContent: "only if new files are included" })));
     rows.append(line);
   }
@@ -3301,6 +3485,33 @@ function writable(repo, path) {
   return repo.is_dir && rel.startsWith(repo.rel + "/");
 }
 
+/* Repo-relative -> scope-relative, for a row's VISIBLE text only. Every row
+   here already prints "scoped to <rel>" nowhere near it (the toolbar says it
+   once), so a repeated `<rel>/` on every single path is noise the reader does
+   not need — but only the printed line loses it. The operational path
+   (`change.path`, passed to stage/unstage/discard/select), every tooltip
+   `title`, and every aria-label stay on the full repo-relative form, so the
+   whole path is never more than a hover or a screen reader away.
+
+   The boundary is `rel + "/"`, never a bare `startsWith(rel)`: a sibling
+   folder that happens to share the prefix (`openindex-old/x` next to a scope
+   of `openindex`) must keep its whole name, not lose "openindex" out of the
+   middle of its own. And a path the scope does not actually contain — an
+   out-of-scope row (GT-14's staged-elsewhere case), or the far side of a
+   rename that moved OUT of the scope (see `change.moved` in `changeLine`) —
+   is returned unchanged rather than mangled: stripping a prefix that is not
+   there would either do nothing (safe) or, for `rel` itself with no
+   trailing content after it, produce an empty label (not safe), which the
+   length check below rules out. */
+function scopeRelative(repo, path) {
+  const rel = repo && repo.rel;
+  if (!rel) return path;                          // the whole repo is the scope
+  const prefix = rel + "/";
+  return path.startsWith(prefix) && path.length > prefix.length
+    ? path.slice(prefix.length)
+    : path;
+}
+
 /* ONE row per changed path, whatever its index state. The staged/unstaged/
    untracked triple was git's model rendered at people who do not have it; the
    CHECKBOX is the model everyone already has — ticked goes into the next
@@ -3311,6 +3522,15 @@ function changeLine(repo, change, selected) {
   const letter = change.untracked ? "?" : (change.x !== " " ? change.x : change.y);
   const label = change.orig ? change.orig + " -> " + change.path : change.path;
   const path = change.path;
+  /* The row's VISIBLE line only — `label` above (full, repo-relative) still
+     feeds the `title` a few lines down, so the whole path stays one hover
+     away. Each side of a rename is stripped independently, because a rename
+     with only one side in scope needs the OTHER side's full path to still say
+     where the file went (`change.moved` renders the direction right next to
+     it). */
+  const displayLabel = change.orig
+    ? scopeRelative(repo, change.orig) + " -> " + scopeRelative(repo, change.path)
+    : scopeRelative(repo, change.path);
   const line = el("div", { className: "line" });
   const canAct = writable(repo, path);
 
@@ -3354,7 +3574,7 @@ function changeLine(repo, change, selected) {
     title: (change.label || "change") + " (" + change.status + ") — " + label,
   },
     el("span", { className: "code is-" + letter, textContent: word }),
-    el("span", { className: "path", textContent: label }),
+    el("span", { className: "path", textContent: displayLabel }),
     /* A rename with only one side in the open scope is a MOVE relative to it,
        and the direction is the fact worth reading — "renamed" says nothing about
        a file that left the folder you are looking at. */
@@ -3429,15 +3649,21 @@ function changeLine(repo, change, selected) {
    there is none, and then there is no button, rather than one that does nothing.
    Hidden, not disabled, for the reason the claude template's annotate switch is:
    a control that cannot do anything is not a promise worth keeping on screen. */
-function commitLine(entry, selected, isLatest) {
+function commitLine(entry, selected) {
   const line = el("div", { className: "line" });
   const previewingHere = previewed === entry.sha;
 
-  /* THE MARKER SLOT, right where the title ends. Three states:
+  /* THE MARKER SLOT, right-aligned with `.when` regardless of
+     how long the subject is (`.subject` growing to absorb the row's slack
+     does the pushing — see the CSS — rather than a margin on the marker
+     itself, since this slot is null below whenever `canPreview` is false and
+     a margin on a slot that isn't there could not push anything). Three
+     states:
        previewing this commit -> a green dot + "previewing", clickable to go
                                  back to now (it stands where the eye was);
-       hover (canPreview)     -> the eye, revealed by the row hover exactly
-                                 like the action cluster's buttons;
+       canPreview             -> the eye, drawn AT REST (D703) — not
+                                 revealed by the row's hover, so a resting
+                                 row still says a preview is possible;
        otherwise              -> nothing.
      A SPAN with role=button, not a <button>: the row itself is one, and
      buttons cannot nest — the click stops propagating so the row does not
@@ -3464,7 +3690,7 @@ function commitLine(entry, selected, isLatest) {
       tabIndex: 0,
       title: "Show the files as of " + entry.short + " (read-only). Views that "
              + "read the file through a Python reader may still show current content.",
-    }, icon(PREVIEW_GLYPH, 14));
+    }, icon(PREVIEW_GLYPH, 14), btnLabel("Preview"));
     marker.setAttribute("aria-label", "Preview the files as of " + entry.short);
     const on = (ev) => { ev.stopPropagation(); ev.preventDefault(); preview(entry.sha); };
     marker.addEventListener("click", on);
@@ -3473,34 +3699,34 @@ function commitLine(entry, selected, isLatest) {
     });
   }
 
-  /* The latest commit's own mark: what the files show NOW. Suppressed while a
-     preview is active anywhere — one green dot on screen, one meaning: the
-     commit the visible files belong to. */
-  const liveDot = (isLatest && !previewed)
-    ? el("span", { className: "live-dot",
-                   title: "The latest commit — what the files show now" })
-    : null;
-
   const row = el("button", {
     className: "row",
     type: "button",
-    title: entry.short + "  " + entry.subject + "\n" + entry.author + " — " + entry.date,
+    title: entry.short + "  " + entry.subject + "\n" + entry.author
+           + " — " + entry.relative + " (" + entry.date + ")",
   },
     el("span", { className: "subject", textContent: entry.subject || "(no subject)" }),
-    liveDot,
-    marker,
-    /* The short id APPEARS on the selected row (only there — on every row it
-       turned the list into a table), on the RIGHT, out of the reading line.
-       Once a commit is picked, the row and the pane say the same identity. */
+    /* The short id is rendered only on the selected row (only there — on
+       every row it turned the list into a table), and it sits on the LEFT of
+       the marker/when cluster, not the right: it is one of `.subject`'s
+       neighbors, not a member of the right-pinned cluster, so it eats into
+       `.subject`'s flexible width instead of reserving a slot beside
+       `.when`. Once a commit is picked, the row and the pane say the same
+       identity. Because it is absent entirely (not merely hidden) on every
+       other row, the marker + `.when` cluster's position never moves —
+       `.subject` is the one flexible child, so removing or adding the sha
+       only changes how much of `.subject`'s width it eats, never where the
+       cluster after it starts. */
     selected ? el("span", { className: "sha", textContent: entry.short }) : null,
-    el("span", { className: "when", textContent: entry.relative }));
+    marker,
+    el("span", { className: "when", textContent: shortWhen(entry), title: entry.relative }));
   if (selected) line.setAttribute("aria-current", "true");
   /* The FULL object name, never the abbreviation the row displays: this value is
-     what the shell resolves the content pane's bytes with (`_fusedSelectRev` ->
-     /api/git/show), and an abbreviation is a display form that would have to be
-     re-resolved to be used. Nothing here clears a working-tree selection — one
-     variable holds the pane's subject, so writing a commit into it IS clearing
-     the other kind. */
+     what the shell resolves the content pane's bytes with (`_fusedSelectSnapshot`
+     -> /api/git/snapshot), and an abbreviation is a display form that would have
+     to be re-resolved to be used. Nothing here clears a working-tree selection —
+     one variable holds the pane's subject, so writing a commit into it IS
+     clearing the other kind. */
   row.addEventListener("click",
     () => select("rev", selected ? null : entry.sha));
   line.append(row);
@@ -3667,7 +3893,7 @@ function diffBody(text) {
  * names every file it touches a few pixels below this line — a second list
  * would be a second git fork to repeat what is already on screen.
  */
-function commitMeta(entry, sha) {
+function commitMeta(entry, sha, trailingAction) {
   const short = entry && entry.short ? entry.short : (sha || "").slice(0, 7);
   const bits = [el("span", { className: "sha", textContent: short })];
   if (entry && entry.author) bits.push(el("span", { className: "who", textContent: entry.author }));
@@ -3688,7 +3914,15 @@ function commitMeta(entry, sha) {
     if (dotted.length) dotted.push(el("span", { className: "dot", textContent: "·" }));
     dotted.push(bit);
   }
-  return el("div", { className: "pane-meta" }, dotted);
+  const row = el("div", { className: "pane-meta" }, dotted);
+  /* `trailingAction` is the caller's own control (Revert and Reset, D745) — this
+     function renders an identity line and knows nothing about what a commit
+     selection can DO, matching `diffPane`'s own `meta` parameter below. */
+  if (trailingAction) {
+    trailingAction.classList.add("meta-action");
+    row.append(trailingAction);
+  }
+  return row;
 }
 
 /* The right-hand pane, for BOTH kinds of selection. `meta` is an optional node
@@ -3744,10 +3978,11 @@ function diffPane(title, sub, payload, meta) {
       return pane;
     }
     const rows = el("div", { className: "rows" });
+    const repo = snapshot && snapshot.data && snapshot.data.repo;
     for (const name of payload.files) {
       const row = el("button", { className: "row", type: "button", title: name },
         el("span", { className: "code", textContent: "New" }),
-        el("span", { className: "path", textContent: name }));
+        el("span", { className: "path", textContent: scopeRelative(repo, name) }));
       row.addEventListener("click", () => select("wt", name));
       rows.append(el("div", { className: "line" }, row));
     }
@@ -3874,6 +4109,15 @@ function pendingConfirm(data) {
        about is the proposed text, which is in the panel and nowhere else. A
        conflicted file is also listed in BOTH the staged and the changes section,
        so there is no single row to attach it to. */
+    return null;
+  }
+  if (op === "app_restore" || op === "revert" || op === "reset") {
+    /* Answered INLINE, not in a list section, for the same reason `resolve`
+       is: the thing each question is about (the previewed version; the
+       expanded commit) is not a row in any list here — it is the banner, or
+       the pane under the selected row — so that is where the confirm bar
+       renders. See the banner block and `loadDiff`'s `rev` branch (Reset,
+       D745, renders beside Revert there). */
     return null;
   }
   if (op === "stash_drop") {
@@ -4078,7 +4322,7 @@ function render(data, stashes, diff) {
   if (commits.length) sections.push(listSection(
     "Commits", null, null,
     spliceDiff(
-      commits.map((c, i) => commitLine(c, c.sha === rev, i === 0)),
+      commits.map((c) => commitLine(c, c.sha === rev)),
       rev ? commits.findIndex((c) => c.sha === rev) : -1),
     "No commits have touched this path yet.",
     loadMore,
@@ -4141,18 +4385,61 @@ function render(data, stashes, diff) {
     page.append(el("div", { className: "toast-host" }, note));
   }
   /* The previewed commit's banner: the eye toggle's state, said where it cannot
-     be missed, with the way back. */
+     be missed, with the way back — and, beside it, Checkout (D703). Checkout
+     lives HERE and nowhere else: it can only ever be reached through an
+     active preview, so there is no way to commit a rollback to a version
+     nobody looked at, and the banner already names which version it means —
+     the button needs no label of its own for that. */
   if (previewed) {
     const known = (data.commits || []).find((c) => c.sha === previewed);
+    const shortSha = known ? known.short : previewed.slice(0, 7);
+    /* The previewed row already carries a green "previewing" pill naming the
+       exact commit (see the row marker above) — repeating "Files are shown
+       as of <sha>" here was pure noise competing for width with the two
+       buttons that actually do something, and at real sidebar width the sha
+       truncated to nothing anyway. The full identity (sha + subject) is
+       still one hover away, in this span's title, matching the row's own
+       title convention (`entry.short + "  " + entry.subject + ...`). */
+    const bannerTitle = known && known.subject
+      ? shortSha + "  " + known.subject
+      : shortSha;
+    const checkoutQuestion = "Commit the app folder back to this version? "
+      + "Other folders in the repository are not touched, and this makes a "
+      + "new commit you can revert.";
     page.append(el("div", { className: "rev-banner" },
-      el("span", { className: "what" },
-        "Files are shown as of ",
-        el("span", { className: "sha", textContent: known ? known.short : previewed.slice(0, 7) }),
-        known && known.subject ? " — " + known.subject : ""),
-      action("preview-off", "Back to now", {
+      el("span", { className: "what", title: bannerTitle }, "Previewing"),
+      confirmable("app_restore:" + previewed, [icon(CHECKOUT_GLYPH, 14), btnLabel("Checkout")],
+        checkoutQuestion,
+        { label: "Commit the app folder back to this version" }),
+      action("preview-off", "Back to live", {
         label: "Stop previewing and show the current files",
         onClick: () => preview(null),
       })));
+    /* Keyed to THIS banner's own sha (finding 5, D703 second review round):
+       `ask=app_restore` alone carried no subject, so previewing a DIFFERENT
+       commit while a Checkout was armed re-rendered this same bar pointing
+       at the new commit — one click would commit a rollback to a version
+       the user never actually confirmed. Requiring `ask` to still name
+       exactly the commit being previewed closes that; a reload with a bare
+       `?ask=app_restore` (no sha, or the previewed commit changed) also no
+       longer arms anything, matching finding 5's own reload complaint. */
+    if (param("ask") === "app_restore:" + previewed) {
+      /* Success leaves the app folder matching HEAD already, so the preview
+         it was showing is now stale — clearing it (`preview(null)`) is what
+         moves the view from "previewing a version" back to "now", rather
+         than continuing to claim a preview of what is already current. */
+      page.append(confirmBar(checkoutQuestion,
+        /* Keyed the same as the `confirmable` button above (finding 5,
+           second review round): `confirmBar`'s own click handler clears
+           `ask` BEFORE calling `run`, so by the time the redraw shows
+           `busy` set, this confirmable button (not the confirm bar) is
+           what's back on screen — its spinner only paints if `run`'s own
+           key still matches the one it was drawn with. A bare
+           "app_restore" left every button disabled with nothing moving. */
+        () => run("app_restore:" + previewed, { op: "app_restore", sha: previewed },
+                  () => { preview(null); }),
+        "Checkout"));
+    }
   }
   /* The proposal (or the call that will become one) sits above the toolbar: it
      is the thing the user is being asked to read. */
@@ -4279,9 +4566,7 @@ function pendingPane(data) {
   const wt = selectedWt();
   if (rev) {
     const known = (data && data.commits ? data.commits : []).find((c) => c.sha === rev);
-    return diffPane(null,
-                    data && data.repo.rel ? "scoped to " + data.repo.rel : null,
-                    "loading", commitMeta(known, rev));
+    return diffPane(null, null, "loading", commitMeta(known, rev));
   }
   if (wt) return diffPane(null, "reading…", "loading");
   return null;
@@ -4307,14 +4592,72 @@ async function loadDiff(data) {
        answer than a pane titled with a 40-character sha. */
     const known = (data.commits || []).find((c) => c.sha === rev);
     const meta = payload.ok ? payload.commit : known;
+    const shortId = meta && meta.short ? meta.short : rev.slice(0, 7);
+    const revertQuestion = "Revert this commit? This adds a new commit "
+      + "undoing it across the whole repository — not just this scope. "
+      + "This cannot be merged away.";
+    /* Hidden, not disabled, where `canPreview` is false — matching the eye's
+       own rule (D701) and reasoning: a control that cannot do anything is
+       not a promise worth keeping on screen. Revert has no `canPreview`
+       requirement of its OWN (it does not drive a pane); it inherits the
+       gate anyway so a scope with no enclosing app folder — where a preview
+       could never have landed in the first place — does not offer a second,
+       unrelated write action either. */
+    const revertBtn = canPreview
+      ? confirmable("revert:" + rev, [icon(REVERT_GLYPH, 14), btnLabel("Revert")],
+          revertQuestion, { label: "Revert " + shortId })
+      : null;
+    /* Reset (D745) plainly says what a hard reset means rather than using
+       git's own vocabulary ("detach", "orphan"): every commit made after this
+       one becomes unreachable from any branch, and the reflog — not this
+       view, not a Back button — is the only way back, for a limited time.
+       Whole-repository, same as Revert. Called out separately: unlike every
+       other write this view offers, a branch already pushed needs a
+       force-push afterward, because this is the one action here that is not
+       push-safe. */
+    const resetQuestion = "Reset history to this commit? Every commit made "
+      + "after this one is discarded from the branch, across the whole "
+      + "repository — not just this scope. The only way back is git's "
+      + "reflog, and that fades over time. If this branch has already been "
+      + "pushed anywhere, you will need to force-push after this.";
+    /* NOT gated on `canPreview`: that gate exists because Revert's own
+       confirmation talks about "this commit" as something currently on
+       screen, and because a scope with no enclosing app folder never had a
+       preview to inherit permission from in the first place. Reset has
+       nothing to do with previewing an app at all — it is a plain history
+       operation on the repository — so tying it to the same gate would
+       refuse it in a repository with no app folder for a reason that has
+       nothing to do with resetting. */
+    const resetBtn = confirmable(
+      "reset:" + rev, [icon(RESET_GLYPH, 14), btnLabel("Reset")],
+      resetQuestion, { label: "Reset history to " + shortId });
+    const actions = el("div", { className: "meta-action commit-actions" },
+                       [revertBtn, resetBtn]);
     /* No title: the diff renders inline under the selected row, which already
        says the subject. The identity line (commitMeta) still answers "which
-       commit exactly?". */
-    return diffPane(
-      null,
-      data.repo.rel ? "scoped to " + data.repo.rel : null,
-      payload,
-      commitMeta(meta, rev));
+       commit exactly?", and now carries Revert/Reset opposite the sha. */
+    const pane = diffPane(null, null, payload, commitMeta(meta, rev, actions));
+    /* Keyed to THIS commit's own sha (finding 4, D703 second review round):
+       `select()` never clears `ask`, so arming a button on one commit and
+       then expanding a DIFFERENT row left a stale `ask` still true — this
+       pane would render an ARMED confirmation for a commit the user never
+       confirmed. Requiring `ask` to still name the commit actually selected
+       closes it; a stale `ask=revert:<oldSha>`/`ask=reset:<oldSha>` left
+       over from a prior selection (or a reload) simply arms nothing here any
+       more. Reset follows the identical `reset:<sha>` keying, never a bare
+       `"reset"` — the same discipline, for the same reason. */
+    if (param("ask") === "revert:" + rev) {
+      pane.append(confirmBar(revertQuestion,
+        /* Keyed the same as the `confirmable` button above (finding 5,
+           second review round) for the same reason as app_restore's own
+           call just above: after `ask` clears, `busy` has to match the
+           button that reappears, not the bare op name. */
+        () => run("revert:" + rev, { op: "revert", sha: rev }), "Revert"));
+    } else if (param("ask") === "reset:" + rev) {
+      pane.append(confirmBar(resetQuestion,
+        () => run("reset:" + rev, { op: "reset", sha: rev }), "Reset"));
+    }
+    return pane;
   }
   if (wt) {
     const payload = await fused.runPython(READER, { file, op: "worktree", entry: wt },
@@ -4466,7 +4809,7 @@ document.addEventListener("keydown", (event) => {
    holding the previous sha would leave the content pane on a revision no row here
    claims. Saying "live" on the way in is what keeps the two ends from disagreeing,
    and it is a no-op when the shell holds nothing. */
-hopRev();
+hopSnapshot();
 
 /* The capability, read once BEFORE the first paint — as a plain assignment and
    not through `pollRevTarget`, which would ask for a repaint of a view that has
@@ -4475,9 +4818,14 @@ hopRev();
    because the host's mark arrives and departs long after this page has mounted
    (its mode switcher moves it; a listing removes it). Same discipline as the
    claude template's annotate target, and for the same reason. */
-canPreview = !!revMarkedFrame();
+canPreview = !!revMarkedFrame() && hasAppFolder;
 window.addEventListener("focus", () => pollRevTarget());
 setInterval(() => pollRevTarget(), REV_TARGET_POLL_MS);
+/* Kicked off here, once, alongside the plain initial assignment above:
+   `hasAppFolder` starts `false`, so this fires the async probe that flips
+   `canPreview` on (via its own call to `pollRevTarget`) the moment the
+   answer is known, rather than waiting for the first poll tick. */
+void probeAppFolder();
 
 fused.params.onChange(() => draw());
 draw(true);
