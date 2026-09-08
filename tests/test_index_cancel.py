@@ -8,9 +8,11 @@ about the token itself; `search_ranked`'s use of it (the phase-boundary
 is covered in tests/test_index_search.py alongside the rest of that
 function's tests.
 """
+import asyncio
+
 import pytest
 
-from fused_render.index.cancel import CancelToken, Cancelled
+from fused_render.index.cancel import CancelToken, Cancelled, cancellable
 
 
 class _FakeConnection:
@@ -106,3 +108,75 @@ def test_unbind_with_nothing_bound_is_a_safe_no_op():
     token.unbind()  # must not raise
     token.cancel()
     assert token.cancelled is True
+
+
+# -- cancellable(request) ------------------------------------------------------
+#
+# `cancellable` wraps the CancelToken()/disconnect-watcher-task boilerplate
+# every route otherwise repeats; these tests are about the wrapping itself —
+# a route's own use of the token it yields is covered where that route lives
+# (tests/test_index_search.py's rank-route 499 test, and the matching
+# stats/search/query/ask ones in tests/test_index_api.py).
+
+class _NeverDisconnects:
+    async def is_disconnected(self):
+        return False
+
+
+class _AlreadyDisconnected:
+    async def is_disconnected(self):
+        return True
+
+
+async def _yields_a_working_token(request):
+    async with cancellable(request) as token:
+        assert isinstance(token, CancelToken)
+        assert token.cancelled is False
+        return token
+
+
+def test_cancellable_yields_a_fresh_uncancelled_token():
+    asyncio.run(_yields_a_working_token(_NeverDisconnects()))
+
+
+async def _cancels_on_disconnect():
+    async with cancellable(_AlreadyDisconnected()) as token:
+        # The watcher task is scheduled, not run inline — give it a beat to
+        # actually poll `is_disconnected()` and act on it.
+        for _ in range(50):
+            if token.cancelled:
+                break
+            await asyncio.sleep(0.01)
+        return token.cancelled
+
+
+def test_cancellable_cancels_its_token_when_the_request_disconnects():
+    assert asyncio.run(_cancels_on_disconnect()) is True
+
+
+async def _watch_task_is_gone_after_the_block():
+    async with cancellable(_NeverDisconnects()) as token:
+        watch = next(t for t in asyncio.all_tasks()
+                    if t is not asyncio.current_task() and not t.done())
+    # `finally` cancels the watcher; give the event loop one tick to land it.
+    await asyncio.sleep(0)
+    return watch.cancelled() or watch.done()
+
+
+def test_the_watch_task_is_cleaned_up_once_the_block_exits():
+    """A `token` outliving its route would poll `is_disconnected()` forever on
+    a request nobody is waiting on — the watcher must not survive the `async
+    with` block."""
+    assert asyncio.run(_watch_task_is_gone_after_the_block()) is True
+
+
+async def _token_survives_watch_cancellation():
+    async with cancellable(_NeverDisconnects()) as token:
+        pass
+    # The watcher task itself was cancelled in the `finally` — that must not
+    # propagate into a cancelled TOKEN. A normal return is not abandonment.
+    return token.cancelled
+
+
+def test_a_normal_exit_does_not_cancel_the_token():
+    assert asyncio.run(_token_survives_watch_cancellation()) is False

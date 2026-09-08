@@ -135,6 +135,11 @@ def _run_serve(args: argparse.Namespace) -> None:
     # First-run onboarding (D81): create ~/Fused. Runs regardless of
     # --start-dir — onboarding is about the Fused dir, not the start dir.
     fused_ws = ensure_fused_dir()
+    # Upgrade edge for the first-run wizard: a workspace that already holds
+    # apps is not a first run (shell/onboarding.py docstring).
+    from fused_render.shell import onboarding as shell_onboarding
+
+    shell_onboarding.seed_for_existing_users(fused_ws)
     # One-time migration: stamp `<meta name="fused-app">` into pre-existing
     # workspace apps (meta_migration's docstring carries the rules). Against
     # the Fused dir, not --start-dir, for the same reason as onboarding.

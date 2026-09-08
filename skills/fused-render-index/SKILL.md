@@ -30,15 +30,14 @@ Facts:
 - Failures reject Error with `.message` (duckdb/server text), `.type`, `.status` — render `.message`.
 - Index calls **not superseded like `runPython`'s**: slower earlier keystroke's reply can land last. Guard own renders (below).
 - Page of rows ≠ match count — ask `count(*)` separately to page.
-- Not on bridge (raw fetch, POSTs need `X-Fused: 1`): `/api/index/scan`, `/api/index/scan-folder`, `/api/index/cancel`, `/api/index/rank`, `/api/index/config`, `/api/index/status`, `/api/index/stats`, `/api/index/lookup`, `/api/index/runs`, `/api/index/delete`, `/api/index/ask` (spends AI credits — button, not debounce), `GET /api/git-repos`. `/api/index/status`'s `error` field = data (last scan's failure), not throw.
+- Not on bridge (raw fetch, POSTs need `X-Fused: 1`): `/api/index/scan`, `/api/index/scan-folder`, `/api/index/cancel`, `/api/index/rank`, `/api/index/config`, `/api/index/status`, `/api/index/stats`, `/api/index/delete`, `/api/index/ask` (spends AI credits — button, not debounce), `GET /api/git-repos`. `/api/index/status`'s `error` field = data (last scan's failure), not throw.
 
   Params that bite (rest: `fused_render/server/routers/index.py`):
 
   | Route | Params |
   |---|---|
-  | `GET /api/index/lookup` | `q`, `limit` (100, capped 5000), `offset`, `sort` (`mtime`; **unknown value silently falls back to it**, no 400) |
   | `GET /api/index/search` | `root` (**required**, else 400), `q`, `limit` (200000 — whole corpus), `fmt` (`""` = per-entry objects; `"columns"` = parallel arrays; anything else = `""`) |
-  | `GET /api/index/stats` | `root` (`""` → manifest's `last_root`, not every root) |
+  | `GET /api/index/stats` | `root` (`""` → manifest's `last_root`, not every root), `breakdown` (default false — set for the per-extension `types` list) |
   | `GET /api/index/status` | `run_id` (`""` → most recent run), `since`. Answers `has_index`+`indexed`, `scanning`, `files_indexed`, `last_completed_at`+`updated`, plus the run readout `run_id, root, phase, dirs, files, reused, current, summary, cancelled, error, running`. `scanning: true` means "say indexing…", NOT "stop using the index" |
   | `GET /api/index/rank` | `root`, `q`, `limit` (200) |
 

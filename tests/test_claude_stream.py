@@ -555,3 +555,94 @@ def test_a_delta_less_turn_shows_its_text_before_the_process_exits(agent, run_di
     data = _poll(agent, run_dir, [{"type": "result", "session_id": "s",
                                    "result": "hello"}])
     assert data["text"] == "hello"
+
+
+# ------------------------------------------------ which models the picker offers
+
+def test_the_picker_offers_a_pinned_fable_51_beside_the_floating_alias(html):
+    """`claude --model` takes two shapes — a moving alias ("fable", whatever
+    Fable is today) and a pinned full id ("claude-fable-5-1", that exact model)
+    — and the picker has to offer both.
+
+    The alias alone is what a long chat cannot be held still on: it advances
+    under the user the day the CLI's default does, mid-project, with nothing on
+    screen saying so. The pinned entry is the fix, and it leads the list because
+    someone opening this menu is usually after a specific model. Pinned first,
+    then the alias, is the ORDER asserted here — the value list is what
+    `curModel()` validates against, so a value dropped from it is a URL param
+    that silently falls back to the default and a pill that blanks."""
+    line = next(ln for ln in html.splitlines() if ln.startswith("const MODELS ="))
+    assert line == ('const MODELS = ["claude-fable-5-1", "fable", "opus", '
+                    '"sonnet", "haiku"];')
+    # …and the raw id is never what the user reads. The pill and the menu take
+    # their words from MODEL_LABELS, which is only needed for the pinned entry
+    # but is written out in full so no value can ever print itself for want of
+    # a line there.
+    assert '"claude-fable-5-1": "Fable 5.1",' in html
+    assert 'fillSelect(el, MODELS, "Model", MODEL_LABELS)' in html
+
+
+def test_a_pinned_model_round_trips_from_a_transcript_to_the_picker(agent):
+    """Detection reads the model off the project's newest transcripts so the
+    pill can preselect what the user is actually working in. The page then
+    VALIDATES that answer against its own MODELS list and drops anything else —
+    so a spelling `_short_model` cannot produce is a preselect that never
+    happens, silently.
+
+    The old loop collapsed every id onto a family name, and every pinned id
+    contains its own family name: "claude-fable-5-1-20260401" came back as
+    "fable", so a chat running the pinned model preselected the floating alias
+    and the user's next turn moved off it."""
+    assert agent._short_model("claude-fable-5-1-20260401") == "claude-fable-5-1"
+    assert agent._short_model("claude-fable-5.1") == "claude-fable-5-1"
+    # Unpinned Fable is still the alias — that IS the value the picker offers
+    # for it, and the one the user would have chosen.
+    assert agent._short_model("claude-fable-5-20260101") == "fable"
+    # A longer version number is a DIFFERENT model, not this one. A prefix match
+    # would quietly stop being true the day 5.10 ships, which is the exact thing
+    # a pinned entry exists to prevent.
+    assert agent._short_model("claude-fable-5-10") == "fable"
+    # Everything else is untouched: aliases, full ids, already-short names.
+    assert agent._short_model("opusplan") == "opus"
+    assert agent._short_model("claude-sonnet-4-5-20250929") == "sonnet"
+    assert agent._short_model("haiku") == "haiku"
+    assert agent._short_model("") == ""
+    assert agent._short_model("gpt-4") == ""
+
+
+# ---------------------------------------- two rules about what the page may do
+#                                          to a run the user is watching stream
+#
+# Both pinned as strings, right here beside the stream the page renders, because
+# both are one edit away from coming back and neither has a symptom a stream test
+# would notice: the first cost the user the whole turn, the second cost them
+# sight of it.
+
+
+def test_no_key_binding_stops_a_run(html):
+    """Escape used to kill a live turn whenever nothing else claimed the key —
+    so a reader who reached for it out of habit lost the run to a keystroke never
+    aimed at it (Akshil, 2026-09-03). Work in progress is not something a bare
+    keypress may throw away. The behavioural half is in
+    tests/test_claude_app_state.py; this is the pin that survives that file being
+    refactored."""
+    assert "stop-run" not in html
+    handler = html[html.index("function onEscape(e) {"):]
+    assert "stopRun" not in handler[:handler.index("\n}\n")]
+    # the stop button itself is untouched — there IS still a way to stop a turn
+    assert "async function stopRun() {" in html
+    assert "if (activeRun) { stopRun(); return; }" in html
+
+
+def test_the_transcript_follows_growth_it_was_not_told_about(html):
+    """A live turn reaches its final height long after the append that scrolled:
+    tool cards expand when their output lands, code blocks grow under the
+    highlighter, pictures and artifact iframes take up room only once they load,
+    the bubble re-renders as markdown at message end. So growth is OBSERVED
+    rather than announced — one ResizeObserver on the scrollport's child,
+    answering with the same follow flag every write site uses. Behaviour in
+    tests/test_claude_scroll_follow.py."""
+    assert "const followGrowth = new ResizeObserver(followBottom);" in html
+    assert "followGrowth.observe(log);" in html
+    # `load` does not bubble, so the picture/iframe backstop must be in capture
+    assert 'logwrap.addEventListener("load", followBottom, true);' in html

@@ -123,6 +123,20 @@
   color: var(--fg-muted);
 }
 
+/* The showcase clone refused (no usable git, no network). A notice, not the
+   page's error banner: the local apps in the grid below loaded fine, so this
+   states what is missing without claiming the page failed. */
+.apps-showcase-note {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
 /* Filter facet selector (Category | Folders): a small segmented control that
    decides which chip set shows. Neutral fill on the active segment (accent
    stays reserved for focus/selection).
@@ -310,12 +324,66 @@ body[data-capture-shooting] .app-pcard-export {
   transition: none;
 }
 
+/* A ROW: the app's mark as a column of its own, then the two text lines
+   stacked beside it (`.app-pcard-lines`). The head's height is still the
+   lines' — the icon is sized to span them, never to set the height — so a
+   card is as tall as it was before icons and Home's skeleton, which reuses
+   these classes to track that height, stays honest (Home.tsx SkeletonCard). */
 .app-pcard-body {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px 9px;
+  min-width: 0;
+}
+
+.app-pcard-lines {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 11px 14px 12px;
+  /* The load-bearing one: a flex item's automatic minimum size is its content,
+     so without this a long app name refuses to shrink and pushes the mark out
+     of the card instead of ellipsising (the title's own overflow rules only
+     get to act once this box can be narrower than its text). */
   min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* 32px, deliberately under the two lines it spans: the name's line box is
+   ~16px (13.5px at the default `normal` line-height) and the meta row's about
+   the same, plus the 4px gap — ~36px, so the mark is the head's tallest thing
+   in neither theme nor font. That's what keeps a card the height it was before
+   icons, and Home's skeleton (which reuses these classes to track that height)
+   honest. */
+.app-pcard-icon,
+.app-pcard-star,
+.app-pcard-body .app-pcard-icon-skel {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+}
+
+/* Home's skeleton square, in the mark's slot (Home.tsx SkeletonCard). Selector
+   compounded with the body so it beats `.skel-bar`'s own 10px height whatever
+   order the two stylesheets land in. */
+.app-pcard-body .app-pcard-icon-skel {
+  border-radius: 8px;
+}
+
+/* An author's svg can declare any intrinsic size; contain keeps a wide or
+   tall one inside the square instead of stretching it. */
+.app-pcard-icon {
+  object-fit: contain;
+}
+
+/* The generic mark for an app with no icon.svg: muted, so it reads as the
+   slot being filled rather than as a badge on the name, and inset inside that
+   slot — an authored icon is a whole tile of artwork, a bare sparkle drawn to
+   the same 32px would shout louder than the name next to it. */
+.app-pcard-star {
+  box-sizing: border-box;
+  padding: 7px;
+  color: var(--fg-muted);
 }
 
 .app-pcard-title {
@@ -333,15 +401,6 @@ body[data-capture-shooting] .app-pcard-export {
   min-width: 0;
   font-size: 11.5px;
   color: var(--fg-muted);
-}
-
-.app-pcard-tag {
-  flex: 0 0 auto;
-  padding: 1px 8px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 10.5px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
 }
 
 .app-pcard-name {

@@ -11,7 +11,6 @@ from fused_render.index.ignore import (
     SHARED_IGNORE_DIRS,
 )
 from fused_render.server.common import _error
-from fused_render.server.gitignore import _IgnoreOracle, _repo_toplevel
 
 
 
@@ -87,15 +86,21 @@ WALK_BATCH_SIZE = 500
 WALK_FLUSH_INTERVAL_S = 0.15
 # Directory names never emitted or descended into by the walk, checked against
 # the bare name so it also applies under hidden=1 (a node_modules is machine
-# noise, not "hidden data"). This is only the UNIVERSAL floor — inside a git
-# repository the walk additionally prunes whatever the repo's own .gitignore
-# ignores (see _IgnoreOracle), which is what actually catches dist/, build/,
-# .next/, target/ and friends without hardcoding every ecosystem's junk dir. The
-# floor still matters outside repos (a stray node_modules in ~/Downloads).
-# Defined once in index/ignore.py, because the index's default list has to
-# contain it: search is answered by this walk or by the index depending on
-# whether a scan has reached the folder, and a name pruned by one but kept by
-# the other flips results between two interchangeable sources.
+# noise, not "hidden data"). This is the ONLY pruning the walk does beyond
+# dot-segments — there is no gitignore lookup here, so a junk dir an
+# ecosystem's tooling produces (dist/, build/, target/, …) is walked and
+# searched like anything else UNLESS its name happens to be one of these few.
+#
+# Deliberately just SHARED_IGNORE_DIRS, not the index's larger
+# DEFAULT_IGNORE_NAMES (index/ignore.py) — the seeded list carries generic
+# build-output names (dist, build, target, …) this walk does not prune, so the
+# same folder can answer differently depending on whether a scan has reached
+# it: the live walk shows it, the index (once it has scanned) does not. That
+# is a real, accepted divergence between the two corpus sources, not a bug —
+# see DEFAULT_IGNORE_NAMES's own comment for why the larger list is index-only.
+# SHARED_IGNORE_DIRS itself stays index-defined for the names that DO have to
+# agree (node_modules, .venv, …): a name pruned by one but kept by the other
+# there would flip results for folders any scan reaches almost immediately.
 #
 # `.git` is NOT in here — it is a LEAF name (WALK_LEAF_DIR_NAMES below), emitted
 # as one entry and never descended. It has to be, in lockstep with the index:
@@ -103,9 +108,6 @@ WALK_FLUSH_INTERVAL_S = 0.15
 # instead of stat-ing 71k directories), and a walk that kept pruning the name
 # would be the exact disagreement this shared definition exists to prevent.
 WALK_IGNORE_DIRS = set(SHARED_IGNORE_DIRS)
-# Cap on concurrently open check-ignore co-processes during one walk (a home
-# walk crosses dozens of repos; each oracle holds a git subprocess).
-WALK_MAX_ORACLES = 8
 # macOS package directories: emitted as a single (dir) entry but never
 # descended — their internals are implementation details (Finder hides them
 # too), and one Electron .app alone can be thousands of files.
@@ -274,14 +276,9 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
     like any other unstatable entry. Unreadable directories are skipped
     silently (matches /api/fs/list).
 
-    Inside a git repository, entries the repo's own gitignore rules ignore are
-    pruned entirely — not emitted, not descended (the generic answer to
-    build/cache junk; WALK_IGNORE_DIRS is just the non-repo floor). Each
-    directory inherits its parent's repo root through the queue; a child
-    directory containing a `.git` entry (dir or worktree/submodule gitfile)
-    starts a nested repo with its own rules. Verdicts come from one streaming
-    check-ignore co-process per repo (_IgnoreOracle), capped at
-    WALK_MAX_ORACLES concurrently, all closed when the walk ends.
+    No gitignore lookup runs during the walk — WALK_IGNORE_DIRS (a fixed
+    floor) and, separately, the index's user-editable DEFAULT_IGNORE_NAMES
+    are the only pruning of build/cache junk. See WALK_IGNORE_DIRS above.
 
     `max_entries`/`max_depth` bound the walk from INSIDE the generator, not just
     the consumer: once `max_entries` entry dicts have been yielded the walk stops
@@ -294,173 +291,126 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
     from fused_render.shell import mounts as shell_mounts
     from fused_render.shell import pathops
 
-    oracles = {}  # repo root -> _IgnoreOracle, insertion order = LRU
-
-    def oracle_for(repo):
-        oracle = oracles.pop(repo, None)
-        if oracle is None:
-            oracle = _IgnoreOracle(repo)
-            while len(oracles) >= WALK_MAX_ORACLES:
-                oracles.pop(next(iter(oracles))).close()
-        oracles[repo] = oracle  # re-insert = mark most-recently-used
-        return oracle
-
-    try:
-        # (abs dir, rel from walk root, repo root or None, rel from repo root)
-        # A mount-backed root gets no repo: mounts hold no git repositories, and
-        # `git -C <mount> rev-parse` (like every gitignore check below) is kernel
-        # I/O on the mount we're deliberately routing around.
-        top = None if shell_mounts.is_mount_backed(path) else _repo_toplevel(path)
-        top_rel = "" if top is None else os.path.relpath(path, top).replace(os.sep, "/")
-        # 5th tuple element is depth (root = 0), used only for the max_depth cap.
-        queue = deque([(path, "", top, "" if top_rel == "." else top_rel, 0)])
-        emitted = 0  # entry dicts yielded so far (for the max_entries cap)
-        while queue:
-            current, rel_base, repo, repo_rel_base, depth = queue.popleft()
-            # Mount-backed dir: list it via the rcd rc API, off the kernel mount
-            # (see rc_list_dir / the mur-sst incident). A dir that times out or
-            # can't be listed is skipped and the walk moves on, rather than
-            # failing the whole request or wedging the mount.
-            mount_backed = shell_mounts.is_mount_backed(current)
-            if mount_backed:
-                is_root = current == path
-                dir_cut = False  # this dir's listing stopped short (1.3)
-                # Mount-backed dir: the direct→rc ladder (anonymous S3/GCS page
-                # the store's own listing API up to the remote walk cap; else, or
-                # on a direct page failure, the rc listing rclone can't paginate),
-                # single-sourced in pathops.list_mount_dir.
-                try:
-                    listing = pathops.list_mount_dir(
-                        current, max_entries=WALK_MAX_ENTRIES_REMOTE,
-                        page_timeout=WALK_RC_LIST_TIMEOUT_S,
-                        overall_timeout=WALK_RC_LIST_TIMEOUT_S,
-                        rc_timeout=WALK_RC_LIST_TIMEOUT_S)
-                except shell_mounts.RcListError:
-                    # rc route rejected the listing (a file / missing / broken —
-                    # RcListTimeout and RcListUnavailable subclass RcListError).
-                    # The ROOT listing failing is fatal — surface it with the same
-                    # status codes fs/list uses (see api_fs_walk, which pulls the
-                    # first item eagerly to catch this). A non-root dir keeps
-                    # skip-and-continue, but marks the walk truncated so the
-                    # client knows coverage is partial.
-                    if is_root:
-                        raise
-                    yield _WALK_TRUNCATED
-                    continue
-                listed = listing.entries
-                if listing.direct:
-                    if listing.token is not None:
-                        dir_cut = True  # more keys remained unlisted
-                else:
-                    # rclone can't paginate, so a huge dir comes back whole: cap
-                    # it at the per-dir remote budget and flag the cut.
-                    if len(listed) > WALK_MAX_ENTRIES_REMOTE:
-                        dir_cut = True
-                        listed = listed[:WALK_MAX_ENTRIES_REMOTE]
-                if dir_cut:
-                    yield _WALK_TRUNCATED
-                children = [
-                    _RcDirEntry(e, shell_mounts.rc_modtime_epoch(e.get("ModTime")))
-                    for e in listed if e.get("Name")
-                ]
+    # (abs dir, rel from walk root, depth). depth (root = 0) is used only for
+    # the max_depth cap.
+    queue = deque([(path, "", 0)])
+    emitted = 0  # entry dicts yielded so far (for the max_entries cap)
+    while queue:
+        current, rel_base, depth = queue.popleft()
+        # Mount-backed dir: list it via the rcd rc API, off the kernel mount
+        # (see rc_list_dir / the mur-sst incident). A dir that times out or
+        # can't be listed is skipped and the walk moves on, rather than
+        # failing the whole request or wedging the mount.
+        mount_backed = shell_mounts.is_mount_backed(current)
+        if mount_backed:
+            is_root = current == path
+            dir_cut = False  # this dir's listing stopped short (1.3)
+            # Mount-backed dir: the direct→rc ladder (anonymous S3/GCS page
+            # the store's own listing API up to the remote walk cap; else, or
+            # on a direct page failure, the rc listing rclone can't paginate),
+            # single-sourced in pathops.list_mount_dir.
+            try:
+                listing = pathops.list_mount_dir(
+                    current, max_entries=WALK_MAX_ENTRIES_REMOTE,
+                    page_timeout=WALK_RC_LIST_TIMEOUT_S,
+                    overall_timeout=WALK_RC_LIST_TIMEOUT_S,
+                    rc_timeout=WALK_RC_LIST_TIMEOUT_S)
+            except shell_mounts.RcListError:
+                # rc route rejected the listing (a file / missing / broken —
+                # RcListTimeout and RcListUnavailable subclass RcListError).
+                # The ROOT listing failing is fatal — surface it with the same
+                # status codes fs/list uses (see api_fs_walk, which pulls the
+                # first item eagerly to catch this). A non-root dir keeps
+                # skip-and-continue, but marks the walk truncated so the
+                # client knows coverage is partial.
+                if is_root:
+                    raise
+                yield _WALK_TRUNCATED
+                continue
+            listed = listing.entries
+            if listing.direct:
+                if listing.token is not None:
+                    dir_cut = True  # more keys remained unlisted
             else:
-                try:
-                    with os.scandir(current) as it:
-                        children = list(it)
-                except OSError:
-                    continue  # unreadable dir skipped silently
-            # A .git entry (dir, or gitfile for worktrees/submodules) marks a
-            # nested repository: its own gitignore rules take over below here.
-            # A .gitignore WITHOUT any repo in scope marks a standalone
-            # ignore root (un-inited project, vault, …): same pruning, backed
-            # by the empty-GIT_DIR graft (see _IgnoreOracle). Not applied
-            # inside a real repo — there git already cascades nested
-            # .gitignore files itself. Skipped entirely for mount-backed dirs:
-            # they hold no repos, and check-ignore is kernel I/O on the mount.
-            if not mount_backed:
-                names = {c.name for c in children}
-                if ".git" in names and current != repo:
-                    repo, repo_rel_base = current, ""
-                elif repo is None and ".gitignore" in names:
-                    repo, repo_rel_base = current, ""
-            dirs = []
-            files = []
-            for child in children:
-                name = child.name
-                if not include_hidden and name.startswith("."):
+                # rclone can't paginate, so a huge dir comes back whole: cap
+                # it at the per-dir remote budget and flag the cut.
+                if len(listed) > WALK_MAX_ENTRIES_REMOTE:
+                    dir_cut = True
+                    listed = listed[:WALK_MAX_ENTRIES_REMOTE]
+            if dir_cut:
+                yield _WALK_TRUNCATED
+            children = [
+                _RcDirEntry(e, shell_mounts.rc_modtime_epoch(e.get("ModTime")))
+                for e in listed if e.get("Name")
+            ]
+        else:
+            try:
+                with os.scandir(current) as it:
+                    children = list(it)
+            except OSError:
+                continue  # unreadable dir skipped silently
+        dirs = []
+        files = []
+        for child in children:
+            name = child.name
+            if not include_hidden and name.startswith("."):
+                continue
+            if not mount_backed and _win_protected(child):
+                continue  # hide protected OS junctions, as /api/fs/list does
+            try:
+                is_dir = child.is_dir()
+            except OSError:
+                continue
+            if is_dir:
+                if name in WALK_IGNORE_DIRS:
                     continue
-                if not mount_backed and _win_protected(child):
-                    continue  # hide protected OS junctions, as /api/fs/list does
+                dirs.append(child)
+            else:
+                files.append(child)
+        dirs.sort(key=lambda e: e.name)
+        files.sort(key=lambda e: e.name)
+        # Don't enqueue this dir's subdirs once we've hit the depth cap: a
+        # dir AT max_depth is still listed (its entries are yielded below),
+        # but the walk stops descending past it. Flagged so we emit one
+        # truncation sentinel per capped parent (not one per child).
+        can_descend = max_depth is None or depth < max_depth
+        depth_capped = False
+        for child, is_dir in [(d, True) for d in dirs] + [(f, False) for f in files]:
+            try:
+                st = child.stat()
+            except OSError:
+                continue  # unreadable entries skipped silently
+            rel = rel_base + "/" + child.name if rel_base else child.name
+            yield {
+                "rel": rel,
+                "is_dir": is_dir,
+                "size": None if is_dir else st.st_size,
+                "mtime": st.st_mtime,
+            }
+            # Entry-count cap enforced HERE, inside the generator, so the walk
+            # actually terminates early instead of the consumer draining a
+            # huge (or unbounded) tree. Flag partial coverage and stop.
+            emitted += 1
+            if max_entries is not None and emitted >= max_entries:
+                yield _WALK_TRUNCATED
+                return
+            if is_dir:
                 try:
-                    is_dir = child.is_dir()
+                    is_link = child.is_symlink()
                 except OSError:
-                    continue
-                if is_dir:
-                    if name in WALK_IGNORE_DIRS:
-                        continue
-                    dirs.append(child)
-                else:
-                    files.append(child)
-            if repo is not None and not mount_backed and (dirs or files):
-                prefix = repo_rel_base + "/" if repo_rel_base else ""
-                ignored = oracle_for(repo).ignored(
-                    [prefix + c.name for c in dirs + files]
-                )
-                if ignored:
-                    dirs = [c for c in dirs if prefix + c.name not in ignored]
-                    files = [c for c in files if prefix + c.name not in ignored]
-            dirs.sort(key=lambda e: e.name)
-            files.sort(key=lambda e: e.name)
-            # Don't enqueue this dir's subdirs once we've hit the depth cap: a
-            # dir AT max_depth is still listed (its entries are yielded below),
-            # but the walk stops descending past it. Flagged so we emit one
-            # truncation sentinel per capped parent (not one per child).
-            can_descend = max_depth is None or depth < max_depth
-            depth_capped = False
-            for child, is_dir in [(d, True) for d in dirs] + [(f, False) for f in files]:
-                try:
-                    st = child.stat()
-                except OSError:
-                    continue  # unreadable entries skipped silently
-                rel = rel_base + "/" + child.name if rel_base else child.name
-                yield {
-                    "rel": rel,
-                    "is_dir": is_dir,
-                    "size": None if is_dir else st.st_size,
-                    "mtime": st.st_mtime,
-                }
-                # Entry-count cap enforced HERE, inside the generator, so the walk
-                # actually terminates early instead of the consumer draining a
-                # huge (or unbounded) tree. Flag partial coverage and stop.
-                emitted += 1
-                if max_entries is not None and emitted >= max_entries:
-                    yield _WALK_TRUNCATED
-                    return
-                if is_dir:
-                    try:
-                        is_link = child.is_symlink()
-                    except OSError:
-                        is_link = True  # can't tell — safer not to descend
-                    lowered = child.name.lower()
-                    is_leaf = (lowered in WALK_LEAF_DIR_NAMES
-                               or lowered.endswith(WALK_LEAF_DIR_SUFFIXES))
-                    if not is_link and not is_leaf:
-                        if not can_descend:
-                            depth_capped = True
-                            continue  # at the depth cap — don't enqueue deeper
-                        repo_rel = (
-                            (repo_rel_base + "/" + child.name if repo_rel_base else child.name)
-                            if repo is not None
-                            else ""
-                        )
-                        queue.append(
-                            (os.path.join(current, child.name), rel, repo, repo_rel, depth + 1)
-                        )
-            if depth_capped:
-                yield _WALK_TRUNCATED  # subtree(s) left unwalked at the depth cap
-    finally:
-        for oracle in oracles.values():
-            oracle.close()
+                    is_link = True  # can't tell — safer not to descend
+                lowered = child.name.lower()
+                is_leaf = (lowered in WALK_LEAF_DIR_NAMES
+                           or lowered.endswith(WALK_LEAF_DIR_SUFFIXES))
+                if not is_link and not is_leaf:
+                    if not can_descend:
+                        depth_capped = True
+                        continue  # at the depth cap — don't enqueue deeper
+                    queue.append(
+                        (os.path.join(current, child.name), rel, depth + 1)
+                    )
+        if depth_capped:
+            yield _WALK_TRUNCATED  # subtree(s) left unwalked at the depth cap
 
 
 def _mount_list_error_response(path, exc):

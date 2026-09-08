@@ -220,7 +220,7 @@ fused.env
 // (.text/.image/.video/.transcribe/.embed/.models/.cancel), not a function (D631).
 const { text, usage, response, provider } = await fused.ai.text({
   prompt,                     // the question — a FIELD, like .image({prompt}) and .transcribe({path})
-  provider,                   // optional "local" | "claude" — pins the tier; omitted, the model's shape decides
+  provider,                   // optional "local" | "apple" | "claude" — pins the tier; omitted, a pinned id ("afm-text") or the model's shape decides
   systemPrompt,               // optional system message
   model,                      // optional model id (default claude-haiku-4-5-20251001)
   effort,                     // optional "low" | "medium" | "high" | "xhigh" (default low: no thinking)
@@ -242,10 +242,14 @@ const { text, usage, response, provider } = await fused.ai.text({
   turn). **`fused.ai` is a namespace, not a function** (D631): text is one verb among
   `.image`/`.video`/`.transcribe`/`.embed`, takes **one options object** like them
   (`prompt` is a field, never a positional argument), and the former callable
-  `fused.ai(prompt)` is gone rather than aliased. **`opts.provider`** (`"local" | "claude"`, optional)
-  pins the **tier** that serves the call; omitted, the model's shape decides (a repo
-  id or `.gguf` filename is local weights, anything else a Claude alias — AI-1), which
-  is the fixed tier walk local → claude. The three omitted-`model` cases: no
+  `fused.ai(prompt)` is gone rather than aliased. **`opts.provider`** (`"local" | "apple" |
+  "claude"`, optional) pins the **tier** that serves the call; omitted, the model decides:
+  the apple tier's **pinned ids** (`afm-text`, `afm-speech`, `afm-embedding` — D700) name
+  their tier outright, then the shape rule (a repo id or `.gguf` filename is local weights,
+  anything else a Claude alias — AI-1), which is the fixed tier walk local → claude. A
+  pinned id under a different `provider` is a 400 in both directions. A tier is an
+  **engine family**, not a privacy class: `local` and `apple` (Apple's on-device models,
+  macOS 26+) both keep the prompt on the machine. The three omitted-`model` cases: no
   `provider` → Claude, the user's default-model preference or haiku; `"claude"` →
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
@@ -289,9 +293,11 @@ const { text, usage, response, provider } = await fused.ai.text({
   file paths (`previewPath`, transcript `output`/`outputText`/`outputPartial`),
   `seconds` — so **no input is echoed at top level** (the SDK's rule), and the frame
   never changes shape because a tier learned a new fact;
-  **`finishReason`** `"stop" | "length" | "cancelled"` (`length` = a local model
-  produced exactly `maxTokens`; the Claude CLI reports no stop reason, so that tier
-  always says `stop`); **`warnings`** an array, usually empty, of
+  **`finishReason`** `"stop" | "length" | "cancelled" | "content-filter"` (`length` = a
+  local model produced exactly `maxTokens`; the Claude CLI reports no stop reason, so
+  that tier always says `stop`; `content-filter` = the apple tier's on-device guardrail
+  declined, the text so far is returned and `providerMetadata.apple.refusal` says why —
+  D700); **`warnings`** an array, usually empty, of
   `{type: "unsupported-setting", setting, message}` — a **tunable** the serving tier
   cannot honour (`temperature`/`maxTokens`/`topP` on Claude, `effort` on a local
   model) is DROPPED and named here rather than refused, so one page carries one
@@ -536,7 +542,7 @@ const page = await fused.runPython("./reader.py",
 | `.html .htm` | `_render`, `code`, `claude`, `reader` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4). A page is authored, so it carries the authored-file pair (PT-14): the chat's left pane renders the page itself and the chat edits it. This is also the key where a `?_mode=claude` link written before D235 works again for free, because D237's rename put the chat back on the file keys (`examples_seed/tutorial/`) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
-- **PT-14** **ONE chat template serves both kinds of target, and the companion that used to split by kind is GONE (D235, chat half overturned by D237; the timeline half removed with the `history` template).** *Original (D235) form: four companion modes split by target kind — a directory offered `claude` + `git`, a file offered `claude_split` + `history`, with two separate chat templates. **The two-chat premise is void, and so is the second companion.*** There is now a single chat template, **`claude`** (`claude_split` renamed after the plain full-width `claude` was deleted, D237), and it is bound to **both** the universal `/` directory key and all 47 authored-file keys — 48 keys in all. The other companion those keys used to carry, `history` (a per-path commit timeline that also materialised a commit as a browsable tree), **is deleted**: the `git` view answers the same question without a second surface, because its commit list is SCOPED to whatever target it was opened on and selecting a commit renders the open file as of it (§33, GT-17 — resolved on read through `/api/git/show`, with nothing written to disk). So the companion set is now the chat plus `git`, and **`git` (the Source Control view, §33, GT-2) is FOLDER-ONLY: the universal `/` directory key and no file extension at all.** Everything `git` offers — staging, discarding, stashing, committing, branches, push/pull — is a REPOSITORY-level act, and the working tree a file sits in is its FOLDER's working tree, not the file's: you do not stash a file, you stash a tree. A file therefore has no binding of its own for it; what a file's reader wants — "what happened to this file" — is served by the SAME view borrowed from the file's parent folder into the preview sidebar (`apps/explorer/lib/dir-mode.ts`), scoped to the open path. `git` did briefly ride along on all 48 keys, and the reason was a gap in a different surface rather than anything about the mode: the explorer gave a FOLDER no mode switcher of its own, the only mode surface a browsing user had was the preview pane's, and the pane acted on the SELECTED ROW, always a file — so a mode bound to `/` alone was unreachable without hand-writing `?_mode=git`. The pane selects and previews FOLDER rows now (the folder peek, FS-10/FS-11), so the folder has a mode surface and the workaround is retired. Two rules, not 47 table rows: the per-extension lists above simply say *which* extensions count as authored files. The **authored-file set** — source, config, prose, notebooks, record streams, tabular data, geo data and image assets, 47 keys — is deliberately withheld from spreadsheets, PDFs, media, archives, 3D and generated tool files: a chat is for bytes a human authors or analyses, and those lists are left alone rather than churned. The `/` key's gating asymmetry is the visible consequence of D237 (its third party, `app`, is gone entirely — D262 deleted the app-builder route and D264 the template): the chat's gate accepts **any** directory, while `git`'s takes any folder in a work tree and refuses a file outright (GT-3), which is the binding stated a second time — so a hand-written `?_mode=git` on a file is not offered a repository-level view of something that is not a repository. The chat's own contract (its gate, its left pane's three shapes, and the system prompt that must agree with the pane) is **PT-16**. **What the deleted timeline mode leaves behind, deliberately.** It materialised a commit by `git archive`-ing it into `~/.fused-render/app-versions/<key>/<sha>/` and framing that directory, and two mechanisms outlive it because trees an older version already extracted are still on disk and still immutable: (1) `server/mount.py::_is_under_snapshot_root` makes every `/api/fs` mutation handler refuse a path under that root with the existing `readonly` contract (403 + `{"error": "readonly"}`) and makes `_writable` report `false` there, so a framed editor draws read-only mode up front instead of only failing at Cmd+S; a **copy out** is still allowed — read-only, not sealed. (2) `?snapshot=1` on an embed URL (`router.ts` `IS_SNAPSHOT` → `body.snapshot`) still says FROZEN TREE, NOT A LIVE FOLDER: it opens no preview pane of its own and suppresses the breadcrumb and the corner chips, all of which would act on a frozen copy as though it were live. **Neither has a producer inside the app any more** — nothing writes `app-versions/` and no view frames a snapshot — and that is recorded here rather than left for a reader to rediscover from dead code. What is **still rejected**: (a) keeping `git` on file keys. The original argument was "two commit-log modes for one story", which stopped applying the moment `git` dropped its commit log (GT-2) — and on that basis the mode WAS bound to every file key for a while. The reason it is rejected again is not about duplication: a file key is the wrong place for a repository-level view. Staging, stashing and pushing are done to a tree, the tree in question is the folder's, and putting that behind a single file offers the user a control whose scope is not the thing they selected. What the file-key binding was really buying was REACHABILITY, back when a folder had no mode surface — and that is now bought properly, by the preview pane peeking folder rows and the file sidebar borrowing the parent's entry, rather than by binding the mode to the wrong target. (b) keeping `annotate` as a standalone mode — its tools live in the chat's pane, so the mode was deregistered from every core key rather than left as a second, staler way in (§17), and its comment handoff is now doubly unreachable (no binding, no receiver). What is **no longer** rejected, and is the reversal itself: D235 rejected "binding ONE chat template to both kinds" on the grounds that the split pane renders a target and an ordinary folder has no app entry to render, so one template would have to branch on kind and carry a dead pane for half its bindings. It does branch on kind, in two places — the pane and the prompt — and D239 has since conceded half of D235's premise while leaving its conclusion overturned: an ordinary folder really does have nothing to render, so it gets **no pane**, not a substitute for one (PT-16). What that does not follow is that the template must therefore fork. A no-pane target is a *layout* the one template resolves — the pane is removed and the conversation takes the width — and everything the two kinds actually SHARE is the part that costs something to duplicate: the transcript, the composer, the approval cards, the permission modes, the run/resume/stop machinery, the session list and the transcript restore. D235's own evidence is the argument here: the second chat template WAS that fork, and it drifted into the feature-poor twin (8 mentions of the annotation machinery against 277) precisely because a fork's two halves are maintained by whoever happens to be editing one of them. So the branch is one predicate read in two places, and the cost of the case that has no pane is a flag and a removal — not a second copy of a chat.
+- **PT-14** **ONE chat template serves both kinds of target, and the companion that used to split by kind is GONE (D235, chat half overturned by D237; the timeline half removed with the `history` template).** *Original (D235) form: four companion modes split by target kind — a directory offered `claude` + `git`, a file offered `claude_split` + `history`, with two separate chat templates. **The two-chat premise is void, and so is the second companion.*** There is now a single chat template, **`claude`** (`claude_split` renamed after the plain full-width `claude` was deleted, D237), and it is bound to **both** the universal `/` directory key and all 47 authored-file keys — 48 keys in all. The other companion those keys used to carry, `history` (a per-path commit timeline that also materialised a commit as a browsable tree), **is deleted**: the `git` view answers the same question without a second surface, because its commit list is SCOPED to whatever target it was opened on and selecting a commit puts the whole shell into `_snapshot=<sha>` (§33, GT-17), materialising the enclosing APP FOLDER at that commit (`git archive`d into `~/.fused-render/app-versions/<key>/<sha>/`, `server/routers/git_snapshot.py`) so every read the app makes — not only the open file — renders as of it (D243's reversal: see that entry). So the companion set is now the chat plus `git`, and **`git` (the Source Control view, §33, GT-2) is FOLDER-ONLY: the universal `/` directory key and no file extension at all.** Everything `git` offers — staging, discarding, stashing, committing, branches, push/pull — is a REPOSITORY-level act, and the working tree a file sits in is its FOLDER's working tree, not the file's: you do not stash a file, you stash a tree. A file therefore has no binding of its own for it; what a file's reader wants — "what happened to this file" — is served by the SAME view borrowed from the file's parent folder into the preview sidebar (`apps/explorer/lib/dir-mode.ts`), scoped to the open path. `git` did briefly ride along on all 48 keys, and the reason was a gap in a different surface rather than anything about the mode: the explorer gave a FOLDER no mode switcher of its own, the only mode surface a browsing user had was the preview pane's, and the pane acted on the SELECTED ROW, always a file — so a mode bound to `/` alone was unreachable without hand-writing `?_mode=git`. The pane selects and previews FOLDER rows now (the folder peek, FS-10/FS-11), so the folder has a mode surface and the workaround is retired. Two rules, not 47 table rows: the per-extension lists above simply say *which* extensions count as authored files. The **authored-file set** — source, config, prose, notebooks, record streams, tabular data, geo data and image assets, 47 keys — is deliberately withheld from spreadsheets, PDFs, media, archives, 3D and generated tool files: a chat is for bytes a human authors or analyses, and those lists are left alone rather than churned. The `/` key's gating asymmetry is the visible consequence of D237 (its third party, `app`, is gone entirely — D262 deleted the app-builder route and D264 the template): the chat's gate accepts **any** directory, while `git`'s takes any folder in a work tree and refuses a file outright (GT-3), which is the binding stated a second time — so a hand-written `?_mode=git` on a file is not offered a repository-level view of something that is not a repository. The chat's own contract (its gate, its left pane's three shapes, and the system prompt that must agree with the pane) is **PT-16**. **What the deleted timeline mode leaves behind, and what has a producer again (D243's reversal).** The original per-path timeline mode materialised a commit by `git archive`-ing it into `~/.fused-render/app-versions/<key>/<sha>/` and framing that directory; two of its mechanisms outlived it through the resolve-on-read design that replaced it (`/api/git/show`, itself since deleted) with nothing written to disk: (1) `server/mount.py::_is_under_snapshot_root` makes every `/api/fs` mutation handler refuse a path under that root with the existing `readonly` contract (403 + `{"error": "readonly"}`) and makes `_writable` report `false` there, so a framed editor draws read-only mode up front instead of only failing at Cmd+S; a **copy out** is still allowed — read-only, not sealed. (2) `?snapshot=1` on an embed URL (`router.ts` `IS_SNAPSHOT` → `body.snapshot`) still says FROZEN TREE, NOT A LIVE FOLDER: it opens no preview pane of its own and suppresses the breadcrumb and the corner chips, all of which would act on a frozen copy as though it were live. **`app-versions/` has a producer again**: `server/routers/git_snapshot.py` extracts the enclosing APP FOLDER (not an arbitrary path — GT-17's `_snapshot` is app-scoped) at a commit, so every read under it — `readFile`/`rawUrl`/`stat` and `runPython` alike — resolves against a real file rather than a special endpoint. The two guardrails above are exactly what let this producer come back safely: they never had a matching writer to police in between, and now they do again. What is **still rejected**: (a) keeping `git` on file keys. The original argument was "two commit-log modes for one story", which stopped applying the moment `git` dropped its commit log (GT-2) — and on that basis the mode WAS bound to every file key for a while. The reason it is rejected again is not about duplication: a file key is the wrong place for a repository-level view. Staging, stashing and pushing are done to a tree, the tree in question is the folder's, and putting that behind a single file offers the user a control whose scope is not the thing they selected. What the file-key binding was really buying was REACHABILITY, back when a folder had no mode surface — and that is now bought properly, by the preview pane peeking folder rows and the file sidebar borrowing the parent's entry, rather than by binding the mode to the wrong target. (b) keeping `annotate` as a standalone mode — its tools live in the chat's pane, so the mode was deregistered from every core key rather than left as a second, staler way in (§17), and its comment handoff is now doubly unreachable (no binding, no receiver). What is **no longer** rejected, and is the reversal itself: D235 rejected "binding ONE chat template to both kinds" on the grounds that the split pane renders a target and an ordinary folder has no app entry to render, so one template would have to branch on kind and carry a dead pane for half its bindings. It does branch on kind, in two places — the pane and the prompt — and D239 has since conceded half of D235's premise while leaving its conclusion overturned: an ordinary folder really does have nothing to render, so it gets **no pane**, not a substitute for one (PT-16). What that does not follow is that the template must therefore fork. A no-pane target is a *layout* the one template resolves — the pane is removed and the conversation takes the width — and everything the two kinds actually SHARE is the part that costs something to duplicate: the transcript, the composer, the approval cards, the permission modes, the run/resume/stop machinery, the session list and the transcript restore. D235's own evidence is the argument here: the second chat template WAS that fork, and it drifted into the feature-poor twin (8 mentions of the annotation machinery against 277) precisely because a fork's two halves are maintained by whoever happens to be editing one of them. So the branch is one predicate read in two places, and the cost of the case that has no pane is a flag and a removal — not a second copy of a chat.
 - **PT-15** **A template whose layout needs width is responsible for collapsing itself; the shell offers modes by *binding and gate* only — never by how much room a host happens to have (D236).** The set of modes a target gets is decided by the registry (PT-7/CT-3) and, for a gated folder, by its `condition.py` verdict (CT-12): those two inputs and nothing else. A **split-layout** template — two panes and a divider, like `claude` (the chat, PT-16) or `history` — therefore has to survive every host the shell renders it in, and three of them are narrow by design: the listing's **preview pane** (floor 220 px, default width *half* its split container — FS-12), a **Panel pane** dragged freely (§14), and **`/embed`** in a small window. The rule: the template ships a **media query** at the width its own layout stops being **useful** — the sum of its panes' minimum *useful* widths, rounded up, which is **not** the width at which they merely stop overflowing — and below it shows **one view at a time with a toggle**, the idiom `log_studio` (780 px), `map` (650), `duckdb`/`sqlite` (560) and `bundle` (640) already use. `claude` collapses at **800 px** (its useful floor: `#left` 420 + divider 4 + `#chat` 440 = 864; the breakpoint sits a deliberate notch below it, trading a slightly-squeezed band for keeping the split alive on more hosts) and `history` at **640 px** (`#side` 200 + divider 4 + a 420 px preview frame that is still a page = 624, rounded up) — the two deliberately do NOT share a figure, because `history`'s non-preview column is a 200 px commit spine where `claude`'s is a 440 px chat. The arithmetic **scopes to the targets that have two panes**, which since D239 is `claude`'s file and app-folder shapes only: an ordinary folder has no `#left`, so there is no sum to satisfy, no collapse to perform and no toggle to offer — a single-column layout is already the thing the breakpoint exists to produce, at every width. This is not an exemption from the rule; it is the rule having nothing to do, and it is why the collapse logic is short-circuited outright for that target rather than left to run against a column that is not in the document. The figures sit **at the useful floors and not the ~560 the overflow floors give** because the listing preview pane defaults to *half* its split container — ~700 px on a 1700 px window — so a breakpoint set at the overflow floor engaged the split in every host that could hold it without breaking and none that could hold it usefully; the arithmetic is written down beside the query, so the figure is checkable rather than a taste call. Three sub-rules the two built-ins establish, because getting them wrong is silent: **(a) park the hidden half, do not `display: none` it** — an iframe with no layout box gives its document a 0×0 viewport, so a screenshot of it rasterises 1×1 and every element rect an annotation pin is anchored to collapses (§17); out of flow + `visibility: hidden` + `pointer-events: none` keeps a real viewport and shows nothing. **(b) An inline width written by the divider's own JS outranks the media query**, so the collapse must neutralise it — either from CSS (`!important`) or by having the apply function skip the inline write while narrow; the split *ratio* param is never touched either way, so crossing back restores the user's width with no reload. **(c) A control that acts on the hidden half is absent, not disabled**, and any **armed** state it owns is reset on the flip — a disabled control still asserts the feature exists, and an armed control over an invisible document swallows input or attaches something the user cannot see. Only the view toggle itself (navigation, not a feature) and content the user has already authored stay reachable from both views. The toggle **names what its destination is FOR**, not merely where it goes: `claude`'s reads **"Comment on preview"** outbound and **"Back to chat"** on the return (D239; the verb was "Annotate" until D298 relabelled the whole feature "Comment" in the UI, ids and params unchanged), because the preview column is where the annotation tools live and that is the only reason a person leaves the conversation for it — "Preview"/"Chat" named the two halves and said nothing about why one would move. It stays navigation and is **not merged** with the annotate switch (§17), which arms the mode once you are there: one control moves the view, the other changes what a click in the frame does, and one button doing both would arm a mode in the same gesture that reveals the surface. The label and the `aria-label` are **one string**, since a second wording is a second thing to keep in step; the longer labels are what `#viewbtn`'s `flex-shrink: 0` and the annotate switch's own ellipsis exist for, so a 220px host truncates the mode name rather than overflowing the row or half-hiding the only way back. Which view **leads** is the mode's subject, not the wider pane: the chat opens on the chat, `history` on the commit list (a snapshot must be picked before there is a preview). **Pane-local params** are the persistence channel and stay pane-local under D72's boundary: `claude` carries `split` (the ratio), `annotations` + `annmode` (§17's notes and armed mode — and **`annmode` is written only when the URL does not already MEAN the new state**: it is effectively-on, so absent and `1` are the same answer, and the boot default normalising an absent param to `1` was a semantic no-op that still cost a history entry under the runtime's first-change-push rule (PR-3), which is why expanding the preview pane to full screen took TWO presses of Back to undo. Writing `0` over an absent param is a real disarm — a narrow pane boots that way — and still pushes; the single-writer funnel is unchanged, it just has a no-op guard), **`leftmode`** (which of the offerable stat entries the left pane frames, PT-16 — a listbox picker at the RIGHT-HAND end of the pane's own bar, showing each template's `icon.svg` beside its name, hidden below two choices, an unknown value falling back to the default silently as in PT-9) and **`paneview`** (`chat`|`preview`, which of the two the narrow layout shows, chat by default) — all four of which an ordinary folder's chat **ignores silently** rather than strips (PT-16), since they describe a layout that target does not have; `history` keeps its narrow view in a **body class only**, deliberately not a param, since which half a temporarily-narrow host shows is not state a bookmark should reproduce. What was **rejected**: having the **shell filter split-layout modes out of narrow hosts**. A pane's width is *dynamic* — the listing pane defaults to half its container, so on a wide window the split fits and the mode should be offered — which makes a host-based ban wrong in the one place it was aimed at; a width-based filter makes modes appear and disappear from the switcher (PT-10) mid-divider-drag and can yank the **active** mode out from under the user; it needs per-template width knowledge in the shell, i.e. a new `registry.json` field plus a new field on stat's template entries (which carry only `mode`/`path`/`icon`/`conditional`, PT-8), applied separately in three hosts (`ListingPreviewPane.tsx`, `PaneModeMenu.tsx`, `/embed`); and **user templates (§16) would never inherit it**, whereas a media query in the template is something a user template gets for free. **The `annmode` clause above has since GENERALISED past boot and SPLIT along D271's policy.** Generalised: every always-live control asks the same question and gets it wrong the same way — see **PT-17**, which is the rule `annmode` was the first instance of. Split: "do not write it" was the right answer for `annmode` because effectively-on is what an absent param already MEANS, but a param whose default the reader could have CHOSEN is stamped into the URL instead, with `{history: "replace"}` so the stamp costs no entry (PR-3), while a value the view DERIVES from something the URL does not record is not written at all and its MODE is the bookmark.
 - **PT-16** **The chat template's contract: one gate, TWO pane shapes plus a no-pane case, and a system prompt that cannot disagree with the pane (D237, revised by D239).** `templates/claude/` is the single chat mode (PT-14). Because it is bound to two kinds of target it branches on kind in exactly two places — the left pane and the prompt — and both read the **same** predicate, `shared/app_entry.entry_html`, so what the prompt claims is beside the chat is what is beside the chat. *This clause said "three pane shapes" until D239: the third shape — fused-render's own file browser framed for a folder with no app entry — is **removed**, and an ordinary folder now gets a full-width chat with no pane at all. The predicate and the two-places rule are unchanged; what changed is that one of the two answers is "there is nothing beside the chat", and the prompt says nothing about a pane there because there is none.*
   - **The gate** (`claude/condition.py`, CT-12) accepts **any existing regular file and any existing directory**, and nothing else: `os.path.isfile` / `os.path.isdir`, never `not isdir` (the loose form also swallows every path that does not exist, and "cannot tell" must read as "refuse"), and it never lists, walks, globs or resolves symlinks, because it runs for every path the explorer stats. That reduces to "the path exists", which the shell already knows — so the gate exists for **one** refusal: a **mount-backed** path (`shared/appenv.is_mount_backed`). The bytes under the mounts dir arrive over FUSE and an agent turned loose there rewrites the remote tree, the same reason every peer gate refuses those paths (MD-11). This is a **capability deliberately removed** relative to the deleted plain chat template, which shipped no `condition.py` at all and therefore did offer a chat over an rclone/NFS mount. **Rejected:** deleting the gate outright now that everything else about it is always-true — an always-true gate would be worth removing, a gate that still says no to remote mounts is not.
@@ -1527,34 +1533,31 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   └─ Music     ✗ 0 children              └─ cap cuts the DEEPEST level only
   ```
 
-- **SR-2** Machine-noise pruning is **gitignore-driven inside git
-  repositories** (D100): entries the containing repo's own gitignore rules
-  ignore are never emitted **nor descended** — the generic answer to `dist/`,
-  `build/`, `.next/`, `target/` and every other ecosystem's junk, with the
-  repo's own file as the authority (negations like `!keep.log` honored).
-  Verdicts come from one streaming `git check-ignore --stdin` co-process per
-  repo (`_IgnoreOracle`, ~14 µs/query, ≤ `WALK_MAX_ORACLES` open at once, all
-  closed when the walk ends); each directory inherits its repo root through
-  the BFS queue, a `.git` entry starts a nested repo with its own rules, and
-  a walk rooted *below* a repo root resolves it via one `git rev-parse
-  --show-toplevel`. A directory with a `.gitignore` but NO repo anywhere in
-  scope (an un-inited project, an Obsidian vault) prunes the same way: the
-  oracle grafts it onto a shared empty `GIT_DIR` as its `GIT_WORK_TREE`, so
-  check-ignore honors standalone `.gitignore` files too (cascading into
-  subdirs, negations included). Pruning is an optimization, never a
-  dependency: git missing or failing degrades to no gitignore pruning.
-  Known miss, accepted: walking a SUBDIRECTORY of a repo-less project looks
-  upward for nothing (no work-tree boundary to find), so an ancestor's
-  standalone `.gitignore` doesn't apply there.
+- **SR-2** Machine-noise pruning is **name-based**: `WALK_IGNORE_DIRS`
+  segments are never emitted **nor descended**, checked by bare name
+  everywhere in the tree — no per-repo gitignore parsing, no git co-process,
+  no repo-root resolution. This is a deliberately smaller floor than the
+  index's own scan-time exclusions (`DEFAULT_IGNORE_NAMES`,
+  `fused_render/index/ignore.py`), which additionally prune generic
+  build-output names (`dist`, `build`, `target`, …) and are user-editable.
+  The two are allowed to diverge — a live directory listing and a maintained
+  corpus answer different questions — everywhere except `WALK_IGNORE_DIRS`
+  itself, which both sides share (`SHARED_IGNORE_DIRS` in
+  `fused_render/index/ignore.py`) so a folder's presence never flips between
+  the walk and the index-backed search that answers from the same corpus.
 - **SR-2a** `WALK_IGNORE_DIRS` (`node_modules`, `__pycache__`, `venv`,
-  `.venv`, `.git`, `site-packages`) stays as the **universal floor**, checked
-  by bare name everywhere: it covers junk outside any repo (a stray
-  `node_modules` in `~/Downloads`, `Library/Python/*/site-packages`) and
-  `.git` itself, which git never reports as ignored. Both SR-2 and SR-2a
-  apply in hidden mode too — those trees are machine noise, not "hidden
-  data" (a `.py` extension search must not drown in `.git` object files).
-  `.git` *files* (worktree/submodule pointers) are ordinary files and do show.
-- **SR-2b** Because the walk excludes gitignored entries outright, walk
+  `.venv`, `site-packages`) is the **universal floor**, checked by bare name
+  everywhere: it covers junk outside any repo (a stray `node_modules` in
+  `~/Downloads`, `Library/Python/*/site-packages`). `.git` is **not** in this
+  set — it is a leaf-name entry instead (`WALK_LEAF_DIR_NAMES`, alongside the
+  macOS package suffixes in SR-3): emitted as one entry but never descended,
+  which keeps it in lockstep with the index's own `.git` dirs row
+  (`/api/git-repos` reads that row instead of stat-ing every directory).
+  Both SR-2 and SR-2a apply in hidden mode too — those trees are machine
+  noise, not "hidden data" (a `.py` extension search must not drown in
+  `.git` object files). `.git` *files* (worktree/submodule pointers) are
+  ordinary files and do show.
+- **SR-2b** Because `WALK_IGNORE_DIRS` pruning excludes junk outright, walk
   entries carry **no `ignored` dimming flag** — dimming remains a
   `/api/fs/list` (plain listing) concern, where ignored entries are still
   shown. Search excludes; the listing dims. (VS Code's split: explorer shows
@@ -4703,6 +4706,67 @@ changes make the showcase an ordinary git work tree with an ordinary
   cross-navigation ask rather than `window._fusedAskClaude`, because no
   surface for that repo may be mounted yet.
 
+- **GT-21** **Preview is drawn AT REST, not revealed by hover, and two new
+  write ops let a preview become history (D744).** The eye used to be a bare
+  glyph that only appeared while the pointer sat on its row — nothing on a
+  resting row said a commit could be previewed at all. It is now a labelled
+  pill (`◉ Preview`) drawn on every row `canPreview` allows — that gate is
+  unchanged (D742): a pane to drive AND a confirmed enclosing app folder —
+  with hover/focus staying an emphasis step rather than the presence step.
+  The now-redundant latest-commit dot is gone: it only ever appeared while
+  NOTHING was previewed, where it marked the top row of a list already
+  ordered newest-first — the previewing pill's own dot (unchanged) is the
+  one that answers a real question, "which commit are the files on screen
+  from", and keeps the colour.
+
+  Two write ops join `ops.py`, both `DESTRUCTIVE_OPS` (consent, not
+  recovery — see below) and both gated by a new `_require_clean(root)`
+  predicate shared between them: **any** uncommitted change — staged,
+  unstaged or untracked, repo-wide rather than scoped to the open path —
+  refuses outright with "Commit or stash them first — nothing was changed."
+  before either op forks a mutating git call. Applying the same rule to
+  Checkout costs a little strictness (an edit in an unrelated folder blocks
+  it) in exchange for one rule the user can predict rather than two that
+  differ by which button was pressed.
+
+  **`app_restore`** — Checkout in the view — commits the enclosing APP
+  FOLDER back to an earlier commit: `git checkout <sha> -- <app folder>`
+  (via `_require_app_dir(root, file)`, walking up from the open path to an
+  `entry_html`-marked folder — reached through `shared/app_entry.py`'s own
+  `sys.path` hop, never `fused_render.app_listing`, since a template must
+  not import the package, GT-1), then `git commit` naming the folder and
+  the short sha. HEAD stays on the branch — this is a scoped checkout of a
+  pathspec, not a checkout of a revision — so nothing outside the app
+  folder is touched, and a restore that would produce an empty commit
+  (already at that version) refuses rather than committing nothing. It
+  lives in the previewing banner (the "Previewing" bar), beside
+  "Back to live", and nowhere
+  else: Checkout is reachable only through an active preview, so there is
+  no way to commit a rollback to a version nobody looked at, and the button
+  needs no label of its own for which version it means — the banner already
+  names it. A successful Checkout clears the preview (the app folder now
+  matches HEAD, so continuing to claim a preview of "an earlier version"
+  would be stale).
+
+  **`revert`** — `git revert --no-edit <sha>`, whole-repository (unlike
+  every scoped write above it, a revert is not a concept that scopes to a
+  folder) — undoes one commit with a new one. A conflicting revert is
+  aborted immediately (`revert --abort`) and refused rather than left
+  mid-operation: `.git/REVERT_HEAD` must never survive a failed attempt,
+  the same "never leave the repository stuck" posture GT-15/GT-16 already
+  hold for everything else here. It appears once, on the identity line of
+  the EXPANDED commit (`commitMeta`, opposite the sha) — never on a
+  collapsed row — and is hidden, not disabled, wherever `canPreview` is
+  false, inheriting the eye's own reasoning: a control that cannot do
+  anything is not a promise worth keeping on screen.
+
+  Neither op rewrites history (GT-15): both **add** a commit, so
+  `test_git_ops.py`'s no-rewrite posture is unchanged, and both are
+  individually addressable through the ordinary confirmation step
+  (GT-16) — Checkout's wording says the change is app-scoped, Revert's
+  says it is repository-wide, because that is the one fact each
+  confirmation actually has to get right.
+
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
 index, i.e. everything git already knows about; that one reads Claude Code's
@@ -5501,7 +5565,10 @@ stop it short of quitting the app.
   disappears so it keeps up with this short a post-read sweep instead of
   lagging behind on its idle (5s) cadence. An
   **error is exempt** and stays
-  until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
+  until dismissed (the persistent-error toast's rule, §3). **SUPERSEDED for
+  `done`/`cancelled` by D663**: every terminal state now gets the same
+  unconditional exemption `error` already had, not only after a first read —
+  see BG-17. `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
   least-recently-updated first, so a live download is the last thing to go.
   **Live SERVER work is never evicted by the cap at all** (D288), so the list
@@ -5753,6 +5820,200 @@ stop it short of quitting the app.
   `localStorage`. The hook now only answers whether something arrived
   unacknowledged; opening the panel — the user's own click, for any
   reason — is what clears it.
+
+- **BG-17** **The queue slot, and a scheduled/task run's own row, are gone
+  from Activity entirely (D661, user: "a task is not something I even want
+  in the activity. that was added unintentionally").** `DownloadManager`'s
+  `QueueSlot`/`queue` prop, `ActivityDock`'s `QueueRowView`/`useQueue()`, and
+  `shell/queue-dock-lib.ts` (with its test) are deleted outright rather than
+  left unused. `jobRows` now excludes every `sys:schedule:*` job
+  unconditionally — no "exempt only while running" carve-out — so a
+  scheduled run's own turn never draws a row here in any state.
+  `schedule-toast.ts`/`App.tsx`'s toast consumption and `schedule.py`'s
+  `_emit()`/`_report()` are untouched: the toast is still how a scheduled
+  run's own page-equivalent surface announces itself, this only removes the
+  DUPLICATE row Activity was drawing for the same event. `DownloadManager`
+  gains a decoupled `onJobsReported?: (jobs: Job[]) => void` prop in the
+  queue slot's place, for a caller that wants to observe reported jobs
+  without the deleted queue machinery.
+
+  **Flagged capability loss: there is no longer a way to cancel an
+  already-running scheduled/task turn from Activity.** The queue's own ✕ was
+  the only reachable control for a live scheduled turn; removing the row
+  removes that control with it, and nothing replaces it. **Flagged
+  trade-off: `pokeTasks()`'s fast-poll path**, which used to piggyback on the
+  queue row's presence to tighten cadence while a scheduled turn ran, now has
+  no Activity-side signal to key off and reverts to its unaccelerated
+  latency for that case.
+
+- **BG-18** **Every terminal job — not only a failure — now reaches
+  Notifications, not only `error` (D662, broadening D586).** `jobs.ts` gains
+  `isTerminal(job)`/`terminalJobs(jobs)`; `inFlightJobs` narrows to
+  running/waiting only (non-terminal), and `isFailure`/`failedJobs` stay
+  scoped to real errors for `RepoUpdatesDock`'s `.is-failure` tint, so a
+  plain success does not turn the chip red. A terminal job can never
+  auto-open a panel by arriving (BG-17's D567 rule already covered this; it
+  now also covers `done`/`cancelled`, not only `error`). Server-side,
+  `fused_render/jobs.py`'s `_sweep()` exemption (BG-6) is extended from
+  `("error", WAITING)` to `TERMINAL_STATES` (`done`/`error`/`cancelled`) plus
+  `WAITING` (D663): once every finished job routes to a list meant to hold a
+  log, the old per-row `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S` clock (BG-6)
+  was deleting the very entry that list exists to keep, before anyone had
+  looked. Those constants and `Job.first_read_at` stay in `jobs.py` — other
+  `mark_read` callers (`routers/jobs.py`, `supervisor.py`,
+  `capture/__init__.py`) have their own reasons independent of this branch —
+  but no reachable job state exercises the read-gated clock any more.
+  `ActivityDock` also now toasts when a background engine retires on its own
+  (D664), by diffing successive `useRunningEngines()` snapshots and excluding
+  a user-initiated stop — the only way to learn a background daemon went idle
+  is to notice it missing between two polls, since nothing server-side calls
+  it out as an event.
+
+- **BG-19** **No card may render a single line of text — title alone, with
+  nothing beneath it (D665).** `jobs.ts` gains `jobDetail(job, nowS)`, a
+  last-resort fallback built only from facts every job always carries (kind,
+  `started_at`, `stalled`) — `"Download · started 2m ago"`, or with
+  `· not reporting` folded in once stalled. `engineDuration` (previously
+  local to the engine rows) moves into `jobs.ts` so both share the same
+  coarse-duration formatting. `jobDetail` is applied at the CALL SITE
+  (`DownloadManager.tsx`'s status-line computation), never inside
+  `jobStatusLine` itself: a running job can carry a real progress AMOUNT
+  with no phase text at all, a fact `jobStatusLine` never sees, so folding
+  the fallback in there would win over that amount rather than only firing
+  once both the status line and the amount are empty — real detail,
+  progress and failure text all still win. `RepoUpdatesDock.tsx`'s own rows
+  (`repoStatusText`, the pairing row) already always render a fixed non-empty
+  line, so the sweep for this gap found nothing left to fix there; the only
+  place it existed was the shared `JobRow` `RepoUpdatesDock.tsx` reuses from
+  `DownloadManager.tsx`, fixed once at the source. `nowS` is `JobsSnapshot.now`
+  (the server's clock), threaded down from `useJobs` through
+  `DownloadManagerView` and `JobRow` — never the browser's `Date.now()`, which
+  drifts from `job.started_at`'s server timestamp after a tab throttle or a
+  sleep (D666).
+
+- **BG-20** **A follow-up review of BG-17/BG-18 closes three gaps D663's
+  keep-until-dismissed policy opened, and confirms one thing it left
+  implicit (D667).** A card that reads a job's mere PRESENCE in the registry
+  as "still busy" — `useCacheScan.ts`/`PlaygroundTab.tsx`'s `jobByModel` maps,
+  `RepoCard.tsx`'s button gates — now stays stuck on a model whose pull or
+  load finished minutes ago, since the row no longer disappears on its own;
+  `jobs.ts`'s `activeJobByModel(jobs)` (mirroring `inFlightJobs`'s own
+  `!isTerminal` filter) is now the one place these maps get built, plus a
+  belt-and-braces `!isTerminal(job)` check on `RepoCard.tsx`'s own gates.
+  `POST /api/jobs/clear` and `clearableCount`/`jobsAfterClear`/
+  `clearFinishedJobs` (jobs.ts), unreachable once BG-17 deleted Activity's
+  own Clear button, get a real caller again: `RepoUpdatesDock.tsx` draws a
+  second "Clear" — for finished jobs, separate from its existing repo-rows
+  one — at 2+ finished jobs (D604's plurality-not-presence rule), since a
+  repo row's dismissal is local and ephemeral while a job's is server-side
+  and permanent, and one button cannot honestly speak for both. `MAX_JOBS`
+  (64) is confirmed the sole bound on registry growth now that no terminal
+  row ages out on its own, via the eviction ordering BG-6 already
+  describes (finished before running, least-recently-updated first, live
+  `SERVER` work never evicted at all). `isFailure`'s doc, `GRACE_MS`, and
+  `failedJobs` were swept for the same class of staleness this policy
+  change could have left behind: `isFailure`'s comment is rewritten to
+  state what it decides now (the `.is-failure` tint, not routing);
+  `GRACE_MS` is confirmed still doing real work (catching the RUNNING→
+  terminal transition fast) independent of the sweep-timing reasoning its
+  comment used to cite; `failedJobs`, with no remaining callers once
+  `RepoUpdatesDock.tsx` started calling `isFailure` directly, is deleted.
+
+- **BG-21** **Two more code-review fixes on BG-17/BG-18's rework, plus its
+  one previously untested piece (D668).** `retiredEngines`'s stopping-marker
+  used to be consumed by the very next poll regardless of what it saw, so a
+  rejected Stop or an engine a `restart()` revived left the marker spent for
+  nothing while the engine was still there — its actual later idle
+  retirement then drew no toast at all, since `stoppingRef` had already
+  forgotten to expect it. The marker is now consumed only by the snapshot
+  where the engine is ACTUALLY missing. `ActivityDock.tsx`'s terminal-job
+  routing (BG-18) now filters `jobRows` before `terminalJobs`, so a schedule
+  run — already toasted, already rowed on the Scheduled page — no longer
+  also accumulates a permanent, silent Notifications entry. `ActivityDock.
+  test.tsx` gives `retiredEngines` its first test coverage: ordinary churn,
+  a Stop within and past its grace window, a revived engine, and the
+  late-retirement-after-rejected-Stop case above.
+
+- **BG-22** **D663's keep-until-dismissed exemption is scoped to a row some
+  surface can show and let the user dismiss, not to every terminal state
+  unconditionally (D669).** A `sys:schedule:*` row is never drawn by any
+  frontend surface — `jobRows` drops it from Activity, and `terminalJobs`
+  runs after `jobRows` in `ActivityDock.tsx`, so it never reaches
+  Notifications either — so the exemption bought it nothing but unbounded
+  accumulation, one invisible row per scheduled turn. `_sweep` now ages a
+  schedule row out on the original read-gated `FINISHED_TTL_S`/
+  `FINISHED_UNREAD_DROP_S` clock (BG-6); every other terminal row keeps
+  D663's keep-until-dismissed behavior. Separately, `MAX_JOBS`'s eviction
+  order (BG-6/BG-20) excluded `WAITING` from `evictable` entirely: a
+  `WAITING` row's reporter has already exited, so its `updated_at` never
+  advances, and ordering evictable rows oldest-`updated_at`-first made a
+  long-open `WAITING` row (uv's "Install anyway" prompt) the first thing
+  the cap evicted — the exact row `_sweep`'s own age-out exemption exists
+  to protect, lost to the other mechanism instead. And `clear_finished`
+  (the bulk Clear button's backend, `fused_render/jobs.py`) is rescoped
+  from `state != RUNNING` to `state in TERMINAL_STATES`: the button never
+  showed or counted a `WAITING` row, but its old filter took one anyway.
+
+- **BG-23** **`ActivityDock.tsx`'s `onJobsReported` applies `mergedRows`
+  before `jobRows`/`terminalJobs` (D670), and the two "Clear" buttons
+  (BG-15/BG-20) get distinct visible labels.** `jobs.ts` gains
+  `terminalNotifications(jobs)` — `mergedRows` then `jobRows` then
+  `terminalJobs`, the same order `DownloadManagerView` already uses for
+  its own Running list — closing a gap where a render sharing a model
+  load with another render could reach Notifications as two completions:
+  `_wait_ready` (D628) clears a waiter's `waiting_for` in a `try`/`finally`
+  around its poll loop, so a poll landing between the load going terminal
+  and the waiter noticing saw the load as its own, independent
+  completion. The repo-updates and finished-job Clear buttons now read
+  "Clear updates" and "Clear finished" rather than sharing the word
+  "Clear" with only a `title` (invisible before a click) distinguishing
+  the reversible, client-side one from the permanent, server-side one.
+  `clearableCount` (jobs.ts) is deleted — BG-20's claim that it "gets a
+  real caller again" from the second Clear button does not hold up, that
+  button gates and counts on `terminal.length` directly — along with the
+  `.q-row`/`.q-row-head`/`.q-title`/`.q-open`/`.q-x`/`.q-spin`/`.q-status`/
+  `.q-note` CSS rules in `notifications.css`, dead since BG-17 deleted the
+  scheduled-message queue row's JSX; `.q-all` keeps its rule, drawn now by
+  `RepoRowView`'s own buttons.
+
+- **BG-24** **A task/scheduled message that finishes successfully speaks no
+  toast at all (D671, user: "why does task completion still show toast
+  messages?" / "remove that too").** `schedule-toast.ts`'s `toastForEvent`
+  returns `ScheduleToast | null`, `null` for `kind === "done"` — a plain
+  success is not news, and the Tasks page is where its result lives.
+  `scheduleEvents.ts`'s poll loop skips a `null` instead of rendering an
+  empty strip. `failed` and `missed` are UNCHANGED: with tasks gone from
+  Activity (BG-17) and excluded from Notifications routing, nothing else
+  would surface either one, and a silent failure or silent miss would be
+  strictly worse than the toast the user was objecting to — the complaint
+  was about *completion*, not about being warned. Both surviving outcomes
+  are now identical in shape (a persistent error with an "Open" action onto
+  `/tasks`), so `ScheduleToast`'s now-constant `tone`/`needsAttention`
+  fields, and the `push` branch in `scheduleEvents.ts` that used to render a
+  lesser, self-dismissing toast for `done`, are deleted rather than left
+  stranded. `schedule.py`'s `_emit()` is untouched — its `done` event still
+  has a client consumer, since `scheduleEvents.ts` still reads it to drive
+  `onOutcome`'s Tasks-page pulse and to ack it off the server's queue, just
+  never to raise a toast.
+
+  **Status bar chips, statusbar redesign (D673, 2026-09-02) — SUPERSEDES the
+  "one circle" rule of D588/D590 above and RETIRES `lib/autoExpand.ts`.** Every
+  chip is `platform/ui/StatusChip.tsx`: a label, a numeral from two things
+  (Notifications from one), and a 2px progress line along the chip's bottom
+  edge while work runs. Models reads `Models` (muted) / the one loaded model's
+  short name / `Models 2`; Activity reads `Activity` (muted) / the one job's
+  own verb (`Erasing`, `Downloading`, `jobTypeLabel`) over its progress / 
+  `Activity 2` over the mean fraction (`aggregateProgress`); Notifications
+  reads `Notifications` with a numeral whose badge turns red when one of them is
+  a failed job (the label keeps its colour). The numeral is one grey pill on every chip (`.sidebar-count-chip`'s
+  style) and the progress line runs along the chip's TOP edge. Panels open on HOVER (120 ms in / 200 ms out) as a
+  preview and PIN on click until a second click, Escape or an outside click
+  (`platform/lib/statusChip.ts`); one panel at a time (D582). Nothing opens on
+  arrival any more — the chip's own readout is the announcement — which is
+  what stops a panel landing on the Claude composer's send button uninvited.
+  Every `.dl-panel` anchors to the BAR's right gutter (`--status-bar-gutter`,
+  12px), not to its own chip, so the three panels open at one edge and the
+  chips end where the header controls above them do.
 
 ---
 
@@ -6408,8 +6669,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   closed by `{"type":"done"}`), and **a call with no `model` still means Claude**,
   which is what keeps every page written before this working. Since D631 the shape
   rule is the **default**, not the only route: an explicit `provider: "local" |
-  "claude"` (RH-11) pins the tier without consulting the model's shape, and the
-  reply's `provider` names the tier that answered on both paths and in both shapes.
+  "apple" | "claude"` (RH-11) pins the tier without consulting the model's shape, the
+  apple tier's pinned ids infer it before the shape rule (D700), and the reply's
+  `provider` names the tier that answered on both paths and in both shapes.
 - **AI-1a** **A conversation and a stop, because a chat client needs both.**
   `prompt` stays the thing being asked NOW, and `history` carries the turns
   before it — so adding it changes no existing call, and the turns reach the
@@ -9157,10 +9419,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   py2app showed only its generic "Launch error", so v0.4.49–v0.4.51 could not
   start at all on macOS 14. **The app's own `MACOSX_DEPLOYMENT_TARGET` was
   correct throughout and did not help** — it governs code WE compile, not
-  bottles we bundle. The macOS build jobs are therefore pinned to `macos-14`,
-  the oldest image GitHub offers, guarded by
-  `tests/test_build_dmg_diagnostics.py`; moving them forward requires first
-  making the build stop bundling a per-OS Homebrew bottle. `ltx-video`
+  bottles we bundle. The macOS build jobs were therefore pinned to `macos-14`,
+  the oldest image GitHub offers, until D700's helper needed the macOS 26 SDK;
+  the build then stopped bundling the per-OS Homebrew bottle (a python.org-style
+  framework instead, plus a minos guard over every bundled Mach-O), which is
+  what D468 named as the precondition for moving the image forward. `ltx-video`
   already served this capability as the default row, so the removal cost the
   high-fidelity option and not the capability. Two traces stay on purpose:
   `formats.loaders` still returns early on a root `FL2VA/` tree while
@@ -11166,7 +11429,22 @@ and `retry_post` (whether a proxied POST to it is safely re-runnable).
     child with `engine_id`, `pid`, `version`, `folder` (set for a background
     app's own daemon, empty for a template) and `module` (set for a `main =`
     warm worker, empty otherwise) so a row can be labelled without guessing
-    which fields a given child populated. Read-only and UNGUARDED, the same
+    which fields a given child populated, plus the four LIFETIME fields the
+    panel's detail line is built from — `uptime_s`, `idle_timeout_s` (`0` for
+    a resident child, which the panel states as "no idle timeout" rather than
+    drawing a countdown that will never run), `idle_for_s` and `busy` (idle-
+    retire is currently skipping this child — either a call `mark_busy`
+    counted, or a child past its own idle timeout whose worker still reports
+    an in-flight call via `_inflight`, the case a 504'd proxy call leaves
+    behind: its `finally` calls `mark_idle` while the worker's `main()` keeps
+    running). Only `uptime_s` and `idle_for_s` are derived from the SAME
+    `now`; `_busy` is snapshotted under the same `_lock` hold as `_children`,
+    so a single row can never report an uptime and a countdown taken a poll
+    apart. The panel renders them as
+    "Warm worker · up 12m · retires in 13m if idle" (`engineDetail`,
+    platform/ui/DownloadManager.tsx); the KIND in that sentence is derived
+    client-side from `folder`/`module`, deliberately not a wire field, since
+    those two already determine it. Read-only and UNGUARDED, the same
     posture as `GET /api/apps/background/running` and as this router's
     proxied GETs. The work is `engine_host.running_engines()`, which keeps
     the same lock discipline `background_running_folders` established —

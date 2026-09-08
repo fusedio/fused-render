@@ -1,0 +1,418 @@
+// The first-run wizard: the `/onboarding` page, four steps, every one of them
+// skippable. App.tsx renders it ALONE on that route — no sidebar, no status
+// bar — and redirects a fresh install there at boot (shell/onboarding/state
+// has the rule). Leaving is a navigation like any other.
+//
+//   1 About        — what FusedRender is (download-page copy + video)
+//   2 Claude Code  — installed / new enough / signed in / on PATH, with buttons
+//   3 Disk Access  — macOS Full Disk Access, why, and the one button there is
+//   4 Models       — local models that fit this machine, downloaded in the background
+//   5 First app    — the Home composer, or a showcase local-AI app
+//
+// Steps 1–3 write nothing but their own STAGE STATUS for the progress meter
+// (progress.ts — the sidebar's "Setup N%" row and the pills in the bar above;
+// a reopen lands on the first step still to do). Step 4 starts model
+// downloads, which
+// are server-owned jobs that outlive the wizard and block nothing in it — a
+// head start, since a model is fetched on first use anyway. Step 5's create
+// (or a showcase open) is the only other durable action and doubles as
+// "complete". ✕ / Escape
+// record a DISMISS — a different flag, so a later build can tell the two
+// apart. Both stop the auto-show; neither is undone by reopening from Help ›
+// Setup wizard, which resumes where the user left off.
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
+
+import {
+  completeOnboarding,
+  dismissOnboarding,
+  openedOnboarding,
+  type Config,
+} from "@platform/lib/api";
+import { useClaudeSetup } from "@platform/lib/claude-setup";
+import { navigateUrl, replaceSearch } from "@platform/lib/router";
+import { Button } from "@platform/shadcn/ui/button";
+import { cn } from "@platform/lib/utils";
+import { FusedMark } from "@platform/ui/FusedMark";
+
+import {
+  firstOpenStage,
+  getProgress,
+  reportStage,
+  seedProgress,
+  setProgress,
+  stageStatus,
+  useOnboardingState,
+} from "./progress";
+import { AboutStep } from "./AboutStep";
+import { ClaudeStep } from "./ClaudeStep";
+import { FdaStep } from "./FdaStep";
+import { FirstAppStep } from "./FirstAppStep";
+import { forgetModelsStep, ModelsStep, useModelPicks } from "./ModelsStep";
+
+type StepId = "about" | "claude" | "fda" | "models" | "app";
+
+const STEPS: { id: StepId; label: string }[] = [
+  { id: "about", label: "About" },
+  { id: "claude", label: "Claude Code" },
+  { id: "fda", label: "Disk Access" },
+  { id: "models", label: "Models" },
+  { id: "app", label: "First app" },
+];
+
+// The step id rides in the query so a refresh and a link both land on it.
+const STEP_PARAM = "step";
+function asStepId(v: string | null | undefined): StepId | null {
+  return STEPS.some((s) => s.id === v) ? (v as StepId) : null;
+}
+function stepFromUrl(): StepId | null {
+  return asStepId(new URLSearchParams(location.search).get(STEP_PARAM));
+}
+
+// Where the wizard lets go: the front door.
+const EXIT_PATH = "/home";
+
+// Full Disk Access is a macOS concept. The server says which platform it is
+// on (claude health carries `platform`); until that lands, the browser's own
+// hint decides so the strip does not jump when the probe answers.
+function isMac(platform: string | null | undefined): boolean {
+  if (platform) return platform === "darwin";
+  return /Mac/i.test(navigator.platform || navigator.userAgent);
+}
+
+export function OnboardingWizard({ config }: { config: Config }) {
+  // The step is named in the URL (`/onboarding?step=claude`): a refresh stays
+  // put, a link can point at one step, and the id — not a position — is what
+  // is held, so the FDA step appearing once health answers "darwin" does not
+  // shift the page under the user. Mirrored with replaceState: steps are not
+  // history entries, Back leaves the wizard.
+  //
+  // Without a step in the URL (Help › Setup wizard is a plain link) the wizard
+  // opens on the FIRST STEP STILL TO DO, read off the stage statuses
+  // (progress.ts firstOpenStage) — the same answer the sidebar meter and the
+  // boot auto-show link to. This replaced a stored "last open step": what is
+  // left to do is a better place to land than wherever the user last was.
+  const [stepId, setStepId] = useState<StepId>(() => {
+    seedProgress(config); // before the first read, and before any subscriber
+    return stepFromUrl() ?? asStepId(firstOpenStage(getProgress()?.stages)) ?? "about";
+  });
+  const settled = useRef(false);
+  // Being on screen is the one fact the server needs from a visit: it is the
+  // auto-show's "never opened" leg (shell/onboarding/state). Once per mount.
+  useEffect(() => {
+    openedOnboarding().then(
+      (s) => setProgress(s),
+      () => undefined,
+    );
+  }, []);
+  useEffect(() => {
+    const url = new URL(location.href);
+    if (url.searchParams.get(STEP_PARAM) === stepId) return;
+    url.searchParams.set(STEP_PARAM, stepId);
+    replaceSearch(url.pathname + url.search);
+  }, [stepId]);
+  // ONE setup machine for the whole wizard, not one per step: a sign-in done
+  // on step 2 must be what step 4 reads, and two hook instances would each
+  // hold their own snapshot. Focus re-checks only while the Claude step is up.
+  const setup = useClaudeSetup(stepId === "claude");
+  const { health } = setup;
+  // The catalog, once, for the whole wizard: the Models step's own contents AND
+  // whether it exists at all come from it (a machine no local engine serves has
+  // nothing to offer, so it gets no step).
+  const picks = useModelPicks();
+  // PROGRESS (progress.ts): seeded from the config we hold, then live. The
+  // pills read a step's STATUS from it, not its position — a skipped Claude
+  // step is not a green tick because the user walked past it.
+  const progress = useOnboardingState();
+  const stages = progress?.stages;
+  // Stages this machine does not have leave the meter: `n/a` once the answer
+  // is KNOWN (health said the platform; the catalog said "nothing to offer").
+  useEffect(() => {
+    if (health?.platform && health.platform !== "darwin") reportStage("fda", "n/a", { platform: health.platform });
+  }, [health?.platform]);
+  useEffect(() => {
+    if (picks !== null && picks.length === 0) reportStage("models", "n/a", { offered: 0 });
+  }, [picks]);
+  const steps = STEPS.filter((s) => {
+    if (s.id === "fda") return isMac(health?.platform);
+    // Kept while the answer is UNKNOWN (`null`), unlike the FDA step's
+    // hidden-until-known: this is the only step a `?step=` resume is likely to
+    // name while its own fetch is still in flight, and dropping it for those
+    // few hundred milliseconds would render step 1 under a user who asked for
+    // step 4. A pill that disappears on the rare no-engine machine is the
+    // cheaper wrong.
+    if (s.id === "models") return picks === null || picks.length > 0;
+    return true;
+  });
+  // A URL naming a step this machine does not have (`fda` off macOS) lands on
+  // the first one rather than nowhere.
+  const found = steps.findIndex((s) => s.id === stepId);
+  const index = found < 0 ? 0 : found;
+  const step = steps[index];
+  const last = index >= steps.length - 1;
+  const setIndex = (i: number) => setStepId(steps[Math.max(0, Math.min(i, steps.length - 1))].id);
+  // About has nothing to check: opening it is completing it.
+  useEffect(() => {
+    if (step.id === "about") reportStage("about", "complete", { viewed_at: Date.now() / 1000 });
+  }, [step.id]);
+  // Counted over the steps this machine actually has (no FDA off macOS).
+  const eyebrowText = `Step ${index + 1} of ${steps.length}`;
+  // One yellow button per screen. A step with its own work to do (install,
+  // grant, download) owns the colour while that work is open and Next goes
+  // quiet; the moment it is done — or on a step with nothing to do — Next
+  // is the yellow one. Steps report through `onWork`, and the report is
+  // TAGGED with the step it came from: a fresh step never inherits the last
+  // one's verdict, and no reset effect is needed. (A reset effect was tried
+  // and lost the race — a child's effect runs before its parent's, so the new
+  // step's `onWork(true)` landed first and the reset then wiped it, leaving
+  // Download AND Next both yellow.)
+  const [work, setWork] = useState<{ id: string; busy: boolean } | null>(null);
+  const stepHasWork = work?.id === step.id && work.busy;
+  const onWork = useCallback((busy: boolean) => setWork({ id: step.id, busy }), [step.id]);
+
+  // Fire-and-forget, and at most one flag per visit: the flag is a courtesy
+  // to the NEXT launch, and a failed write must not hold the page over the
+  // app the user is trying to reach. (`settled` is declared above, by the
+  // step effect that reads it.)
+  // `via` names the ACTION that finished it — the composer made an app, or a
+  // showcase card was opened — and is what marks the First-app STAGE
+  // complete. "I'll explore on my own" passes none: it ends the wizard but
+  // builds nothing, and the meter must say so.
+  const markComplete = useCallback((via?: "composer" | "showcase") => {
+    if (via) reportStage("app", "complete", { via });
+    if (settled.current) return;
+    settled.current = true;
+    // The Models step's own across-mount memory: a wizard
+    // reopened in this page load should offer a fresh selection, not rows
+    // still reporting a download that has since finished.
+    forgetModelsStep();
+    completeOnboarding().catch(() => undefined);
+  }, []);
+  const finish = useCallback(
+    (how: "complete" | "dismiss") => {
+      if (how === "complete") markComplete();
+      else if (!settled.current) {
+        settled.current = true;
+        dismissOnboarding().catch(() => undefined);
+      }
+      navigateUrl(EXIT_PATH);
+    },
+    [markComplete],
+  );
+
+  // Step 4's actions (the composer's create, a showcase card) NAVIGATE — App
+  // swaps this page out on the route change, not when the action starts, so
+  // the composer's own `task_error` ("folder created, Claude didn't start")
+  // lands in a composer that is still on screen where the user can read it.
+  //
+  // A navigation off the last step IS completion (a showcase card opened, or
+  // the composer landed on the new app) — so cards need no click hook, and a
+  // click that does not navigate (a card's export icon) completes nothing.
+  // The unmount is that navigation.
+  const lastRef = useRef(last);
+  lastRef.current = last;
+  // The FLAG only: this unmount also fires on browser Back from the last
+  // step, where nothing was built. The First-app STAGE is claimed by the step
+  // itself, which checks the page it landed on (FirstAppStep onShowcaseOpened).
+  //
+  // Any OTHER way out is a close, and a close is dismissed — the ✕ and
+  // Escape said so already, but browser Back, the brand link, the sidebar
+  // meter, a Models row opening the Playground all leave the same way (this
+  // unmount) without a word to the server, and the auto-show then had only
+  // `opened_at` to go on. `settled` keeps a ✕ press from stamping twice.
+  useEffect(
+    () => () => {
+      if (lastRef.current) markComplete();
+      else if (!settled.current) {
+        settled.current = true;
+        dismissOnboarding().catch(() => undefined);
+      }
+    },
+    [markComplete],
+  );
+
+  const next = () => {
+    if (last) finish("complete");
+    else setIndex(index + 1);
+  };
+  const back = () => setIndex(index - 1);
+
+  // Escape dismisses; ⌘/Ctrl+Enter advances. Neither on the last step: the
+  // composer owns both there (Escape cancels its name prompt, Enter sends).
+  useEffect(() => {
+    if (last) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish("dismiss");
+      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        next();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `next` is a per-render closure over index
+  }, [finish, last, index, steps.length]);
+
+  // Step counter on the left, Back/Next hugging the right edge of the content
+  // column: the pair reads as one control, so they sit together.
+  const eyebrow = (
+    <>
+      <span>{eyebrowText}</span>
+      <div className="flex items-center gap-2 normal-case tracking-normal">
+        <Button variant="outline" size="sm" onClick={back} disabled={index === 0}>
+          <ArrowLeft data-icon="inline-start" />
+          Back
+        </Button>
+        {last ? (
+          <Button key="explore" variant="outline" size="sm" onClick={() => finish("complete")}>
+            I'll explore on my own
+          </Button>
+        ) : (
+          <Button
+            key="next"
+            variant={stepHasWork ? "outline" : "accent"}
+            size="sm"
+            onClick={next}
+            title="⌘/Ctrl + Enter"
+          >
+            Next
+            <ArrowRight data-icon="inline-end" />
+          </Button>
+        )}
+      </div>
+    </>
+  );
+
+  return (
+    <div
+      className="onboarding flex min-h-0 flex-1 flex-col bg-background text-foreground"
+      aria-label="Set up FusedRender"
+    >
+      {/* Top bar: brand · steps · close. Three tracks, the outer two an equal
+          `1fr`, so the middle one is centred on the BAR — not on whatever the
+          brand and the ✕ leave over, which is what `mx-auto` in a flex row
+          gives and which reads as pushed-right (the brand is far wider than
+          the ✕). In flow, so a squeeze shrinks the side tracks instead of
+          painting the pills over the wordmark. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 border-b border-border px-5 py-3">
+        {/* The sidebar's brand row, verbatim (platform/ui/sidebar/SidebarFrame
+            + styles/sidebar.css .sidebar-brand): same mark, same "Render"
+            title, same 9px gap / 13.5px / 650 weight, one click target that
+            goes Home, title turning --accent-soft on hover. Leaving this way
+            is a CLOSE, so it goes through `finish("dismiss")` like the ✕ —
+            not a bare navigate, which on the last step the unmount would
+            read as completion (a navigation off step 5 is how a built app
+            reports itself; bugbot). */}
+        <a
+          href={EXIT_PATH}
+          title="Home"
+          onClick={(e) => {
+            e.preventDefault();
+            finish("dismiss");
+          }}
+          className="group flex min-w-0 items-center gap-[9px] text-[13.5px] font-[650] tracking-[0.01em] text-foreground no-underline"
+        >
+          <span className="flex shrink-0 items-center text-[var(--accent)]">
+            <FusedMark size={20} />
+          </span>
+          {/* Only where the pills are actually competing for the row: from
+              `sm` (where they appear) up to 760px (measured as the width at
+              which the centred pills stop leaving the side track room for the
+              wordmark) the mark alone says it better. Under `sm` the pills are
+              hidden, so the wordmark has the row to itself and stays. */}
+          <span className="truncate transition-colors group-hover:text-[var(--accent-soft)] sm:max-[760px]:hidden">
+            Render
+          </span>
+        </a>
+
+        {/* Every step is a link, in both directions: nothing before step 4
+            gates anything after it, so a user who knows what they want can go
+            straight there. */}
+        <ol
+          className="my-0 hidden list-none items-center gap-0.5 rounded-lg bg-muted/60 p-0.5 sm:flex"
+          aria-label="Setup steps"
+        >
+          {/* The mark is the stage's STATUS (progress.ts), not its position:
+              green check = complete, half-filled amber = partial, the number
+              = pending. Walking past a step earns it nothing. */}
+          {steps.map((s, i) => {
+            const status = stageStatus(stages, s.id);
+            const done = status === "complete";
+            const partial = status === "partial";
+            const current = i === index;
+            const statusWord = done ? "complete" : partial ? "partly done" : "not done";
+            return (
+              <li key={s.id} className="flex items-center">
+                <button
+                  type="button"
+                  onClick={() => setStepId(s.id)}
+                  aria-current={current ? "step" : undefined}
+                  title={`${s.label} — ${statusWord}`}
+                  className={cn(
+                    "flex cursor-pointer appearance-none items-center gap-1.5 rounded-md border-0 bg-transparent px-3 py-1.5 text-xs leading-none [font-family:inherit] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    current
+                      ? "bg-background font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "grid size-4 place-items-center rounded-full text-[10px] font-semibold tabular-nums",
+                      done && "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+                      partial && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+                      !done && !partial && current && "bg-foreground text-background",
+                      !done && !partial && !current && "bg-muted-foreground/15 text-muted-foreground",
+                    )}
+                    aria-hidden
+                  >
+                    {done ? (
+                      <Check className="size-2.5" strokeWidth={3} />
+                    ) : partial ? (
+                      <span className="size-2 rounded-full border-[1.5px] border-current [background:linear-gradient(90deg,currentColor_50%,transparent_50%)]" />
+                    ) : (
+                      i + 1
+                    )}
+                  </span>
+                  {s.label}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+
+        <button
+          type="button"
+          onClick={() => finish("dismiss")}
+          aria-label="Close setup"
+          title="Skip for now"
+          className="col-start-3 grid size-8 cursor-pointer justify-self-end appearance-none place-items-center rounded-md border-0 bg-transparent text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <X className="size-4" />
+        </button>
+      </div>
+
+      {/* Body */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-4xl px-6 py-10">
+          {step.id === "about" && <AboutStep eyebrow={eyebrow} />}
+          {step.id === "claude" && <ClaudeStep setup={setup} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "fda" && <FdaStep config={config} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "models" && <ModelsStep picks={picks} eyebrow={eyebrow} onWork={onWork} />}
+          {step.id === "app" && (
+            <FirstAppStep
+              health={health}
+              eyebrow={eyebrow}
+              onComplete={() => markComplete("composer")}
+              onShowcaseOpened={() => markComplete("showcase")}
+            />
+          )}
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+export default OnboardingWizard;

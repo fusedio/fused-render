@@ -9,35 +9,39 @@
 // results (see FilesHome), taken only when the user asks for it.
 //
 // The SERVER now filters and ranks (/api/index/rank, fused_render/index/
-// rank.py). The page used to fetch the whole corpus — 19.8 MB and 164k rows on
-// the first keystroke, capped at 200k entries so ~71% of a 571k-file home
-// could not be found at all — and rank it here. It now asks per query and gets
-// a few KB, over the WHOLE index.
+// query.py's `_rank_sql`, one SQL statement — see D708). The page used to
+// fetch the whole corpus — 19.8 MB and 164k rows on the first keystroke,
+// capped at 200k entries so ~71% of a 571k-file home could not be found at
+// all — and rank it here. It now asks per query and gets a few KB, over the
+// WHOLE index.
 //
-// The ranking is still not reimplemented anywhere: rank.py is a port of
-// listing/search.ts pinned by a cross-language fixture, because two search
-// boxes in the same app that order results differently is a bug the user
-// experiences as "it found it last time".
+// Index-backed search is substring-only (D708 — the deleted `index/rank.py`'s
+// fuzzy subsequence escalation is gone, an owner-accepted trade). `narrowAnswer`
+// below matches that with `platform/lib/fuzzy.ts`'s `substringMatch` rather
+// than `fuzzyMatch`, which still accepts a subsequence and would otherwise
+// keep rows the server no longer returns. `fuzzyMatch` (listing/search.ts)
+// stays subsequence-based and is still correct there — the live walk it ranks
+// has no server to agree with.
 //
 // Two things must not be papered over:
 //
 //  * a cold index. The home page has no live-walk fallback (that is the
 //    listing's job, one folder at a time), so an uncovered root is reported as
-//    "still building", never as "no matches" — blaming the user's files for
+//    the state of the INDEX (`indexGap`, below — building, not built, off, or
+//    never coverable), never as "no matches" — blaming the user's files for
 //    the app's state is exactly the failure the server's search refuses to
 //    make.
 //  * the WAIT. Ranking used to be local, so results repainted within a frame
 //    and never blanked. A round trip per query can only feel as good if it
-//    never blanks the list, never flashes a spinner, fires the first keystroke
-//    without a debounce, and answers a backspace from memory — which is what
-//    the pieces below are for.
+//    never blanks the list, never flashes a spinner, and answers a backspace
+//    from memory — which is what the pieces below are for.
 //
-// The pieces that make a per-query round trip feel instant — the leading-edge
+// The pieces that make a per-query round trip feel instant — the trailing
 // debounce, the pending threshold, the backspace memo — are NOT here: they are
 // shared with the listing's in-folder box, which is now the same kind of box,
 // and they live in platform/lib/instant-search.
 import type { IndexRankResult, RankReason } from "@platform/lib/api";
-import { fuzzyMatch } from "@platform/lib/fuzzy";
+import { substringMatch } from "@platform/lib/fuzzy";
 
 // Rows rendered at most. Far smaller than the listing's SEARCH_RESULT_CAP, and
 // the number is set by what has to stay VISIBLE rather than by how many hits are
@@ -110,16 +114,31 @@ export interface HomeAnswer {
   covered: boolean;
   /**
    * WHY, when `covered` is false — carried through verbatim from the
-   * server's `reason` (platform/lib/api.ts's `RankReason`). FilesHome reads
-   * this only to say "indexing is off" instead of the generic "still
-   * building" when `reason === "disabled"`; every other value renders the
-   * same not-covered message it always has.
+   * server's `reason` (platform/lib/api.ts's `RankReason`). FilesHome pairs
+   * it with the live scan poll to pick which of the four not-covered states
+   * the root is in, and only one of them tells the user to wait: see
+   * `indexGap`.
    */
   reason: RankReason;
+  /**
+   * Wall-clock cost of the request this answer came from, `Date.now()` at
+   * issue to `Date.now()` when the response was applied — the true
+   * end-to-end latency the user felt, not just server time. A memoised
+   * answer (the backspace path, `QueryMemo`) keeps the value it was
+   * measured with: it is a real measurement of a real request, and
+   * re-timing a cache hit would report ~0ms for a query that actually cost
+   * a full round trip moments earlier.
+   */
+  elapsedMs: number;
 }
 
 /** A ranked response as an answer: absolutized, capped, and highlighted. */
-export function answerFrom(res: IndexRankResult, query: string, home: string): HomeAnswer {
+export function answerFrom(
+  res: IndexRankResult,
+  query: string,
+  home: string,
+  elapsedMs: number,
+): HomeAnswer {
   return {
     query,
     hits: res.hits.slice(0, HOME_RESULT_CAP).map((h) => ({
@@ -129,14 +148,19 @@ export function answerFrom(res: IndexRankResult, query: string, home: string): H
       size: h.size,
       mtime: h.mtime,
       // Re-matched HERE rather than sent: fuzzy.ts decides what highlights,
-      // full stop, and the server's ranker is a port of it (index/rank.py),
-      // so this reproduces the alignment that produced the score.
-      positions: fuzzyMatch(query, h.rel)?.positions ?? [],
+      // full stop. `substringMatch`, not `fuzzyMatch`'s looser subsequence
+      // pass: every row in `res` already passed the server's substring
+      // filter, so the guarantee that this always finds something is made
+      // EXPLICIT (the same test the server used, not merely a weaker one
+      // that happens to agree here) rather than incidental to which function
+      // got called.
+      positions: substringMatch(query, h.rel)?.positions ?? [],
     })),
     truncated: res.truncated,
     total: res.total,
     covered: res.covered,
     reason: res.reason,
+    elapsedMs,
   };
 }
 
@@ -145,27 +169,37 @@ export function answerFrom(res: IndexRankResult, query: string, home: string): H
  * trip.
  *
  * The common case while a request is in flight is the new query EXTENDING the
- * old one ("read" -> "readm"): re-running `fuzzyMatch` (the same matcher
- * rank.py mirrors) over the hits already in hand and keeping only the ones
- * that still match — with `positions` recomputed for the new query — narrows
- * the list on screen with no round trip and no blank frame, which is strictly
- * better than dimming rows that cannot possibly be answers to what is now
- * typed.
+ * old one ("read" -> "readm"): re-running `substringMatch` over the hits
+ * already in hand and keeping only the ones that still match — with
+ * `positions` recomputed for the new query — narrows the list on screen with
+ * no round trip and no blank frame, which is strictly better than dimming
+ * rows that cannot possibly be answers to what is now typed.
+ *
+ * `substringMatch` (platform/lib/fuzzy.ts), NOT `fuzzyMatch` (D708 correction
+ * — review finding): the index-backed server is substring-only, so narrowing
+ * with `fuzzyMatch`'s looser subsequence test could KEEP a row the server
+ * would no longer return (`"rdme"` is a subsequence of `"readme.md"` but
+ * never a substring of it) — painting a hit for a query, then watching it
+ * vanish when the real answer lands empty. `substringMatch` is the exact test
+ * `_rank_sql`'s `WHERE lower(rel) LIKE '%q%'` (fused_render/index/query.py)
+ * filters on server-side, reproduced here so this agrees with it with no
+ * round trip. `fuzzyMatch` stays correct for the LIVE-WALK path
+ * (`listing/search.ts`), which has no server-side filter to disagree with.
  *
  * Deliberately does NOT re-rank or add rows: it can only ever REMOVE hits from
  * the held answer, which is what makes the result a provable SUBSET of the
  * true answer for `q` — it can never show something the fresh answer
- * wouldn't. A query that is not an extension of the old one (a paste, a
- * select-all retype) narrows to whichever held hits happen to still
- * fuzzy-match `q` directly, which is usually few or none; that emptiness is
- * exactly the signal the staleness deadline (`STALE_CLEAR_MS`,
- * platform/lib/instant-search) uses to decide there is nothing worth holding
- * onto.
+ * wouldn't, now that both agree on what counts as a match. A query that is
+ * not an extension of the old one (a paste, a select-all retype) narrows to
+ * whichever held hits happen to still contain `q` as a substring, which is
+ * usually few or none; that emptiness is exactly the signal the staleness
+ * deadline (`STALE_CLEAR_MS`, platform/lib/instant-search) uses to decide
+ * there is nothing worth holding onto.
  */
 export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
   const out: HomeHit[] = [];
   for (const hit of answer.hits) {
-    const m = fuzzyMatch(q, hit.rel);
+    const m = substringMatch(q, hit.rel);
     if (!m) continue;
     out.push({ ...hit, positions: m.positions });
   }
@@ -255,6 +289,44 @@ export function homeCountNote(total: number, corpusTruncated: boolean): string {
   const n = total.toLocaleString();
   if (total <= HOME_RESULT_CAP) return `${n}${suffix} match${total === 1 ? "" : "es"}`;
   return `Showing top ${HOME_RESULT_CAP} of ${n}${suffix}`;
+}
+
+/**
+ * `elapsedMs` as a short latency readout next to the count note: `"42 ms"`
+ * under a second (rounded — the readout is a feel, not a profiler), one
+ * decimal place in seconds at or above it (`"1.2 s"`, never `"1234 ms"`).
+ */
+export function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+/**
+ * Which answer the result note should read from: the live one once ranking
+ * has settled for the current query, otherwise whatever the LAST settled
+ * answer was — never a value recomputed from the narrowed hits in between.
+ *
+ * This is the fix for the note rewriting itself 2-3 times per keystroke: the
+ * caller renders `held`'s total/truncated/elapsedMs verbatim rather than
+ * reaching for `answer.total` (the previous query's number, wrong the
+ * instant `q` changes) or `hits.length` (a shrinking lower bound that hits
+ * zero the moment narrowing empties the held hits, which used to force a
+ * "Searching…" flash). Staleness is still communicated — the rows dim while
+ * behind, and the `slow`-gated "· Searching…" suffix covers the in-flight
+ * case — so the note itself is free to just hold still.
+ */
+export function noteAnswer(
+  answer: HomeAnswer | null,
+  settled: boolean,
+  held: HomeAnswer | null,
+): HomeAnswer | null {
+  // `settled` is true on a failed request even when `answer` is null (a
+  // later query's request failed while an earlier, unrelated query's held
+  // answer got cleared by the stale-clear effect — see FilesHome.tsx). A
+  // null `answer` here is never itself something to show; falling back to
+  // `held` is what keeps that render reporting the last real result instead
+  // of flashing "Searching…" over one it already showed.
+  return settled && answer !== null ? answer : held;
 }
 
 // -- typing anywhere is typing here ------------------------------------------
@@ -455,4 +527,137 @@ export function submitRow(
   settled: boolean,
 ): number | null {
   return activeRow(highlight, m, settled);
+}
+
+// -- why there is no index answer --------------------------------------------
+
+/**
+ * The four states a not-covered answer can be in. They differ in what the
+ * user can do about it, which is the only reason to tell them apart.
+ *
+ *  * `scanning` — a scan is running, so waiting really is the advice.
+ *  * `buildable` — the root is not in the index and NOTHING is running.
+ *    Waiting fixes nothing; only a scan does.
+ *  * `disabled` — the indexing pref is off, so no scan can start until it is
+ *    back on.
+ *  * `fda` — the packaged mac app has no Full Disk Access, so no scan can
+ *    start until it is granted (and the app relaunched). The page offers the
+ *    grant, not a scan.
+ *  * `unavailable` — mount-backed, inside a package, or pruned by the ignore
+ *    rules: no scan will ever cover it (see `RankReason`).
+ */
+export type IndexGap = "scanning" | "buildable" | "disabled" | "fda" | "unavailable";
+
+/**
+ * Which of those an uncovered root is in.
+ *
+ * The page used to render one message — "the file index is still building" —
+ * for every `reason`, and that message is a promise that something is coming.
+ * For `uncovered` nothing is: this page never asks for a scan (that is the
+ * in-folder box's `requestFolderScan`) and the startup scheduler runs once per
+ * boot, so a first scan that was refused, debounce-skipped, or died with its
+ * worker leaves the page promising a build that no longer exists — for as long
+ * as the user is willing to stare at it. `buildable` is that case as its own
+ * state, so the page can offer the scan instead of describing one.
+ *
+ * `scanning` is read from the LIVE status poll as well as from `reason`, and
+ * the poll wins in BOTH directions — which is why it is tri-state (`null` is
+ * "the poll has not answered yet", not "idle"):
+ *
+ *  * `reason` was fixed when the answer was ranked, so a scan started since
+ *    the last keystroke (by the user's own button, or by anything else) shows
+ *    up in the poll a second later and in `reason` only on the next query.
+ *  * a definite `false` DEMOTES `reason === "scanning"` to `buildable`. A rank
+ *    that landed while the startup scan was alive says "scanning" forever
+ *    after: if that worker is then killed, `/api/index/status` reports idle
+ *    (runner._with_liveness, after ABANDONED_RUN_S) but `last_completed_at`
+ *    never moves, so no lifecycle event fires and nothing re-ranks. Trusting
+ *    the frozen `reason` there is the twenty-minute wedge again, wearing the
+ *    other reason's clothes — and with a frozen file count to make it
+ *    convincing.
+ *
+ * `disabled` outranks the poll because nothing can be in flight while the pref
+ * is off — every trigger is gated on it, and a scan running at the moment of
+ * toggle-off is cancelled outright (routers/index.cancel_all_scans).
+ */
+export function indexGap(reason: RankReason, scanning: boolean | null): IndexGap {
+  if (reason === "disabled") return "disabled";
+  // Same argument as `disabled`: every trigger is gated on the grant, so a
+  // lagging `scanning` from the poll cannot be a scan that will finish.
+  if (reason === "fda") return "fda";
+  if (scanning === true) return "scanning";
+  if (reason === "scanning" && scanning === null) return "scanning";
+  if (reason === "mount" || reason === "package" || reason === "ignored") {
+    return "unavailable";
+  }
+  return "buildable";
+}
+
+/**
+ * Whether AI search is worth offering.
+ *
+ * AI search is not a second engine. The spec the model produces is executed
+ * against the SAME file index — `routers/search._search_index`, whose
+ * docstring says "the only engine" — so with nothing built it raises
+ * `IndexUnavailable` and reports "the file index has not been built yet". That
+ * is the message the note is standing next to, which makes "AI search can
+ * answer in the meantime" false in exactly the state that printed it, and the
+ * "Search with AI" row a click into the same wall.
+ *
+ * A root the index deliberately does not cover (mount / package / ignored) is
+ * a different case: the index is built, so AI search does answer — just not
+ * about that root's files. `has_index` is the right question either way.
+ *
+ * `null` — no poll answer yet — offers it. `has_index` is false on a cold
+ * poll, and hiding the row for the first second of every page load would be
+ * its own wrong answer.
+ */
+export function aiSearchUsable(status: { has_index: boolean } | null): boolean {
+  return status === null || status.has_index;
+}
+
+/**
+ * A scan this page asked for that the status poll has not accounted for yet.
+ *
+ * `at` is `Date.now()` when the request went out, `completedAt` the
+ * `last_completed_at` it went out under.
+ */
+export interface PendingScan {
+  at: number;
+  completedAt: number | null;
+}
+
+/**
+ * How long a requested scan may stay unaccounted for before the note stops
+ * claiming it is starting. Two idle poll intervals
+ * (`INDEX_IDLE_POLL_MS`) — long enough that the poll has certainly had a turn,
+ * short enough that a scan which died between two polls without moving
+ * `last_completed_at` cannot leave "Starting…" on screen indefinitely. That
+ * failure mode is the one this whole file is about; it does not get to come
+ * back as the spinner for its own fix.
+ */
+export const SCAN_START_GRACE_MS = 20_000;
+
+/**
+ * Whether to say a requested scan is starting rather than re-offer the button.
+ *
+ * The POST returning is not the scan appearing. While idle the shared poll is
+ * on a ten-second beat, so between "started" and "scanning" the answer's
+ * `reason` is still `uncovered` and the note would go back to offering "Index
+ * them now" — a click that reads as a no-op on the one screen whose whole
+ * point is that waiting is futile, and whose obvious response is to click
+ * again. The claim is held until the poll either shows the scan running or
+ * shows it already over (`last_completed_at` moved).
+ */
+export function scanStarting(
+  pending: PendingScan | null,
+  scanning: boolean | null,
+  completedAt: number | null,
+  now: number,
+): boolean {
+  if (pending === null) return false;
+  if (now - pending.at >= SCAN_START_GRACE_MS) return false;
+  if (scanning === null) return true;
+  if (scanning) return false;
+  return completedAt === pending.completedAt;
 }

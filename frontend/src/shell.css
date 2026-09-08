@@ -9,6 +9,12 @@
 @import "./styles/sidebar.css";
 @import "./styles/explorer.css";
 @import "./styles/preview.css";
+/* After preview.css and before task-cards.css, and the order is load-bearing
+   both ways: the chat frame's iframe rule must beat `.preview-side-frame`'s
+   flex-derived height (the frame is a child of the new box now, not a flex
+   item) and must LOSE to `.task-card-frame`'s scaled fit. Its skeleton bars are
+   explorer.css's `.skel-bar`, imported above. */
+@import "./styles/chat-frame.css";
 @import "./styles/context-menu.css";
 @import "./styles/dialogs.css";
 @import "./styles/notifications.css";
@@ -44,9 +50,18 @@
    adds only the rows new to it — the two checkboxes, title and description,
    the past-time note. */
 @import "./styles/new-task.css";
+/* Fourth of the family and last of it: the Cards view borrows the Board's card
+   surface (--tasks-card-bg, the 8px radius, the status ring) and adds only the
+   wall it lays them out on and the live pane inside one — so it must come after
+   both files whose vocabulary it is layering over. */
+@import "./styles/task-cards.css";
 /* After the whole tasks family: the app page (/apps/<slug>, D488) hosts the
    Tasks page inside its Tasks tab and adds only the header and frame around it. */
 @import "./styles/app-page.css";
+/* After app-page.css: the App Doctor dialog is opened from that header (and
+   from the explorer's entry-page topbar) and layers only its checklist over
+   the shared modal chrome imported far above. */
+@import "./styles/app-doctor.css";
 @import "./styles/setup-modal.css";
 @import "./styles/templates.css";
 @import "./styles/home.css";

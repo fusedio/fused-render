@@ -1,0 +1,92 @@
+// Skip-rule text <-> pattern-list conversion, and the "Restore defaults"
+// logic — the pure half of Indexing.tsx.
+//
+// The editor is a textarea, one pattern per line, because that IS the
+// server's own format: `clean_patterns` takes newline-separated text,
+// comments and all (index/specs/scan-ignore.md §2). A row-per-chip widget
+// would be a second, lossier representation of the same list.
+
+export function patternsToText(patterns: string[]): string {
+  return patterns.join("\n");
+}
+
+export function textToPatterns(text: string): string[] {
+  return text.split("\n");
+}
+
+// A line that names a pattern, as opposed to a blank line or a `#` comment —
+// mirrors clean_patterns' own comment/blank handling (scan-ignore.md §2)
+// closely enough for the set-difference below, without mutating what is
+// actually stored (comments and blank lines are preserved verbatim in the
+// textarea; this is only used to decide what counts as "already present").
+function isPatternLine(line: string): boolean {
+  const t = line.trim();
+  return t !== "" && !t.startsWith("#");
+}
+
+// Default patterns present in `defaults` but absent from `saved` — a set
+// difference on the pattern strings, order-insensitive, so a user who
+// reordered entries or added their own is not flagged as stale. `saved`
+// is `config.ignore` (what is actually on disk), not the textarea's live
+// text, so mid-edit typing never flips this.
+export function missingDefaults(saved: string[], defaults: string[]): string[] {
+  const have = new Set(saved.filter(isPatternLine).map((l) => l.trim()));
+  return defaults.filter((d) => !have.has(d.trim()));
+}
+
+// The union merge "Restore defaults" performs: every line the user has,
+// verbatim (comments, blanks and ordering untouched), with whatever default
+// patterns are missing appended at the end. A no-op (same text back) when
+// nothing is missing.
+export function unionWithDefaults(text: string, defaults: string[]): string {
+  const lines = textToPatterns(text);
+  const have = new Set(lines.filter(isPatternLine).map((l) => l.trim()));
+  const missing = defaults.filter((d) => !have.has(d.trim()));
+  if (missing.length === 0) return text;
+  // A single trailing "" is the split artifact of an empty textarea or a
+  // trailing newline, not a blank line the user meant to keep — appending
+  // straight after it would land the first default on its own blank line
+  // (`textToPatterns("") === [""]`, `textToPatterns("a\n") === ["a", ""]`).
+  // Drop only ONE: a genuine blank line the user typed still survives.
+  const base =
+    lines.length > 0 && lines[lines.length - 1] === "" ? lines.slice(0, -1) : lines;
+  return [...base, ...missing].join("\n");
+}
+
+// The "Scanning now — N files so far under X." line. `files` alone is only
+// the newly-walked count (index/store.py's `Sink` credits an unchanged
+// directory to `reused` instead, not `files`) — a rescan that reuses most of
+// a tree would otherwise read as barely started until the run completes and
+// `files_indexed` jumps all at once. Pulled out of IndexingPanel so the
+// arithmetic can be tested without mounting the panel (D736): mounting it
+// drags in `useIndexStatus`'s file-access-daemon-adjacent polling machinery,
+// which needs a `window` this bun:test run does not always have.
+export function scanningLine(
+  status: { files: number; reused: number; root: string | null },
+): string {
+  return `Scanning now — ${(status.files + status.reused).toLocaleString()} files so far${
+    status.root ? ` under ${status.root}` : ""
+  }.`;
+}
+
+// The one line of a failed scan's `error` worth putting in a settings panel.
+//
+// A scan that raised reports `traceback.format_exc()` (index/scan.py's
+// `run_end msg="failed"`), so the raw value is a multi-line Python traceback:
+// a screen of this app's own file paths, with the only part the user could act
+// on — "No space left on device", "Permission denied" — at the bottom. The
+// last non-empty line IS the exception, and a short one-line error (an
+// abandoned worker's own message) passes through unchanged.
+export function scanErrorLine(error: string): string {
+  const lines = error.split("\n").filter((l) => l.trim() !== "");
+  return lines.length === 0 ? "" : lines[lines.length - 1].trim();
+}
+
+// The scan route's 409 body when the packaged mac app has no Full Disk Access
+// (shell/index_gate.py FDA_MESSAGE), and the runner's ValueError for the same
+// gate — the one error the Indexing panel's FDA card already explains, so the
+// banner should not repeat it. Every OTHER error (Save, Delete, config load)
+// still shows: the gate being shut says nothing about those.
+export function isFdaRefusal(error: string | null | undefined): boolean {
+  return (error ?? "").toLowerCase().includes("needs full disk access");
+}

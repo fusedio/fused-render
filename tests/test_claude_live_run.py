@@ -918,14 +918,16 @@ console.log(JSON.stringify(calls.filter((c) => c[0] !== "stat")));
 def test_a_refresh_does_not_move_the_reader(html_pane):
     """A refresh is not a navigation. This lap can fire every five seconds under
     a reader who is scrolled back reading an earlier turn, so it restores the
-    scroll it found — except for a reader already at the bottom, who is
-    following along and gets carried to the turn that just landed (the same
-    `nearBottom` rule the streaming output obeys). `?msg=` is a link followed
-    once, so the anchor is not re-honoured on every lap either."""
+    scroll it found — except for a reader who is following the tail, who gets
+    carried to the turn that just landed (the same `followTail` flag the
+    streaming output obeys, rather than a fresh geometry read: a composer that
+    grew under the reader must not be mistaken for the reader moving).
+    `?msg=` is a link followed once, so the anchor is not re-honoured on every
+    lap either."""
     body = _block_between(html_pane,
                           "async function loadHistory(session_id, opts) {",
                           "\n}\n")
-    assert "const keepTop = refresh && !nearBottom() ? logwrap.scrollTop : null;" in body
+    assert "const keepTop = refresh && !followTail ? logwrap.scrollTop : null;" in body
     assert "if (keepTop !== null) logwrap.scrollTop = keepTop;" in body
     # ...and a failed refresh keeps the turns it has: blanking a conversation
     # because one stat round trip lost is strictly worse than showing it stale.

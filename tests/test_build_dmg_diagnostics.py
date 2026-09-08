@@ -108,16 +108,19 @@ def test_the_force_list_reconciliation_does_not_repin_the_shipped_payload():
         )
 
 
-# The macOS runner image is load-bearing, not incidental -- see the comment at
-# each workflow's own `runs-on`. `build_dmg.sh` bundles Homebrew's python@3.12
-# FRAMEWORK, and Homebrew ships prebuilt PER-OS bottles, so the image the DMG
-# is built on decides which OS's system libraries the bundled interpreter's C
-# extensions link against. Building on macos-15 shipped a `pyexpat.so`
-# referencing `XML_SetReparseDeferralEnabled` -- a symbol macOS 14's
-# /usr/lib/libexpat.1.dylib does not export -- so `import plistlib` failed at
-# launch and py2app showed only its generic "Launch error" dialog. The app's
-# own MACOSX_DEPLOYMENT_TARGET was correct throughout and did not help: it
-# governs code WE compile, not bottles we bundle.
+# The macOS runner image WAS load-bearing (D468): `build_dmg.sh` bundled
+# Homebrew's python@3.12 FRAMEWORK, and Homebrew ships prebuilt PER-OS bottles,
+# so the image the DMG was built on decided which OS's system libraries the
+# bundled interpreter's C extensions linked against. Building on macos-15
+# shipped a `pyexpat.so` referencing `XML_SetReparseDeferralEnabled` -- a
+# symbol macOS 14's /usr/lib/libexpat.1.dylib does not export -- so `import
+# plistlib` failed at launch and py2app showed only its generic "Launch error"
+# dialog. The apple tier (D700) then needed the macOS 26 SDK, so the pin moved
+# from the RUNNER to the INTERPRETER: the build refuses Homebrew's python for a
+# release, bundles the python.org-style framework `setup-python` installs, and
+# step 4f fails the build on any Mach-O whose minos exceeds 14.0. These pins
+# check the source for that arrangement, since the failure is silent on the
+# machine that builds and only shows up on a user's older Mac.
 _MACOS_WORKFLOW_JOBS = (
     ("release.yml", "build-sign-notarize-release"),
     ("test.yml", "macos-desktop"),
@@ -125,23 +128,31 @@ _MACOS_WORKFLOW_JOBS = (
 
 
 @pytest.mark.parametrize("workflow,job", _MACOS_WORKFLOW_JOBS)
-def test_the_macos_build_runs_on_the_oldest_supported_image(workflow, job):
-    """Checked on the SOURCE rather than by running the build, for the same
-    reason the diagnostics above are: the failure is silent on the machine
-    that builds (where every symbol resolves) and only shows up on a user's
-    older Mac.
-    """
+def test_the_macos_build_runs_on_one_macos_26_job_with_a_portable_interpreter(workflow, job):
     path = os.path.join(_REPO, ".github", "workflows", workflow)
     with open(path, encoding="utf-8") as f:
         src = f.read()
-    assert "runs-on: macos-14" in src, (
-        f"{workflow}'s {job} job must build on macos-14, the oldest macOS "
-        f"image GitHub offers: a newer image stages a Homebrew python@3.12 "
-        f"bottle whose C extensions link that newer OS's system libraries, "
-        f"which is what broke app launch on macOS 14 in v0.4.49-v0.4.51"
+    assert "runs-on: macos-26" in src, (
+        f"{workflow}'s {job} job builds the apple tier helper in place and so "
+        f"needs the macOS 26 SDK"
     )
-    assert "macos-15" not in src, (
-        f"{workflow} pins a macos-15 runner somewhere — see this test's own "
-        f"comment for why the macOS build image may not move forward without "
-        f"also making build_dmg.sh stop bundling a per-OS Homebrew bottle"
+    assert "apple-helper" not in src, (
+        f"{workflow} grew a separate helper job again; the owner wants ONE mac "
+        f"build job (the helper builds inside build_dmg.sh step 4e)"
     )
+    assert "actions/setup-python" in src, (
+        f"{workflow}'s {job} job must install setup-python's 3.12: on macOS "
+        f"arm64 it is the python.org-style framework build_dmg.sh bundles"
+    )
+
+
+def test_build_dmg_refuses_a_homebrew_interpreter_for_a_release_and_guards_minos():
+    src = _script()
+    resolution = src.index('PORTABLE_FRAMEWORK_PYTHON="/Library/Frameworks/Python.framework')
+    homebrew = src.index('HOMEBREW_FRAMEWORK_PYTHON="/opt/homebrew/opt/')
+    assert resolution < homebrew, "the portable framework must be preferred over Homebrew's"
+    assert 'FATAL: a release build needs a python.org-style framework python' in src
+    assert 'MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-14.0}"' in src, (
+        "the step-4f minos guard is what lets the runner be newer than users' Macs"
+    )
+    assert 'otool -l' in src[src.index("# 4f."):src.index("# 5. Code signing")]

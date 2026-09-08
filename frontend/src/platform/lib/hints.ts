@@ -80,13 +80,27 @@ function hintOf(target: EventTarget | null): Element | null {
  *  `elementsFromPoint` gives the whole stack, topmost first. The first entry
  *  that resolves to a hinted element decides — including deciding NOTHING, when
  *  that element's hint is empty, so an opt-out placed above a caption still
- *  wins. */
+ *  wins.
+ *
+ *  PIERCING STOPS AT A MODAL. `elementsFromPoint` walks the whole stack
+ *  regardless of what visually blocks the pointer — a stretched link over a
+ *  row's own title and a New Task dialog sitting over that same row read
+ *  identically to this loop, "an element with no hint, keep going." That
+ *  correctly reaches the title in the first case (same row, sharing this
+ *  pointer's screen position on purpose) and wrongly reaches it in the second
+ *  (a DIFFERENT row's title, portalled to <body>, that has nothing to do with
+ *  the dialog above it) — hovering anywhere over the New Task card showed the
+ *  caption of whatever List row happened to sit under it (Akshil, 2026-09-03).
+ *  A dialog's overlay (`.modal-overlay`, every modal's chassis — Modal.tsx,
+ *  FsDialogs) covers the full viewport and owns every point inside it, so once
+ *  the walk reaches it the answer is decided: nothing further down the stack —
+ *  behind the backdrop — ever gets to caption this pointer. */
 function hintAt(x: number, y: number, target: EventTarget | null): Element | null {
   if (typeof document.elementsFromPoint !== "function") return hintOf(target);
   for (const node of document.elementsFromPoint(x, y)) {
     const el = node.closest("[data-hint]");
-    if (!el) continue;
-    return (el.getAttribute("data-hint") || "").trim() ? el : null;
+    if (el) return (el.getAttribute("data-hint") || "").trim() ? el : null;
+    if (node.closest(".modal-overlay")) return null;
   }
   return null;
 }

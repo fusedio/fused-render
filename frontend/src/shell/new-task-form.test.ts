@@ -119,6 +119,11 @@ const form = (over: Partial<Form> = {}): Form => ({
   repeat: "none",
   legacyCron: "",
   permission: "auto",
+  // "Default" for both — the form's own default, and the case almost every
+  // task is in: nothing goes on the wire and the run detects the project's own
+  // config. The tests that are about the two pickers override them.
+  model: "",
+  effort: "",
   sessionId: "",
   newTaskEachRun: false,
   ...over,
@@ -225,6 +230,42 @@ describe("the payload", () => {
     // With no title to head it, the message is the description alone — no
     // leading blank line.
     expect(body.message).toBe("pull today's news");
+  });
+
+  test("model and effort go on the wire ONLY when the user picked one", () => {
+    // The default is "Default", which is not a value — it is the absence of a
+    // flag. Sending "" would store the same thing, but then every task on the
+    // machine carries two empty keys and nothing on a stored entry says whether
+    // anyone chose anything. The absent key IS the answer.
+    const untouched = buildSchedulePayload(form());
+    expect("model" in untouched).toBe(false);
+    expect("effort" in untouched).toBe(false);
+
+    const picked = buildSchedulePayload(
+      form({ model: "claude-fable-5-1", effort: "high" }),
+    );
+    // The KEY travels, not the label: "claude-fable-5-1" is what `--model`
+    // takes, "Fable 5.1" is only how the card says it. Same for "high", whose
+    // field is labelled Thinking.
+    expect(picked.model).toBe("claude-fable-5-1");
+    expect(picked.effort).toBe("high");
+
+    // Independent of each other — a task can pin the model and leave the
+    // thinking budget alone, which is the common half of the pair.
+    const modelOnly = buildSchedulePayload(form({ model: "fable" }));
+    expect(modelOnly.model).toBe("fable");
+    expect("effort" in modelOnly).toBe(false);
+  });
+
+  test("an edit re-states the model it was given — the choice survives cancel + re-create", () => {
+    // Editing a task is not a PATCH: the entry is cancelled and a new one
+    // created from whatever the form sends. A form that prefilled these but
+    // dropped them from the payload would reset every edited task to the
+    // default, with nothing on screen saying so.
+    const body = buildSchedulePayload(
+      form({ model: "opus", effort: "max", replacesEntryId: "s1" }),
+    );
+    expect(body).toMatchObject({ model: "opus", effort: "max", replaces: "s1" });
   });
 
   test("new_task_each_run is sent only when the task actually repeats", () => {

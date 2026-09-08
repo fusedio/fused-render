@@ -160,6 +160,22 @@ def test_a_turn_parked_on_a_permission_card_says_so(target, sent):
     assert jobs.list_jobs()[0]["detail"] == "waiting for permission"
 
 
+def test_an_ANSWERED_card_is_not_a_parked_turn(target, sent):
+    """`_poll` hands back every request the run has raised, answered ones
+    included, so a re-attaching frame can rebuild the cards it never saw. Read as
+    a whole that calls a run which was carded once and allowed twenty minutes ago
+    blocked for the rest of its life."""
+    entry = _overdue(target)
+    schedule.tick()
+
+    schedule._turn_tick(entry, "r-1", FakeAgent(),
+                        {"done": False, "phase": "thinking", "tokens": 40,
+                         "permissions": [{"id": "p1", "tool": "Bash",
+                                          "decision": "allow"}]})
+
+    assert jobs.list_jobs()[0]["detail"] == "thinking · 40 tokens"
+
+
 def test_the_session_the_turn_ran_in_is_captured(target, sent):
     """A FRESH scheduled send creates a session nothing else in the app knows the
     id of, and the Inbox addresses a session by exactly that id — so without this

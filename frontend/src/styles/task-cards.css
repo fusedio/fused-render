@@ -1,0 +1,542 @@
+/* Tasks → Cards: every task's conversation, side by side, the live ones streaming.
+   (shell/TaskCards.tsx — the page's fourth view.)
+
+   The other three views draw ROWS about tasks. This one draws the tasks
+   themselves: each card is the real chat, embedded live, so the page is read the
+   way a wall of monitors is read — you look at it, you do not click through it.
+
+   Which is why almost nothing here is decoration. The rules that matter are:
+   a card is a FIXED height so a wall of them is a grid and not a staircase; the
+   scrolling happens INSIDE the embedded document and never on this page
+   sideways; and the head is one line, because a header tall enough to be read
+   properly is a header eating the thing it labels.
+
+   The vocabulary is the Board's — the same surface token, the same 8px radius,
+   the same 1px border, the same status ring — so the fourth view reads as one
+   more lens on this page rather than as a different product (design-principles
+   §1). Only what is new to it lives here. */
+
+/* -- the wall ----------------------------------------------------------------- */
+/* THREE ACROSS, TWO DOWN, THEN SCROLL (Akshil, 2026-09-04: six cards in view;
+   2026-09-05: six a page — one page is what is in view, Show more adds the
+   fold for whoever scrolls). The SCROLLER is `.task-cards-scroll`, in exactly
+   the List's shape — the same `flex: 1; min-height: 0; overflow-y: auto` in the
+   same 1050px content column, so the bar stands where the List's bar stands and
+   the two views line up when you switch between them (Akshil, 2026-09-05: "make
+   sure we have the same in both"). The grid inside it sizes its rows from the
+   SCROLLER's height — `cqh`, with the scroller as the size container — so
+   exactly two rows fill whatever height the toolbar leaves and the third is the
+   first thing under the fold. A fixed pixel height would be six cards on one
+   monitor and four-and-a-half on another. The 260px floor wins on a short
+   window, where the wall simply scrolls sooner.
+
+   Fixed column COUNT rather than auto-fill: the number of monitors on the wall
+   is the thing the reader gets used to, and a wall that re-flows from three to
+   four columns when the window grows by 60px is a wall whose cards have all
+   moved. Narrow windows step down to two and one, at breakpoints chosen where a
+   card would otherwise fall under ~300px — the width below which a chat turn
+   stops being a paragraph. */
+/* The page itself is content-sized (`flex: 0 1 auto`, so a short List is a short
+   page), which for every other view is right: their content is rows, and rows
+   have a height of their own. A wall's rows are sized FROM the pane, so the page
+   has to reach the bottom first or "two rows fill the height" resolves against a
+   height of nothing. Scoped with `:has()` so the other three views keep their
+   shape — a Board with two cards must not become a full-height Board. */
+.schedule-page:has(> .schedule-main > .task-cards-scroll) {
+  flex: 1 1 auto;
+}
+
+.schedule-page .schedule-main > .task-cards-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* The List's rule, for the List's reason (tasks.css): a wheel that reaches
+     the end stops there instead of bouncing the page. */
+  overscroll-behavior: contain;
+  /* The grid's row height is a fraction of THIS box (`cqh` below). */
+  container-type: size;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.task-cards {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: max(260px, calc((100cqh - 12px) / 2));
+  gap: 12px;
+  /* Belt and braces against the one failure this view must not have: a page that
+     scrolls sideways. A grid item's default `min-width: auto` lets a wide child
+     (an iframe with its own layout in it) push its track past `1fr`, and the
+     overflow lands on the PAGE. The iframe below is `width: 100%` and the tracks
+     are `minmax(0, 1fr)`, and this says so once more at the container. */
+  min-width: 0;
+}
+
+.task-cards > * {
+  min-width: 0;
+}
+
+/* SHOW MORE ABOVE THE FOLD (Akshil, 2026-09-06: "to see show more button I
+   need to scroll"). When the strip is there, the two rows give up its 36px and
+   the gap before it, so a first visit sees six cards AND the way to the next
+   six without touching the wheel. Without the strip (six or fewer tasks) the
+   rows take the whole pane as before. The 260px floor still wins on a short
+   window, where the wall scrolls sooner either way. */
+.task-cards-scroll:has(> .task-cards-more) > .task-cards {
+  grid-auto-rows: max(260px, calc((100cqh - 12px * 2 - 36px) / 2));
+}
+
+/* COLUMNS FOLLOW THE WIDTH THE WALL HAS, not the window's (Akshil, 2026-09-05:
+   with the sidebar collapsed the wall stepped from three to two exactly right,
+   and with it open — 232px narrower — it did not, because a media query cannot
+   see the sidebar). The scroller is already a size container (for the rows,
+   above), so the steps are container queries against it: three across while a
+   card keeps ~300px — the width below which a chat turn stops being a
+   paragraph — then two, then one. */
+@container (max-width: 920px) {
+  .task-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 600px) {
+  .task-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* -- one card ----------------------------------------------------------------- */
+/* The card takes the ROW's height (set on the wall above, from the container),
+   so a wall of them is a grid and not a staircase and six of them are what fits
+   before the fold. About a dozen lines of transcript on a laptop — enough to see
+   what a run is DOING and not enough to invite reading it here. Reading happens
+   on the List, one segment away. */
+.task-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  background: var(--tasks-card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px var(--shadow-sm);
+  overflow: hidden;
+}
+
+/* ONE LINE, and it holds its height whether or not the ring is in it — same rule
+   the Board's card head follows (`--tasks-card-head-h`), for the same reason: a
+   wall of cards that jittered by a glyph would be a worse tell than anything the
+   glyph says. */
+.task-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  /* The doors below anchor to the head's corner. */
+  position: relative;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  /* Its OWN ground, a step up from the card's: the frame under it is the chat
+     template, whose page colour is within a shade of the card's, so a head on
+     the card's ground read as one more line of the transcript (Akshil,
+     2026-09-05: "the card heading doesn't have enough contrast"). The colour
+     is BORROWED, not new (Akshil, same day: "borrow a color ... so it feels
+     consistent"): --row-bg-hover is the Tasks page's one raised strip — the
+     List row, the Board's lane head and the calendar's rows all lift to it —
+     and it is the only ground in the palette that clears both the card and
+     the frame on both themes (--bg-alt and --tasks-lane-bg sit within a shade
+     of the frame in the dark). */
+  background: var(--row-bg-hover);
+  /* The head is a button (TaskCards: it opens the task's popup) and says so
+     the way every pressable strip on this page does — the pointer, and a wash
+     on hover at the row's own weight (tasks.css `.tasks-row:hover`). */
+  cursor: pointer;
+  user-select: none;
+}
+
+.task-card-head:hover {
+  /* One more step of the same wash the token itself is made of (tokens.css:
+     "--bg-alt under the neutral 0.06 wash"). */
+  background: color-mix(in srgb, var(--fg) 5%, var(--row-bg-hover));
+}
+
+.task-card-head:focus-visible {
+  outline: 2px solid var(--focus, var(--fg-muted));
+  outline-offset: -2px;
+}
+
+/* Row one: ring then id at the left edge (the List row's order), the folder
+   chip and the time at the right. `margin-left: auto` on the chip is what
+   pushes the right-hand pair over; the chip gives way first when the row is
+   short, the time never does. */
+.task-card-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The chip arrives inside IdentityChip's shield when it is a tag (and bare
+   when it is a label), so both shapes take the auto margin. Its skin is the
+   List row's, widened to this row in tasks.css. */
+.task-card-head-row > .schedule-tv-id-shield,
+.task-card-head-row > .schedule-tv-id {
+  margin-left: auto;
+}
+
+/* CENTRED ON THE ROW'S OWN LINE. The List row pays for the tag's 3px of padding
+   with `margin-block: -3px` and lets the shield stretch to the row's height,
+   which is right in a 36px row and wrong here: this row is one text line tall,
+   the stretched shield is shorter than the tag, and centring a negative-margin
+   box in it landed the folder name 1.5px above the id and the time (Akshil,
+   2026-09-05, screenshot). No negative margin and no stretch: the tag stands at
+   its own height, the shield takes that height, and the row centres it with
+   everything else. */
+.task-card-head-row .schedule-tv-id-shield {
+  align-self: center;
+}
+
+.task-card-head-row .schedule-tv-id--tag {
+  margin-block: 0;
+}
+
+/* Row two: the title, ONE LINE, at a size that reads across a wall of six —
+   the card's whole width is its own now, so it no longer competes with the id
+   and the time for one strip. Ellipsed; the full text rides `data-hint`. */
+.task-card-title {
+  /* Shrink-to-fit inside the row, not a full-width block: the hint rides
+     `data-hint` on THIS element, so a block would show the title's tooltip
+     over the empty run to its right (Akshil, 2026-09-05). */
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--fg);
+}
+
+/* THE DOORS, ON HOVER, OVER THE TITLE'S RIGHT END (Akshil, 2026-09-06: "archive
+   and explorer button right side of the title … don't cover or shift, make
+   extra space, just show them on hover … overlap"). The popup's two doors —
+   Archive (or Unarchive) and the folder — as icons only, absolutely placed on
+   the title row so the head's height and the title's width never move; the
+   strip wears the head's hover ground so a long title is masked under it
+   rather than showing through. `visibility` and not `display`, so the fade
+   can run and a hidden strip takes no clicks. For the keyboard, `:has(
+   :focus-visible)` and NOT `:focus-within`: a mouse click on the head or the
+   folder chip leaves focus inside the head too, and `:focus-within` kept the
+   doors up after the pointer left (Bugbot, #1018) — the same stuck reveal the
+   List rows rejected. `:focus-visible` is true only for focus the keyboard
+   gave, so Tab reaches the doors and shows them, and a click does neither.
+   The head's OWN `:focus-visible` too (Bugbot, #1018, round two): `:has()`
+   sees descendants only, and a hidden strip is out of the tab order — so the
+   doors have to be up the moment Tab lands on the head, or Tab could never
+   land on them. */
+.task-card-doors {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 6px;
+  background: color-mix(in srgb, var(--fg) 5%, var(--row-bg-hover));
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 120ms ease;
+}
+
+/* The strip's left edge FADES IN over the title instead of cutting it (Akshil,
+   2026-09-06: "add a fading thing so it looks like it is fading in"): a 24px
+   run from transparent to the strip's own ground, hung off the left edge. */
+.task-card-doors::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 100%;
+  width: 24px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--fg) 5%, var(--row-bg-hover))
+  );
+  pointer-events: none;
+}
+
+.task-card-head:hover .task-card-doors,
+.task-card-head:focus-visible .task-card-doors,
+.task-card-head:has(:focus-visible) .task-card-doors {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* One door: a 24px square in the app's secondary-button skin (buttons-modal.css
+   `.btn-secondary`: transparent, 1px border, the border lifts on hover), icon
+   only, the word on `title`. Addressed THROUGH the strip, not by its class
+   alone: the page's `.prefs-section button` (padding 5px 12px, the page's
+   ground) outranks a lone class, and under it the Archive button was a blank
+   24px box — 24px of padding left the icon 0px wide (Akshil, 2026-09-06,
+   screenshot). The folder is an <a> and never met that rule. */
+.task-card-doors > .task-card-door {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+/* Both doors hover ALIKE — the page's `.prefs-section button:hover` fills a
+   button with --bg-alt and an accent border, and the folder is an <a> it never
+   touches, so without saying so here the two doors lit up differently. */
+.task-card-doors > .task-card-door:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--fg-muted);
+}
+
+/* The trash door. Neutral at rest, like both of its neighbours — three doors in
+   one 24px strip, and a permanently red one would make the strip look like a
+   warning rather than a set of controls — and the List row's own `--error` on
+   hover and on keyboard focus, which is the page's single colour for "this
+   destroys something" (`.tasks-row-missing`, `.tasks-act--delete`). Through the
+   strip like every other door rule, or `.prefs-section button` blanks it. */
+.task-card-doors > .task-card-door--danger:hover:not(:disabled),
+.task-card-doors > .task-card-door--danger:focus-visible:not(:disabled) {
+  /* The same wash the List row's and Board strip's trash take (tasks.css
+     `.tasks-act--delete:hover`), so one door reads the same on every surface
+     (Akshil, 2026-09-07). */
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 32%, transparent);
+}
+
+.task-card-doors > .task-card-door:disabled,
+.task-card-doors > .task-card-door.is-disabled,
+.task-card-doors > .task-card-door.is-disabled:hover {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--border);
+}
+
+/* The popup's disabled folder door: the same greyed skin, `aria-disabled` and
+   not `disabled` so it stays hoverable and pressable — its hint says why, and
+   its press raises the toast; a real `disabled` swallows both in WebKit. */
+.task-peek .modal-head-act[aria-disabled="true"],
+.task-peek .modal-head-act[aria-disabled="true"]:hover {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--border);
+}
+
+.task-card-doors > .task-card-door:focus-visible {
+  outline: 2px solid var(--focus, var(--fg-muted));
+  outline-offset: 1px;
+}
+
+.task-card-when {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- the live pane ------------------------------------------------------------ */
+/* The card's whole remaining height, and the ONLY scrolling surface in it. */
+.task-card-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  background: var(--bg);
+}
+
+/* SCALED, not shrunk. Six cards across a laptop leave each frame ~380px wide,
+   and the chat template lays itself out for a pane twice that: at 1:1 its text
+   was too big to read as a wall (Akshil, 2026-09-04). The template's type is in
+   px and lives in another document, so the card cannot restyle it — instead the
+   frame is laid out at 4/3 of the body and drawn at 3/4, which is the same
+   picture a pane 4/3 as wide would show, fitted. `transform-origin: 0 0` keeps
+   the fit anchored top-left; the body's `overflow: hidden` clips nothing because
+   133.333% × 0.75 is exactly the body. Pointer events map through the transform,
+   so scrolling the transcript still works. */
+.task-card-frame {
+  display: block;
+  width: 133.3334%;
+  height: 133.3334%;
+  transform: scale(0.75);
+  transform-origin: 0 0;
+  border: 0;
+}
+
+/* The card's placeholder is SCALED WITH the frame it stands in for. The chat
+   inside the frame draws its own skeleton at 4/3 size and the browser paints it
+   at 3/4 (the fit above), so a host skeleton at 1:1 would be a third too big and
+   the crossfade would jump. Same trick, same numbers, on the cover — which is
+   why the two are one geometry rather than two similar pictures.
+   (platform/ui/ChatFrame.tsx, styles/chat-frame.css.) */
+.task-card-body .chat-frame-placeholder {
+  width: 133.3334%;
+  height: 133.3334%;
+  transform: scale(0.75);
+  transform-origin: 0 0;
+}
+
+/* A run that has been claimed but has not reported a session yet (schedule-lib,
+   above `folderHref`: the window between "sent" and "we know which chat that
+   is"). There is nothing to embed, so the pane says so in the page's own quiet
+   voice instead of showing an iframe that would load the wrong thing. */
+.task-card-starting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* "Folder no longer exists" — the error colour the List row's and the Board
+   card's "Folder missing" mark wear (tasks.css `.tasks-row-missing`), so the
+   same fact reads the same on every view (Akshil, 2026-09-06). */
+.task-card-starting.is-missing {
+  color: var(--error);
+}
+
+/* A pane with no frame in it wears the CARD's ground, not the page's. The body
+   is `--bg` so a loading frame shows no seam against the chat template, whose
+   page colour is within a shade of the card's — but with only a sentence in it,
+   `--bg` read as a darker well cut into the card (Akshil, 2026-09-06,
+   screenshot: "the bg color is different"). Same rule for the popup's body. */
+.task-card-body:has(> .task-card-starting),
+.task-peek > .modal-body:has(> .task-card-starting) {
+  background: var(--tasks-card-bg);
+}
+
+/* -- show more ---------------------------------------------------------------- */
+/* Past the page (tasks-lib.CARD_PAGE) the wall stops embedding and offers the
+   next six: one full-width strip under the grid, in the card's own dashed
+   voice, sized like a control and not like a card — it used to be a grid cell,
+   which made it one card wide and a whole chat tall (Akshil, 2026-09-05).
+   Pressing it adds a page in place; it never navigates away. */
+.task-cards-more {
+  flex: none;
+  width: 100%;
+  height: 36px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.task-cards-more:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+/* -- the popup ---------------------------------------------------------------- */
+/* A card's head opens the task as a tall column — a little over half the
+   window wide and most of its height (Akshil, 2026-09-05: "reduce the width a
+   little bit but increase it in height"; a chat is read top to bottom) — on the
+   app's one modal chassis. The dialog's width is set by the component
+   (`width="54vw"`); this gives it the HEIGHT — a fixed one, not max-height,
+   because the body is a frame that fills whatever it is given and a dialog
+   sized by its content would size itself by nothing. Floors and ceilings keep
+   it usable on a laptop and sane on a 5K display. */
+.modal-dialog.task-peek {
+  height: 82vh;
+  min-height: 420px;
+  min-width: min(640px, 100%);
+  max-width: 1100px;
+  max-height: 92vh;
+  /* The frame is a square document painted to the body's edges, and the body
+     is the dialog's last child: without this the frame's corners paint over
+     the dialog's 10px radius and the popup has square feet (Akshil,
+     2026-09-05, screenshot). Nothing in this dialog needs to overflow it. */
+  overflow: hidden;
+}
+
+/* The title is the card head's own row — ring, id chip, name — so the popup
+   reads as the card grown, not as a different thing about the same task. */
+.task-peek-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.task-peek-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The chassis's h2 is the head's flexible cell; it must not stretch the title
+   group to the actions, or the group's empty right half would wear the hint. */
+.task-peek .modal-head > h2 {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The body is the frame and nothing else: no padding (the chat has its own
+   margins), no scrolling of its own (the transcript scrolls inside the frame),
+   and it takes every pixel the head and footer leave. */
+.task-peek > .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  background: var(--bg);
+}
+
+.task-peek-frame {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.task-peek > .modal-body > .task-card-starting {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+/* A refused archive says so in the footer, in the List row's quiet voice, and
+   pushes the buttons right by taking the free space. */
+.task-peek-note {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The popup head's delete door: the head's own .btn skin at rest, Cancel's red
+   under the pointer — the same escalation the card strip's trash door makes. */
+.modal-head-actions > .modal-head-act--danger:hover:not(:disabled),
+.modal-head-actions > .modal-head-act--danger:focus-visible:not(:disabled) {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 32%, transparent);
+}

@@ -418,6 +418,19 @@ a.sidebar-rail-btn {
   white-space: nowrap;
 }
 
+/* The waiting count wears the Blocked red instead of the running yellow — the
+   same token as the dot beside it and the ring on the row it points at. Same
+   shimmer, different ink; nothing else about the label changes. */
+.sidebar-running.is-attention {
+  color: var(--status-failed);
+  background-image: linear-gradient(
+    100deg,
+    var(--status-failed) 30%,
+    color-mix(in srgb, var(--status-failed) 65%, var(--fg)) 50%,
+    var(--status-failed) 70%
+  );
+}
+
 /* ONE property animates, and it is the position of the highlight — never
    opacity, never the fill, never anything that could take a letter away. The
    range is 100% → 0%: with a background 300% the width of the box, both ends (and
@@ -442,6 +455,17 @@ a.sidebar-rail-btn {
     animation: none;
     background-image: none;
     -webkit-text-fill-color: var(--status-progress);
+  }
+
+  /* AND THE WAITING LABEL KEEPS ITS OWN HUE HERE TOO (bugbot, PR #984). The rule
+     above names `-webkit-text-fill-color`, which OUTRANKS `color` on the text it
+     paints — so `.sidebar-running.is-attention`'s red `color` was overruled by a
+     yellow fill and the one label that says somebody is being waited on came out
+     the same colour as "3 running". A reader who has asked for less motion is
+     not asking for less meaning; both variants have to state their hue in the
+     property that actually paints. */
+  .sidebar-running.is-attention {
+    -webkit-text-fill-color: var(--status-failed);
   }
 }
 
@@ -485,10 +509,20 @@ a.sidebar-rail-btn {
   border-color: var(--bg-alt);
 }
 
-/* The Tasks states, in the status ring's own hues (schedule.css): yellow while
-   anything is in flight, green for work that finished and has not been read.
-   Yellow outranks green in the MARKUP (GlobalSidebar picks one), not here — two
-   dots in one corner is not a state this can draw. */
+/* The Tasks states, in the status ring's own hues (schedule.css): red for a run
+   that has stopped to ask the reader something, yellow while anything else is in
+   flight, green for work that finished and has not been read. Red outranks
+   yellow outranks green in the MARKUP (GlobalSidebar picks one), not here — two
+   dots in one corner is not a state this can draw.
+
+   Red is `--status-failed` because that is the Blocked ring's own token and
+   `needs_attention` is DRAWN in Blocked (schedule-lib.laneOf) — the same status
+   wearing the same colour on every surface that names it, rather than a second
+   red minted for the rail. */
+.sidebar-rail-dot.is-attention {
+  background: var(--status-failed);
+}
+
 .sidebar-rail-dot.is-running {
   background: var(--status-progress);
 }
@@ -510,6 +544,18 @@ a.sidebar-rail-btn {
    what had to match. Same class, same box, same corner, same ring. */
 .sidebar-rail-dot.is-resident {
   background: var(--success-bright);
+}
+
+/* AND THE PREFERENCES ROW'S: a self-update waiting/installing/ready-to-restart
+   (platform/lib/update-status, shared with UpdateBadge above the Settings row
+   and the popover's own row). It is the collapsed rail's only signal that one
+   of those states is true — there is no Settings row for the badge to sit
+   above while collapsed. `--accent` rather than one of the status hues above:
+   this isn't a completion or a running-work fact, it's the app's own "there is
+   a new version of me" affordance, the same colour the sidebar already uses
+   for its own chrome (active row highlight). */
+.sidebar-rail-dot.is-update {
+  background: var(--accent);
 }
 
 /* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
@@ -975,106 +1021,6 @@ a.bookmark-name::after {
   padding: 2px 6px;
 }
 
-/* Icon picker popover (Notion-style): search + Remove header, categorized
-   emoji grid. Fixed-position; the component keeps it on-screen. */
-.icon-picker {
-  position: fixed;
-  z-index: 1001;
-  width: 264px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px var(--shadow-lg);
-  padding: 8px;
-}
-
-.icon-picker-head {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.icon-picker-search {
-  flex: 1 1 auto;
-  min-width: 0;
-  font: inherit;
-  font-size: 12px;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 8px;
-}
-
-.icon-picker-search:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.icon-picker-remove {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 11.5px;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 4px 8px;
-}
-
-.icon-picker-remove:hover {
-  color: var(--fg);
-  background: var(--bg);
-}
-
-.icon-picker-body {
-  max-height: 260px;
-  overflow-y: auto;
-}
-
-.icon-picker-cat {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
-  padding: 6px 4px 3px;
-}
-
-.icon-picker-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-}
-
-.icon-picker-cell {
-  font: inherit;
-  font-size: 15px;
-  line-height: 1;
-  background: none;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  padding: 5px 0;
-  text-align: center;
-}
-
-.icon-picker-cell:hover,
-.icon-picker-cell.active {
-  background: rgba(var(--tint), 0.09);
-}
-
-.icon-picker-cell.active {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.icon-picker-empty {
-  color: var(--fg-muted);
-  font-size: 12px;
-  padding: 10px 4px;
-}
-
-
 /* -- Self-update badge (platform/ui/UpdateBadge, packaged mac app only) ----- */
 
 .update-badge {
@@ -1133,6 +1079,10 @@ a.bookmark-name::after {
 }
 
 .update-badge-action {
+  /* A <button> or an <a> (the installed state's Restart is a link to
+     fused-render://relaunch) — same box either way. */
+  display: inline-block;
+  text-decoration: none;
   align-self: flex-start;
   padding: 4px 10px;
   border: 1px solid var(--border);
@@ -1255,4 +1205,46 @@ a.bookmark-name::after {
    masthead and is dead space inside a dialog body. */
 .current-apps-compose .home-composer-wrap {
   margin-bottom: 0;
+}
+
+/* -- The setup meter (shell/onboarding/SetupProgress) --------------------------
+   A `.sidebar-item` row above Settings: ring glyph, "Setup", then a thin bar
+   and the number in the trailing slot. The fill is the accent — this is the
+   one row in the sidebar that is an invitation rather than a destination, and
+   the wizard's own yellow says so. The rail shows the ring alone. */
+.setup-progress-bar {
+  position: relative;
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.1);
+  overflow: hidden;
+}
+
+.setup-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 400ms ease;
+}
+
+.setup-progress-pct {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  min-width: 3ch;
+  text-align: right;
+}
+
+.setup-ring-fill {
+  color: var(--accent);
+  transition: stroke-dasharray 400ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-progress-fill,
+  .setup-ring-fill {
+    transition: none;
+  }
 }

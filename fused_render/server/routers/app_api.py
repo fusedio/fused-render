@@ -17,9 +17,9 @@ The engine is resolved HERE (``shell_prefs.effective_engine()``), the same rule
 ``/api/run`` applies, so the form always describes the function that will
 actually run — the template asks ``/api/config`` for the same value.
 
-The walk is ``server/walk._walk_bfs``: gitignore-pruned, hidden entries skipped,
-bounded — an app folder is small, and a bound that fires is reported as
-``truncated`` rather than hidden.
+The walk is ``server/walk._walk_bfs``: ``WALK_IGNORE_DIRS`` prunes build/cache
+junk by name, hidden entries are skipped, and it is bounded — an app folder is
+small, and a bound that fires is reported as ``truncated`` rather than hidden.
 """
 import importlib.util
 import os

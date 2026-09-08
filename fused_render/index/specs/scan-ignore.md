@@ -197,13 +197,21 @@ creates by accident.
 | JS | `node_modules`, `.next`, `.nuxt`, `.parcel-cache`, `.turbo` |
 | Other tooling | `Pods`, `.gradle`, `.terraform`, `.cache` |
 | macOS | `.Trash` |
-| fused-render | `<home_dir()>/**/mounts` — see §7 |
+| Generic build output | `dist`, `build`, `out`, `target`, `coverage`, `vendor` |
+| fused-render | `.fused`, `<home_dir()>/**/mounts` — see §7 |
 
-**Deliberately excluded: `dist`, `build`, `target`, `vendor`, `env`.** Each is usually
-build output — but each is also an ordinary word a person may have named a real folder.
-The asymmetry decides it: over-indexing costs disk and some query time, both visible and
-recoverable, whereas a false positive is **invisible** — the file is silently absent
-from the index and the search simply returns nothing.
+**Included despite the asymmetry: `dist`, `build`, `out`, `target`, `coverage`,
+`vendor`.** Each is an ordinary word a person could legitimately name a real folder, and
+over-indexing costs only disk and some query time — both visible and recoverable —
+whereas a false positive is **invisible**: the file is silently absent from the index
+and the search simply returns nothing. That asymmetry used to keep this group out of
+the defaults entirely, deferring instead to a repo's own `.gitignore`. With search no
+longer consulting `.gitignore` at all (`server-api.md`'s search routes answer purely
+from the index and the live walk), there is nothing left to defer to — these are the
+only mitigation against a build tree's tens of thousands of generated files flooding a
+background scan, and the tradeoff favors a smaller index over indexing every
+`node_modules`-sized `dist/` on the machine. The list is user-editable per project
+(§5) for anyone who keeps real content under one of these names.
 
 The mounts entry is **computed**, not a literal `~/.fused-render/**/mounts`:
 FUSED_RENDER_HOME moves the whole shell home (every test redirects it), and a pattern

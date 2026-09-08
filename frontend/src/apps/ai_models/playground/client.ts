@@ -521,6 +521,64 @@ export function startTranscribe(request: TranscribeRequest): Promise<TranscribeS
   return postJson<TranscribeStarted>("/api/ai/transcribe", request);
 }
 
+// ---- native microphone capture (SPEC §45) ------------------------------------
+//
+// The same `/api/capture` the page runtime's `fused.capture.audio()` drives.
+// On macOS the server records the microphone itself through AVFoundation and
+// writes an `.m4a` — a container every transcribe tier reads, including the
+// apple one, which opens files through AVFoundation and has no WebM/Opus
+// demuxer (Chrome's `MediaRecorder` default). Windows and Linux report
+// `sources.client: true`: there the browser is the encoder, and the stage
+// keeps its MediaRecorder path (the Whisper workers decode WebM fine).
+
+export interface CaptureSources {
+  /** True where the BROWSER must encode (Windows/Linux); false where the
+   *  server records natively (macOS). */
+  client?: boolean;
+  audio: { available: boolean; granted?: boolean; reason?: string };
+}
+
+export async function captureSources(): Promise<CaptureSources> {
+  const res = await fetch("/api/capture");
+  const data = (await res.json().catch(() => null)) as { sources?: CaptureSources } | null;
+  if (!res.ok || !data?.sources) throw new Error(`capture sources unavailable (${res.status})`);
+  return data.sources;
+}
+
+export interface CaptureStarted {
+  id: string;
+  path: string;
+  jobId: string;
+}
+
+export interface CaptureStopped {
+  path: string | null;
+  url?: string | null;
+  seconds?: number;
+  state: string;
+  /** Set when the recording ended but the file failed to write. */
+  error?: string;
+}
+
+/** Begin a native microphone recording into `path` (extension chosen by the
+ *  server — pass none). Resolves once the recording is running. */
+export function startNativeAudio(path: string, title: string): Promise<CaptureStarted> {
+  return postJson<CaptureStarted>("/api/capture/start", {
+    mode: "audio",
+    source: "mic",
+    path,
+    title,
+  });
+}
+
+export function stopCapture(id: string): Promise<CaptureStopped> {
+  return postJson<CaptureStopped>(`/api/capture/${encodeURIComponent(id)}/stop`, {});
+}
+
+export function cancelCapture(id: string): Promise<CaptureStopped> {
+  return postJson<CaptureStopped>(`/api/capture/${encodeURIComponent(id)}/cancel`, {});
+}
+
 export interface TranscriptSegment {
   start?: number;
   end?: number;

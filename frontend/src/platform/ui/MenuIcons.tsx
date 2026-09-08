@@ -77,6 +77,17 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M10 11v6M14 11v6" />
     </svg>
   ),
+  // Unread — the task views' status ring with its centre filled
+  // (`.schedule-ring--unread`, schedule.css: a 16px ring with an 8px disc in
+  // it), redrawn on this table's 24-grid so "Mark all tasks as read" carries
+  // the very mark it clears. The disc is filled with currentColor, as the
+  // ring's `::after` is, so it tints with the row like every other glyph here.
+  unread: (
+    <svg {...svgProps}>
+      <circle cx="12" cy="12" r="8.5" strokeWidth="2.25" />
+      <circle cx="12" cy="12" r="4.5" fill="currentColor" stroke="none" />
+    </svg>
+  ),
   // Rename — pencil.
   rename: (
     <svg {...svgProps}>
@@ -288,7 +299,7 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M12 8h.01" />
     </svg>
   ),
-  // A target/bullseye — "Best match" (D663) is the one ordering that is a
+  // A target/bullseye — "Best match" (D754) is the one ordering that is a
   // judgement blending several facts into a single ranking rather than a
   // fact about the repo itself, and no existing glyph here reads as
   // "ranked for you" without already meaning something else in this menu.
@@ -297,6 +308,14 @@ export const MenuIcons: Record<string, ReactNode> = {
       <circle cx="12" cy="12" r="8" />
       <circle cx="12" cy="12" r="4" />
       <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+    </svg>
+  ),
+  fullscreen: (
+    <svg {...svgProps}>
+      <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+      <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+      <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+      <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
     </svg>
   ),
 };

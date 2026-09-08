@@ -1,17 +1,23 @@
 import { describe, expect, it } from "bun:test";
 import {
   HOME_RESULT_CAP,
+  SCAN_START_GRACE_MS,
   activeRow,
+  aiSearchUsable,
   answerFrom,
+  formatElapsed,
   homeCountNote,
+  indexGap,
   isAiRow,
   isOpenRow,
   nameStart,
   narrowAnswer,
+  noteAnswer,
   pathShortcut,
   positionsWithin,
   rankingSettled,
   redirectsToSearch,
+  scanStarting,
   stepHighlight,
   submitRow,
   type HomeAnswer,
@@ -28,10 +34,6 @@ function rankHit(rel: string, over: Partial<IndexRankHit> = {}): IndexRankHit {
     is_dir: false,
     size: 10,
     mtime: 1_800_000_000,
-    score: 1,
-    longest_run: 1,
-    tier: 1,
-    depth: 1,
     ...over,
   };
 }
@@ -39,14 +41,10 @@ function rankHit(rel: string, over: Partial<IndexRankHit> = {}): IndexRankHit {
 function rankResult(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
     covered: true,
-    fresh: true,
     reason: "",
-    root: HOME,
     hits: [rankHit("Downloads/a.csv")],
     truncated: false,
     total: 1,
-    updated: null,
-    age_s: null,
     ...over,
   };
 }
@@ -59,6 +57,7 @@ function answer(over: Partial<HomeAnswer> = {}): HomeAnswer {
     total: 0,
     covered: true,
     reason: "",
+    elapsedMs: 0,
     ...over,
   };
 }
@@ -127,7 +126,7 @@ describe("pathShortcut", () => {
 describe("answerFrom", () => {
   it("absolutizes rel paths against home and carries the row's facts", () => {
     const res = rankResult({ hits: [rankHit("Downloads/a.csv", { size: 42 })] });
-    expect(answerFrom(res, "a.csv", HOME).hits).toEqual([
+    expect(answerFrom(res, "a.csv", HOME, 0).hits).toEqual([
       {
         path: `${HOME}/Downloads/a.csv`,
         rel: "Downloads/a.csv",
@@ -141,26 +140,27 @@ describe("answerFrom", () => {
 
   it("re-runs the matcher for highlights rather than trusting the wire", () => {
     // fuzzy.ts is the single source of truth for what highlights; the server
-    // deliberately does not send positions (index/rank.py's docstring).
-    const [row] = answerFrom(rankResult({ hits: [rankHit("docs/README.md")] }), "readme", HOME).hits;
+    // deliberately does not send positions (index/query.py's `search_ranked`
+    // docstring).
+    const [row] = answerFrom(rankResult({ hits: [rankHit("docs/README.md")] }), "readme", HOME, 0).hits;
     expect(row.positions!.map((i) => "docs/README.md"[i]).join("")).toBe("README");
   });
 
   it("caps the rendered rows but keeps the server's true total", () => {
     const many = Array.from({ length: HOME_RESULT_CAP + 25 }, (_, i) => rankHit(`f${i}.txt`));
-    const out = answerFrom(rankResult({ hits: many, total: many.length }), "f", HOME);
+    const out = answerFrom(rankResult({ hits: many, total: many.length }), "f", HOME, 0);
     expect(out.hits).toHaveLength(HOME_RESULT_CAP);
     expect(out.total).toBe(HOME_RESULT_CAP + 25);
   });
 
   it("carries the query it answers, which is what stops the list blanking", () => {
-    expect(answerFrom(rankResult(), "down", HOME).query).toBe("down");
+    expect(answerFrom(rankResult(), "down", HOME, 0).query).toBe("down");
   });
 
   it("reports an uncovered root as such, never as zero matches", () => {
     // The honest answer is "still building": the home page has no live walk to
     // fall back on, so a miss here is the app's state, not the user's files.
-    const out = answerFrom(rankResult({ covered: false, hits: [], total: 0 }), "x", HOME);
+    const out = answerFrom(rankResult({ covered: false, hits: [], total: 0 }), "x", HOME, 0);
     expect(out.covered).toBe(false);
     expect(out.hits).toEqual([]);
   });
@@ -170,8 +170,13 @@ describe("answerFrom", () => {
       rankResult({ covered: false, reason: "disabled", hits: [], total: 0 }),
       "x",
       HOME,
+      0,
     );
     expect(out.reason).toBe("disabled");
+  });
+
+  it("carries the measured elapsed time through", () => {
+    expect(answerFrom(rankResult(), "down", HOME, 123).elapsedMs).toBe(123);
   });
 });
 
@@ -248,6 +253,46 @@ describe("homeCountNote", () => {
     expect(homeCountNote(4690, false)).toBe(`Showing top ${HOME_RESULT_CAP} of 4,690`);
     // A truncated corpus is a second, independent "there was more than this".
     expect(homeCountNote(3, true)).toBe("3+ matches");
+  });
+});
+
+describe("formatElapsed", () => {
+  it("renders sub-second durations as rounded milliseconds", () => {
+    expect(formatElapsed(0)).toBe("0 ms");
+    expect(formatElapsed(42)).toBe("42 ms");
+    expect(formatElapsed(42.6)).toBe("43 ms");
+    expect(formatElapsed(999)).toBe("999 ms");
+  });
+
+  it("switches to one-decimal seconds at the 1000ms boundary", () => {
+    expect(formatElapsed(1000)).toBe("1.0 s");
+    expect(formatElapsed(1234)).toBe("1.2 s");
+    expect(formatElapsed(12_345)).toBe("12.3 s");
+  });
+});
+
+describe("noteAnswer", () => {
+  const settledAnswer = answer({ query: "a", total: 3 });
+  const heldAnswer = answer({ query: "prev", total: 9 });
+
+  it("reads the live answer once ranking has settled", () => {
+    expect(noteAnswer(settledAnswer, true, heldAnswer)).toBe(settledAnswer);
+  });
+
+  it("holds the last settled answer while not settled, ignoring the live one", () => {
+    expect(noteAnswer(settledAnswer, false, heldAnswer)).toBe(heldAnswer);
+  });
+
+  it("is null when nothing has ever settled", () => {
+    expect(noteAnswer(settledAnswer, false, null)).toBeNull();
+  });
+
+  it("holds the last settled answer when a settled render's live answer is null", () => {
+    // Reachable via a failed request for a LATER query than the held answer,
+    // combined with the stale-clear effect nulling `answer` out from under a
+    // query that has since moved on (see FilesHome.tsx). The note must not
+    // flash "Searching…" over a result it already showed.
+    expect(noteAnswer(null, true, heldAnswer)).toBe(heldAnswer);
   });
 });
 
@@ -476,6 +521,18 @@ describe("narrowAnswer", () => {
     // surviving order is the HELD order, not a re-sort.
     expect(narrowed.map((h) => h.rel)).toEqual(["code-file.txt", "one-file.txt"]);
   });
+
+  it("drops a held hit that is only a SUBSEQUENCE match, not a substring one (D708 correction)", () => {
+    // The index-backed server is substring-only (D708) — `search_ranked`'s
+    // `_rank_sql` filters on `lower(rel) LIKE '%q%'`, nothing weaker. Narrowing
+    // with `fuzzyMatch` (subsequence-accepting) could KEEP a row the server
+    // would never return: "rdme" is a valid subsequence of "readme.md"
+    // (r-e-a-d-m-e, skipping the "e" and "a") but never a substring of it, so
+    // a held answer for "readme" narrowed to "rdme" must drop it, matching
+    // what a fresh /api/index/rank request for "rdme" would answer.
+    const held = answer({ query: "readme", hits: [homeHit("readme.md")] });
+    expect(narrowAnswer(held, "rdme")).toEqual([]);
+  });
 });
 
 describe("redirectsToSearch", () => {
@@ -523,5 +580,130 @@ describe("redirectsToSearch", () => {
     // Not merely redundant: focusing on every keystroke would reset the caret
     // to the end, so editing the middle of a query would be impossible.
     expect(redirectsToSearch(key({ tagName: "INPUT", isSearchInput: true }))).toBe(false);
+  });
+});
+
+describe("aiSearchUsable", () => {
+  it("offers AI search before the poll has answered", () => {
+    // `null` is "no status yet"; hiding the row for the first second of every
+    // page load would be its own wrong answer.
+    expect(aiSearchUsable(null)).toBe(true);
+  });
+
+  it("withholds the offer with no index built", () => {
+    // AI search executes its spec against the same file index
+    // (routers/search._search_index) — with nothing built it raises
+    // IndexUnavailable, so offering the row is a click into a wall.
+    expect(aiSearchUsable({ has_index: false })).toBe(false);
+  });
+
+  it("offers it once the index exists", () => {
+    expect(aiSearchUsable({ has_index: true })).toBe(true);
+  });
+});
+
+describe("indexGap", () => {
+  it("separates a scan that is running from one that is not", () => {
+    // The distinction the page did not make, and the whole of the
+    // sit-on-"indexing"-for-20-minutes report: `uncovered` with nothing
+    // running is not a build in progress, it is a build that has to be asked
+    // for.
+    expect(indexGap("scanning", true)).toBe("scanning");
+    expect(indexGap("uncovered", false)).toBe("buildable");
+  });
+
+  it("takes the live poll's word for a scan the answer predates", () => {
+    // `reason` was fixed when the answer was ranked, so the scan the user
+    // just started is only visible in the status poll until the next query.
+    expect(indexGap("uncovered", true)).toBe("scanning");
+  });
+
+  it("demotes a stale `scanning` once the poll says nothing is running", () => {
+    // The other way into the same wedge: the rank landed while the startup
+    // scan was alive, then that worker was killed. Status goes idle,
+    // `last_completed_at` never moves so nothing re-ranks, and a `reason`
+    // frozen at "scanning" would keep promising a build (with a frozen file
+    // count for evidence) until the user gave up.
+    expect(indexGap("scanning", false)).toBe("buildable");
+  });
+
+  it("trusts `reason` while the poll has not answered", () => {
+    // `null` is "no status yet", not "idle" — demoting on it would flash
+    // "your files aren't indexed" over a scan that is genuinely running, on
+    // every first paint.
+    expect(indexGap("scanning", null)).toBe("scanning");
+    expect(indexGap("uncovered", null)).toBe("buildable");
+  });
+
+  it("never claims a scan while indexing is off", () => {
+    // Nothing can be in flight with the pref off — every trigger is gated and
+    // a running scan is cancelled at toggle-off — so a lagging `scanning`
+    // from the poll must not out-vote it, or the note promises a build that
+    // cannot start.
+    expect(indexGap("disabled", true)).toBe("disabled");
+    expect(indexGap("disabled", false)).toBe("disabled");
+  });
+
+  it("never claims a scan without Full Disk Access either", () => {
+    // Every trigger is gated on the grant (shell/index_gate.py), and the
+    // grant applies to the next launch, so nothing this process reports as
+    // scanning can be a scan that finishes.
+    expect(indexGap("fda", true)).toBe("fda");
+    expect(indexGap("fda", false)).toBe("fda");
+    expect(indexGap("fda", null)).toBe("fda");
+  });
+
+  it("calls the permanently uncoverable reasons what they are", () => {
+    // Offering "index it now" for these would be a button that cannot work.
+    for (const r of ["mount", "package", "ignored"] as const)
+      expect(indexGap(r, false)).toBe("unavailable");
+  });
+
+  it("treats an unnamed miss as buildable", () => {
+    // `""` only reaches here if a not-covered answer arrived without a
+    // reason; a scan is the one thing that could fix it, so offer that
+    // rather than a dead end.
+    expect(indexGap("", false)).toBe("buildable");
+  });
+});
+
+describe("scanStarting", () => {
+  const at = 1_000_000;
+  const pending = { at, completedAt: 500 };
+
+  it("is false with nothing requested", () => {
+    expect(scanStarting(null, false, 500, at)).toBe(false);
+  });
+
+  it("holds the claim across the gap between the POST and the poll", () => {
+    // The window the button was previously re-offered in: the request has
+    // returned, the idle poll is up to ten seconds from its next look, and
+    // status still says idle with the same completion stamp.
+    expect(scanStarting(pending, false, 500, at + 900)).toBe(true);
+    // No status at all yet counts the same way.
+    expect(scanStarting(pending, null, null, at + 900)).toBe(true);
+  });
+
+  it("hands off as soon as the poll sees the run", () => {
+    // From here `indexGap` says "scanning" and the note has a live file count
+    // to show, which is a better claim than this one.
+    expect(scanStarting(pending, true, 500, at + 900)).toBe(false);
+  });
+
+  it("hands off to a scan that finished before the poll looked", () => {
+    // A small root can be scanned and done inside one poll interval, so
+    // "starting" must also end on a MOVED completion stamp — otherwise a
+    // finished scan keeps the button disabled.
+    expect(scanStarting(pending, false, 900, at + 900)).toBe(false);
+  });
+
+  it("gives up rather than claim a start forever", () => {
+    // A scan that died between two polls without writing a completion stamp
+    // leaves status idle and the stamp frozen — indistinguishable, from here,
+    // from a request the poll simply has not caught up with. After the grace
+    // window the button comes back, because clicking again is the one thing
+    // that can help and staring at "Starting the scan…" is the bug this file
+    // exists to fix.
+    expect(scanStarting(pending, false, 500, at + SCAN_START_GRACE_MS)).toBe(false);
   });
 });

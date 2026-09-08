@@ -55,6 +55,9 @@ jobs:
               - 'scripts/setup_py2app.py'
               - 'scripts/app_entry.py'
               - 'scripts/file_associations.*'
+              # The apple tier's Swift helper ships inside the DMG (D700).
+              - 'scripts/build_apple_helper.sh'
+              - 'fused_render/ai/apple/helper/**'
             app:
               - 'fused_render/**'
               - 'tests/**'
@@ -643,17 +646,18 @@ jobs:
   macos-desktop:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success'
-    # macos-14, deliberately the OLDEST macOS image GH offers: build_dmg.sh
-    # bundles Homebrew's python@3.12 framework, and Homebrew ships PREBUILT
-    # PER-OS BOTTLES. A newer runner therefore stages a Python whose C
-    # extensions link the newer OS's system libraries -- which is exactly how
-    # v0.4.49-v0.4.51 shipped a pyexpat.so referencing
-    # XML_SetReparseDeferralEnabled, a symbol macOS 14's /usr/lib/libexpat.1.dylib
-    # does not export, so the app died at launch on macOS 14 with py2app's
-    # generic "Launch error". The app's own MACOSX_DEPLOYMENT_TARGET never
-    # entered into it: the deployment target governs code WE compile, not
-    # bottles we bundle. Keep this pinned to the oldest supported macOS.
-    runs-on: macos-14
+    # macos-26, the NEWEST image: the apple tier's Swift helper (D700) links
+    # FoundationModels and Speech, which exist only in the macOS 26 SDK, and it
+    # is built in place by build_dmg.sh step 4e. D468 had pinned this job to
+    # macos-14 because build_dmg.sh bundled Homebrew's python@3.12 — a per-OS
+    # bottle whose C extensions link the BUILD host's system libraries (the
+    # v0.4.49-v0.4.51 pyexpat/libexpat launch failure on macOS 14). That pin
+    # is lifted by changing the interpreter, not by trusting the runner: the
+    # build now uses the python.org-style framework `setup-python` installs
+    # (old deployment target, own libexpat/OpenSSL) and refuses Homebrew's for
+    # a release, and step 4f fails the build if ANY bundled Mach-O carries a
+    # minos above 14.0 — bottles and newer-tagged wheels alike.
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -670,6 +674,8 @@ jobs:
       # do not have it preinstalled, so the build fails loudly without this.
       - uses: astral-sh/setup-uv@v9.0.0
 
+      # On macOS arm64 this is also a python.org-style FRAMEWORK build under
+      # /Library/Frameworks — the interpreter build_dmg.sh step 1 bundles.
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -678,6 +684,15 @@ jobs:
 
       - name: Install fused-render (dev extra)
         run: pip install -e ".[dev]"
+
+      - name: Select an Xcode with the macOS 26 SDK (apple tier helper)
+        if: needs.detect-changes.outputs.macos_packaging == 'true'
+        run: |
+          set -euo pipefail
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [[ -n "$XCODE" ]]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
 
       - name: Run the macOS backend suite
         run: >
@@ -694,6 +709,7 @@ jobs:
         # packaging changes: py2app + the full [bundled] install is several
         # minutes. setup-python 3.12 above satisfies the script's own version
         # check (str | None syntax, py>=3.10), same as release.yml's DMG job.
+        # The apple tier helper is built in place (step 4e, Xcode 26 above).
         if: needs.detect-changes.outputs.macos_packaging == 'true'
         run: bash scripts/build_dmg.sh
 

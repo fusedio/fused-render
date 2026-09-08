@@ -65,6 +65,20 @@
   }
   #bar .grow { flex: 1 1 auto; }
   #status-text { color: var(--fg-muted); }
+  /* The buffer's size rides beside the save state — "433 lines │ Saved" — the
+     way an editor's status bar is read: two facts, two segments, a hairline
+     between them (VS Code, Cursor, Zed all segment the bar; none joins the two
+     into a sentence). One span, so the bar's own 12px gap does not push them
+     apart further; the divider is the status's left border and goes when
+     either half is empty (the conflict banner blanks the status; an unloaded
+     file has no count). */
+  #state { display: inline-flex; align-items: center; white-space: nowrap; color: var(--fg-muted); }
+  #lines:not(:empty) + #status-text:not(:empty) {
+    margin-left: 8px;
+    padding-left: 8px;
+    border-left: 1px solid var(--border);
+    line-height: 1.2;
+  }
   #status-text.error { color: var(--error); }
   #conflict {
     display: none;
@@ -140,7 +154,7 @@
       <button id="overwrite">Overwrite</button>
     </span>
     <span id="ro" hidden></span>
-    <span id="status-text">Saved</span>
+    <span id="state"><span id="lines"></span><span id="status-text">Saved</span></span>
     <button id="save" disabled>Save</button>
   </div>
   <div id="root"><div id="skel-code" aria-hidden="true">
@@ -165,6 +179,7 @@
     const statusTextEl = document.getElementById("status-text");
     const conflictEl = document.getElementById("conflict");
     const saveBtn = document.getElementById("save");
+    const linesEl = document.getElementById("lines");
     const reloadBtn = document.getElementById("reload");
     const overwriteBtn = document.getElementById("overwrite");
     const root = document.getElementById("root");
@@ -204,6 +219,16 @@
         case "toml": return CM.tomlLang;
         default: return null; // unknown → plain text, no highlighting
       }
+    }
+
+    // The line count the bar prints, from the live document (CM's Text keeps it
+    // as a field, so this is a read and not a scan). Painted on load and on
+    // every edit that changed the doc; blank while nothing is loaded.
+    function paintLines() {
+      if (!linesEl) return;
+      if (!view) { linesEl.textContent = ""; return; }
+      const n = view.state.doc.lines;
+      linesEl.textContent = n + (n === 1 ? " line" : " lines");
     }
 
     function setDirty(d) {
@@ -362,6 +387,7 @@
         // docChanged fires on any user edit → mark the buffer modified.
         CM.EditorView.updateListener.of((update) => {
           if (update.docChanged) {
+            paintLines();
             setDirty(true);
             clearTimeout(saveTimer);
             saveTimer = setTimeout(autosave, 250);
@@ -382,6 +408,7 @@
 
       root.innerHTML = "";
       view = new CM.EditorView({ doc: text, extensions, parent: root });
+      paintLines();
       // A live appearance change (the shell's menu, or the OS flipping while
       // the setting is System) reconfigures the RUNNING view — rebuilding it
       // would throw away unsaved edits, the caret and the scroll position.

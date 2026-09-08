@@ -120,6 +120,44 @@
   color: var(--fg-muted);
 }
 
+/* Model and Thinking, side by side at the bottom of More options: one decision
+   ("Fable 5.1, thinking high") read as one line rather than two rows saying
+   half of it each.
+
+   WRAPPING, not a breakpoint. Both columns ask for the same basis and split
+   whatever is left over evenly, so they sit together while the card is wide
+   enough for two readable chips and drop to stacked when it is not. A media
+   query would have to guess the card's width from the viewport's, and a
+   container query is the wrong tool here for a specific reason: `container-type`
+   makes the element a containing block for fixed-position descendants, and these
+   chips' dropdown panels are `position: fixed` precisely so they can escape the
+   dialog's scroll box.
+
+   THE BASIS IS 150px, NOT A ROUNDER NUMBER, because the card it has to fit is
+   not one either: NewJobModal's `<Modal width={460}>` leaves this pair about
+   400px of the dialog's own padding and the form's 26px sub-gutter — measured,
+   not assumed, after 220px (a guess at what "two readable chips" needs) turned
+   out to always exceed it and wrap on every load. 150px x 2 + the 12px gap is
+   312px, comfortably inside the 400px this card actually has, so the pair
+   renders as one row at the width the New Task card is actually built at and
+   only drops to stacked if that ever shrinks below roughly 480px (bugbot would
+   have caught 220px the same way this did: by measuring the real container
+   instead of picking a number that reads well on paper).
+
+   `min-width: 0` is what lets a long choice ellipsis INSIDE its chip rather than
+   forcing the row wider than the card — a flex item refuses to shrink below its
+   content without it. */
+.new-task-run-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.new-task-run-pair > .field {
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
 /* -- The writing surface -----------------------------------------------------
    Title and description are ONE borderless area, not two controls (Akshil,
    2026-08-17, reference image): a single continuous surface between the card's

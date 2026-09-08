@@ -275,6 +275,20 @@ def api_schedule_create(body: dict = Body(...),
             resolved, body.get("message"), due,
             session_id=str(body.get("session_id") or ""),
             permission_mode=str(body.get("permission_mode") or ""),
+            # WHICH Claude runs the task, and how hard it thinks. Both optional
+            # and both "" by default — "" is "pass no flag", so a task without
+            # an opinion keeps behaving exactly as every task did before these
+            # existed, and the session detects its own defaults.
+            #
+            # NOT validated into a 400 here, for the same reason
+            # `permission_mode` is not: `--model` takes an alias or a full id,
+            # `--effort` takes one of five levels, and the authority on both is
+            # the CLI this server shells out to — not a list in this file that
+            # would go stale the day Claude Code learns a new one. A value the
+            # CLI refuses fails the RUN, with the CLI's own sentence on the
+            # entry, which is a better error than a 400 written from a guess.
+            model=str(body.get("model") or ""),
+            effort=str(body.get("effort") or ""),
             repeats=repeats, rule=rule,
             title=body.get("title"), description=body.get("description"),
             new_task_each_run=body.get("new_task_each_run"),

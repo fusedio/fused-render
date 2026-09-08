@@ -27,11 +27,61 @@
   padding: 14px 0 10px;
 }
 
+/* Mark, then the name/folder pair. CENTER, not baseline: the mark is a square
+   beside both lines of text, and a baseline-aligned box in the same row would
+   sit on the name's baseline and drag the pair off center against it. The
+   baseline row the header always had is `.app-page-name` inside this. */
 .app-page-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.app-page-name {
   min-width: 0;
   display: flex;
   align-items: baseline;
   gap: 12px;
+}
+
+/* The app's mark and the icon picker's toggle in one: a plain button, since
+   nothing here wraps it in a link (the sidebar's glyph is a span for exactly
+   that reason). 26px against the 18px name — the same posture as the card's
+   mark, sized to the text beside it rather than the other way round. */
+.app-page-icon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.app-page-icon:hover {
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+
+.app-page-icon img {
+  width: 100%;
+  height: 100%;
+  /* An author's svg can declare any intrinsic size; contain keeps a wide or
+     tall one inside the square instead of stretching it. */
+  object-fit: contain;
+}
+
+/* The generic star (AppStar) is a bare sparkle where an authored icon is a
+   whole tile of artwork — inset, so it does not shout louder than the name. */
+.app-page-icon svg {
+  width: 16px;
+  height: 16px;
 }
 
 .app-page-title h1 {
@@ -90,6 +140,20 @@
   gap: 14px;
   padding: 16px 0 16px;
 }
+/* The tab strip and the version picker (shell/AppVersionPicker.tsx) share one
+   row and one bottom rule — the picker is page-wide state (it puts all three
+   visible tabs on the selected commit), so it reads as part of the strip
+   rather than belonging to any one panel. The strip itself lost its own
+   border-b (app-page.css above used to put it on .app-page-tabs) so the rule
+   spans the whole row instead of stopping at the strip's own width. */
+.app-page-tabbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
 /* The tab strip is shadcn's Tabs (line variant, AppPage.tsx) — the anchors
    under the triggers only need to lose the underline. NOT the colour: this
    rule is unlayered and would beat the trigger's own layered state colours
@@ -98,6 +162,88 @@
    the utilities already win over the UA default. */
 .app-page-tabs a {
   text-decoration: none;
+}
+
+.app-version-picker {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 7px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.app-version-picker-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* The closed face (task 7): a real `<select>`, transparent and stacked over
+   a visible label span that shows only the v-number. The select stays fully
+   interactive (it is what keyboard/screen-reader/mobile users actually
+   drive) — only its own painted text is hidden, by making it transparent
+   and letting the label sit visually in its place. */
+.app-version-picker-face {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  /* Rounded to match the label's own radius below: the ring wraps the
+     VISIBLE pill, not a phantom rectangle the size of the invisible select
+     (which is `inset: 0` over this whole element — see below). */
+  border-radius: 6px;
+}
+
+.app-version-picker-face select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* FINDING 6: the select's own focus rectangle paints on an element that is
+   itself `opacity: 0` — invisible even when it IS drawn — so tabbing to
+   this control used to leave no visible indicator at all. `:focus-within`
+   on the wrapper is what a hidden-but-focusable control needs: the select
+   is what actually receives focus, and this is the nearest VISIBLE
+   ancestor to draw a ring on. */
+.app-version-picker-face:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.app-version-picker-face-label {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  /* Extra right padding: room for the caret glyph below, so a long label's
+     own ellipsis truncates before the caret rather than under it. */
+  padding: 3px 18px 3px 6px;
+  font: inherit;
+  pointer-events: none;
+}
+
+/* The caret glyph (finding 6): with the native select's own text painted
+   transparent, this pill had nothing left saying "this opens a menu" — it
+   read as static text. Positioned over the label's own trailing edge
+   rather than taking a place in the flex row, so the label's `max-width`
+   ellipsis still measures against the same box it always did. */
+.app-version-picker-caret {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-muted);
+  pointer-events: none;
 }
 
 /* The panels (one per APP_PAGE_TABS entry, class `app-page-<id>` beside this).

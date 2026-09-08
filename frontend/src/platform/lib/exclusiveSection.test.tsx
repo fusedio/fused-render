@@ -8,9 +8,22 @@
 // own `useAutoExpandOnNew` call never feeds anything into `ids`), so the only
 // tie this arbiter can ever see is still Activity vs Notifications, which is
 // the one case these tests pin.
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { useExclusiveSection, type SectionKey } from "./exclusiveSection";
+import {
+  resetExclusiveSectionsForTests,
+  useExclusiveSection,
+  type SectionKey,
+} from "./exclusiveSection";
+
+// The arbiter's store is module-level and bun shares one module registry
+// across test files, so a section some OTHER file mounted and never unmounted
+// would still be sitting in it, wanting to be open, and would win or lose
+// ties here that it was never part of. That is exactly what happened on the
+// Linux runner (file order differs from a Mac's): "two sections ... resolve to
+// Activity" and "a LATER request beats ..." went red on every push while the
+// same suite was green locally. Each case starts from an empty store.
+beforeEach(() => resetExclusiveSectionsForTests());
 
 /** A stand-in for one bar section: declares whether it wants to be open and
  *  records every time the arbiter closes it. */

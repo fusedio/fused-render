@@ -1,6 +1,7 @@
 // Trusting the computer's private CA (fused_render/lan_tls.py) with zero user
 // steps. The pairing QR carries the CA's SHA-256 fingerprint; the app fetches
-// /lan/ca.pem over http, checks it against that fingerprint, and from then on
+// /lan/ca.pem (https, unvalidated — the fingerprint is the trust, not the
+// transport — falling back to http), checks it against that fingerprint, and
 // evaluates the https listener's chain against THAT certificate only — no
 // profile install, no Settings trip. The QR is the ONLY channel that pins a
 // CA — no trust-on-first-use from Bonjour, so nothing on the Wi-Fi can slip
@@ -30,27 +31,78 @@ enum TLSTrust {
         SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Fetch the CA over plain http and verify it against `expected` (hex
-    /// SHA-256 of the DER). Returns the DER when it matches.
-    static func fetchCA(host: String, httpPort: Int, expected: String) async -> Data? {
+    /// Why fetching the CA failed. The three are worth telling apart: only
+    /// `mismatch` means a certificate that is not the one the pairing code
+    /// named — the other two are "we never got a certificate at all", and
+    /// reporting those as a mismatch sent people hunting for a fresh code that
+    /// could not help.
+    enum CAProblem: Error {
+        /// Nothing answered on either port — the phone is on another network,
+        /// Local Network access is denied, or the listener is down.
+        case unreachable
+        /// Something answered, but not with a certificate.
+        case badResponse
+        /// A certificate that is not the one the pairing code named.
+        case mismatch
+    }
+
+    /// Fetch the CA and verify it against `expected` (hex SHA-256 of the DER).
+    ///
+    /// https FIRST, over a session that accepts whatever certificate answers:
+    /// the transport is not the trust here — the fingerprint the QR carried is,
+    /// and it is checked against the bytes that come back — so an unvalidated
+    /// fetch plus that check is exactly as strong as the plain-http fetch this
+    /// replaces. It also keeps pairing working when the computer's http
+    /// listener is down, which the https one the pairing itself runs over does
+    /// not depend on. http stays as the fallback.
+    static func fetchCA(host: String, httpPort: Int, httpsPort: Int?,
+                        expected: String) async -> Result<Data, CAProblem> {
+        var problem = CAProblem.unreachable
+        var attempts: [(String, Int)] = []
+        if let httpsPort { attempts.append(("https", httpsPort)) }
+        attempts.append(("http", httpPort))
+        for (scheme, port) in attempts {
+            switch await fetchCA(scheme: scheme, host: host, port: port, expected: expected) {
+            case .success(let der):
+                return .success(der)
+            case .failure(let kind):
+                // A mismatch is the answer: a computer answering to this name
+                // holds a CA that is not the one in the code, and the other
+                // port will not change that. Otherwise keep the most specific
+                // problem seen so far.
+                if kind == .mismatch { return .failure(.mismatch) }
+                if kind == .badResponse { problem = .badResponse }
+            }
+        }
+        return .failure(problem)
+    }
+
+    private static func fetchCA(scheme: String, host: String, port: Int,
+                                expected: String) async -> Result<Data, CAProblem> {
         var c = URLComponents()
-        c.scheme = "http"
+        c.scheme = scheme
         c.host = host
-        c.port = httpPort == 80 ? nil : httpPort
+        c.port = port == (scheme == "https" ? 443 : 80) ? nil : port
         c.path = "/lan/ca.pem"
-        guard let url = c.url else { return nil }
+        guard let url = c.url else { return .failure(.unreachable) }
         var req = URLRequest(url: url)
         req.cachePolicy = .reloadIgnoringLocalCacheData
         req.timeoutInterval = 5
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let der = derFromPEM(data) else { return nil }
+        let session = PinnedSession(caDER: nil, acceptAnyCertificate: scheme == "https")
+        guard let (data, response) = try? await session.data(for: req) else {
+            log.info("tls: CA fetch over \(scheme, privacy: .public) did not answer for \(host, privacy: .public)")
+            return .failure(.unreachable)
+        }
+        guard (response as? HTTPURLResponse)?.statusCode == 200, let der = derFromPEM(data) else {
+            log.error("tls: CA fetch over \(scheme, privacy: .public) answered without a certificate for \(host, privacy: .public)")
+            return .failure(.badResponse)
+        }
         let got = fingerprint(der)
         guard got == expected.lowercased() else {
             log.error("tls: CA fingerprint mismatch for \(host, privacy: .public): got \(got, privacy: .public)")
-            return nil
+            return .failure(.mismatch)
         }
-        return der
+        return .success(der)
     }
 
     static func derFromPEM(_ pem: Data) -> Data? {
@@ -72,10 +124,16 @@ enum TLSTrust {
 final class PinnedSession {
     private let session: URLSession
 
-    init(caDER: Data?) {
+    /// `acceptAnyCertificate` is for the ONE request that has no anchor yet —
+    /// fetching the CA a pairing code named, where the code's fingerprint is
+    /// the trust and is checked on the bytes that come back (`fetchCA`).
+    /// Everything else passes the pinned CA and nothing else is trusted.
+    init(caDER: Data?, acceptAnyCertificate: Bool = false) {
         let config = URLSessionConfiguration.ephemeral
         config.waitsForConnectivity = false
-        session = URLSession(configuration: config, delegate: PinDelegate(caDER: caDER), delegateQueue: nil)
+        session = URLSession(configuration: config,
+                             delegate: PinDelegate(caDER: caDER, acceptAny: acceptAnyCertificate),
+                             delegateQueue: nil)
     }
 
     deinit {
@@ -89,8 +147,12 @@ final class PinnedSession {
 
 private final class PinDelegate: NSObject, URLSessionDelegate {
     private let caDER: Data?
+    private let acceptAny: Bool
 
-    init(caDER: Data?) { self.caDER = caDER }
+    init(caDER: Data?, acceptAny: Bool = false) {
+        self.caDER = caDER
+        self.acceptAny = acceptAny
+    }
 
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -99,7 +161,9 @@ private final class PinDelegate: NSObject, URLSessionDelegate {
             completionHandler(.performDefaultHandling, nil)
             return
         }
-        if let ca = caDER, TLSTrust.accepts(trust, caDER: ca, host: challenge.protectionSpace.host) {
+        if acceptAny {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else if let ca = caDER, TLSTrust.accepts(trust, caDER: ca, host: challenge.protectionSpace.host) {
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
             completionHandler(.cancelAuthenticationChallenge, nil)

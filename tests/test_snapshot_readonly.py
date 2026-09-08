@@ -12,10 +12,15 @@ own default view — `code` or `markdown`, both of which call `fused.writeFile`.
 Cmd+S SUCCEEDED, the real file was untouched, the edit was lost, and the
 "historical" revision was quietly rewritten.
 
-THE VIEW THAT MATERIALISED THESE TREES IS GONE (the `git` view resolves a
-revision on read instead, /api/git/show), so nothing writes `app-versions/` any
-more. The guard is still the truth for trees an older version left on disk, which
-are still reachable by path and still immutable.
+THIS HAS A PRODUCER AGAIN. The predecessor per-path timeline mode that first
+materialised these trees was retired, and for a while nothing wrote here at
+all (the `git` view resolved a revision on read instead, `/api/git/show`,
+since deleted). `server/routers/git_snapshot.py` is the current producer:
+the `git` sidebar's commit preview extracts the app folder enclosing a path
+at a commit, so every read the runtime makes under it — `readFile`, `rawUrl`,
+`stat`, `runPython` — resolves against a real file. The guard is unchanged
+either way: nothing under this root is ever writable through `/api/fs`,
+whether the tree was cached yesterday or a second ago.
 
 Fixing only the framing template would leave the path writable to everything else
 (the explorer's own file ops, an /api/fs/write from any view, a rename). The
@@ -209,3 +214,41 @@ def test_the_guard_reads_the_live_home_dir(tmp_path, monkeypatch):
     assert mount._is_under_snapshot_root(os.path.join(a, "f")) is True
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "b"))
     assert mount._is_under_snapshot_root(os.path.join(a, "f")) is False
+
+
+# ---------------------------------------- the producer and the guard, pinned together
+
+
+def test_a_tree_extracted_by_git_snapshot_is_refused(tmp_path, monkeypatch):
+    """Not the hand-laid `snap` fixture above — an app folder actually
+    extracted by `GET /api/git/snapshot`'s own code path, so the producer and
+    the guard are pinned together rather than only through
+    `mount.py:53`'s unit test of the guard alone."""
+    import subprocess
+
+    from fused_render.server.routers import git_snapshot
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    repo = tmp_path / "repo"
+    app = repo / "myapp"
+    app.mkdir(parents=True)
+    (app / "index.html").write_text(
+        '<html><head><meta name="fused-app" /></head><body>hi</body></html>',
+        encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=T", "-c", "user.email=t@e",
+         "commit", "-qm", "init"], check=True, env=env)
+    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                         check=True, env=env, capture_output=True
+                         ).stdout.decode().strip()
+
+    result = git_snapshot.extract_snapshot(str(app / "index.html"), sha)
+    target = os.path.join(result["dir"], "index.html")
+
+    _refused(fs_mutate._fs_write({"path": target, "content": "tampered"},
+                                 x_fused="1"))
+    with open(target, encoding="utf-8") as f:
+        assert "tampered" not in f.read()

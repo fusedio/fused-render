@@ -320,22 +320,50 @@ def test_a_finished_run_releases_a_parked_app_state_request(agent, run_dir):
 
 # ------------------------------------------------- the spawn line & the prompt
 
-def _spawn(agent, monkeypatch, target, message="hi"):
-    """Run `_start` against a fake Popen and return the argv it built."""
-    seen = {}
+class _HostProc:
+    """Stands in for the session_host.py process `_start` now Popens instead
+    of the CLI itself: the CLI's argv is built by `_claude_argv` inside THAT
+    process, from the JSON request written to this stub's stdin — so a test
+    that wants the argv has to capture the request and rebuild it, the same
+    call session_host.py's own `main()` makes."""
+    pid = 4242
 
-    class _Proc:
-        pid = 4242
+    class _Stdin:
+        def __init__(self, seen):
+            self._seen = seen
+            self._buf = b""
+
+        def write(self, data):
+            self._buf += data
+
+        def close(self):
+            self._seen["req"] = json.loads(self._buf.decode("utf-8"))
+
+    def __init__(self, seen):
+        self.stdin = _HostProc._Stdin(seen)
+
+
+def _argv_from_req(agent, req, run_dir):
+    return agent._claude_argv(
+        run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+
+
+def _spawn(agent, monkeypatch, target, message="hi"):
+    """Run `_start` against a fake Popen and return the argv `_claude_argv`
+    builds from the request it hands the session host."""
+    seen = {}
 
     # The argv is what's under test, not where claude lives. CI runners have no
     # claude on PATH, so resolving the real one would fail there and pass only
     # on a developer machine that happens to have it installed.
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kw: (seen.__setitem__("cmd", cmd), _Proc())[1])
+                        lambda cmd, **kw: _HostProc(seen))
     out = agent._start(str(target), message, "", "", "")
     assert "error" not in out, out
-    return seen["cmd"], os.path.join(agent.RUNS, out["run_id"])
+    run_dir = os.path.join(agent.RUNS, out["run_id"])
+    return _argv_from_req(agent, seen["req"], run_dir), run_dir
 
 
 def test_the_mcp_server_gets_its_own_app_state_directory(agent, tmp_path,
@@ -569,17 +597,20 @@ def test_a_file_target_is_not_told_it_is_a_fused_render_project(
 def test_the_state_block_reaches_the_cli_but_not_the_users_transcript(
         agent, tmp_path, monkeypatch):
     """The user typed the message, not the block. So the model gets the whole
-    thing on the command line, while everything replayed back to the page —
-    the re-attach match, the session-list preview, the commit subject — gets the
-    message the user actually typed."""
+    thing in the turn queued for the CLI, while everything replayed back to
+    the page — the re-attach match, the session-list preview, the commit
+    subject — gets the message the user actually typed."""
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
     project.mkdir()
     sent = ('<live-app-state>\nsnapshot of the app the user is looking at\n'
             '{"console": [{"level": "error", "text": "boom"}]}\n'
             '</live-app-state>\n\nwhy is the map blank?')
-    cmd, run_dir = _spawn(agent, monkeypatch, project, sent)
-    assert sent in cmd
+    _cmd, run_dir = _spawn(agent, monkeypatch, project, sent)
+    inbox_dir = os.path.join(run_dir, "inbox")
+    entry = json.load(open(
+        os.path.join(inbox_dir, os.listdir(inbox_dir)[0]), encoding="utf-8"))
+    assert entry["message"]["content"][0]["text"] == sent
     meta = json.load(open(os.path.join(run_dir, "meta.json"), encoding="utf-8"))
     assert meta["message"] == "why is the map blank?"
 
@@ -1460,36 +1491,72 @@ def test_a_null_snapshot_on_the_wire_is_the_hard_error_the_page_now_avoids(
 # ------------------------------------------------- Escape has three claimants
 
 def test_escape_prefers_the_smallest_undo_it_can_do(html):
-    """Four features bind Escape in this pane, and the order is least-destructive
-    first. Closing the screenshot viewer undoes nothing at all, dismissing a
-    popover is small and repeatable, leaving annotate mode is reversible with one
-    click, killing a live turn is none of those — so an Escape pressed with a text
-    box open means the text box, and one pressed while annotating means annotate
-    mode, not the run.
+    """Three features bind Escape in this pane, and the order is
+    least-destructive first. Closing the screenshot viewer undoes nothing at all,
+    dismissing a popover is small and repeatable, leaving annotate mode is
+    reversible with one click — so an Escape pressed with a text box open means
+    the text box, and one pressed while annotating means annotate mode.
 
     The viewer leads for a stronger reason than cheapness: it is MODAL, so every
-    other claimant is literally behind it, and an Escape that stopped a run the
-    user could not see would be the worst thing this key can do."""
-    def act(viewer, open_, annotating, run):
+    other claimant is literally behind it."""
+    def act(viewer, open_, annotating):
         return _node(["function escapeAction("],
-                     "console.log(JSON.stringify(escapeAction(%s, %s, %s, %s)));"
+                     "console.log(JSON.stringify(escapeAction(%s, %s, %s)));"
                      % (json.dumps(viewer), json.dumps(open_),
-                        json.dumps(annotating), json.dumps(run)),
+                        json.dumps(annotating)),
                      html)
 
-    # the viewer outranks every other claimant, including a live run
-    assert act(True, True, True, "run-7") == "close-viewer"
-    assert act(True, False, False, None) == "close-viewer"
-    assert act(False, True, False, "run-7") == "close-composer"
-    assert act(False, True, True, None) == "close-composer"
-    # The banner says "Esc or click to stop", so Escape must leave annotate mode —
-    # and must do it in preference to ending the turn.
-    assert act(False, False, True, None) == "exit-annotate"
-    assert act(False, False, True, "run-7") == "exit-annotate"
-    assert act(False, False, False, "run-7") == "stop-run"
+    assert act(True, True, True) == "close-viewer"
+    assert act(True, False, False) == "close-viewer"
+    assert act(False, True, False) == "close-composer"
+    assert act(False, True, True) == "close-composer"
+    # The banner says "Esc or click to stop", so Escape must leave annotate mode.
+    assert act(False, False, True) == "exit-annotate"
     # Inert otherwise: this page is in an iframe and must not swallow the shell's
     # Escape for nothing.
-    assert act(False, False, False, None) == ""
+    assert act(False, False, False) == ""
+
+
+def test_escape_never_stops_a_live_run(html):
+    """It used to, as the last claimant — so a reader who reached for the key out
+    of habit (a popover this page had already closed, backing out of the shell's
+    own UI) lost the whole turn to a keystroke never aimed at the run (Akshil,
+    2026-09-03). Work in progress is not something a bare keypress may throw
+    away. Stopping is now a deliberate press on a control that says so: the stop
+    square the send button becomes, and the tasks queue card's ✕.
+
+    Pinned three ways, because any one of them alone can be reintroduced without
+    the others noticing: the decision has no stop branch, it does not even take
+    the run to branch on, and no keydown handler in the page calls stopRun()."""
+    decision = html[html.index("function escapeAction("):]
+    decision = decision[:decision.index("\n}\n")]
+    assert "stop-run" not in decision
+    assert "runId" not in decision, "the decision still takes a run to kill"
+
+    handler = html[html.index("function onEscape(e) {"):]
+    handler = handler[:handler.index("\n}\n")]
+    assert "stopRun" not in handler
+
+    # ...and nothing else reaches it from a key either. Every keydown binding in
+    # the page is swept; the stop button's own `onsubmit` paths are untouched by
+    # this and are what still call stopRun().
+    at = html.find('addEventListener("keydown"')
+    seen = 0
+    while at >= 0:
+        # The handler only, not the code that happens to follow it: every one of
+        # these bindings closes on a `});` at the start of a line (or is a
+        # one-liner naming a function), and reading past that swept in the send
+        # button's `onsubmit`, which legitimately stops runs.
+        eol = html.find("\n", at)
+        if html[at:eol].rstrip().endswith(");"):
+            end = eol                       # a one-liner naming its handler
+        else:
+            end = min(x for x in (html.find("\n});", at),
+                                  html.find("\n}, true);", at)) if x > 0)
+        seen += 1
+        assert "stopRun" not in html[at:end], html[at:end]
+        at = html.find('addEventListener("keydown"', at + 1)
+    assert seen > 3, "the keydown sweep found almost nothing to sweep"
 
 
 def test_escape_is_bound_inside_the_framed_app_too(html):
@@ -1504,10 +1571,11 @@ def test_escape_is_bound_inside_the_framed_app_too(html):
     assert "document.addEventListener(\"keydown\", onEscape" in html
 
 
-def test_the_composers_escape_does_not_also_reach_the_run_killer(html):
+def test_the_composers_escape_does_not_also_reach_the_next_claimant(html):
     """The textarea's handler runs first and hides the popover, so without a
     stopPropagation the document binding would look at an already-closed
-    composer and end the turn as well."""
+    composer, fall through, and leave annotate mode as well. One press, one
+    undo."""
     start = html.index("annTa.addEventListener(\"keydown\"")
     head = html[start:start + 400]
     assert "stopPropagation" in head, head
@@ -1666,15 +1734,13 @@ def _spawn_with(agent, monkeypatch, target, **kw):
     "0" that means a real no cannot be mistaken for the "" that means absence."""
     seen = {}
 
-    class _Proc:
-        pid = 4242
-
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kwargs: (seen.__setitem__("cmd", cmd), _Proc())[1])
+                        lambda cmd, **kwargs: _HostProc(seen))
     out = agent.main(action="start", file=str(target), message="hi", **kw)
     assert "error" not in out, out
-    return seen["cmd"], os.path.join(agent.RUNS, out["run_id"])
+    run_dir = os.path.join(agent.RUNS, out["run_id"])
+    return _argv_from_req(agent, seen["req"], run_dir), run_dir
 
 
 def _pane_facts(agent, cmd, run_dir):

@@ -266,13 +266,16 @@ def api_fs_list(path: str, cursor: str | None = None):
         with os.scandir(path) as it:
             dents = list(itertools.islice(it, _server_walk.LIST_MAX_ENTRIES + 1))
     except OSError as e:
-        # A PermissionError here is the moment the Full Disk Access warning
-        # becomes worth showing (shell/fda.py) — on macOS a TCC deny lands as
-        # exactly this EPERM, sometimes with no prompt ever shown.
-        shell_fda.note_denied(e)
         broken = shell_mounts.broken_mount_error(path)
         if broken:
             return _error(broken, status=503)
+        # A PermissionError here is the moment the Full Disk Access warning
+        # becomes worth showing (shell/fda.py) — on macOS a TCC deny lands as
+        # exactly this EPERM, sometimes with no prompt ever shown. refused()
+        # is the one place that records it AND shapes the 403 the explorer
+        # keys its card on, same as stat (mount.py) and read below.
+        if isinstance(e, PermissionError):
+            return shell_fda.refused(path, e)
         return _error(f"cannot read directory {path}: {e}", status=400)
     truncated = len(dents) > _server_walk.LIST_MAX_ENTRIES
     if truncated:
@@ -325,12 +328,12 @@ async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: st
     # the ones a search almost always targets — are all emitted before any
     # deep subtree can exhaust the WALK_MAX_ENTRIES cap (the old
     # depth-first walk let one big sibling starve every later one). Prunes
-    # WALK_IGNORE_DIRS entirely, prunes gitignored entries inside git
-    # repositories (see _walk_bfs — which is why walk entries carry no
-    # `ignored` dimming flag: nothing ignored survives to be dimmed),
-    # emits WALK_LEAF_DIR_SUFFIXES packages without descending, never
-    # follows symlinks, and skips unreadable entries silently (matches
-    # /api/fs/list). `rel` is posix-relative to `path`.
+    # WALK_IGNORE_DIRS entirely (see _walk_bfs — which is why walk entries
+    # carry no `ignored` dimming flag: the walk never consults .gitignore at
+    # all, so there is no verdict to carry), emits WALK_LEAF_DIR_SUFFIXES
+    # packages without descending, never follows symlinks, and skips
+    # unreadable entries silently (matches /api/fs/list). `rel` is
+    # posix-relative to `path`.
     #
     # The walk is bounded on three axes so a search-as-you-type over a big
     # (esp. mount) root can't kick off an unbounded enumeration: entry count
@@ -341,9 +344,9 @@ async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: st
     # disconnect without stalling the event loop.
     #
     # `hidden=1` (explicit intent: the user typed a dot-leading query)
-    # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS,
-    # the leaf rules and gitignore pruning apply regardless — those trees are
-    # noise, not "hidden data", and letting hidden=1 descend into
+    # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS and
+    # the leaf rules apply regardless — those trees are noise, not "hidden
+    # data", and letting hidden=1 descend into
     # node_modules or a repo's .git would flood the results with
     # machine-managed junk. `.git` is emitted as ONE undescended entry (it is a
     # leaf name, so the index has a row for it and the two corpora agree);
@@ -613,8 +616,7 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     try:
         st = await asyncio.to_thread(os.stat, path)
     except PermissionError as e:
-        shell_fda.note_denied(e)
-        return _error(f"cannot read {path}: {e}", status=403)
+        return shell_fda.refused(path, e)
     except OSError:
         # Any other OSError keeps the historical _stat_or_none contract:
         # ENOENT, ENOTDIR, ELOOP and friends all report as missing.
@@ -629,8 +631,7 @@ async def _api_fs_raw_read(path: str, request: Request, base: str | None,
     try:
         await asyncio.to_thread(lambda: open(path, "rb").close())
     except PermissionError as e:
-        shell_fda.note_denied(e)
-        return _error(f"cannot read {path}: {e}", status=403)
+        return shell_fda.refused(path, e)
     except OSError:
         # A non-permission open failure (EIO, a file racing away) keeps its
         # previous behavior: FileResponse surfaces it as the send-time error.

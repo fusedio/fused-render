@@ -16,6 +16,7 @@
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { Job } from "@platform/lib/jobs";
+import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import {
   IS_EMBED,
   IS_PREVIEW,
@@ -31,9 +32,11 @@ import {
   getMounts,
   reconnectMount,
   type Config,
+  type HttpError,
   type Mount,
   type StatResult,
 } from "@platform/lib/api";
+import { AccessDenied, isAccessDenied } from "@apps/explorer/AccessDenied";
 import {
   useNavEpoch,
   useDocumentTitle,
@@ -49,6 +52,9 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
+import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
+import { onboardingUrl } from "@shell/onboarding/progress";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
@@ -61,6 +67,7 @@ import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
 import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
+import EmbedStrip from "@apps/explorer/EmbedStrip";
 import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
@@ -74,6 +81,11 @@ import {
   DEFAULT_TAB,
   isAiModelsPath,
 } from "@apps/ai_models/routes";
+
+// The boot-time "send a fresh install to the wizard" decision is made once
+// per page load (App's render below), not on every re-render — a user who
+// left the wizard would otherwise be pushed back in on the next state change.
+let autoShowDecided = false;
 
 // Route-gated surfaces, lazy-loaded: none of these render on the front door
 // (the explorer route above stays eager), only once a route nobody may ever
@@ -106,7 +118,9 @@ const CanvasWorkspace = lazy(() =>
 type StatState =
   | { status: "loading" }
   | { status: "ok"; stat: StatResult }
-  | { status: "error"; message: string };
+  // `httpStatus`: the response code, so StatErrorView can tell a refused
+  // read (403 → the Full Disk Access card) from missing/broken.
+  | { status: "error"; message: string; httpStatus?: number };
 
 // `reloadKey` re-runs the stat without a navigation — used to recover after a
 // disconnected mount is reconnected in place (StatErrorView), where fsPath and
@@ -126,8 +140,9 @@ function useStat(
     setState({ status: "loading" });
     statPath(fsPath).then(
       (stat) => alive && setState({ status: "ok", stat }),
-      (err: Error) =>
-        alive && setState({ status: "error", message: err.message }),
+      (err: HttpError) =>
+        alive &&
+        setState({ status: "error", message: err.message, httpStatus: err.status }),
     );
     return () => {
       alive = false;
@@ -145,10 +160,12 @@ function useStat(
 function StatErrorView({
   fsPath,
   message,
+  httpStatus,
   onReload,
 }: {
   fsPath: string;
   message: string;
+  httpStatus?: number;
   onReload: () => void;
 }) {
   // undefined = still checking; null = not under any mount.
@@ -210,6 +227,18 @@ function StatErrorView({
           {busy ? "Reconnecting…" : wedged ? "Reconnect" : "Mount"}
         </button>
         {mountErr && <div className="deploy-error">{mountErr}</div>}
+      </div>
+    );
+  }
+  // A refused stat (403 — a file or folder macOS/TCC or mode bits won't let us
+  // read) gets the access card with the Full Disk Access strip in place of
+  // the raw errno plate (explorer/AccessDenied.tsx). Checked after the mount
+  // branch: a dead mount can surface as EPERM too, and reconnecting is the
+  // right offer there.
+  if (isAccessDenied({ status: httpStatus, message })) {
+    return (
+      <div className="status-message">
+        <AccessDenied path={fsPath} />
       </div>
     );
   }
@@ -360,7 +389,9 @@ function StatView({
       live = false;
     };
   }, [fsPath]);
-  useFavicon(iconHref);
+  // Theme-resolved: a picker-written icon.svg names its colour and the
+  // favicon cannot read a token itself (app-icon-src.ts).
+  useFavicon(useThemedIconSrc(iconHref));
   // Recents: the explorer's own store, gated on a confirmed FILE, so a
   // directory never lands there. The app
   // builder's parallel (tag, name) store went with its route — nothing displays
@@ -378,6 +409,7 @@ function StatView({
       <StatErrorView
         fsPath={fsPath}
         message={stat.message}
+        httpStatus={stat.httpStatus}
         onReload={() => setReloadKey((k) => k + 1)}
       />
     );
@@ -430,6 +462,12 @@ function StatView({
           home={home}
           renderedTitle={renderedTitle}
         />
+        {/* The top-level embed's one piece of chrome (IS_TOP_EMBED): a
+            dismissable strip with the way back to the explorer and, for a
+            .fused, Clone. Here and not in Preview: the preview header is
+            CSS-hidden in embed, and the fusedapp template frames the entry
+            page as a SECOND embed, so only this outer shell is top-level. */}
+        <EmbedStrip fsPath={fsPath} isDir={isDir} />
         <div id="content">{content}</div>
       </div>
       <PreviewSideSlot />
@@ -462,15 +500,16 @@ function ClaudeConfigView() {
 export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
 
-  // FAILED JOBS, ON THEIR WAY FROM Activity TO Notifications (D586). `ActivityDock`
-  // already receives `DownloadManager`'s full jobs snapshot on every poll and
-  // forwards just the `error` rows here; `RepoUpdatesDock` draws them beside
-  // its repo rows. This lives in `App` because it is the only place both
-  // sections are in scope — `StatusBar` deliberately takes them as opaque
-  // `ReactNode`s and must not learn what its children are. `ActivityDock` only
-  // calls up when the error-id SET changes, so this does not re-render the
-  // shell on every poll.
-  const [failedJobs, setFailedJobs] = useState<Job[]>([]);
+  // TERMINAL JOBS, ON THEIR WAY FROM Activity TO Notifications (D586,
+  // broadened by D662 to every terminal state — done/error/cancelled, not
+  // only error). `ActivityDock` already receives `DownloadManager`'s full
+  // jobs snapshot on every poll and forwards the terminal subset here;
+  // `RepoUpdatesDock` draws them beside its repo rows. This lives in `App`
+  // because it is the only place both sections are in scope — `StatusBar`
+  // deliberately takes them as opaque `ReactNode`s and must not learn what
+  // its children are. `ActivityDock` only calls up when the terminal-id SET
+  // changes, so this does not re-render the shell on every poll.
+  const [terminalJobs, setTerminalJobs] = useState<Job[]>([]);
 
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
@@ -609,6 +648,22 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", "/home");
   }
+  // A fresh install's first load lands on the setup wizard instead (its own
+  // route, shell/onboarding). Once per page load and only from the front
+  // door: a deep link (a bookmark, an app URL from the CLI) is honoured, and
+  // leaving the wizard must not bounce back in. Same render-time rewrite as
+  // "/" above; the flag the rule reads is the server's, so a completed or
+  // dismissed wizard stays gone across ports and browsers. The URL names the
+  // server's stored step, so a restart mid-wizard resumes where it was.
+  if (
+    !IS_EMBED &&
+    !autoShowDecided &&
+    location.pathname === "/home" &&
+    shouldAutoShow(config)
+  ) {
+    history.replaceState(null, "", onboardingUrl(config.onboarding?.stages));
+  }
+  autoShowDecided = true;
   // Legacy: the CLAUDE.md explorer ("MD Files") was deleted from the Config
   // panel in round 2, so the old page URL folds into the panel's default tab
   // (same render-time rewrite as "/" above) rather than 404ing on someone's
@@ -750,9 +805,13 @@ export default function App({ config }: { config: Config }) {
   // version of the old single `tourPending` — it stops the retries for a tour
   // that has run, so a browser refusing the "seen" write can't restart it on
   // every navigation, while leaving the other tours still armed.
+  //
+  // Not on the setup wizard's route (shell/onboarding): two first-run moments
+  // must not fire on top of each other. Keyed on pathname already, so the
+  // tour for wherever the wizard lets go fires on that navigation.
   const firedTours = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (IS_EMBED) return;
+    if (IS_EMBED || pathname === ONBOARDING_PATH) return;
     const tour = autoStartTourFor(pathname);
     if (!tour || firedTours.current.has(tour.id)) return;
     // Retries IN PLACE, not only on the next route change: a tour can be held
@@ -983,6 +1042,25 @@ export default function App({ config }: { config: Config }) {
   // bottom Preferences menu itself.
   const sidebar = <GlobalSidebar config={config} />;
 
+  // The setup wizard (shell/onboarding) is the whole window: no sidebar, no
+  // status bar, no docks — a pre-app surface, which is why it is not one more
+  // `main` branch above. Keyed on the epoch like every route, so reopening it
+  // from Help starts at step 1.
+  if (pathname === ONBOARDING_PATH && !IS_EMBED) {
+    return (
+      <div id="app">
+        <OnboardingWizard key={epoch} config={config} />
+        <NotificationHost />
+        {/* Mod+K is App-wide (the listener above runs here too), so the sheet
+            must be renderable here — or the flag flips with nothing shown and
+            the sheet pops open on whatever page the wizard lets go to. */}
+        {shortcutsOpen && (
+          <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+        )}
+      </div>
+    );
+  }
+
   return (
     <div id="app">
       {!IS_EMBED && sidebar}
@@ -1007,14 +1085,14 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             models={<ModelsDock />}
-            /* D586: failures are re-routed from Activity to Notifications, and
-               this is the one place both sections are in scope. Plain prop
-               wiring on purpose — the alternative was a shared store, which
-               would be a new subsystem for a list that one section already
-               polls and the other only reads. */
-            activity={<ActivityDock onFailed={setFailedJobs} />}
+            /* D586/D662: every terminal job is re-routed from Activity to
+               Notifications, and this is the one place both sections are in
+               scope. Plain prop wiring on purpose — the alternative was a
+               shared store, which would be a new subsystem for a list that
+               one section already polls and the other only reads. */
+            activity={<ActivityDock onTerminalJobs={setTerminalJobs} />}
             repoUpdates={
-              <RepoUpdatesDock failed={failedJobs} onFailedPatch={setFailedJobs} />
+              <RepoUpdatesDock terminal={terminalJobs} onTerminalPatch={setTerminalJobs} />
             }
           />
         )}

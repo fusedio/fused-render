@@ -19,6 +19,7 @@ launches a real claude.
 import json
 import os
 import stat
+import sys
 import time
 
 import pytest
@@ -899,12 +900,36 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
 
 # --------------------------------------------- the stdin path through agent.py
 
-def test_agent_start_stdin_mode_keeps_message_out_of_argv(tmp_path, monkeypatch):
-    """The spawn the apps API relies on: message_via_stdin writes the prompt as
-    a stream-json user line in the run dir and wires it as the process stdin —
-    the prompt string must appear nowhere in argv."""
+class _HostProc:
+    """Stands in for the session_host.py process `_start` now Popens instead
+    of the CLI itself: `_start` hands it a JSON request over stdin (never
+    argv), and this stub captures that request the way session_host.py's own
+    `main()` would go on to read it."""
+    pid = 4242
+
+    class _Stdin:
+        def __init__(self, seen):
+            self._seen = seen
+            self._buf = b""
+
+        def write(self, data):
+            self._buf += data
+
+        def close(self):
+            self._seen["req"] = json.loads(self._buf.decode("utf-8"))
+
+    def __init__(self, seen):
+        self.stdin = _HostProc._Stdin(seen)
+
+
+def test_agent_start_always_keeps_the_message_out_of_argv(tmp_path, monkeypatch):
+    """The spawn the apps API relies on: every message — regardless of what
+    `message_via_stdin` says — is queued as a stream-json user line in the
+    run dir's inbox, for the session host to drain into the CLI's own held-
+    open stdin pipe. `message_via_stdin` is accepted and ignored (there is no
+    longer an argv-embedded-message form to choose between); the prompt
+    string must appear nowhere in the CLI's argv either way."""
     import importlib.util
-    import json as jsonlib
 
     path = os.path.join("fused_render", "templates", "claude", "agent.py")
     spec = importlib.util.spec_from_file_location("claude_agent_stdin", path)
@@ -915,52 +940,28 @@ def test_agent_start_stdin_mode_keeps_message_out_of_argv(tmp_path, monkeypatch)
     target.write_text('<html><head><meta name="fused-app" /></head></html>')
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
-    seen = {}
-
-    def fake_popen(cmd, **kwargs):
-        seen["cmd"] = cmd
-        seen["stdin"] = kwargs["stdin"]
-        return type("P", (), {"pid": 4242})()
-
-    monkeypatch.setattr(agent.subprocess, "Popen", fake_popen)
     secret = "build me a $(rm -rf /) app"
-    run_id = agent._start(str(target), secret, "", "", "",
-                          message_via_stdin=True)["run_id"]
 
-    assert secret not in " ".join(seen["cmd"])
-    assert seen["cmd"][seen["cmd"].index("--input-format") + 1] == "stream-json"
-    # stdin is the run-dir file holding exactly one stream-json user message
-    stdin_file = os.path.join(agent.RUNS, run_id, "stdin.jsonl")
-    assert seen["stdin"].name == stdin_file
-    row = jsonlib.loads(open(stdin_file, encoding="utf-8").read())
-    assert row["message"]["content"][0]["text"] == secret
+    for via_stdin in (True, False):
+        seen = {}
+        monkeypatch.setattr(agent.subprocess, "Popen",
+                            lambda cmd, **kw: _HostProc(seen))
+        run_id = agent._start(str(target), secret, "", "", "",
+                              message_via_stdin=via_stdin)["run_id"]
+        run_dir = os.path.join(agent.RUNS, run_id)
+        req = seen["req"]
+        cmd = agent._claude_argv(
+            run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
+            req["model"], req["effort"], req["extra_read_dirs"], req["file"])
 
-
-def test_agent_start_default_still_passes_message_in_argv(tmp_path, monkeypatch):
-    """The template path is unchanged: no stdin file, message after -p."""
-    import importlib.util
-
-    path = os.path.join("fused_render", "templates", "claude", "agent.py")
-    spec = importlib.util.spec_from_file_location("claude_agent_argv", path)
-    agent = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(agent)
-
-    target = tmp_path / "index.html"
-    target.write_text('<html><head><meta name="fused-app" /></head></html>')
-    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
-    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
-    seen = {}
-
-    def fake_popen(cmd, **kwargs):
-        seen["cmd"] = cmd
-        seen["stdin"] = kwargs["stdin"]
-        return type("P", (), {"pid": 4242})()
-
-    monkeypatch.setattr(agent.subprocess, "Popen", fake_popen)
-    run_id = agent._start(str(target), "hello", "", "", "")["run_id"]
-    assert seen["cmd"][seen["cmd"].index("-p") + 1] == "hello"
-    assert seen["stdin"] == agent.subprocess.DEVNULL
-    assert not os.path.exists(os.path.join(agent.RUNS, run_id, "stdin.jsonl"))
+        assert secret not in " ".join(cmd)
+        assert cmd[cmd.index("--input-format") + 1] == "stream-json"
+        assert not os.path.exists(os.path.join(run_dir, "stdin.jsonl")), \
+            "the old per-turn stdin file is retired; _start never writes it"
+        inbox = os.path.join(run_dir, "inbox")
+        entry = json.load(open(
+            os.path.join(inbox, os.listdir(inbox)[0]), encoding="utf-8"))
+        assert entry["message"]["content"][0]["text"] == secret
 
 
 # --------------------------- landing the creator in the running claude session
@@ -1042,15 +1043,29 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
     entry.parent.mkdir()
     entry.write_text('<html><head><meta name="fused-app" /></head></html>')
     stub = tmp_path / "claude"
-    # the stream-json rows poll parses: an init row carrying the session id, a
-    # streamed text delta, and the terminating result row
+    # session_host.py holds the CLI's stdin open for the whole session (it
+    # only closes it once the idle-reap window elapses), so a stub that waits
+    # for EOF before answering — the old one-shot `cat > /dev/null` — would
+    # block forever and _poll would never see `done`. This one answers as
+    # soon as its one message has arrived: the stream-json rows poll parses,
+    # an init row carrying the session id, a streamed text delta, and the
+    # terminating result row.
     stub.write_text(
-        '#!/bin/sh\ncat > /dev/null\n'
-        'printf \'%s\\n\' \'{"type":"system","subtype":"init","session_id":"sid-live"}\'\n'
-        'printf \'%s\\n\' \'{"type":"stream_event","event":{"type":'
-        '"content_block_delta","delta":{"type":"text_delta","text":"on it"}}}\'\n'
-        'printf \'%s\\n\' \'{"type":"result","subtype":"success",'
-        '"session_id":"sid-live","result":"on it"}\'\nexit 0\n')
+        "#!%s\n" % sys.executable +
+        "import sys, json\n"
+        "for line in sys.stdin:\n"
+        "    if not line.strip():\n"
+        "        continue\n"
+        "    for row in ("
+        "        {'type': 'system', 'subtype': 'init', 'session_id': 'sid-live'},"
+        "        {'type': 'stream_event', 'event': {'type': 'content_block_delta',"
+        "            'delta': {'type': 'text_delta', 'text': 'on it'}}},"
+        "        {'type': 'result', 'subtype': 'success', 'session_id': 'sid-live',"
+        "            'result': 'on it'},"
+        "    ):\n"
+        "        sys.stdout.write(json.dumps(row) + chr(10))\n"
+        "    sys.stdout.flush()\n"
+        "    break\n")
     stub.chmod(0o755)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", str(stub))
 

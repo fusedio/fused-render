@@ -229,9 +229,9 @@ def test_a_permission_card_pulls_the_narrow_layout_back_to_the_chat(html):
 
 
 def test_auto_submit_is_still_unconditional(html):
-    """The fix is NOT "stop auto-submitting from Preview view": a saved note going
-    to Claude immediately is the feature. Pinned so the card fix above cannot be
-    "simplified" into an off switch."""
+    """The fix is NOT "stop auto-submitting from Preview view": Done sending the
+    pooled notes from wherever the reader is is the feature. Pinned so the card
+    fix above cannot be "simplified" into an off switch."""
     start = html.index("function annAutoSubmit()")
     body = html[start:html.index("\n}\n", start)]
     assert "paneview" not in body and "NARROW_MQ" not in body

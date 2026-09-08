@@ -2,6 +2,9 @@
 // shell registered a route() handler here; the React shell instead listens for
 // the "fused:navigate" event (useNavEpoch in lib/hooks.ts) — navigate/
 // navigateUrl dispatch it after pushState, popstate is subscribed alongside it.
+import { carries as snapshotCarries, getSnapshotAppDir } from
+  "@platform/lib/snapshot-param";
+
 export const VIEW_PREFIX = "/explorer/view/";
 
 // Embed = chrome-free variant of view (same shell, same routing, just no
@@ -148,6 +151,22 @@ export function withPreviewFlag(src: string): string {
 // would be a second source of truth for a fact that never moves.
 export const IS_SNAPSHOT =
   new URLSearchParams(location.search).get("snapshot") === "1";
+
+// AM I A TOP-LEVEL EMBED? — the embed shell running as the WHOLE WINDOW, not
+// framed by anything: a Finder double-click on a `.fused` (the view-URL codec
+// lands OS opens on the embed prefix, D390), a CLI/deeplink `/explorer/embed/`
+// URL, a pasted link. This is the one embed the user is stranded in: no
+// sidebar, no crumb, no header (D39), and nothing to click to reach the real
+// explorer or the Clone button (D397). EmbedStrip (apps/explorer/EmbedStrip)
+// renders exactly there.
+//
+// `IS_EMBED` alone is far too wide — it is every panel pane, tab, bookmark
+// card peek and foreign-page component, all of which have a host that owns
+// their chrome and none of which want a strip. `window === window.top` is the
+// whole test for "no host"; a thumbnail/snapshot can never be top-level in
+// practice, but the guards make the intent explicit and cost nothing. Read
+// once at module init like the flags above — a document cannot be re-parented.
+export const IS_TOP_EMBED = IS_EMBED && window === window.top && !IS_PREVIEW && !IS_SNAPSHOT;
 
 // Is this pathname panel mode's sentinel route? Both prefixes, because panel
 // mode lives under the page's own one (Panel.tsx's PANEL_PATH) so that
@@ -366,20 +385,37 @@ export function navigate(
   // out of highlighted (listing/selection.ts cameFromSelParam). Relative to
   // the destination, exactly like the value the listing writes back.
   //
-  // `snapshot=1` is the exception to the fresh-query-string rule, and it is a
-  // different KIND of param from the two below: it says what this PAGE is — a
-  // frozen tree framed in some view's column (see IS_SNAPSHOT) — not how the
-  // destination should be viewed. Every hop the framed listing makes is still
-  // inside that snapshot, so dropping it would make the url describe a page
-  // that does not exist. IS_SNAPSHOT is read once at boot, so the live session
-  // survives the drop; a RELOAD or a copied link is where it bites, bringing
-  // back the breadcrumb walking up into the snapshot cache's internals and the
-  // preview pane inside the preview pane. Carried on FILE hops as well as
-  // folder ones, unlike `_side`: the framed listing opens files too, and
-  // the chrome the flag suppresses is the same chrome on a file view.
+  // `snapshot=1` is the FIRST exception to the fresh-query-string rule, and it
+  // is a different KIND of param from the two below: it says what this PAGE
+  // is — a frozen tree framed in some view's column (see IS_SNAPSHOT) — not
+  // how the destination should be viewed. Every hop the framed listing makes is
+  // still inside that snapshot, so dropping it would make the url describe a
+  // page that does not exist. IS_SNAPSHOT is read once at boot, so the live
+  // session survives the drop; a RELOAD or a copied link is where it bites,
+  // bringing back the breadcrumb walking up into the snapshot cache's
+  // internals and the preview pane inside the preview pane. Carried on FILE
+  // hops as well as folder ones, unlike `_side`: the framed listing opens
+  // files too, and the chrome the flag suppresses is the same chrome on a
+  // file view.
+  //
+  // `_snapshot=<sha>` is the SECOND exception, and unlike `snapshot=1` it is
+  // BOUNDED rather than unconditional: it names a commit, and a commit from
+  // one app's history says nothing once the destination leaves that app's
+  // folder. `carries` (platform/lib/snapshot-param.ts) is the one test —
+  // same folder, or anywhere under it — checked against `getSnapshotAppDir()`,
+  // the live app folder the current `_snapshot` was last resolved against
+  // (task 4 is what keeps that resolved; until something has, this exception
+  // never fires and the param is dropped like any other). This is what makes
+  // browsing an app's subfolders under a snapshot behave like browsing it
+  // live, and what makes a breadcrumb hop OUT of the app return to today's
+  // files without a stale sha still describing nothing in particular.
   const current = new URLSearchParams(location.search);
   const parts: string[] = [];
   if (current.get("snapshot") === "1") parts.push("snapshot=1");
+  const snapshotSha = current.get("_snapshot");
+  if (snapshotSha && snapshotCarries(getSnapshotAppDir(), fsPath)) {
+    parts.push("_snapshot=" + encodeURIComponent(snapshotSha));
+  }
   // FOLDER TO FOLDER ONLY — both ends, and the SOURCE end is the half added in
   // D326. `_side` is one param name on two surfaces (the file preview's companion
   // sidebar and this pane), read the same way since that decision but describing

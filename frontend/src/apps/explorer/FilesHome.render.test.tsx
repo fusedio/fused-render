@@ -27,9 +27,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
-import type { IndexRankResult, StatResult } from "@platform/lib/api";
+import type { IndexRankResult, IndexStatus, StatResult } from "@platform/lib/api";
 import { Clock } from "@apps/explorer/listing/hook-harness";
-import { STALE_CLEAR_MS } from "@platform/lib/instant-search";
+import {
+  INSTANT_DEBOUNCE_MS,
+  PENDING_INDICATOR_MS,
+  STALE_CLEAR_MS,
+} from "@platform/lib/instant-search";
 import { resetFsMutations } from "@platform/lib/index-freshness";
 
 // --- the module boundary: a fetch stub, not a module mock -------------------
@@ -48,6 +52,13 @@ interface StatCall {
 }
 const rankCalls: RankCall[] = [];
 const statCalls: StatCall[] = [];
+/** Every POST /api/index/scan, by URL — the observable trace of the note's
+ * "index them now" button actually asking for a scan. */
+const scanCalls: string[] = [];
+/** How many times the box told its parent to re-poll the index status — the
+ * one thing that turns the parent's idle ten-second beat into a look NOW, so
+ * that a scan this box started is not invisible until then. */
+let scanRequested = 0;
 /** Every `history.pushState(..., url)` the router's `navigate()` makes — the
  * observable trace of a navigation, since `navigate` itself is a frozen ES
  * module export this file cannot spy on (see the file-header comment on why
@@ -84,6 +95,18 @@ function fakeFetch(url: string | URL): Promise<Response> {
       });
     });
   }
+  // The "index them now" button's POST. Answered immediately rather than
+  // deferred like the two above: the test's interest is that the scan was
+  // ASKED FOR, and the note's state after it comes from the status poll
+  // (`indexScan`, a prop here), not from this reply.
+  if (u.startsWith("/api/index/scan")) {
+    scanCalls.push(u);
+    return Promise.resolve(
+      new Response(JSON.stringify({ ok: true, run_id: "r1", root: HOME, runs: [] }), {
+        status: 200,
+      }),
+    );
+  }
   throw new Error("FilesHome.render.test.tsx: unexpected fetch " + u);
 }
 
@@ -95,7 +118,7 @@ function fakeFetch(url: string | URL): Promise<Response> {
 // first time this file was written (see the afterEach comment).
 (globalThis as Record<string, unknown>).location = { pathname: "/explorer", search: "" };
 
-const { FilesSearch } = await import("@apps/explorer/FilesHome");
+const { FilesSearch, WARM_QUERY } = await import("@apps/explorer/FilesHome");
 
 const HOME = "/Users/me";
 
@@ -116,6 +139,8 @@ const mounted: ReactTestRenderer[] = [];
 beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
+  scanCalls.length = 0;
+  scanRequested = 0;
   navPushes.length = 0;
   globalThis.fetch = fakeFetch as typeof fetch;
   // `indexRescanPending` (platform/lib/index-freshness) reads a module-level
@@ -161,26 +186,72 @@ afterEach(() => {
   resetFsMutations();
 });
 
-/** Run `fn` inside `act` and let any microtasks it releases settle. */
+/** Run `fn` inside `act` and let any microtasks it releases settle.
+ *
+ * Also strips any `indexRank(WARM_QUERY)` call the mount effect's idle
+ * warm-up fired during this flush — see the note on `WARM_QUERY` above and
+ * on `type()` below for why it exists at all. Done HERE, not only inside
+ * `type()`: at `INSTANT_DEBOUNCE_MS` (200) the warm's own
+ * `window.setTimeout(cb, 300)` fallback no longer lands on the exact same
+ * tick as the first debounce, so which `clock.advance` call crosses 300ms
+ * moved — it can now be a LATER, unrelated advance a test makes for its own
+ * reasons (a follow-up keystroke, running past a staleness deadline) rather
+ * than always the first one. Stripping in the one place every clock-advancing
+ * call already funnels through keeps every test's `rankCalls` clean of this
+ * noise regardless of exactly when it fires. */
 async function flush(fn: () => void = () => {}): Promise<void> {
   await act(async () => {
     fn();
     await Promise.resolve();
     await Promise.resolve();
   });
+  const warm = rankCalls.findIndex((c) => c.q === WARM_QUERY);
+  if (warm !== -1) rankCalls.splice(warm, 1);
 }
 
-function mount(): { renderer: ReactTestRenderer; input: () => any; unmount: () => void } {
+/** The shared status poll's reading, as the page's own `useIndexStatus` would
+ * hand it down. Null (the default) is "no poll answer yet", which is what
+ * every test that does not care about scan state wants. */
+function scanStatus(over: Partial<IndexStatus> = {}): IndexStatus {
+  return {
+    scanning: false,
+    has_index: false,
+    files_indexed: 0,
+    last_completed_at: null,
+    running: false,
+    run_id: null,
+    root: HOME,
+    phase: "",
+    dirs: 0,
+    files: 0,
+    reused: 0,
+    error: null,
+    ...over,
+  };
+}
+
+function mount(
+  indexScan: IndexStatus | null = null,
+): {
+  renderer: ReactTestRenderer;
+  input: () => any;
+  /** Hand down a fresh poll reading, the way the parent's re-render would. */
+  poll: (next: IndexStatus | null) => void;
+  unmount: () => void;
+} {
   let renderer!: ReactTestRenderer;
+  const element = (scan: IndexStatus | null) =>
+    createElement(FilesSearch, {
+      home: HOME,
+      initialQuery: "",
+      indexScan: scan,
+      onActiveChange: () => {},
+      onScanRequested: () => {
+        scanRequested += 1;
+      },
+    });
   act(() => {
-    renderer = create(
-      createElement(FilesSearch, {
-        home: HOME,
-        initialQuery: "",
-        indexScan: null,
-        onActiveChange: () => {},
-      }),
-    );
+    renderer = create(element(indexScan));
   });
   // Tracked for the unconditional afterEach sweep (above) — removed here on a
   // NORMAL unmount so that sweep does not try to unmount an already-unmounted
@@ -189,6 +260,7 @@ function mount(): { renderer: ReactTestRenderer; input: () => any; unmount: () =
   return {
     renderer,
     input: () => renderer.root.findByProps({ className: "files-search-input" }),
+    poll: (next: IndexStatus | null) => act(() => renderer.update(element(next))),
     // Unmount INSIDE act(): effect cleanups (the pending timers, the
     // document listener) must run in the same batched world the rest of the
     // test drives, or React can warn about — or in practice mis-schedule —
@@ -201,8 +273,19 @@ function mount(): { renderer: ReactTestRenderer; input: () => any; unmount: () =
   };
 }
 
-function type(box: { input: () => any }, value: string): Promise<void> {
-  return flush(() => box.input().props.onChange({ target: { value } }));
+// `instant-search` dropped the leading-edge throttle (`searchDelay`) for a
+// plain trailing debounce: every keystroke now waits `INSTANT_DEBOUNCE_MS`
+// before firing, including the first one after a mount, so this helper — the
+// one every test types through — advances the fake clock past that wait
+// itself. Tests exercising a BURST instead dispatch the follow-up keystrokes
+// directly through `box.input().props.onChange` and advance the clock
+// themselves, same as before.
+async function type(box: { input: () => any }, value: string): Promise<void> {
+  await flush(() => box.input().props.onChange({ target: { value } }));
+  await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+  // `flush` itself strips any `indexRank(WARM_QUERY)` the mount effect's idle
+  // warm-up fired during either of the two flushes above — see its own
+  // comment for why that lives there now rather than only here.
 }
 
 /** Elements carrying `cls` among possibly several space-separated classes —
@@ -218,21 +301,15 @@ function findByClass(box: { renderer: ReactTestRenderer }, cls: string): unknown
 function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
     covered: true,
-    fresh: true,
     reason: "",
-    root: HOME,
     hits: [],
     truncated: false,
     total: 0,
-    updated: 1,
-    age_s: 1,
     ...over,
   };
 }
 
-const hit = (rel: string) => ({
-  rel, is_dir: false, size: 1, mtime: 1, score: 10, longest_run: 3, tier: 1, depth: 1,
-});
+const hit = (rel: string) => ({ rel, is_dir: false, size: 1, mtime: 1 });
 
 /** The result note's flattened text, kbd/span children included. */
 function noteText(box: { renderer: ReactTestRenderer }): string {
@@ -258,9 +335,23 @@ describe("MIN_QUERY_CHARS: nothing is asked below it", () => {
     box.unmount();
   });
 
-  test("two characters ask, at the leading edge", async () => {
+  test("two characters ask, past the debounce", async () => {
     const box = mount();
     await type(box, "ab");
+    expect(rankCalls.filter((c) => c.q === "ab")).toHaveLength(1);
+    box.unmount();
+  });
+
+  test("the FIRST keystroke after a mount does not fire before the debounce elapses", async () => {
+    // Pins the change away from the old leading-edge throttle: `searchDelay`
+    // used to return 0 for exactly this case (nothing issued yet, so the
+    // first keystroke fired immediately) — the shortest, broadest, most
+    // expensive query of any run was the one guaranteed no delay at all.
+    // Every request is now a plain trailing debounce, first one included.
+    const box = mount();
+    await flush(() => box.input().props.onChange({ target: { value: "ab" } }));
+    expect(rankCalls.filter((c) => c.q === "ab")).toHaveLength(0);
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls.filter((c) => c.q === "ab")).toHaveLength(1);
     box.unmount();
   });
@@ -288,9 +379,13 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
     await flush(() => rankCalls[0].resolve(
       answer({ hits: [hit("formula.txt"), hit("format.md")], total: 2 })));
 
-    // Extend the query; the second request is left hanging.
+    // Extend the query; the second request is left hanging. `flush` strips
+    // any idle warm-up call (`indexRank(WARM_QUERY)`) this advance happens
+    // to cross, so the exact margin here no longer matters for that reason —
+    // exactly the debounce is still the right amount to advance, just for its
+    // own sake (past the trailing debounce, no further).
     await flush(() => box.input().props.onChange({ target: { value: "forma" } }));
-    await flush(() => clock.advance(200)); // past the trailing debounce
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // past the trailing debounce
     expect(rankCalls).toHaveLength(2);
     expect(box.renderer.root.findAllByProps({ className: "fh-result-name" }).length)
       .toBeGreaterThan(0); // narrowed rows are on screen already, no round trip needed
@@ -303,39 +398,46 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
     box.unmount();
   });
 
-  test("an unrelated query narrows to nothing: the note says so immediately, and the deadline only clears the stale-rows dimming", async () => {
+  test("an unrelated query narrows to nothing: the note holds the last settled count instead of flashing \"Searching…\"", async () => {
     const box = mount();
     await type(box, "form");
     await flush(() => rankCalls[0].resolve(
       answer({ hits: [hit("formula.txt"), hit("format.md")], total: 2 })));
     expect(noteText(box)).not.toContain("Searching");
+    expect(noteText(box)).toContain("2 matches");
 
-    // A paste-over: nothing held matches this at all.
+    // A paste-over: nothing held matches this at all, so `hits` narrows to
+    // empty — but the note reads from the last SETTLED answer (`noteAnswer`,
+    // home-search.ts), not from `hits`, so it keeps reading the held count
+    // (now with a "+", since `behind` says more could be out there for this
+    // query than the held answer ever had a chance to include) rather than
+    // reverting to "Searching…" for a query that has not actually failed to
+    // find anything yet.
+    // Exactly the debounce (see the identical note in the test above).
     await flush(() => box.input().props.onChange({ target: { value: "zzzqqq" } }));
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
 
-    // Before the deadline: the note already reads the RENDERED (narrowed,
-    // now-empty) rows, not the previous request's non-zero count — it used
-    // to keep reporting that stale count until the deadline dropped `answer`
-    // to null, over a list that had already narrowed to nothing.
-    expect(noteText(box)).toBe("Searching…");
+    // Before the deadline: the held note is unchanged but for that "+".
+    expect(noteText(box)).toContain("2+ matches");
     // The rows themselves are still `behind` (dimmed): the held answer is
     // for "form", not yet given up on.
     expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
       .toContain("is-stale");
 
     await flush(() => clock.advance(STALE_CLEAR_MS + 50));
-    // Past the deadline `answer` itself drops to null: the note still reads
-    // "Searching…" (nothing changed about what's on screen), but the rows
-    // are no longer flagged stale — there is nothing stale left to dim.
-    expect(noteText(box)).toBe("Searching…");
+    // Past the deadline `answer` itself drops to null, so `behind` (which
+    // reads `answer`, not the held note) goes false along with the dimming —
+    // the "+" drops with it — but the count keeps reading the held total:
+    // `noteAnswer` only ever changes when a query actually settles, and
+    // nothing has for "zzzqqq" yet.
+    expect(noteText(box)).toContain("2 matches");
     expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
       .not.toContain("is-stale");
     box.unmount();
   });
 
-  test("the count note narrows together with the rows, not left describing the held answer", async () => {
+  test("the count note holds the last settled total while rows narrow underneath it", async () => {
     const box = mount();
     await type(box, "form");
     // A broad first answer: the note claims 137 matches.
@@ -352,15 +454,62 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
     // ("formula.txt" — the others lack a "u"). The second request is left
     // hanging, so this is all narrowing, no round trip.
     await flush(() => box.input().props.onChange({ target: { value: "formu" } }));
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     // Only the file row with an href is a FILE hit — the AI row also carries
     // `.fh-result-name` (its "Search with AI" label), so counting that class
-    // alone would double-count it.
+    // alone would double-count it. The rows on screen DO narrow with the
+    // query (`narrowAnswer`) — it is only the count note that holds still.
     expect(box.renderer.root.findAll((n) => typeof n.props?.href === "string")).toHaveLength(1);
-    // The note used to keep reporting the OLD request's total (137) over the
-    // now-narrowed 1-row list — describing a search that was never sent for
-    // "formu" at all. It must track what's actually on screen.
-    expect(noteText(box)).not.toContain("137");
+    // The note reads the last SETTLED answer (`noteAnswer`), not the
+    // narrowed row count, so it keeps reporting 137 rather than rewriting
+    // itself to a number that describes a search that was never sent for
+    // "formu" at all — the dimmed rows already say this is stale.
+    expect(noteText(box)).toContain("137");
+    box.unmount();
+  });
+
+  test("typing a second query never flips the note to \"Searching…\" once a count has been shown", async () => {
+    const box = mount();
+    await type(box, "form");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("formula.txt"), hit("format.md")], total: 2 })));
+    expect(noteText(box)).toContain("2 matches");
+
+    // Every keystroke of a second query, with the round trip left hanging —
+    // at no point should the note revert to "Searching…": that number is
+    // the last thing settled, and it stays on screen until a new one lands.
+    for (const value of ["forma", "formal", "formal "]) {
+      await flush(() => box.input().props.onChange({ target: { value } }));
+      await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+      expect(noteText(box)).not.toBe("Searching…");
+    }
+    box.unmount();
+  });
+});
+
+describe("the latency readout", () => {
+  test("reports the round-trip time next to the count", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(87);
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(noteText(box)).toContain("87 ms");
+    box.unmount();
+  });
+
+  test("a memoised answer (backspace) keeps the elapsed time it was measured with", async () => {
+    const box = mount();
+    await type(box, "readme");
+    clock.advance(120);
+    await flush(() => rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })));
+    expect(noteText(box)).toContain("120 ms");
+
+    // Extend, then backspace back to the memoised query — no new round trip,
+    // so the readout must still read the original measurement, not ~0ms.
+    await flush(() => box.input().props.onChange({ target: { value: "readmex" } }));
+    await flush(() => box.input().props.onChange({ target: { value: "readme" } }));
+    expect(rankCalls.filter((c) => c.q === "readme")).toHaveLength(1); // no re-ask
+    expect(noteText(box)).toContain("120 ms");
     box.unmount();
   });
 });
@@ -403,6 +552,9 @@ describe("a query that is really an address (section 7)", () => {
     // hasn't answered yet (showOpenRow is false) — so the note must not fall
     // through to describing the OLD answer.
     await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    // Past the address stat's own trailing debounce — it schedules its own
+    // timer the same way the rank request does.
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(statCalls).toHaveLength(1);
     expect(rankCalls).toHaveLength(1); // no second rank request
     expect(noteText(box)).not.toContain("137");
@@ -421,7 +573,75 @@ describe("a query that is really an address (section 7)", () => {
       answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
 
     await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    // Past the address stat's own trailing debounce.
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(statCalls).toHaveLength(1); // the stat is issued but left hanging
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .toContain("is-stale");
+
+    await flush(() => clock.advance(STALE_CLEAR_MS + 50));
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .not.toContain("is-stale");
+    box.unmount();
+  });
+
+  test("the stale-clear deadline gets its full budget from ISSUANCE, not the keystroke (D706)", async () => {
+    // Review finding, fixed in D706: `suppressRank` flips true on the
+    // keystroke itself, but the stat does not fire until
+    // `INSTANT_DEBOUNCE_MS` later — gating the deadline effect on
+    // `suppressRank` (rather than `addr.status === "checking"`, which flips
+    // only once the stat actually goes out) started the STALE_CLEAR_MS clock
+    // at the keystroke, shrinking the stat's real budget to
+    // `STALE_CLEAR_MS - INSTANT_DEBOUNCE_MS`.
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
+
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    // Past the address stat's own trailing debounce: the stat is issued HERE
+    // (addr.status moves to "checking"), which is when the deadline should
+    // start counting.
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(statCalls).toHaveLength(1);
+
+    // Just short of a FULL STALE_CLEAR_MS measured from issuance. Before
+    // D706, the deadline was already counting from the keystroke — i.e. from
+    // INSTANT_DEBOUNCE_MS earlier — so by this point in total elapsed time it
+    // had already fired and cleared the stale rows.
+    await flush(() => clock.advance(STALE_CLEAR_MS - 50));
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .toContain("is-stale");
+
+    // Cross the real deadline (measured from issuance) and confirm it does
+    // still fire eventually.
+    await flush(() => clock.advance(100));
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .not.toContain("is-stale");
+    box.unmount();
+  });
+
+  test("the stale-clear deadline still fires once the address RESOLVES (code review finding)", async () => {
+    // The D706 swap (gate on `addr.status === "checking"`) fixed the
+    // hanging-stat case above, but it lost the case where the stat actually
+    // settles to a real path: `suppressRank` stays true forever once
+    // `addr.status` is "exists" (it only excludes "missing"), so the rank
+    // effect keeps early-returning (`pending` never fires) and `addr.status`
+    // moves off "checking" the moment the stat resolves — a gate reading only
+    // `pending || addr.status === "checking"` never arms again, and the held
+    // answer's `is-stale` dimming never clears.
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
+
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // the stat is issued
+    await flush(() =>
+      statCalls[0].resolve({
+        path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
+      }),
+    );
     expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
       .toContain("is-stale");
 
@@ -435,6 +655,11 @@ describe("a query that is really an address (section 7)", () => {
     const box = mount();
     await type(box, "/tmp/does-not-exist");
     await flush(() => statCalls[0].reject());
+    // The rank effect was suppressed the whole time up to here (address !==
+    // null), so this is the FIRST time it has ever scheduled a timer for this
+    // mount — it still has to wait out its own trailing debounce before
+    // firing, same as any other query change.
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     // Falls through to a normal search (7d) — but still no AI row (7e).
     expect(rankCalls.map((c) => c.q)).toEqual(["/tmp/does-not-exist"]);
     expect(findByClass(box, "fh-ai-glyph")).toHaveLength(0);
@@ -498,6 +723,32 @@ describe("Enter while a pasted path's stat is still resolving (section 7 paste-a
       }),
     );
     expect(navPushes).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("paste-and-Enter over a held answer still navigates once the debounced stat resolves", async () => {
+    // Paste-and-go over an EXISTING search (not an empty box, the shape every
+    // other test in this describe block starts from): a held rank answer is
+    // on screen, the paste makes the query address-shaped, and Enter is
+    // pressed once the address stat has actually been issued (D706:
+    // `addr.status === "checking"`, not the keystroke, is what the deadline
+    // effect now tracks). `awaitingCommit` has to survive the round trip and still
+    // commit once the stat lands.
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("readme.md")], total: 137 })));
+
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // the stat is now issued
+    expect(statCalls).toHaveLength(1);
+    await pressEnter(box);
+    await flush(() =>
+      statCalls[0].resolve({
+        path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
+      }),
+    );
+    expect(navPushes.some((u) => u.includes("report.csv"))).toBe(true);
     box.unmount();
   });
 });
@@ -581,6 +832,284 @@ describe("the AI row's sticky positioning is on the LIST ITEM, not the button in
     );
     expect(carriers.length).toBeGreaterThan(0);
     for (const n of carriers) expect(n.type).toBe("li");
+    box.unmount();
+  });
+});
+
+// An uncovered root with nothing scanning used to render the same "still
+// building" note as a live scan. Nothing on this page ever asks for a scan
+// (that is the in-folder box's `requestFolderScan`) and the startup scheduler
+// runs once per boot, so that note promised a build that had already failed,
+// been refused, or been debounce-skipped — for as long as the user was
+// willing to wait, which in the report that prompted this was twenty minutes.
+describe("an uncovered index with no scan running offers the scan", () => {
+  const uncovered = { covered: false, reason: "uncovered" as const, hits: [], total: 0 };
+
+  test("says the files are not indexed rather than that something is coming", async () => {
+    // The message lives in the .fh-index-cta callout, and there only: the
+    // note renders nothing for `buildable`, so it cannot say it twice.
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(findByClass(box, "fh-index-cta-text")).toHaveLength(1);
+    expect(noteText(box)).not.toContain("aren’t indexed yet");
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  test("the button asks for a whole-index scan, not a folder one", async () => {
+    // POST /api/index/scan (every configured root, no debounce) — NOT
+    // /api/index/scan-folder, whose 15-minute floor would refuse exactly the
+    // case this button exists for.
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(1);
+    const button = findByClass(box, "fh-index-cta-btn") as { props: { onClick: () => void } }[];
+    expect(button).toHaveLength(1);
+    await flush(() => button[0].props.onClick());
+    expect(scanCalls).toEqual(["/api/index/scan"]);
+    // And the parent is told to look at the status again NOW: its poll is on a
+    // ten-second idle beat, so without this the run the user just started
+    // would not exist as far as this note is concerned.
+    expect(scanRequested).toBe(1);
+    box.unmount();
+  });
+
+  test("does not re-offer the button while the poll has yet to see the scan", async () => {
+    // The POST returns in milliseconds; the poll answers when it answers. In
+    // between, the CTA used to go straight back to "Index my files" — a
+    // click that reads as a no-op on the one screen whose whole point is that
+    // waiting is futile, and whose obvious response is to click again.
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    type Button = { props: { onClick: () => void; disabled?: boolean } };
+    const button = findByClass(box, "fh-index-cta-btn") as Button[];
+    await flush(() => button[0].props.onClick());
+    expect((findByClass(box, "fh-index-cta-btn") as Button[])[0].props.disabled).toBe(true);
+    // Poll catches up: now "building" is the true claim, and it comes with a
+    // count, back in the note (the CTA disappears once `gap` is no longer
+    // `buildable`).
+    box.poll(scanStatus({ scanning: true, files: 21 }));
+    expect(noteText(box)).toContain("still building");
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a stale `scanning` gives way to the poll saying nothing runs", async () => {
+    // The other route into the twenty-minute wedge: this answer was ranked
+    // while the startup scan was alive, then that worker died. Status reports
+    // idle (after ABANDONED_RUN_S), `last_completed_at` never moves so no
+    // lifecycle event re-ranks anything, and trusting `reason` would leave
+    // "still building" — with a frozen file count — on screen forever.
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ ...uncovered, reason: "scanning" })));
+    const note = noteText(box);
+    expect(note).not.toContain("still building");
+    expect(findByClass(box, "fh-index-cta-btn")).toHaveLength(1);
+    box.unmount();
+  });
+
+  test("a live scan still says building, with its progress", async () => {
+    // The other half of the same distinction: when a scan really is running,
+    // waiting IS the advice — and the count is what tells the user that
+    // "building" is a live claim rather than the wedged one above.
+    const box = mount(scanStatus({ scanning: true, files: 12345 }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    const note = noteText(box);
+    expect(note).toContain("still building");
+    expect(note).toContain("12,345 files so far");
+    box.unmount();
+  });
+
+  test("a scan started since the answer was ranked flips the note off the poll", async () => {
+    // `reason` was fixed when the answer was ranked, so the status poll is
+    // the only thing that can report the scan the button just started. Same
+    // uncovered answer, `scanning: true` from the poll.
+    const box = mount(scanStatus({ scanning: true }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(noteText(box)).toContain("still building");
+    box.unmount();
+  });
+
+  test("indexing turned off keeps its own message and offers no scan", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ ...uncovered, reason: "disabled" })));
+    const note = noteText(box);
+    expect(note).toContain("File indexing is off");
+    expect(note).not.toContain("Index them now");
+    box.unmount();
+  });
+
+  test("no Full Disk Access offers the grant, not a scan", async () => {
+    // The packaged mac app without FDA: no scan may start (shell/index_gate.py),
+    // so "Index my files" would be a button that cannot work. The callout asks
+    // for the grant instead, and the note says nothing on top of it.
+    const box = mount(scanStatus({ scanning: true }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ ...uncovered, reason: "fda" })));
+    const cta = findByClass(box, "fh-index-cta-text") as { props: { children: unknown } }[];
+    expect(cta.length).toBe(1);
+    expect(String(cta[0].props.children)).toContain("Full Disk Access");
+    expect(findByClass(box, "fh-index-cta-btn").length).toBe(1);
+    expect(scanCalls).toEqual([]);
+    expect(noteText(box)).not.toContain("still building");
+    box.unmount();
+  });
+
+  test("a permanently uncoverable root offers no scan either", async () => {
+    // A button that cannot work is worse than none: no scan will ever cover a
+    // mount-backed root.
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer({ ...uncovered, reason: "mount" })));
+    const note = noteText(box);
+    expect(note).toContain("can’t be indexed");
+    expect(note).not.toContain("Index them now");
+    box.unmount();
+  });
+});
+
+describe("the scan CTA follows the note's own precedence guards", () => {
+  const uncovered = { covered: false, reason: "uncovered" as const, hits: [], total: 0 };
+
+  // Regression for `gap` reading `displayAnswer` alone: a held uncovered
+  // answer kept the CTA on screen after the note itself had moved on to
+  // "Keep typing…", offering "Index my files" next to a note that no longer
+  // has an uncovered answer to report on at all.
+  test("dropping below MIN_QUERY_CHARS removes the CTA along with the note's claim", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(1);
+
+    await flush(() => box.input().props.onChange({ target: { value: "r" } }));
+    expect(noteText(box)).toContain("Keep typing");
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(0);
+    box.unmount();
+  });
+
+  // Same bug, the other guard: once an address resolves the Open row is the
+  // whole story, and the CTA has nothing left to add to it.
+  test("a resolved address removes the CTA even with a held uncovered answer", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(1);
+
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    // Past the address stat's own trailing debounce.
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => statCalls[statCalls.length - 1].resolve({
+      path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
+    }));
+    expect(box.renderer.root.findAllByProps({ id: "fh-row-0" }).length).toBeGreaterThan(0);
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(0);
+    box.unmount();
+  });
+});
+
+describe("the scan latch is one-shot: the poll owns the state once it sees the run", () => {
+  const uncovered = { covered: false, reason: "uncovered" as const, hits: [], total: 0 };
+
+  // Regression for `pendingBuild` never being cleared: a scan that dies
+  // between two polls without moving `last_completed_at` left
+  // `scanStarting`'s last clause (`completedAt === pending.completedAt`) true
+  // again, re-arming "Starting the scan…" (disabled) for the rest of the
+  // 20s grace window on the one screen whose whole point is that waiting is
+  // futile — and blocking the retry the button exists to offer.
+  test("a scan that dies after the poll saw it running re-offers an enabled button", async () => {
+    const box = mount(scanStatus({ scanning: false, last_completed_at: 1000 }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    type Button = { props: { onClick: () => void; disabled?: boolean } };
+    const button = () => (findByClass(box, "fh-index-cta-btn") as Button[])[0];
+    await flush(() => button().props.onClick());
+    expect(button().props.disabled).toBe(true);
+
+    // The poll sees the run: the latch's one job is done.
+    await flush(() => box.poll(scanStatus({ scanning: true, last_completed_at: 1000 })));
+    expect(findByClass(box, "fh-index-cta")).toHaveLength(0);
+
+    // The worker dies without moving `last_completed_at`. If the latch were
+    // still armed, `scanStarting` would read this as the SAME pending scan
+    // and re-disable the button reading "Starting the scan…".
+    await flush(() => box.poll(scanStatus({ scanning: false, last_completed_at: 1000 })));
+    const retry = button() as Button & { props: { children: unknown } };
+    expect(retry.props.disabled).toBe(false);
+    // Enabled AND saying the true thing: no scan is starting, so the button
+    // has to read as the offer again, not as a claim about a dead run.
+    expect(retry.props.children).toBe("Index my files");
+    box.unmount();
+  });
+});
+
+describe("the empty (buildable) note paints no leading separator", () => {
+  const uncovered = { covered: false, reason: "uncovered" as const, hits: [], total: 0 };
+
+  // Regression for the slow-search suffix rendering unconditionally: the
+  // `buildable` branch of the note cascade returns null (the `.fh-index-cta`
+  // callout carries the message instead), so the suffix used to be the ONLY
+  // content of the paragraph — a leading "· Searching…" separating nothing.
+  test("the slow-search suffix drops its leading dot while the note is empty", async () => {
+    const box = mount(scanStatus({ scanning: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    expect(noteText(box)).toBe("");
+
+    // Extend the query so a new request is pending (and left hanging). The
+    // debounce timer and the `slow` timer are each scheduled by an effect
+    // that only runs once React re-renders on the PREVIOUS timer firing, so
+    // each has to fire in its own flush — advancing past both in one call
+    // races ahead of the effect that schedules the second timer.
+    await flush(() => box.input().props.onChange({ target: { value: "reports" } }));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // past the trailing debounce
+    await flush(() => clock.advance(PENDING_INDICATOR_MS + 50)); // past the slow threshold
+    expect(noteText(box)).toBe("Searching…");
+    box.unmount();
+  });
+});
+
+// AI search executes its spec against the same file index
+// (routers/search._search_index), so offering it — or promising it "can
+// answer in the meantime" — when there is no index built is a dead end: the
+// click produces the exact "file index has not been built yet" error the
+// note was standing next to. `aiSearchUsable`/`has_index` gate that offer.
+describe("the AI offer is gated on has_index", () => {
+  const uncovered = { covered: false, reason: "mount" as const, hits: [], total: 0 };
+
+  test("has_index: false hides the Search with AI row entirely", async () => {
+    const box = mount(scanStatus({ scanning: false, has_index: false }));
+    await type(box, "zzzqqqnomatch");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [], total: 0 })));
+    expect(findByClass(box, "fh-ai-row")).toHaveLength(0);
+    expect(noteText(box)).not.toContain("AI search");
+    box.unmount();
+  });
+
+  test("has_index: false drops the AI clause from an uncoverable-root note", async () => {
+    const box = mount(scanStatus({ scanning: false, has_index: false }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    const note = noteText(box);
+    expect(note).toContain("can’t be indexed");
+    expect(note).not.toContain("AI search");
+    box.unmount();
+  });
+
+  test("has_index: true keeps the Search with AI row and the note's AI clause", async () => {
+    const box = mount(scanStatus({ scanning: false, has_index: true }));
+    await type(box, "report");
+    await flush(() => rankCalls[0].resolve(answer(uncovered)));
+    const note = noteText(box);
+    expect(note).toContain("can’t be indexed");
+    expect(note).toContain("AI search");
+    expect(findByClass(box, "fh-ai-row")).toHaveLength(1);
     box.unmount();
   });
 });

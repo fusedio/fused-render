@@ -237,7 +237,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     writeParams({
       hubQ: settled.q || null,
       hubTask: settled.task || null,
-      // "best" (D663) is now the default — the same slot "downloads" held
+      // "best" (D754) is now the default — the same slot "downloads" held
       // before the composite ranking existed — so it is the value omitted
       // from the URL rather than always written.
       hubSort: settled.sort === "best" ? null : settled.sort,

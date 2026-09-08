@@ -139,7 +139,10 @@ _STATE_FNS = ["let schedBlockers", "const BOX_PLACEHOLDER",
 # there is one. Everything else here is a surface the state function writes to.
 _STATE_STUBS = """
 const fused = { params: { get: (k) => (k === "session_id" ? "S1" : "") } };
-function nearBottom() { return false; }
+// the annotation mode's lock (annNavLock) — off in these runs, which are about the schedule's block
+let annLocked = false;
+function annNavLocked() { return annLocked; }
+function followBottom() {}
 function scrollBottom() {}
 function schedLoadTaskRow() {}
 let confirmClosed = 0;
@@ -337,10 +340,10 @@ def test_every_route_to_the_scheduler_is_closed_while_blocked(code):
     this template opens the Schedule page with a draft."""
     clicks = code[code.index('document.querySelectorAll(".schedbtn")'):]
     clicks = clicks[:clicks.index("\n});")]
-    assert "if (schedBlocked()) return;" in clicks
+    assert "if (schedBlocked() || annNavLocked()) return;" in clicks
     go = code[code.index('document.getElementById("schedpop-go").addEventListener'):]
     go = go[:go.index("\n});")]
-    assert "if (schedBlocked()) return;" in go
+    assert "if (schedBlocked() || annNavLocked()) return;" in go
     assert go.index("schedBlocked()") < go.index("openScheduler("), \
         "the guard has to come before the hop"
     # and only those two: no third entry point grew one
@@ -450,13 +453,14 @@ def test_the_arriving_banner_does_not_move_the_composer(code, source):
     """The one thing a card directly above the input must never do. It does not,
     by LAYOUT rather than by reserved space: #logwrap is #chat's only `flex: 1`
     child, so the height comes out of the transcript and the composer stays put.
-    The transcript's last line is what moves, so a reader who was at the bottom is
-    put back there — measured before the render, applied on the shown edge only."""
+    The transcript's last line is what moves, so a reader who was following the
+    tail is put back at the bottom — through the follow FLAG, not a geometry
+    read: this banner shrinks the scrollport as it appears, which is exactly the
+    case a distance threshold gets wrong (see tests/test_claude_scroll_follow.py)."""
     state = _fn(code, "function applyComposerBlockState(")
     assert "const wasHidden = schedBlockEl.hidden;" in state
-    assert "const pinned = wasHidden && nearBottom();" in state
-    assert state.index("nearBottom()") < state.index("renderSchedBlock()")
-    assert "if (pinned && !schedBlockEl.hidden) scrollBottom();" in state
+    assert "nearBottom()" not in state, "a threshold read came back into the banner"
+    assert "if (wasHidden && !schedBlockEl.hidden) followBottom();" in state
     # no reserved strip and no entry animation: #schedblock is `display: none`
     # when hidden, so an unblocked composer pays nothing for it
     assert "#schedblock[hidden] { display: none; }" in source

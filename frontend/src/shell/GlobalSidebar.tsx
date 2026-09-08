@@ -16,9 +16,20 @@ import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
+import { updateInstall } from "@platform/lib/api";
+import {
+  pokeUpdateStatus,
+  setUpdateStatus,
+  updateLabel,
+  updateRelevant,
+  useUpdateStatus,
+} from "@platform/lib/update-status";
+import { pushToast } from "@platform/lib/toast";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
+import { ONBOARDING_PATH } from "@shell/onboarding/state";
+import { SetupProgressRing, SetupProgressRow, useSetupMeter } from "@shell/onboarding/SetupProgress";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
@@ -26,7 +37,7 @@ import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
-import { pulseTitle, runningLabel } from "@shell/tasks-lib";
+import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 import CurrentAppsSection from "@shell/CurrentAppsSection";
@@ -422,6 +433,58 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // AI Models row itself now that it is primary nav.
   const aiRuntime = useAiRuntime();
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
+
+  // The same self-update poll UpdateBadge reads (platform/lib/update-status) —
+  // one store, so the collapsed rail's dot on Preferences and the popover row
+  // below agree with the expanded badge about what's happening, without a
+  // second timer.
+  const updateStatus = useUpdateStatus();
+  const updateIsRelevant = updateRelevant(updateStatus);
+  // Same action UpdateBadge's own button performs: dmg installs itself, brew
+  // installs are copy-the-command-and-run-it-yourself (the app never shells
+  // out to brew). Reached from the popover row rather than the expanded
+  // badge's own panel, so there's no panel here to flash "Copied" in — a
+  // toast says it instead.
+  const handleUpdatePick = () => {
+    if (!updateStatus) return;
+    // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the
+    // badge's own button and the ServerStatusBanner card use. FIRST, before
+    // the brew branch: a brew upgrade also lands in "installed" and clears
+    // manual_command, and the brew branch used to return on that before this
+    // path was reached (bugbot, PR #1058).
+    if (updateStatus.state === "installed") {
+      window.location.assign("fused-render://relaunch");
+      return;
+    }
+    if (updateStatus.method === "brew") {
+      if (!updateStatus.manual_command) return;
+      navigator.clipboard.writeText(updateStatus.manual_command);
+      pushToast({ msg: "Copied", tone: "info" });
+      return;
+    }
+    // ONLY AN UPDATE THAT IS WAITING GETS INSTALLED (bugbot, PR #1049): the
+    // row is drawn for every relevant state, but "Updating…" must not start
+    // a second install under the first, and "Ready to restart" is the
+    // ServerStatusBanner's restart card's job — this row is a status line
+    // there, the same as UpdateBadge's installed state.
+    if (updateStatus.state !== "available" && updateStatus.state !== "error") return;
+    // Same order as UpdateBadge.install: the poke comes AFTER the install
+    // answers, so the poll it arms sees "installing" and runs at the busy
+    // interval — poked first it would still read "available" and arm the 60s
+    // idle timer, leaving the rail dot behind for a minute (bugbot, PR #1049).
+    void updateInstall()
+      .then(setUpdateStatus)
+      .catch(() => {
+        // Fall through — the re-armed poll picks up the real state.
+      })
+      .finally(pokeUpdateStatus);
+  };
+  const updateDot = updateIsRelevant ? (
+    <span
+      className="sidebar-rail-dot is-update"
+      title={updateLabel(updateStatus!)}
+    />
+  ) : undefined;
   // `.sidebar-rail-dot`, the SAME dot the Tasks row wears, since 2026-08-24
   // (Akshil: "the dots in left sidebar are not consistent, make dot on ai models
   // page similar to one we have in tasks page"). It wore
@@ -511,8 +574,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const unseen = tasksActive ? 0 : pulse.unseen;
   const tasksTip = pulseTitle(pulse);
 
-  // ONE DOT ON THE ICON, IN BOTH MODES (Akshil, 2026-08-18): yellow while
-  // anything runs, green for completions not yet shown, nothing at all
+  // ONE DOT ON THE ICON, IN BOTH MODES (Akshil, 2026-08-18): red while a run is
+  // waiting on an answer, yellow while anything else runs, green for completions
+  // not yet shown, nothing at all
   // otherwise. It began as the collapsed rail's whole signal — no label there to
   // hang a word on — and the expanded row deliberately went without it. That was
   // wrong in use: the icon is where the eye lands whatever the sidebar's width,
@@ -521,12 +585,27 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // constant, and expanding ADDS words beside it ("N running" + the count chip)
   // instead of trading the dot for them.
   //
-  // Still ONE dot: yellow outranks green — a reader told work is in flight does
-  // not also need sending to the page mid-run. The hues are the status ring's
-  // own (--status-progress / --status-done, schedule.css) — one status, one
-  // colour, on every surface that names it (design-principles §1).
+  // Still ONE dot: red outranks yellow outranks green — a reader told work is in
+  // flight does not also need sending to the page mid-run, and a run that has
+  // STOPPED to ask something outranks both, because it is the only one of the
+  // three that goes nowhere until the reader acts. The hues are the status
+  // ring's own (--status-failed / --status-progress / --status-done,
+  // schedule.css) — one status, one colour, on every surface that names it
+  // (design-principles §1); red is the hue the Blocked ring already wears, and
+  // `needs_attention` is drawn in Blocked (schedule-lib.laneOf).
+  //
+  // A WAITING TASK NOW GETS ITS OWN COLOUR, AND STILL NO MOVEMENT (Akshil,
+  // 2026-09-03, revising the same day's "no dot of its own"). It is counted in
+  // `running` too — its turn genuinely is in flight — so before this it wore the
+  // plain yellow and the waiting was said in WORDS alone, which is invisible at
+  // rail width, where there are no words. A different HUE says it at both widths
+  // and costs nothing that moves: the pulsing dot tried first stays out, because
+  // the rail's corner is the one place on screen a reader cannot look away from,
+  // and nothing there may blink. The words below and the tooltip are unchanged.
   const tasksDot =
-    pulse.running > 0 ? (
+    pulse.attention > 0 ? (
+      <span className="sidebar-rail-dot is-attention" title={tasksTip} />
+    ) : pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
     ) : unseen > 0 ? (
       <span className="sidebar-rail-dot is-unread" title={tasksTip} />
@@ -541,7 +620,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const tasksTrailing =
     pulse.running > 0 || pulse.doneUnread > 0 ? (
       <>
-        {pulse.running > 0 && (
+        {/* The waiting count SPEAKS INSTEAD of the running one when there is
+            one, rather than beside it: they are the same rows counted twice
+            (tasks-lib.tasksPulse), and printing "1 waiting for you · 1 running"
+            about one task would read as two. The one that asks for something
+            wins the words; the total is still in the tooltip. */}
+        {pulse.attention > 0 ? (
+          // Red, like the dot beside it: one state, one colour, on the mark and
+          // on the words (Akshil, 2026-09-03: "this should be red as well").
+          <span className="sidebar-running is-attention" title={tasksTip}>
+            {attentionLabel(pulse.attention)}
+          </span>
+        ) : pulse.running > 0 && (
           <span className="sidebar-running" title={tasksTip}>
             {runningLabel(pulse.running)}
           </span>
@@ -558,11 +648,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the former sidebar entries (Config), then the settings
   // pages. Same gates as before — an entry a machine can't use stays hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
+    // A first row for the same fact the collapsed rail's dot and the expanded
+    // badge both carry — the popover is the only one of the three with room
+    // for the actual verb (install / copy the command), so it gets one here
+    // rather than just a label. `href` is a stable key (see PrefsMenuEntry) —
+    // this row never navigates, it only runs `handleUpdatePick`.
+    ...(updateIsRelevant && updateStatus
+      ? [{ href: "#update", label: updateLabel(updateStatus), onPick: handleUpdatePick }, "separator" as const]
+      : []),
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
       : []),
   ];
-  if (menuEntries.length > 0) menuEntries.push("separator");
+  if (claudeConfigAvailable) menuEntries.push("separator");
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
@@ -603,15 +701,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // help — the walkthroughs are what the row holds, not what it is named.
     label: "Help",
     icon: TOURS_ICON,
-    submenu: TOURS.map((tour) => ({
-      href: `/preferences#tour-${tour.id}`,
-      label: tour.title,
-      // Next frame, not now: driver.js measures its highlight the moment it is
-      // told to drive, and closing the menu only queues the unmount — it is
-      // still over the sidebar rows some tours point at until React has painted
-      // without it.
-      onPick: () => requestAnimationFrame(() => startTour(tour)),
-    })),
+    submenu: [
+      // The first-run wizard, on demand — its own page (shell/onboarding).
+      // Reopening touches neither flag until the user finishes or closes it.
+      { href: ONBOARDING_PATH, label: "Setup wizard" },
+      ...TOURS.map((tour) => ({
+        href: `/preferences#tour-${tour.id}`,
+        label: tour.title,
+        // Next frame, not now: driver.js measures its highlight the moment it is
+        // told to drive, and closing the menu only queues the unmount — it is
+        // still over the sidebar rows some tours point at until React has painted
+        // without it.
+        onPick: () => requestAnimationFrame(() => startTour(tour)),
+      })),
+    ],
   });
 
   // The trigger (and its rail icon) is the only sidebar chrome that can show
@@ -642,6 +745,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // Grows upward: pinned by its bottom edge just above the trigger.
     setPrefsPos({ left: r.left, bottom: window.innerHeight - r.top + 4 });
   };
+
+  // THE SETUP METER (shell/onboarding/progress): how far first-run setup has
+  // got, as a row above Settings and a ring on the rail, both leading back into
+  // the wizard. Null = nothing to show (never started, or finished).
+  const setupMeter = useSetupMeter(config);
 
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
@@ -674,16 +782,34 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       active: aiModelsActive,
       badge: residentDot,
     },
+    // Same gate and same place as the expanded row: the rail is the whole
+    // sidebar when collapsed, and a meter that vanished on collapse would read
+    // as setup being done.
+    ...(setupMeter
+      ? [
+          {
+            key: "setup",
+            label: setupMeter.title,
+            icon: <SetupProgressRing percent={setupMeter.percent} />,
+            href: ONBOARDING_PATH,
+            pinBottom: true,
+          },
+        ]
+      : []),
     {
       key: "preferences",
       label: "Preferences",
       icon: PREFERENCES_ICON,
       href: "/preferences",
-      pinBottom: true,
+      pinBottom: !setupMeter,
       active: prefsActive,
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/Mounts/etc.
       onClick: (e) => togglePrefsMenu(e.currentTarget),
+      // The rail's only signal that an update exists: collapsed, there is no
+      // Settings row for the UpdateBadge to sit above (see design.md §1) — so
+      // the same fact becomes a dot on the one rail icon that leads to it.
+      badge: updateDot,
     },
   ];
 
@@ -740,6 +866,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateBadge />
+          {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
+          {setupMeter && <SetupProgressRow meter={setupMeter} />}
           {/* The version rides the Settings row's trailing edge rather than the
               brand row it used to sit in. Two reasons it moved: the brand row is
               one click target for Home, so a version glued to the title read as

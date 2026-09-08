@@ -213,8 +213,10 @@ class RescanQueue:
 def _real_start(root: str) -> None:
     from fused_render.index import runner
     from fused_render.index.config import load_config
+    from fused_render.server.routers.index import _wake_index_job_bridge
 
     started = runner.start(load_config(), root)
+    _wake_index_job_bridge()
     logger.info("index: rescanning %s after an in-app change (run %s)",
                 root, (started or {}).get("run_id"))
 
@@ -313,8 +315,8 @@ def note_index_mutation(*paths: str | None) -> None:
     the mutating page keeps touching files. Checked here rather than only at
     `_real_start` because THAT already having a scan to skip is the failure
     mode this avoids."""
-    from fused_render.shell.prefs import indexing_enabled
+    from fused_render.shell import index_gate
 
-    if not indexing_enabled():
+    if not index_gate.indexing_allowed():
         return
     _queue.note(*[p for p in paths if isinstance(p, str) and p])

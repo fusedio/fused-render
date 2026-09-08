@@ -1,5 +1,5 @@
-"""The file index's HTTP surface: scan control, status polling, stats,
-lookup, and the small persisted config — plus the startup scan scheduler.
+"""The file index's HTTP surface: scan control, status polling, stats, and
+the small persisted config — plus the startup scan scheduler.
 
 The engine lives in `fused_render/index/` and knows nothing about HTTP; this
 module is the thin adapter. Every route resolves its `IndexConfig` from disk
@@ -24,13 +24,14 @@ import logging
 import os
 import re
 import threading
+import weakref
 
 from fastapi import APIRouter, Body, Header, Query, Request
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
+from fused_render import jobs
 from fused_render.index import freshness, runner
-from fused_render.index.cancel import CancelToken, Cancelled
+from fused_render.index.cancel import CancelToken, Cancelled, cancellable
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
@@ -41,7 +42,6 @@ from fused_render.index.ignore import (
     norm,
 )
 from fused_render.index.query import MAX_CORPUS, RANK_LIMIT
-from fused_render.index.query import lookup as index_lookup
 from fused_render.index.query import search_ranked as index_rank
 from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
@@ -54,11 +54,88 @@ from fused_render.index.store import (
 from fused_render.server import ai as _server_ai
 from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
-from fused_render.server.index_gitignore import filter_corpus
+from fused_render.shell import index_gate
 from fused_render.shell.prefs import indexing_enabled
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Bounds how many index reads run their duckdb call at once. `asyncio.to_thread`
+# alone dispatches onto the default executor (min(32, cpu+4) workers) with no
+# ceiling of its own, and each of those threads opens a DuckDB connection
+# capped to `search_threads()` (index/store.py) — so without this, up to 32 of
+# those capped pools could still run concurrently, which adds back most of the
+# whole-machine exposure the per-connection cap exists to remove.
+#
+# TWO LANES (D701 correction / D706), not one shared semaphore: `rank`,
+# `search`, and plain `stats` are per-keystroke and their statements are
+# ours — bounded, cheap, and known-shaped. `query` and `ask` run a
+# CALLER-AUTHORED statement (a hand-typed SQL-panel query, or one a model
+# compiled) bounded only by `guarded_query.TIMEOUT_S` (10s). One shared
+# semaphore meant two SQL-panel queries could hold both of its slots for up
+# to 10s each, and every keystroke in the home search box — an unrelated
+# workload — queued behind them: the search box went dead for seconds
+# because of an unrelated panel. Splitting the lanes means the authored-SQL
+# path can never again block the per-keystroke one, whatever it is doing.
+#
+# `stats?breakdown=true` (review finding) shares the authored-SQL lane too,
+# despite running OUR sql rather than a caller's: the "bounded, cheap, and
+# known-shaped" premise the interactive lane rests on is true of plain
+# `stats` but not of a breakdown, an unbounded `GROUP BY ext` over every
+# partition under the root that can take seconds on a large index. Two
+# breakdown requests used to fill the entire width-2 interactive lane on
+# their own, and every keystroke in the home search box queued behind
+# them — the exact head-of-line blocking the two-lane split exists to
+# eliminate, relocated inside the lane meant to be safe from it. It costs the
+# authored-SQL lane nothing extra to also hold this: a breakdown request is
+# rare (an explorer settings panel, not typed per keystroke) and no slower
+# than the caller-authored statements that lane already tolerates serializing
+# behind each other.
+#
+# Widths: the interactive lane keeps its previous width of 2 — tight on
+# purpose, so a third keystroke waits milliseconds behind two running ones
+# rather than the app inventing a fourth simultaneous full-width scan. The
+# authored-SQL lane is narrower still, 1: it is rare (one SQL panel, one ask
+# box, almost never both at once, and now one breakdown request), each
+# statement can run for up to 10 `search_threads()`-capped seconds, and a
+# caller who fires a second one while the first is still running is already
+# watching that first one's tab — serializing them costs that caller nothing
+# a second slot would have saved, and keeps two long full-table scans from
+# ever running side by side.
+#
+# Each lane is a LAZY PER-EVENT-LOOP semaphore rather than one instance built
+# at import time: `asyncio.Semaphore` binds to whichever loop first CONTENDS
+# on it (an uncontended acquire skips the bind, which is why the single
+# module-level instance this replaced passed this repo's own test suite while
+# still carrying the bug) — a second event loop in the same process that later
+# contends on an already-bound semaphore raises `RuntimeError: ... is bound to
+# a different event loop`, surfacing as a 500 instead of a queued request. A
+# `WeakKeyDictionary` keyed on the running loop gives each loop (the app's
+# own, and any test harness that opens its own) its own semaphore, and lets a
+# closed test loop's entry be collected instead of accumulating for the life
+# of the process.
+_interactive_lane_loops: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_query_lane_loops: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _lane(loops: "weakref.WeakKeyDictionary", width: int) -> asyncio.Semaphore:
+    """This running loop's semaphore of the given width, created on first use."""
+    loop = asyncio.get_running_loop()
+    sem = loops.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(width)
+        loops[loop] = sem
+    return sem
+
+
+def _interactive_read_concurrency() -> asyncio.Semaphore:
+    """The `rank`/`search`/`stats` lane. See the block comment above."""
+    return _lane(_interactive_lane_loops, 2)
+
+
+def _query_read_concurrency() -> asyncio.Semaphore:
+    """The `query`/`ask` (caller-authored SQL) lane. See the block comment above."""
+    return _lane(_query_lane_loops, 1)
 
 # How recently a root must have been scanned for the startup scheduler to skip
 # it. Short enough that a machine left on for a day rescans when the app is
@@ -113,11 +190,17 @@ def run_startup_scan(start_dir: str | None = None) -> None:
     Records each started run in `_startup_runs` for `run_startup_warm`, which
     warms only after the run covering its root has finished."""
     _startup_runs.clear()
-    if not indexing_enabled():
-        # No scan ever starts while the pref is off (shell/prefs.py). The
-        # warm still runs — it only searches the existing index, never
-        # scans — so search stays as snappy as the stale index allows.
-        logger.info("index: startup scan skipped (indexing is disabled)")
+    blocked = index_gate.indexing_blocked()
+    if blocked:
+        # No scan ever starts while the pref is off (shell/prefs.py) or, on
+        # the packaged mac app, without Full Disk Access (shell/index_gate.py:
+        # the home walk would prompt per protected folder before onboarding
+        # even painted). The warm still runs — it only searches the existing
+        # index, never scans — so search stays as snappy as the stale index
+        # allows.
+        logger.info("index: startup scan skipped (%s)",
+                    "indexing is disabled" if blocked == "disabled"
+                    else "no Full Disk Access yet")
         return
     try:
         cfg = load_config()
@@ -139,6 +222,7 @@ def run_startup_scan(start_dir: str | None = None) -> None:
             run_id = (started or {}).get("run_id")
             if run_id:
                 _startup_runs[root] = run_id
+            _wake_index_job_bridge()
             logger.info("index: started background scan of %s (run %s)",
                         root, run_id)
         except ValueError as e:
@@ -237,43 +321,22 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
         time.sleep(WARM_WAIT_POLL_S)
 
 
-# The query the startup warm ranks with, and it is deliberately one that MATCHES
-# NOTHING. A query with hits stops at the cheap substring pass (the ladder in
-# `search_ranked`), leaving the subsequence-regex plan — the expensive half, and
-# the one a mistyped query lands on — cold for the first user who needs it. A
-# no-match query runs both passes, plus the ignore-root discovery behind the
-# gitignore filter, and returns an empty body.
+# The query the startup warm ranks with. Index-backed search is substring-only
+# (search_ranked's docstring), so there is no longer a cold expensive plan to
+# warm separately from a cheap one — this just needs to exercise the one SQL
+# statement's compilation/plan cache before a real user's first keystroke.
+# Deliberately a query that MATCHES NOTHING, so the warm returns an empty body
+# rather than paying to materialise real hits nobody asked for.
 WARM_RANK_QUERY = "zqxjv"
 
 
 def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
-               token: CancelToken | None = None) -> dict:
-    """`search_ranked` with the server's gitignore filter wired in.
-
-    The index package cannot import the server, so `search_ranked` takes the
-    filter as a callable — this is the only place that knows both. It is
-    called BEFORE the cut to `limit` (search_ranked does that), and keyed on
-    the enclosing INDEX ROOT rather than the requested folder, for the reason
-    `api_index_search` gives: a pool keyed per browsed folder re-paid a whole
-    check-ignore sweep every time browsing evicted one.
-
-    `oracle_rels` comes from the caller, not from the payload: a ranked answer
-    is ~200 rows with no dot-leading rels among them, so the filter's own
-    discovery would find no `.gitignore`, decide nothing, and drop nothing
-    (index_gitignore.filter_corpus says this at length).
-
-    `token`, when given, is forwarded to `search_ranked` unchanged — it
-    already checks it right before calling `drop_ignored` (query.py's
-    `pass_over`), which is "before entering the sweep" from this function's
-    side without anything extra needed here."""
-    def drop_ignored(canonical_root: str, hits: list, oracle_rels: list) -> list:
-        index_root = enclosing_root(scan_roots(cfg), canonical_root)
-        return filter_corpus({"covered": True, "root": canonical_root,
-                              "entries": hits}, index_root=index_root,
-                             oracle_rels=oracle_rels, token=token)["entries"]
-
-    return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored,
-                      token=token)
+               token: CancelToken | None = None, ranked: bool = True) -> dict:
+    """`search_ranked`, unchanged, under the name the rest of this module and
+    the startup warm call it by. `token`, when given, is forwarded unchanged.
+    `ranked`, likewise (D720) — default True, so the startup warm call and
+    every caller that doesn't pass it keeps the scored behavior."""
+    return index_rank(cfg, root, q=q, limit=limit, token=token, ranked=ranked)
 
 
 def _covers(a: str, b: str) -> bool:
@@ -377,8 +440,12 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
         # scan will ever fix an uncovered folder, which is exactly the claim
         # `mount`/`package` make too — it just comes from a toggle rather
         # than from the filesystem's shape.
-        if not indexing_enabled():
-            return "disabled"
+        blocked = index_gate.indexing_blocked()
+        if blocked:
+            # "disabled" or "fda": either way no scan will start until the
+            # user acts (a toggle, or a grant plus relaunch), so the client
+            # must offer THAT rather than a scan.
+            return blocked
         if ignored_for_index(cfg.rules, norm(os.path.abspath(root)), tree=True):
             return "ignored"
     # Never claim a scan is in flight while the pref is off — nothing can be
@@ -393,9 +460,7 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
 def run_startup_warm() -> None:
     """Pay the first search's cold cost at idle instead of on a keystroke.
 
-    Everything the corpus path caches is PER PROCESS and starts empty: the
-    gitignore verdict pool (server/index_gitignore.py) knows nothing until
-    some request sweeps `git check-ignore` over the whole corpus, and duckdb
+    Everything the corpus path caches is PER PROCESS and starts empty: duckdb
     is not even imported until the first query. Measured on a 164k-entry home:
     ~2.2 s for the first search of a fresh process against ~0.8 s for the next
     one — and all of it was billed to the user's first keystroke.
@@ -444,17 +509,12 @@ def run_startup_warm() -> None:
                 # original single-shot warm already paid.
                 _wait_for_scan(cfg, run_id)
                 out = index_search(cfg, root)
-        # Unconditional, including the uncovered cases: filter_corpus is a
-        # no-op on a response that is not covered, and the point is to run
-        # precisely what the route runs.
-        filter_corpus(out, index_root=enclosing_root(scan_roots(cfg),
-                                                     out.get("root") or root))
         # And the path the HOME search now takes, which is a different query
         # over the same index: /api/index/rank, verbatim, with a query that
         # matches something on essentially every machine. Same duckdb
-        # connection cost, same gitignore pool, but its own two-stage SQL —
-        # warming only the corpus would leave the home page's first keystroke
-        # paying for the ranked plan.
+        # connection cost, but its own two-stage SQL — warming only the
+        # corpus would leave the home page's first keystroke paying for the
+        # ranked plan.
         _rank_body(cfg, out.get("root") or root, WARM_RANK_QUERY)
     except Exception:  # noqa: BLE001 - a warm must never take the server down
         logger.exception("could not warm the index search path")
@@ -463,12 +523,330 @@ def run_startup_warm() -> None:
 def startup_warm() -> None:
     """The create_app hook. A detached daemon thread, not `to_thread`: the
     startup hook must COMPLETE before the app serves, and this is seconds of
-    duckdb and `git check-ignore` — the very cost the warm exists to move off
-    the request path — and, on a first boot, a bounded wait for the startup
+    duckdb — the very cost the warm exists to move off the request path — and,
+    on a first boot, a bounded wait for the startup
     scan on top of that. Nobody joins it and it cannot raise (above); `daemon`
     is what guarantees a warm still waiting cannot hold the process open."""
     threading.Thread(target=run_startup_warm, name="index-warm",
                      daemon=True).start()
+
+
+# --------------------------------------------------------- activity job bridge
+
+# Re-indexing is a server-owned Job (jobs.SERVER_ID_PREFIX, "sys:"), the same
+# idiom `envinstall.py` and `ai/supervisor.py` already use, so it shows up in
+# the Activity card the same way a download or a background AI task does —
+# without teaching the card to speak /api/index/* or adding a third polling
+# loop to the frontend. One job per RUN (keyed by run_id, not by root): the
+# existing status poll can only ever answer for the most recent run, and this
+# is what makes two concurrent per-root scans each get their own row instead
+# of one clobbering the other.
+INDEX_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "index:"
+
+# Same order of magnitude as the Indexing panel's own poll (index-status.ts
+# INDEX_POLL_MS, 1500ms): an Activity row for a scan updates no more (and no
+# less) often than the panel that has always shown this progress, so nothing
+# about how "live" a re-index looks changes by adding a second surface for it.
+# Named, like `INDEX_JOB_IDLE_S` below, to match index-status.ts's own two
+# constants (`INDEX_POLL_MS` / `INDEX_IDLE_POLL_MS`) rather than the frontend's
+# names for one cadence and an invented name for the other.
+INDEX_JOB_ACTIVE_S = 1.5
+
+# The idle cadence — no run was live on the last tick. Equal to
+# index-status.ts's own `INDEX_IDLE_POLL_MS` (10000ms): the bridge was modeled
+# on that poller and copied its active cadence, but not this half, which is
+# the whole reason a server with no index scan running or ever run was waking
+# up and re-listing run directories roughly 24 times a minute forever. A scan
+# starting while idle does not wait out this interval — see
+# `_index_job_wake` below.
+INDEX_JOB_IDLE_S = 10.0
+
+
+def _index_job_id(run_id: str) -> str:
+    return INDEX_JOB_PREFIX + run_id
+
+
+def _display_root(root: str) -> str:
+    """`root` the way a user would type it, not the canonical absolute form
+    `runner.canonical_root` stores it as. No shared "~/..." helper exists
+    anywhere in this repo for this (checked `shell/pathops.py`,
+    `envinstall.py`'s `projectenv.display_name`, and the frontend's
+    `platform/lib` — none of them shorten a path against home), so this is
+    the smallest version that does it, scoped to this one call site.
+
+    `root` arrives already run through `runner.canonical_root` (forward
+    slashes, however this run's spec was recorded). Comparing it against a
+    raw `os.path.expanduser("~")` fails on Windows, where that returns
+    backslashes (`C:\\Users\\x`) — the prefix could never match, and the
+    card would always show the full absolute path. Running `home` through
+    `runner.canonical_root` too — the same function that produced `root`'s
+    spelling — keeps this a single normalization, not a second hand-rolled
+    one that could drift from the first."""
+    home = runner.canonical_root("~")
+    if root == home:
+        return "~"
+    prefix = home.rstrip("/") + "/"
+    if root.startswith(prefix):
+        return "~/" + root[len(prefix):]
+    return root
+
+
+# run_ids whose terminal state has already been written to their job once.
+# `list_runs` keeps reporting a finished run for as long as it stays one of
+# the KEEP_RUNS most recent — without this, every tick after a scan finishes
+# would re-upsert an already-terminal job forever. Never cleared: a run_id is
+# minted once per `runner.start` (a timestamp plus a random suffix) and is
+# never reused, and a process restart — which empties this set — is also what
+# empties the job registry itself (jobs.py carries no state across restarts).
+_mirrored_terminal: set = set()
+
+
+# Phases in which `files + reused` has nothing to do with `prev_total` yet:
+# derive_state's own seeded default (index/runner.py), shown before the first
+# `type="phase"` event lands, and scan.py's "checking for changes" phase
+# (the fsevents.hint / load_dir_cache race that default covers up until now).
+# Kept as a set, not a single string, so a future phase can join it without
+# restructuring the check below.
+_UNCOUNTABLE_PHASES = frozenset({"starting", "checking for changes"})
+
+
+def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -> bool:
+    """Mirror one run into its job. Returns whether the run was live
+    (`running`) on this tick, so `mirror_index_jobs_once` can answer the
+    loop's cadence question without a second read of the run directories.
+
+    `prev_total` — the rescan denominator ESTIMATE — is read by the CALLER,
+    once per tick, not here: this function runs once per run
+    `mirror_index_jobs_once` is mirroring (its own `for run in runs:` loop),
+    so a `read_manifest(cfg)` call inside this function would run once PER
+    RUNNING RUN per tick, not once per tick — the two disagree on multi-root
+    setups, where every configured root scanning at once used to mean one
+    JSON read of the same `partitions.json` per root, every tick. Hoisted out
+    (D733) because every run under one `cfg` shares that one file, so reading
+    it once and handing the same value to every run this tick is both cheaper
+    and, unlike N separate reads, immune to the file changing mid-tick and
+    making sibling runs disagree about the denominator."""
+    run_id = run.get("run_id")
+    root = run.get("root")
+    if not run_id or not root:
+        return False
+    job_id = _index_job_id(str(run_id))
+    if job_id in _mirrored_terminal:
+        return False
+    running = bool(run.get("running"))
+    if not running:
+        prev_total = None
+    phase = str(run.get("phase") or "")
+    if phase in _UNCOUNTABLE_PHASES:
+        # `done` (files+reused) is still 0 here — derive_state's seeded
+        # "starting" default, or scan.py's own "checking for changes" phase
+        # that names it (the fsevents.hint/load_dir_cache race, before either
+        # has anything countable to report) — so a `total` alongside it would
+        # render "0 / 673,655", which reads as broken rather than as "not
+        # started counting yet". jobFraction (jobs.ts) already turns a `None`
+        # total into an indeterminate sweep, so withholding it here is enough;
+        # no frontend special-casing of the phase string is needed. Every
+        # phase reached AFTER this one keeps its estimate: the plain
+        # full/incremental pool path increments steadily throughout its own
+        # "scanning (...)" phase already, the fsevents path's bulk-reuse tail
+        # now emits mid-loop too (index/scan.py's beat-gated credit, this same
+        # branch), and "writing index"/"writing signatures" (store.py) show a
+        # stable, accurate `done` frozen at the walk's final count — none of
+        # those are "meaningless", just possibly an estimate, which
+        # `total_estimated` below already communicates honestly.
+        prev_total = None
+    root_display = _display_root(str(root))
+    fields = {
+        "title": "Indexing files",
+        "detail": root_display,
+        # True only when `total` is actually set below — a tree that grew
+        # since the last scan means `done` can pass `total` before the walk
+        # finishes (jobs.ts `jobFraction` clamps the bar at 1.0 rather than
+        # render past full or backwards), so the row has to say the
+        # denominator is a guess, not a promise. This used to be an
+        # "(estimated)" suffix appended to `detail` above — but `detail` here
+        # is the ROOT PATH, so the qualifier ended up modifying the wrong
+        # noun (`~/proj (estimated)` reads as "the path is a guess"). A
+        # dedicated field lets the client (`jobAmount`'s call site) attach it
+        # to the COUNT instead, where it actually belongs (D733). `total_scope`
+        # is a different approximation for model downloads
+        # (`shared/modelSize.ts`) and is untouched by this.
+        "total_estimated": prev_total is not None,
+        "kind": "task",
+        # `files` ALONE undercounts against `prev_total`: `Sink.add` (D724's
+        # own `read_manifest` fold, `index/store.py:215-229`) only adds to
+        # `files` for a dir it actually re-walks (`kind != "u"`) — an
+        # unchanged dir's cached file count goes to `reused` instead
+        # (`index/scan.py:78`'s own docstring: "'u' (unchanged; payload =
+        # cached file count)"). `prev_total`, by contrast, is the LAST
+        # compaction's `total_rows` — every row in the merged index, reused
+        # dirs included (`_compact_locked`'s `merged` table unions the old
+        # kept/unchanged rows with the new shard rows before counting,
+        # `index/store.py`'s `compact`). Comparing `files` alone to that would
+        # divide a NEW-ONLY numerator by an EVERYTHING denominator: a rescan
+        # that reuses 95% of a tree (the common case) would crawl to ~5% and
+        # then jump straight to done the instant compaction lands — a bar
+        # that lies with an official look, not an honest one. `files +
+        # reused` is the like-for-like pair: both counters are in the SAME
+        # file-count units (`scan.py:78`, `store.py:219,229`), so their sum is
+        # "every file this run has accounted for so far" — the same
+        # population `prev_total` counts.
+        "done": float((run.get("files") or 0) + (run.get("reused") or 0)),
+        "total": prev_total,
+        "unit": "files",
+        # The run's phase, verbatim — this covers compaction too, which has
+        # no structured flag of its own and appears only as this same text
+        # ("writing index" / "writing signatures", index/store.py). The
+        # bridge does not special-case it into a separate concept.
+        "message": str(run.get("phase") or ""),
+        "cancellable": True,
+    }
+    if running:
+        fields["state"] = jobs.RUNNING
+    elif run.get("cancelled"):
+        fields["state"] = "cancelled"
+    elif run.get("error"):
+        fields["state"] = "error"
+        fields["message"] = str(run.get("error"))
+    else:
+        fields["state"] = "done"
+        summary = run.get("summary")
+        files_done = run.get("files")
+        if isinstance(summary, dict) and summary.get("files") is not None:
+            files_done = summary.get("files")
+        fields["message"] = f"{int(files_done or 0)} files indexed"
+    try:
+        result = jobs.upsert({"id": job_id, **fields}, server=True)
+    except jobs.JobError:
+        # A reporting failure says nothing about whether the RUN is live —
+        # `running` above already answered that from `run` itself, before
+        # `jobs.upsert` was ever called. Returning bare `None` here used to
+        # read as "not live" to `mirror_index_jobs_once`'s `if
+        # _mirror_one_run_job(...): live = True`, which backed the tick off
+        # to the idle cadence (INDEX_JOB_IDLE_S, 10s) while a scan was
+        # genuinely running and simply failing to report — the two facts are
+        # independent and only one of them broke.
+        logger.exception("could not report index job %s", job_id)
+        return running
+    if not running:
+        _mirrored_terminal.add(job_id)
+        return False
+    # A cancel is a REQUEST the reporter honours on its next tick (jobs.py
+    # `request_cancel`'s own docstring) — this IS that next tick, and
+    # `runner.cancel` is the exact function `/api/index/cancel` calls, so
+    # driving it from here is the same action through the same path, just
+    # without an HTTP hop the server does not need to make to itself.
+    if result.get("cancel_requested"):
+        try:
+            runner.cancel(cfg, str(run_id))
+        except ValueError:
+            pass
+    return True
+
+
+def mirror_index_jobs_once(cfg: IndexConfig | None = None) -> bool:
+    """One tick of the Activity bridge: every run `list_runs` currently
+    knows about gets (or updates) a `sys:index:<run_id>` job.
+
+    Deliberately reads through `runner.list_runs` — the same fold
+    `/api/index/status` and the Indexing panel already use — rather than
+    opening `events.jsonl` a second way, so this shares that function's
+    liveness check and its 1s fold cache instead of adding a competing read
+    of the same run directories.
+
+    Returns whether any run this tick was still `running` — the signal
+    `_index_job_loop` uses to pick its next sleep, again without a second
+    read of the run directories.
+    """
+    cfg = cfg or load_config()
+    try:
+        runs = runner.list_runs(cfg, limit=KEEP_RUNS)["runs"]
+    except Exception:  # noqa: BLE001 - a bridge tick must never take the server down
+        logger.exception("could not list index runs for job mirroring")
+        return False
+    # An ESTIMATE for a rescan's denominator: the file count `partitions.json`
+    # recorded as of the LAST completed scan — the same fold `/api/index/status`
+    # already reads (`read_manifest(cfg)["rows"]`). Read ONCE HERE, per tick,
+    # not inside `_mirror_one_run_job`'s own per-run loop below — every run
+    # under this one `cfg` shares the same `partitions.json`, so N running
+    # runs sharing one config used to mean N identical JSON reads every tick
+    # (D733). A first-ever scan has no such file (`read_manifest` returns
+    # None) and every run's `total` stays the indeterminate `None` (jobs.ts
+    # `jobFraction`/`StatusChip`) rather than a fake number invented to fill
+    # a bar. `cfg` is best-effort here (a caller can hand this a stub, as
+    # every non-estimate test in test_index_jobs.py does): a bad or absent
+    # manifest just means no estimate, not a broken tick. Read unconditionally
+    # (not gated on any run being `running`) — cheap (one small JSON file),
+    # and `_mirror_one_run_job` already drops it back to `None` for a run
+    # that isn't running, so a wasted read here costs nothing observable.
+    try:
+        manifest = read_manifest(cfg)
+    except Exception:
+        manifest = None
+    prev_rows = int((manifest or {}).get("rows") or 0)
+    prev_total = float(prev_rows) if prev_rows > 0 else None
+    live = False
+    for run in runs:
+        try:
+            if _mirror_one_run_job(cfg, run, prev_total):
+                live = True
+        except Exception:  # noqa: BLE001 - one bad run must not stop the rest
+            logger.exception("could not mirror index run %s into jobs",
+                             run.get("run_id"))
+    return live
+
+
+# Set by every path that starts a scan (`run_startup_scan`, `api_index_scan`,
+# `api_index_scan_folder`, and the freshness check's own rescan) so the loop
+# below ticks immediately instead of waiting out up to `INDEX_JOB_IDLE_S` of
+# an idle sleep before a freshly started run reaches the Activity card. A
+# plain `threading.Event`, not a queue or counter: the loop only ever cares
+# whether SOMETHING happened since its last wait, never how many things or
+# what — the next tick's own `list_runs` answers that.
+_index_job_wake = threading.Event()
+
+
+def _wake_index_job_bridge() -> None:
+    _index_job_wake.set()
+
+
+def _index_job_loop() -> None:
+    while True:
+        try:
+            live = mirror_index_jobs_once()
+        except Exception:  # noqa: BLE001 - the loop itself must never die
+            logger.exception("index job bridge tick failed")
+            # A failing tick must not pin the loop to the fast cadence
+            # forever — treated the same as "nothing is running" so a
+            # persistent failure backs off instead of hot-looping.
+            live = False
+        # `wait` both sleeps AND clears on a spurious-looking early return:
+        # a wake that arrives DURING this wait ends it early (good — that is
+        # the point), and the flag is cleared right after regardless of
+        # whether this wait was the one satisfied by it, so a wake that
+        # lands between the `wait` returning and the `clear` below is never
+        # silently swallowed (`Event.wait` returning True vs timing out is
+        # not even checked: either way the next loop iteration's tick is
+        # about to run `list_runs` fresh).
+        _index_job_wake.wait(INDEX_JOB_ACTIVE_S if live else INDEX_JOB_IDLE_S)
+        _index_job_wake.clear()
+
+
+_index_job_thread: "threading.Thread | None" = None
+_index_job_started = threading.Lock()
+
+
+def start_index_job_bridge() -> None:
+    """Start the background tick loop. Idempotent, same pattern as
+    `shell.mounts.health.start_health_monitor` — safe to call once at server
+    startup; a redundant call while the thread is alive is a no-op."""
+    global _index_job_thread
+    with _index_job_started:
+        if _index_job_thread is not None and _index_job_thread.is_alive():
+            return
+        _index_job_thread = threading.Thread(
+            target=_index_job_loop, daemon=True, name="index-job-bridge")
+        _index_job_thread.start()
 
 
 # ------------------------------------------------------ open-folder freshness
@@ -625,6 +1003,7 @@ def _run_freshness_check(path: str) -> None:
             return
         started = freshness.note_folder_opened(cfg, path, roots)
         if started:
+            _wake_index_job_bridge()
             logger.info("index: %s changed since the last scan; rescanning %s",
                         path, started)
     except Exception:  # noqa: BLE001 - housekeeping must never surface
@@ -645,7 +1024,7 @@ def note_folder_opened(path: str) -> bool:
     is the ONE gate for every caller of this function (fs_read.py,
     git_repos.py, exported_apps.py), so a rescan-if-stale check never turns
     into a scan behind the pref's back."""
-    if not indexing_enabled():
+    if not index_gate.indexing_allowed():
         return False
     if not _freshness_slot.acquire(blocking=False):
         return False
@@ -666,8 +1045,11 @@ def api_index_scan(body: dict = Body(default={}),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    if not indexing_enabled():
-        return JSONResponse({"error": "indexing is disabled in Preferences"},
+    blocked = index_gate.indexing_blocked()
+    if blocked:
+        return JSONResponse({"error": "indexing is disabled in Preferences"
+                             if blocked == "disabled" else index_gate.FDA_MESSAGE,
+                             "reason": blocked},
                             status_code=409)
     cfg = load_config()
     full = bool(body.get("full"))
@@ -677,6 +1059,7 @@ def api_index_scan(body: dict = Body(default={}),
             started = runner.start(cfg, str(root), full=full)
         except ValueError as e:
             return _error(str(e))
+        _wake_index_job_bridge()
         return {"ok": True, **started, "runs": [started]}
     # No root means "the whole index", which is every configured root — the
     # panel's Re-index and Full-scan buttons say exactly that. Scanning only
@@ -692,6 +1075,7 @@ def api_index_scan(body: dict = Body(default={}),
             logger.info("index: skipping %s (%s)", r, e)
     if not runs:
         return _error(last_error or "no scannable roots are configured")
+    _wake_index_job_bridge()
     return {"ok": True, **runs[0], "runs": runs}
 
 
@@ -735,11 +1119,12 @@ def api_index_scan_folder(body: dict = Body(default={}),
 
     cfg = load_config()
     root = runner.canonical_root(path)
-    if not indexing_enabled():
+    blocked = index_gate.indexing_blocked()
+    if blocked:
         # A durable "no", same as every other refusal here: the search box
-        # polls this on a retry loop, and "disabled" says as plainly as
-        # `refused` does that asking again will not change the answer.
-        return {"ok": True, "started": False, "why": "disabled",
+        # polls this on a retry loop, and "disabled" / "fda" say as plainly
+        # as `refused` does that asking again will not change the answer.
+        return {"ok": True, "started": False, "why": blocked,
                 "run_id": None, "root": root}
     # THE MOUNT GUARD FIRST, and the order is the point rather than a
     # preference: `blocks` is pure string work against the mount records,
@@ -773,6 +1158,7 @@ def api_index_scan_folder(body: dict = Body(default={}),
         logger.info("index: not scanning %s on demand (%s)", root, e)
         return {"ok": True, "started": False, "why": "refused",
                 "error": str(e), "run_id": None, "root": root}
+    _wake_index_job_bridge()
     logger.info("index: scanning %s on demand (run %s)",
                 root, started.get("run_id"))
     return {"ok": True, "started": True,
@@ -885,25 +1271,34 @@ def api_index_status(run_id: str = Query(default=""),
             "events": out["events"], "cursor": out["cursor"]}
 
 
-@router.get("/api/index/runs")
-def api_index_runs():
-    return {"ok": True, **runner.list_runs(load_config())}
-
-
 # -------------------------------------------------------------------- reading
 
 @router.get("/api/index/stats")
-def api_index_stats(root: str = Query(default="")):
-    return {"ok": True, **index_stats(load_config(), root=root)}
-
-
-@router.get("/api/index/lookup")
-def api_index_lookup(q: str = Query(default=""), limit: int = Query(default=100),
-                     offset: int = Query(default=0),
-                     sort: str = Query(default="mtime")):
-    return {"ok": True,
-            **index_lookup(load_config(), q, limit=limit, offset=offset,
-                           sort=sort)}
+async def api_index_stats(request: Request, root: str = Query(default=""),
+                          breakdown: bool = Query(default=False)):
+    cfg = load_config()
+    async with cancellable(request) as token:
+        # Acquired INSIDE `cancellable`, not before it, so the disconnect
+        # watcher is already running while this request waits its turn —
+        # otherwise a client that gave up while queued would sit uncancellable
+        # until it reached the front, wasting its slot on nobody.
+        #
+        # `breakdown=true` shares the authored-SQL lane, not the interactive
+        # one: see the block comment above `_interactive_read_concurrency` —
+        # a breakdown is an unbounded GROUP BY, not the bounded/cheap/
+        # known-shaped statement the interactive lane is sized for.
+        lane = _query_read_concurrency() if breakdown else _interactive_read_concurrency()
+        async with lane:
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(
+                    index_stats, cfg, root=root, breakdown=breakdown, token=token)
+            except Cancelled:
+                logger.debug("index stats: root=%r breakdown=%s abandoned by the client",
+                            root, breakdown)
+                return Response(status_code=499)
+    return {"ok": True, **out}
 
 
 # The one value of `fmt` that means anything. Anything else — including the
@@ -915,10 +1310,11 @@ COLUMNS_FMT = "columns"
 
 
 @router.get("/api/index/search")
-def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
-                     limit: int = Query(default=MAX_CORPUS),
-                     fmt: str = Query(default=""),
-                     accept_encoding: str | None = Header(default=None)):
+async def api_index_search(request: Request, root: str = Query(default=""),
+                           q: str = Query(default=""),
+                           limit: int = Query(default=MAX_CORPUS),
+                           fmt: str = Query(default=""),
+                           accept_encoding: str | None = Header(default=None)):
     """The explorer's in-folder corpus, index-backed.
 
     Same entry shape as /api/fs/walk, plus `covered`/`fresh` so the client can
@@ -927,10 +1323,6 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     search box during the first-boot scan would be a lie about a system that
     is working exactly as designed.
 
-    Entries pass through the gitignore filter before leaving: the walk this
-    corpus replaces prunes gitignored entries, and the swap must not change
-    what search shows (server/index_gitignore.py).
-
     `fmt=columns` asks for the same corpus as parallel arrays instead of one
     object per entry (§6 of index/specs/server-api.md) — the home page's
     corpus is the whole ranking set, 25.7 MB on a 164k-entry home, and it is
@@ -938,43 +1330,28 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     if not root.strip():
         return _error("'root' is required")
     cfg = load_config()
-    out = index_search(cfg, root, q=q, limit=limit)
-    # Filtered per INDEX ROOT, not per requested folder: the explorer's
-    # in-folder search asks with whichever folder is open, and a cache keyed on
-    # that re-paid a whole-subtree check-ignore sweep every time browsing
-    # evicted a folder. `out["root"]` (not the raw query string) is the
-    # canonical spelling the corpus rels are relative to.
-    index_root = enclosing_root(scan_roots(cfg), out.get("root") or root)
-    out = filter_corpus(out, index_root=index_root)
+    async with cancellable(request) as token:
+        # See api_index_stats above for why the semaphore is acquired inside
+        # `cancellable` rather than around it.
+        async with _interactive_read_concurrency():
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(
+                    index_search, cfg, root, q=q, limit=limit, token=token)
+            except Cancelled:
+                logger.debug("index search: %r under %s abandoned by the client", q, root)
+                return Response(status_code=499)
     if fmt != COLUMNS_FMT:
         return {"ok": True, **out}
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
 
 
-# How often the disconnect watcher polls `request.is_disconnected()` while a
-# rank request is in flight on the worker thread. `is_disconnected()` is the
-# only signal an async route that is ALSO doing real work off the event loop
-# has for "the client gave up" — the same tradeoff `api_fs_walk` already makes
-# (fs_read.py's WALK_DISCONNECT_CHECK_EVERY) — and a `receive`-driven variant
-# is not worth the added complexity here.
-_RANK_DISCONNECT_POLL_S = 0.1
-
-
-async def _watch_disconnect(request: Request, token: CancelToken) -> None:
-    """Cancel `token` the moment `request` disconnects; otherwise run forever
-    until the caller cancels THIS task (the route's `finally`, once the rank
-    finished on its own — see `api_index_rank`)."""
-    while True:
-        if await request.is_disconnected():
-            token.cancel()
-            return
-        await asyncio.sleep(_RANK_DISCONNECT_POLL_S)
-
-
 @router.get("/api/index/rank")
 async def api_index_rank(request: Request, root: str = Query(default=""),
                          q: str = Query(default=""),
-                         limit: int = Query(default=RANK_LIMIT)):
+                         limit: int = Query(default=RANK_LIMIT),
+                         ranked: bool = Query(default=True)):
     """The home search: filtered AND ranked here, top `limit` hits returned.
 
     The corpus route next door hands the client every entry under `root`
@@ -996,21 +1373,32 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     policy is `MountGuard`'s, and a second copy of it in the client would
     drift.
 
+    `ranked` (D720, default True) is the owner's unranked-search preference:
+    `false` orders hits `depth ASC, rel ASC` instead of by score — see
+    `_rank_sql`'s docstring (query.py) for the exact ordering guarantee.
+    Threaded straight through to `search_ranked`; every existing caller omits
+    it and gets the scored behavior unchanged.
+
     `positions` are deliberately NOT returned. The client re-runs `fuzzyMatch`
     over the ~200 rows it gets back to build its highlights, so
     platform/lib/fuzzy.ts stays the single source of truth for what highlights
     — and the ranker here stays free to carry positions internally without
     them becoming a wire contract.
 
+    `score`/`tier`/`depth`/`longest_run` are dropped from each hit the same
+    way: `search_ranked` still computes and returns them (its own tests pin
+    `_rank_sql`'s scoring correctness off them), but no client re-sorts a
+    server-answered row — `listing/ranked-hits.ts` hands back hits "in the
+    order it returned them" — so they never reach the wire.
+
     ASYNC, and doing real cancellation, not merely handling a request that
     happens to be a coroutine — a fast typist fires and abandons this route
     on every keystroke, and the abandoned ones used to run to completion:
-    both duckdb ladder passes, the Python ranking, and (worst case) up to
-    `SWEEP_WAIT_MAX_S` blocked on another request's git sweep
-    (index_gitignore.py). The actual query runs on a worker thread
-    (`asyncio.to_thread`), watched by `_watch_disconnect` polling
-    `request.is_disconnected()`; on disconnect it calls `token.cancel()`,
-    which is index/cancel.py's job from there. Two honest limitations:
+    both duckdb ladder passes and the Python ranking. The actual query runs
+    on a worker thread (`asyncio.to_thread`), watched by `cancellable`
+    (index/cancel.py) polling `request.is_disconnected()`; on disconnect it
+    calls `token.cancel()`, which is `CancelToken`'s job from there. Two
+    honest limitations:
 
       * `asyncio.to_thread` cannot kill the thread it started — nothing in
         Python can. `token.cancel()` is what makes the QUERY inside that
@@ -1022,37 +1410,41 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
         itself skippable.
       * `is_disconnected()` polling is the only disconnect signal available
         to a route that is also doing work; a `receive`-driven variant is not
-        worth the complexity here (see `_watch_disconnect`).
+        worth the complexity here (see `cancel.py`'s `_watch_disconnect`).
 
     `Cancelled` escaping the worker thread is NOT logged as an error — a
     cancelled rank is a client that stopped waiting, which is normal
-    operation for a per-keystroke request (same reasoning the candidate-cap
-    line above already applies to `logger.debug`) — and the response is a
-    body nobody reads, because nobody is listening by the time it is sent.
+    operation for a per-keystroke request (`Cancelled`'s own docstring in
+    index/cancel.py gives the same reasoning for `logger.debug` over
+    anything louder) — and the response is a body nobody reads, because
+    nobody is listening by the time it is sent.
     """
     if not root.strip():
         return _error("'root' is required")
     import time
     t0 = time.monotonic()
     cfg = load_config()
-    token = CancelToken()
-    work = asyncio.create_task(asyncio.to_thread(_rank_body, cfg, root, q, limit, token))
-    watch = asyncio.create_task(_watch_disconnect(request, token))
-    try:
-        out = await work
-    except Cancelled:
-        logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
-                    q, root, (time.monotonic() - t0) * 1000)
-        return Response(status_code=499)
-    finally:
-        watch.cancel()
-    out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
+    async with cancellable(request) as token:
+        # See api_index_stats above for why the semaphore is acquired inside
+        # `cancellable` rather than around it.
+        async with _interactive_read_concurrency():
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(
+                    _rank_body, cfg, root, q, limit, token, ranked)
+            except Cancelled:
+                logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
+                            q, root, (time.monotonic() - t0) * 1000)
+                return Response(status_code=499)
+    _WIRE_DROP = ("positions", "score", "tier", "depth", "longest_run")
+    out["hits"] = [{k: v for k, v in h.items() if k not in _WIRE_DROP}
                    for h in out["hits"]]
     out["reason"] = _rank_reason(cfg, root, out)
     # DEBUG: the request total, to set against the per-phase DEBUG lines
-    # logged underneath (stage A per pass, _repo_toplevel, the _inflight wait,
-    # the git sweep) — this fires on every keystroke of the home search, so it
-    # stays DEBUG (see query.py's pass_over for the same reasoning at length).
+    # logged underneath (stage A per pass) — this fires on every keystroke of
+    # the home search, so it stays DEBUG (see query.py's pass_over for the
+    # same reasoning at length).
     # Without this, a slow report has nothing server-side to diagnose it with
     # beyond guessing which phase was the ~4s.
     logger.debug("index rank: %r under %s answered in %.1fms (reason=%r)",
@@ -1153,27 +1545,33 @@ def _accepts_gzip(accept_encoding: str | None) -> bool:
 DEFAULT_QUERY_LIMIT = 200
 
 
-def _guarded(cfg: IndexConfig, sql: str, limit) -> dict | object:
+def _guarded(cfg: IndexConfig, sql: str, limit, token=None) -> dict | object:
     """`run_guarded` with both failure modes mapped to a 400.
 
     duckdb's own exceptions are 400s too, not 500s: "no such column" is the
     caller's mistake, and the panel shows the message verbatim so a typo is
-    self-explanatory. Only the message travels — no traceback."""
+    self-explanatory. Only the message travels — no traceback.
+
+    `Cancelled` is deliberately NOT caught here — it is not a duckdb error to
+    flatten into a 400, it is the caller's own `token` doing its job, and it
+    must keep propagating so the route can answer 499 instead."""
     try:
         n = int(limit) if limit is not None else DEFAULT_QUERY_LIMIT
     except (TypeError, ValueError):
         return _error("'limit' must be a number")
     try:
-        return run_guarded(cfg, sql, limit=min(max(n, 0), MAX_LIMIT))
+        return run_guarded(cfg, sql, limit=min(max(n, 0), MAX_LIMIT), token=token)
     except ValueError as e:
         return _error(str(e))
+    except Cancelled:
+        raise
     except Exception as e:  # noqa: BLE001 - duckdb's exception tree, flattened
         return _error(f"{type(e).__name__}: {e}")
 
 
 @router.post("/api/index/query")
-def api_index_query(body: dict = Body(default={}),
-                    x_fused: str | None = Header(default=None)):
+async def api_index_query(request: Request, body: dict = Body(default={}),
+                          x_fused: str | None = Header(default=None)):
     """Run one read-only statement against `files` / `dirs`.
 
     Guarded like the mutating routes even though it writes nothing: it executes
@@ -1185,7 +1583,18 @@ def api_index_query(body: dict = Body(default={}),
     sql = body.get("sql")
     if not isinstance(sql, str) or not sql.strip():
         return _error("'sql' must be a non-empty string")
-    out = _guarded(load_config(), sql, body.get("limit"))
+    async with cancellable(request) as token:
+        # See api_index_stats above for why the semaphore is acquired inside
+        # `cancellable` rather than around it.
+        async with _query_read_concurrency():
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(
+                    _guarded, load_config(), sql, body.get("limit"), token)
+            except Cancelled:
+                logger.debug("index query: abandoned by the client")
+                return Response(status_code=499)
     if not isinstance(out, dict):
         return out
     return {"ok": True, **out}
@@ -1269,13 +1678,30 @@ async def api_index_ask(request: Request, body: dict = Body(default={}),
     sql = _sql_from_answer((answered.get("result") or {}).get("text") or "")
     if not sql:
         return _error("the model answered with no SQL", status=502)
-    # In a threadpool, unlike `query` next door: that one is a plain `def`
-    # handler, so FastAPI already threadpools it, while this handler must be
-    # `async` for the relay `await` above — and a duckdb query bounded only by
-    # guarded_query.TIMEOUT_S (10s) run inline would block the event loop, and
-    # with it every other request the app is making meanwhile.
-    out = await run_in_threadpool(
-        lambda: _guarded(load_config(), sql, body.get("limit")))
+    # On a worker thread, unlike `query` next door for the same reason that
+    # one is: this handler must be `async` for the relay `await` above, and a
+    # duckdb query bounded only by guarded_query.TIMEOUT_S (10s) run inline
+    # would block the event loop, and with it every other request the app is
+    # making meanwhile. `cancellable` wraps only this SQL-execution part, not
+    # the AI relay above — the relay owns its own timeout/cancellation, and a
+    # client that gave up mid-relay is the relay's disconnect to notice, not
+    # this route's; a token bound before the relay's `await` would just sit
+    # idle for however long that hop takes.
+    async with cancellable(request) as token:
+        # The `query`/`ask` lane (D701 correction / D706), not the interactive
+        # one: a model-compiled statement runs the exact same guarded DuckDB
+        # call `api_index_query` does, so it belongs on the same authored-SQL
+        # side of the split, not the per-keystroke side. Acquired inside
+        # `cancellable`, same reasoning as `api_index_stats` above.
+        async with _query_read_concurrency():
+            if token.cancelled:
+                return Response(status_code=499)
+            try:
+                out = await asyncio.to_thread(
+                    _guarded, load_config(), sql, body.get("limit"), token)
+            except Cancelled:
+                logger.debug("index ask: abandoned by the client")
+                return Response(status_code=499)
     if not isinstance(out, dict):
         # Same 400, plus the statement that earned it.
         return JSONResponse({**json.loads(bytes(out.body)), "sql": sql},
@@ -1336,6 +1762,8 @@ def api_index_config_write(body: dict = Body(default={}),
             rescan_run_ids.append((started or {}).get("run_id"))
         except (ValueError, OSError):
             logger.exception("could not start the post-edit rescan of %s", root)
+    if rescan_run_ids:
+        _wake_index_job_bridge()
     # Same shape as the GET: the panel swaps its whole state for this
     # response, so a save that reported the raw configured list would blank
     # the coverage line whenever the roots are the unconfigured home default.

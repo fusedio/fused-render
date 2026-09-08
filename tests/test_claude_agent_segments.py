@@ -725,6 +725,43 @@ def test_a_task_notification_becomes_a_notice_segment(agent, tmp_path):
     assert data["segments"][2]["text"] == "They passed."
 
 
+def test_a_wake_does_not_erase_the_reply_on_the_poll_after_it_arrives(
+        agent, tmp_path):
+    """B1 regression: `agent.py:3571`'s cursor used to advance past ANY
+    `result` that had bytes after it, wake continuations included. Sequence:
+    the turn ends with `result`, and by the time anyone polls, the CLI has
+    already woken itself and written its notice row too — so the FIRST poll
+    sees `[text, result, notice]` all at once and (with the bug) advances the
+    cursor past `result`. The SECOND poll then starts reading from there and
+    sees only `[notice]` — the reply the first poll already rendered is gone
+    from what the page has to show, even though nothing ever asked for a new
+    turn to begin."""
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir / "perm", exist_ok=True)
+    out_path = run_dir / "out.jsonl"
+    agent.RUNS = str(tmp_path)
+    agent._alive = lambda _run_dir: True
+
+    with open(out_path, "w", encoding="utf-8") as fh:
+        for row in [
+            _delta("text_delta", "Started the tests."),
+            {"type": "result", "result": "Started the tests.",
+             "session_id": "s1"},
+            _wake_row(),
+        ]:
+            fh.write(json.dumps(row) + "\n")
+
+    first = agent._poll("run")
+    assert [s["kind"] for s in first["segments"]] == ["text", "notice"]
+
+    second = agent._poll("run")
+    kinds = [s["kind"] for s in second["segments"]]
+    assert kinds == ["text", "notice"], (
+        "the reply from the first poll must still be on screen alongside "
+        "the wake, not dropped because the cursor skipped past it")
+    assert second["segments"][0]["text"] == "Started the tests."
+
+
 def test_a_task_notification_with_no_summary_still_says_something(agent, tmp_path):
     data = _poll_rows(agent, tmp_path, [_wake_row(summary="")])
     assert data["segments"] == []  # nothing to say = nothing drawn

@@ -2,9 +2,13 @@
 
 Surfaces a curated catalog of scalar settings.json keys as form controls, each
 showing its documented default when unset. The catalog is settings_catalog.json
-(merged UI overlay + docs snapshot) — the user-writable override when one exists,
-else the copy that shipped with the package; refresh_catalog.py regenerates its
-doc/default half from Anthropic's docs.
+— curated fields (label/group/control/options/optionLabels/unsetLabel) always
+from the copy that shipped with the package, doc/default/minVersion overlaid
+from the user-writable override when refresh_catalog.py has ever written one;
+see lib.load_catalog() for why the merge is per-field rather than per-file
+(a whole-file override going stale on the curated half — a new option, a new
+row — the moment anyone ever refreshes was PR #968's bug, live on a real
+server: an old override shadowed a catalog update forever).
 
 main(action=...) actions:
   get    -> {schema, prefs}   schema = catalog list; prefs = current value per
@@ -20,10 +24,9 @@ from . import lib
 
 def _catalog() -> list:
     # Resolved per call, not once at import: a refresh writes the override
-    # mid-process, and a module-level constant would keep serving the packaged
-    # copy until the app restarted.
-    with open(lib.catalog_read_path(), "r", encoding="utf-8") as f:
-        return json.load(f)
+    # mid-process, and a module-level constant would keep serving a stale
+    # merge until the app restarted.
+    return lib.load_catalog()
 
 
 def main(action: str = "get", payload: str = "") -> dict:

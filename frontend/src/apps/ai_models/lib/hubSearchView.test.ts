@@ -284,7 +284,7 @@ describe("wireSort", () => {
     expect(sortsOnPage("best")).toBe(false);
   });
 
-  it("offers 'best' first (D663's default) and size last", () => {
+  it("offers 'best' first (D754's default) and size last", () => {
     // Size is the only ordering that costs a measurement, so the cheap
     // answers come first; "best" leads because index 0 is what `activeSort`
     // falls back to for a missing/unrecognised sort — see `SORTS`'s own doc.

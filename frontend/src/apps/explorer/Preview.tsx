@@ -6,8 +6,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
+  addCurrentApp,
   getAppEntry,
-  migrateApp,
   setAppPreview,
   getAppFileCloneTarget,
   cloneAppFile,
@@ -21,12 +21,14 @@ import {
   getRegistryEntryForPath,
   resetRegistryBinding,
   repairTemplateRegistry,
+  getGitSnapshot,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
-import { appLandingUrl } from "@platform/lib/appLanding";
-import { announceTasksChanged } from "@platform/lib/tasksChanged";
-import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, encodeFsPathSegments, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
+import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
+import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, encodeFsPathSegments, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
   dirname,
@@ -77,11 +79,15 @@ import {
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import {
-  activeRev,
-  revFromHook,
-  revSrc,
-  type RevSelection,
-} from "@apps/explorer/lib/preview-rev";
+  isSha,
+  setResolvedSnapshot,
+  shortSha,
+  snapshotFrameSrc,
+  type ResolvedSnapshot,
+} from "@platform/lib/snapshot-param";
+import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
+import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
+import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
@@ -89,14 +95,21 @@ import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/previe
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import Listing from "@apps/explorer/Listing";
 
 // The window global the injected runtime calls to hand this shell the commit the
-// git sidebar just selected (static/runtime.js `noteRevSelected`, reached from the
-// template as `window._fusedSelectRev`). Declared here, beside the assignment that
-// installs it, exactly as main.tsx declares `_fusedFsChanged` beside its own — the
-// other half of the same ancestor-global contract with that runtime.
+// git sidebar just selected (static/runtime.js `noteSnapshotSelected`, reached
+// from the template as `window._fusedSelectSnapshot`). Declared here, beside the
+// assignment that installs it, exactly as main.tsx declares `_fusedFsChanged`
+// beside its own — the other half of the same ancestor-global contract with
+// that runtime. The handler resolves `/api/git/snapshot` and writes
+// `_snapshot=<sha>` onto the shell's own URL (see the effect below) — a URL
+// write, unlike the in-memory selection the predecessor `_fusedRevSelected`
+// held, because every frame under this shell (not only the content pane) has
+// to see the same commit.
 //
 // `_fusedClaudeAsk`/`_fusedClaudeAskTake` are the git sidebar's "Fix with AI"
 // hop (static/runtime.js `noteAskClaude`/`pullClaudeAsk`, reached from the git
@@ -109,7 +122,7 @@ import Listing from "@apps/explorer/Listing";
 // into that iframe's `src`).
 declare global {
   interface Window {
-    _fusedRevSelected?: (sha: unknown) => void;
+    _fusedSnapshotSelected?: (sha: unknown) => void;
     _fusedClaudeAsk?: (text: unknown) => void;
     _fusedClaudeAskTake?: () => string | null;
   }
@@ -172,11 +185,14 @@ function usePreviewSideSlot(): HTMLElement | null {
 // which is why this probes on mount and re-probes per file rather than trusting
 // anything cached.
 //
-// Header-only, like ExportAppButton beside it, and with the same consequence
-// worth knowing: embed mode hides the whole topbar, so a `.fused` opened by
-// double-click shows no Clone. Reaching it means opening the file in the
-// explorer (owner's call — the embed stays chrome-free, D386/D390).
-function CloneAppFileButton({ fsPath }: { fsPath: string }) {
+// Lives in the header, like ExportAppButton beside it — which embed mode
+// hides, so a `.fused` opened by double-click used to show no Clone at all
+// (D390's chrome-free posture, accepted in D397). The top-level embed's
+// EmbedStrip now renders this same button (one control, one label rule) with
+// `toView`: from the embed shell, `navigate` would keep the embed prefix and
+// land the clone folder as a chrome-free listing with no way out (D282's dead
+// end), so the strip's copy goes to the folder's VIEW URL instead.
+export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?: boolean }) {
   const [target, setTarget] = useState<{ path: string; cloned: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -192,15 +208,34 @@ function CloneAppFileButton({ fsPath }: { fsPath: string }) {
     };
   }, [fsPath]);
   if (!target) return null;
+  // Land on the copy's ENTRY PAGE (owner: "open the index.html, not the
+  // folder") — the same rule the app page and Export use (/api/apps/entry) —
+  // and on the folder only when it has none. Both branches: a fresh clone and
+  // an existing copy are the same destination.
+  const land = async (dir: string) => {
+    let dest = dir;
+    let isDir = true;
+    try {
+      const info = await getAppEntry(dir);
+      if (info.entry) {
+        dest = info.entry;
+        isDir = false;
+      }
+    } catch {
+      /* no entry answer — the folder is still the right place */
+    }
+    if (toView) location.assign(viewUrlForFsPath(dest));
+    else navigate(dest, { isDir });
+  };
   const go = async () => {
     if (busy) return;
     // Already cloned: this is pure navigation, so it never needs the spinner
     // or the write route.
-    if (target.cloned) return navigate(target.path, { isDir: true });
+    if (target.cloned) return land(target.path);
     setBusy(true);
     try {
       const r = await cloneAppFile(fsPath);
-      navigate(r.path, { isDir: true });
+      await land(r.path);
     } catch (e) {
       pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
       setBusy(false);
@@ -219,41 +254,43 @@ function CloneAppFileButton({ fsPath }: { fsPath: string }) {
       onClick={go}
       disabled={busy}
     >
-      {busy && <span className="mode-icon-spinner" />}
+      {busy ? (
+        <span className="mode-icon-spinner" />
+      ) : target.cloned ? (
+        MenuIcons.open
+      ) : (
+        MenuIcons.duplicate
+      )}
       {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
     </button>
   );
 }
 
-// The app page's Migrate button, on the explorer topbar: shown only when the
-// previewed page IS its folder's app entry AND declares a fused API version
-// behind the runtime's (both facts from the same /api/apps/entry answer). One
-// click creates the migration task on this page (POST /api/apps/migrate) and
-// lands in the Claude pane on its run; while a task is live — the server says
-// so, across reloads — the button reads "in progress" and opens the app page's
-// Tasks tab instead. Same gate as ExportAppButton beside it, same reason:
-// the server owns the entry rule, the filename says nothing.
-function MigrateAppButton({ fsPath }: { fsPath: string }) {
-  const [info, setInfo] = useState<{
-    behind: boolean;
-    to: number;
-    from: number;
-    live: boolean;
-  } | null>(null);
-  const [busy, setBusy] = useState(false);
+// The App Doctor button, on the explorer topbar: shown whenever the previewed
+// page IS its folder's app entry (the server's own entry rule, asked of
+// /api/apps/entry — same gate as ExportAppButton beside it, same reason: the
+// filename says nothing). One click opens the checklist dialog, which runs the
+// deterministic checks and offers the one task that explains and fixes them
+// (platform/ui/AppDoctorModal).
+//
+// It REPLACES the "Migrate to new version" button that stood here: a stale
+// `fused-api-version` tag is one row of that checklist now, alongside the
+// things it never covered — a leaked key, a device path, stray generated
+// files, an uncommitted tree. That is also why the gate widened: migrate had
+// nothing to say about an app that was already current, and the doctor does.
+function AppDoctorButton({ fsPath }: { fsPath: string }) {
+  const [isEntry, setIsEntry] = useState(false);
+  const [open, setOpen] = useState(false);
   const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
   const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
   useEffect(() => {
     let alive = true;
-    setInfo(null);
+    setIsEntry(false);
+    setOpen(false);
     getAppEntry(dir)
       .then((r) => {
         if (!alive) return;
-        if (r.entry == null || canon(r.entry) !== fsPath) return;
-        const from = r.api_version ?? null;
-        const to = r.current_api_version ?? null;
-        if (from == null || to == null) return;
-        setInfo({ behind: from < to, to, from, live: !!r.migration_task });
+        setIsEntry(r.entry != null && canon(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no button for nothing */
@@ -262,58 +299,70 @@ function MigrateAppButton({ fsPath }: { fsPath: string }) {
       alive = false;
     };
   }, [fsPath, dir]);
-  if (!info || !info.behind) return null;
-  const name = basename(dir);
-  const doMigrate = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const res = await migrateApp(dir);
-      if (res.task) announceTasksChanged();
-      if (res.task_error) throw new Error(res.task_error);
-      // Live now, whatever happens next: a second click must not create a
-      // second task while this one is being sent.
-      setInfo({ ...info, live: true });
-      if (res.task?.run_id) navigateUrl(appLandingUrl(res.entry_html, res.task.run_id));
-    } catch (e) {
-      pushToast({
-        msg: "Could not create the migration task for " + name + ": " + (e as Error).message,
-        tone: "error",
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (info.live) {
-    return (
+  if (!isEntry) return null;
+  return (
+    <>
       <button
         type="button"
         className="bar-ctl bar-ctl-bordered"
-        title={"A migration task for " + name + " is still running — listed under the app's Tasks tab"}
-        // The app page's Tasks tab (`/apps/<folder>?_tab=tasks`, the address
-        // current-apps-lib.appPageUrl builds; spelled here because an app may
-        // not import the shell).
-        onClick={() =>
-          navigateUrl("/apps/" + encodeFsPathSegments(dir) + "?_tab=tasks")
+        title={
+          "Check " + basename(dir) +
+          " before you share it: leaked credentials, paths tied to this machine, " +
+          "stray generated files, uncommitted work, a stale fused API version"
         }
+        onClick={() => setOpen(true)}
       >
-        Migration in progress
+        App Doctor
       </button>
-    );
-  }
+      {open && <AppDoctorModal dir={dir} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+// The explorer folder view's "Open in project" (Listing.tsx openAppEntry),
+// here on the ENTRY PAGE's own header: viewing an app's index.html is the
+// other place one is standing in an app, so the same hop is offered — put the
+// folder on the sidebar's desk (POST /api/current-apps/add, a no-op when the
+// row is there already, which then reads as the active row) and open the
+// folder's app page, `/apps/<folder>`, spelled as the Migrate button spells it
+// since an app may not import shell/current-apps-lib. Same gate as
+// ExportAppButton beside it: the server's entry rule, never the filename.
+function OpenInProjectButton({ fsPath }: { fsPath: string }) {
+  const [isEntry, setIsEntry] = useState(false);
+  const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
+  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+  useEffect(() => {
+    let alive = true;
+    setIsEntry(false);
+    getAppEntry(dir)
+      .then((r) => {
+        if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
+      })
+      .catch(() => {
+        /* indeterminate reads as "not an entry" — no button for nothing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, dir]);
+  if (!isEntry) return null;
+  const open = async () => {
+    try {
+      await addCurrentApp(dir);
+      announceCurrentAppsChanged();
+    } catch {
+      /* the page still opens; the row shows up on the next task under it */
+    }
+    navigateUrl("/apps/" + encodeFsPathSegments(dir));
+  };
   return (
     <button
       type="button"
       className="bar-ctl bar-ctl-bordered"
-      title={
-        name + " declares fused API version " + info.from + "; the runtime is on " + info.to +
-        ". Creates a task that updates the code and the tag."
-      }
-      onClick={doMigrate}
-      disabled={busy}
+      title={"Open " + basename(dir) + " as a project"}
+      onClick={open}
     >
-      {busy && <span className="mode-icon-spinner" />}
-      {busy ? "Creating task…" : "Migrate to new version"}
+      Open in project
     </button>
   );
 }
@@ -322,9 +371,32 @@ function MigrateAppButton({ fsPath }: { fsPath: string }) {
 // the previewed page IS its folder's app entry — asked of the server (the one
 // shared entry rule, /api/apps/entry) rather than guessed from the filename.
 // You export from the app you're looking at; a plain html file gets nothing.
-function ExportAppButton({ fsPath }: { fsPath: string }) {
+function ExportAppButton({
+  fsPath,
+  snapshotSha,
+  snapshotResolved,
+  snapshotPending,
+  snapshotError,
+}: {
+  fsPath: string;
+  // The pane's own `_snapshot` resolution (`usePreviewSnapshot`, hoisted in
+  // the parent so the picker and this button agree on what "the previewed
+  // version" means) — mirrors AppPage.tsx's `snapshot` (`useAppPageSnapshot`)
+  // and its Export control's use of it, point for point: export the
+  // snapshot's OWN extracted tree, never the live folder, while one is
+  // previewed.
+  snapshotSha: string | null;
+  snapshotResolved: ResolvedSnapshot | null;
+  snapshotPending: boolean;
+  snapshotError: boolean;
+}) {
   const [isEntry, setIsEntry] = useState(false);
   const [busy, setBusy] = useState(false);
+  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+  const name = basename(dir);
+  // Rules-of-hooks: called on every render, before the `!isEntry` early
+  // return below, exactly like every other hook in this component.
+  const versionLabel = useAppVersionLabel(dir, snapshotSha);
   // The server answers os.path.abspath (backslashes on Windows) while fsPath
   // is the shell's canonical forward-slash form — same drive-letter-only
   // normalization rule as the URL codec (a backslash in a POSIX filename must
@@ -333,7 +405,6 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
   useEffect(() => {
     let alive = true;
     setIsEntry(false);
-    const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
     getAppEntry(dir)
       .then((r) => {
         if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
@@ -346,12 +417,23 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
     };
   }, [fsPath]);
   if (!isEntry) return null;
-  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
-  const name = basename(dir);
+  // Mirrors AppPage.tsx's `exportDisabled`: a click landing mid-resolve, before
+  // `snapshotResolved.dir` exists, must not fall through to exporting the LIVE
+  // folder while the pane still shows the version being resolved.
+  const exportDisabled = busy || snapshotPending || snapshotError;
   const doExport = async () => {
-    if (busy) return;
+    if (exportDisabled) return;
     setBusy(true);
     try {
+      const isLive = snapshotSha === null;
+      // The snapshot's OWN extracted tree (`snap.dir`), never `snap.app_dir`
+      // (the LIVE folder the sha resolved from) — exporting that would
+      // silently ship the live app labelled as the picked commit. See
+      // AppPage.tsx's Export control, which this mirrors.
+      const exportPath = snapshotResolved ? snapshotResolved.dir : dir;
+      // The filename carries the version so a v7 export sitting beside a
+      // live export in Downloads is never ambiguous about which is which.
+      const exportName = isLive ? name : `${name}-${versionLabel}`;
       // Same capture-on-export as the /apps card (appShot, D396): the shown
       // preview frame IS the app rendering, so it is the crop source — no
       // navigation, no flash. exportAppFile itself skips capture when the
@@ -364,15 +446,29 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
       // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
       // the app, not a box it may fill): the class rides `shown`, which the
       // frame swap only sets once that frame paints — the same guarantee
-      // `data-fused-annotate-target` below relies on.
-      const authored = await statPath(dir + "/preview.png").then(
-        (s) => !s.is_dir,
-        () => false,
-      );
+      // `data-fused-annotate-target` below relies on. Only checked for a LIVE
+      // export: a snapshot's preview.png (if any) lives under the extracted
+      // tree, and `entry_html` is omitted below for a snapshot anyway, so
+      // there is no on-screen capture source for it to matter.
+      const authored = isLive
+        ? await statPath(dir + "/preview.png").then(
+            (s) => !s.is_dir,
+            () => false,
+          )
+        : false;
       await exportAppFile(
-        { path: dir, name, entry_html: fsPath,
-          preview_image: authored ? dir + "/preview.png" : null },
-        document.querySelector(".preview-frame.is-shown"),
+        {
+          path: exportPath,
+          name: exportName,
+          // Omitted for a snapshot export: with no on-screen capture element
+          // threaded to this button's target folder, `exportAppFile`'s stage
+          // fallback would reload the ENTRY PAGE'S LIVE copy to shoot it — a
+          // present-day screenshot baked into a file labelled as the old
+          // commit. See AppPage.tsx's Export control for the same rule.
+          entry_html: isLive ? fsPath : undefined,
+          preview_image: isLive && authored ? dir + "/preview.png" : null,
+        },
+        isLive ? document.querySelector(".preview-frame.is-shown") : null,
       );
     } catch (e) {
       pushToast({ msg: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
@@ -386,7 +482,7 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
       className="bar-ctl bar-ctl-bordered"
       title={"Export " + name + " as a single .fused app file"}
       onClick={doExport}
-      disabled={busy}
+      disabled={exportDisabled}
     >
       {busy && <span className="mode-icon-spinner" />}
       {busy ? "Exporting…" : "Export App"}
@@ -810,22 +906,24 @@ const FRAME_FADE_MS = 150;
 // previous mode's content forever — past this the swap completes regardless.
 const FRAME_SWAP_TIMEOUT_MS = 4000;
 
-// The shell-level revision indicator: what a content pane wears while it is
-// showing a PAST commit instead of the live file.
-//
-// It exists because the pane itself cannot say so. A revision pane is the ordinary
-// template rendering ordinary bytes — the code editor looks exactly like the code
-// editor — so without this the only difference between "your file" and "your file
-// as it was in March" is a save that quietly refuses. So: which commit, said in the
-// same 7-character form the sidebar's rows and `git log --oneline` use, and one
-// obvious way back.
-//
-// The revision badge that used to sit here is GONE (owner: the state now
-// lives where it is controlled — the git sidebar's commit list wears a dot and
-// a `previewing` pill on the previewed row, and its banner carries the way
-// back). The MECHANISM is untouched: `rev` still swaps the pane's bytes, and
-// the honest caveat about runPython readers now lives on the sidebar's eye
-// toggle tooltip (templates/git/template.html).
+// THIS FILE ONCE HOSTED NO SNAPSHOT INDICATOR OF ITS OWN — the reasoning was
+// that a content pane is the ordinary template rendering ordinary bytes, the
+// code editor looks exactly like the code editor, with no room to say "these
+// are a past commit's" without every template growing a line for it. That
+// held for a plain file, but not for a rendered APP: its iframe looks
+// completely, indistinguishably live, and silently serving frozen content
+// behind a normal-looking pane reads as a bug rather than a feature — see
+// DECISIONS-app-snapshot-preview.md's later entry. `TemplatePreview` below
+// now renders that same `.listing-snapshot-banner` (reused verbatim from
+// Listing.tsx's own, not a duplicate) above `.preview-frames`, gated on
+// `snapshotResolved` so it only shows once the sha is genuinely resolved for
+// THIS file's app folder. The git sidebar's commit list still carries the
+// dot and the `previewing` pill on the previewed row, and its own banner
+// still carries the way back (templates/git/template.html) — nothing here
+// duplicates that. Listing.tsx's own banner (".listing-snapshot-banner")
+// still exists for browsing the app's OWN subfolders under a snapshot, for
+// the same reason: a listing has no per-row heading a template could wear
+// instead.
 function TemplatePreview({
   fsPath,
   stat,
@@ -1055,41 +1153,106 @@ function TemplatePreview({
   const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide);
   const sideTargetEntry = sideTargets.find((e) => e.mode === sideTarget) ?? null;
 
-  // --- the CONTENT pane's revision (`_rev`) ---------------------------------
-  // A commit clicked in the git sidebar makes the content pane render this file as
-  // of that commit. The sha arrives from the sidebar's frame through the runtime's
-  // ancestor-window hop — a global on this window, the same idiom
-  // `_fusedFsChanged` uses (static/runtime.js), and deliberately NOT a param: see
-  // lib/preview-rev for the three places a `_rev` in the address bar would leak to.
+  // --- the shell's git snapshot (`_snapshot`) --------------------------------
+  // A commit clicked in the git sidebar puts the WHOLE SHELL into
+  // `_snapshot=<sha>`, not merely this content pane: the sha arrives from the
+  // sidebar's frame through the runtime's ancestor-window hop — a global on
+  // this window, the same idiom `_fusedFsChanged` uses (static/runtime.js) —
+  // and the RESPONSE to it is a URL write, deliberately, unlike the deleted
+  // `_rev` design's in-memory selection: every frame under this shell (the
+  // file explorer's own listing included) has to see the same commit, which
+  // component state cannot reach.
   //
-  // State, held as {sha, path}, and read ONLY through `activeRev` — which is what
-  // makes the clearing rules invariants rather than effects. Nothing here clears
-  // anything: a revision chosen for another file, or one left over from a sidebar
-  // that has since closed or switched companion, simply does not resolve. See the
-  // header of lib/preview-rev.
-  const [revSel, setRevSel] = useState<RevSelection | null>(null);
+  // `useUrlVersion()` in the deps (code review finding B5, the reverse
+  // direction): a commit selection or a "back to live" is a `replaceSearch`,
+  // which does not dispatch `fused:navigate` — only `fused:urlchange`. Keyed
+  // on `[fsPath]` alone, a `TemplatePreview` mounted for the same path never
+  // noticed a mounted Listing.tsx's OWN `backToLive` clearing `_snapshot`
+  // (or a companion pane's own selection changing it): this component kept
+  // its stale `snapshotSha` state and kept building every frame's src with
+  // it. `useUrlVersion` listens to `fused:urlchange`, which `replaceSearch`
+  // always dispatches, so any writer of `_snapshot` — this component's own
+  // handler below, or a sibling Listing.tsx — reaches this one too.
+  //
+  // The resolve/error/retry/back-to-live state machine itself lives in
+  // `usePreviewSnapshot` (apps/explorer/lib/), extracted so it can be driven
+  // through a hook-level test (this component has no render-test precedent
+  // anywhere in this codebase) — see that hook's own comment for what each
+  // field means; `backToLive` there is `clearShellSnapshot` (singleton, URL,
+  // AND the git sidebar hop — round 3 findings 2 and 7), and `snapshotError`
+  // is the round 3 finding 8 fix: a non-404 resolve failure used to leave
+  // this pane pending forever with no way out.
+  const urlVersion = useUrlVersion();
+  const {
+    sha: snapshotSha,
+    snap: snapshotResolved,
+    pending: snapshotPending,
+    error: snapshotError,
+    retry: retrySnapshot,
+    backToLive,
+    applySelected: applySelectedSnapshot,
+  } = usePreviewSnapshot(fsPath, urlVersion);
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
     // git sidebar to select in, and two instances racing for one window global
     // (a panel of panes) would have the last mount win the callback for all of
-    // them. Re-installed per file so the report is stamped with the file that was
-    // open when it arrived.
+    // them. Re-installed per file so a resolve in flight from a PREVIOUS file
+    // can never land after this effect's own cleanup has already fired.
     if (!splitCapable) return;
-    window._fusedRevSelected = (sha: unknown) => setRevSel(revFromHook(sha, fsPath));
-    return () => {
-      delete window._fusedRevSelected;
+    let alive = true;
+    window._fusedSnapshotSelected = (sha: unknown) => {
+      if (!isSha(sha)) {
+        // Back to live: drop both the resolution the carry rule and the
+        // listing's own rewrite check, and the shell's own `_snapshot` param.
+        backToLive();
+        return;
+      }
+      getGitSnapshot(fsPath, sha)
+        .then((r) => {
+          if (!alive) return; // a later selection, or this file closed, already won
+          const snap = { sha, dir: r.dir, app_dir: r.app_dir };
+          setResolvedSnapshot(snap);
+          applySelectedSnapshot(snap);
+          // Finding B8: `location.search` is snapshotted BEFORE this `await`
+          // (the `getGitSnapshot` round trip) if read at the top of the
+          // handler — any OTHER `replaceSearch` landing in that window (e.g.
+          // `setSide` writing `_side`) would then be silently discarded when
+          // this write goes out, since it would overwrite the query string
+          // with a stale copy taken before that other write happened. Reading
+          // it fresh HERE, inside the `.then()`, is what makes this write
+          // additive to whatever the query string actually is by the time
+          // this call is ready to land, rather than a snapshot of what it
+          // was when the click happened.
+          const search = writeQueryParam(
+            location.search.replace(/^\?/, ""),
+            "_snapshot",
+            sha
+          );
+          replaceSearch(location.pathname + (search ? "?" + search : ""));
+        })
+        .catch(() => {
+          if (!alive) return; // a later selection, or this file closed, already won
+          // No app folder encloses this path, a mount-backed path, git
+          // trouble: the same posture the deleted `_rev` design took toward
+          // a junk value — the pane stays live rather than surfacing a
+          // broken param. But `preview()` in template.html arms the
+          // sidebar's "previewing" banner and Checkout button
+          // SYNCHRONOUSLY, before this resolve ever confirms anything — a
+          // swallowed failure here used to leave the sidebar armed against
+          // a sha this pane never actually adopted, DESTRUCTIVE Checkout
+          // included, while the pane quietly stayed live (round 4, item 3;
+          // the review filed this as a bare `.catch(() => {})`, but the
+          // sidebar's own optimism is the root cause). See
+          // `disarmSidebarOnFailedSelect`'s own comment for exactly what it
+          // does and does not fix.
+          disarmSidebarOnFailedSelect();
+        });
     };
-  }, [splitCapable, fsPath]);
-  const rev = activeRev(revSel, activeSide, fsPath);
-  // HOUSEKEEPING, not the guarantee. `activeRev` above already refuses a stale
-  // selection on the paint that makes it stale, so nothing depends on this effect
-  // running — but a selection kept in memory after its sidebar closed would come
-  // BACK the moment the same sidebar reopened, for the few milliseconds before the
-  // template's own frame loads and announces "live". Dropping it here means the
-  // reopened pane starts live and stays live until a row is clicked again.
-  useEffect(() => {
-    if (revSel && (activeSide !== "git" || revSel.path !== fsPath)) setRevSel(null);
-  }, [revSel, activeSide, fsPath]);
+    return () => {
+      alive = false;
+      delete window._fusedSnapshotSelected;
+    };
+  }, [splitCapable, fsPath, backToLive, applySelectedSnapshot]);
 
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
@@ -1129,7 +1292,7 @@ function TemplatePreview({
   // The git sidebar's "Fix with AI" button has no chat of its own — it hands the
   // prompt it built to whichever ancestor owns a Claude sidebar, through the
   // runtime's ancestor-window hop (static/runtime.js `noteAskClaude`), the same
-  // idiom `_fusedRevSelected` above uses for `_rev`.
+  // idiom `_fusedSnapshotSelected` above uses for `_snapshot`.
   //
   // THIS IS A PULL, NOT A PARAM ON THE SRC (review #804 round 2). It used to be
   // the latter — a `_fused_ask` query baked into the claude iframe's URL, kept
@@ -1508,20 +1671,51 @@ function TemplatePreview({
   // page can prefer ranged HTTP reads (/api/fs/raw) over local file I/O.
   // `_listing` builds no src — it renders a shell component, not an iframe.
   //
-  // `_rev` rides here and NOWHERE ELSE (lib/preview-rev): a revision is a property
-  // of what this frame is showing, not of where the user is, so it lives on the
-  // iframe src exactly as `_file` and `chat_only=1` do. The runtime reads it off
-  // the frame's own query and resolves readFile/rawUrl/stat through
-  // /api/git/show instead of the live filesystem — which is why no template
-  // changes a line for this.
+  // `_snapshot` rides here and on the shell's OWN url, unlike the deleted
+  // `_rev` design (lib/preview-rev.ts, deleted): a snapshot is a
+  // property of the whole page, not just what this one frame is showing, but
+  // this frame still needs it on ITS OWN src — the runtime reads params off
+  // its own frame's query (`ownQuery`, static/runtime.js), so a param that
+  // rides only on the shell's address bar is invisible inside the iframe. The
+  // runtime rewrites readFile/rawUrl/stat/runPython paths under the app
+  // folder to the extracted tree instead of fetching through a special
+  // endpoint — which is why no template changes a line for this.
   //
-  // It goes onto the "_render" frame too, and that one is a KNOWN partial: /render
-  // serves the file's own bytes from disk, so an .html file previewed as itself
-  // shows the live page under a revision heading. Same family as the runPython gap
-  // (static/runtime.js, above runPython) and deferred with it — the pill below is
-  // what keeps it honest. The param is still worth carrying there: any read the
-  // page makes through `fused.*` does resolve to the revision, and the write gate
-  // applies.
+  // `_snapshot_dir`/`_snapshot_app` ride ALONGSIDE `_snapshot`, carrying the
+  // exact `dir`/`app_dir` THIS component already resolved (`getGitSnapshot`,
+  // the effects above) — so the frame's own runtime.js never has to
+  // re-resolve `/api/git/snapshot` itself before it can rewrite a read. That
+  // used to be a real, structural race (code review finding B1): a
+  // template's boot-time `fused.readFile(fused.params.get("_file"))` runs
+  // synchronously, essentially always before a fresh network round trip
+  // could complete, so a pane opened at commit X rendered TODAY's file for
+  // that whole window. Handing the already-resolved answer down instead
+  // means the frame's own runtime.js needs no fetch at all in the ordinary
+  // case — see static/runtime.js's own comment on `resolvedSnapshot`.
+  //
+  // The "_render" sentinel ADDITIONALLY rewrites `path` ITSELF to the
+  // extracted file (`snapshotFrameSrc` does this internally, against THIS
+  // component's own `snapshotResolved` — see that const's own comment on why
+  // not the singleton) rather than only carrying `_snapshot` for the runtime to
+  // resolve against — GET /render
+  // (server/routers/render.py) has no `_snapshot` awareness of its own, so
+  // an app previewed as ITSELF used to show its LIVE document body and
+  // script under an active snapshot, with only the `fused.*` calls that
+  // document's own script made resolving against the commit — two eras
+  // mixed in one frame (finding A1, the feature's headline claim). Once the
+  // src already addresses the extracted entry, there is nothing left for the
+  // runtime to re-resolve for this frame's OWN document, and no race to lose
+  // — which is what collapses A1 into the same fix as B1 rather than a
+  // second, separate one. Ordinary template entries need no equivalent
+  // rewrite of `path`/`_file`: that param always names the reader's own
+  // install-tree asset or the previewed FILE, both already resolved by the
+  // runtime's rewrite rule once it has `_snapshot_dir`/`_snapshot_app` in
+  // hand.
+  // `snapshotResolved`/`snapshotPending` are `usePreviewSnapshot`'s own
+  // `snap`/`pending` (destructured above) — that hook already applies the
+  // same "sha matches AND app_dir actually encloses THIS file" check this
+  // used to re-derive here by hand (code review finding [3], round 2: two
+  // apps in one repo share shas, so matching the sha alone is not enough).
   const remote = stat.remote ? "&_remote=1" : "";
   // A shell loaded as a card thumbnail (IS_PREVIEW) forwards the flag onto
   // every render it triggers, so peeking at an app's entry page is not
@@ -1538,14 +1732,52 @@ function TemplatePreview({
   const thumbFlags = IS_PREVIEW ? "&_preview=1&_nofocus=1" : "";
   const srcFor = (m: string): string | null => {
     if (m === "_listing") return null;
-    if (m === "_render")
-      return revSrc(`/render?path=${encodeURIComponent(fsPath)}${thumbFlags}`, rev);
+    // Both branches below route through the shared `snapshotFrameSrc`
+    // (platform/lib/snapshot-param.ts) rather than composing the src by
+    // hand — the app page's own copy of this logic (AppPage.tsx, AppFiles.tsx)
+    // is what code review's root-cause finding traced every one of findings
+    // 1/2/4 back to: each lesson this function had already learned (rewrite
+    // `path` AND append all three snapshot params AND refuse a frame during
+    // the resolve window) was lost when re-implemented from scratch. The
+    // helper's own pending check (`sha` claimed, `snap` not yet resolved)
+    // is exactly `snapshotPending` below, restated once for every caller.
+    if (m === "_render") {
+      // A1: the extracted file itself when snapshotted — a no-op (`fsPath`
+      // unchanged) whenever `snapshotResolved` is null, which is every
+      // non-snapshotted render. `snapshotResolved` is passed EXPLICITLY
+      // (code review finding [1], round 2), not the module singleton
+      // `getResolvedSnapshot()` a sibling Listing.tsx/useSnapshotForFolder
+      // may have last written: a split view with a Listing on one app and
+      // this Preview on another, both under the SAME sha (two apps in one
+      // repo share shas), could leave the singleton holding the OTHER
+      // pane's resolution by the time this runs — the rewrite would then
+      // find no prefix match for THIS file and return the live path while
+      // the snapshot params (built from `snapshotResolved` inside the
+      // helper) still described THIS pane's own app — live content
+      // rendered under a snapshot pill, exactly the mixed-era bug finding
+      // A1 exists to close.
+      return snapshotFrameSrc({
+        snap: snapshotResolved,
+        sha: snapshotSha,
+        path: fsPath,
+        extra: thumbFlags,
+      });
+    }
     const t = templates.find((x) => x.mode === m);
     return t
-      ? revSrc(
-          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}${thumbFlags}`,
-          rev
-        )
+      ? snapshotFrameSrc({
+          snap: snapshotResolved,
+          sha: snapshotSha,
+          path: t.path as string,
+          // `t.path` is the TEMPLATE's own file, never the subject
+          // (`fsPath`, carried instead via `_file` in `extra` below) — code
+          // review finding 4, second round: a template's path must never be
+          // rewritten onto the snapshot even in the case (not true today,
+          // but not enforced either) that it happens to sit under this
+          // app's `app_dir`.
+          rewritePath: false,
+          extra: `&_file=${encodeURIComponent(fsPath)}${remote}${thumbFlags}`,
+        })
       : null;
   };
 
@@ -1629,7 +1861,16 @@ function TemplatePreview({
   // after asking for A. Entries are dropped when their frame is retired: a later
   // mount of the same mode is a NEW document that has to load again.
   const loadedFrames = useRef<Set<string>>(new Set());
-  const framePending = isListing || isPending(entry);
+  // `snapshotPending` in the mix too (code review finding [6], round 2):
+  // without it, `srcFor` returns `null` for a pending resolve but this stayed
+  // `false` — the frame still mounted with `src={null}`, React omits the
+  // attribute, the iframe loads `about:blank`, fires `onLoad` as if it were
+  // real content (recording itself in `loadedFrames`, completing the swap,
+  // even calling `onRenderedTitle(null)` for a `_render` frame) — a blank
+  // white pane on a reload of a `_snapshot` url instead of the loading
+  // skeleton this same condition already shows for every other kind of
+  // pending gate.
+  const framePending = isListing || isPending(entry) || snapshotPending;
   useLayoutEffect(() => {
     // Layout effect: the incoming frame must be in the DOM before the paint
     // that starts its fade, or the transition has no `from` value to run from.
@@ -1719,10 +1960,12 @@ function TemplatePreview({
 
   const headerActions = (
     <>
-      {/* The revision badge that sat FIRST in this bar is gone: which commit the
-          pane shows (and the way back to Live) is stated in the git sidebar's
-          own commit list — the dot, the `previewing` pill, and its banner's
-          "Back to now". One surface owns the state it controls. */}
+      {/* No snapshot indicator sits here, deliberately: which commit the pane
+          shows (and the way back to live) is stated in the git sidebar's own
+          commit list — the dot, the `previewing` pill, and its banner's
+          "Back to live". One surface owns the state it controls; the file
+          explorer's OWN indicator, for browsing the app's subfolders, is
+          Listing.tsx's banner instead. */}
       {/* A `.fused` app file: Clone unpacks it into Fused/local as an editable
           app, or opens the copy that is already there (D397). Keyed off the
           extension, which is what routes this file to the fusedapp template in
@@ -1734,8 +1977,24 @@ function TemplatePreview({
           when this page is its folder's app entry (the component asks the
           server). Embed mode hides the whole header/topbar, so an opened
           .fused app never shows it. */}
-      {!stat.is_dir && <MigrateAppButton fsPath={fsPath} />}
-      {!stat.is_dir && <ExportAppButton fsPath={fsPath} />}
+      {!stat.is_dir && <AppDoctorButton fsPath={fsPath} />}
+      {!stat.is_dir && (
+        <ExportAppButton
+          fsPath={fsPath}
+          snapshotSha={snapshotSha}
+          snapshotResolved={snapshotResolved}
+          snapshotPending={snapshotPending}
+          snapshotError={snapshotError}
+        />
+      )}
+      {/* The folder view's "Open in project", offered on the app's entry page
+          too (same server-side entry gate), wearing the same bordered look as
+          Export App. Its HOME is the sidebar's header, right before the mode
+          pill — exactly where the folder pane's strip puts it — so the two
+          views agree on where the hop lives. This copy is the SHUT-SIDEBAR
+          fallback (`!activeSide`, Listing's `!paneOpen` rule): with the column
+          down there is no strip, and the button must not vanish with it. */}
+      {!stat.is_dir && !activeSide && <OpenInProjectButton fsPath={fsPath} />}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder
@@ -1808,6 +2067,34 @@ function TemplatePreview({
           onClick={toggleSide}
         />
       )}
+      {/* Fullscreen: this same page under the chrome-free embed prefix — no
+          sidebar, no crumb, no header — with the current query carried over,
+          and `_mode` stamped explicitly even when the view is on its default
+          (the URL omits it then). A FULL page load rather than `navigate`:
+          the view/embed prefix is read once at module init (router.ts), so
+          switching it is a new document. The way back is EmbedStrip's "Open
+          in explorer", which the top-level embed shows: it carries the query
+          back, and reads the `_mode` stamp as "return to THIS page" rather
+          than hopping a folder to its app entry. */}
+      <button
+        type="button"
+        className="bar-ctl bar-ctl-icon"
+        title="Open fullscreen, without the sidebar and toolbar"
+        aria-label="Open fullscreen, without the sidebar and toolbar"
+        onClick={() => {
+          // The existing query goes across BYTE FOR BYTE — no URLSearchParams
+          // round trip, which would re-encode every value on the way. Only the
+          // `_mode` stamp is appended, and only when the URL omits it (the
+          // default mode; setMode deletes the param for clean URLs).
+          const search = location.search;
+          const stamped = new URLSearchParams(search).has("_mode")
+            ? search
+            : (search ? search + "&" : "?") + "_mode=" + encodeURIComponent(entry.mode);
+          location.assign(embedUrlForFsPath(fsPath, stamped));
+        }}
+      >
+        <span className="mode-menu-icon">{MenuIcons.fullscreen}</span>
+      </button>
       {/* The app view's overflow lived here — one "Open in explorer" entry,
           jumping from the app's own route back to the folder. The route went
           with D262 and the app view itself with D264. */}
@@ -1845,10 +2132,77 @@ function TemplatePreview({
             barChrome={actionsInTopbar}
           />
         ) : (
-          /* One frame per mounted mode (see the held-frame swap above). Each
+          <>
+            {/* The content-pane counterpart to Listing.tsx's own
+                ".listing-snapshot-banner": a previewed commit changes what
+                every frame below renders, but nothing about a rendered app
+                says so on its own — it looks completely live. Gated on
+                `snapshotResolved`, not the raw `_snapshot` URL param, so the
+                banner only appears once the sha is actually resolved AND
+                that resolution's app folder actually encloses THIS file (the
+                same guard `srcFor` below trusts) — never a flash of "as of
+                commit" for a sha that turns out to belong to a different app,
+                or for a still-pending resolve. See
+                DECISIONS-app-snapshot-preview.md for why this reverses that
+                doc's "invisible outside the listing" rule. */}
+            {/* `.preview-body` is a flex ROW (it also hosts the mode iframe,
+                see preview.css's own note above `.metadata-stack`), so the
+                banner needs its own flex-COLUMN wrapper here too — without
+                it the banner rendered as a squeezed vertical strip beside
+                the frames instead of a bar above them. */}
+            <div className="preview-content-stack">
+            {/* Round 3, finding 8: a NON-404 resolve failure (a dropped
+                connection, a 500) used to leave this pane on the pending
+                skeleton forever — the sha stays on the URL, nothing
+                re-tries on its own, and reload does not help since the
+                same param fails the same way again. Gated on
+                `snapshotError`, ahead of the ordinary "resolved" banner
+                below (mutually exclusive: `usePreviewSnapshot` never sets
+                both at once) — the same escape shape the app page's own
+                `SnapshotError` gives Overview/Files/API, reused here as
+                plain `ErrorBanner`/`Button` rather than that component
+                itself: `shell/` sits ABOVE `apps/explorer` in this
+                codebase's own import direction (shell imports apps/, never
+                the reverse — see platform/lib/snapshot-param.ts's own
+                comment on the platform/apps half of the same rule), and
+                `SnapshotError`'s built-in "back to live" clears the URL
+                directly with no sidebar hop — reusing it as-is would
+                silently reintroduce finding 2. */}
+            {snapshotError ? (
+              <ErrorBanner>
+                <p className="m-0">
+                  Could not load this commit. This may be a temporary problem.
+                </p>
+                <div className="flex gap-2 pt-2">
+                  <Button size="xs" variant="outline" onClick={retrySnapshot}>
+                    Retry
+                  </Button>
+                  <Button size="xs" variant="ghost" onClick={backToLive}>
+                    Back to Live
+                  </Button>
+                </div>
+              </ErrorBanner>
+            ) : (
+              snapshotResolved && (
+                <div className="listing-snapshot-banner">
+                  Showing this file as of commit{" "}
+                  <span className="listing-snapshot-sha">
+                    {shortSha(snapshotResolved.sha)}
+                  </span>.
+                  <button
+                    type="button"
+                    className="listing-snapshot-back"
+                    onClick={backToLive}
+                  >
+                    Back to live
+                  </button>
+                </div>
+              )
+            )}
+            {/* One frame per mounted mode (see the held-frame swap above). Each
              key is its own mode, so a frame is created once and never
-             re-created by a switch away and back within the swap window. */
-          <div className="preview-frames">
+             re-created by a switch away and back within the swap window. */}
+            <div className="preview-frames">
             {frames.map((m) => (
               <iframe
                 key={m}
@@ -1914,7 +2268,9 @@ function TemplatePreview({
                 }}
               />
             ))}
-          </div>
+            </div>
+            </div>
+          </>
         )}
         {/* EMBED ONLY, by the CSS (see .preview-browse-chip): it is the embed's
             whole mode affordance, because the embed hides .preview-header and
@@ -2008,6 +2364,7 @@ function TemplatePreview({
             src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
             onSelect={setSide}
             onClose={() => setSide(null)}
+            lead={<OpenInProjectButton fsPath={fsPath} />}
           />,
           sideSlot
         )}

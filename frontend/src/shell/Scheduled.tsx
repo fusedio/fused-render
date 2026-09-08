@@ -68,6 +68,7 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
   ICON_VIEW_BOARD,
   ICON_VIEW_CALENDAR,
+  ICON_VIEW_CARDS,
   ICON_VIEW_LIST,
 } from "./ScheduleCalendar";
 import NewJobModal from "./NewJobModal";
@@ -82,8 +83,10 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
-import { mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
+import { TASK_VIEWS, mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
+import { TaskCards } from "./TaskCards";
+import { useMissingFolders } from "./useMissingFolders";
 import { isUnderDir } from "./current-apps-lib";
 
 /** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
@@ -154,7 +157,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     let saved: TaskView = "list";
     try {
       const stored = localStorage.getItem(VIEW_KEY);
-      if (stored === "board" || stored === "calendar") saved = stored;
+      // Against TASK_VIEWS rather than a hand-written list of the non-default
+      // ones: this store is untrusted input (an older build wrote it, a person
+      // edited it), and the one place that decides what a view NAME is has to be
+      // the same place `?view=` reads (tasks-lib.TASK_VIEWS).
+      if (stored && (TASK_VIEWS as string[]).includes(stored)) saved = stored as TaskView;
     } catch {
       // A blocked store just means no remembered view; the URL may still say.
     }
@@ -391,6 +398,22 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     };
   }, []);
 
+  // A folder chip pressed on a row or a card: filter the page to that
+  // project, pressing the pinned one again clears it. It REPLACES the project
+  // selection rather than adding to it — the gesture means "show me this
+  // folder", and a press that quietly widened an existing selection would be
+  // the opposite of what it looks like. Everything else about the filters is
+  // left alone, so a status or a search already on stays on. A TOGGLE, because
+  // the chip stays on screen wearing the state: pressing the folder you are
+  // already filtered to is the obvious way to let it go. ONE handler for the
+  // List and the Cards wall (Akshil, 2026-09-05: the card's chip must filter
+  // like the List's), so the two cannot drift.
+  const pickProject = (project: string) =>
+    setFilters((f) => ({
+      ...f,
+      projects: f.projects.length === 1 && f.projects[0] === project ? [] : [project],
+    }));
+
   const pickView = (v: TaskView) => {
     setView(v);
     // Into the URL, so the view is a thing you can link to and reload onto.
@@ -432,6 +455,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     () => filterTasks(inScope, filtersForView(filters, view)),
     [inScope, filters, view],
   );
+  // Which of the shown tasks' folders the disk no longer has — asked once per
+  // folder, so a row can say "Folder missing" instead of opening an Explorer
+  // that can only answer with a stat error (useMissingFolders).
+  const missing = useMissingFolders(shown);
 
   // Editing is addressed by ENTRY id, not by task: a task is a thread, and a
   // thread has nothing to edit — only a message that has not gone out yet does.
@@ -529,6 +556,18 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 {ICON_VIEW_BOARD}
                 Board
               </button>
+              {/* Before the calendar (Akshil, 2026-09-03): the first three
+                  answer "what is there" and "what is happening right now",
+                  and the calendar is the drill-down for the scheduled subset —
+                  the same argument that made List the default. */}
+              <button type="button"
+                      data-view="cards"
+                      className={"btn btn-secondary schedule-view-btn" + (view === "cards" ? " is-active" : "")}
+                      aria-pressed={view === "cards"}
+                      onClick={() => pickView("cards")}>
+                {ICON_VIEW_CARDS}
+                Cards
+              </button>
               <button type="button"
                       data-view="calendar"
                       className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
@@ -593,11 +632,28 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               onEditEntry={editEntry}
             />
           ) : view === "board" ? (
-            <TaskBoard tasks={shown} home={home} onReload={reload} />
+            <TaskBoard tasks={shown} home={home} onReload={reload} missing={missing} />
+          ) : view === "cards" ? (
+            <TaskCards
+              // The FILTERED set, like every other view: Cards only ORDERS it
+              // (tasks-lib.cardsForTasks — every lane, Archive last), and a
+              // Project, Status or Search the reader set on another view is a
+              // lens they meant to keep — the same argument that put the
+              // toolbar on the calendar.
+              tasks={shown}
+              home={home}
+              onReload={reload}
+              // The folder chip in a card's head is the List row's filter tag
+              // (Akshil, 2026-09-05): same handler, same pinned state.
+              onPickProject={pickProject}
+              pinnedProjects={filters.projects}
+              missing={missing}
+            />
           ) : (
             <TaskList
               tasks={shown}
               home={home}
+              missing={missing}
               // A failed poll empties `tasks` too, and the List cannot tell that
               // apart from a filter that matched nothing — but it must, because
               // one is a reason to forget where the reader was and the other is
@@ -611,20 +667,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // an existing selection would be the opposite of what it looks
               // like. Everything else about the filters is left alone, so a
               // status or a search already on stays on.
-              onPickProject={(project) =>
-                setFilters((f) => ({
-                  ...f,
-                  // A TOGGLE, because the chip stays on screen wearing the
-                  // state: pressing the folder you are already filtered to is
-                  // the obvious way to let it go, and it is the only way that
-                  // does not send the reader to the toolbar popover to undo a
-                  // gesture they made in the list.
-                  projects:
-                    f.projects.length === 1 && f.projects[0] === project
-                      ? []
-                      : [project],
-                }))
-              }
+              onPickProject={pickProject}
               // Which project the page is pinned to — so the chip survives the
               // filter that makes every row agree, and shows that it is on.
               pinnedProjects={filters.projects}

@@ -150,13 +150,13 @@ export interface SortOption {
 
 /** Every ordering the page offers, in the order the menu lists them.
  *
- *  **"Best match" is FIRST, and that is what makes it the default** (D663):
+ *  **"Best match" is FIRST, and that is what makes it the default** (D754):
  *  `activeSort` falls back to `SORTS[0]` for a value the page does not
  *  recognise — the same mechanism `readHubUrl` already relies on for a
  *  missing `?hubSort=` — so putting the composite ranking at index 0 is
  *  what makes it the default sort with no second "what does an empty
  *  `sort` mean" rule to keep in sync. Downloads used to hold this slot;
- *  see D663 for why raw downloads rewards age and CI traffic over
+ *  see D754 for why raw downloads rewards age and CI traffic over
  *  usefulness. Size is LAST, unchanged, because it is the only ordering
  *  that costs a measurement (see `wireSort`) and the menu reads best when
  *  the cheap answers come first. */

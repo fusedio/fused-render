@@ -2,7 +2,9 @@
 
 See fused_render/index/specs/server-api.md.
 """
+import asyncio
 import json
+import logging
 import os
 import time
 
@@ -83,7 +85,7 @@ def test_scan_rejects_a_path_that_is_not_a_directory(home, tmp_path):
 
 
 def test_scan_409s_while_indexing_is_off(home, tmp_path, monkeypatch):
-    monkeypatch.setattr(index_router, "indexing_enabled", lambda: False)
+    monkeypatch.setattr(index_router.index_gate.prefs, "indexing_enabled", lambda: False)
     resp = _client(tmp_path).post("/api/index/scan", json={"root": str(tmp_path)},
                                   headers={"X-Fused": "1"})
     assert resp.status_code == 409
@@ -100,7 +102,7 @@ def test_cancel_of_an_unknown_run_is_a_400(home, tmp_path):
 
 def test_scan_status_and_stats_over_a_real_tree(home, tmp_path):
     """One end-to-end pass: POST a scan, poll status until the detached worker
-    finishes, then read the index back through stats and lookup."""
+    finishes, then read the index back through stats."""
     src = _tree(tmp_path)
     client = _client(tmp_path)
     started = client.post("/api/index/scan", json={"root": str(src)},
@@ -125,9 +127,6 @@ def test_scan_status_and_stats_over_a_real_tree(home, tmp_path):
     stats = client.get("/api/index/stats", params={"root": str(src)}).json()
     assert stats["rows"] == 2
     assert stats["empty"] is False
-
-    found = client.get("/api/index/lookup", params={"q": "beta"}).json()
-    assert [r["name"] for r in found["rows"]] == ["beta.md"]
 
 
 def test_status_without_a_run_id_reports_the_latest_run(home, tmp_path):
@@ -215,7 +214,7 @@ def test_cancel_writes_the_flag(home, tmp_path):
     assert os.path.exists(os.path.join(d, "cancel"))
 
 
-# -- stats / lookup on an empty index -----------------------------------------
+# -- stats on an empty index ---------------------------------------------------
 
 def test_stats_on_a_never_built_index(home, tmp_path):
     body = _client(tmp_path).get("/api/index/stats").json()
@@ -223,16 +222,286 @@ def test_stats_on_a_never_built_index(home, tmp_path):
     assert body["rows"] == 0
 
 
-def test_lookup_on_a_never_built_index(home, tmp_path):
-    body = _client(tmp_path).get("/api/index/lookup", params={"q": "x"}).json()
-    assert body["empty"] is True
-    assert body["rows"] == []
+# -- the read-concurrency semaphores ---------------------------------------------
+#
+# `_interactive_read_concurrency()` and `_query_read_concurrency()`
+# (routers/index.py) bound how many of the five expensive read routes may be
+# running their duckdb call at once — without it, `asyncio.to_thread`'s
+# default executor (min(32, cpu+4) workers) would let up to 32
+# `search_threads()`-capped pools run simultaneously, most of the
+# whole-machine exposure `search_threads` exists to remove.
+#
+# Two lanes (D701 correction / D706), not one shared semaphore: `stats`,
+# `search`, and `rank` are per-keystroke and share the tight, width-2
+# interactive lane; `query` and `ask` run a caller-authored statement bounded
+# only by `guarded_query.TIMEOUT_S` (10s) and share their own narrower,
+# width-1 lane, so a slow SQL-panel query can no longer block the home search
+# box behind it.
+
+def test_read_routes_bound_how_many_run_their_duckdb_call_at_once(home, tmp_path,
+                                                                   monkeypatch):
+    """Six concurrent `/api/index/stats` requests, each blocked on a real
+    `threading.Event` inside the (monkeypatched) duckdb call: peak concurrency
+    must never exceed the semaphore's width, and every request must still
+    eventually complete rather than deadlock behind it.
+
+    Driven through `httpx.AsyncClient` + `ASGITransport` on ONE event loop
+    (`asyncio.run`, `asyncio.gather`) rather than a thread pool of sync
+    `TestClient` calls: `asyncio.Semaphore` binds to whichever loop first
+    awaits it, and a thread pool of separately-looped sync clients trips that
+    the moment two of them touch the same module-level semaphore."""
+    import threading
+
+    import httpx
+
+    lock = threading.Lock()
+    state = {"concurrent": 0, "peak": 0}
+    release = threading.Event()
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        with lock:
+            state["concurrent"] += 1
+            state["peak"] = max(state["peak"], state["concurrent"])
+        release.wait(timeout=5)
+        with lock:
+            state["concurrent"] -= 1
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            tasks = [asyncio.create_task(client.get("/api/index/stats"))
+                     for _ in range(6)]
+            # Give the pile-up a moment to reach its ceiling before releasing —
+            # long enough on any CI box, short enough not to matter if it isn't.
+            for _ in range(50):
+                with lock:
+                    if state["concurrent"] >= 2:
+                        break
+                await asyncio.sleep(0.02)
+            assert state["peak"] <= 2
+            release.set()
+            return await asyncio.gather(*tasks)
+
+    responses = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses)
+    assert state["peak"] == 2  # the ceiling was actually reached, not just respected
 
 
-def test_lookup_limit_is_clamped(home, tmp_path):
-    body = _client(tmp_path).get("/api/index/lookup",
-                                 params={"q": "x", "limit": 10 ** 9}).json()
-    assert body["ok"] is True  # coerced, not rejected
+def test_a_slow_query_does_not_block_the_interactive_lane(home, tmp_path, monkeypatch):
+    """The regression the two-lane split fixes: with one shared semaphore, a
+    slow `/api/index/query` could hold both of its slots for up to 10s, and
+    every keystroke in the home search box queued behind it. `/api/index/stats`
+    (the interactive lane) must answer immediately while a query is still
+    running."""
+    import threading
+
+    import httpx
+
+    query_started = threading.Event()
+    query_release = threading.Event()
+
+    def fake_guarded(cfg, sql, limit, token=None):
+        query_started.set()
+        query_release.wait(timeout=5)
+        return {"columns": [], "rows": []}
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "_guarded", fake_guarded)
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            query_task = asyncio.create_task(
+                client.post("/api/index/query", json={"sql": "select 1"},
+                           headers={"X-Fused": "1"}))
+            for _ in range(50):
+                if query_started.is_set():
+                    break
+                await asyncio.sleep(0.02)
+            assert query_started.is_set()
+            t0 = time.monotonic()
+            stats_resp = await client.get("/api/index/stats")
+            elapsed = time.monotonic() - t0
+            query_release.set()
+            query_resp = await query_task
+            return stats_resp, elapsed, query_resp
+
+    stats_resp, elapsed, query_resp = asyncio.run(run())
+    assert stats_resp.status_code == 200
+    # Would be seconds if `stats` shared the query's slot; this only bounds
+    # generously to stay fast on a loaded CI box.
+    assert elapsed < 2.0, elapsed
+    assert query_resp.status_code == 200
+
+
+def test_a_breakdown_request_does_not_consume_an_interactive_slot(home, tmp_path, monkeypatch):
+    """Code review finding: `stats`/`search`/`rank` share the interactive
+    lane on the premise that every member is "bounded, cheap, and
+    known-shaped" -- true of a plain `/api/index/stats`, but not of
+    `?breakdown=true`, an unbounded `GROUP BY ext` over every partition under
+    the root that can take seconds on a large index. Two PLAIN stats calls
+    filling the whole width-2 interactive lane must not delay a breakdown
+    request -- if breakdown still shared that lane, it would queue behind
+    them for as long as they run, the exact head-of-line blocking the
+    two-lane split (D706) was introduced to eliminate, reintroduced inside
+    the lane meant to be safe from it."""
+    import threading
+
+    import httpx
+
+    lock = threading.Lock()
+    plain_concurrent = 0
+    plain_started = threading.Event()
+    plain_release = threading.Event()
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        nonlocal plain_concurrent
+        if not breakdown:
+            with lock:
+                plain_concurrent += 1
+                if plain_concurrent >= 2:
+                    plain_started.set()
+            plain_release.wait(timeout=5)
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            plain_tasks = [
+                asyncio.create_task(client.get("/api/index/stats"))
+                for _ in range(2)
+            ]
+            for _ in range(50):
+                if plain_started.is_set():
+                    break
+                await asyncio.sleep(0.02)
+            assert plain_started.is_set()  # both interactive-lane slots taken
+            t0 = time.monotonic()
+            breakdown_resp = await client.get(
+                "/api/index/stats", params={"breakdown": "true"})
+            elapsed = time.monotonic() - t0
+            plain_release.set()
+            plain_resps = await asyncio.gather(*plain_tasks)
+            return breakdown_resp, elapsed, plain_resps
+
+    breakdown_resp, elapsed, plain_resps = asyncio.run(run())
+    assert breakdown_resp.status_code == 200
+    # Would be seconds if breakdown queued behind the two plain calls filling
+    # the interactive lane.
+    assert elapsed < 2.0, elapsed
+    assert all(r.status_code == 200 for r in plain_resps)
+
+
+def test_ask_shares_the_query_lane_with_query(home, tmp_path, monkeypatch):
+    """Review finding: `/api/index/ask` ran the same guarded DuckDB call
+    `/api/index/query` does, over model-generated SQL, on a worker thread, and
+    was not bounded by any semaphore at all. It must now share the
+    authored-SQL lane with `query` — concurrent `query` + `ask` calls must
+    never both be running their duckdb call at once."""
+    import threading
+
+    import httpx
+    from fastapi.responses import JSONResponse
+
+    lock = threading.Lock()
+    state = {"concurrent": 0, "peak": 0}
+    release = threading.Event()
+
+    def fake_guarded(cfg, sql, limit, token=None):
+        with lock:
+            state["concurrent"] += 1
+            state["peak"] = max(state["peak"], state["concurrent"])
+        release.wait(timeout=5)
+        with lock:
+            state["concurrent"] -= 1
+        return {"columns": [], "rows": []}
+
+    async def fake_relay(body, session=None):
+        return JSONResponse({"ok": True, "result": {"text": "select 1"}})
+
+    monkeypatch.setattr(index_router, "_guarded", fake_guarded)
+    monkeypatch.setattr(index_router._server_ai, "_ai_relay", fake_relay)
+
+    async def run():
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            tasks = [
+                asyncio.create_task(client.post(
+                    "/api/index/query", json={"sql": "select 1"},
+                    headers={"X-Fused": "1"})),
+                asyncio.create_task(client.post(
+                    "/api/index/ask", json={"prompt": "how many files"},
+                    headers={"X-Fused": "1"})),
+            ]
+            for _ in range(50):
+                with lock:
+                    if state["concurrent"] >= 1:
+                        break
+                await asyncio.sleep(0.02)
+            assert state["peak"] <= 1
+            release.set()
+            return await asyncio.gather(*tasks)
+
+    responses = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses)
+    assert state["peak"] == 1  # the ceiling was actually reached
+
+
+def test_a_lane_survives_a_second_contending_event_loop(home, tmp_path, monkeypatch):
+    """The bug the lazy per-loop semaphore fixes (review finding, D701
+    correction / D706): a bare module-level `asyncio.Semaphore()` binds to
+    whichever event loop first CONTENDS on it, and a second event loop that
+    later contends on it raises `RuntimeError: ... is bound to a different
+    event loop` — surfacing as a 500 instead of a queued request. Two separate
+    `asyncio.run` calls (two separate loops), each with MORE concurrent
+    requests than the lane's width so each one genuinely contends, must both
+    succeed."""
+    import threading
+
+    import httpx
+
+    release = threading.Event()
+
+    def fake_stats(cfg, root="", breakdown=False, token=None):
+        release.wait(timeout=5)
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", fake_stats)
+
+    async def run_three_concurrent():
+        # 3 requests against a width-2 lane: the third genuinely contends,
+        # rather than merely acquiring an uncontended semaphore (which never
+        # exercised the binding bug in the first place).
+        transport = httpx.ASGITransport(app=_client(tmp_path).app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://test") as client:
+            tasks = [asyncio.create_task(client.get("/api/index/stats"))
+                     for _ in range(3)]
+            await asyncio.sleep(0.2)
+            release.set()
+            return await asyncio.gather(*tasks)
+
+    first = asyncio.run(run_three_concurrent())
+    release.clear()
+    second = asyncio.run(run_three_concurrent())  # a brand-new event loop
+    for resp in first + second:
+        assert resp.status_code == 200
 
 
 # -- config --------------------------------------------------------------------
@@ -312,32 +581,6 @@ def test_saving_the_config_answers_in_the_same_shape_as_reading_it(home, tmp_pat
     assert saved["roots"] == read["roots"]  # the effective (home) fallback
     assert saved["roots"]  # ...and it is not empty
     assert saved["configured_roots"] == read["configured_roots"] == []
-
-
-def test_a_search_is_filtered_against_its_enclosing_index_root(home, tmp_path,
-                                                              monkeypatch):
-    """The gitignore filter pools its verdicts per INDEX ROOT, so the route has
-    to tell it which one this folder lives under. Keyed on the REQUESTED folder
-    instead (the old behaviour), browsing five folders evicted the first and
-    re-paid a full check-ignore sweep of its whole recursive subtree."""
-    seen = []
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None: seen.append(index_root) or out)
-    sub = tmp_path / "sub"
-    sub.mkdir()
-    client = _client(tmp_path)
-    client.post("/api/index/config", json={"roots": [str(tmp_path)]},
-                headers={"X-Fused": "1"})
-    client.get(f"/api/index/search?root={tmp_path}")
-    client.get(f"/api/index/search?root={sub}")
-    # Both requests pool under the configured root, whichever folder was asked
-    # for. A folder outside every root has no pool to share and gets None.
-    client.get(f"/api/index/search?root={tmp_path.parent}")
-    # The route hands `filter_corpus` the matched entry from `scan_roots`,
-    # which is already in `runner.canonical_root` form — not the caller's
-    # raw spelling (platform.md §1) — so the expectation has to be too.
-    canon = runner.canonical_root(str(tmp_path))
-    assert seen == [canon, canon, None]
 
 
 def test_saving_the_ignore_list_preserves_comments_and_blank_lines(home, tmp_path):
@@ -698,7 +941,7 @@ def test_startup_scan_skips_every_root_while_indexing_is_off(home, tmp_path,
     started = []
     monkeypatch.setattr(index_router.runner, "start",
                         lambda cfg, root, full=False: started.append(root))
-    monkeypatch.setattr(index_router, "indexing_enabled", lambda: False)
+    monkeypatch.setattr(index_router.index_gate.prefs, "indexing_enabled", lambda: False)
     cfg = load_config()
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
@@ -745,8 +988,6 @@ def _corpus(n=3):
 def _stub_corpus(monkeypatch, out):
     monkeypatch.setattr(index_router, "index_search",
                         lambda cfg, root, **kw: dict(out))
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None: out)
 
 
 def test_search_answers_in_columns_when_asked(home, tmp_path, monkeypatch):
@@ -864,19 +1105,12 @@ def test_startup_warm_runs_the_home_pages_first_search(home, tmp_path, monkeypat
     monkeypatch.setattr(index_router, "index_search",
                         lambda cfg, root, **kw: seen.append(("search", root))
                         or {"covered": True, "root": root, "entries": []})
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None:
-                        seen.append(("filter", index_root)) or out)
     cfg = load_config()
     cfg.roots = [str(tmp_path)]
     index_router.save_config(cfg)
     index_router.run_startup_warm()
-    # Same pair of calls the route makes, and pooled under the same index root:
-    # a warm that filtered under a different key would fill a second pool.
-    # `filter_corpus`'s `index_root` comes from `enclosing_root(scan_roots(...))`
-    # — canonical_root form, not the caller's raw spelling.
-    assert seen == [("search", index_router.runner.canonical_root("~")),
-                    ("filter", index_router.runner.canonical_root(str(tmp_path)))]
+    # Same call the route makes: /api/index/search's corpus, aimed at home.
+    assert seen == [("search", index_router.runner.canonical_root("~"))]
 
 
 def test_startup_warm_never_raises(home, tmp_path, monkeypatch):
@@ -902,40 +1136,6 @@ def test_startup_warm_refuses_a_mount_backed_home(home, tmp_path, monkeypatch):
     assert called == []
 
 
-def test_startup_warm_fills_the_gitignore_verdict_pool(home, tmp_path, monkeypatch):
-    """The point of the warm, end to end: after a real scan the first search
-    pays a full check-ignore sweep of the whole corpus (~1.5 s on a home dir).
-    Once the warm has run, that sweep is already in the pool."""
-    from fused_render.server import index_gitignore
-
-    src = _tree(tmp_path)
-    (src / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    (src / "noise.log").write_text("x", encoding="utf-8")
-    client = _client(tmp_path)
-    started = client.post("/api/index/scan", json={"root": str(src)},
-                          headers={"X-Fused": "1"})
-    run_id = started.json()["run_id"]
-    deadline = time.time() + 120
-    while time.time() < deadline:
-        if not client.get("/api/index/status",
-                          params={"run_id": run_id}).json()["running"]:
-            break
-        time.sleep(0.2)
-    cfg = load_config()
-    cfg.roots = [str(src)]
-    index_router.save_config(cfg)
-    index_gitignore._cache.clear()
-    # HOME is what the warm aims at; point it at the scanned tree so the warm
-    # answers `covered` and actually sweeps.
-    _point_home_at(monkeypatch, src)
-    index_router.run_startup_warm()
-    # the pool is keyed by canonical_root(src), not the raw literal.
-    pool = index_gitignore._cache.get(runner.canonical_root(str(src)))
-    assert pool is not None
-    assert "noise.log" in pool.ignored
-    assert "alpha.txt" in pool.decider
-
-
 def test_startup_scan_records_the_run_the_warm_waits_on(home, tmp_path, monkeypatch):
     """The warm waits on the run THIS process started, so the scheduler has to
     hand it over — `run_startup_scan` used to drop `runner.start`'s run id on
@@ -958,16 +1158,12 @@ def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch)
     and there is nothing to sweep; the scan this process just spawned finishes
     seconds later. Sampling once left the user's first keystroke paying the
     whole cold cost anyway (2.3 s, observed). Waiting for that one run and
-    warming after it is what fills the pool."""
-    from fused_render.server import index_gitignore
-
+    searching again after it is what fills the corpus before the user's first
+    keystroke."""
     src = _tree(tmp_path)
-    (src / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    (src / "noise.log").write_text("x", encoding="utf-8")
     cfg = load_config()
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
-    index_gitignore._cache.clear()
     # HOME is what the warm aims at, and what the scheduler scans.
     _point_home_at(monkeypatch, src)
     index_router.run_startup_scan(start_dir=str(tmp_path))
@@ -989,11 +1185,6 @@ def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch)
     index_router.run_startup_warm()
 
     assert len(calls) == 2, "the warm did not search again after the scan"
-    # the pool is keyed by canonical_root(src), not the raw literal.
-    pool = index_gitignore._cache.get(runner.canonical_root(str(src)))
-    assert pool is not None
-    assert "noise.log" in pool.ignored
-    assert "alpha.txt" in pool.decider
 
 
 def test_startup_warm_gives_up_when_the_scan_never_finishes(home, tmp_path,
@@ -1059,7 +1250,7 @@ def test_startup_warm_searches_again_when_the_run_dir_vanishes_mid_wait(
     monkeypatch.setenv("HOME", str(tmp_path))
     run_dir = tmp_path / "pruned-run"
     run_dir.mkdir()
-    calls, filtered = [], []
+    calls, ranked = [], []
 
     def search(cfg, root, **kw):
         calls.append(root)
@@ -1069,8 +1260,8 @@ def test_startup_warm_searches_again_when_the_run_dir_vanishes_mid_wait(
         return {"covered": True, "root": root, "entries": []}
 
     monkeypatch.setattr(index_router, "index_search", search)
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None: filtered.append(out) or out)
+    monkeypatch.setattr(index_router, "_rank_body",
+                        lambda cfg, root, q, **kw: ranked.append(root) or {})
     monkeypatch.setattr(index_router.runner, "_run_dir",
                         lambda cfg, run_id: str(run_dir))
     monkeypatch.setattr(index_router, "WARM_WAIT_POLL_S", 0.01)
@@ -1078,7 +1269,8 @@ def test_startup_warm_searches_again_when_the_run_dir_vanishes_mid_wait(
                         "run-that-was-pruned")
     index_router.run_startup_warm()
     assert len(calls) == 2
-    assert [out.get("covered") for out in filtered] == [True]
+    # The unconditional rank warm still runs, over the SECOND (covered) search.
+    assert len(ranked) == 1
 
 
 def test_startup_warm_does_not_wait_when_the_root_is_covered(home, tmp_path,
@@ -1086,19 +1278,19 @@ def test_startup_warm_does_not_wait_when_the_root_is_covered(home, tmp_path,
     """The overwhelmingly common boot: an index is already there, so the warm
     is the same two calls it always was, with no wait in the way."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    waited, filtered = [], []
+    waited, ranked = [], []
     monkeypatch.setattr(index_router, "_wait_for_scan",
                         lambda cfg, run_id: waited.append(run_id) or True)
     monkeypatch.setattr(index_router, "index_search",
                         lambda cfg, root, **kw: {"covered": True, "root": root,
                                                  "entries": []})
-    monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, index_root=None: filtered.append(out) or out)
+    monkeypatch.setattr(index_router, "_rank_body",
+                        lambda cfg, root, q, **kw: ranked.append(root) or {})
     monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
                         "run-1")
     index_router.run_startup_warm()
     assert waited == []
-    assert len(filtered) == 1
+    assert len(ranked) == 1
 
 
 def test_startup_warm_does_not_wait_when_the_scan_was_debounced(home, tmp_path,
@@ -1347,7 +1539,7 @@ def test_note_folder_opened_starts_nothing_while_indexing_is_off(
     threads = []
     monkeypatch.setattr(index_router.threading, "Thread",
                         lambda **kw: threads.append(kw) or _FakeThread())
-    monkeypatch.setattr(index_router, "indexing_enabled", lambda: False)
+    monkeypatch.setattr(index_router.index_gate.prefs, "indexing_enabled", lambda: False)
     assert _real_note_folder_opened(str(tmp_path)) is False
     assert threads == []
 
@@ -1625,3 +1817,124 @@ def _write_dirs_index(cfg, dirs):
         sink.add(d, "s", ("sig", [], 0, mtime_ns, 0))
     sink.close()
     compact(cfg, next(iter(dirs)), shards, pa, pq)
+
+
+# -- cancellation: an abandoned request gets a quiet 499 -----------------------
+#
+# Same end-to-end shape /api/index/rank already covers (test_index_search.py's
+# test_rank_route_answers_a_disconnected_client_with_a_quiet_499): the worker
+# function is monkeypatched to a controllable stand-in — sleeping briefly on
+# its OWN thread, never the event loop — that then consults the very token
+# the route handed it, exactly as the real query.py/guarded_query.py
+# functions do. A real (tiny, near-instant) index would make the outcome a
+# coin flip on scheduling order against `_watch_disconnect`'s poll.
+
+class _DisconnectedRequest:
+    """`app.state` is only there for `api_index_ask`'s `ai_session` lookup —
+    the other three routes never touch it."""
+
+    class app:
+        class state:
+            pass
+
+    async def is_disconnected(self):
+        return True
+
+
+def test_stats_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    from fused_render.index.cancel import Cancelled
+
+    def slow_cancellable_stats(cfg, root="", breakdown=False, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
+                "total_size": 0, "types": [], "partitions": []}
+
+    monkeypatch.setattr(index_router, "index_stats", slow_cancellable_stats)
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_stats(request=_DisconnectedRequest()))
+    assert resp.status_code == 499
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)
+
+
+def test_search_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    from fused_render.index.cancel import Cancelled
+
+    def slow_cancellable_search(cfg, root, q="", limit=None, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"covered": False, "fresh": False, "updated": None, "age_s": None,
+                "root": root, "entries": [], "truncated": False, "total": 0,
+                "scanned_partitions": 0, "of_partitions": 0}
+
+    monkeypatch.setattr(index_router, "index_search", slow_cancellable_search)
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_search(
+                request=_DisconnectedRequest(), root=str(tmp_path)))
+    assert resp.status_code == 499
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)
+
+
+def test_query_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    from fused_render.index.cancel import Cancelled
+
+    def slow_cancellable_guarded(cfg, sql, limit, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"columns": [], "rows": [], "truncated": False}
+
+    monkeypatch.setattr(index_router, "_guarded", slow_cancellable_guarded)
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_query(
+                request=_DisconnectedRequest(),
+                body={"sql": "SELECT 1"}, x_fused="1"))
+    assert resp.status_code == 499
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)
+
+
+def test_ask_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    from fused_render.index.cancel import Cancelled
+
+    monkeypatch.setattr(index_router._server_ai, "_ai_relay",
+                        _fake_relay("SELECT 1"))
+
+    def slow_cancellable_guarded(cfg, sql, limit, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"columns": [], "rows": [], "truncated": False}
+
+    monkeypatch.setattr(index_router, "_guarded", slow_cancellable_guarded)
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_ask(
+                request=_DisconnectedRequest(),
+                body={"prompt": "anything"}, x_fused="1"))
+    assert resp.status_code == 499
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)

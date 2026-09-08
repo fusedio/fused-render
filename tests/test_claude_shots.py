@@ -55,6 +55,35 @@ def agent():
     return _load("agent")
 
 
+class _HostProc:
+    """Stands in for the session_host.py process `_start` now Popens instead
+    of the CLI itself: the CLI's argv is built by `_claude_argv` inside THAT
+    process, from the JSON request written to this stub's stdin — so a test
+    that wants the argv has to capture the request and rebuild it, the same
+    call session_host.py's own `main()` makes."""
+    pid = 4242
+
+    class _Stdin:
+        def __init__(self, seen):
+            self._seen = seen
+            self._buf = b""
+
+        def write(self, data):
+            self._buf += data
+
+        def close(self):
+            self._seen["req"] = json.loads(self._buf.decode("utf-8"))
+
+    def __init__(self, seen):
+        self.stdin = _HostProc._Stdin(seen)
+
+
+def _argv_from_req(agent, req, run_dir):
+    return agent._claude_argv(
+        run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+
+
 @pytest.fixture
 def html():
     return open(TEMPLATE, encoding="utf-8").read()
@@ -145,14 +174,12 @@ def test_the_spawn_line_pre_approves_reading_a_crop_and_nothing_else(
     project.mkdir()
     seen = {}
 
-    class _Proc:
-        pid = 4242
-
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
-    monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kw: (seen.__setitem__("cmd", cmd), _Proc())[1])
-    assert "error" not in agent._start(str(project), "hi", "", "", "")
-    cmd = seen["cmd"]
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    out = agent._start(str(project), "hi", "", "", "")
+    assert "error" not in out, out
+    run_dir = os.path.join(agent.RUNS, out["run_id"])
+    cmd = _argv_from_req(agent, seen["req"], run_dir)
     allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
     assert agent._read_rule(str(tmp_path / "shots")) in allowed
     # Not a blanket Read: a rule with no path would allow the whole filesystem.
@@ -2179,8 +2206,10 @@ def test_annotate_mode_defaults_off_and_owns_pin_visibility(html):
     opened) leaves the comment layer down, so clicks reach the app. Encoded as
     `=== "1"` rather than `!== "0"` so ABSENT reads as disarmed.
     Pin visibility and auto-send have no params of their own any more: pins
-    follow the mode, and a saved new note always auto-sends."""
-    assert 'annSetMode(fused.params.get("annmode") === "1")' in html
+    follow the mode, and Done always sends the pending notes."""
+    boot = html[html.index("function annBootMode()"):]
+    boot = boot[:boot.index("\n}\n")]
+    assert 'annSetMode(m === "1");' in boot
     assert "annshow" not in html
     assert "annautosend" not in html
     # pins gate on the mode itself, and toggling the mode repaints them
@@ -2194,11 +2223,15 @@ def test_annotate_mode_defaults_off_and_owns_pin_visibility(html):
     # runs; only the write is conditional, and only on a no-op — writing "1"
     # over an absent param is a real arm and still pushes.
     mode = _between(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
-    assert 'if ((fused.params.get("annmode") === "1") !== annOn) {' in mode
-    assert mode.count('fused.params.set("annmode"') == 1
-    # auto-send is unconditional (bar the in-flight guard) — an empty composer
-    # sends bare, the annotations carrying the content
-    assert "if (isNew && !sending) annAutoSubmit();" in html
+    assert "annModeSync();" in mode
+    sync = _between(html, "function annModeSync() {", "\n}\n")
+    assert 'if (curOn !== annOn || (annOn && cur !== want)) fused.params.set("annmode", want);' in sync
+    assert html.count('fused.params.set("annmode"') == 1
+    # Done's send is unconditional (bar the in-flight guard) — an empty
+    # composer sends bare, the annotations carrying the content. Saving a note
+    # sends nothing: notes pool until Done (Akshil, 2026-09-04).
+    assert "if (pending && (activeRun || !sending)) annAutoSubmit();" in html
+    assert "isNew && !sending" not in html
     assert "annAutoEl" not in html and 'id="annauto"' not in html
 
 
@@ -2447,8 +2480,9 @@ def test_the_shot_belongs_to_exactly_one_message(html):
     assert "if (!message && !pending.length && !pics.length) { sending = false; return; }" \
         in send
     assert html.count(
-        "if (!message && !annPending().length && !shotAttached.length) return;") == 2, \
-        "and both composers' submit guards agree"
+        "if (!message && !annPending().length && !shotAttached.length) return;") == 3, \
+        "the home composer, the chat composer, and its activeRun follow-up " \
+        "branch all agree"
 
 
 def test_the_thumbnail_never_reaches_the_wire(html):
@@ -2504,7 +2538,7 @@ def test_a_second_click_replaces_the_picture_and_releases_the_first(html):
     # ONE pane seat, found by kind — a pasted picture is the other kind and stacks
     assert 'const seat = shotAttached.findIndex((s) => s.kind === "pane");' in click
     # and a double-click cannot start a second capture at all
-    assert "if (shotBusy || !annCapable()) return;" in click
+    assert "if (shotBusy || annOn || !annCapable()) return;" in click
     assert "shotBusy = true;" in click
 
 
@@ -2603,16 +2637,17 @@ def test_the_button_is_absent_wherever_there_is_nothing_to_photograph(html):
 def test_the_strip_carries_the_one_button_between_comment_and_record(html):
     """ONE button, in the #anncta strip (Akshil, 2026-08-27): it used to be a
     camera pill beside Send in both composers; it acts on the PREVIEW like Comment
-    and Record, so it sits with them — in that order: Comment, Screenshot, Record.
+    and Record, so it sits with them — first of the three: Screenshot, Comment, Record.
     The strip is the one row the home card and the chat both keep, so one copy
     serves both composers, and the chip still lands above whichever is showing.
-    Hidden while a mode is armed, like the mic."""
+    Stays while a mode is armed (2026-09-06), like its two neighbours."""
     assert 'id="hviewshot"' not in html
     assert 'class="pill viewshot"' not in html
     strip = _between(html, '<div id="anncta">', "\n      </div>")
     assert 'id="viewshot"' in strip
-    assert strip.index('id="annbtn"') < strip.index('id="viewshot"') < strip.index('id="annrec"')
-    assert "#anncta:has(#annbtn.on) #viewshot { display: none; }" in html
+    # Screenshot · Comment · Annotate (Akshil, 2026-09-04)
+    assert strip.index('id="viewshot"') < strip.index('id="annbtn"') < strip.index('id="annrec"')
+    assert "#anncta:has(#annbtn.on) #viewshot { display: none; }" not in html
     btns = _between(html, "function shotBtns()", "\n}\n")
     assert '"viewshot"' in btns and "hviewshot" not in btns
     # the spoken strings are the pane-noun writer's, not two hardcoded literals
@@ -3991,9 +4026,10 @@ def test_a_pasted_picture_and_a_capture_ride_the_same_message_together(html):
 })();
 """)
     assert out["kinds"] == ["image", "pane", "image"]
-    # and the composer's own guard counts the list rather than one binding
+    # and the composer's own guard counts the list rather than one binding —
+    # the home composer, the chat composer, and its activeRun follow-up branch
     assert html.count(
-        "if (!message && !annPending().length && !shotAttached.length) return;") == 2
+        "if (!message && !annPending().length && !shotAttached.length) return;") == 3
 
 
 def test_the_block_tells_the_model_which_picture_is_of_this_app(html):
@@ -4211,16 +4247,13 @@ def test_the_spawn_line_grows_a_read_rule_per_attachment_directory(
     drops.mkdir()
     seen = {}
 
-    class _Proc:
-        pid = 4242
-
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
-    monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kw: (seen.__setitem__("cmd", cmd), _Proc())[1])
-    assert "error" not in agent.main(action="start", file=str(project),
-                                    message="hi",
-                                    read_dirs=json.dumps([str(drops)]))
-    cmd = seen["cmd"]
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    out = agent.main(action="start", file=str(project), message="hi",
+                     read_dirs=json.dumps([str(drops)]))
+    assert "error" not in out, out
+    run_dir = os.path.join(agent.RUNS, out["run_id"])
+    cmd = _argv_from_req(agent, seen["req"], run_dir)
     allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
     assert agent._read_rule(str(tmp_path / "shots")) in allowed, "still there"
     assert agent._read_rule(str(drops)) in allowed

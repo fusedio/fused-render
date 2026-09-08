@@ -66,6 +66,62 @@ def test_running_reports_every_live_child_with_its_labelling_fields(client, monk
     assert by_id["map"]["pid"] == 4242
 
 
+def test_running_reports_the_lifetime_fields_the_activity_panel_reads(client, monkeypatch):
+    """Uptime, the manifest's idle policy, how long the child has been idle and
+    whether a call is in flight — what the Activity panel turns into "up 5m ·
+    retires in 10m if idle". A resident child reports `idle_timeout_s == 0`,
+    which is what the panel renders as "no idle timeout"."""
+    now = engine_host.time.monotonic()
+    resident = _child("map")
+    resident.started_at = now - 300.0
+    warm = _child("bg:widget", folder="/w/widget", module="widget.main",
+                  idle_timeout_s=900.0)
+    warm.started_at = now - 600.0
+    warm.last_used = now - 60.0
+    monkeypatch.setattr(engine_host, "_children", {"map": resident, "bg:widget": warm})
+    monkeypatch.setattr(engine_host, "_busy", {"bg:widget": 1})
+    monkeypatch.setattr(engine_host, "_alive", lambda c: True)
+
+    by_id = {e["engine_id"]: e
+             for e in client.get("/api/engines/running").json()["engines"]}
+
+    assert by_id["map"]["idle_timeout_s"] == 0
+    assert by_id["map"]["busy"] is False
+    assert by_id["map"]["uptime_s"] == pytest.approx(300.0, abs=5)
+    assert by_id["bg:widget"]["idle_timeout_s"] == 900.0
+    assert by_id["bg:widget"]["uptime_s"] == pytest.approx(600.0, abs=5)
+    assert by_id["bg:widget"]["idle_for_s"] == pytest.approx(60.0, abs=5)
+    # A call in flight is why idle-retire is skipping this child, so the panel
+    # is told rather than left drawing a countdown that is not running.
+    assert by_id["bg:widget"]["busy"] is True
+
+
+def test_running_reports_busy_for_a_child_reap_is_skipping_on_inflight_alone(
+        client, monkeypatch):
+    """A call that outran the 60s proxy budget gets a 504, whose `finally`
+    calls `mark_idle` (routers/engines.py): `_busy` drops to 0 and `last_used`
+    is stamped as if the call had ended. But `main()` keeps running in the
+    worker, and `reap_idle_children` knows that — it skips the child whenever
+    `_inflight` (a ping to the worker itself) is still nonzero, past the local
+    `_busy` gate. The wire's `busy` has to agree with the thing that is
+    actually keeping this child alive, or the panel reads "retiring now" for
+    the one state its detail line exists to explain, for as long as the call
+    keeps running past the timeout."""
+    now = engine_host.time.monotonic()
+    worker = _child("bg:slow", folder="/w/slow", module="slow.main", idle_timeout_s=60.0)
+    worker.started_at = now - 900.0
+    worker.last_used = now - 61.0  # idle_for_s > idle_timeout_s: a reap candidate
+    monkeypatch.setattr(engine_host, "_children", {"bg:slow": worker})
+    monkeypatch.setattr(engine_host, "_busy", {})  # cleared by the 504's mark_idle
+    monkeypatch.setattr(engine_host, "_alive", lambda c: True)
+    monkeypatch.setattr(engine_host, "_inflight", lambda c: 1)  # main() still running
+
+    by_id = {e["engine_id"]: e
+             for e in client.get("/api/engines/running").json()["engines"]}
+
+    assert by_id["bg:slow"]["busy"] is True
+
+
 def test_running_omits_a_child_whose_process_has_exited(client, monkeypatch):
     """`_children` holds the pointer until something reaps it, so liveness is a
     `Popen.poll()` — a dead child must not be offered a Stop button."""

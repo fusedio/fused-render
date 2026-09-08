@@ -1,23 +1,13 @@
 import { expect, test } from "bun:test";
 
+import { installDomShim } from "@platform/lib/testDomShim";
+
 // params.ts imports router.ts for `replaceSearch`, and router.ts reads
-// `location` at module scope; bun has no DOM. Same shim as router.test.ts.
-// Nothing below touches it — every case hands the codec its own search string.
-(globalThis as { location?: unknown }).location ??= {
-  pathname: "/ai-models/playground",
-  search: "",
-  href: "http://localhost/ai-models/playground",
-};
-(globalThis as { history?: unknown }).history ??= {
-  state: null,
-  pushState() {},
-  replaceState() {},
-};
-(globalThis as { window?: unknown }).window ??= {
-  dispatchEvent() {},
-  addEventListener() {},
-  removeEventListener() {},
-};
+// `location` at module scope; bun has no DOM. See testDomShim.ts for why this
+// is the one shared stub every suite in the run installs, rather than a stub
+// hand-rolled per file. Nothing below touches the exact pathname — every case
+// hands the codec its own search string.
+installDomShim();
 
 // A dynamic import, not a static one: static imports hoist ABOVE the shim
 // above and router.ts would read `location` before it exists (chat-params.test

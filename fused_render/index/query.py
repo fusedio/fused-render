@@ -4,8 +4,7 @@ Ported from OpenIndex's `query.py` MINUS its `sql` action, which was an
 arbitrary read/write surface with no allowlist and no read-only flag. User SQL
 lives in `guarded_query.py` instead, where the confinement is the whole point of
 the module (specs/query.md §5); nothing here takes a caller's statement.
-`stats` and `lookup` build SQL only from escaped literals, an int-cast
-limit/offset and a fixed sort allowlist.
+`stats` builds SQL only from escaped literals, same as every other reader here.
 
 duckdb is imported inside each function, not at module top: this module is
 imported by the server's router, and a call against a missing index should not
@@ -21,18 +20,15 @@ import time
 from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import is_inside_leaf_dir, is_leaf_dir, norm
-from fused_render.index.rank import query_wants_hidden as _wants_hidden
-from fused_render.index.rank import rank_entries
 from fused_render.index.store import (
     depth_expr,
     like_literal,
     parquet_src,
     read_manifest,
+    search_threads,
 )
 
 logger = logging.getLogger(__name__)
-
-_DRIVE = re.compile(r"^[A-Za-z]:/")
 
 # A bare drive letter ("C:") is what rstrip("/") leaves a Windows drive root
 # ("C:/") reduced to — the same way rstrip("/") leaves a POSIX root ("/")
@@ -50,14 +46,6 @@ def _root_or_bare(stripped: str) -> str:
     root spelling if it collapsed to one — "" -> "/", "C:" -> "C:/" — else
     unchanged."""
     return stripped + "/" if not stripped or _BARE_DRIVE.match(stripped) else stripped
-
-SORTS = {
-    "path": "path ASC", "size": "size DESC", "mtime": "mtime DESC",
-    "name": "name ASC",
-}
-
-# Rows a single lookup may return, whatever the caller asks for.
-MAX_LIMIT = 5_000
 
 # Entries an in-folder corpus may return — the same cap /api/fs/walk uses, so
 # swapping the corpus source cannot change how much the client holds.
@@ -125,27 +113,6 @@ def prune(parts, prefix):
     return out
 
 
-def pattern_for(q: str):
-    """Turn a user query into (like_pattern, prune_prefix).
-
-    `*` is a wildcard; everything else is a literal substring match anywhere
-    in the path. A query starting with `/`, a drive letter or `~` is anchored
-    at the start, and its literal lead-in (up to the first `*`) prunes
-    partitions."""
-    q = norm(q)
-    anchored = q.startswith("/") or q.startswith("~") or bool(_DRIVE.match(q))
-    if q.startswith("~"):
-        q = norm(os.path.expanduser(q))
-    lit = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    pat = lit.replace("*", "%")
-    if not anchored:
-        pat = "%" + pat
-    if not pat.endswith("%"):
-        pat += "%"
-    prune_prefix = q.split("*", 1)[0] if anchored else ""
-    return pat, prune_prefix
-
-
 def files_src(cfg: IndexConfig, parts) -> str:
     """A duckdb source over exactly the partitions the MANIFEST names.
 
@@ -158,62 +125,71 @@ def files_src(cfg: IndexConfig, parts) -> str:
     return "read_parquet([" + ",".join(f"'{f}'" for f in files) + "])"
 
 
-def _depth_col(con, src: str, path_col: str) -> str:
-    """`depth` when the parquet behind `src` carries it, else the slash-count
-    expression over `path_col`.
+def _src_cols(con, src: str) -> set:
+    """The column names the parquet behind `src` carries.
 
-    DESCRIBE reads footers only, so this costs no rows. Deciding per SOURCE
-    rather than per file is exact: every partition a manifest names was written
-    by one compaction, so a generation's schema is uniform (and DuckDB would
-    refuse a mixed-schema read_parquet list anyway). An index predating the
-    column keeps answering; migrating it is a full rescan."""
-    cols = {r[0] for r in con.execute(
+    DESCRIBE reads footers only, so a single call costs no rows. `_name_col`
+    and `_depth_col` both used to run their OWN `DESCRIBE` against the same
+    `src` (one footer read each) — this collapses that into one lookup per
+    caller, since both questions are answered by the same column list.
+    (A `cache: dict` parameter used to let a caller share that one lookup
+    ACROSS sources too, for a caller asking about the same source more than
+    once in one call — D707. Dropped: `search_ranked`'s files branch was the
+    only caller that ever passed one, and D708 removed the dirs branch's own
+    `_src_cols`/`_depth_col` call entirely — the cache's second ask never
+    happened. Re-add it if a caller that actually hits the same source twice
+    shows up; keeping it unused made the "second ask is a dict lookup" claim
+    describe no live call.)
+
+    Deciding per SOURCE rather than per file is exact: every partition a
+    manifest names was written by one compaction, so a generation's schema is
+    uniform (and DuckDB would refuse a mixed-schema read_parquet list
+    anyway)."""
+    return {r[0] for r in con.execute(
         f"DESCRIBE SELECT * FROM {src} LIMIT 0").fetchall()}
+
+
+def _name_col(cols: set) -> str:
+    """`lower(name)` when `cols` (from `_src_cols`) carries a `name` column,
+    else the regex extracted from `path`.
+
+    Same pattern as `_depth_col` just below, and for the same reason: without
+    this, `search_ranked`'s candidate subquery ran a regex per row over every
+    indexed file (~571k) on every keystroke, purely to recover a value the
+    files parquet already stores (store.py's schema — `name` is denormalised
+    out of `path` at scan time, scan.py:147's `e.name`, unlowered and
+    including the extension). `lower(name)` is therefore byte-for-byte the
+    same string `regexp_extract(lower(path), '[^/]*$')` computes, just without
+    paying for the regex. Only the files table HAS a `name` column — dirs has
+    none (store.py's dir schema) — so this is for the files branch only; an
+    index predating the column keeps answering via the fallback."""
+    return ("lower(name)" if "name" in cols
+            else "regexp_extract(lower(path), '[^/]*$')")
+
+
+def _depth_col(cols: set, path_col: str) -> str:
+    """`depth` when `cols` (from `_src_cols`) carries it, else the slash-count
+    expression over `path_col`. An index predating the column keeps answering;
+    migrating it is a full rescan."""
     return "depth" if "depth" in cols else depth_expr(path_col)
 
 
-def lookup(cfg: IndexConfig, query: str = "", limit: int = 100, offset: int = 0,
-           sort: str = "mtime") -> dict:
-    """Files whose path matches `query`, with partition-pruning telemetry.
-    An index that was never built answers `{empty: True}` rather than raising —
-    "no index yet" is a state the UI renders, not an error."""
-    m = read_manifest(cfg)
-    if m is None:
-        return {"empty": True, "location": cfg.dir, "rows": [], "total": 0,
-                "partitions": [], "scanned_partitions": 0, "of_partitions": 0}
-    import duckdb
+def stats(cfg: IndexConfig, root: str = "", breakdown: bool = False,
+         token=None) -> dict:
+    """Totals for ONE subtree — the explicit `root`, else the manifest's
+    `last_root`. An index may hold several roots, so a whole-index total
+    would be a number nobody asked for.
 
-    q = (query or "").strip().rstrip("/")
-    pat, prune_prefix = pattern_for(q) if q else ("%", "")
-    hit = prune(m["partitions"], prune_prefix)
-    base = {"empty": False, "location": cfg.dir,
-            "partitions": [p["file"] for p in hit],
-            "scanned_partitions": len(hit),
-            "of_partitions": len(m["partitions"])}
-    if not hit:
-        return {**base, "rows": [], "total": 0}
-    where = (f"WHERE path ILIKE '{_q(pat)}' ESCAPE '\\'" if q else "WHERE 1=1")
-    order = SORTS.get(sort, SORTS["mtime"])
-    limit = max(0, min(int(limit), MAX_LIMIT))
-    offset = max(0, int(offset))
-    src = files_src(cfg, hit)
-    con = duckdb.connect()
-    total = con.execute(f"SELECT count(*) FROM {src} {where}").fetchone()[0]
-    rows = con.execute(
-        f"SELECT path, dir, name, ext, size, mtime FROM {src} {where} "
-        f"ORDER BY {order} LIMIT {limit} OFFSET {offset}").fetchall()
-    cols = ["path", "dir", "name", "ext", "size", "mtime"]
-    return {**base, "rows": [dict(zip(cols, r)) for r in rows],
-            "total": int(total)}
+    The default is a `count(*)`/`sum(size)` over partitions PRUNED to the
+    root's range (`prune`, query.md §4) — no per-extension grouping. Pass
+    `breakdown=True` for `types`: the same partitions, but a `GROUP BY ext`
+    pass over them, which most callers never read and shouldn't pay for.
 
-
-def stats(cfg: IndexConfig, root: str = "") -> dict:
-    """Totals + per-extension breakdown for ONE subtree — the explicit `root`,
-    else the manifest's `last_root`. An index may hold several roots, so a
-    whole-index total would be a number nobody asked for.
-
-    Known cost (inherited): this reads every partition to group by extension;
-    there is no cached rollup."""
+    `token` (index/cancel.CancelToken), when given, is bound to the connection
+    the moment it exists and checked before each query — same contract
+    `search_ranked` documents at length. `breakdown=True` is the only pass
+    here expensive enough for cancellation to matter in practice, but the
+    check costs nothing on the cheap path either."""
     m = read_manifest(cfg)
     if m is None:
         return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
@@ -221,39 +197,71 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
     import duckdb
 
     con = duckdb.connect()
-    root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
-    root = _root_or_bare((root or m.get("last_root") or "").rstrip("/"))
-    # `root` already ends in "/" for a bare root (POSIX "/", or a Windows
-    # drive root "C:/" via _root_or_bare above) — appending another "/"
-    # unconditionally, as a plain `root != "/"` check used to, would double
-    # it on the drive-root case and match nothing.
-    pfx = like_literal(root if root.endswith("/") else root + "/")
-    inside = (f"(dir = '{_q(root)}' "
-              f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
-    n_rows, total_size, n_dirs = 0, 0, 0
-    types = []
-    if os.path.exists(cfg.dirs_parquet):
-        n_dirs = con.execute(
-            f"SELECT count(*) FROM {dirs_src(cfg)} "
-            f"WHERE {inside}").fetchone()[0]
-    if m.get("partitions"):
-        by_ext = con.execute(
-            f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
-            f"coalesce(sum(size), 0) s "
-            f"FROM {files_src(cfg, m['partitions'])} "
-            f"WHERE {inside} "
-            f"GROUP BY 1 ORDER BY s DESC").fetchall()
-        n_rows = sum(r[1] for r in by_ext)
-        total_size = sum(r[2] for r in by_ext)
-        top, rest = by_ext[:50], by_ext[50:]
-        types = [{"ext": e, "n": int(n), "size": int(sz)} for e, n, sz in top]
-        if rest:
-            types.append({"ext": "other", "n": int(sum(r[1] for r in rest)),
-                          "size": int(sum(r[2] for r in rest))})
-    return {"empty": False, "location": cfg.dir, "rows": int(n_rows),
-            "dirs": int(n_dirs), "total_size": int(total_size),
-            "updated": m.get("updated"), "last_root": root,
-            "partitions": m["partitions"], "types": types}
+    # Capped like every other interactive index read (search_threads' docstring
+    # in store.py): a bare connect() defaults to one thread per core, and this
+    # is a keystroke away, not a background job.
+    con.execute(f"SET threads TO {search_threads()}")
+    if token is not None:
+        token.bind(con)
+    try:
+        root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
+        root = _root_or_bare((root or m.get("last_root") or "").rstrip("/"))
+        # `root` already ends in "/" for a bare root (POSIX "/", or a Windows
+        # drive root "C:/" via _root_or_bare above) — appending another "/"
+        # unconditionally, as a plain `root != "/"` check used to, would double
+        # it on the drive-root case and match nothing.
+        prefix = root if root.endswith("/") else root + "/"
+        pfx = like_literal(prefix)
+        inside = (f"(dir = '{_q(root)}' "
+                  f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
+        hit = prune(m["partitions"], prefix)
+        n_rows, total_size, n_dirs = 0, 0, 0
+        types = []
+        if os.path.exists(cfg.dirs_parquet):
+            if token is not None:
+                token.check()
+            n_dirs = con.execute(
+                f"SELECT count(*) FROM {dirs_src(cfg)} "
+                f"WHERE {inside}").fetchone()[0]
+        if hit and breakdown:
+            if token is not None:
+                token.check()
+            by_ext = con.execute(
+                f"SELECT coalesce(nullif(ext, ''), 'no ext') e, count(*) n, "
+                f"coalesce(sum(size), 0) s "
+                f"FROM {files_src(cfg, hit)} "
+                f"WHERE {inside} "
+                f"GROUP BY 1 ORDER BY s DESC").fetchall()
+            n_rows = sum(r[1] for r in by_ext)
+            total_size = sum(r[2] for r in by_ext)
+            top, rest = by_ext[:50], by_ext[50:]
+            types = [{"ext": e, "n": int(n), "size": int(sz)} for e, n, sz in top]
+            if rest:
+                types.append({"ext": "other", "n": int(sum(r[1] for r in rest)),
+                              "size": int(sum(r[2] for r in rest))})
+        elif hit:
+            if token is not None:
+                token.check()
+            n_rows, total_size = con.execute(
+                f"SELECT count(*), coalesce(sum(size), 0) "
+                f"FROM {files_src(cfg, hit)} WHERE {inside}").fetchone()
+        return {"empty": False, "location": cfg.dir, "rows": int(n_rows),
+                "dirs": int(n_dirs), "total_size": int(total_size),
+                "updated": m.get("updated"), "last_root": root,
+                "partitions": m["partitions"], "types": types}
+    except duckdb.InterruptException:
+        # Same attribution rule search_ranked's identical handler documents:
+        # only an interrupt THIS token caused becomes Cancelled.
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
+    finally:
+        # `unbind` BEFORE `close` — see search_ranked's identical `finally`
+        # for why the ordering matters (a disconnect-triggered `cancel()`
+        # racing the connection closing).
+        if token is not None:
+            token.unbind()
+        con.close()
 
 
 def _root_is_covered(con, cfg: IndexConfig, root: str) -> bool:
@@ -295,7 +303,7 @@ def _coverage_reason(con, cfg: IndexConfig, root: str) -> str:
 
 
 def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORPUS,
-                 include_dirs: bool = True) -> dict:
+                 include_dirs: bool = True, token=None) -> dict:
     """The explorer's in-folder corpus for `root`, from the index.
 
     Returns entries in exactly the shape /api/fs/walk streams — `rel` (posix,
@@ -312,6 +320,10 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     it — it wants the whole corpus, so client-side fuzzy matching stays
     subsequence-based rather than being pre-narrowed to substrings — but it
     keeps the endpoint useful for a caller that only wants the hits.
+
+    `token`, when given, follows `search_ranked`'s contract exactly: bound to
+    the connection as soon as it exists, checked before the one real query,
+    and an interrupt this token caused re-raises as `Cancelled`.
     """
     # `or "/"` because rstrip eats the filesystem root down to the empty
     # string, which the guard below then reads as "no root given" — so a
@@ -334,72 +346,84 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     age = (time.time() - updated) if isinstance(updated, (int, float)) else None
     fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
-    covered = _root_is_covered(con, cfg, root)
-    if not covered:
-        return {**empty, "updated": updated, "age_s": age}
-    # See stats()'s identical fix above: root already ends in "/" for
-    # any bare root (POSIX or a Windows drive), not only "/" itself.
-    prefix = root if root.endswith("/") else root + "/"
-    prefix_like = like_literal(prefix)
-    limit = max(0, min(int(limit), MAX_CORPUS))
-    hit = prune(m["partitions"], prefix)
-    qlit = like_literal(q.strip()) if q and q.strip() else ""
-    # Files and directories compete in ONE depth-ordered query, not two.
-    #
-    # Two queries meant the files branch was served first and directories got
-    # only `limit - len(files)` rows — so on any tree big enough to truncate the
-    # corpus, `room` was 0 and folder search was DEAD, not degraded: a query
-    # naming a folder returned the files inside it and never the folder. The
-    # live walk never had this bug because BFS interleaves both kinds.
-    #
-    # Shallow entries first (smaller `depth`), path order within a depth: when
-    # the cap bites on a >limit tree, the capped corpus keeps the same
-    # breadth-first character as the walk it replaces — plain ORDER BY path
-    # would starve everything after the first deep subtree.
-    #
-    # The trade: directories now spend part of the budget files used to have,
-    # so a very large tree carries slightly fewer files. A corpus with no
-    # folders in it at all is strictly worse.
-    branches = []
-    if hit:
-        fsrc = files_src(cfg, hit)
-        like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-        branches.append(
-            f"SELECT path, size, mtime, false AS is_dir, "
-            f"{_depth_col(con, fsrc, 'path')} AS depth FROM {fsrc} "
-            f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
-    if include_dirs:
-        dsrc = dirs_src(cfg)
-        dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
-        branches.append(
-            f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
-            f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-            f"{_depth_col(con, dsrc, 'dir')} AS depth FROM {dsrc} "
-            f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
-    entries, truncated = [], False
-    if branches:
-        # One row past the cap, so "there was more" is known without a count.
-        rows = con.execute(
-            " UNION ALL ".join(branches)
-            + f" ORDER BY depth, path LIMIT {limit + 1}").fetchall()
-        for path, size, mtime, is_dir, _depth in rows[:limit]:
-            entries.append({"rel": path[len(prefix):], "is_dir": bool(is_dir),
-                            "size": int(size) if size is not None else None,
-                            "mtime": float(mtime) if mtime is not None else None})
-        truncated = len(rows) > limit
-    return {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
-            "root": root, "scanned_partitions": len(hit),
-            "of_partitions": len(m["partitions"]), "entries": entries,
-            "truncated": truncated, "total": len(entries)}
+    # Capped like every other interactive index read (search_threads' docstring
+    # in store.py): a bare connect() defaults to one thread per core, and this
+    # is a keystroke away, not a background job.
+    con.execute(f"SET threads TO {search_threads()}")
+    if token is not None:
+        token.bind(con)
+    try:
+        covered = _root_is_covered(con, cfg, root)
+        if not covered:
+            return {**empty, "updated": updated, "age_s": age}
+        # See stats()'s identical fix above: root already ends in "/" for
+        # any bare root (POSIX or a Windows drive), not only "/" itself.
+        prefix = root if root.endswith("/") else root + "/"
+        prefix_like = like_literal(prefix)
+        limit = max(0, min(int(limit), MAX_CORPUS))
+        hit = prune(m["partitions"], prefix)
+        qlit = like_literal(q.strip()) if q and q.strip() else ""
+        # Files and directories compete in ONE depth-ordered query, not two.
+        #
+        # Two queries meant the files branch was served first and directories got
+        # only `limit - len(files)` rows — so on any tree big enough to truncate the
+        # corpus, `room` was 0 and folder search was DEAD, not degraded: a query
+        # naming a folder returned the files inside it and never the folder. The
+        # live walk never had this bug because BFS interleaves both kinds.
+        #
+        # Shallow entries first (smaller `depth`), path order within a depth: when
+        # the cap bites on a >limit tree, the capped corpus keeps the same
+        # breadth-first character as the walk it replaces — plain ORDER BY path
+        # would starve everything after the first deep subtree.
+        #
+        # The trade: directories now spend part of the budget files used to have,
+        # so a very large tree carries slightly fewer files. A corpus with no
+        # folders in it at all is strictly worse.
+        branches = []
+        if hit:
+            fsrc = files_src(cfg, hit)
+            like = f" AND path ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+            branches.append(
+                f"SELECT path, size, mtime, false AS is_dir, "
+                f"{_depth_col(_src_cols(con, fsrc), 'path')} AS depth FROM {fsrc} "
+                f"WHERE path LIKE '{prefix_like}%' ESCAPE '\\'{like}")
+        if include_dirs:
+            dsrc = dirs_src(cfg)
+            dlike = f" AND dir ILIKE '%{qlit}%' ESCAPE '\\'" if qlit else ""
+            branches.append(
+                f"SELECT dir AS path, CAST(NULL AS BIGINT) AS size, "
+                f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
+                f"{_depth_col(_src_cols(con, dsrc), 'dir')} AS depth FROM {dsrc} "
+                f"WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'{dlike}")
+        entries, truncated = [], False
+        if branches:
+            if token is not None:
+                token.check()
+            # One row past the cap, so "there was more" is known without a count.
+            rows = con.execute(
+                " UNION ALL ".join(branches)
+                + f" ORDER BY depth, path LIMIT {limit + 1}").fetchall()
+            for path, size, mtime, is_dir, _depth in rows[:limit]:
+                entries.append({"rel": path[len(prefix):], "is_dir": bool(is_dir),
+                                "size": int(size) if size is not None else None,
+                                "mtime": float(mtime) if mtime is not None else None})
+            truncated = len(rows) > limit
+        return {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
+                "root": root, "scanned_partitions": len(hit),
+                "of_partitions": len(m["partitions"]), "entries": entries,
+                "truncated": truncated, "total": len(entries)}
+    except duckdb.InterruptException:
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
+    finally:
+        # `unbind` BEFORE `close` — see search_ranked's identical `finally`
+        # for why the ordering matters (a disconnect-triggered `cancel()`
+        # racing the connection closing).
+        if token is not None:
+            token.unbind()
+        con.close()
 
-
-# Rows stage A hands to the Python ranker. Measured basis (571k rows under
-# /Users/<me>): the subsequence regex over every row costs 31-143 ms depending
-# on the query, while scoring in Python costs ~4 us a row — 3,576 candidates
-# scored in 14 ms, 176,505 in 186 ms. So SQL narrows and coarse-orders over
-# everything, and Python does the real fuzzy scoring on a bounded slice. This
-# is the bound.
-RANK_CANDIDATE_CAP = 2_000
 
 # Ranked hits a search answers with. The client renders a list; nobody scrolls
 # past a couple of hundred fuzzy matches, and the whole point of ranking here
@@ -410,178 +434,275 @@ RANK_LIMIT = 200
 # corpus endpoint — `search_under` is, and it has its own MAX_CORPUS.
 MAX_RANK_LIMIT = 2_000
 
-# RE2 metachars, escaped one at a time. Not `re.escape`: that escapes a space
-# as `\ `, which RE2 rejects as an unknown escape, and this pattern is executed
-# by duckdb, not by Python.
-_RE2_META = set("\\.^$|()[]{}*+?")
+# Chars that open a new "segment" in a path/name; a match right after one of
+# these reads as the start of a word and scores higher. Mirrors
+# frontend/src/platform/lib/fuzzy.ts's SEPARATORS exactly — change one, change
+# both, then regenerate tests/fixtures/rank-parity.json.
+_SEGMENT_SEPARATORS = ["/", ".", "-", "_", " "]
+
+# A deep, vague match used to out-score a shallow one on raw `score` alone —
+# score accumulates over the matched window, and DEPTH_PENALTY offsets a long
+# ancestor chain's extra segment-start bonuses. Mirrors fuzzy.ts's DEPTH_PENALTY
+# / SHALLOW_FREE. See the ORDER BY comment on `_rank_sql` for how these fold in.
+_DEPTH_PENALTY = 4
+_SHALLOW_FREE = 3
 
 
-def _subseq_regex(q: str) -> str:
-    """`q` as a subsequence pattern: `abc` -> `a.*b.*c`, ready for a duckdb
-    string literal (single quotes doubled; backslashes are literal in a
-    standard SQL string, so they need no doubling)."""
-    return ".*".join(("\\" + c if c in _RE2_META else c).replace("'", "''")
-                     for c in q)
+def query_wants_hidden(raw_query: str) -> bool:
+    """A dot-leading query segment is explicit intent to SEE hidden entries.
+
+    That makes ".py" work as an extension search without a second pass, and
+    "env" deliberately not surface ".env". Moved here from the now-deleted
+    index/rank.py, which this module was its only importer of."""
+    q = raw_query.strip()
+    return q.startswith(".") or "/." in q
 
 
-# root -> (index generation, ignore-root rels). The `.gitignore` rows under a
-# root change only when the index does, and the query behind them is a scan of
-# the path column — a few tens of ms that a keystroke must not pay. Keyed on the
-# manifest's `updated`, so a completed scan re-discovers exactly once.
-#
-# CAPPED, and the cap is not decoration. This used to be "bounded by the number
-# of roots ever searched in one process", which was true when the home page was
-# the only caller: one root, one entry. The in-folder search makes every folder
-# anybody browses into a root, so the bound became "every folder visited this
-# session" — a dict that only grows, holding a list of rels per entry.
-ORACLE_CACHE_MAX = 32
-_ORACLE_RELS: dict = {}
+# `query.py` used to import this as `_wants_hidden` from `index/rank.py`.
+_wants_hidden = query_wants_hidden
 
 
-def _remember_oracle_rels(key, value) -> None:
-    """Insert or refresh, evicting the least recently USED."""
-    _ORACLE_RELS.pop(key, None)
-    _ORACLE_RELS[key] = value
-    while len(_ORACLE_RELS) > ORACLE_CACHE_MAX:
-        _ORACLE_RELS.pop(next(iter(_ORACLE_RELS)))
+def is_hidden_rel(rel: str) -> bool:
+    """An entry is hidden when any path segment is dot-leading. Moved here
+    from the now-deleted index/rank.py."""
+    return rel.startswith(".") or "/." in rel
 
 
-def _recall_oracle_rels(key):
-    """Read, and count the read as use.
+def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int,
+              ranked: bool = True) -> str:
+    """The whole rank query: substring filter, scoring, and ORDER BY ... LIMIT,
+    all in SQL — no candidate cap, no Python-side pass.
 
-    Recency has to move on the READ or the policy is first-in-first-out with
-    an LRU's name on it: the folder somebody searches all day would be evicted
-    by thirty-two others they opened once, and re-pay the path-column scan
-    that this cache exists to skip."""
-    cached = _ORACLE_RELS.pop(key, None)
-    if cached is not None:
-        _ORACLE_RELS[key] = cached
-    return cached
+    `ranked=False` (the owner's unranked-results preference, D720) keeps the
+    exact same `WHERE lrel LIKE ...` substring filter and hidden-file handling
+    below, but drops the entire scoring apparatus — no `p0`/`strpos`, no
+    `segment_starts`, no `name_bonus`, no `score`, no `tier` — computed
+    nowhere, not computed-then-discarded. It orders `depth ASC, rel ASC`
+    instead: `depth` here is `rel_depth`, the same ROOT-RELATIVE depth the
+    ranked branch computes in `inner` (see `search_ranked`'s docstring on
+    `rel_depth` for why the parquet's own stored absolute `depth` column would
+    be the wrong one — the ranked branch had a real bug from exactly that mix-
+    up before it was fixed). This mirrors `search_under`'s own `ORDER BY
+    depth, path` above — the ordering the owner's user confirmed is usable.
+    `depth, rel` is a TOTAL order as long as `rel` is unique, which it is: a
+    file and a directory cannot share a path on a real filesystem, and both
+    parquet stores are keyed on that same path uniqueness — the ranked
+    branch's own final tie-break (`rel ASC`, after tier/score/depth/
+    lower(rel)) already leans on this identical fact. No `lower(rel)` ahead of
+    `rel` here — unlike the ranked branch, which needs it as an intermediate
+    tie-break before `rel ASC` because ties can survive tier/score/depth —
+    the unranked branch's ORDER BY has only two keys and `rel` alone already
+    makes it total, so a `lower(rel)` in front would reintroduce a case-
+    insensitive ordering question for no benefit (see D712 on the ranked
+    branch's own `lower(rel)`/`rel` split for the class of bug that guards
+    against, which does not apply to a two-key order that is already total).
 
+    `inner` is the UNION ALL of the files/dirs branches (each already carries
+    `rel`, `size`, `mtime`, `is_dir`, `depth` — RELATIVE to the search root,
+    `search_ranked`'s `rel_depth` — and `nm`, the lowercased basename,
+    `_name_col`'s doing) plus `lrel` (`lower(rel)`). `ql` is the ORIGINAL-case
+    `qs` as a LIKE literal (metachars escaped, use with ESCAPE '\\'); `qq` is
+    the same original-case string as a plain SQL string literal (quotes
+    doubled only) for `strpos`/`=` comparisons, which are not LIKE and must
+    not see LIKE's escapes. Every comparison against `ql`/`qq` below wraps
+    them in SQL's own `lower(...)` rather than lowering in Python first — see
+    the paragraph below for why. `n` is `len(qs)` — the constant `longest_run`
+    every surviving row shares now that the fuzzy/subsequence pass is gone
+    (see this module's docstring on `search_ranked` for why that constant
+    safely drops out of the ORDER BY).
 
-def _ignore_roots(con, cfg: IndexConfig, parts, root: str, prefix: str,
-                  updated) -> list:
-    """Dirs under `root` that hold a `.gitignore`, as rels ('' = the root).
+    Ported line for line from the deleted index/rank.py's `fuzzy_match`
+    substring branch, `_is_segment_start`, `_name_tier` and `_sort_key` — see
+    that module's own history for the fuzzy-subsequence half this replaces.
 
-    The server's gitignore filter needs these, and it cannot get them from a
-    ranked payload: stage A drops every dot-leading rel unless the query asks
-    for hidden entries, so `.gitignore` is essentially never a candidate, and a
-    filter that discovers its oracles from the rows it is given then decides
-    nothing at all (server/index_gitignore.filter_corpus). The index knows
-    where they are, so it says.
+    The query is lowercased IN SQL, with the same `lower()` call that already
+    produces `lrel` — not in Python (`qs.lower()`) before being embedded as a
+    literal. The two used to disagree: Python's `str.lower()` and DuckDB's
+    `lower()` don't always fold the same character the same way — U+0130
+    ('İ') folds to TWO Python characters ('i' + a combining dot, U+0307) but
+    to plain 'i' in DuckDB — so a query lowered in Python could never appear
+    as a substring of a `rel` DuckDB lowered, even on an exact-letter match a
+    user would expect to work. Deferring both sides' lowering to the SAME
+    function makes them agree by construction, whichever way `lower()`
+    happens to fold any given character; `rank.py` made the Python-side
+    assumption alone (a `KNOWN, deliberate` divergence noted in its own
+    docstring, about `lower()` not preserving character OFFSETS — a related
+    but different Unicode wrinkle from this one, about the two sides FOLDING
+    a character differently in the first place), which this rewrite no
+    longer needs to inherit now that both sides are one implementation.
 
-    Not the same question as "which oracle decides this row" — that stays in
-    the filter. This is only the discovery half, moved to the one place that
-    can see the whole tree cheaply."""
-    key = (cfg.dir, root)
-    cached = _recall_oracle_rels(key)
-    if cached is not None and cached[0] == updated:
-        return cached[1]
-    rels = []
-    if parts:
-        rel_from = len(prefix) + 1
-        rows = con.execute(
-            f"SELECT DISTINCT substr(path, {rel_from}) AS rel "
-            f"FROM {files_src(cfg, parts)} "
-            f"WHERE path LIKE '{like_literal(root)}/%' ESCAPE '\\' "
-            f"AND path LIKE '%/.gitignore' ESCAPE '\\'").fetchall()
-        for (rel,) in rows:
-            rels.append(rel[: -len("/.gitignore")] if "/" in rel else "")
-    _remember_oracle_rels(key, (updated, rels))
-    return rels
+    Per matched row, at the substring's start position `p0` (`strpos(lrel,
+    qq) - 1`, 0-indexed):
+
+    - `score = n + 3*(n-1) + 5*segment_starts - DEPTH_PENALTY*max(0, depth -
+      SHALLOW_FREE) + name_bonus` — `n + 3*(n-1)` is rank.py's "+1 per char,
+      +3 for the whole run being consecutive" collapsed algebraically (a
+      substring match IS one run), `segment_starts` is how many of the `n`
+      matched positions land on a segment start (computed against the
+      ORIGINAL-case `rel`, not `lrel`, so the camelCase hump test survives
+      lowercasing — same reason rank.py's `_is_segment_start` does), and
+      `name_bonus` is +100 for an exact basename match, +25 for a basename
+      prefix, else 0.
+    - `tier` is 1 when `qs` is a substring of the basename, 3 when the match
+      ends before the basename starts (an ancestor-only hit), else 2.
+
+    `segment_starts` is a `list_filter` over `range(p0, p0+n)` — the lambda
+    only evaluates for the (small) matched window of each already-substring-
+    filtered row, not over every row in the corpus. `substr(rel, i, 1)` (1-
+    indexed) is therefore the ORIGINAL-case character at 0-indexed `i - 1` —
+    the "previous" character for the segment-start test at 0-indexed `i`;
+    `substr(rel, i + 1, 1)` is the character AT `i`. `c BETWEEN 'A' AND 'Z'`
+    is the ASCII-uppercase test (a plain byte comparison, matching rank.py's
+    `.isupper() and .isascii()` pair — and `regexp_matches(c, '^[A-Z]$')`,
+    which this was rewritten from: RE2's `[A-Z]` is byte/ASCII by default
+    too, so the two are equivalent, `BETWEEN` just doesn't pay for spinning
+    up the regex engine to answer a single-byte-range question).
+
+    Final order is `tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC` —
+    `longest_run` does not appear because every surviving row shares it. The
+    trailing `rel ASC` is what makes this a TOTAL order: a pair equal under
+    every column before it (tier, score, depth) AND under `lower(rel)` — two
+    rels differing only in case, e.g. `notes/Alpha.txt` vs `notes/alpha.txt`
+    — was otherwise still an unresolved tie, and DuckDB's multi-threaded
+    top-N is free to resolve an unresolved tie arbitrarily, so the pair could
+    silently swap order between two runs of the identical query and shift
+    keyboard selection out from under a user who hadn't typed anything.
+    `rel` (byte/ASCII comparison, not `lower(rel)`) breaks that tie for free
+    — it costs nothing beyond a column DuckDB already has in hand — and
+    always resolves it the same way. This makes the SQL side deterministic
+    ON ITS OWN, but not necessarily identical to `frontend/src/platform/lib/
+    fuzzy.ts`'s tie-break: the JS ranker's is `Intl.Collator(sensitivity:
+    "base")`, which is locale-aware and does not always agree with a plain
+    ASCII byte comparison on which of a case-only pair sorts first. That
+    divergence is pre-existing (`tests/test_index_rank.py`'s
+    `_group_case_only_ties` helper exists because of it, not because of
+    this) and is unaffected by adding `rel ASC` here — it only fixes SQL's
+    OWN run-to-run stability, not cross-language agreement."""
+    if not ranked:
+        # No `p0`/`strpos`, no `segment_starts`, no `name_bonus`, no `score`,
+        # no `tier` — the scoring apparatus below is never built for this
+        # branch, not built and then left out of the SELECT list.
+        return (
+            f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
+            f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden} "
+            f"ORDER BY depth ASC, rel ASC "
+            f"LIMIT {limit}")
+    # `BETWEEN 'A' AND 'Z'`, not `regexp_matches(c, '^[A-Z]$')`: same ASCII-
+    # uppercase test (a single-byte comparison DuckDB can do without spinning
+    # up its regex engine), measured ~15-20% faster and byte-for-byte
+    # equivalent for this predicate — this only ever compares a length-1
+    # string against the two ASCII bytes 'A'/'Z', which is exactly what
+    # `^[A-Z]$` matched and nothing more.
+    segment_starts = (
+        f"len(list_filter(range(p0, p0 + {n}), i -> "
+        f"i = 0 OR list_contains({_SEGMENT_SEPARATORS!r}, substr(rel, i, 1)) "
+        f"OR (substr(rel, i + 1, 1) BETWEEN 'A' AND 'Z' "
+        f"AND NOT (substr(rel, i, 1) BETWEEN 'A' AND 'Z'))))"
+    )
+    name_bonus = (f"CASE WHEN nm = lower('{qq}') THEN 100 "
+                  f"WHEN nm LIKE lower('{ql}') || '%' ESCAPE '\\' THEN 25 ELSE 0 END")
+    tier = (f"CASE WHEN strpos(nm, lower('{qq}')) > 0 THEN 1 "
+            f"WHEN p0 + {n} - 1 < length(rel) - length(nm) THEN 3 "
+            f"ELSE 2 END")
+    score = (f"{n} + 3 * ({n} - 1) + 5 * {segment_starts} "
+             f"- {_DEPTH_PENALTY} * greatest(0, depth - {_SHALLOW_FREE}) "
+             f"+ {name_bonus}")
+    return (
+        f"WITH matched AS ("
+        f"SELECT *, strpos(lrel, lower('{qq}')) - 1 AS p0 FROM ({inner}) "
+        f"WHERE lrel LIKE '%' || lower('{ql}') || '%' ESCAPE '\\'{hidden}) "
+        f"SELECT rel, size, mtime, is_dir, depth, ({score}) AS score, "
+        f"({tier}) AS tier FROM matched "
+        f"ORDER BY tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC "
+        f"LIMIT {limit}")
 
 
 def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                   limit: int = RANK_LIMIT, include_dirs: bool = True,
-                  cap: int = RANK_CANDIDATE_CAP,
-                  gitignore_filter=None, token=None) -> dict:
-    """Search `root` for `q` — filtered AND ranked here, top `limit` returned.
+                  token=None, ranked: bool = True) -> dict:
+    """Search `root` for `q` — filtered, scored and ordered ENTIRELY in SQL,
+    top `limit` returned. No candidate rows cross into Python.
 
     The home page used to fetch the whole corpus and rank it in the browser:
     19.8 MB and 164k rows on one keystroke, and silently capped at MAX_CORPUS,
     so ~71% of a 571k-file home could not be found AT ALL. This answers a few
     KB from the whole index instead.
 
-    Two stages, because neither alone is affordable:
+    Index-backed search is substring-only: `_rank_sql`'s `WHERE lrel LIKE
+    '%q%'` is the entire candidate filter, and its score/tier expressions are
+    a straight SQL port of the deleted index/rank.py's substring branch
+    (`fuzzy_match`'s `sub != -1` case), `_is_segment_start`, `_name_tier` and
+    `_sort_key`. The fuzzy subsequence escalation `rank.py` used to fall back
+    to when a substring pass came up short is GONE — an owner-accepted feature
+    loss, not an oversight: `indexstore` no longer matches `index/specs/
+    index-store.md` on an indexed folder. `frontend/src/platform/lib/fuzzy.ts`
+    keeps its subsequence pass unchanged; it ranks the live streamed walk for
+    folders no scan will ever cover (a mount, a package, an ignored folder),
+    which this function never touches.
 
-    - **A, in SQL, over every row under `root`.** A candidate filter on the rel
-      (the same relation `fuzzy_match` tests, so a candidate here is a possible
-      hit there) plus a coarse `tier` — name-exact / name-prefix /
-      name-contains / rel-contains / subsequence-only — and `ORDER BY tier,
-      depth, rel LIMIT cap`. Files and directories compete in ONE query, for
-      the reason `search_under` explains at length: two queries served files
-      first and folder search died on any tree big enough to fill the budget.
+    Files and directories still compete in ONE query, for the reason
+    `search_under` explains at length: two queries served files first and
+    folder search died on any tree big enough to fill the budget.
 
-      Two passes, cheapest first, and the second is often skipped:
+    `ORDER BY ... LIMIT {limit + 1}` is pushed into the same query as the
+    filter and the scoring — the real win this change preserves from the
+    two-stage version it replaces (which capped a 2,000-row Python-scored
+    candidate set) is that duckdb now does the ordering and the cut in the
+    SAME statement, so there is no per-request cap to tune, no Python
+    scoring loop, and no risk of the cap silently dropping a row the full
+    ranking would have preferred. **Not free, and not claimed to be**:
+    scoring runs for every matched row before the top-N cut, not only the
+    rows that survive it, so a broad query pays for scoring rows it will
+    then discard. Measured on a 300k-file synthetic index, `q="e"` (353k
+    matching rows) took ~100ms for the full statement here, ~53ms with
+    scoring stripped out, and ~43ms for the old stage-A candidate-gathering
+    shape alone — scoring roughly DOUBLES the per-keystroke cost for a query
+    this broad. The trade is still the right one (no candidate cap means no
+    row is ever dropped before ranking gets to see it, which is the actual
+    correctness property that matters), but it is a trade with a real cost on
+    a broad query, not a strictly cheaper replacement for the two-stage
+    shape.
 
-        1. substring — `lower(rel) LIKE '%q%'`;
-        2. subsequence — `regexp_matches(lower(rel), 'a.*b.*c')`.
-
-      Measured over 571k rows: `render` is 30,319 rows / 51 ms as a substring
-      against 176,505 / 143 ms as a subsequence; `readme.md` 3,056 / 41 ms
-      against 11,766 / 45 ms. So pass 2 runs only when pass 1 cannot fill the
-      returned `limit`, which is LOSSLESS rather than approximate:
-      `fuzzy_match`'s substring branch sets `longest_run = len(q)`, the maximum
-      the subsequence branch can never reach (a contiguous run of the whole
-      query would have taken the substring branch), and `rank_compare` orders
-      on `longest_run` first. Every substring hit therefore outranks every
-      subsequence-only hit, so once pass 1 fills the cut, pass 2 can only append
-      rows below the cut that nobody will ever see. `escalated` reports which
-      happened.
-
-      The check is made AFTER ranking and gitignore-filtering pass 1, not on
-      the raw SQL row count, so no safety margin is needed or used: the number
-      compared against `limit` is the number of rows the user would actually
-      get. A margin over the raw count would be the guess this avoids —
-      gitignore can drop any fraction of a pass, and guessing high spends the
-      143 ms it was trying to save.
-
-      Deliberately NOT taken: a depth cap on pass 1. `depth` is already a
-      tie-break in the ORDER BY, so shallow-first is delivered without a
-      cutoff, and a hard limit would hide a deep exact match and cost a second
-      round trip precisely when the first answer was wrong.
-    - **B, in Python.** `rank_entries` (index/rank.py) over those ≤`cap` rows —
-      the real fuzzy scoring, in parity with the browser's ranker — then the
-      gitignore filter, THEN the cut to `limit`. That order is not incidental:
-      filtering after the cut is what makes today's corpus report `truncated`
-      while holding fewer rows than it claims.
-
-    KNOWN, and logged rather than hidden: stage A's cap can in principle drop a
-    row stage B would have ranked first. It is unlikely because the two agree
-    on what is coarsely good — a name-substring hit outranks a fuzzy-only one
-    in `rank_compare` too, and tier 1-3 rows are emitted before any tier 5 one
-    — but it is not impossible, so a cap that bites is a debug line in the log and
-    `truncated: true` in the response. Silent truncation is what this removes,
-    not what it reintroduces.
-
-    `gitignore_filter(root, entries, oracle_rels) -> entries` is how the server
-    layer hands in `index_gitignore.filter_corpus`; the index package does not
-    import the server. `oracle_rels` is this function's half of that job — the
-    dirs holding a `.gitignore`, read out of the INDEX (`_ignore_roots`),
-    because a filter that discovers them from a 200-row ranked payload finds
-    none and therefore filters nothing. Omitted, nothing is filtered.
+    `longest_run` does not appear in `_rank_sql`'s ORDER BY: every surviving
+    row is a substring hit, so `longest_run = len(q)` for every one of them,
+    and a sort key that is constant across every row drops out. It, and
+    `score`/`tier`/`depth`, are still on every hit THIS function returns (this
+    module's own tests pin `_rank_sql`'s scoring correctness off them) but no
+    longer reach the wire: nothing downstream re-sorts a server-answered row —
+    `listing/ranked-hits.ts` returns hits "in the order [the server] returned
+    them" — so `server/routers/index.py`'s `api_index_rank` strips them before
+    responding, the same way it already strips `positions`. See DECISIONS.md.
 
     Coverage semantics are `search_under`'s exactly: an uncovered root, a
     missing index or a package directory answers `covered: false` with no hits
     — never an error, because "no index yet", "not covered" and "a scan is
     running" are one condition to a search box.
 
+    `ranked=False` (D720) is the owner's unranked-search preference: same
+    filter, same hidden-file handling, `depth ASC, rel ASC` order instead of
+    a score — see `_rank_sql`'s docstring on that branch for the ordering
+    guarantee and why it's total. Threaded straight into `_rank_sql`; every
+    other piece of this function (coverage, root/prefix resolution, LIMIT,
+    truncation, cancellation) is unchanged by it.
+
     `token` (index/cancel.CancelToken), when given, is bound to the duckdb
-    connection the moment it exists and checked at every phase boundary in
-    `pass_over` — before each `execute`, after the `fetchall`, before
-    `rank_entries`, before the gitignore filter. Binding is to the whole
-    CONNECTION, though, not just `pass_over`'s statement, so a
-    `duckdb.InterruptException` can land in any query run on it —
-    `_coverage_reason`'s and `_ignore_roots`' included, both of which execute
-    on this same connection before `pass_over` ever does. One try/except
-    around the whole bound region (not one per query site) re-raises as
-    `Cancelled` an interrupt this token caused; one it did NOT cause (a real
-    duckdb error, or another caller's timeout on a connection this function
-    does not own — it never shares one) keeps surfacing as itself.
-    `search_ranked` cannot make the abandoned THREAD return on its own
-    (`asyncio.to_thread` has no such power); this is what makes the QUERY
-    inside it return quickly instead, which is what the caller is actually
-    waiting on.
+    connection the moment it exists and checked immediately before and after
+    the one SQL statement that does the filtering, scoring AND ordering.
+    Binding is to the whole CONNECTION, so a `duckdb.InterruptException` can
+    land in any query run on it — `_coverage_reason`'s included, which
+    executes on this same connection first. One try/except around the whole
+    bound region (not one per query site) re-raises as `Cancelled` an
+    interrupt this token caused; one it did NOT cause (a real duckdb error, or
+    another caller's timeout on a connection this function does not own — it
+    never shares one) keeps surfacing as itself. **CORRECTS D703**: that entry
+    describes a Python-only cancellation gap INSIDE `rank_entries`'s scoring
+    loop — pure Python holding the GIL, with no duckdb call in flight for
+    `con.interrupt()` to reach. `rank_entries` no longer exists; scoring is
+    now inside the one SQL statement `con.interrupt()` already reaches, so
+    that gap is gone with it, not merely unaddressed. `search_ranked` cannot
+    make the abandoned THREAD return on its own (`asyncio.to_thread` has no
+    such power); this is what makes the QUERY inside it return quickly
+    instead, which is what the caller is actually waiting on.
     """
     root = _root_or_bare(
         norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/"))
@@ -591,9 +712,17 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     # uncovered one is scanned on demand. Decided here rather than in the
     # client, so there is one copy of the rule. The mount half is the server
     # layer's to add (MountGuard); this package/uncovered half is the index's.
-    empty = {"covered": False, "fresh": False, "updated": None, "age_s": None,
-             "root": root, "hits": [], "truncated": False, "total": 0,
-             "escalated": False, "scanned_partitions": 0,
+    #
+    # `fresh`/`age_s`/`updated`/`root` are `search_under`'s fields, not this
+    # function's: `search_under`'s copy is load-bearing (FRESH_MAX_AGE_S drives
+    # the in-folder corpus box's "indexing…" caveat), but nothing reads them on
+    # this path — the frontend's `IndexRankResult` never declared `fresh`/
+    # `age_s`/`updated`, and `_rank_reason` (server/routers/index.py) only ever
+    # reads `covered`/`reason` off this function's return. Carrying them here
+    # was copy-paste from `search_under` directly above. Removed, not just
+    # left unread — see DECISIONS.md.
+    empty = {"covered": False, "hits": [], "truncated": False, "total": 0,
+             "scanned_partitions": 0,
              "reason": "package" if (is_leaf_dir(root)
                                      or is_inside_leaf_dir(root)) else "uncovered",
              "of_partitions": len(((m or {}).get("partitions")) or [])}
@@ -603,10 +732,11 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
 
     import duckdb
 
-    updated = m.get("updated")
-    age = (time.time() - updated) if isinstance(updated, (int, float)) else None
-    fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
+    # Capped like every other interactive index read (search_threads' docstring
+    # in store.py): a bare connect() defaults to one thread per core, and this
+    # is the query a single keystroke pays for.
+    con.execute(f"SET threads TO {search_threads()}")
     # Bound the instant the connection exists: a token cancelled before this
     # point still has to stop it (CancelToken.bind's own docstring), and every
     # `return`/`raise` from here on must close it — hence the try/finally
@@ -617,137 +747,131 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     try:
         miss = _coverage_reason(con, cfg, root)
         if miss:
-            return {**empty, "reason": miss, "updated": updated, "age_s": age}
+            return {**empty, "reason": miss}
         # See stats()'s identical fix above: root already ends in "/" for
         # any bare root (POSIX or a Windows drive), not only "/" itself.
         prefix = root if root.endswith("/") else root + "/"
         prefix_like = like_literal(prefix)
         limit = max(0, min(int(limit), MAX_RANK_LIMIT))
-        cap = max(1, int(cap))
         hit = prune(m["partitions"], prefix)
-        base = {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
-                "root": root, "reason": "", "scanned_partitions": len(hit),
+        base = {"covered": True, "reason": "", "scanned_partitions": len(hit),
                 "of_partitions": len(m["partitions"])}
         qs = (q or "").strip()
         if not qs:
             # Nothing typed is not "everything": the empty query has no ranking to
             # apply, and answering with an arbitrary 200 files would be noise.
-            return {**base, "hits": [], "truncated": False, "total": 0,
-                    "escalated": False}
+            return {**base, "hits": [], "truncated": False, "total": 0}
 
         # `substr` from the prefix's length, so every comparison below is against
         # the REL — exactly the string stage B scores. Filtering on the full path
         # would let the root's own spelling admit rows no fuzzy match will keep.
         rel_from = len(prefix) + 1
+        # `depth` here is RELATIVE to `root` (1 + how many "/" are in `rel`) —
+        # the deleted index/rank.py's `_depth_of(rel)`, not the files/dirs
+        # parquet's own stored `depth` column, which is the ABSOLUTE path's
+        # depth and answers a different question (used by `search_under`'s
+        # breadth-first corpus ordering, and by the coarse candidate-cap
+        # ordering this single-pass query no longer has). Mixing the two up
+        # here would make `alpha.txt` directly under a search root score as if
+        # it were nested two levels deep.
+        rel_depth = f"({depth_expr('rel')} + 1)"
         branches = []
+        # `_src_cols` (one `DESCRIBE`) is the ONLY column question this
+        # function asks: the dirs branch has no `name` column to reuse
+        # (D708) and derives its basename by regex instead, so only the
+        # files branch, for `_name_col`, ever calls this.
         if hit:
             fsrc = files_src(cfg, hit)
+            fcols = _src_cols(con, fsrc)
             branches.append(
                 f"SELECT substr(path, {rel_from}) AS rel, size, mtime, "
-                f"false AS is_dir, {_depth_col(con, fsrc, 'path')} AS depth "
+                f"false AS is_dir, {_name_col(fcols)} AS nm "
                 f"FROM {fsrc} WHERE path LIKE '{prefix_like}%' ESCAPE '\\'")
         if include_dirs:
             dsrc = dirs_src(cfg)
+            # No stored `name` column here to reuse — the dirs schema has none
+            # (store.py:165-171) — so the dirs branch keeps deriving its
+            # basename by regex. Far fewer directories than files, so this is
+            # still the bulk of the win over regexing every row.
             branches.append(
                 f"SELECT substr(dir, {rel_from}) AS rel, CAST(NULL AS BIGINT) AS size, "
                 f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-                f"{_depth_col(con, dsrc, 'dir')} AS depth "
+                f"regexp_extract(lower(substr(dir, {rel_from})), '[^/]*$') AS nm "
                 f"FROM {dsrc} WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'")
         if not branches:
-            return {**base, "hits": [], "truncated": False, "total": 0,
-                    "escalated": False}
+            return {**base, "hits": [], "truncated": False, "total": 0}
 
-        ql = like_literal(qs.lower())
-        qq = _q(qs.lower())
-        # The coarse tier. Deliberately cruder than `rank_entries`' — it exists to
-        # decide which `cap` rows are worth scoring properly, not to order the
-        # answer, and every extra SQL expression here is paid on all 571k rows.
-        tier = (f"CASE WHEN nm = '{qq}' THEN 1 "
-                f"WHEN nm LIKE '{ql}%' ESCAPE '\\' THEN 2 "
-                f"WHEN nm LIKE '%{ql}%' ESCAPE '\\' THEN 3 "
-                f"WHEN lrel LIKE '%{ql}%' ESCAPE '\\' THEN 4 "
-                f"ELSE 5 END")
-        # Hidden entries are dropped HERE as well as in the ranker, so a query that
-        # does not want them cannot spend the candidate cap on them (rank.py's
-        # query_wants_hidden / is_hidden_rel are the definitions; this mirrors them).
+        # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself, with
+        # the same `lower()` call that produces `lrel`, so the query and the
+        # rel it's compared against always fold through one implementation
+        # (see `_rank_sql`'s docstring on why that used to diverge).
+        ql = like_literal(qs)
+        qq = _q(qs)
+        n = len(qs)
+        # Hidden entries are dropped HERE, in the same query that filters and
+        # scores — `query_wants_hidden`/`is_hidden_rel` (this module, moved
+        # from the now-deleted index/rank.py) are the definitions; this
+        # mirrors them.
         hidden = ("" if _wants_hidden(qs)
                   else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
-        inner = (f"SELECT *, lower(rel) AS lrel, "
-                 f"regexp_extract(lower(rel), '[^/]*$') AS nm FROM ("
+        # `nm` comes from each branch (the files branch reuses the stored
+        # `name` column instead of a regex — see `_name_col`), so this adds
+        # `lrel` and the root-RELATIVE `depth` (see `rel_depth` above; this is
+        # computed once here rather than duplicated into every branch).
+        inner = (f"SELECT *, lower(rel) AS lrel, {rel_depth} AS depth FROM ("
                  + " UNION ALL ".join(branches) + ")")
 
-        def pass_over(predicate: str, name: str):
-            """One candidate pass: `predicate` over every row under the root, coarse
-            tier order, one row past the cap so "the cap bit" needs no count.
-
-            The between-passes check (the one before `rank_entries`, and the
-            one before this function is even called a second time for the
-            escalated pass) is the highest-value cancellation point: escalation
-            is the expensive half, and it runs precisely for the broad queries
-            a fast typist is most likely to have already abandoned."""
-            if token is not None:
-                token.check()
-            t0 = time.monotonic()
-            rows = con.execute(
-                f"SELECT rel, size, mtime, is_dir FROM ({inner}) "
-                f"WHERE {predicate}{hidden} "
-                f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}").fetchall()
-            if token is not None:
-                token.check()
-            # DEBUG: stage A's own cost, per pass, separate from stage B's ranking
-            # and the gitignore filter below — this fires on every keystroke, so
-            # it stays DEBUG rather than something louder (same reasoning as the
-            # cap-bit line right after it).
-            logger.debug("index rank: stage A (%s) for %r under %s: %d row(s) "
-                        "in %.1fms", name, qs, root,
-                        len(rows), (time.monotonic() - t0) * 1000)
-            if len(rows) > cap:
-                # DEBUG, not WARNING: this fires on every keystroke of any broad
-                # query — "a" and "e" alone exceed the cap on the substring pass —
-                # and a line that appears whenever the app is working normally
-                # trains everyone to ignore the log. The response says the same
-                # thing where it can be acted on (`truncated: true`), so nothing is
-                # silent; it is just not shouted.
-                logger.debug(
-                    "index rank: the candidate cap (%d) bit for %r under %s — the "
-                    "ranked answer is drawn from stage A's coarse top rows only",
-                    cap, qs, root)
-            entries = [{"rel": rel, "is_dir": bool(is_dir),
-                        "size": int(size) if size is not None else None,
-                        "mtime": float(mtime) if mtime is not None else None}
-                       for rel, size, mtime, is_dir in rows[:cap]]
-            if token is not None:
-                token.check()
-            ranked = rank_entries(qs, entries)
-            if gitignore_filter is not None:
-                if token is not None:
-                    token.check()
-                ranked = gitignore_filter(
-                    root, ranked,
-                    _ignore_roots(con, cfg, hit, root, prefix, updated))
-            return ranked, len(rows) > cap
-
-        # The LADDER (see the docstring): the cheap substring pass first, and the
-        # regex only when the cheap one cannot fill the cut. `capped` also stops the
-        # escalation — a pass that filled the candidate cap already handed stage B
-        # more coarsely-better rows than it can return, so widening the filter can
-        # only push MORE of them out of the cap.
-        ranked, capped = pass_over(f"lrel LIKE '%{ql}%' ESCAPE '\\'", "substring")
-        escalated = False
-        if not capped and len(ranked) < limit:
-            escalated = True
-            ranked, capped = pass_over(
-                f"regexp_matches(lrel, '{_subseq_regex(qs.lower())}')", "subsequence")
-        return {**base, "hits": ranked[:limit],
-                "truncated": capped or len(ranked) > limit,
-                "total": len(ranked[:limit]), "escalated": escalated}
+        if token is not None:
+            token.check()
+        t0 = time.monotonic()
+        # One row past `limit` so "there was more" is known without a count —
+        # same trick `search_under` uses for its own LIMIT.
+        rows = con.execute(
+            _rank_sql(inner, hidden, ql, qq, n, limit + 1, ranked=ranked)).fetchall()
+        if token is not None:
+            token.check()
+        logger.debug("index rank: %r under %s: %d row(s) in %.1fms",
+                    qs, root, len(rows), (time.monotonic() - t0) * 1000)
+        truncated = len(rows) > limit
+        if ranked:
+            # `score`/`tier`/`depth`/`longest_run` stay on EVERY hit dict this
+            # function returns, even though nothing on the client's index-
+            # answered path reads them any more (see this docstring above, and
+            # DECISIONS.md) — this function's own test suite (test_index_rank.py)
+            # pins `_rank_sql`'s scoring correctness (the depth penalty, both
+            # name bonuses, the tier boundaries, the camelCase segment-start
+            # case) directly off these fields, and that is the only place they
+            # still earn their keep. The HTTP layer (server/routers/index.py's
+            # `api_index_rank`) is where they actually stop reaching the wire —
+            # same pattern already used there to drop `positions`.
+            hits = [{"rel": rel, "is_dir": bool(is_dir),
+                     "size": int(size) if size is not None else None,
+                     "mtime": float(mtime) if mtime is not None else None,
+                     "score": int(score), "longest_run": n, "tier": int(tier),
+                     "depth": int(depth)}
+                    for rel, size, mtime, is_dir, depth, score, tier
+                    in rows[:limit]]
+        else:
+            # Unranked (D720): `_rank_sql` emits no score/tier — every hit
+            # still carries those keys as fixed constants (0/0/len(q)) so
+            # existing callers/tests keying off them unconditionally don't
+            # KeyError; the HTTP layer strips all four before the wire either
+            # way (`_WIRE_DROP`, server/routers/index.py).
+            hits = [{"rel": rel, "is_dir": bool(is_dir),
+                     "size": int(size) if size is not None else None,
+                     "mtime": float(mtime) if mtime is not None else None,
+                     "score": 0, "longest_run": n, "tier": 0,
+                     "depth": int(depth)}
+                    for rel, size, mtime, is_dir, depth in rows[:limit]]
+        return {**base, "hits": hits, "truncated": truncated,
+                "total": len(hits)}
     except duckdb.InterruptException:
         # `token.bind(con)` above binds the WHOLE connection, not just
         # pass_over's own SELECT — con.interrupt() can land in any statement
-        # run on it, including `_coverage_reason`'s and `_ignore_roots`'
-        # queries above, both of which run on this same bound connection
-        # before pass_over ever does. Handled once here for the entire bound
-        # region rather than wrapping each query site separately.
+        # run on it, including `_coverage_reason`'s query above, which runs on
+        # this same bound connection before pass_over ever does. Handled once
+        # here for the entire bound region rather than wrapping each query
+        # site separately.
         #
         # An interrupt with NO token, or one this token did not cause, is a
         # real error (someone else's timeout, a genuine duckdb abort) and

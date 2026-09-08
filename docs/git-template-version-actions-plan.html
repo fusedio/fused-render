@@ -1,0 +1,722 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Git template — prominent Preview, Checkout, Revert</title>
+<style>
+  :root {
+    --ink: #16181d; --dim: #5b6472; --line: #dfe3ea; --bg: #fbfcfd;
+    --accent: #2f6fe4; --good: #167a4a; --warn: #a8571b; --bad: #b3261e;
+    --code: #f4f6f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 28px 80px; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  main { max-width: 940px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.02em; }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--dim); margin: 40px 0 14px; padding-bottom: 7px;
+    border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 15px; margin: 0 0 8px; }
+  p { margin: 0 0 12px; }
+  .goal { font-size: 17px; color: var(--dim); margin-bottom: 18px; }
+  .approach {
+    background: #fff; border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 5px; padding: 14px 16px; margin-bottom: 8px;
+  }
+  code {
+    font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--code); padding: 1.5px 5px; border-radius: 3px;
+  }
+  .task {
+    background: #fff; border: 1px solid var(--line); border-radius: 6px;
+    padding: 16px 18px; margin-bottom: 14px;
+  }
+  .task > .hd { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+  .num {
+    flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--accent);
+    color: #fff; font-size: 12px; font-weight: 700; display: grid; place-items: center;
+  }
+  .task ul { margin: 0 0 10px; padding-left: 20px; }
+  .task li { margin-bottom: 5px; }
+  .file { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; font-weight: 600; }
+  .verify {
+    background: var(--code); border-radius: 4px; padding: 9px 11px; margin-top: 10px;
+    font: 12.5px/1.6 ui-monospace, Menlo, monospace; color: #333;
+  }
+  .verify b { color: var(--good); font-weight: 600; }
+  .commit { margin-top: 8px; font-size: 13px; color: var(--dim); }
+  .commit code { background: #eef2f8; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin-bottom: 10px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+  .risk { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 4px 18px 10px; }
+  .risk dt { font-weight: 600; margin-top: 12px; font-size: 14px; }
+  .risk dd { margin: 3px 0 0; color: #3c4450; font-size: 13.5px; }
+  .tag {
+    display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .05em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 3px; vertical-align: 1px;
+  }
+  .t-new { background: #e4f2ea; color: var(--good); }
+  .t-mod { background: #fdf0e2; color: var(--warn); }
+  .t-danger { background: #fce9e7; color: var(--bad); }
+  svg { display: block; margin: 0 auto; max-width: 100%; }
+  .cap { text-align: center; font-size: 12.5px; color: var(--dim); margin-top: 6px; }
+  .panel { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 18px; }
+
+  /* ---- UI mockup: the real sidebar's dark palette ---- */
+  .mocks { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 780px) { .mocks { grid-template-columns: 1fr; } }
+  .mockwrap > .lbl {
+    font-size: 11.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 7px;
+  }
+  .mock {
+    background: #101216; border: 1px solid #23262c; border-radius: 8px; padding: 12px 11px 14px;
+    font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e6e8ec;
+  }
+  .mock .sect {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .12em; color: #79808b;
+    margin: 4px 0 8px 2px;
+  }
+  .mock .crow {
+    display: flex; align-items: center; gap: 8px;
+    background: #16181d; border: 1px solid #23262c; border-radius: 6px;
+    padding: 9px 10px; margin-bottom: 6px;
+  }
+  .mock .crow.sel { background: #1b1f27; border-color: #2f6fe4; }
+  .mock .crow.hov { background: #191c22; border-color: #2e323a; }
+  .mock .subj {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mock .when { flex: none; color: #79808b; font-size: 12px; }
+  .mock .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #4ade80; }
+  .mock .mbtn {
+    flex: none; display: inline-flex; align-items: center; gap: 4px;
+    border: 1px solid #2e323a; border-radius: 5px; padding: 2.5px 7px;
+    font-size: 11.5px; color: #c3c8d1; background: #1d2027; white-space: nowrap;
+  }
+  .mock .mbtn.eye { border-color: #33383f; }
+  .mock .mbtn.co { border-color: #3a4150; color: #cfd6e2; }
+  .mock .mbtn.rev { border-color: #6d3a34; color: #e2a49c; background: #241a19; }
+  .mock .mbtn.ghost { opacity: .0; }
+  .mock .mbtn.on {
+    border-color: #2c6b48; color: #7fdca6; background: #16241d;
+  }
+  .mock .glyph { font-size: 11px; opacity: .85; }
+  .mock .pane {
+    border: 1px solid #23262c; border-top: none; border-radius: 0 0 6px 6px;
+    background: #131519; padding: 10px 11px; margin: -6px 0 8px;
+  }
+  .mock .pmeta {
+    display: flex; gap: 7px; align-items: center; flex-wrap: wrap;
+    color: #79808b; font-size: 11.5px; padding-bottom: 9px;
+    border-bottom: 1px solid #23262c; margin-bottom: 9px;
+  }
+  .mock .pmeta .sha { color: #c3c8d1; font-family: ui-monospace, Menlo, monospace; }
+  .mock .pmeta .sep { opacity: .5; }
+  .mock .pmeta .spacer { flex: 1 1 auto; }
+  .mock .diff { font: 11.5px/1.55 ui-monospace, Menlo, monospace; }
+  .mock .diff .add { color: #6ee7a8; }
+  .mock .diff .del { color: #f08b84; }
+  .mock .diff .ctx { color: #6d747f; }
+  .mock .refuse {
+    display: flex; gap: 8px; align-items: flex-start;
+    border: 1px solid #6d3a34; background: #1e1615; border-radius: 6px;
+    padding: 9px 10px; font-size: 12px; color: #e8b6b0; margin-bottom: 6px;
+  }
+  .mock .confirm {
+    border: 1px solid #6b5326; background: #1f1a12; border-radius: 6px;
+    padding: 10px 11px; font-size: 12px; color: #e4c893; margin-bottom: 6px;
+  }
+  .mock .confirm .acts { display: flex; gap: 6px; margin-top: 9px; }
+  .mock .confirm .yes {
+    border: 1px solid #7a4a2a; background: #2a1d12; color: #f0b787;
+    border-radius: 5px; padding: 3px 9px; font-size: 11.5px;
+  }
+  .mock .confirm .no {
+    border: 1px solid #2e323a; background: #1d2027; color: #aab1bb;
+    border-radius: 5px; padding: 3px 9px; font-size: 11.5px;
+  }
+  .mock .banner {
+    display: flex; align-items: center; gap: 7px;
+    border: 1px solid #35507e; background: #141922; border-radius: 7px;
+    padding: 7px 9px; margin-bottom: 10px; font-size: 11.5px; color: #b9c1cd;
+  }
+  .mock .bwhat {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mock .bsha { color: #7ea6ea; font-family: ui-monospace, Menlo, monospace; }
+  .note {
+    font-size: 12.5px; color: var(--dim); margin: 8px 0 0; padding-left: 13px;
+    border-left: 2px solid var(--line);
+  }
+  .callout {
+    background: #fff; border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 5px; padding: 12px 15px; margin: 14px 0 0; font-size: 13.5px;
+  }
+</style>
+<main>
+
+<h1>Git template — prominent Preview, Checkout, Revert</h1>
+<p class="goal">Make previewing a commit a first-class, always-visible action, and add two write
+actions beside it: restore the app folder to a commit, and revert a commit.</p>
+
+<div class="approach">
+  <p><strong>Approach.</strong> The preview eye becomes a labelled button that is always drawn
+  (not hover-revealed), keeping the existing capability gate that hides it where a preview could
+  never land. Two new ops join <code>ops.py</code> behind the module's existing refusal machinery:
+  <code>app_restore</code> (checkout the app folder at a sha, then commit it) and <code>revert</code>
+  (<code>git revert</code>). Both refuse outright on a dirty working tree, so neither can ever
+  collide with uncommitted work.</p>
+  <p>Nothing here rewrites history — <code>revert</code> adds a commit and <code>app_restore</code>
+  adds a commit, so <code>test_git_ops.py</code>'s "no history rewriting" posture is preserved as-is.</p>
+</div>
+
+<h2>What each button does</h2>
+<table>
+  <tr><th>Button</th><th>Where</th><th>Effect</th><th>Scope</th></tr>
+  <tr>
+    <td><strong>Preview</strong> <span class="tag t-mod">changed</span></td>
+    <td>Every commit row, always visible</td>
+    <td>Unchanged behaviour — sets <code>_snapshot=&lt;sha&gt;</code> via the shell hop. Read-only.</td>
+    <td>App folder</td>
+  </tr>
+  <tr>
+    <td><strong>Checkout</strong> <span class="tag t-new">new</span></td>
+    <td>The previewing banner, beside "Back to now" — only while previewing</td>
+    <td><code>git checkout &lt;sha&gt; -- &lt;app_dir&gt;</code> then <code>git commit</code>.
+      HEAD stays on the branch; a new commit restores the app folder's contents.</td>
+    <td>App folder only</td>
+  </tr>
+  <tr>
+    <td><strong>Revert</strong> <span class="tag t-new">new</span></td>
+    <td>Expanded (selected) commit pane</td>
+    <td><code>git revert --no-edit &lt;sha&gt;</code> — a new commit undoing that commit.</td>
+    <td>Whole repo</td>
+  </tr>
+</table>
+
+<h2>What it looks like</h2>
+
+<div class="mocks">
+  <div class="mockwrap">
+    <div class="lbl">Today — the eye appears only on hover</div>
+    <div class="mock">
+      <div class="sect">COMMITS</div>
+      <div class="crow">
+        <span class="subj">Label the undo/redo step counter</span>
+        <span class="dot"></span>
+        <span class="when">5 days ago</span>
+      </div>
+      <div class="crow hov">
+        <span class="subj">Make style tiles restyle the picture</span>
+        <span class="mbtn eye"><span class="glyph">◉</span></span>
+        <span class="when">6 days ago</span>
+      </div>
+      <div class="crow">
+        <span class="subj">perf: recompress png, jpeg and video</span>
+        <span class="when">4 days ago</span>
+      </div>
+      <div class="crow">
+        <span class="subj">local-image: fix six issues found in review</span>
+        <span class="when">7 days ago</span>
+      </div>
+    </div>
+    <p class="note">Only the hovered row reveals anything, and it is a bare glyph with no
+      label — nothing on screen at rest says a commit can be previewed at all.</p>
+  </div>
+
+  <div class="mockwrap">
+    <div class="lbl">After — Preview drawn at rest, time kept</div>
+    <div class="mock">
+      <div class="sect">COMMITS</div>
+      <div class="crow">
+        <span class="subj">Label the undo/redo step counter</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">5d</span>
+      </div>
+      <div class="crow">
+        <span class="subj">Make style tiles restyle the picture</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">6d</span>
+      </div>
+      <div class="crow">
+        <span class="subj">perf: recompress png, jpeg and video</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">4d</span>
+      </div>
+      <div class="crow">
+        <span class="subj">local-image: fix six issues found in review</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">7d</span>
+      </div>
+    </div>
+    <p class="note">One action per row, so the relative time keeps its slot. It may need the
+      short form (<code>6d</code>) to fit alongside a labelled button — the builder should use
+      the long form where it fits and fall back only if it does not. The latest-commit green dot
+      is gone (task 5): in a newest-first list it only ever marked the top row.</p>
+  </div>
+</div>
+
+<h3 style="margin-top:26px">Previewing, and the expanded commit</h3>
+<div class="mocks">
+  <div class="mockwrap">
+    <div class="lbl">While previewing — Checkout lives in the banner</div>
+    <div class="mock">
+      <div class="banner">
+        <span class="bwhat">Files are shown as of <span class="bsha">a3f91c2</span>
+          — Make style tiles restyle the picture</span>
+        <span class="mbtn co"><span class="glyph">⤓</span> Checkout</span>
+        <span class="mbtn">Back to now</span>
+      </div>
+      <div class="sect">COMMITS</div>
+      <div class="crow">
+        <span class="subj">Label the undo/redo step counter</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">5d</span>
+      </div>
+      <div class="crow hov">
+        <span class="subj">Make style tiles restyle the picture</span>
+        <span class="mbtn on"><span class="dot"></span> previewing</span>
+        <span class="when">6d</span>
+      </div>
+      <div class="crow">
+        <span class="subj">perf: recompress png, jpeg and video</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">4d</span>
+      </div>
+    </div>
+    <p class="note">The banner already exists and already carries "Back to now"
+      (<span class="file">template.html:4186</span>). Checkout becomes its second action, so the
+      write button only ever appears for the version you are actually looking at.</p>
+  </div>
+
+  <div class="mockwrap">
+    <div class="lbl">Expanded commit — Revert appears here only</div>
+    <div class="mock">
+      <div class="sect">COMMITS</div>
+      <div class="crow sel">
+        <span class="subj">Make style tiles restyle the picture</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">6d</span>
+      </div>
+      <div class="pane">
+        <div class="pmeta">
+          <span class="sha">a3f91c2</span>
+          <span class="sep">·</span><span>Suryashankar</span>
+          <span class="sep">·</span><span>6 days ago</span>
+          <span class="spacer"></span>
+          <span class="mbtn rev"><span class="glyph">↺</span> Revert</span>
+        </div>
+        <div class="diff">
+          <div class="ctx">@@ styles/tiles.css</div>
+          <div class="del">- .tile { filter: none; }</div>
+          <div class="add">+ .tile { filter: var(--restyle); }</div>
+          <div class="ctx">&nbsp;</div>
+        </div>
+      </div>
+      <div class="crow">
+        <span class="subj">perf: recompress png, jpeg and video</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">4d</span>
+      </div>
+    </div>
+    <p class="note">Revert sits on the identity line of the expanded pane, opposite the sha —
+      one per expanded commit, never on the collapsed rows.</p>
+  </div>
+</div>
+
+<h3 style="margin-top:26px">The two guard states</h3>
+<div class="mocks">
+  <div class="mockwrap">
+    <div class="lbl">Confirming — both write ops</div>
+    <div class="mock">
+      <div class="banner">
+        <span class="bwhat">Files are shown as of <span class="bsha">a3f91c2</span></span>
+        <span class="mbtn co"><span class="glyph">⤓</span> Checkout</span>
+        <span class="mbtn">Back to now</span>
+      </div>
+      <div class="confirm">
+        Commit the app folder back to this version? Other folders in the repository
+        are not touched, and this makes a new commit you can revert.
+        <div class="acts">
+          <span class="yes">Checkout</span>
+          <span class="no">Cancel</span>
+        </div>
+      </div>
+      <div class="sect">COMMITS</div>
+      <div class="crow">
+        <span class="subj">perf: recompress png, jpeg and video</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">4d</span>
+      </div>
+    </div>
+    <p class="note">Reuses the existing confirmation step that <code>discard</code> and
+      <code>stash_drop</code> already get, by classing both new ops destructive. Revert's
+      wording differs — it says the change is repo-wide.</p>
+  </div>
+
+  <div class="mockwrap">
+    <div class="lbl">Refused — uncommitted changes present</div>
+    <div class="mock">
+      <div class="banner">
+        <span class="bwhat">Files are shown as of <span class="bsha">a3f91c2</span></span>
+        <span class="mbtn co"><span class="glyph">⤓</span> Checkout</span>
+        <span class="mbtn">Back to now</span>
+      </div>
+      <div class="refuse">
+        <span class="glyph">⚠</span>
+        <span>You have uncommitted changes. Commit or stash them first —
+          nothing was changed.</span>
+      </div>
+      <div class="sect">COMMITS</div>
+      <div class="crow">
+        <span class="subj">perf: recompress png, jpeg and video</span>
+        <span class="mbtn eye"><span class="glyph">◉</span> Preview</span>
+        <span class="when">4d</span>
+      </div>
+    </div>
+    <p class="note">Rendered in place through the module's existing <code>_Refused</code>
+      path — the same shape the mount refusal already uses, so no new error surface.</p>
+  </div>
+</div>
+
+<div class="callout">
+  <strong>Why the banner is the right home for Checkout.</strong> It solves the row-width problem
+  that two labelled buttons created, but the better reason is sequencing: Checkout is only offered
+  for a version you are already looking at, so "preview, then adopt" is the only path to it. There
+  is no way to commit a rollback to a version you never saw, and the banner already names that
+  version — the button needs no label of its own to say which commit it means.
+</div>
+
+<h2>Guard chain</h2>
+
+<div class="panel">
+<svg viewBox="0 0 880 300" role="img" aria-label="Guard chain for the two write ops">
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0,1 L8,4.5 L0,8 z" fill="#8b95a5"/>
+    </marker>
+    <style>
+      .bx { fill:#fff; stroke:#dfe3ea; stroke-width:1.4; rx:6; }
+      .gd { fill:#fff8ef; stroke:#e8b273; stroke-width:1.4; rx:6; }
+      .no { fill:#fdeceb; stroke:#e59b95; stroke-width:1.4; rx:6; }
+      .ok { fill:#eaf5ef; stroke:#7bb897; stroke-width:1.4; rx:6; }
+      .t  { font:12.5px -apple-system,sans-serif; fill:#16181d; }
+      .s  { font:11px ui-monospace,Menlo,monospace; fill:#5b6472; }
+      .l  { font:11px -apple-system,sans-serif; fill:#8b95a5; }
+      .ln { stroke:#8b95a5; stroke-width:1.3; fill:none; marker-end:url(#a); }
+    </style>
+  </defs>
+
+  <rect class="bx" x="20" y="16" width="150" height="42"/>
+  <text class="t" x="95" y="34" text-anchor="middle">Checkout / Revert</text>
+  <text class="s" x="95" y="49" text-anchor="middle">clicked</text>
+
+  <rect class="gd" x="20" y="88" width="150" height="42"/>
+  <text class="t" x="95" y="106" text-anchor="middle">confirm step</text>
+  <text class="s" x="95" y="121" text-anchor="middle">DESTRUCTIVE_OPS</text>
+
+  <rect class="gd" x="20" y="160" width="150" height="42"/>
+  <text class="t" x="95" y="178" text-anchor="middle">_refuse_mounts</text>
+  <text class="s" x="95" y="193" text-anchor="middle">existing</text>
+
+  <rect class="gd" x="230" y="160" width="160" height="42"/>
+  <text class="t" x="310" y="178" text-anchor="middle">_require_clean</text>
+  <text class="s" x="310" y="193" text-anchor="middle">new</text>
+
+  <rect class="gd" x="450" y="160" width="170" height="42"/>
+  <text class="t" x="535" y="178" text-anchor="middle">_require_app_dir</text>
+  <text class="s" x="535" y="193" text-anchor="middle">new · checkout only</text>
+
+  <rect class="ok" x="680" y="160" width="170" height="42"/>
+  <text class="t" x="765" y="178" text-anchor="middle">git runs</text>
+  <text class="s" x="765" y="193" text-anchor="middle">new commit</text>
+
+  <rect class="no" x="230" y="244" width="390" height="40"/>
+  <text class="t" x="425" y="262" text-anchor="middle">_Refused → rendered in place, nothing touched</text>
+  <text class="s" x="425" y="276" text-anchor="middle">dirty tree · no app folder · mount-backed</text>
+
+  <path class="ln" d="M95,58 L95,86"/>
+  <path class="ln" d="M95,130 L95,158"/>
+  <path class="ln" d="M170,181 L228,181"/>
+  <path class="ln" d="M390,181 L448,181"/>
+  <path class="ln" d="M620,181 L678,181"/>
+  <path class="ln" d="M310,202 L310,242"/>
+  <path class="ln" d="M535,202 L535,242"/>
+  <text class="l" x="325" y="228">refuse</text>
+</svg>
+<p class="cap">Every new guard fails into the module's existing <code>_Refused</code> path — the same
+shape <code>_refuse_mounts</code> already uses, so the view renders it with no new error handling.</p>
+</div>
+
+<h2>Task breakdown</h2>
+
+<div class="task">
+  <div class="hd"><span class="num">1</span><h3>The dirty-tree guard and the app-folder resolver</h3></div>
+  <ul>
+    <li><span class="file">fused_render/templates/git/ops.py</span> — add <code>_require_clean(root)</code>
+      near the other predicates (<code>_has_staged</code>, ops.py:769). It raises <code>_Refused</code>
+      when <code>git status --porcelain</code> returns any line. Repo-wide, not app-scoped — see decisions.</li>
+    <li>Same file — add <code>_require_app_dir(root, file)</code>. It resolves the enclosing app folder
+      by walking up from <code>file</code> to <code>root</code>, asking
+      <code>shared/app_entry.py::entry_html</code> at each level, and raises <code>_Refused</code> when
+      none is found. Reach <code>../shared</code> with the <code>sys.path.insert</code> hop
+      <span class="file">log.py:72-81</span> already uses; do not import <code>fused_render</code>
+      (SPEC PY-15 / D166).</li>
+    <li>Tests in <span class="file">tests/test_git_ops.py</span> against real throwaway repos
+      (<code>tests/_git_repo.py</code>): a clean repo passes, a repo with an unstaged edit refuses,
+      one with a staged-but-uncommitted change refuses, and an untracked file refuses. For the
+      resolver: a file inside an app folder resolves to it, a plain repo file refuses, and a folder
+      whose html carries no <code>fused-app</code> meta refuses.</li>
+  </ul>
+  <div class="verify"><b>$</b> .venv/bin/pytest tests/test_git_ops.py -q -k "clean or app_dir"<br>→ new tests pass; nothing else in the file changes</div>
+  <p class="commit">Commit: <code>git ops: a dirty-tree guard and an app-folder resolver for the version actions</code></p>
+</div>
+
+<div class="task">
+  <div class="hd"><span class="num">2</span><h3>The <code>app_restore</code> op</h3></div>
+  <ul>
+    <li><span class="file">ops.py:188</span> — add <code>"app_restore"</code> to
+      <code>DESTRUCTIVE_OPS</code>, not <code>_SAFE_OPS</code>, so the view's existing confirmation
+      step covers it. Add a line to the comment above the split saying why (it writes history).</li>
+    <li><span class="file">ops.py</span> — add <code>_app_restore(root, file, sha)</code> beside
+      <code>_commit</code> (ops.py:943). Order: validate <code>sha</code> against
+      <code>_SHA_RE</code> (ops.py:169), <code>_require_clean</code>, <code>_require_app_dir</code>,
+      then <code>git checkout &lt;sha&gt; -- &lt;app_rel&gt;</code> via <code>_git_ok</code>, then
+      <code>git commit</code> with a generated message naming the app folder and the short sha.
+      Build the pathspec with <code>_pathspec</code> (ops.py:436), never by string concatenation.</li>
+    <li>Return <code>_ok("app_restore", ...)</code> when the checkout produced changes; when the app
+      folder is already identical to that commit the commit would be empty — refuse with a readable
+      "already at this version" rather than passing <code>--allow-empty</code>.</li>
+    <li><span class="file">ops.py:1248</span> <code>main()</code> — accept the op and dispatch it,
+      following the existing <code>if op == ...</code> chain. It takes <code>sha</code>, which the
+      signature already declares.</li>
+    <li>Tests in <span class="file">tests/test_git_ops.py</span>: restoring an older commit's app
+      folder produces a new commit whose tree for that folder matches the old one; files
+      <em>outside</em> the app folder are byte-identical before and after; HEAD is still on the same
+      branch (not detached); a dirty repo refuses and leaves no commit; a no-op restore refuses; a
+      mount-backed path refuses (mirror the existing mount test in that file).</li>
+  </ul>
+  <div class="verify"><b>$</b> .venv/bin/pytest tests/test_git_ops.py -q -k app_restore<br>→ pass, and the outside-the-app-folder assertion is the one that must not be skipped</div>
+  <p class="commit">Commit: <code>git ops: app_restore — commit the app folder back to an earlier version</code></p>
+</div>
+
+<div class="task">
+  <div class="hd"><span class="num">3</span><h3>The <code>revert</code> op</h3></div>
+  <ul>
+    <li><span class="file">ops.py:188</span> — add <code>"revert"</code> to
+      <code>DESTRUCTIVE_OPS</code> alongside <code>app_restore</code>.</li>
+    <li><span class="file">ops.py</span> — add <code>_revert(root, sha)</code>. Validate against
+      <code>_SHA_RE</code>, <code>_require_clean</code>, then
+      <code>git revert --no-edit &lt;sha&gt;</code>. On a conflicting revert git leaves the tree
+      mid-revert: run <code>git revert --abort</code> and refuse with text saying the revert
+      conflicts and needs a terminal — the same posture <code>_pull</code> (ops.py:1130) takes for a
+      non-fast-forward. Do not leave the repo in a conflicted state.</li>
+    <li>Note the environment already sets <code>GIT_EDITOR=false</code> (ops.py:150), so a revert
+      that wants an editor fails loudly rather than hanging; <code>--no-edit</code> is belt and braces.</li>
+    <li><span class="file">ops.py:1248</span> <code>main()</code> — dispatch it.</li>
+    <li>Tests in <span class="file">tests/test_git_ops.py</span>: reverting the tip commit undoes its
+      changes and leaves a new commit (history grows, the original commit still present — assert
+      <code>git rev-list --count</code> increased and the reverted sha is still reachable); a dirty
+      repo refuses; a conflicting revert refuses AND leaves no in-progress revert (assert
+      <code>.git/REVERT_HEAD</code> is absent afterwards).</li>
+  </ul>
+  <div class="verify"><b>$</b> .venv/bin/pytest tests/test_git_ops.py -q -k revert<br>→ pass, including the abort-on-conflict cleanup assertion</div>
+  <p class="commit">Commit: <code>git ops: revert a commit, aborting cleanly when it conflicts</code></p>
+</div>
+
+<div class="task">
+  <div class="hd"><span class="num">4</span><h3>Preview becomes a prominent, always-visible button</h3></div>
+  <ul>
+    <li><span class="file">template.html:3489-3512</span> — in <code>commitLine</code>, the
+      <code>.inline-eye</code> branch currently renders a bare icon revealed only on row hover. Give
+      it a visible text label beside the glyph and draw it at rest. Keep the
+      <code>role="button"</code> span (the row is a <code>&lt;button&gt;</code> and buttons cannot
+      nest — that constraint is unchanged), and keep <code>stopPropagation</code>.</li>
+    <li><span class="file">template.html:916-938</span> — the <code>.row .inline-eye</code> rules
+      hide the control until <code>.line:hover</code>. Replace the hover-reveal with an always-drawn
+      resting state; keep the hover and <code>:focus-visible</code> treatments as the emphasis step.
+      Follow the <code>.btn</code> vocabulary already in this file rather than inventing a new one.</li>
+    <li>Leave the <code>canPreview</code> gate exactly as it is
+      (<span class="file">template.html:1482-1546</span>). "Always shown" means always drawn where a
+      preview can land — not drawn where it provably cannot; see decisions.</li>
+    <li>The "previewing" marker branch (<span class="file">template.html:3487</span>) already renders
+      at rest and needs no change beyond sitting correctly next to a wider button.</li>
+  </ul>
+  <div class="verify"><b>$</b> .venv/bin/pytest tests/test_git_view_renders.py tests/test_git_view.py -q<br>→ pass; update any assertion that pins the hover-only markup</div>
+  <p class="commit">Commit: <code>git view: draw the preview control at rest instead of on hover</code></p>
+</div>
+
+<div class="task">
+  <div class="hd"><span class="num">5</span><h3>Drop the latest-commit green dot</h3></div>
+  <ul>
+    <li><span class="file">template.html:3520-3523</span> — remove the <code>liveDot</code> node and
+      its use in the row. It renders only when <code>isLatest &amp;&amp; !previewed</code>, which
+      means it marks the top row of a newest-first list and vanishes in exactly the state where
+      "which commit are the files from?" is a live question. It answers nothing the list's own order
+      does not.</li>
+    <li><span class="file">template.html:3473</span> — drop the now-unused <code>isLatest</code>
+      parameter from <code>commitLine</code>, and the argument at its call site (find it with
+      <code>grep -n commitLine</code>). Leaving a dead parameter behind invites a future caller to
+      pass something meaningful to it.</li>
+    <li><span class="file">template.html:3495</span> — <strong>keep</strong> the
+      <code>live-dot</code> inside the previewing pill. That one is load-bearing: it is the pill's
+      on-state marker. The <code>.row .live-dot</code> CSS rule
+      (<span class="file">template.html:1008</span>) therefore stays; only its comment at
+      <span class="file">1003-1007</span> needs rewriting, since it currently describes a dot that
+      "travels" between the latest row and the previewed one.</li>
+    <li>Update any assertion in <span class="file">tests/test_git_view_renders.py</span> that pins
+      the latest-commit dot; the previewing pill's dot must stay asserted.</li>
+  </ul>
+  <div class="verify"><b>$</b> .venv/bin/pytest tests/test_git_view_renders.py tests/test_git_view.py -q<br>→ pass; the previewing-state assertions must still be present, not deleted alongside</div>
+  <p class="commit">Commit: <code>git view: drop the latest-commit dot, which only ever marked the top row</code></p>
+</div>
+
+<div class="task">
+  <div class="hd"><span class="num">6</span><h3>Checkout and Revert in the view</h3></div>
+  <ul>
+    <li><span class="file">template.html:4186-4196</span> — the <code>rev-banner</code> block, which
+      already renders only while <code>previewed</code> is set and already carries a "Back to now"
+      <code>action()</code>. Add a Checkout <code>action()</code> beside it, sending
+      <code>op: "app_restore"</code> with <code>sha: previewed</code>. It needs no
+      <code>canPreview</code> check of its own — the banner cannot render unless a preview is
+      active, which already implies both halves of that gate.</li>
+    <li>Use the existing <code>action()</code> + <code>run()</code> helpers the stash rows use
+      (<span class="file">template.html:3576-3585</span>) so it inherits the confirmation step, the
+      in-flight state and the refusal rendering for free — do not hand-roll a fetch.</li>
+    <li>Its confirmation text must say what it does in the user's terms: it commits the app folder
+      back to that version, and other folders are untouched.</li>
+    <li>On success the banner's own subject is stale — the app folder now matches the previewed
+      commit at HEAD. Clear the preview (<code>preview(null)</code>) after the op reports ok, so the
+      view returns to "now" rather than claiming to preview a version that is now current.</li>
+    <li><span class="file">template.html:1036-1052</span> — the <code>.rev-banner</code> rule sets
+      <code>.what</code> to <code>flex: 1</code>, so a second action fits without a layout change.
+      Verify rather than assume at the sidebar's narrowest width.</li>
+    <li><span class="file">template.html:4334-4358</span> — the selected-commit branch of the pane
+      builder. Pass a Revert control into <code>diffPane</code>'s <code>meta</code> node (built by
+      <code>commitMeta</code>, <span class="file">template.html:3712</span>), so it appears in the
+      expanded commit only. <code>diffPane</code> takes <code>meta</code> as a parameter precisely so
+      the caller decides what a commit selection shows — change the caller, not
+      <code>diffPane</code>.</li>
+    <li>Revert's confirmation must say it is repo-wide, unlike Checkout.</li>
+    <li>Revert is hidden — not disabled — where <code>canPreview</code> is false, matching the eye's
+      existing rule and the reasoning at <span class="file">template.html:3470</span>. Checkout
+      inherits the same outcome structurally, by living in a banner that only a live preview draws.</li>
+    <li>Extend <span class="file">tests/test_git_view_renders.py</span> for the rendered controls,
+      and <span class="file">tests/test_git_view.py</span> for the op each one sends. Check
+      <span class="file">tests/_git_view_probe.mjs</span> for the existing driving pattern before
+      writing new harness code.</li>
+  </ul>
+  <div class="verify"><b>$</b> .venv/bin/pytest tests/test_git_view_renders.py tests/test_git_view.py tests/test_git_ops.py -q<br>→ all pass</div>
+  <p class="commit">Commit: <code>git view: Checkout on every commit row, Revert on the expanded commit</code></p>
+</div>
+
+<div class="task">
+  <div class="hd"><span class="num">7</span><h3>App page: the closed picker shows only the version number</h3></div>
+  <ul>
+    <li><span class="file">frontend/src/shell/AppVersionPicker.tsx:125-148</span> — the control is a
+      native <code>&lt;select&gt;</code>, and a native select's closed face is necessarily the
+      selected <code>&lt;option&gt;</code>'s own text. So "v10" closed and "v10 — perf: recompress
+      png…" in the list is not reachable by changing the option text; it needs one of the two
+      approaches below. Pick the second unless it proves unworkable.</li>
+    <li><strong>Preferred:</strong> keep the native <code>&lt;select&gt;</code> for keyboard,
+      screen-reader and mobile behaviour, render it transparent above a visible
+      <code>&lt;span&gt;</code> showing just the v-number, and keep the full text in the options.
+      The span is <code>aria-hidden</code> — the select already carries
+      <code>aria-label="App version"</code> (:126), so the accessible name does not change.</li>
+    <li><strong>Only if that fails:</strong> a custom listbox. It costs keyboard handling, focus
+      management and outside-click dismissal that the native element gives for free — do not reach
+      for it first.</li>
+    <li>The v-number arithmetic and the <code>value</code>/<code>title</code> attributes are
+      unchanged: <code>value</code> stays the hex sha (:141, :144) and <code>_snapshot</code> stays a
+      sha. This is presentation only, exactly as the comment at :14-15 already states.</li>
+    <li>The "Live" option (:130) and the unknown-sha fallback option (:141) both keep their current
+      closed-state text — "Live" is already short, and a bare short sha is already the whole label.</li>
+    <li>Extend <span class="file">frontend/src/shell/AppVersionPicker.test.tsx</span>: the closed
+      control shows only the v-number, each option still carries its subject, and selecting still
+      writes the sha. Assert the accessible name is unchanged.</li>
+  </ul>
+  <div class="verify"><b>$</b> bun test frontend/src/shell/ &amp;&amp; cd frontend &amp;&amp; bunx tsc --noEmit<br>→ tests pass, tsc silent</div>
+  <p class="commit">Commit: <code>app page: the version picker's closed face is just the version number</code></p>
+</div>
+
+<div class="task">
+  <div class="hd"><span class="num">8</span><h3>Spec and decisions</h3></div>
+  <ul>
+    <li><span class="file">SPEC.md</span> §33 (the git template's section) — record the two new ops
+      and the dirty-tree precondition.</li>
+    <li><span class="file">DECISIONS.md</span> — one D-number for the pair. Before choosing it, check
+      the numbers already taken on <code>main</code>, not just in this worktree: duplicate D-numbers
+      have collided on long branches before.</li>
+  </ul>
+  <div class="verify"><b>$</b> .venv/bin/pytest tests/test_decisions.py tests/test_spec.py -q<br>→ pass (a docs-only change gets the targeted test, never the full suite)</div>
+  <p class="commit">Commit: <code>docs: record the git version actions and their dirty-tree guard</code></p>
+</div>
+
+<h2>Key decisions &amp; risks</h2>
+<dl class="risk">
+  <dt>"Always shown" keeps the <code>canPreview</code> gate</dt>
+  <dd>The gate has two halves — a content pane to drive, and an enclosing app folder — and D701
+    added the second because without it the eye promised a preview that 404s and silently does
+    nothing. Drawing the button everywhere would reintroduce exactly that. So the change is
+    hover-revealed → drawn at rest, not conditional → unconditional. Flagging it because it is a
+    narrower reading of "always" than the words alone.</dd>
+
+  <dt>The latest-commit dot goes; the previewing pill's dot stays</dt>
+  <dd>Two dots shared one colour and one stated meaning ("the commit the files belong to"), but only
+    one of them was ever informative. The latest-commit dot appears only when nothing is previewed,
+    where it marks the top row of a newest-first list; the previewing pill's dot appears exactly when
+    the answer is not obvious. Removing the first is what lets the second keep the colour unambiguously.</dd>
+
+  <dt>Checkout lives in the previewing banner, not on the rows</dt>
+  <dd>Your call, and it turned out to carry a design benefit past the width problem it solved:
+    Checkout can only be reached through a preview, so nothing can commit a rollback to a version
+    that was never looked at. It also means the button needs no per-commit label — the banner
+    already names the version it means.</dd>
+
+  <dt>Checkout commits rather than leaving working-tree changes</dt>
+  <dd>Per your amendment. It also composes: a committed restore is itself revertible by the new
+    Revert button, where an uncommitted one would need a different undo.</dd>
+
+  <dt>The dirty-tree guard is repo-wide, not app-scoped</dt>
+  <dd>Revert is repo-wide so it needs a repo-wide check regardless. Applying the same rule to
+    Checkout costs a little strictness — an edit in an unrelated folder blocks it — but one rule the
+    user can predict beats two that differ by which button they pressed. Narrowing Checkout's guard
+    to the app folder later is a small change if the strictness bites.</dd>
+
+  <dt>Both ops are <code>DESTRUCTIVE_OPS</code></dt>
+  <dd>Neither can lose work once the dirty guard holds, so this is about consent, not recovery: both
+    write to history on one click, and that deserves the confirmation step. The classification is
+    also what the view keys its confirm UI off, so it is the mechanism as well as the label.</dd>
+
+  <dt>Risk — a conflicting revert leaving the repo mid-operation</dt>
+  <dd>The worst outcome here: a user left in a conflicted state by a sidebar button, with no UI to
+    finish it. Task 3 aborts and refuses instead, and asserts the absence of
+    <code>REVERT_HEAD</code> so a regression is caught rather than discovered.</dd>
+
+  <dt>Risk — <code>app_restore</code> reaching outside the app folder</dt>
+  <dd>A pathspec bug would make this a repo-wide rollback wearing an app-scoped label. The
+    outside-the-folder byte-identity assertion in task 2 is the specific guard, and it is called out
+    as non-skippable for that reason.</dd>
+
+  <dt>ops.py cannot import <code>fused_render</code></dt>
+  <dd>Templates are packaged data (SPEC PY-15 / D166), so the app-folder walk goes through
+    <code>shared/app_entry.py</code> via the <code>sys.path</code> hop <code>log.py</code> and
+    <code>condition.py</code> already use — not through <code>app_listing.enclosing_app_dir</code>,
+    which is the server-side twin of the same rule.</dd>
+</dl>
+
+<h2>How we'll know it works</h2>
+<p>In a repo app: every commit row shows a Preview button without hovering, and still shows its
+relative time. Previewing swaps the pane to that commit read-only and raises the banner, which now
+offers Checkout beside "Back to now". Checkout, after confirming, leaves HEAD on the branch with one
+new commit whose app folder matches the previewed version and whose other folders are byte-identical,
+then drops back to "now". Expanding a commit shows Revert, which adds an undo commit. With any
+uncommitted change in the repo, Checkout and Revert both refuse with a readable message and change
+nothing.</p>
+
+</main>

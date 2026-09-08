@@ -4,16 +4,22 @@
 // header counting finished work as running.
 import { expect, test } from "bun:test";
 import {
-  clearableCount,
+  aggregateProgress,
+  jobTypeLabel,
+  SCHEDULE_JOB_PREFIX,
+  activeJobByModel,
   GRACE_MS,
   jobAmount,
+  jobDetail,
   jobFraction,
+  jobRows,
   jobsAfterClear,
   jobStatusLine,
   mergedRows,
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
+  terminalNotifications,
   trackSeenIds,
   type Job,
 } from "@platform/lib/jobs";
@@ -29,6 +35,7 @@ function job(over: Partial<Job> = {}): Job {
     done: null,
     total: null,
     total_scope: "phase",
+    total_estimated: false,
     unit: "bytes",
     message: "",
     page: "/tmp/index.html",
@@ -58,6 +65,21 @@ test("a reporter over-counting past its own total clamps to full", () => {
   expect(jobFraction(job({ done: 120, total: 100 }))).toBe(1);
 });
 
+test("a done that outgrows an ESTIMATED total (an index rescan's tree grew since the last scan) still clamps to full, never past it or backwards", () => {
+  // The index-job bridge (D724+) sets `total` to the last completed scan's
+  // file count as an ESTIMATE for a rescan's denominator — a real but
+  // possibly-stale number, since the tree can have grown. `jobFraction` is
+  // where every job's bar gets clamped (there is no bridge-side clamp; a
+  // reporter honestly stating `done` past a stale `total` is real data, not
+  // something to hide at the source), so this is the one place a fast-
+  // growing rescan's bar is guaranteed not to render past full.
+  expect(jobFraction(job({ state: "running", done: 700_000, total: 672_424 }))).toBe(1);
+  // Still a normal fraction well before the estimate is exceeded.
+  expect(jobFraction(job({ state: "running", done: 10_856, total: 672_424 }))).toBeCloseTo(
+    10856 / 672424
+  );
+});
+
 test("a done job reads as complete even if its last numbers never caught up", () => {
   expect(jobFraction(job({ state: "done", done: 7, total: 10 }))).toBe(1);
 });
@@ -77,6 +99,39 @@ test("bytes with no total still say how much has arrived", () => {
 
 test("a non-byte unit counts plainly", () => {
   expect(jobAmount(job({ unit: "", done: 3, total: 12 }))).toBe("3 / 12");
+});
+
+test("a counted unit gets locale thousands separators and its own word", () => {
+  // `unit: "files"` (index scans, D724) and `unit: "tokens"` (text
+  // generation) used to fall through to a bare, unformatted number — no
+  // separators, no word — which is why an in-progress scan read "10856"
+  // instead of "10,856 files". `toLocaleString()`, not a hard-coded comma:
+  // the Preferences panel's own count renders in the browser's locale (e.g.
+  // Indian digit grouping), and this has to agree with it.
+  expect(jobAmount(job({ unit: "files", done: 10856, total: null }))).toBe("10,856 files");
+  expect(jobAmount(job({ unit: "tokens", done: 512, total: null }))).toBe("512 tokens");
+});
+
+test("a counted unit with a total renders both sides, unit word once", () => {
+  expect(jobAmount(job({ unit: "files", done: 10856, total: 672424 }))).toBe(
+    "10,856 / 672,424 files"
+  );
+});
+
+test("a done that outgrows an estimated total clamps the printed numerator, matching the bar (D733)", () => {
+  // jobFraction already clamps the BAR at full when done > total (an index
+  // rescan whose tree grew since the last scan). The printed amount must
+  // not disagree with a bar already pinned at 100% — "700,000 / 672,424"
+  // beside a full bar claims the walk overran what it promised. Clamping
+  // the numerator to the total (not dropping the denominator) keeps the
+  // total's honest information ("what the walk expected") on the row.
+  expect(jobAmount(job({ unit: "files", done: 700_000, total: 672_424 }))).toBe(
+    "672,424 / 672,424 files"
+  );
+  // Still unclamped, still agrees with a non-full bar.
+  expect(jobAmount(job({ unit: "files", done: 10_856, total: 672_424 }))).toBe(
+    "10,856 / 672,424 files"
+  );
 });
 
 test("seconds of audio read as a CLOCK, not as a bare pair of numbers", () => {
@@ -132,6 +187,62 @@ test("a stalled row blames the right reporter", () => {
   const server = jobStatusLine(job({ stalled: true, owner: "server" }));
   expect(server).toContain("the process running it stopped reporting");
   expect(server).not.toContain("page");
+});
+
+test("a running job with no detail and no message reads as empty — the fallback is the call site's job (jobDetail)", () => {
+  // `jobStatusLine` no longer folds `jobDetail` in itself (Change 3): a
+  // running download can carry a real progress AMOUNT with no phase text at
+  // all, a fact this function never sees, so falling back here would win
+  // over that amount at the render site. Callers apply `jobDetail` only once
+  // BOTH the status line and the amount are known to be empty.
+  expect(jobStatusLine(job({ state: "running", detail: undefined }))).toBe("");
+});
+
+test("a running job's phase (message) leads, its detail follows — both reach the line", () => {
+  // The index-scan bridge (D724) puts its run's phase in `message`
+  // ("writing index" / "writing signatures") and its root in `detail` — but
+  // this function used to read `message` only for `error`/`waiting`, so a
+  // running row's phase was written to the job record and never rendered.
+  // Every other running reporter still sends `message: ""`, so this is
+  // additive for them (see the plain-`detail` case just below).
+  expect(jobStatusLine(job({ state: "running", message: "writing index", detail: "~" }))).toBe(
+    "writing index · ~"
+  );
+});
+
+test("a running job with only a detail (message empty) is unchanged from before", () => {
+  expect(jobStatusLine(job({ state: "running", message: "", detail: "shard 3/8" }))).toBe(
+    "shard 3/8"
+  );
+});
+
+test("jobDetail names the kind and how long it has been running, from facts every job always carries", () => {
+  const now = 10_000;
+  const started_at = now - 125; // 2m 5s ago
+  expect(jobDetail(job({ kind: "download", started_at, stalled: false }), now)).toBe(
+    "Download · started 2m ago"
+  );
+  expect(jobDetail(job({ kind: "task", started_at, stalled: false }), now)).toBe(
+    "Task · started 2m ago"
+  );
+});
+
+test("jobDetail folds in stalled, since a job with nothing else to say and no reporter left needs it most", () => {
+  const now = 10_000;
+  const started_at = now - 5;
+  expect(jobDetail(job({ kind: "download", started_at, stalled: true }), now)).toBe(
+    "Download · started 5s ago · not reporting"
+  );
+});
+
+test("jobDetail measures against the SERVER's clock, not the browser's (C4)", () => {
+  // `started_at` is a server timestamp; a browser clock that has drifted
+  // hours from the server's must not leak into what "started X ago" says.
+  const serverNow = 1_000_000;
+  const started_at = serverNow - 30; // 30s ago, by the SERVER's clock
+  expect(jobDetail(job({ started_at, stalled: false }), serverNow)).toBe(
+    "Download · started 30s ago"
+  );
 });
 
 test("stalled outranks a pending cancel, and says both", () => {
@@ -210,14 +321,26 @@ test("the poll idles once the grace window has elapsed", () => {
 // orphaned live work behind a Clear press. The per-row ✕ (`dismiss`) still
 // takes a stalled row on purpose; only the bulk sweep changed.
 
-test("clearableCount counts terminal rows but not a stalled running one", () => {
-  const jobs = [
-    job({ id: "run", state: "running", stalled: false }),
-    job({ id: "stalled", state: "running", stalled: true }),
-    job({ id: "done", state: "done" }),
-    job({ id: "err", state: "error" }),
-  ];
-  expect(clearableCount(jobs)).toBe(2);
+// ------------------------------------------------------------- activeJobByModel
+
+test("activeJobByModel (Part A item 1 / C3) drops a done job — a finished pull must not read as still busy forever", () => {
+  const done = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "server", state: "done" });
+  expect(activeJobByModel([done]).get("FLUX.2-klein-4B")).toBeUndefined();
+});
+
+test("activeJobByModel keeps a running server job, keyed by its title", () => {
+  const running = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "server", state: "running" });
+  expect(activeJobByModel([running]).get("FLUX.2-klein-4B")).toBe(running);
+});
+
+test("activeJobByModel keeps a waiting server job — parked on a question is not finished", () => {
+  const waiting = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "server", state: "waiting" });
+  expect(activeJobByModel([waiting]).get("FLUX.2-klein-4B")).toBe(waiting);
+});
+
+test("activeJobByModel ignores a page-owned job — a card only asks about its own model's server-side job", () => {
+  const pageJob = job({ id: "j1", title: "FLUX.2-klein-4B", owner: "page", state: "running" });
+  expect(activeJobByModel([pageJob]).size).toBe(0);
 });
 
 test("jobsAfterClear keeps every running row, stalled included", () => {
@@ -265,4 +388,99 @@ test("mergedRows leaves unrelated rows alone", () => {
 test("mergedRows is a no-op when nothing has waiting_for set", () => {
   const jobs = [job({ id: "a" }), job({ id: "b", waiting_for: "" })];
   expect(mergedRows(jobs)).toEqual(jobs);
+});
+
+// --------------------------------------------------------- terminalNotifications
+//
+// `ActivityDock.tsx`'s `onJobsReported` — what actually reaches Notifications
+// from a full snapshot. `mergedRows` has to run FIRST, on the unfiltered
+// snapshot, or a load that has already gone terminal but whose waiter has not
+// yet cleared its own `waiting_for` (the one-tick gap `_wait_ready`'s poll
+// loop leaves between the load finishing and the waiter noticing) reaches
+// Notifications on its own — a second completion entry for what Activity is,
+// at that very moment, still drawing as one row.
+
+test("terminalNotifications withholds a load's completion while its merged waiter is still running", () => {
+  const jobs = [
+    job({ id: "waiter", state: "running", waiting_for: "load" }),
+    job({ id: "load", state: "done" }),
+  ];
+  expect(terminalNotifications(jobs)).toEqual([]);
+});
+
+test("terminalNotifications surfaces the load once the waiter itself has gone terminal", () => {
+  const jobs = [
+    job({ id: "waiter", state: "done", waiting_for: "load" }),
+    job({ id: "load", state: "done" }),
+  ];
+  expect(terminalNotifications(jobs).map((j) => j.id).sort()).toEqual(["load", "waiter"]);
+});
+
+test("terminalNotifications still drops a scheduled run's own job", () => {
+  const jobs = [job({ id: "sys:schedule:e1", state: "done" })];
+  expect(terminalNotifications(jobs)).toEqual([]);
+});
+
+test("terminalNotifications leaves an ordinary terminal job alone", () => {
+  const jobs = [job({ id: "dl", state: "done" })];
+  expect(terminalNotifications(jobs).map((j) => j.id)).toEqual(["dl"]);
+});
+
+// An index scan's own job (fused_render/server/routers/index.py's
+// mirror_index_jobs_once, "sys:index:<run_id>") is NOT a sys:schedule:* row
+// and must draw a row in Activity like any other server-owned task — unlike
+// a scheduled run's job, which jobRows deliberately drops (see
+// isScheduleJob's own comment).
+test("an index scan's job is not caught by the schedule-job filter", () => {
+  const jobs = [
+    job({ id: "sys:index:20260907-1200-ab12", state: "running" }),
+    job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "running" }),
+  ];
+  expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:index:20260907-1200-ab12"]);
+});
+
+// ---- the chip's one word and one line (D673, statusbar redesign) ------------
+
+test("a single job's chip word is its title's own -ing verb, capitalised", () => {
+  expect(jobTypeLabel(job({ title: "erasing text using flux" }))).toBe("Erasing");
+  expect(jobTypeLabel(job({ title: "Transcribing meeting.mp3" }))).toBe("Transcribing");
+});
+
+test("the live phase in `detail` wins over the title — the bar says what the page says", () => {
+  expect(
+    jobTypeLabel(job({ title: "Studio photograph of a polished chrome robot", detail: "Denoising · 0 / 4" })),
+  ).toBe("Denoising");
+  expect(jobTypeLabel(job({ title: "Erasing text", detail: "Decoding" }))).toBe("Decoding");
+  expect(jobTypeLabel(job({ title: "Erasing text", detail: "step 3 of 9" }))).toBe("Erasing");
+});
+
+test("a title with no leading verb falls back to the kind", () => {
+  expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "download" }))).toBe("Downloading");
+  expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "task" }))).toBe("Working");
+  expect(jobTypeLabel(job({ title: "Ring sizing", kind: "task" }))).toBe("Working");
+});
+
+test("a scheduled Claude run says Running; a queued Claude call says Queued", () => {
+  expect(
+    jobTypeLabel(job({ id: SCHEDULE_JOB_PREFIX + "abc", kind: "task", title: "Summarise the inbox", detail: "/Users/me/mail" })),
+  ).toBe("Running");
+  expect(jobTypeLabel(job({ title: "Claude", detail: "Queued — another Claude call is in flight" }))).toBe("Queued");
+  expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "download", detail: "Preparing MLX…" }))).toBe("Preparing");
+});
+
+test("a job parked on a question says Waiting whatever its title", () => {
+  expect(jobTypeLabel(job({ title: "Erasing text", state: "waiting" }))).toBe("Waiting");
+});
+
+test("aggregate progress: nothing running draws no line, no totals sweep, else the mean", () => {
+  expect(aggregateProgress([])).toBeUndefined();
+  expect(aggregateProgress([job({ state: "done", done: 1, total: 1 })])).toBeUndefined();
+  expect(aggregateProgress([job({ state: "running", done: null, total: null })])).toBeNull();
+  expect(
+    aggregateProgress([
+      job({ state: "running", done: 25, total: 100 }),
+      job({ state: "running", done: 75, total: 100 }),
+      job({ state: "running", done: null, total: null }),
+    ]),
+  ).toBeCloseTo(0.5);
 });

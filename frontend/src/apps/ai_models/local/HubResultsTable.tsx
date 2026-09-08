@@ -9,7 +9,7 @@
 // two or three facts before it sprawls, which is why the grid it replaces
 // showed popularity and size and nothing about THIS machine. Many columns
 // only become legible in a row, and a row is only worth reading once it is
-// SCORED — see `hubTableView.ts` for the cell rules and D663/D664/D665 in
+// SCORED — see `hubTableView.ts` for the cell rules and D754/D755/D756 in
 // DECISIONS.md for the fuller argument.
 //
 // **Match, Model and the action are the only unconditional columns.** Every
@@ -30,7 +30,7 @@
 // column dropped for emptiness would have nowhere to put the answer it is
 // about to receive.
 //
-// **A family is one `<tbody>`, not one `<tr>` (D686).** The rows a disclosure opens
+// **A family is one `<tbody>`, not one `<tr>` (D777).** The rows a disclosure opens
 // are part of the same group as the row that opened it, and a `<tbody>` per
 // family is what says so in the markup — which is also what lets the CSS
 // draw a border around an OPEN group and nothing at all around the closed
@@ -405,9 +405,9 @@ function HubResultRow({
         }
         style={arriving === null ? undefined : ({ "--am-part": `${arriving * 100}%` } as CSSProperties)}
       >
-        {/* The merged Match cell (D663/D664): the printed number IS the
+        {/* The merged Match cell (D754/D755): the printed number IS the
             composite `matchScore`, coloured by the memory verdict, and a
-            non-GPU run mode (D665) prints as a visible muted suffix rather
+            non-GPU run mode (D756) prints as a visible muted suffix rather
             than a second colour. */}
         <TableCell
           className="am-hubtable-match"
@@ -478,7 +478,7 @@ function HubResultRow({
             )}
           </span>
         </TableCell>
-        {/* Task/Capability, merged (D665): the value is `model.capability` —
+        {/* Task/Capability, merged (D756): the value is `model.capability` —
             what the download path and runner resolution actually key on —
             with the Hub's own `task` label folded into the hint ONLY where
             it genuinely disagrees. The COLUMN itself only exists at all
@@ -618,7 +618,7 @@ export function HubResultsTable({
   onDownload: (id: string, capability: string) => void;
   onCancel: (job: Job) => void;
 }) {
-  // Hoisting (D664/D665): presence and the summary line must be computed
+  // Hoisting (D755/D756): presence and the summary line must be computed
   // off ONE value set, not two that can disagree — `familyHoist`
   // (`hubTableView.ts`) owns that computation (and this file's test suite
   // drives it directly); see its own doc for why two separate computations
@@ -657,7 +657,7 @@ export function HubResultsTable({
             <TableHead scope="col">Match</TableHead>
             <TableHead scope="col">Model</TableHead>
             {/* Labelled "Capability", not "Task" — the cells beneath it
-                render `model.capability` (D665), and a header must not
+                render `model.capability` (D756), and a header must not
                 name a different field than its own cells do. */}
             {columns.task && <TableHead scope="col" className="am-col-task">Capability</TableHead>}
             {columns.params && <TableHead scope="col" className="num am-col-params">Params</TableHead>}

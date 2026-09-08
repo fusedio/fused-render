@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getApps, getBackgroundAppsRunning, getHomeApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
+import { useCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { appCardMenu } from "@platform/lib/appCardMenu";
 import { sortApps } from "@platform/lib/appEntry";
 import { runCommunity } from "@platform/lib/community";
@@ -85,7 +86,15 @@ type ShowcaseCatalog = { status?: string };
 // the first visit doesn't keep a stale listing until reload. An
 // already-cloned catalog never touches the network here (it's cloned once,
 // then left alone), so this never blocks on git after the first visit.
-function useShowcaseSync(onSynced: () => void): void {
+//
+// Returns the clone's failure message when it refused (no usable git on the
+// machine, no network, a foreign folder already at <workspace>/showcase).
+// This used to be swallowed, which left the hub silently short of every
+// showcase app with nothing on screen to say why; the local grid still loads
+// either way, so it renders as a muted line rather than the page's error
+// banner. The backend composes the whole user-facing sentence.
+function useShowcaseSync(onSynced: () => void): string | null {
+  const [syncError, setSyncError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -95,12 +104,15 @@ function useShowcaseSync(onSynced: () => void): void {
       await runCommunity<ShowcaseCatalog>({ action: "refresh" });
       if (!alive) return;
       onSynced();
-    })().catch(() => undefined);
+    })().catch((e: Error) => {
+      if (alive) setSyncError(e.message);
+    });
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
   }, []);
+  return syncError;
 }
 
 // Folder paths (keys of GET /api/apps/background/running) whose background
@@ -166,8 +178,12 @@ export default function Apps({ config }: { config: Config }) {
     if (tag !== null) setMode("repo");
     else if (category !== null) setMode("category");
   }, [tag, category]);
-  // Bumped when the panel creates an app: refetches the grid without clearing it.
+  // Bumped when the panel creates an app, and on the desk-changed announcement
+  // (an icon picked from the sidebar's Projects row while the grid is on
+  // screen): refetches the grid without clearing it, so the card's mark
+  // follows the new icon.svg.
   const [nonce, setNonce] = useState(0);
+  useCurrentAppsChanged(() => setNonce((n) => n + 1));
   // One context-menu portal for the whole grid, at the cursor coords — same
   // shape as the explorer listing's (Listing.tsx openRowMenu).
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
@@ -264,7 +280,7 @@ export default function Apps({ config }: { config: Config }) {
     () => orderCategories(all.map((a) => a.category).filter((c): c is string => !!c)),
     [all],
   );
-  useShowcaseSync(() => setNonce((n) => n + 1));
+  const showcaseError = useShowcaseSync(() => setNonce((n) => n + 1));
   const runningPaths = useRunningBackgroundApps();
   const q = query.trim().toLowerCase();
   const shown = useMemo(
@@ -364,6 +380,9 @@ export default function Apps({ config }: { config: Config }) {
         </div>
 
         {error && <ErrorBanner>{error}</ErrorBanner>}
+        {/* Above the grid, not inside its empty state: the local apps below
+            are fine, it is only the showcase half that is missing. */}
+        {showcaseError && <div className="apps-showcase-note">{showcaseError}</div>}
         {/* Skeleton only while there is nothing drawable at all: once the fast
             row has landed the cards themselves are the loading indicator, and
             the count line below says the rest is still coming. */}

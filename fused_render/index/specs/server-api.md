@@ -17,15 +17,35 @@ unguarded like every other read endpoint and none of them can write.
 | `POST /api/index/scan-folder` `{path}` | X-Fused | cover ONE folder because a search box asked; `{started, why, run_id, root}`, never an error (§7.2) |
 | `POST /api/index/cancel` `{run_id}` | X-Fused | touch the run's cancel flag |
 | `GET /api/index/status?run_id=&since=` | — | scan state (§2) |
-| `GET /api/index/runs` | — | the 20 most recent runs with their folded state |
-| `GET /api/index/stats?root=` | — | totals + per-extension breakdown (`query.md §2`) |
-| `GET /api/index/lookup?q=&limit=&offset=&sort=` | — | path lookup (`query.md §3`) |
+| `GET /api/index/stats?root=&breakdown=` | — | totals + manifest; per-extension breakdown when `breakdown` is truthy (`query.md §2`) |
 | `GET /api/index/search?root=&q=&limit=&fmt=` | — | the whole-folder corpus (`query.md §6`); `fmt=columns` for the compact encoding (§6). No longer used by the app — it is the `fused.fileIndex.search` bridge contract user pages are written against |
 | `GET /api/index/rank?root=&q=&limit=` | — | BOTH search boxes: filtered AND ranked server-side, top `limit` hits, with a `reason` when it cannot answer (§7) |
 | `POST /api/index/query` `{sql, limit?}` | X-Fused | run ONE read-only statement over `files`/`dirs`; `{columns, rows, truncated}` (`query.md §5`) |
 | `POST /api/index/ask` `{prompt, limit?}` | X-Fused | compile a question to SQL through the AI relay, run it under the same guard, echo the `sql` (`query.md §5`) |
 | `GET /api/index/config` · `POST /api/index/config` | X-Fused on write | scan roots + ignore list (§3) |
 | `POST /api/index/delete` | X-Fused | drop the whole store (§5) |
+
+### 1.1 Cancellation — an abandoned request stops, quietly
+
+`GET /api/index/stats`, `GET /api/index/search`, `GET /api/index/rank`,
+`POST /api/index/query` and `POST /api/index/ask` each dispatch their real work
+onto a worker thread (`asyncio.to_thread`), which **cannot be killed** once
+started — Python has no thread-preemption. Instead each of these routes wraps
+its body in `async with cancellable(request) as token:` (`index/cancel.py`),
+which starts a task polling `request.is_disconnected()` for the duration of the
+block and calls `token.cancel()` the moment the client is gone. The `token`
+passed into `stats`/`search_under`/`run_guarded`/`search_ranked` makes the
+QUERY ITSELF notice, cooperatively: a `check()` at each phase boundary, and
+`token.cancel()` also calling `con.interrupt()` on the bound connection so a
+`con.execute()` already in flight unblocks too.
+
+A cancelled request is not an error — it is a client that stopped waiting,
+normal for a per-keystroke search box. The route logs it at `debug` (never
+louder) and answers `Response(status_code=499)` — a body nobody reads, since
+nobody is listening. `POST /api/index/scan`, `scan-folder`, and `cancel`
+deliberately do NOT use this: a scan is a detached, long-running background
+job with its own run-directory cancel flag (§1's `cancel` route), not a
+request/response the caller is blocked on.
 
 Every route resolves its `IndexConfig` from disk **per request**. That is what
 de-globalizing the engine bought: an ignore-list edit applies to the next scan with no
@@ -149,19 +169,25 @@ developer's real home. The scheduler's own tests call `run_startup_scan()` direc
 ### 4.1 The startup warm
 
 The same hook then calls `startup_warm()`, which spawns one detached daemon thread
-running `run_startup_warm()`: `search_under` + `filter_corpus` over `expanduser("~")`,
+running `run_startup_warm()`: `search_under` over `expanduser("~")`,
 and then `search_ranked` with a query that matches NOTHING over the same root — exactly
 the two requests the explorer makes (the in-folder corpus and the home page's ranked
 search), under exactly the same pool key. Warming only the corpus would leave the
-ranked path's own duckdb plan cold, and that is the one a keystroke waits on. The
-no-match query is not laziness: the ladder above stops at the substring pass as soon as
-it has enough, so a query WITH hits never touches the subsequence-regex plan — the
-expensive half, and the one a mistyped query lands on. The client's idle warm
-(`FilesHome.tsx`) sends the same shape of query for the same reason.
+ranked path's own duckdb plan cold, and that is the one a keystroke waits on. There is
+no ladder or subsequence pass any more (D708 — index-backed search is one substring-
+filtering SQL statement, scored and ordered entirely by duckdb); a no-match query is
+still deliberate, not laziness, for a narrower reason: `_rank_sql` scores every row
+that passes its substring filter BEFORE the top-N cut (`search_ranked`'s docstring,
+D714), so a query that matches something real would spend the warm scoring real rows
+for no reason a cold PROCESS needs — what this warm is actually priming is `duckdb`'s
+first import, the connection/thread setup, and the query's plan and pool key, none of
+which depend on getting a hit. A no-match query exercises that whole pipeline (parse,
+plan, the substring filter, `ORDER BY … LIMIT`) at the lowest possible cost: zero rows
+ever reach scoring. The client's idle warm (`FilesHome.tsx`) sends the same shape of
+query for the same reason.
 
-Everything that path caches is **per process** and starts empty: the gitignore verdict
-pool has no verdicts until some request sweeps `git check-ignore` over the whole corpus,
-and `duckdb` is not imported until the first query. Measured on a 164k-entry home,
+Everything that path caches is **per process** and starts empty: `duckdb` is not
+imported until the first query. Measured on a 164k-entry home,
 that made the first search of a fresh process ~2.2 s against ~0.8 s for the next one,
 all of it billed to a keystroke. The warm moves it to idle.
 
@@ -186,13 +212,7 @@ all of it billed to a keystroke. The warm moves it to idle.
   scan ended does not tell you whether the index covers the root, and an uncovered one
   costs one cheap `covered: false`. Giving up is logged once.
   A root whose scan was **debounce-skipped** has no entry and is not waited on: no new
-  run is coming and its index is already on disk. The persisted verdict pool
-  (`server/index_gitignore.py`) is what covers restarts.
-- The warm and the **first keystroke overlap by design** — the warm runs for ~2.2 s and
-  the user is typing inside it — so `server/index_gitignore.py` coordinates them: the
-  second caller to want verdicts for the same base waits on the sweep already in flight
-  (`_inflight`, `SWEEP_WAIT_MAX_S`) and reads the pool it produced, instead of shelling
-  out to `git check-ignore` over the same 200k entries a second time.
+  run is coming and its index is already on disk.
 - It **never raises**: nobody joins the thread.
 
 Patched out in tests by the same fixture, and its own tests call `run_startup_warm()`
@@ -239,7 +259,7 @@ same redundancy for an eighth of the time.
 ## 7. The ranked search — `GET /api/index/rank`
 
 `GET /api/index/rank?root=&q=&limit=` answers `{ok, covered, fresh, reason, updated,
-age_s, root, hits, total, truncated, escalated, scanned_partitions, of_partitions}`, where each
+age_s, root, hits, total, truncated, scanned_partitions, of_partitions}`, where each
 hit is `{rel, is_dir, size, mtime, score, longest_run, tier, depth}` and `limit`
 defaults to 200 (hard cap `MAX_RANK_LIMIT`, 2,000). Plain JSON, a few KB — no columnar
 encoding and no gzip special-casing, because that machinery (§6) exists for a 20 MB
@@ -248,46 +268,47 @@ as for the corpus.
 
 **Why it exists.** §6's corpus is the whole ranking set shipped to the browser: 19.8 MB
 raw / 5.4 MB gzipped for 164,405 rows on a home directory whose index actually held
-571,429 files. `MAX_CORPUS` (200,000, depth-ordered) plus the gitignore filter is what
-cut it down, so ~71% of that home was unfindable from the home search while the
-response reported `truncated: true` and the client ranked what it got. This route
-filters and ranks over the WHOLE index and returns the part anybody reads.
+571,429 files. `MAX_CORPUS` (200,000, depth-ordered) is what cut it down, so ~71% of
+that home was unfindable from the home search while the response reported
+`truncated: true` and the client ranked what it got. This route filters and ranks over
+the WHOLE index and returns the part anybody reads.
 
-**Two stages** (`query.md`, `search_ranked`), because neither is affordable alone: SQL
-narrows and coarse-orders over every row under the root; Python's ranker
-(`index/rank.py`) scores a bounded slice of at most `RANK_CANDIDATE_CAP` (2,000) rows.
-Scoring every subsequence candidate in Python is the 186 ms case that shape avoids.
+**One SQL statement** (`query.py`, `search_ranked`/`_rank_sql`) does the filtering, the
+scoring AND the `ORDER BY ... LIMIT` — no candidate cap, no Python-side ranking pass.
+Index-backed search is **substring-only**: the candidate filter is `lower(rel) LIKE
+'%q%'`, and the fuzzy SUBSEQUENCE escalation the route used to fall back to when that
+came up short (a separate `regexp_matches(lower(rel), 'a.*b.*c')` pass, scored by a
+now-deleted Python port of the browser ranker) is gone — an accepted feature loss, not
+an oversight: `indexstore` no longer matches `index/specs/index-store.md` on an indexed
+folder. `frontend/src/platform/lib/fuzzy.ts` is UNCHANGED and keeps its subsequence
+pass; it still ranks the live streamed walk for the folders no scan will ever cover
+(mount-backed, package, ignored), which this route never touches.
 
-Stage A is itself a **ladder**, cheapest pass first:
-
-| pass | filter | `render` over 571k rows | `readme.md` |
-|---|---|---|---|
-| 1 | `lower(rel) LIKE '%q%'` | 30,319 rows / 51 ms | 3,056 / 41 ms |
-| 2 | `regexp_matches(lower(rel), 'a.*b.*c')` | 176,505 / 143 ms | 11,766 / 45 ms |
-
-Pass 2 runs only when pass 1 cannot fill the returned `limit` after ranking and
-gitignore filtering, and `escalated` says which happened. That is **lossless, not an
-approximation**: `fuzzyMatch`'s substring branch sets `longestRun = len(q)`, the maximum
-the subsequence branch can never reach, and `rankCompare` orders on `longestRun` first,
-so every substring hit outranks every subsequence-only hit and a filled cut leaves pass
-2 nothing to contribute above it. The check runs on the FILTERED count, so it needs no
-safety margin.
-
-**The gitignore filter runs before the cut to `limit`**, never after — filtering after
-the cut is precisely what let the corpus report more rows than it held.
+Losing the subsequence pass loses only a TAIL, not a reordering: `fuzzyMatch`'s
+substring branch always set `longestRun = len(q)`, the maximum a subsequence-only hit
+could reach, and `rankCompare` ordered on `longestRun` first — so every substring hit
+already outranked every subsequence-only one. With the subsequence pass gone,
+`longest_run` is constant across every surviving row and drops out of the SQL `ORDER
+BY` entirely (`tier ASC, score DESC, depth ASC, lower(rel) ASC, rel ASC` — the trailing
+`rel ASC` is a later fix, a free final tie-break so a pair equal in every other column,
+including `lower(rel)`, doesn't land in an arbitrary order on a multi-threaded top-N);
+`longest_run` is still reported on each hit, since the wire contract and
+`listing/ranked-hits.ts` still read it.
 
 **`positions` are not returned.** The client re-runs `fuzzyMatch` over the ~200 rows it
 got back to build its highlights, so `platform/lib/fuzzy.ts` stays the single source of
-truth for what highlights, and the server's port of it stays free to carry positions
-internally without them becoming a wire contract.
+truth for what highlights, and the server stays free to change how it scores internally
+without that becoming a wire contract.
 
-**Parity is a test, not an intention.** `index/rank.py` is a port of `fuzzy.ts` +
-`listing/search.ts`, which remain the authority — the in-folder search still ranks a
-live streamed walk in the browser, and only a browser-side ranker can rank a stream. The
-same box is therefore answered by either ranker depending on coverage, so both assert
-against `tests/fixtures/rank-parity.json` (generated from the JS side by `bun
-scripts/gen-rank-fixture.ts`): `tests/test_index_rank.py` and
-`frontend/src/apps/explorer/listing/rank-parity.test.ts`.
+**Parity is a test, not an intention.** The deleted `index/rank.py` used to be a line-
+for-line port of `fuzzy.ts` + `listing/search.ts`; `_rank_sql` is now a SQL port of just
+its substring branch. `fuzzy.ts` remains the authority for the folders it still ranks —
+the in-folder search still ranks a live streamed walk in the browser, and only a
+browser-side ranker can rank a stream. The same box is therefore answered by either
+ranker depending on coverage, so both assert against `tests/fixtures/rank-parity.json`
+(generated from the JS side by `bun scripts/gen-rank-fixture.ts`):
+`tests/test_index_rank.py` (restricted to the fixture's substring-matching rows) and
+`frontend/src/apps/explorer/listing/rank-parity.test.ts` (the full fixture, unchanged).
 
 ### 7.1 `reason` — why an answer is what it is
 
@@ -301,6 +322,7 @@ otherwise one of:
 | `package` | a `.app`/`.photoslibrary` — recorded as one opaque row, never listed | live streamed walk |
 | `ignored` | the scan's ignore list excludes this tree (`node_modules`, …) | live streamed walk |
 | `disabled` | the `indexing_enabled` preference is off (`shell/prefs.py`) — no scan will start | live streamed walk |
+| `fda` | the packaged mac app has no Full Disk Access (`shell/index_gate.py`) — no scan will start until it is granted and the app relaunched | live streamed walk; the home search offers the grant |
 | `uncovered` | not scanned yet, and scannable | ask for a scan (§7.2), then poll |
 | `scanning` | a run covering this root is live — in EITHER direction, an ancestor root or a descendant one | poll, rendering whatever came back |
 
@@ -328,6 +350,18 @@ the ordinary on-demand-scan path (§7.2) takes over from there. Precedence: `dis
 checked after `mount`/`package` and before `ignored`, so an ignored folder is still
 `ignored` regardless of the toggle — that fact is about the scan config, not about
 whether scanning can run at all.
+
+`fda` is `disabled`'s sibling and sits right after it in precedence (`shell/index_gate.py`
+answers both from one call). The default root is the user's home, and walking it reads
+under every TCC-protected folder — Desktop, Documents, Downloads and the rest — which on a
+fresh install fired a prompt per folder at boot, before onboarding had painted, or had
+those prompts silently denied because the app was not frontmost. So on the packaged mac
+app no trigger starts a scan (startup, on-demand, folder-open freshness, mutation rescan,
+`runner.start` as the backstop) while the in-process probe conclusively says not granted;
+an inconclusive probe (no target on the machine) does not block. The grant applies to the
+next launch, which runs the startup scan, so indexing begins on its own once the user
+grants and relaunches. `POST /api/index/scan` answers 409 with `reason: "fda"`;
+`scan-folder` answers `why: "fda"`.
 
 **Deciding this server-side is the point.** The mount policy is `MountGuard`'s — the
 same object `runner.start` refuses with — the ignore list is the scan config's, and the
@@ -436,11 +470,10 @@ the honest fix is to make the index right — and the only client-side remnant i
 completes or the claim expires (the server refuses some rescans and does not report
 that back, so the claim has to be able to end on its own).
 
-**Known and logged:** stage A's cap can in principle drop a row stage B would have
-ranked first. Tier ordering makes it unlikely (a name-substring hit outranks a
-fuzzy-only one in `rank_compare` too), and a cap that bites is a `logger.debug` line plus
-`truncated: true` — silent truncation is what this route removes, not what it
-reintroduces.
+**Stale, pre-D708 note removed here:** this used to describe a two-stage candidate-cap
+design ("stage A"/"stage B") that could in principle drop a row full ranking would have
+preferred. §7 covers the current design — one SQL statement, no candidate cap, so that
+risk doesn't exist any more (`search_ranked`'s docstring, `_rank_sql`).
 
 ## Non-goals
 

@@ -85,6 +85,22 @@ function currentTick(): number {
   return tick;
 }
 
+/** Test-only: forget every section and rewind the tick.
+ *
+ *  The store is module-level ON PURPOSE (see the top of the file), and bun
+ *  runs every test file in one module registry — so a section a sibling
+ *  file's test mounted and never unmounted is still in `entries`, wanting to
+ *  be open, when this file's tie-break tests run. Which file runs first is
+ *  readdir order, and readdir order is what differed between a Mac (green)
+ *  and the Linux runner (two tests red on every push). The tests call this
+ *  before each case so they arbitrate over their own sections only. */
+export function resetExclusiveSectionsForTests(): void {
+  entries.clear();
+  closers.clear();
+  tick = 0;
+  tickScheduled = false;
+}
+
 function arbitrate(): void {
   const wanting = [...entries.entries()].filter(([, e]) => e.want);
   if (wanting.length <= 1) return;

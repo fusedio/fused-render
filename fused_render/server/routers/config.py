@@ -105,6 +105,11 @@ def api_config(
     # packaged mac app when the probe is conclusive; absent = render nothing.
     if (fda := shell_fda.snapshot()) is not None:
         config["fda"] = fda
+    # First-run wizard flag (shell/onboarding.py) — always present; the shell
+    # auto-shows the wizard while both timestamps are null.
+    from fused_render.shell import onboarding as shell_onboarding
+
+    config["onboarding"] = shell_onboarding.snapshot()
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

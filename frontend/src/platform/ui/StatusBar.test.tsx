@@ -76,8 +76,23 @@ describe("right-aligned chips (D569) and the panel anchor that has to move with 
     // right (this round) need the mirror image, or a panel near the bar's
     // right edge grows off `#main`'s right edge the moment it opens — the
     // exact class of bug D568 fixed on the opposite side.
+    //
+    // STATUSBAR REDESIGN: the panel now sits `right: var(--status-bar-gutter)`
+    // rather than a bare `right: 0` — the gutter is what keeps the panel from
+    // touching the bar's own edge exactly, same reasoning, a token instead of
+    // a literal.
     const panel = block(CSS, ".dl-panel");
-    expect(panel).toContain("right: 0;");
+    expect(panel).toContain("right: var(--status-bar-gutter);");
+    expect(panel).not.toContain("right: 0;");
     expect(panel).not.toContain("left: 0;");
+  });
+
+  // STATUSBAR REDESIGN: `.dl-host` is `position: static` now (the chip no
+  // longer anchors its own panel) and `.status-bar` itself is the positioned
+  // ancestor (`position: relative`) the panel's `right: var(...)` resolves
+  // against instead.
+  it("the bar itself is the positioned ancestor, not each chip's own host", () => {
+    expect(block(CSS, ".status-bar")).toContain("position: relative;");
+    expect(block(CSS, ".dl-host")).toContain("position: static;");
   });
 });

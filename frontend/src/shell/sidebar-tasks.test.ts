@@ -17,6 +17,7 @@ import {
   isDoneUnread,
   isUnseenCompletion,
   parseTasksSeen,
+  attentionLabel,
   pulseTitle,
   runningLabel,
   sameSeen,
@@ -72,17 +73,66 @@ describe("the sidebar's tasks pulse", () => {
       task({ key: "d", status: "upcoming" }),
       task({ key: "e", status: "archived", unread: 3 }),
     ];
-    expect(tasksPulse(tasks, {})).toEqual({ running: 1, doneUnread: 1, unseen: 1 });
+    expect(tasksPulse(tasks, {}))
+      .toEqual({ running: 1, attention: 0, doneUnread: 1, unseen: 1 });
     expect(tasksPulse([], {})).toEqual(EMPTY_TASKS_PULSE);
   });
 
-  it("does not paint a FAILED run green", () => {
-    // Failed is a status of its own on this page (taskColumn), and the green mark
-    // means "work you were waiting on is ready". A broken run wearing the done
-    // hue would be the one place in the app where a colour disagreed with the
-    // ring the row itself draws (design-principles §1).
-    const broke = [task({ key: "f", status: "failed", unread: 1 })];
-    expect(tasksPulse(broke, {})).toEqual({ running: 0, doneUnread: 0, unseen: 0 });
+  it("does not paint a BLOCKED run green", () => {
+    // Blocked is a status of its own on this page (taskColumn), and the green
+    // mark means "work you were waiting on is ready". A broken run wearing the
+    // done hue would be the one place in the app where a colour disagreed with
+    // the ring the row itself draws (design-principles §1).
+    const broke = [task({ key: "f", status: "blocked", unread: 1 })];
+    expect(tasksPulse(broke, {}))
+      .toEqual({ running: 0, attention: 0, doneUnread: 0, unseen: 0 });
+  });
+
+  it("counts a WAITING task as running, and again as waiting", () => {
+    // Both are true of it and neither replaces the other: its turn is in flight
+    // (so the rail's yellow is honest), and it is the one kind of in-flight that
+    // will never end by itself — which is the number the sidebar exists to put
+    // in front of somebody. One row, two facts, never two rows.
+    const parked = [
+      task({ key: "p", status: "needs_attention" }),
+      task({ key: "a", status: "in_progress" }),
+    ];
+    expect(tasksPulse(parked, {}))
+      .toEqual({ running: 2, attention: 1, doneUnread: 0, unseen: 0 });
+    // And it is what the tooltip leads with: the one line in it that asks the
+    // reader for something goes first. Singular at one, because one is the
+    // common case and "1 tasks" reads as a broken string.
+    expect(pulseTitle(tasksPulse(parked, {})))
+      .toBe("1 task needs input · 2 running");
+    expect(attentionLabel(2)).toBe("2 tasks need input");
+  });
+
+  it("says it in WORDS and in RED, and still nothing that moves", () => {
+    // Akshil, 2026-09-03: "show the red dot on tasks sidebar and change that
+    // color to red as well". A waiting task is counted in `running` too, so
+    // until this it wore the plain yellow and the waiting was said in words
+    // alone — which is invisible at rail width, where there are no words. The
+    // HUE says it at both widths; the pulsing dot tried first stays out, because
+    // the rail is the one place on screen a reader cannot look away from and
+    // nothing there may blink.
+    expect(SIDEBAR).toContain("pulse.attention > 0 ? (");
+    expect(SIDEBAR).toContain('className="sidebar-rail-dot is-attention"');
+    // Red OUTRANKS yellow, which outranks green: still ONE dot, and the state
+    // that will not resolve on its own is the one it shows.
+    expect(SIDEBAR.indexOf("pulse.attention > 0 ? (")).toBeLessThan(
+      SIDEBAR.indexOf("pulse.running > 0 ? ("),
+    );
+    // The Blocked ring's own token — `needs_attention` is DRAWN in Blocked
+    // (schedule-lib.laneOf), so it wears Blocked's colour here too rather than a
+    // second red minted for the rail.
+    const attention = SIDEBAR_CSS.slice(
+      SIDEBAR_CSS.indexOf(".sidebar-rail-dot.is-attention {"),
+    );
+    const rule = attention.slice(0, attention.indexOf("}"));
+    expect(rule).toContain("var(--status-failed)");
+    // Nothing animated, in the markup or the stylesheet.
+    expect(rule).not.toContain("animation");
+    expect(SIDEBAR_CSS).not.toContain("sidebar-attention-pulse");
   });
 
   it("keeps the COUNT through a visit and drops only the dot", () => {
@@ -91,7 +141,8 @@ describe("the sidebar's tasks pulse", () => {
     // about unread work, and glancing at the list does not make it untrue.
     const finished = task({ key: "b", status: "done", unread: 1, last_active: 500 });
     const before = [task({ key: "a", status: "in_progress" }), finished];
-    expect(tasksPulse(before, {})).toEqual({ running: 1, doneUnread: 1, unseen: 1 });
+    expect(tasksPulse(before, {}))
+      .toEqual({ running: 1, attention: 0, doneUnread: 1, unseen: 1 });
 
     const seen = seenAfterVisit(before);
     const after = tasksPulse(before, seen);
@@ -174,11 +225,15 @@ describe("the sidebar's tasks pulse", () => {
     // mark-seen effect runs on every published pulse — value equality is what
     // keeps that from looping. `unseen` is in the comparison: it is the field the
     // dismissal moves, and a publish that skipped it would leave the dot up.
-    const p = { running: 1, doneUnread: 1, unseen: 1 };
-    expect(samePulse(p, { running: 1, doneUnread: 1, unseen: 1 })).toBe(true);
-    expect(samePulse(p, { running: 1, doneUnread: 1, unseen: 0 })).toBe(false);
-    expect(samePulse(p, { running: 1, doneUnread: 2, unseen: 1 })).toBe(false);
-    expect(samePulse(p, { running: 0, doneUnread: 1, unseen: 1 })).toBe(false);
+    const p = { running: 1, attention: 0, doneUnread: 1, unseen: 1 };
+    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 1, unseen: 1 })).toBe(true);
+    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 1, unseen: 0 })).toBe(false);
+    expect(samePulse(p, { running: 1, attention: 0, doneUnread: 2, unseen: 1 })).toBe(false);
+    expect(samePulse(p, { running: 0, attention: 0, doneUnread: 1, unseen: 1 })).toBe(false);
+    // ...and `attention` is in the comparison too: it is the field that decides
+    // which dot the rail draws, so a publish that skipped it would leave a
+    // waiting task wearing the plain running mark until something else moved.
+    expect(samePulse(p, { running: 1, attention: 1, doneUnread: 1, unseen: 1 })).toBe(false);
     const a: TasksSeen = { x: 1, y: 2 };
     expect(sameSeen(a, { y: 2, x: 1 })).toBe(true);
     expect(sameSeen(a, { x: 1 })).toBe(false);
@@ -189,9 +244,10 @@ describe("the sidebar's tasks pulse", () => {
     // The tooltip names the STATE, not the dismissal, so a dot and a chip on the
     // same entry cannot quote different numbers.
     expect(runningLabel(1)).toBe("1 running");
-    expect(pulseTitle({ running: 2, doneUnread: 1, unseen: 0 }))
+    expect(pulseTitle({ running: 2, attention: 0, doneUnread: 1, unseen: 0 }))
       .toBe("2 running \u00b7 1 finished, not read");
-    expect(pulseTitle({ running: 0, doneUnread: 3, unseen: 1 })).toBe("3 finished, not read");
+    expect(pulseTitle({ running: 0, attention: 0, doneUnread: 3, unseen: 1 }))
+      .toBe("3 finished, not read");
     expect(pulseTitle(EMPTY_TASKS_PULSE)).toBe("");
   });
 });
@@ -379,6 +435,29 @@ describe("one nav dot, worn by two rows", () => {
     expect(SIDEBAR_CSS).toContain("background: var(--status-progress)");
     expect(SIDEBAR_CSS).toContain("background: var(--status-done)");
     expect(SIDEBAR_CSS).toMatch(/\.sidebar-running \{[^}]*color: var\(--status-progress\)/);
+    // ...and the WAITING count is red — the dot's own token, so the words and
+    // the mark beside them say one thing (Akshil, 2026-09-03).
+    expect(SIDEBAR_CSS).toMatch(/\.sidebar-running\.is-attention \{[^}]*color: var\(--status-failed\)/);
+    expect(SIDEBAR).toContain('className="sidebar-running is-attention"');
+  });
+
+  it("keeps the waiting label red under prefers-reduced-motion too", () => {
+    // bugbot, PR #984. The reduced-motion block drops the shimmer and paints the
+    // label with `-webkit-text-fill-color`, which OUTRANKS `color` on the text it
+    // fills — so the yellow fill stated for `.sidebar-running` overruled the red
+    // `color` on `.sidebar-running.is-attention`, and the one label that says
+    // somebody is being waited on came out looking like "3 running". Both
+    // variants have to name their hue in the property that actually paints.
+    const media = SIDEBAR_CSS.slice(
+      SIDEBAR_CSS.indexOf("@media (prefers-reduced-motion: reduce) {"),
+      SIDEBAR_CSS.indexOf("/* -- The nav dot"),
+    );
+    expect(media).toMatch(
+      /\.sidebar-running \{[^}]*-webkit-text-fill-color: var\(--status-progress\)/,
+    );
+    expect(media).toMatch(
+      /\.sidebar-running\.is-attention \{[^}]*-webkit-text-fill-color: var\(--status-failed\)/,
+    );
   });
 
   it("wears the bookmark folder's count chip rather than a lookalike", () => {
@@ -480,11 +559,21 @@ describe("one nav dot, worn by two rows", () => {
 });
 
 // -- the poke: finished in one surface, finished in the other -------------------
-// The queue card and the schedule's event poll both learn a run ended seconds
-// after it does; this store's own cadence is 10–30s and the Tasks page's 20s.
-// pokeTasks is the bridge, and these tests pin the two rules that make it safe:
-// it never fetches over a feeder, and every producer of "a run just ended"
+// The schedule's event poll learns a run ended seconds after it does; this
+// store's own cadence is 10–30s and the Tasks page's 20s. pokeTasks is the
+// bridge, and these tests pin the two rules that make it safe: it never
+// fetches over a feeder, and every remaining producer of "a run just ended"
 // actually calls it.
+//
+// D661 removed one such producer: the queue card (ActivityDock.tsx, née
+// QueueDock.tsx) used to diff successive job snapshots itself
+// (scheduleRunsEnded/scheduleRunsStarted) and poke on a start/end edge,
+// giving the Tasks page/sidebar a faster nudge than the schedule-event poll
+// alone while a scheduled run's OWN queue row was on screen. That row is
+// gone (D661: "a task is not something I even want in the activity"), and
+// with it this fast path — a scheduled run's unread status now waits on
+// the schedule-event poll's own cadence like any other producer, a
+// documented latency trade-off rather than an oversight.
 
 const QUEUE_DOCK = readFileSync(join(SHELL, "ActivityDock.tsx"), "utf8");
 const EVENTS = readFileSync(
@@ -519,14 +608,14 @@ describe("pokeTasks", () => {
     expect(SCHEDULED).toMatch(/window\.removeEventListener\(TASKS_POKE_EVENT, reload\)/);
   });
 
-  it("the queue card pokes when a scheduled run's job starts or goes terminal", () => {
-    // Compared snapshot-to-snapshot (scheduleRunsEnded / scheduleRunsStarted)
-    // so mounting onto a registry full of old rows fires nothing — including
-    // the slot's initial [] echo, which must not become the baseline.
-    expect(QUEUE_DOCK).toMatch(/scheduleRunsEnded\(prevJobs\.current, next\)/);
-    expect(QUEUE_DOCK).toMatch(/scheduleRunsStarted\(prevJobs\.current, next\)/);
-    expect(QUEUE_DOCK).toMatch(/if \(news\) pokeTasks\(\);/);
-    expect(QUEUE_DOCK).toMatch(/sawEcho\.current = true;/);
+  it("the queue card no longer pokes on a job edge — that producer is gone (D661)", () => {
+    // ActivityDock.tsx (the queue card's successor) carries no
+    // scheduleRunsEnded/scheduleRunsStarted diffing and no pokeTasks call at
+    // all: the row that fast path existed to keep in sync with is deleted,
+    // so there is nothing left here to poke over.
+    expect(QUEUE_DOCK).not.toContain("scheduleRunsEnded");
+    expect(QUEUE_DOCK).not.toContain("scheduleRunsStarted");
+    expect(QUEUE_DOCK).not.toContain("pokeTasks");
   });
 
   it("a done/failed schedule event pokes too — handed down from the shell", () => {
@@ -535,6 +624,9 @@ describe("pokeTasks", () => {
     expect(EVENTS).toMatch(
       /fresh\.some\(\(e\) => e\.kind === "done" \|\| e\.kind === "failed"\)/,
     );
+    // NOTHING IS NARRATED FOR A PARKED RUN (Akshil, 2026-09-03): the Tasks page
+    // says it on its own, with the ring and the row's place at the top.
+    expect(EVENTS).not.toContain('"attention"');
     expect(EVENTS).not.toContain("@shell/");
     expect(APP).toContain("useScheduleEvents(pokeTasks)");
   });

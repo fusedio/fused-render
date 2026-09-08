@@ -17,6 +17,7 @@ from fused_render.deeplink import (
     DeeplinkError,
     clone_or_pull,
     github_url_from,
+    is_fda_relaunch_url,
     is_launch_url,
     is_relaunch_url,
     parse_github_url,
@@ -150,6 +151,39 @@ def test_is_relaunch_url_accepts(src):
 )
 def test_is_relaunch_url_rejects(src):
     assert is_relaunch_url(src) is False
+
+
+# The one relaunch payload (D110: a query param on the same action): reason=fda
+# respawns the SAME version so a fresh Full Disk Access grant takes effect.
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "fused-render://relaunch?reason=fda",
+        "fused-render://relaunch/?reason=fda",
+        "fused-render:relaunch?reason=fda",
+        "FUSED-RENDER://RELAUNCH?REASON=FDA",
+    ],
+)
+def test_is_fda_relaunch_url_accepts(src):
+    assert is_fda_relaunch_url(src) is True
+    assert is_relaunch_url(src) is False  # the two actions never both match
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "",
+        None,
+        "fused-render://relaunch",  # bare relaunch is the update swap, not this
+        "fused-render://relaunch?reason=update",
+        "fused-render://relaunch?reason=fda&x=1",
+        "fused-render://launch?reason=fda",
+    ],
+)
+def test_is_fda_relaunch_url_rejects(src):
+    assert is_fda_relaunch_url(src) is False
 
 
 def test_github_url_from_passthrough():

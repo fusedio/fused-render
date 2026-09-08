@@ -32,11 +32,29 @@ PUBLIC_KEY = base64.b64decode("u4eiDvccdWmsVCN0nifCEXqmU+xVGIDPe8LP5KRlDns=")
 SIGNING_CONTEXT = "fused-render-update"
 FETCH_TIMEOUT_S = 15.0
 DOWNLOAD_TIMEOUT_S = 300.0
-STARTUP_DELAY_S = 60.0
+# Short — the sidebar's first badge (UpdateBadge, 60s idle poll on top of this)
+# used to be up to ~2 minutes late after launch: 60s startup delay plus up to
+# 60s until the first poll landed. 10s keeps the manifest check off the
+# earliest, busiest moment of startup while getting the badge on screen within
+# about a minute of launch instead of two.
+STARTUP_DELAY_S = 10.0
 CHECK_INTERVAL_S = 6 * 60 * 60
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_BYTES = 600 * 1024 * 1024
 DOWNLOAD_CHUNK = 1024 * 1024
+
+
+class UpdateCancelled(Exception):
+    """The user asked for the in-flight update to stop.
+
+    Its own exception type, not a bare RuntimeError, because a cancel is the
+    one install failure that is not a failure: the caller has to tell it apart
+    from every other error to put the manager back into "available" (an
+    update still waiting to be installed) rather than into "error" (something
+    broke). Raised only by `download_verified`'s `should_abort` check, so the
+    partial file is discarded by the same `finally` that handles a genuine
+    failure.
+    """
 
 
 class HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
@@ -102,14 +120,23 @@ def is_newer(candidate: str, current: str) -> bool:
 def download_verified(manifest: dict, *, dir: str | None = None,
                       prefix: str = "fused-render-update-", suffix: str = "",
                       max_bytes: int = MAX_ARTIFACT_BYTES,
-                      progress=None, urlopen_fn=None) -> str:
+                      progress=None, should_abort=None, urlopen_fn=None) -> str:
     """Stream the artifact to a temp file (in `dir`, or the system temp dir)
     while hashing it, and confirm its SHA-256 matches the signed value. The
     manifest signature (over version + sha256) is already verified in
     fetch_manifest; the URL is not signed, so require HTTPS. `progress`
     (optional) is called with (bytes downloaded so far, total bytes or None)
     after each chunk — the total comes from the response's Content-Length
-    header, which the manifest itself does not carry."""
+    header, which the manifest itself does not carry.
+
+    `should_abort` (optional) is consulted once per chunk, BEFORE the chunk is
+    written: a 600MB download is minutes of work, and a cancel that only took
+    effect between whole downloads would not be a cancel at all. Returning
+    true raises `UpdateCancelled` and the partial file is discarded on the way
+    out — the same cleanup a checksum mismatch gets, since a half-written DMG
+    is worth exactly as much in both cases. Checked per chunk rather than per
+    byte because the read itself is the thing that blocks; one 1MB chunk is
+    the granularity the whole loop already runs at."""
     if urlopen_fn is None:
         urlopen_fn = urlopen
     url = manifest["url"]
@@ -128,6 +155,8 @@ def download_verified(manifest: dict, *, dir: str | None = None,
             except ValueError:
                 size = None
             while chunk := resp.read(DOWNLOAD_CHUNK):
+                if should_abort is not None and should_abort():
+                    raise UpdateCancelled("update download cancelled")
                 done += len(chunk)
                 if done > max_bytes:
                     raise ValueError("update download exceeds the size limit")

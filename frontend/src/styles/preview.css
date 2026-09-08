@@ -186,6 +186,23 @@
   min-width: 0;
 }
 
+/* Preview.tsx's content-pane counterpart to Listing.tsx's own
+   ".listing-snapshot-banner" wrapper. `.preview-body` above is a flex ROW
+   (it also hosts the mode iframe as a sibling), so the banner and
+   `.preview-frames` need their own flex-COLUMN wrapper here to stack
+   vertically — without it the banner rendered as a squeezed vertical strip
+   to the LEFT of the frames instead of a bar above them, which is the trap
+   `.metadata-stack`'s own comment above already documents for the fallback
+   card. `.listing-main` (explorer.css) is already a column, which is why
+   Listing.tsx's identical banner never needed this wrapper of its own. */
+.preview-content-stack {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .preview-body iframe {
   flex: 1 1 auto;
   width: 100%;
@@ -460,6 +477,38 @@ html.side-reopening iframe {
 }
 .listing-load-more {
   margin-left: 10px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Git-snapshot banner: the one piece of chrome the `_snapshot` param adds —
+   everywhere else the state is invisible by design (see the plan's decisions
+   log). Sits ABOVE the table, same slim treatment as the truncated-listing
+   banner, so a folder browsed under a commit reads as a distinct mode rather
+   than a normal listing with no explanation for why nothing here is editable. */
+.listing-snapshot-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  /* Every colour here must come from a palette token (tests/test_theme.py) so
+     light mode can repaint it — no raw rgba() literal. */
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+.listing-snapshot-banner .listing-snapshot-sha {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--fg);
+}
+.listing-snapshot-back {
+  margin-left: auto;
   padding: 3px 10px;
   background: transparent;
   color: var(--accent);
@@ -911,3 +960,31 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   color: var(--fg);
 }
 
+
+/* Refused read (explorer/AccessDenied.tsx): one plain sentence over the Full
+   Disk Access strip. Lives in the muted .status-message cell, never the red
+   .error plate — a permission gap is a setup step, not an outage. The strip's
+   own bottom margin is for sitting above a grid; here it is the last thing. */
+.access-denied {
+  /* Full width of the listing like the strip is on Home (a band, not a
+     floating plate). Side gutters: the cell's own 24px of padding plus 40px
+     here — wider than Home's 28px on purpose, the listing is a wider column. */
+  margin: 8px 40px 16px;
+  /* The listing's td is `white-space: nowrap` (one entry per line); this cell
+     holds prose and a card, both of which must wrap inside the 640px. */
+  white-space: normal;
+}
+.access-denied-text {
+  margin: 0 0 12px;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.access-denied-text code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.access-denied .claude-health {
+  margin-bottom: 0;
+}

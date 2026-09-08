@@ -60,27 +60,32 @@
 // applied here to what is always true versus what is currently happening,
 // rather than to how long each lives.
 //
-// EVERY CHIP IS A LABEL PLUS ONE CIRCLE — outlined when the section holds
-// nothing, filled when it holds anything (D588/D590, user: "no count. just a
-// circle outlined or filled"). Nothing else is on a chip: the chevron went in
-// D573, the aggregate percentage (`dl-pct`) in D581, Models' size readout in
-// D589, the counts in D588/D590, and the "something unacknowledged" dot
-// (`.dl-new-dot`) in D588 — the one circle answers "is there anything here",
-// which is all a bar this thin has room to say. On Models that circle fills
-// whenever ANY model is resident — the exact signal that earned this section
-// its own chip back — and on Activity it answers a narrower question, "is
-// there work right now": see DownloadManagerView's own header for why a
-// running engine alone leaves ITS dot unfilled. `.is-idle` muting is the
-// only other state a chip carries.
+// EVERY CHIP IS ONE COMPONENT, `platform/ui/StatusChip.tsx` (statusbar
+// redesign, 2026-09-02): a label, a numeral when there is more than one thing
+// to count, and a 2px progress line along the chip's bottom edge while work
+// runs. The circle (`StatusDot`, D588/D590) is GONE — the label itself now
+// carries the state. Models reads "Models" muted / the one model's own name /
+// "Models 2"; Activity reads "Activity" muted / the one job's verb ("Erasing",
+// "Downloading") over its progress line / "Activity 2" over the mean progress;
+// Notifications reads "Notifications" with a count from one, red when one of
+// them is a failure. The count is one grey pill on every chip — the sidebar's
+// own count style — and the progress line sits along the chip's TOP edge. User brief: "show minimal progress in status bar
+// and then when we click open the full information … a number next to
+// notifications and jobs … if there is only one model loaded we can just show
+// the model name".
 //
-// THE FOLD IS NOT PERSISTED, AND NOT LIFTED HERE (D603). Every section starts
-// collapsed on every load, unconditionally. Each section still OWNS its own
-// in-session collapse state — this component does not lift it, it only hosts
-// what each section renders. One panel is open at a time
-// (`lib/exclusiveSection.ts`, D582). A panel opens on a USER action, or
-// transiently for a job arrival in Activity, or a repo/failure arrival in
-// Notifications (`lib/autoExpand.ts`); Models never auto-opens (D587,
-// unaffected by any of this — see `shell/ModelsDock.tsx`).
+// HOVER PREVIEWS, CLICK PINS, NOTHING AUTO-OPENS (`platform/lib/statusChip.ts`).
+// Hovering a chip opens its panel; leaving closes it; a click pins it until a
+// second click, Escape or an outside click. One panel at a time
+// (`lib/exclusiveSection.ts`, D582). The old arrival-driven auto-open
+// (`lib/autoExpand.ts`, DELETED) is what kept landing a panel on top of the
+// Claude composer's send button uninvited — the panel still floats above the
+// bar, but now only while the pointer is on it or the user pinned it. The fold
+// is not persisted (D603): every load starts closed.
+//
+// THE PANEL ANCHORS TO THE BAR'S RIGHT GUTTER, not to its own chip
+// (`--status-bar-gutter` in notifications.css), so all three panels open at
+// the same edge and the chips end where the header controls above them do.
 //
 // `models`/`activity`/`repoUpdates` are handed in rather than imported, for
 // the exact layering reason NotificationHost.tsx's own header comment states

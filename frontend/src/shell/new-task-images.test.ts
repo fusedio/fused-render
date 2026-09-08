@@ -43,6 +43,8 @@ const FORM = {
   repeat: "none",
   legacyCron: "",
   permission: "auto",
+  model: "",
+  effort: "",
   sessionId: "",
   newTaskEachRun: false,
 };

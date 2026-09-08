@@ -86,7 +86,7 @@ describe("matchCell", () => {
   });
 
   it("prints the COMPOSITE score, not the memory-only fit score", () => {
-    // D663/D664: the merged cell's number is `matchScore`, and the verdict
+    // D754/D755: the merged cell's number is `matchScore`, and the verdict
     // object's own `score` (memory-only) never leaks into either field —
     // that would silently un-merge the two facts this cell exists to keep
     // together but distinct.
@@ -273,7 +273,7 @@ describe("matchTitle", () => {
     expect(matchTitle(null, null)).toContain("unavailable");
   });
 
-  it("folds the run mode in — D665's replacement for the deleted Mode column", () => {
+  it("folds the run mode in — D756's replacement for the deleted Mode column", () => {
     expect(
       matchTitle({ verdict: "tight", basis: "declared", footprintBytes: 1, runMode: "cpu-offload" }, 40),
     ).toContain("CPU offload");
@@ -479,7 +479,7 @@ describe("familyDisplay", () => {
 
 describe("capabilityHint", () => {
   it("is undefined when the Hub's task label and the capability slug agree", () => {
-    // The common case this column collapse (D665) exists for: both strings
+    // The common case this column collapse (D756) exists for: both strings
     // read "text-generation" (or "text generation"/"text-generation" before
     // the merge) — the same fact stated twice with nothing to disclose.
     expect(capabilityHint({ task: "text-generation", capability: "text-generation" })).toBeUndefined();
@@ -601,7 +601,7 @@ describe("hoistSummary", () => {
 
 describe("familyHoist", () => {
   // Code review finding 4 (presence/summary must share one value set), and
-  // D682 (unanimity-only hoisting): four states pinned directly, the
+  // D773 (unanimity-only hoisting): four states pinned directly, the
   // variant-dominated shape (few primaries, many hidden variants) explicitly
   // among them since it is the shape that regressed twice.
   function family(id: string, quant: string | null, variantQuants: (string | null)[] = []): HubFamily {
@@ -677,7 +677,7 @@ describe("familyHoist", () => {
     // No quant clause at all when nothing is known — every fixture here
     // shares `model()`'s default `capability: "text-generation"`, so the
     // capability hoist is unanimous and the summary states only that. The
-    // count is `allRows.length` (D682's denominator fix), not
+    // count is `allRows.length` (D773's denominator fix), not
     // `families.length` — here 2 families with 1 hidden null variant makes
     // 3 total rows, all still `text-generation`.
     const totalRows = families.flatMap((f) => [f.primary, ...f.variants]).length;

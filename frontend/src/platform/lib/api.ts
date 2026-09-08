@@ -3,6 +3,16 @@ import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshnes
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
 
+export interface FdaState {
+  // What THIS server process can read. Final for the process's lifetime.
+  granted: boolean;
+  // The two-stage verdict (shell/fda.py): this process cannot read, but a
+  // fresh child of the app can — the grant landed, only a relaunch remains.
+  pending_relaunch: boolean;
+  // An fs route was refused and nobody has dismissed it yet.
+  denied: boolean;
+}
+
 export interface Config {
   start_dir: string;
   home: string;
@@ -30,11 +40,19 @@ export interface Config {
   // the Windows/Linux packages (those update through their supervisor).
   update?: UpdateStatus;
   // Full Disk Access state (fused_render/shell/fda.py) — present only on the
-  // packaged mac app when the probe is conclusive. FdaStrip renders off this;
-  // absent means render nothing and stop watching. `denied` flips when this
-  // session hits a PermissionError on an fs route — the moment the warning
-  // is worth showing; dismissing clears it server-side until the next one.
-  fda?: { granted: boolean; denied: boolean };
+  // packaged mac app when the probe is conclusive. Read through the one store
+  // in platform/lib/fda.ts (FdaStrip + the onboarding FdaStep); absent means
+  // render nothing and stop watching. `pending_relaunch`: a fresh child of
+  // the app can read but this process cannot — the grant landed, relaunch to
+  // apply. `denied` flips when this session hits a PermissionError on an fs
+  // route — the moment the warning is worth showing; dismissing clears it
+  // server-side until the next one.
+  fda?: FdaState;
+  // First-run wizard flag (fused_render/shell/onboarding.py). The shell
+  // auto-shows the wizard while BOTH timestamps are null; `complete` and
+  // `dismiss` are distinct writes (reached the end vs "skip for now").
+  // Server-side, not localStorage: a port drift is a new origin.
+  onboarding?: OnboardingState;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -69,8 +87,8 @@ export interface WalkEntry {
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  // No `ignored` flag here (unlike FsEntry): the walk PRUNES gitignored
-  // entries server-side, so nothing ignored ever reaches search results.
+  // No `ignored` flag here (unlike FsEntry): the walk does not consult
+  // .gitignore at all, so there is no verdict to carry.
 }
 
 export interface WalkResult {
@@ -176,6 +194,58 @@ export function dismissFdaNudge(): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/fda/dismiss", {});
 }
 
+// -- First-run wizard flag (fused_render/shell/onboarding.py) ----------------
+export interface OnboardingState {
+  completed_at: number | null;
+  dismissed_at: number | null;
+  // When the wizard was first on screen (stamped by the first step write).
+  // Third leg of the auto-show rule (shell/onboarding/state): a wizard that
+  // has been opened is never auto-shown again. Optional: older server.
+  opened_at?: number | null;
+  // Per-step progress (the meter): what each step last reported about itself,
+  // overruled server-side where the truth is cheap to see. Optional: an older
+  // server does not send it. Rules live in shell/onboarding/progress.ts.
+  stages?: Record<string, OnboardingStage>;
+  version: number;
+}
+
+/** `n/a` = this machine has no such step; it leaves the denominator. */
+export type OnboardingStageStatus = "pending" | "partial" | "complete" | "n/a";
+
+export interface OnboardingStage {
+  status: OnboardingStageStatus;
+  /** Free-form notes the step left for reference (version found, account,
+      model ids started). Merged on write; never read by a rule. */
+  meta: Record<string, unknown>;
+  updated_at: number | null;
+}
+
+export function getOnboarding(): Promise<OnboardingState> {
+  return getJson<OnboardingState>("/api/onboarding");
+}
+
+export function completeOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/complete", {});
+}
+
+export function dismissOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/dismiss", {});
+}
+
+/** The wizard is on screen — stamps `opened_at` (the auto-show's third leg)
+    without saying anything else. */
+export function openedOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/opened", {});
+}
+
+export function setOnboardingStage(
+  stage: string,
+  status: OnboardingStageStatus,
+  meta?: Record<string, unknown>,
+): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/stage", { stage, status, meta: meta ?? {} });
+}
+
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
 //
 // The proactive counterpart to the TroubleCard's reactive classification: these
@@ -205,6 +275,16 @@ export interface ClaudeHealth {
       asked (no runnable CLI, or one predating the subcommand), NOT that it said
       no: the UI may only offer a sign-in fix on an explicit `false`. */
   signed_in: boolean | null;
+  /** Who, when signed in: the CLI's own `authMethod` ("claude.ai", "console",
+      "apiKey", …) plus the claude.ai account's email / org / plan when it has
+      one. An env token with no CLI answer reports as an API key. null when
+      there is nothing to say. Read by the setup wizard's "Signed in" row. */
+  account: {
+    method: string | null;
+    email: string | null;
+    org: string | null;
+    plan: string | null;
+  } | null;
   config_dir: string;
   /** `sys.platform`. Here so the UI never guesses which install line to show —
       it used to, and it guessed wrong on Windows. */
@@ -532,66 +612,80 @@ export async function walkDirStream(
 //
 // `positions` are NOT on the wire: the caller re-runs `fuzzyMatch(q, rel)`
 // over the rows it got back, so platform/lib/fuzzy.ts stays the single source
-// of truth for what highlights (and the server's port of it, index/rank.py,
-// stays free to change its internals). A miss is a normal 200 with
-// covered:false, same as the corpus.
+// of truth for what highlights. A miss is a normal 200 with covered:false,
+// same as the corpus.
+//
+// `score`/`tier`/`depth`/`longest_run` are also NOT on the wire: they drove
+// `_rank_sql`'s ORDER BY server-side, but nothing here re-sorts an already-
+// ranked row (`listing/ranked-hits.ts` returns hits in the order the server
+// sent them), so the server stops at computing them and never returns them.
 export interface IndexRankHit {
   rel: string;
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  // The ranking that produced this order. Carried for debugging and for
-  // callers that want to group by tier; the ORDER is the contract.
-  score: number;
-  longest_run: number;
-  tier: number;
-  depth: number;
 }
 
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
 // five ways the index cannot give one, and they are NOT interchangeable —
 // `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
-// other three never (see listing/index-source, which is the only place that
-// switches on this). `disabled` is the one of those three that can become
+// other three never. Two places switch on this: listing/index-source picks the
+// in-folder box's SOURCE from it, and explorer/lib/home-search's `indexGap`
+// turns it into what the home box tells the user. `disabled` is the one of
+// those three that can become
 // fixable again — turning the indexing preference back on — but the client
 // does not wait around for that: it walks, exactly as it does for `mount` /
 // `package` / `ignored`, because there is no server signal to poll for "the
 // user flipped a switch in Preferences".
+// `fda` is `disabled`'s sibling: the packaged mac app has no Full Disk Access,
+// so no scan may start (shell/index_gate.py — a home walk would prompt per
+// protected folder). Fixable by the user, but only through a grant plus a
+// relaunch, so the client offers THAT and never a scan.
 export type RankReason =
   | ""
   | "mount"
   | "package"
   | "ignored"
   | "disabled"
+  | "fda"
   | "uncovered"
   | "scanning";
 
 export interface IndexRankResult {
   covered: boolean;
-  fresh: boolean;
   // WHY this answer is what it is — "" when the index answered outright, else
   // "mount" | "package" | "ignored" | "disabled" | "uncovered" | "scanning".
   // The in-folder search picks its source from this (listing/index-source);
   // the client deliberately holds no copy of the rules behind it, because the
   // mount policy is MountGuard's and the ignore list is the scan config's.
   reason: RankReason;
-  root: string;
   hits: IndexRankHit[];
-  // More matched than were returned — either more than `limit` survived
-  // ranking, or the server's candidate cap bit.
+  // More matched than were returned: more than `limit` survived ranking.
+  // (Was ALSO true when the server's candidate cap bit before D708 — that
+  // cap, and `RANK_CANDIDATE_CAP`, are gone; index-backed search scores every
+  // matched row in one SQL statement with no candidate cap to hit.)
   truncated: boolean;
   total: number;
-  updated: number | null;
-  age_s: number | null;
+  // No `fresh`/`age_s`/`updated`/`root`: those are `search_under`'s wire
+  // fields (`IndexCorpus`/the walk-search path), load-bearing there for the
+  // in-folder corpus box's "indexing…" caveat. `search_ranked` used to
+  // compute and return the same three by copy-paste from `search_under`
+  // directly above it, but nothing here ever read them — no caller
+  // destructured `fresh`/`age_s`/`updated`/`root` off an `indexRank()`
+  // response. See DECISIONS.md.
 }
 
 export function indexRank(
   fsPath: string,
   query: string,
-  opts: { signal?: AbortSignal; limit?: number } = {},
+  opts: { signal?: AbortSignal; limit?: number; ranked?: boolean } = {},
 ): Promise<IndexRankResult> {
   const params = new URLSearchParams({ root: fsPath, q: query });
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  // Omitted entirely when unset — the route defaults to `ranked=true`
+  // (D720), so a caller that never passes it (the warm-up/source-selection
+  // probes) gets exactly the same answer it always did.
+  if (opts.ranked !== undefined) params.set("ranked", String(opts.ranked));
   return getJson<IndexRankResult>("/api/index/rank?" + params.toString(), {
     signal: opts.signal,
   });
@@ -613,7 +707,14 @@ export interface IndexStatus {
   root: string | null;
   phase: string;
   dirs: number;
-  files: number; // this run's progress
+  files: number; // this run's NEWLY-walked count — a reused (unchanged) dir's
+  // files are NOT in here, they're in `reused` below (index/store.py's `Sink`
+  // keeps the two separate: `files` credits a dir this run actually re-stat'd,
+  // `reused` credits one it skipped via cache). A live "N files so far" line
+  // has to add the two together to mean the same thing `files_indexed` means
+  // once the scan finishes — `files` alone undercounts by however much of the
+  // tree was unchanged, which is usually most of it on a rescan.
+  reused: number;
   error: string | null;
 }
 
@@ -1032,7 +1133,11 @@ export interface Prefs {
   // opt-OUT, the opposite polarity from `reader`). Turning it off does not
   // delete the on-disk index or stop search from answering it; only new
   // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
-  indexing: { enabled: boolean };
+  // `ranked` (D720, also default ON) is a separate, sibling preference:
+  // whether index-backed search ORDERS its hits by relevance score at all —
+  // off means `/api/index/rank?ranked=false`'s shallowest-then-alphabetical
+  // order instead (`ranked_search_enabled` server-side).
+  indexing: { enabled: boolean; ranked: boolean };
 }
 
 export interface AiIdlePrefs {
@@ -1254,6 +1359,10 @@ export function putLanEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
+}
+
+export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { ranked_search_enabled: enabled });
 }
 
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
@@ -2135,6 +2244,13 @@ export interface AppInfo {
   // repo's per-app metadata shape), or null when absent/invalid. Undefined on
   // older backends. Apps without one only appear under the "All" filter.
   category?: string | null;
+  // The app's optional `icon.svg` at the folder's root (absolute path) and its
+  // mtime — the mark a card draws to the left of its name, the same file the
+  // sidebar's Projects row and the app's tab favicon draw. Null for an app
+  // without one (and for an exported `.fused`, which has no folder root),
+  // undefined on backends that predate the keys; draw it through appIconUrl.
+  icon?: string | null;
+  icon_mtime?: number | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.
@@ -2188,6 +2304,21 @@ export interface RunningEngine {
   /** The module a `main =` daemon serves — "" for a `daemon =` app or a
    *  template daemon. */
   module: string;
+  /** Seconds since this child's bring-up began. */
+  uptime_s: number;
+  /** The manifest's idle-retire policy in seconds; `0` means resident — a
+   *  written `daemon =` and every template daemon. */
+  idle_timeout_s: number;
+  /** Seconds since the last call finished (stamped at completion, not at
+   *  routing — and at bring-up for a child that has never served one). Only
+   *  meaningful against a non-zero `idle_timeout_s`. */
+  idle_for_s: number;
+  /** Idle-retire is currently skipping this child. NOT "a call is in flight
+   *  right now": `mark_busy` only runs for a bounded child (`idle_timeout_s
+   *  > 0`), so a resident `daemon =` app serving a request always reports
+   *  `busy: false` here — this field structurally cannot answer "is this
+   *  engine in use". */
+  busy: boolean;
 }
 
 /** Every engine daemon running right now — the status bar's Engines section.
@@ -2235,13 +2366,14 @@ export interface AppEntryInfo {
   // The fused page API version the entry declares via
   // `<meta name="fused-api-version">` — 0 when undeclared (every app authored
   // before the tag existed), null when there is no entry. Beside the version
-  // the runtime speaks now; the app page offers "Migrate" when it is behind.
-  // Both optional so an older server (entry only) still types.
+  // the runtime speaks now. No button hangs off these any more: the gap is a
+  // ROW of the App Doctor checklist (`getAppDoctor`), which is what replaced
+  // the standalone Migrate button. Both optional so an older server (entry
+  // only) still types.
   api_version?: number | null;
   current_api_version?: number;
   // A migration task on this entry that has not finished (pending, sending,
-  // or running with no verdict yet) — the button reads "in progress" instead
-  // of offering a second one. Null / absent when none.
+  // or running with no verdict yet). Null / absent when none.
   migration_task?: { id: string; state: string; run_id: string | null } | null;
 }
 
@@ -2255,6 +2387,11 @@ export function getAppEntry(path: string): Promise<AppEntryInfo> {
 // shape /api/apps/new creates, its prompt invoking the fused-render-api-migration
 // skill for the jump from the declared version to the current one. 409 when the
 // app is already current, 404 when the folder has no entry.
+//
+// No UI calls this any longer — the App Doctor button took the place of the
+// Migrate button on both surfaces, and its fix session routes a stale version
+// through the migration skill itself. The endpoint stays as the narrow,
+// single-purpose way to ask for exactly that one task.
 export interface MigrateAppResult extends NewAppResult {
   from_version: number;
   to_version: number;
@@ -2266,6 +2403,60 @@ export function migrateApp(
   effort: SessionEffort = "",
 ): Promise<MigrateAppResult> {
   return postJson<MigrateAppResult>("/api/apps/migrate", { path, model, effort });
+}
+
+// ---- App Doctor (fused_render/app_doctor.py) --------------------------------
+//
+// The share-readiness checklist for one app folder: deterministic checks only —
+// a row is `pass`, `fail`, or `skip` (the check could not run: no entry to read,
+// no git repo, an optional file that isn't there), never a judgment. The
+// judgment is the fix TASK's, which is a Claude session running the
+// fused-render-app-doctor skill (`runAppDoctor` below).
+
+export type AppCheckState = "pass" | "fail" | "skip";
+
+export interface AppCheckFinding {
+  rule: string;
+  path: string;
+  /** 0 for a finding about the folder rather than a line. */
+  line: number;
+  /** Already masked server-side when it came off a secret — safe to render. */
+  excerpt: string;
+}
+
+export interface AppCheck {
+  id: string;
+  label: string;
+  state: AppCheckState;
+  detail: string;
+  findings: AppCheckFinding[];
+}
+
+export interface AppDoctorReport {
+  path: string;
+  entry: string | null;
+  /** Nothing failed. A skipped check is not a pass, but it is not a problem. */
+  ok: boolean;
+  checks: AppCheck[];
+  /** A fix task on the entry that has not finished yet, or null. */
+  task?: { id: string; state: string; run_id: string | null } | null;
+}
+
+export function getAppDoctor(path: string): Promise<AppDoctorReport> {
+  return getJson<AppDoctorReport>(
+    `/api/apps/doctor?path=${encodeURIComponent(path)}`,
+  );
+}
+
+// Create the App Doctor FIX task on the app's entry page — one session for the
+// whole report, its prompt invoking the fused-render-app-doctor skill. 409 when
+// one is already running, 404 when the folder has no entry page.
+export function runAppDoctor(
+  path: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/doctor", { path, model, effort });
 }
 
 // ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------
@@ -2286,10 +2477,31 @@ export interface CurrentAppEntry {
   icon?: string | null;
   icon_mtime?: number | null;
   added_at: number | null;
+  /** Epoch (server clock) of the last `openCurrentApp`; 0 for a row a task
+   *  put on the desk that has never been opened. */
+  opened_at?: number | null;
+  /** A task under the app finished since `opened_at` — the sidebar's green
+   *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
+   *  and by nothing done to the tasks. */
+  unread?: boolean;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
   return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
+}
+
+/** The user opened the app: stamp its row `opened_at` (server clock) and clear
+ *  its `unread`. Touches no task. Answers with the whole table as it stands
+ *  after the stamp, so the caller can adopt it without a second read. */
+export interface OpenCurrentAppResult {
+  ok: boolean;
+  opened: boolean;
+  opened_at: number;
+  apps: CurrentAppEntry[];
+}
+
+export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
+  return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
@@ -2337,6 +2549,18 @@ export async function removeAppIcon(
   });
   if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
   return r.json();
+}
+
+/** Put an app folder on the desk by hand — the explorer's "Open in project"
+ *  button, ahead of the hop to `/apps/<folder>`. `added` is false when the
+ *  row was already there; the sidebar then focuses it rather than inserting. */
+export function addCurrentApp(
+  path: string,
+): Promise<{ ok: boolean; added: boolean; path: string }> {
+  return postJson<{ ok: boolean; added: boolean; path: string }>(
+    "/api/current-apps/add",
+    { path },
+  );
 }
 
 /** Take an app off the desk. SIDE EFFECT, by design: every task whose project
@@ -2570,25 +2794,57 @@ export interface Task {
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.
   //
-  // `failed` is a status of its own and not a kind of `done`: a run that
+  // `blocked` is a status of its own and not a kind of `done`: a run that
   // started and broke is news, and filing it under done meant a view had to
   // remember to read the boolean below to say so — which is how a failed task
-  // could simply not be shown.
+  // could simply not be shown. It was called `failed` until 2026-09-03; the
+  // wider word is what lets ONE lane hold both ways a task stops moving (see
+  // schedule-lib.BOARD_COLUMNS), and `blocked_reason` says which.
   //
-  // A SKIPPED occurrence is `archived`, not `failed`. It was filed away and
+  // `needs_attention` sits ABOVE `in_progress`: the run is in flight and is
+  // waiting on a permission or question card nobody has answered, which is the
+  // one kind of in-flight that never ends on its own.
+  //
+  // A SKIPPED occurrence is `archived`, not `blocked`. It was filed away and
   // never attempted (the coalescer dropped it, or the user cancelled it), which
   // is a different thing from a run that tried and broke; only something that
   // actually ran can fail.
-  status: "upcoming" | "in_progress" | "done" | "failed" | "archived";
+  status: "upcoming" | "in_progress" | "needs_attention" | "blocked" | "done"
+    | "archived";
   // Did the newest message's run break? `status` is the authority on which
   // column a task belongs in; this is the raw fact underneath it, and the two
   // disagree in exactly one direction — a task triaged to `done`, or one whose
   // session is live again, reads a different status while this stays true.
   // Anything asking "which column" should read `status`.
   failed: boolean;
+  // WHY it is not moving, for the two statuses that need a reason. "permission"
+  // and "question" belong to `needs_attention` (a card is waiting), "failed" to
+  // `blocked`, and "" to every other task — which is most of them. It is what
+  // decides the row's button: Retry on a run that broke, Open on one somebody is
+  // being waited on. Absent on an older server; read as "".
+  blocked_reason?: "permission" | "question" | "failed" | "";
+  // The one line under a needs-attention row's title: which tool, and what it
+  // wants to do ("Bash · rm -rf build"). Null — or absent, on an older server —
+  // whenever nothing is waiting.
+  attention?: { tool: string; summary: string } | null;
   live: boolean;
   unread: number;
+  // WHEN THIS TASK BEGAN, epoch seconds — the EARLIEST clock the server has for
+  // it: the scheduled entry's `created`, else the transcript's first record
+  // (routers/tasks.py `_place`, which says why it is the earliest and not
+  // whichever one exists). The one time on this row that never moves, which is
+  // why the Cards wall orders by it (tasks-lib.cardsForTasks) instead of by
+  // `last_active`, a number that climbs every time a run says anything. 0 when
+  // the task has neither a transcript nor an entry yet; absent on an older
+  // server, which reads the same way.
+  started?: number;
   last_active: number;
+  // WHEN SOMETHING LAST ACTUALLY HAPPENED — a run finishing, a transcript
+  // growing — and 0 when nothing has. Unlike `last_active` it never carries a
+  // scheduled due time or a creation stamp (tasks.py `_row`). The desk's
+  // unread flag is judged against it server-side, and the sidebar refetches the
+  // projects table when it moves. Absent on an older server.
+  happened_at?: number;
   message_count: number;
   // WHEN THIS NEXT RUNS, and WHICH schedule entry that run is: `min(at)` over
   // every PENDING entry the task has, epoch seconds, decided by the server
@@ -2618,13 +2874,31 @@ export interface Task {
   messages: TaskMessage[];
 }
 
-// The global sidebar needs task state, not the Tasks page's titles, paths,
-// descriptions, and message previews. Keep this structural subset compatible
-// with Task so the Tasks page can still publish its full rows into the shared
-// pulse store while every other route polls the compact endpoint.
+// The global sidebar needs task state, not the Tasks page's paths, descriptions
+// and message previews — which is where a task listing's weight actually is.
+// Keep this structural subset compatible with Task so the Tasks page can still
+// publish its full rows into the shared pulse store while every other route
+// polls the compact endpoint.
 // `project` is here for the sidebar's Current apps section (D487), which groups
-// live tasks by the workspace app they belong to off this same poll.
-export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active" | "project">;
+// live tasks by the workspace app they belong to off this same poll; `task_id`,
+// `title`, `target` and `session_id` for the Notifications section's
+// needs-attention rows (2026-09-03), which have to NAME the task and then open
+// its conversation (tasks-lib `attentionRows`/`taskHref`) — see
+// routers/tasks.py `_PULSE_FIELDS` for why four short strings beat the second
+// /api/tasks poll the alternative would have cost.
+export type TaskPulseTask = Pick<
+  Task,
+  | "key"
+  | "status"
+  | "unread"
+  | "last_active"
+  | "happened_at"
+  | "project"
+  | "task_id"
+  | "title"
+  | "target"
+  | "session_id"
+>;
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
   return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
@@ -2763,6 +3037,38 @@ export function deleteTask(
     cancelled: number;
     erased_transcript: boolean;
   }>("/api/tasks/delete", { key });
+}
+
+// Taking the SESSION away for good (Akshil, 2026-09-07). Delete's older
+// sibling and the one verb on this page that is not undoable: `/api/tasks/delete`
+// writes a tombstone and leaves the conversation on disk (D306), this one
+// removes the transcript itself — `~/.claude/projects/<slug>/<session_id>.jsonl`
+// and the sidecar directory beside it — along with the triage/read/task-id
+// bookkeeping that points at it, then tombstones the row like delete does.
+//
+// `erased_transcript` is therefore TRUE here where delete always answers false,
+// and `removed` counts the files that actually went. The task's NUMBER is still
+// never reallocated: the max-seen rule survives the session it was minted for.
+//
+// Refused with a 409 while the task is running, in delete's own words ("that
+// task is running — stop the run first, then delete"): erasing a transcript out
+// from under a live `claude --resume` is the one thing this verb must never do.
+export function eraseTask(
+  key: string,
+): Promise<{
+  ok: boolean;
+  key: string;
+  cancelled: number;
+  erased_transcript: boolean;
+  removed: number;
+}> {
+  return postJson<{
+    ok: boolean;
+    key: string;
+    cancelled: number;
+    erased_transcript: boolean;
+    removed: number;
+  }>("/api/tasks/erase", { key });
 }
 
 // Every scheduled message in a time window, which is the one question the
@@ -3127,11 +3433,11 @@ export interface HubModel {
    *  GGUF file's own published quant token — never a guess from the repo's
    *  name. Null when nothing measured it. */
   quant: string | null;
-  /** 0-100, D663 — the composite the DEFAULT sort ranks by and the merged
-   *  Fit+Score cell (D664) both bars and prints. Blends memory fit,
+  /** 0-100, D754 — the composite the DEFAULT sort ranks by and the merged
+   *  Fit+Score cell (D755) both bars and prints. Blends memory fit,
    *  params-as-capability, speed, recency and popularity, plus a small
    *  on-disk bonus — see `hub_models.py::_composite_score`'s own docstring
-   *  and DECISIONS.md's D663 for the weights and why. Always present:
+   *  and DECISIONS.md's D754 for the weights and why. Always present:
    *  every axis has an honest default for missing evidence, so this is
    *  never null the way `fit`/`speedEstimate` can be. */
   matchScore: number;
@@ -3166,7 +3472,7 @@ export interface HubSearchResult {
  *  "size" uses) and reorders the answer itself over `fit.verdict`'s own score.
  *  "trending" IS a Hub field (`trendingScore`), sent straight through.
  *
- *  "best" (D663) is the DEFAULT — see `HubModel.matchScore`'s own doc — and
+ *  "best" (D754) is the DEFAULT — see `HubModel.matchScore`'s own doc — and
  *  is the identical shape as "fit": not a Hub field, same downloads
  *  candidate set, reordered by the composite score after the join. */
 export type HubSort = "downloads" | "likes" | "updated" | "created" | "trending" | "fit" | "best";
@@ -3540,7 +3846,7 @@ export interface AiCatalogModel {
    *  The Discover tab's "Suggested models" grid renders the CURATED half only:
    *  the Local tab is already the answer to "what is on my disk", and the same
    *  repo in both grids would read as two different things. */
-  source: "curated" | "cached";
+  source: "curated" | "cached" | "apple";
   /** Whether it is on this disk. Always true for a cached entry; on a curated
    *  one it is what the checkmark means. */
   downloaded: boolean;
@@ -3677,14 +3983,44 @@ export interface AiUnsupportedModel {
   reason: string;
 }
 
+/** One id the apple tier serves (D700): no size, no download, no version —
+ *  the OS owns the weights. Drawn by a picker that opts in, never mixed into
+ *  `capabilities[].models` (see `AiUnsupportedModel` for why a separate key). */
+export interface AiProviderModel {
+  id: string;
+  capability: string;
+  label: string;
+  nickname: string | null;
+  note: string | null;
+}
+
+/** The `provider: "apple"` tier as the catalog reports it. */
+export interface AiAppleProvider {
+  available: boolean;
+  /** `loading` = the OS is still fetching Apple's model; a wait, not a refusal. */
+  state: "available" | "loading" | "unavailable";
+  reason: string | null;
+  /** False on a machine whose class rules the tier out (Linux, Intel): the
+   *  reason is then not something a user can act on, so a picker stays quiet. */
+  relevant: boolean;
+  os: string | null;
+  /** Speech needs the helper, not Apple Intelligence — it can be usable while
+   *  `available` (the text model) is false. */
+  speechAvailable?: boolean;
+  models: AiProviderModel[];
+}
+
 export function getAiCatalog(): Promise<{
   capabilities: AiCatalogCapability[];
   /** Optional: an older server does not send it. */
   unsupported?: AiUnsupportedModel[];
+  /** Optional: an older server does not send it. */
+  providers?: { apple?: AiAppleProvider };
 }> {
   return getJson<{
     capabilities: AiCatalogCapability[];
     unsupported?: AiUnsupportedModel[];
+    providers?: { apple?: AiAppleProvider };
   }>("/api/ai/catalog");
 }
 
@@ -4004,6 +4340,68 @@ export function getGitRepos(): Promise<GitRepos> {
   return getJson<GitRepos>("/api/git-repos");
 }
 
+// -- Git snapshot (GET /api/git/snapshot) -------------------------------------
+// The app folder enclosing `path`, materialised at `sha` (fused_render/server/
+// routers/git_snapshot.py). Backs the shell's `_snapshot=<sha>` URL state: the
+// explorer resolves this once per selection (and once per fresh load that
+// already carries the param) to learn `app_dir` — the live folder the carry
+// rule (platform/lib/snapshot-param.ts) is scoped to — and `entry`/`dir` for
+// whatever needs to open the extracted tree directly.
+export interface GitSnapshot {
+  ok: boolean;
+  dir: string;
+  entry: string | null;
+  app_dir: string;
+}
+
+export function getGitSnapshot(path: string, sha: string): Promise<GitSnapshot> {
+  return getJson<GitSnapshot>(
+    `/api/git/snapshot?path=${encodeURIComponent(path)}&sha=${encodeURIComponent(sha)}`,
+  );
+}
+
+// The cheap, sha-less sibling: does an app folder enclose `path` at all — the
+// same fail-closed probe templates/git/template.html's own `probeAppFolder()`
+// calls before offering its preview eye (D742 / review finding B4). Backs
+// AppVersionPicker's own gate: the picker renders only once this resolves ok.
+export interface GitAppFolder {
+  ok: boolean;
+  app_dir: string;
+}
+
+export function getGitAppFolder(path: string): Promise<GitAppFolder> {
+  return getJson<GitAppFolder>(
+    `/api/git/app-folder?path=${encodeURIComponent(path)}`,
+  );
+}
+
+// A bounded, recent-first log for the app folder enclosing `path` — the
+// version picker's own list. Deliberately smaller than the git template's own
+// reader: a label per commit, not a diff.
+export interface GitCommit {
+  sha: string;
+  short: string;
+  subject: string;
+  author: string;
+  when: number;
+}
+
+export interface GitCommits {
+  ok: boolean;
+  commits: GitCommit[];
+  has_more: boolean;
+  // ALL commits reachable from HEAD touching the app folder, not just the
+  // ones `limit` let through — the version picker needs this to label its
+  // newest row `v<total>` correctly even when the list is capped.
+  total: number;
+}
+
+export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
+  return getJson<GitCommits>(
+    `/api/git/commits?path=${encodeURIComponent(path)}&limit=${limit}`,
+  );
+}
+
 // -- AI completion (POST /api/ai) ---------------------------------------------
 // The fused.ai relay: one non-streaming completion through the server's warm
 // Claude Code CLI instance (server/ai.py). The shell uses this for small
@@ -4088,6 +4486,17 @@ export interface ScheduledMessage {
   // continue the chat it was scheduled from.
   session_learned?: boolean;
   permission_mode: string;
+  // WHICH Claude the run is launched with (`--model`, an alias or a full id)
+  // and how hard it thinks (`--effort`). "" on both means "pass no flag": the
+  // session detects its own defaults, which is what every task did before these
+  // were askable. Optional in the type because an entry stored before the
+  // fields existed simply has neither.
+  //
+  // Read back for one reason: editing a task is cancel + re-create, so the New
+  // task form has to prefill from here and send them again or the choice dies
+  // on the first edit.
+  model?: string;
+  effort?: string;
   state: ScheduledState;
   created: string;
   fired: string;
@@ -4185,6 +4594,17 @@ export function scheduleMessage(body: {
   // resume the conversation it was scheduled from.
   session_learned?: boolean;
   permission_mode?: string;
+  // The run's model (`--model`: an alias like "fable", or a pinned full id like
+  // "claude-fable-5-1") and its thinking budget (`--effort`: low…max). Omitted
+  // rather than sent empty, like everything else optional here — the server
+  // stores "" for "pass no flag", so an absent key and a blank one already mean
+  // the same thing and the shorter body is the honest one.
+  //
+  // Neither is validated client-side. The CLI is the authority on what it
+  // accepts, and a list duplicated here would go stale the day it learns a new
+  // model; see the note at the create endpoint.
+  model?: string;
+  effort?: string;
   // All three are omitted rather than sent empty: blank means "no opinion", and
   // for `title` that is a meaningful answer — the server names the task itself.
   title?: string;
@@ -4288,6 +4708,11 @@ export function cancelScheduledMessage(id: string): Promise<{ entry: ScheduledMe
 // Append-only with monotonically increasing ids, so a poller both dedups and
 // orders by tracking a high-water mark. Bounded server-side: it is a narration,
 // not history — the schedule store holds every outcome durably.
+//
+// NOTHING IS NARRATED FOR A RUN PARKED ON A CARD, deliberately (Akshil,
+// 2026-09-03): the Tasks page says it on its own — the row wears the Needs
+// attention ring and sorts to the top — and a toast for it would interrupt the
+// reader for a run that has not finished doing anything yet.
 export type ScheduleEventKind = "done" | "failed" | "missed";
 
 export interface ScheduleEvent {
