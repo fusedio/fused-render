@@ -373,56 +373,38 @@ function RepoRowView({
     navigate(row.repo.root, { isDir: true });
   };
 
+  // THE ONE ACTION, THEN THE DISMISS ✕ — the same left-to-right order every
+  // row in this card follows. The ✕ is not merely next, though:
+  // notifications.css pins it to the row's right edge with an auto margin
+  // (D609, user: "the x icon should always be at the very right of the
+  // card"), so any slack in the head falls between the action and the ✕
+  // rather than after it — a statement about what the ✕ is (a dismissal of
+  // this ROW, not a third step in the action group it would otherwise read
+  // as part of) rather than an accident of order.
+  //
+  // Refusal, not error text alone, on failure — the same failure-toast rule
+  // the git companion's own rows follow: a refusal is spoken AND offers a
+  // way out, never just swallowed. This surface has no chat of its own
+  // (unlike the git companion), so the way out is navigating to the repo and
+  // staging the ask for whatever Claude-capable surface mounts there
+  // (pending-claude-ask.ts) rather than calling `window._fusedClaudeAsk`
+  // directly — `extraAction` (`.q-all`, below the status line).
   return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span className="dl-title" title={row.repo.root}>
-          {row.name}
-        </span>
-        {/* The one action, then the dismiss ✕ — the same left-to-right
-            order every row in this card follows. The ✕ is not merely NEXT,
-            though: notifications.css pins it to the row's right edge with an
-            auto margin (D609, user: "the x icon should always be at the very
-            right of the card"), so any slack in the head falls between the
-            action and the ✕ rather than after it. That is a statement about
-            what the ✕ is — a dismissal of this ROW, not a third step in the
-            action group it would otherwise read as part of — so it belongs on
-            the row's boundary. The ORDER here is unchanged; only where the
-            leftover width goes is. */}
-        <button
-          type="button"
-          className="q-all"
-          onClick={() => run(row.primaryAction)}
-          disabled={busyAction !== null}
-        >
-          {busyAction === row.primaryAction
+    <NotificationCard
+      title={row.name}
+      titleTooltip={row.repo.root}
+      navAction={{
+        label:
+          busyAction === row.primaryAction
             ? "Working…"
-            : repoActionLabel(row.primaryAction, row.repo.default_branch)}
-        </button>
-        <button
-          type="button"
-          className="dl-x"
-          onClick={onDismiss}
-          title="Dismiss"
-          aria-label={`Dismiss ${row.name}`}
-        >
-          ✕
-        </button>
-      </div>
-      <div className="dl-status">{failure ? failure.message : repoStatusText(row)}</div>
-      {/* Refusal, not error text alone — the same failure-toast rule the git
-          companion's own rows follow: a refusal is spoken AND offers a way
-          out, never just swallowed. This surface has no chat of its own
-          (unlike the git companion), so the way out is navigating to the
-          repo and staging the ask for whatever Claude-capable surface mounts
-          there (pending-claude-ask.ts) rather than calling
-          `window._fusedClaudeAsk` directly. */}
-      {failure && (
-        <button type="button" className="q-all" onClick={fixWithClaude}>
-          Fix with Claude
-        </button>
-      )}
-    </div>
+            : repoActionLabel(row.primaryAction, row.repo.default_branch),
+        onClick: () => run(row.primaryAction),
+        disabled: busyAction !== null,
+      }}
+      onDismiss={{ onClick: onDismiss, ariaLabel: `Dismiss ${row.name}` }}
+      status={failure ? failure.message : repoStatusText(row)}
+      extraAction={failure ? { label: "Fix with Claude", onClick: fixWithClaude } : undefined}
+    />
   );
 }
 
