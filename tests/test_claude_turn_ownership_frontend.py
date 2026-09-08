@@ -163,7 +163,8 @@ def _run(html, body):
     if not shutil.which("node"):
         pytest.skip("node is needed to run the page's own render glue")
     script = _DOM_STUB + "\n" + body
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True,
+                        encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
