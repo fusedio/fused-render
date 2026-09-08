@@ -26,7 +26,7 @@ import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/
 import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
-import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, encodeFsPathSegments, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, encodeFsPathSegments, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
   dirname,
@@ -1852,6 +1852,21 @@ function TemplatePreview({
           onClick={toggleSide}
         />
       )}
+      {/* Fullscreen: this same page under the chrome-free embed prefix — no
+          sidebar, no crumb, no header — with the current query carried over so
+          `_mode` survives the hop. A FULL page load rather than `navigate`:
+          the view/embed prefix is read once at module init (router.ts), so
+          switching it is a new document. The way back is EmbedStrip's "Open
+          in explorer", which the top-level embed shows. */}
+      <button
+        type="button"
+        className="bar-ctl bar-ctl-icon"
+        title="Open fullscreen, without the sidebar and toolbar"
+        aria-label="Open fullscreen, without the sidebar and toolbar"
+        onClick={() => location.assign(embedUrlForFsPath(fsPath, location.search))}
+      >
+        <span className="mode-menu-icon">{MenuIcons.fullscreen}</span>
+      </button>
       {/* The app view's overflow lived here — one "Open in explorer" entry,
           jumping from the app's own route back to the folder. The route went
           with D262 and the app view itself with D264. */}
