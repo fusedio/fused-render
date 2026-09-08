@@ -122,7 +122,7 @@ function StateMark({ state, severity }: { state: AppCheckState; severity?: Sever
 // comment. The hover wash is the row's only background, and it says "this is
 // the row your pointer is on", not "this row failed".
 const ROW_BOX =
-  "flex items-start gap-2.5 rounded-lg px-3 py-2 hover:bg-foreground/[0.04]";
+  "flex items-start gap-2.5 rounded-lg px-3 py-1.5 hover:bg-foreground/[0.04]";
 
 // The severity word the badge prints. Sentence case, because it sits inline
 // beside the label rather than as chrome above it.
@@ -340,7 +340,7 @@ export function AppDoctorModal({
           `minmax(0, 1fr)` on the middle row is what lets it actually shrink
           to the 80vh cap instead of pushing the footer off-screen. */}
       <DialogContent
-        className="grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-[620px] max-h-[80vh]"
+        className="grid-rows-[auto_minmax(0,1fr)_auto] gap-3 overflow-hidden sm:max-w-[620px] max-h-[80vh]"
         showCloseButton={false}
       >
         {/* The close control is rendered here, inside the header row, rather
@@ -348,14 +348,17 @@ export function AppDoctorModal({
             in the header it sits ON the title's line, so the two read as one
             title bar instead of a heading with a button floating over the
             dialog's top corner. */}
-        <DialogHeader className="flex-row items-center justify-between gap-2">
-          <DialogTitle>App Doctor</DialogTitle>
-          <DialogClose
-            render={<Button variant="ghost" size="icon-sm" className="-my-1 -mr-1" />}
-          >
-            <X aria-hidden />
-            <span className="sr-only">Close</span>
-          </DialogClose>
+        <DialogHeader className="gap-1">
+          <div className="flex items-center justify-between gap-2">
+            <DialogTitle>App Doctor</DialogTitle>
+            <DialogClose
+              render={<Button variant="ghost" size="icon-sm" className="-my-1 -mr-1" />}
+            >
+              <X aria-hidden />
+              <span className="sr-only">Close</span>
+            </DialogClose>
+          </div>
+          {report !== null && <p className="appdoc-summary">{summaryLine(report.checks)}</p>}
         </DialogHeader>
         <div className="flex min-h-0 min-w-0 flex-col gap-2 overflow-x-hidden overflow-y-auto">
           <ErrorBanner>{error}</ErrorBanner>
@@ -363,17 +366,18 @@ export function AppDoctorModal({
             <SkeletonLines rows={6} />
           ) : (
             <>
-              <p className="appdoc-summary">{summaryLine(report.checks)}</p>
               {groupBySection(report.checks).map((group) => (
-                // A heading and its list, nothing around them. The heading's
-                // left inset (px-3) is the row's own, so the section name and
-                // every label under it share one left edge — the alignment
-                // does the grouping a box would otherwise be drawn for.
+                // A heading and its list, nothing around them. The heading is
+                // inset to the LABEL column, not to the row's own edge, so
+                // the section name and every label under it share one left
+                // edge and the state marks hang in the gutter beside them —
+                // that one column is what does the grouping a box would
+                // otherwise be drawn for.
                 <section key={group.section} className="flex min-w-0 flex-col">
                   <h3 className="appdoc-section-label">
                     {SECTION_LABEL[group.section] ?? group.section}
                   </h3>
-                  <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
+                  <ul className="m-0 flex list-none flex-col p-0">
                     {sortByAttention(group.checks).map((c) => (
                       <CheckRow
                         key={c.id}

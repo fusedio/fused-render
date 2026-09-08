@@ -6,9 +6,12 @@
  * the two 20px line-box reference boxes that align a row's mark and action to
  * its label's first line.
  *
- * The STATES are told by COLOUR AND SHAPE together — a ✓, a fail mark and a
- * "–" — never by colour alone, so the list survives a monochrome or
- * colour-blind reading.
+ * The STATES are told by SHAPE — a ✓, a fail mark, a "–" — never by colour
+ * alone, so the list survives a monochrome or colour-blind reading. Only a
+ * FAILING row is coloured at all: a pass, a skip and an unrun row all take
+ * the muted foreground, because a row that wants nothing from the reader
+ * should be countable without being looked at, and that leaves the semantic
+ * hues to the handful of rows that do want something.
  *
  * A FAILING row also carries a SEVERITY (critical/warning), and that is its
  * own axis, told apart the same disciplined way: the severity WORD in a badge
@@ -22,24 +25,34 @@
  * a stack of tinted plates — and the dialog's only fill is the hover wash
  * under the pointer. */
 
+/* The title's second line (the dialog header, AppDoctorModal.tsx): what this
+ * report amounts to, in one sentence, at the detail size the rows' own
+ * secondary lines use. */
 .appdoc-summary {
   margin: 0;
   color: var(--fg-muted);
+  font-size: 12.5px;
 }
 
-/* The section's own heading: the same left inset as a row's label (the row's
- * `px-3`), muted and at body weight, so it groups the rows under it by
- * alignment instead of by a box. */
+/* The section's own heading, muted and at body weight, so it groups the rows
+ * under it by alignment instead of by a box.
+ *
+ * Its left inset is the LABEL column's, not the row's: 12px of row pad + a
+ * 16px state mark + the row's 10px gap. The section name therefore starts
+ * exactly where every label under it starts, and the marks hang to the left
+ * of that shared edge — one text column down the whole dialog, with the
+ * marks in its gutter. Change the row's `px-3`, the mark's size or the row's
+ * `gap-2.5` (AppDoctorModal.tsx) and this number moves with them. */
 .appdoc-section-label {
-  margin: 10px 0 2px;
-  padding: 0 12px;
+  margin: 14px 0 2px;
+  padding: 0 12px 0 38px;
   color: var(--fg-muted);
   font-size: 13px;
   font-weight: 500;
 }
 
 .appdoc-section-label:first-child {
-  margin-top: 0;
+  margin-top: 2px;
 }
 
 /* The label and its severity badge share one line and wrap together when the
@@ -76,8 +89,8 @@
 }
 
 .appdoc-pass .appdoc-state {
-  color: var(--success);
-  opacity: 0.7;
+  color: var(--fg-muted);
+  opacity: 0.75;
 }
 
 .appdoc-row-sev-critical .appdoc-state {
