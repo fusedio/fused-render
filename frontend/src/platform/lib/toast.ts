@@ -63,7 +63,29 @@ export function getToasts(): ToastItem[] {
 // dismissing it once its own action succeeds, or automatically once it falls
 // off the back of the MAX_TOASTS stack. Returns the id so callers can dismiss
 // it themselves.
-export function pushToast(t: { msg: string; tone: ToastTone; action?: ToastAction }): number {
+//
+// `replaceId`, when given, is a toast id from an earlier `pushToast` call —
+// a repeated notice (e.g. "Still undoing…" on a second Cmd+Z while the first
+// is still running) passes back the id it got last time instead of always
+// omitting it, so N repeats update one standing toast rather than stacking
+// N of them. If that id still names a live (non-leaving) toast, its
+// message/tone/action are replaced in place and the same id comes back; if
+// it has already left the stack (dismissed, or never existed), a new toast
+// is pushed exactly as if no id had been given.
+export function pushToast(
+  t: { msg: string; tone: ToastTone; action?: ToastAction },
+  replaceId?: number,
+): number {
+  if (replaceId !== undefined) {
+    const existing = toasts.find((x) => x.id === replaceId && !x.leaving);
+    if (existing) {
+      toasts = toasts.map((x) =>
+        x.id === replaceId ? { ...x, msg: t.msg, tone: t.tone, action: t.action } : x,
+      );
+      emit();
+      return replaceId;
+    }
+  }
   const id = nextId++;
   toasts = [...toasts, { id, msg: t.msg, tone: t.tone, action: t.action, leaving: false }];
   // Cap the stack at MAX_TOASTS by dropping the oldest live (non-leaving)

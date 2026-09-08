@@ -87,6 +87,30 @@ test("a 6th toast drops the oldest live one, keeping the stack at MAX_TOASTS", (
   expect(live).toEqual([...ids.slice(1), sixth]);
 });
 
+// ---- replace-by-id: a repeated notice collapses onto one toast ------------
+
+test("pushToast with a live replaceId updates that toast in place instead of adding a new one", () => {
+  const id = pushToast({ msg: "Still undoing…", tone: "info" });
+  const again = pushToast({ msg: "Still undoing…", tone: "info" }, id);
+  expect(again).toBe(id);
+  expect(getToasts().map((t) => t.id)).toEqual([id]);
+  expect(getToasts()[0].msg).toBe("Still undoing…");
+});
+
+test("pushToast with a replaceId whose toast is gone pushes a fresh toast instead", () => {
+  const first = pushToast({ msg: "Still undoing…", tone: "info" });
+  dismissToast(first); // now leaving, not a live target
+  const second = pushToast({ msg: "Still undoing…", tone: "info" }, first);
+  expect(second).not.toBe(first);
+  expect(getToasts().map((t) => t.id)).toContain(second);
+});
+
+test("pushToast with an unknown replaceId (never issued) pushes a fresh toast", () => {
+  const id = pushToast({ msg: "x", tone: "info" }, 999_999);
+  expect(getToasts().map((t) => t.id)).toContain(id);
+  expect(id).not.toBe(999_999);
+});
+
 test("a toast already animating out does not count toward the cap, and is not double-dropped", async () => {
   const ids = Array.from({ length: MAX_TOASTS }, (_, i) => pushToast({ msg: `t${i}`, tone: "info" }));
   dismissToast(ids[0]); // leaving, but still in the array
