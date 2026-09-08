@@ -1891,6 +1891,52 @@ table.listing-table tr.row.ignored {
   opacity: 0.45;
 }
 
+/* Git decoration, the file-tree convention: a name in a colour because git has
+   something to say about that path (server/git_status.py decides what). The ROW
+   carries the state as a class and only the NAME cell wears it — a tinted SIZE
+   or MODIFIED would read as a second, unrelated signal about the same row.
+   Folders are tinted by whatever is most urgent beneath them, so a change can't
+   hide inside a folder nobody opened.
+
+   The state is funnelled through one `--git-tint` rather than four colour rules
+   so the badge in listing/bits.tsx picks up the same value from the same place;
+   the two cannot drift into disagreeing about what a row's colour is. */
+table.listing-table tr.row.git-untracked {
+  --git-tint: var(--git-untracked);
+}
+table.listing-table tr.row.git-modified {
+  --git-tint: var(--git-modified);
+}
+table.listing-table tr.row.git-staged {
+  --git-tint: var(--git-staged);
+}
+table.listing-table tr.row.git-conflicted {
+  --git-tint: var(--git-conflicted);
+}
+table.listing-table tr.row.git-untracked > td.name,
+table.listing-table tr.row.git-modified > td.name,
+table.listing-table tr.row.git-staged > td.name,
+table.listing-table tr.row.git-conflicted > td.name {
+  color: var(--git-tint);
+}
+
+/* The one-letter badge beside a tinted name (listing/git-mark.ts says why a
+   letter exists at all). Same tint as the name, at the muted weight of a
+   margin note: it annotates the filename rather than competing with it.
+   `flex: 0 0 auto` keeps it from being the thing that shrinks — the name has
+   `min-width: 0` and ellipsizes, and a badge clipped to "M" reading as "!" is
+   the one failure this element cannot afford. */
+table.listing-table td.name .git-mark {
+  flex: 0 0 auto;
+  color: var(--git-tint);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0.85;
+  cursor: default;
+  user-select: none;
+}
+
 table.listing-table tr.row:hover {
   background: var(--bg-alt);
   opacity: 1;

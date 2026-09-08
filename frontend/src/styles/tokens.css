@@ -150,6 +150,27 @@
   --series-5: #4fd1c5;
   --series-6: #ff8f8f;
 
+  /* Git decoration for a file listing's NAME — the explorer's row tinting
+     (styles/explorer.css, fused_render/server/git_status.py). Not the
+     --success/--warning/--error family, for the same reason --series-* is not:
+     those three carry SENTIMENT, and "you have edited this file" is not good
+     news or bad news. They are also not interchangeable with the chart hues,
+     which are chosen for mutual separation and mean nothing individually —
+     each of these does mean one specific thing, and the meanings are the
+     conventional ones (green new, amber edited) that a reader arrives with
+     from every other git UI.
+
+     The pairs that must stay separable are added-vs-modified (green/amber, the
+     commonest confusion under deuteranopia) and modified-vs-staged, which is
+     why staged is a blue rather than a second warm hue. The one-letter badge
+     beside the name carries the same distinction without hue at all
+     (listing/git-mark.ts), so the palette is a shortcut and never the only
+     signal. */
+  --git-untracked: #7ec699;
+  --git-modified: #e2c08d;
+  --git-staged: #7fb3f0;
+  --git-conflicted: #e4676b;
+
   /* Full-page failure card (.status-message.error). */
   --error-page-bg: rgba(30, 5, 5, 0.9);
   --error-page-border: #c0392b;
@@ -399,6 +420,13 @@
   --series-4: #7a3fa8;
   --series-5: #0f7c74;
   --series-6: #b03030;
+
+  /* The four git hues, darkened for white. Same hue order and same meanings —
+     a name that was green over the dark page is green over the light one. */
+  --git-untracked: #2f7d3f;
+  --git-modified: #8a5a06;
+  --git-staged: #1f5fa8;
+  --git-conflicted: #b02020;
 
   --error-page-bg: rgba(255, 236, 236, 0.95);
   --error-page-border: #c0392b;
