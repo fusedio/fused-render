@@ -1194,28 +1194,21 @@
   flex: none;
 }
 
-/* THE ROW THAT IS ITSELF THE ACTION (2026-09-03). A waiting task's row has
-   exactly one thing to do — open the conversation and answer — so the whole row
-   is the control rather than a small button parked in its corner. A real
-   `<button>`, so it is focusable and announced as an action; this rule takes the
-   UA chrome back off it so it sits in `.dl-rows` exactly like the `<div>` rows
-   around it, the same reset `button.sidebar-prefs-trigger` does for the sidebar.
+/* THE ROW THAT IS ITSELF THE ACTION. A waiting task's row has exactly one
+   thing to do — open the conversation and answer — so the whole row is the
+   control rather than a small button parked in its corner. `role="button"`
+   plus a keydown handler (`NotificationCard`'s `rowClick`), not a real
+   `<button>` element: the row also carries a genuine `<button>` for its own
+   ✕ dismiss, and a button cannot nest inside a button.
 
    The hover wash is the list's own (`--row-bg-hover`), not the status bar's
    (`--status-item-hover`, which is for the chip): this is a row in a list, and
    it should feel like the file rows and menu items that use that token. */
-button.dl-row {
-  display: block;
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  background: none;
-  border: 0;
+.dl-row.dl-row-open {
   cursor: pointer;
 }
 
-button.dl-row:hover {
+.dl-row.dl-row-open:hover {
   background: var(--row-bg-hover);
 }
 
