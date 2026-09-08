@@ -11729,7 +11729,7 @@ the rules around it.
   any `window.fused` accessor for the paths.
 ---
 
-## 48. Self-Fix — A Claude Session on This Installation (D742)
+## 48. Self-Fix — A Claude Session on This Installation (D746)
 
 Goal: when the app fails on a machine we cannot see, the user has one more
 option than "dismiss it and hope" — they can ask Claude to look at the failure
