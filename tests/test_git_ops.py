@@ -1008,12 +1008,17 @@ def test_app_restore_commits_the_app_folder_back_to_an_older_version(ops, app_re
     root, old_sha = app_repo
     before_branch = git(root, "symbolic-ref", "--short", "HEAD").strip()
     before_log = len(git(root, "log", "--oneline").strip().split("\n"))
+    # What `write()` actually put in `old_sha`'s blob — on Windows that's
+    # `\r\n` (no `core.autocrlf` here, see `_git_repo.py`), so comparing
+    # against a re-typed `\n`-only literal would fail for a reason that has
+    # nothing to do with the restore logic under test.
+    old_content = git(root, "show", f"{old_sha}:app/main.py")
 
     got = ops.main(_app_file(root), op="app_restore", sha=old_sha)
 
     assert got["ok"] is True, got
     assert got["op"] == "app_restore"
-    assert git(root, "show", "HEAD:app/main.py") == "VERSION = 1\n"
+    assert git(root, "show", "HEAD:app/main.py") == old_content
     # HEAD stays on the branch — not detached.
     assert git(root, "symbolic-ref", "--short", "HEAD").strip() == before_branch
     after_log = len(git(root, "log", "--oneline").strip().split("\n"))
@@ -1075,8 +1080,14 @@ def test_app_restore_leaves_files_outside_the_app_folder_byte_identical(
 
     with open(outside_path, "rb") as fh:
         after = fh.read()
-    assert after == before == b"outside v2\n"
-    assert git(root, "show", "HEAD:outside.txt") == index_before == "outside v2\n"
+    # Byte-identical means the restore didn't touch this file at all — so the
+    # honest check is the working-tree bytes before vs. after, and the index
+    # blob before vs. after. Neither side is compared to a re-typed literal:
+    # on Windows `write()` puts `\r\n` in both the working tree and the blob
+    # (no `core.autocrlf` here), and a hard-coded `\n` literal would fail for
+    # a reason that has nothing to do with app_restore's own scoping.
+    assert after == before
+    assert git(root, "show", "HEAD:outside.txt") == index_before
 
 
 def test_app_restore_refuses_on_a_dirty_repo_and_leaves_no_commit(ops, app_repo):
