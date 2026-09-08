@@ -1,6 +1,6 @@
-// Notion-style icon picker popover: an Emoji tab (the whole Unicode set, from
-// emojibase), an Icons tab (the whole lucide set, written on pick as the bare
-// glyph in one of ten theme-following colours — icon-color.ts; the Notion
+// Notion-style icon picker popover: an Icons tab first (the whole lucide set,
+// written on pick as the bare glyph in one of five theme-following colours —
+// icon-color.ts), then an Emoji tab (the whole Unicode set, from emojibase); the Notion
 // swatch popover beside the shuffle button chooses, and the choice sticks
 // across picks rather than being asked each time), a filter box, a shuffle
 // button that picks at random from the active tab, a Recent row per tab, and
@@ -272,7 +272,8 @@ const COLOR_KEY = "fused-render:icon-picker-color";
 function readColor(): IconColor {
   try {
     const v = localStorage.getItem(COLOR_KEY);
-    return isIconColor(v) ? v : "default";
+    // A colour saved before the palette shrank falls back to default.
+    return isIconColor(v) && (ICON_COLORS as readonly string[]).includes(v) ? v : "default";
   } catch {
     return "default";
   }
@@ -324,9 +325,9 @@ export default function IconPicker({
   onRemove,
   onClose,
   toggleSelector = ".bookmark-glyph:not(.folder-glyph):not(.current-app-glyph)",
-  tabs = ["emoji", "icon"],
+  tabs = ["icon", "emoji"],
 }: IconPickerProps) {
-  const [tab, setTab] = useState<IconPickerTab>(tabs[0] ?? "emoji");
+  const [tab, setTab] = useState<IconPickerTab>(tabs[0] ?? "icon");
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [color, setColor] = useState<IconColor>(readColor);
@@ -606,7 +607,7 @@ export default function IconPicker({
                 data-slot="icon-picker-colors"
                 // Fixed tracks, not grid-cols-5: an absolutely positioned box
                 // shrinks to fit, and 1fr tracks contribute no intrinsic width,
-                // so the five swatches piled onto one another.
+                // so the swatches piled onto one another.
                 className="absolute top-full right-0 z-10 mt-1 grid w-max grid-cols-[repeat(5,1.75rem)] gap-1.5 rounded-lg border border-border bg-popover p-2 shadow-md"
               >
                 {ICON_COLORS.map((c) => (
