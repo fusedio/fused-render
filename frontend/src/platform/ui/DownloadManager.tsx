@@ -128,11 +128,6 @@ import type { RunningEngine } from "@platform/lib/api";
 // Python worker) writes no ping, so the idle poll below is the floor that
 // guarantees the row shows up either way.
 function useJobs(): {
-  /** Has /api/jobs answered once? `jobs` starts `[]` and stays `[]` on an idle
-   *  machine, so the list cannot tell "not asked yet" from "genuinely
-   *  nothing" — the distinction `useAutoExpandOnNew` needs to avoid reading
-   *  pre-existing jobs as arrivals on load (D574 bug 2). */
-  settled: boolean;
   jobs: Job[];
   /** The SERVER's clock at the last successful read (`JobsSnapshot.now`) —
    *  what `jobDetail` measures a running job's age against (C4 fix), never
@@ -145,7 +140,6 @@ function useJobs(): {
 } {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [now, setNow] = useState<number>(() => Date.now() / 1000);
-  const [settled, setSettled] = useState(false);
   // Read by the scheduler without re-arming it: the poll loop re-reads the
   // cadence after every response, so `jobs` must not be in its dependency list
   // or every tick would tear the timer down and build a new one.
@@ -205,7 +199,6 @@ function useJobs(): {
       try {
         const snapshot = await fetchJobs();
         if (disposed) return;
-        setSettled(true);
         if (at === epochRef.current) {
           setJobs(snapshot.jobs);
           setNow(snapshot.now);
@@ -265,7 +258,7 @@ function useJobs(): {
     setJobs(fn);
   }, []);
 
-  return { jobs, now, settled, refresh, patch };
+  return { jobs, now, refresh, patch };
 }
 
 /** `NotificationCard`'s `progress`: `undefined` draws no bar, `null` draws
@@ -654,7 +647,6 @@ export function JobRow({
 // global `mock.module` on it does not scope to one file).
 export function DownloadManagerView({
   reported,
-  ready,
   initialCollapsed,
   engines,
   onJobsReported,
@@ -679,9 +671,6 @@ export function DownloadManagerView({
    *  `mock.module`: a process-wide replacement has contaminated unrelated
    *  suites here before. */
   initialCollapsed?: boolean;
-  /** Has the first /api/jobs read landed (kept for callers; the chip no longer auto-opens on it)? Optional
-   *  so a test mounting this view with a fixed list keeps the old behaviour. */
-  ready?: boolean;
   /** The Background tasks section (formerly EnginesDock's own chip). Optional
    *  and data-only — see `EnginesSlot`'s own doc. */
   engines?: EnginesSlot;
@@ -899,11 +888,10 @@ export default function DownloadManager({
   engines?: EnginesSlot;
   onJobsReported?: (jobs: Job[]) => void;
 }) {
-  const { jobs: reported, now, settled, refresh, patch } = useJobs();
+  const { jobs: reported, now, refresh, patch } = useJobs();
   return (
     <DownloadManagerView
       reported={reported}
-      ready={settled}
       engines={engines}
       onJobsReported={onJobsReported}
       refresh={refresh}
