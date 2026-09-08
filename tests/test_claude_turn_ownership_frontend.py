@@ -655,6 +655,78 @@ setTimeout(() => {
     assert out["pollLoopCalls"] == [["r1", 0]]
 
 
+# Everything sendMessage needs besides the DOM stub, addUser, and the real
+# wire functions (_WIRE_FNS) above: a scriptable start/send, and everything
+# else it touches stubbed to a no-op or a call counter.
+_SENDMSG_STUB = """
+let sending = false;
+let sendSeq = 0;
+let logGen = 0;
+const AGENT = "agent.py";
+const FILE = "/f";
+const box = null;
+function focusBox() {}
+const noPane = false;
+let annotations = [];
+const annPending = () => annotations.filter((c) => !c.sent);
+function annLabelFor(i) { return String.fromCharCode(65 + i); }
+function annSave() {}
+function appStatePush() { return null; }
+async function appStateFile(state) { return state; }
+async function annOverview(pending) { return null; }
+function annApplyOverview() {}
+function sentPopWire() {}
+function shotReceipt() {}
+function annReceiptRow() { return document.createElement("div"); }
+function shotReadDirs() { return []; }
+function curModel() { return ""; }
+function curEffort() { return ""; }
+function shotRevoke() {}
+const DEFAULT_PERMISSION = "default";
+let pollLoopCalls = [];
+async function pollLoop(run_id, gen) { pollLoopCalls.push([run_id, gen]); }
+const errors = [];
+function addError(msg) { errors.push(msg); }
+const fused = {
+  params: { get: () => "", set: () => {} },
+  runPython: async (agent, req) => {
+    if (req.action === "start") return { run_id: "r1" };
+    return { sent: true };
+  },
+};
+"""
+
+
+def test_send_message_draws_a_wordless_turn_with_the_same_marker_a_reload_would_show(html):
+    """Finding 4: `sendMessage`'s wordless branch (annotations or pictures,
+    no typed words) used to draw a bubble-less `div.turn.user` to hang the
+    receipt on — the lockstep sibling of D758's fix, already applied to
+    `sendFollowUp` but not here. Drawn now with the same
+    `stripBlocks(outgoing)` marker a reload's history restore or another
+    tab's poll would show, so the ordinary `.user .bubble` textContent dedup
+    finds this turn already on screen instead of drawing a second one."""
+    src = _node_fns(html, _WIRE_FNS) + "\n" + _addUser_src(html) + "\n" \
+        + _block(html, "async function sendMessage(message) {", "\n}\n")
+    out = _run(html, _SENDMSG_STUB + f"""
+(async () => {{
+{src}
+let shotAttached = [{{ kind: "pane", view: "/tmp/fr/shots/x.png" }}];
+function renderAnn() {{}}
+  await sendMessage("");
+  console.log(JSON.stringify({{
+    turns: [...log.querySelectorAll(".turn.user")].length,
+    bubbles: [...log.querySelectorAll(".user .bubble")].map((b) => b.textContent),
+    errors,
+  }}));
+}})();
+""")
+    assert out["errors"] == []
+    assert out["turns"] == 1, "the wordless send must draw exactly one turn"
+    assert out["bubbles"] == ["🖼 pane screenshot"], \
+        "exactly one bubble, showing the marker label — never a second, " \
+        "bubble-less turn nothing later compares against"
+
+
 # Everything sendFollowUp needs besides the DOM stub, addUser, and the real
 # wire functions (_WIRE_FNS) above: a scriptable send, and everything else it
 # touches stubbed to a no-op or a call counter.

@@ -16504,15 +16504,7 @@ async function sendMessage(message) {
   // step on this path: the user's words appearing instantly is worth more than a
   // receipt and a bubble arriving together.
   let bareTurn = null;
-  if (message) {
-    addUser(message);
-  } else {
-    // annotation- or screenshot-only send: a bubble-less user turn to hang the
-    // receipt on
-    bareTurn = document.createElement("div");
-    bareTurn.className = "turn user";
-    log.appendChild(bareTurn);
-  }
+  if (message) addUser(message);
   // Labels first, THEN the capture: the letter burned into the overview and the
   // `label` the wire carries must be the same string, and annotations.indexOf
   // can shift between now and any later read (notes resolve, notes are added) —
@@ -16566,6 +16558,18 @@ async function sendMessage(message) {
     wireViews.unshift(wire);
   }
   const outgoing = composeOutgoing(message, pending, sentState, wireViews);
+  if (!message) {
+    // annotation- or screenshot-only send: no typed words, but still a turn —
+    // drawn with the marker label stripBlocks gives this exact wire text (D758's
+    // fix to sendFollowUp, mirrored here), so the bubble already on screen is
+    // the one thing another tab's poll (or this tab's own pollLoop, once the
+    // CLI echoes it back) finds through the ordinary `.user .bubble`
+    // textContent dedup, rather than drawing a second, separate turn for the
+    // same send.
+    addUser(stripBlocks(outgoing));
+    const bareTurns = log.querySelectorAll(".turn.user");
+    bareTurn = bareTurns[bareTurns.length - 1];
+  }
   if (pending.length) {
     for (const c of pending) c.sent = 1;
     annSave();
