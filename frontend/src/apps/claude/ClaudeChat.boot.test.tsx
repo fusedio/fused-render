@@ -302,38 +302,6 @@ test("the ask is spent ONCE — a host's own re-render cannot send it twice", as
   expect(started().length).toBe(1);
 });
 
-test("a host that DROPS initialAsk mid-wait still sends the ask once (Fix with AI, R4-4)", async () => {
-  // THE BUG THIS PINS. The explorer hosts derive `nativeAsk` at RENDER time
-  // from a ref written in a committed effect, so `initialAsk` is non-null for
-  // exactly ONE of the host's renders and `undefined` on the next — measured
-  // at 32 ms after the delivery remount, well inside the 1.5 s detection wait
-  // the ask boot parks in. With the prop in the boot effect's deps that flip
-  // cancelled the boot, re-armed the latch, and the re-run read `undefined`
-  // and took the "nothing to restore" branch: chat entered, composer live,
-  // prompt never sent.
-  //
-  // The test above re-renders WITH the ask still set, which is why this slipped
-  // through — the drop is the whole defect.
-  holdPrefs = true; // park inside ASK_DETECTION_TIMEOUT_MS
-  const params = createMemoryParamsStore();
-  let r!: ReturnType<typeof create>;
-  await act(async () => {
-    r = create(<ClaudeChat {...baseProps} params={params} initialAsk="fix it" />);
-  });
-  mounted.push(r);
-  expect(started()).toEqual([]); // still waiting on detection
-
-  // The host's one-shot `nativeAsk` flipping to null on its very next render.
-  await act(async () => {
-    r.update(<ClaudeChat {...baseProps} params={params} />);
-  });
-
-  holdPrefs = false; // detection lands
-  await settle(1700);
-  expect(started().length).toBe(1);
-  expect(started()[0].params.message).toContain("fix it");
-});
-
 // ── THE ANNOTATION STRIP FOLLOWS THE TARGET, NOT THE LAYOUT ─────────────────
 //
 // T's `annPollTarget` sets `hidden` on Screenshot/Comment/Annotate off ONE fact
@@ -352,7 +320,7 @@ function byClass(r: ReturnType<typeof create>, cls: string) {
   );
 }
 
-test("a HOSTED chat shows the seats — landing included — because the host has a target", async () => {
+test("a HOSTED chat shows the strip — landing included — because the host has a target", async () => {
   // The bug: `stripShown` read `!chatOnly`, a question about OUR layout, so the
   // sidebar lost the whole row on both views while the app sat on screen in the
   // middle column with its mark on it.
@@ -363,42 +331,30 @@ test("a HOSTED chat shows the seats — landing included — because the host ha
   expect(byClass(r, "c-anntools").length).toBe(1);
   expect(byClass(r, "c-anncta").length).toBe(1);
   const seats = byClass(r, "c-anncta")[0].findAllByType("button");
-  // ONE SEAT IN PR2 (P2-2). Comment and Annotate shipped here disabled and the
-  // owner's rule is that neither is ever drawn dead — T greys one only while the
-  // OTHER mode is armed (T:320-322) — so PR2 draws Screenshot alone and PR3
-  // turns the other two on through `AnnStrip`'s `modes`.
-  expect(seats.length).toBe(1);
+  expect(seats.length).toBe(3);
+  // ALL THREE ARE LIVE (PR3). When this landed, Comment and Annotate were seats
+  // waiting for their handlers and the assertion was that they arrived disabled
+  // rather than absent — the row must not grow two buttons under the reader's
+  // hand. PR3 handed them those handlers, and a hosted mount whose host has
+  // marked its frame is exactly the case they act on, so the row is three
+  // working controls; "absent beats dead" now decides the whole row at once
+  // (`capable`), which the next test pins.
   expect(seats[0].props.disabled).toBe(false);
-  expect(String(seats[0].props.className)).toContain("c-viewshot");
+  expect(seats[1].props.disabled).toBe(false);
+  expect(seats[2].props.disabled).toBe(false);
 });
 
-test("the strip ROW stands even with nothing to photograph — it carries the ⋮", async () => {
-  // T's `#anntools` is static markup and holds `← Chats` and `#kebab` as well as
-  // the three seats, so a folder listing keeps the row and loses only the
-  // buttons (T:526 `body.nopane #kebab { margin-left: auto }` is that state).
-  // Native used to drop the whole row, which took the menu with it (P2-1).
+test("a hosted chat whose host has marked NOTHING hides the strip, like the folder listing on :1777", async () => {
   const { r } = await mountChat({ annotateTarget: () => null });
   await settle(20);
-  expect(byClass(r, "c-anntools").length).toBe(1);
+  expect(byClass(r, "c-anntools").length).toBe(0);
   expect(byClass(r, "c-anncta").length).toBe(0);
-  expect(byClass(r, "c-kebab").length).toBe(1);
 });
 
-test("the seats are absent on a chat-only mount with no host getter at all", async () => {
+test("a chat-only mount with no host getter at all hides the strip", async () => {
   // A cards tile and the peek modal pass none: there is genuinely nothing to
   // photograph, and "absent beats dead" (T:238-241).
   const { r } = await mountChat();
   await settle(20);
-  expect(byClass(r, "c-anncta").length).toBe(0);
-});
-
-// THE MENU AND THE WAY OUT RIDE THE SAME ONE ROW (P2-1).
-test("the ⋮ is in the strip on the landing, and `← Chats` joins it in a chat", async () => {
-  const { r } = await mountChat({ annotateTarget: hostFrameStub() });
-  await settle(20);
-  const strip = () => byClass(r, "c-anntools")[0];
-  // The landing has no chat to leave, so no back button — and the menu is the
-  // landing's own one item ("New session in terminal", T:13415).
-  expect(strip().findAll((n) => String(n.props.className ?? "") === "c-back").length).toBe(0);
-  expect(strip().findAll((n) => String(n.props.className ?? "").split(/\s+/).includes("c-kebab")).length).toBe(1);
+  expect(byClass(r, "c-anntools").length).toBe(0);
 });

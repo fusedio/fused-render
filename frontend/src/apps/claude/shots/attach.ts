@@ -35,6 +35,7 @@ import {
 import {
   SHOT_PATH_TYPE,
   type Attachment,
+  type CaptureResult,
   type PaneShotEntry,
   type Receipt,
   type ShotBadge,
@@ -199,28 +200,43 @@ function beginShotsDir(agentDir: string): Promise<string> {
 }
 
 /**
- * The send-time overview: ONE whole-pane screenshot with a red letter badge
- * burned in at each note's spot (T:10127).
+ * The send-time overview, UPLOADED: ONE whole-pane screenshot with a red letter
+ * badge burned in at each note's spot (T:10127).
  *
- * EXPORTED BUT UNWIRED, AND DELIBERATELY PR3's. Nothing in PR2 has notes to
- * badge, so there is no caller — and the seam it still needs belongs with the
- * caller rather than here: T's failed-send path revokes the OVERVIEW while
- * keeping the user's own pictures (T:16698-16708), because the overview is the
- * page's own picture of a pane that has since moved on, where a picture the user
- * attached may not be retakeable. `ClaudeChat`'s `onSendReturned` hands the
- * whole tray back today, which is right for a tray that only ever holds the
- * user's; the asymmetry arrives with the first overview and is PR3's to land
- * with it.
+ * IT TAKES THE PICTURE IT IS GIVEN, and does not take one itself, because the
+ * badge POINTS are the annotation subsystem's to compute — which notes resolved,
+ * which scrolled out of the pane, and the sentence each of the second kind puts
+ * on the wire (`ann/overview.overviewFor`, whose answer the notes are then
+ * folded with). A second capture here would photograph a pane that has moved on
+ * between the two, and the badges burned into the first picture would be the
+ * letters describing the second.
+ *
+ * `frame` is still the argument for the ORDINARY road (`attachPane`); this one
+ * only needs the bytes, the caveats and the `why`.
+ *
+ * NOT ADDED TO THE TRAY by its caller, and that asymmetry is T's (T:16698-16708):
+ * a failed send hands the user's own pictures back as pending chips — they were
+ * attached deliberately and may not be retakeable — but REVOKES the overview,
+ * which is the page's own picture of a pane that has since moved on. A retried
+ * send captures a fresh one.
  */
 export async function attachOverview(
+  agentDir: string,
+  capture: CaptureResult,
+): Promise<Attachment> {
+  return uploadCapture(agentDir, capture, "overview", SHOT_SUFFIX_OVERVIEW, beginShotsDir(agentDir));
+}
+
+/** The one-call form, for a caller that has badges but no capture yet. Kept
+ *  because `captureOverview`'s options (the budget, the XO flag, `rectOf`) are
+ *  `shots/`'s own vocabulary and a caller should not have to assemble them. */
+export async function captureAndAttachOverview(
   agentDir: string,
   frame: HTMLIFrameElement | null,
   badges: ShotBadge[],
   opts: CaptureOptions = {},
 ): Promise<Attachment> {
-  const dir = beginShotsDir(agentDir);
-  const shot = await captureOverview(frame, badges, opts);
-  return uploadCapture(agentDir, shot, "overview", SHOT_SUFFIX_OVERVIEW, dir);
+  return attachOverview(agentDir, await captureOverview(frame, badges, opts));
 }
 
 async function uploadCapture(

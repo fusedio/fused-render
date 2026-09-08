@@ -124,6 +124,7 @@ export {
   attachOverview,
   attachPane,
   attachPaths,
+  captureAndAttachOverview,
   dragHasAttachment,
   failLabel,
   filesFromDrop,

@@ -228,6 +228,18 @@ export interface ComposerCardProps {
   /** The textarea itself, for a host modal's `initialFocus` (TaskPeek, whose
    *  target used to be the iframe element). */
   boxRef?: React.MutableRefObject<HTMLTextAreaElement | null>;
+  /**
+   * T:8505 `annAutoSubmit` — the ONE programmatic send. A spoken walkthrough
+   * ends by seeding the box with what was said before the first click and then
+   * pressing send itself; ✓ Done does the same with no words at all.
+   *
+   * T reaches for `form.requestSubmit()`, which cannot work here: the composer's
+   * text is React state and only this component can read it. So the seat is
+   * handed out instead — filled while this composer is mounted, nulled when it
+   * goes, which is also what makes it honest about WHICH composer is on screen
+   * (home or chat, never both).
+   */
+  submitRef?: React.MutableRefObject<(() => void) | null>;
   /** The column whose width the ladder measures against. */
   columnRef?: React.RefObject<HTMLElement | null>;
   /** Chips above the box: attachments (PR2), annotations (PR3). */
@@ -278,6 +290,7 @@ export function ComposerCard({
   placeholder,
   restore,
   boxRef: hostBoxRef,
+  submitRef,
   columnRef,
   chips,
   onPaste,
@@ -366,6 +379,17 @@ export function ComposerCard({
       });
     }
   }, [blocked, attaching, text, hasAttachments, running, onFollowUp, onSend, controls]);
+
+  // The seat for the programmatic send. In an EFFECT so a render React throws
+  // away (StrictMode's double invoke, a concurrent attempt that loses) cannot
+  // leave its own `submit` installed for the recorder to press.
+  useEffect(() => {
+    if (!submitRef) return;
+    submitRef.current = submit;
+    return () => {
+      if (submitRef.current === submit) submitRef.current = null;
+    };
+  }, [submitRef, submit]);
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {

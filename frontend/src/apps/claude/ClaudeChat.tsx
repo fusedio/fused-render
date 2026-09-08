@@ -44,6 +44,30 @@ import { finishedTailText, parseTailKey, streamingTailOf } from "./protocol/segm
 import { createTyper, type Typer } from "./protocol/typer";
 import { createFrameClock } from "./ui/frameClock";
 import {
+  AnnBar,
+  AnnChips,
+  barFit,
+  AnnPins,
+  AnnPopover,
+  createRecorder,
+  recClockText,
+  RecControls,
+  transcribe,
+  useAnnotations,
+  warmTranscriber,
+  type AnnAnchor,
+  type AnnBarHandlers,
+  type AnnotationsApi,
+  type AnnRecorder,
+  type Annotation,
+  type RecAnchor,
+  type RecAnnotation,
+  type Recorder,
+} from "./ann";
+import { captureAudio, captureSources } from "@platform/lib/capture-audio";
+import { formatAnnotations, type AnnotationWire } from "./protocol/wire";
+import { getStream, isNativeOff } from "./shots";
+import {
   AppPane,
   createAppStateWatcher,
   footnoteFor,
@@ -84,6 +108,7 @@ import {
   type TranscriptTail,
   type Viewable,
 } from "./ui";
+import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
 
@@ -214,6 +239,26 @@ let inFlightForTests: Map<Receipt[], Attachment[]> | null = null;
 /** How many sends are still holding their pictures. Tests only. */
 export function inFlightSizeForTests(): number {
   return inFlightForTests ? inFlightForTests.size : 0;
+}
+
+/**
+ * TEST-ONLY WINDOW ONTO THE ANNOTATION SUBSYSTEM (`ann`, below), the same idiom
+ * `inFlightForTests` is and for the same kind of reason.
+ *
+ * A note is MADE by a click inside the framed app — six listeners in a document
+ * `react-test-renderer` does not have — so the seams this file owns (the strip's
+ * arm, the chip row, the send's `<annotations>` block and its badged overview,
+ * Escape's discard, `enterNoPane`) had no way to be driven from a test at all.
+ * They are integration wiring: the pieces each have their own suite, and what is
+ * left untested is precisely how this file joins them.
+ *
+ * `ann/*`'s own suites cover the making of a note; this hands the coordinator
+ * over so a test can make one and then assert on what THIS file did with it.
+ */
+let annForTests: AnnotationsApi | null = null;
+
+export function annotationsForTests(): AnnotationsApi | null {
+  return annForTests;
 }
 
 /**
@@ -384,12 +429,28 @@ function ChatBody(props: ChatBodyProps) {
     [props.preview, props.noOpen],
   );
   const noPaneFlag = useRef(false);
-  // `enterNoPane`'s steps 1, 2 and 5 are the ANNOTATION half of the teardown and
-  // land in PR3 (AppPane's header spells the order out and why it is an order).
-  // Steps 3 and 4 fall out of `noPane` here — `useNarrowView` answers `""` for a
-  // no-pane target and the root's own `nopane` class carries the rest — and step
-  // 6 is `AppPane`'s early return.
-  const noPaneSteps = useMemo(() => ({}), []);
+  /**
+   * `enterNoPane`'s steps 1, 2 and 5 — the ANNOTATION half of the teardown, and
+   * an ORDER rather than a set (AppPane's header spells out why). Steps 3 and 4
+   * fall out of `noPane` here — `useNarrowView` answers `""` for a no-pane
+   * target and the root's own `nopane` class carries the rest — and step 6 is
+   * `AppPane`'s early return.
+   *
+   * Through `annRef`, because this object is built BEFORE the hook it drives:
+   * the pane resolves the target the annotation layer points at, so the pane's
+   * state has to exist first. `[]`-dep, so the teardown the pane closed over is
+   * never a stale render's.
+   */
+  const annRef = useRef<AnnotationsApi | null>(null);
+  const noPaneSteps = useMemo(
+    () => ({
+      clearAnnotations: () => annRef.current?.clearAnnotations(),
+      renderAnn: () => annRef.current?.render(),
+      annSetMode: (on: boolean) => annRef.current?.setMode(on),
+      rescueComposer: () => annRef.current?.rescueComposer(),
+    }),
+    [],
+  );
   const pane = usePaneState({
     file,
     chatOnly,
@@ -400,8 +461,23 @@ function ChatBody(props: ChatBodyProps) {
     watcher,
     noPaneSteps,
   });
-  const narrowView = useNarrowView({ params, noPane: pane.noPane });
-  const split = useSplit({ params, narrow: narrowView.narrow, noPane: pane.noPane });
+  const narrowView = useNarrowView({
+    params,
+    noPane: pane.noPane,
+    // T:8940 — arriving in the narrow CHAT view disarms: the toggle that would
+    // undo the mode is hidden there, and an armed mode behind a hidden toggle
+    // keeps the frame's click swallower live over a document nobody can see.
+    onArriveChat: () => annRef.current?.arriveNarrowChat(),
+    onRemeasure: () => annRef.current?.remeasure(),
+  });
+  const split = useSplit({
+    params,
+    narrow: narrowView.narrow,
+    noPane: pane.noPane,
+    // Every frame of a divider drag moves the frame's box, and every pin is
+    // placed against it (T:8849's resize, per tick).
+    onDragTick: () => annRef.current?.remeasure(),
+  });
   // `has_pane` is the PAGE's answer and is sent on every turn (T:16609). Read
   // through a ref so a pane resolving does not rebuild the controller.
   //
@@ -563,6 +639,8 @@ function ChatBody(props: ChatBodyProps) {
   // reference to release.
   useEffect(() => dropSpent, [dropSpent]);
   const attachBack = useRef<((items: readonly Attachment[]) => void) | null>(null);
+  /** How many sends have come BACK — see `onSendReturned` below. */
+  const returned = useRef(0);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
 
@@ -607,11 +685,22 @@ function ChatBody(props: ChatBodyProps) {
         // PR4 hangs the artifacts read and the snapshot invalidation here
         // (T:16229, 16321-16330); the ticks already run on T's clock.
         onArtifactsTick: () => {},
-        onRunEnded: () => {},
+        // T:10608/16341 — the run this turn started is over, so the annotations
+        // it carried are HANDLED: drop them. Even on error, deliberately (T's
+        // own note): an errored run may not have acted on them, but they were
+        // already stamped `sent` and folded into the transcript — re-annotating
+        // is one click, silently re-sending is not.
+        onRunEnded: () => annRef.current?.resolveSent(),
         // The agent saw none of it, so the pictures come back to the tray —
         // never revoked on this road, because those very thumbnails are what the
         // returned chips show (T:16693-16720).
         onSendReturned: ({ attachments }) => {
+          // T:16068 — THE ROLL-BACK SIGNAL, counted rather than flagged: the
+          // agent saw none of this send, which is what the notes' `sent = 0`
+          // and the overview's revoke both hang off. A counter, because a
+          // boolean cannot tell "this send came back" from "a send came back
+          // while this one was still out".
+          returned.current += 1;
           if (!attachments) return;
           const back = inFlight.current.get(attachments);
           if (!back) return;
@@ -688,6 +777,248 @@ function ChatBody(props: ChatBodyProps) {
       offStream();
     };
   }, []);
+
+  // ── the annotations this message will carry (PR3, inventory 02) ───────────
+  //
+  // `useAnnotations` is the door: it owns the store, the mode machine, the
+  // target poll, the overlay and the six listeners inside the framed document.
+  // What is left here is the SEAMS — eight of them, listed in `ann/README.md` —
+  // and the two facts only this file knows: which composer is on screen, and
+  // whether a send is allowed right now.
+  const viewingRef = useRef(viewing);
+  viewingRef.current = viewing;
+  const statusRef = useRef(state.status);
+  statusRef.current = state.status;
+  /** T:8505 `annAutoSubmit` — the composer that is actually mounted (home or
+   *  chat, never both) hands its own send in here. */
+  const submitBox = useRef<(() => void) | null>(null);
+  /** `.c-leftview`, from the pane. The pins, the ring and every popover
+   *  coordinate are measured against this box and not against `.c-left`
+   *  (T:6888). */
+  const [stage, setStage] = useState<HTMLElement | null>(null);
+
+  /**
+   * THE VOICE WALKTHROUGH's state machine, built once. Its ports read `annRef`
+   * rather than closing over the hook, because the two need each other: the
+   * coordinator asks the recorder whether a mic is live (`AnnRecorder`), and the
+   * recorder writes its marks into the coordinator's store.
+   *
+   * `notes` is a PORT and not the store itself — `ann/rec.ts` deliberately knows
+   * nothing about `Annotation` — so `spoken` is translated to `content` here, in
+   * the one place that speaks both. The anchor's own `text` (the element digest)
+   * is NOT that field and rides through in `rest`: two facts, two names.
+   */
+  const [recorder] = useState<Recorder>(() =>
+    createRecorder({
+      capture: (o) => captureAudio(o),
+      // Fire-and-forget by contract: the model load overlaps the recording, so
+      // the stop is not the first thing that ever asks for it (T:7814).
+      warm: () => void warmTranscriber(),
+      transcribe: (path) => transcribe({ path, words: true }),
+      notes: {
+        add: (note) => {
+          const store = annRef.current?.store;
+          if (!store) return;
+          // `RecAnchor`'s own keys ride along untyped by design (the recorder is
+          // handed the anchor the click handler built and never reads into it),
+          // so the cast is the honest spelling of that contract.
+          const { spoken, sent, ...rest } = note as RecAnnotation & Record<string, unknown>;
+          store.add({
+            ...(rest as unknown as Omit<Annotation, "id" | "createdAt">),
+            content: spoken,
+            ...(sent ? { sent: 1 as const } : {}),
+          });
+        },
+        get: (id) => {
+          const c = annRef.current?.store.list().find((n) => n.id === id);
+          if (!c) return undefined;
+          const out: RecAnnotation = { id: c.id, spoken: c.content };
+          if (typeof c.t === "number") out.t = c.t;
+          if (c.kind) out.kind = c.kind;
+          if (c.createdAt) out.createdAt = c.createdAt;
+          if (c.sent) out.sent = true;
+          return out;
+        },
+        // ONE save, one notification, whatever the count: the transcript folds
+        // into a whole walkthrough, not note by note (`store.merge`).
+        assign: (texts) => {
+          const store = annRef.current?.store;
+          if (!store) return;
+          const words = new Map(texts.map((t) => [t.id, t.text]));
+          const next = store
+            .list()
+            .filter((n) => words.has(n.id))
+            .map((n) => ({ ...n, content: words.get(n.id) as string }));
+          if (next.length) store.merge(next);
+        },
+        remove: (ids) => annRef.current?.store.removeMany(ids),
+      },
+      mode: {
+        isArmed: () => annRef.current?.machine.armed() ?? false,
+        capable: () => annRef.current?.target.capable() ?? false,
+        arm: () => annRef.current?.machine.set(true),
+        disarm: () => annRef.current?.machine.set(false),
+        epoch: () => annRef.current?.machine.epoch() ?? 0,
+        syncParam: () => annRef.current?.store.syncModeParam("2"),
+      },
+      /**
+       * T:8289 — everything said BEFORE the first click is the message's own
+       * prompt, so it seeds the box; then the walkthrough sends itself.
+       *
+       * The seed goes through the composer's `restore` seat, which is a STATE
+       * write — so the send waits a turn for it. T's `requestSubmit` had the
+       * text in the DOM already and could send on the next line; here sending
+       * synchronously would send the box as it was before the words landed.
+       */
+      deliver: (intro, spoke) => {
+        if (intro) {
+          strandSeq.current += 1;
+          setStranded({ text: intro, seq: strandSeq.current });
+        }
+        if (!spoke && !intro) return;
+        setTimeout(() => {
+          if (statusRef.current === "starting") return; // `activeRun || !sending`
+          submitBox.current?.();
+        }, 0);
+      },
+    }),
+  );
+  const recSnap = useSyncExternalStore(recorder.subscribe, recorder.snapshot, recorder.snapshot);
+  /** The mode machine's own view of the mic: four questions, no microphone. */
+  const annRecorder = useMemo<AnnRecorder>(
+    () => ({
+      recording: () => recorder.snapshot().state === "recording",
+      settling: () => recorder.snapshot().busy,
+      end: () => void recorder.end(),
+      discard: () => void recorder.discard(),
+    }),
+    [recorder],
+  );
+
+  const ann = useAnnotations({
+    params,
+    // `chat_only=1`: the pane belongs to the host, so the overlay is INJECTED
+    // into the marked frame's document rather than being a node of this one.
+    hosted: chatOnly,
+    noPane: pane.noPane,
+    ...(props.annotateTarget ? { annotateTarget: props.annotateTarget } : {}),
+    // The ONE thing that genuinely has to live in the parent: the cross-origin
+    // overlay stands over the frame's rect, and that rect is in the host's
+    // layout. Same origin by construction — the host marked the frame for us —
+    // and guarded anyway, because a `parent` we cannot read is the honest
+    // "no XO overlay" answer rather than a throw at poll time.
+    parentDocument: () => {
+      try {
+        const win = typeof window === "undefined" ? null : window;
+        if (!win || win.parent === win) return null;
+        return win.parent.document;
+      } catch {
+        return null;
+      }
+    },
+    // T:7291 — the parked composer's home is the chat column.
+    composerHome: () => columnRef.current,
+    // T:7720 `activeRun || !sending`: a live run takes the notes as a follow-up,
+    // and only the width of a start request is a moment with nowhere to put
+    // them.
+    canSend: () => statusRef.current !== "starting",
+    autoSubmit: () => submitBox.current?.(),
+    // T:7670 — arming over a cross-origin target is the natural moment for the
+    // ONE tab-share prompt, and only where the native screen shot is off: with
+    // it there is no prompt at all, and raising one here would be the prompt
+    // that change exists to remove. Swallowed whole — a declined share means
+    // notes without pictures, which every capture path already degrades to.
+    onXOArm: () => {
+      if (isNativeOff()) void getStream().catch(() => {});
+    },
+    viewerOpen: () => viewingRef.current !== null,
+    recorder: () => annRecorder,
+    // While a walkthrough owns the click the RECORDER writes the note: it mints
+    // the id and the `t` the transcript is matched against.
+    recMark: (anchor: AnnAnchor) => recorder.mark(anchor as RecAnchor),
+    recMarkPoint: (cx, cy, win, nearPath) => recorder.markPoint(cx, cy, win, nearPath ?? null),
+  });
+  annRef.current = ann;
+  // The seam above, parked from an EFFECT — the most recently mounted chat owns
+  // it, and a render React discarded must not.
+  useEffect(() => {
+    annForTests = ann;
+    return () => {
+      if (annForTests === ann) annForTests = null;
+    };
+  }, [ann]);
+
+  /**
+   * A34 / T:7788 — WHETHER THIS MACHINE HAS A MIC AT ALL. `captureSources` says
+   * so WITHOUT prompting for permission (CP-7), which is what makes it safe to
+   * ask before anyone has pressed anything: a machine that cannot record gets no
+   * mic seat rather than one that could only ever alert — "absent beats dead",
+   * the rule the camera seat already follows.
+   *
+   * Asked at boot AND again on every arm, because `granted` moves with TCC and
+   * does not wait for this process to restart. Anything but an explicit
+   * `available: false` keeps the seat, so a probe that fails degrades to showing
+   * it rather than to hiding the feature.
+   */
+  const [micShown, setMicShown] = useState(true);
+  const annArmed = ann.mode !== "off";
+  useEffect(() => {
+    let live = true;
+    void captureSources()
+      .then((sources) => {
+        if (live) setMicShown(sources.audio?.available !== false);
+      })
+      .catch(() => {
+        /* no answer is not a NO: the seat stays */
+      });
+    return () => {
+      live = false;
+    };
+  }, [annArmed]);
+
+  /**
+   * The recorder's state, told to the mode machine (T:8114's `.busy` seat) and
+   * to the bar's clock.
+   *
+   * `setBusyHold` is `annBusyHold`: the nav lock is the MODE's claim, and
+   * through Stopping…/Transcribing… the mode is still armed (the transcription
+   * belongs to THIS chat) — so the hold outlives the recording flag and is
+   * released by the disarm at the end of the settle.
+   */
+  useEffect(() => {
+    const m = ann.machine;
+    m.setBusyHold(recSnap.busy);
+    m.setPhase(
+      recSnap.state === "transcribing" ? "transcribing" : recSnap.busy ? "settling" : null,
+    );
+    ann.setClock(recSnap.state === "recording" ? recClockText(recSnap.seconds * 1000, recSnap.marks) : "");
+  }, [ann, recSnap]);
+
+  /** The bar's three buttons in the SPLIT layout. (The injected and
+   *  cross-origin bars get the same three from inside the hook, since their node
+   *  is built over there.) */
+  const annBarHandlers = useMemo<AnnBarHandlers>(
+    () => ({
+      onDone: () => void ann.done(),
+      onStop: () => void recorder.end(),
+      // T:8419 — ONE dispatcher: the trash throws the walkthrough while one
+      // records and the round's notes otherwise.
+      onDiscard: () => ann.discard(),
+      onResize: (bar) => barFit(bar),
+    }),
+    [ann, recorder],
+  );
+  /** `picker: null` — the Element/Point pill is ONE node the coordinator owns
+   *  and adopts into the bar's `.slot` on its own paint; a second writer would
+   *  fight it for the node. */
+  const annBarPaint = useMemo(
+    () => ({
+      mode: ann.mode,
+      clock: recSnap.state === "recording" ? recClockText(recSnap.seconds * 1000, recSnap.marks) : "",
+      picker: null,
+    }),
+    [ann.mode, recSnap],
+  );
 
   // ── the three pills ────────────────────────────────────────────────────────
   const defaults = useComposerDefaults(agentDir, file, params);
@@ -1038,13 +1369,32 @@ function ChatBody(props: ChatBodyProps) {
   // stopped the event, which is the precedence T has.
   const onEscape = props.onEscape;
   useEffect(() => {
-    if (!onEscape || typeof document === "undefined") return;
+    if (typeof document === "undefined") return;
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape" || ev.defaultPrevented) return;
-      // Only this chat's keystrokes: `document` is shared with the shell.
+      // 1. THE SHOT VIEWER CLAIMS IT FIRST (T:15959), and it is a portalled
+      //    dialog that closes itself — so this listener stands down entirely
+      //    rather than claiming on its behalf: neither the annotation mode nor
+      //    the host may act on a press the viewer is already answering.
+      if (viewingRef.current) return;
       const root = rootRef.current;
       const target = ev.target as Node | null;
-      if (!root || !target || !root.contains(target)) return;
+      // Only this chat's keystrokes: `document` is shared with the shell. A
+      // press with nothing focused (body, the root element) is this chat's too —
+      // it is how Esc reaches an armed mode whose pointer is over the app.
+      const loose =
+        !target || target === document.body || target === document.documentElement;
+      if (!loose && !(root && root.contains(target))) return;
+      // 2/3. the annotation composer, then the mode itself. `onEscape`
+      //      preventDefaults exactly when it claimed, which is what makes the
+      //      host's own hop below the LEFTOVER case rather than a second
+      //      claimant (T:15968-15976, `escapeAction`).
+      annRef.current?.onEscape(ev);
+      if (ev.defaultPrevented) return;
+      // 4. nothing of the chat's own was open, so the press reaches the host —
+      //    which is how TaskPeek closes. Never a stop: Escape has no claim on a
+      //    run (T:15947-15978).
+      if (!onEscape || loose) return;
       onEscape();
       // Claimed, so the host chassis's own Esc does not close the same thing a
       // second time.
@@ -1089,14 +1439,54 @@ function ChatBody(props: ChatBodyProps) {
    * will wear. The tray is emptied by the same call that reads it, so a second
    * Enter cannot send the same pictures twice (T:16532).
    */
-  const takeAttachments = useCallback((): { opts: SendOptions; items: Attachment[] } => {
-    const out = attach.take();
-    if (!out.items.length) return { opts: {}, items: [] };
+  const takeAttachments = useCallback(
+    (lead: readonly Attachment[] = []): { opts: SendOptions; items: Attachment[] } => {
+      const out = attach.take(lead);
+      if (!out.receipts.length) return { opts: {}, items: [] };
+      return {
+        opts: { blocks: out.blocks, readDirs: out.readDirs, attachments: out.receipts },
+        items: out.items,
+      };
+    },
+    [attach],
+  );
+
+  /**
+   * THE ANNOTATION HALF OF A SEND, in T's order (T:16503-16560):
+   *
+   *   1. the badge LETTERS, stamped onto the notes — the letter burned into the
+   *      picture and the `label` on the wire have to be the same string, and an
+   *      index can shift between now and any later read;
+   *   2. ONE picture of the whole pane with every letter burned in at its spot,
+   *      bounded and swallowing, because no screenshot is worth losing the
+   *      user's message over;
+   *   3. the picture folded back into the notes — which of them got a badge, and
+   *      the sentence naming why each of the rest did not.
+   *
+   * Steps 1 and 3 are `overviewForSend`'s; the UPLOAD is this file's, because
+   * the tray, the receipts and the failed-send road all live here.
+   */
+  const takeAnnotations = useCallback(async (): Promise<{
+    block: string | null;
+    notes: Annotation[];
+    overview: Attachment | null;
+  }> => {
+    const a = annRef.current;
+    if (!a) return { block: null, notes: [], overview: null };
+    const { notes, overview } = await a.overviewForSend();
+    if (!notes.length) return { block: null, notes: [], overview: null };
+    let shot: Attachment | null = null;
+    if (overview) {
+      // A failed upload is a chip that says so, not a lost message: the same
+      // degradation the capture itself already has (`attachOverview`).
+      shot = await ATTACH_API.attachOverview(agentDir, overview.capture).catch(() => null);
+    }
     return {
-      opts: { blocks: out.blocks, readDirs: out.readDirs, attachments: out.receipts },
-      items: out.items,
+      block: formatAnnotations(notes as AnnotationWire[], pane.noun),
+      notes,
+      overview: shot,
     };
-  }, [attach]);
+  }, [agentDir, pane.noun]);
 
   /**
    * BOTH SEND ROADS GO THROUGH HERE, and they MERGE rather than spread: T's wire
@@ -1111,11 +1501,18 @@ function ChatBody(props: ChatBodyProps) {
    * built a new array out of two owners' rows.
    */
   const beginSend = useCallback(
-    (opts: SendOptions): { merged: SendOptions; done: () => void } => {
-      const mine = takeAttachments();
-      const merged = mergeSendOptions(opts, mine.opts);
+    async (opts: SendOptions): Promise<{ merged: SendOptions; done: (ok: boolean) => void }> => {
+      // The notes FIRST, and awaited: their picture rides the same `<pane-shot>`
+      // block the tray's own do, first in the list, so it has to be in hand
+      // before the tray is emptied (T:16549).
+      const notes = await takeAnnotations();
+      const mine = takeAttachments(notes.overview ? [notes.overview] : []);
+      const merged = mergeSendOptions({ ...opts, ...(notes.block ? { blocks: [notes.block] } : {}) }, mine.opts);
       const key = mine.items.length ? merged.attachments : undefined;
       if (key) inFlight.current.set(key, mine.items);
+      // T:16064 — the send has taken them. Stamped BEFORE the request, because
+      // the receipt and a failed send's roll-back both read the stamp.
+      if (notes.notes.length) annRef.current?.markSent(notes.notes);
       // DELETED ON EVERY ROAD, not only the failed one: `onSendReturned` fires
       // inside the send, so by the time this runs the entry is either already
       // gone (the pictures went back to the tray) or is a send that LANDED — and
@@ -1132,7 +1529,20 @@ function ChatBody(props: ChatBodyProps) {
       // document (Bugbot, PR #1064).
       return {
         merged,
-        done: () => {
+        done: (ok) => {
+          // THE NOTES' SIDE OF THE HAND-BACK FIRST. The run never launched, so
+          // the agent saw none of it: the notes go back to pending, so the chips
+          // return and Done can send them again (T:16086). The OVERVIEW is
+          // revoked rather than handed back — it is the page's own picture of a
+          // pane that has since moved on, and a retried send takes a fresh one
+          // (T:16698-16708).
+          if (!ok) {
+            if (notes.notes.length) annRef.current?.unmarkSent(notes.notes);
+            if (notes.overview) ATTACH_API.revoke(notes.overview);
+          }
+          // …then the tray's side, which judges landing by the ledger and not by
+          // `ok`: a send handed back to the tray was already removed by
+          // `onSendReturned`, so the read below is what says this one went out.
           if (!key) return;
           const landed = inFlight.current.get(key);
           if (!landed) return;
@@ -1149,7 +1559,7 @@ function ChatBody(props: ChatBodyProps) {
         },
       };
     },
-    [controller, takeAttachments],
+    [controller, takeAttachments, takeAnnotations],
   );
 
   const onSend = useCallback(
@@ -1162,29 +1572,49 @@ function ChatBody(props: ChatBodyProps) {
       // round-trip plus a 400 ms lap, which is the 1-2 s stall the QA measured
       // against :1777. The controller puts the user bubble up before anything
       // slow on its own path (`addUser`), so the view this switches to already
-      // has the message and the working line in it.
+      // has the message and the working line in it. Set before the await below,
+      // not inside it: a note's picture is taken on the send path and the view
+      // must not wait on it.
       //
       // A REFUSED START DOES NOT COME BACK HERE, and T's `enterChat()` is
       // equally one-way: its rollback (T:16693-16720) drops the bubble and posts
       // the failure INTO the chat, where the reader stays to read it. Back is
       // the way out, the same as for a run that started and then failed.
       setEntered(true);
-      const { merged, done } = beginSend(opts);
-      // `then(done, done)` and not `finally`: the promise is deliberately
-      // discarded, and a `finally` chain would turn a rejected send into an
-      // unhandled rejection in the console.
-      void controller.sendMessage(text, merged).then(done, done);
+      // ASYNC now, because a send that carries notes has to take their picture
+      // first. The promise is deliberately discarded — the composer already
+      // cleared its box and the transcript already has the bubble.
+      void (async () => {
+        const { merged, done } = await beginSend(opts);
+        const seat = returned.current;
+        let ok = true;
+        try {
+          await controller.sendMessage(text, merged);
+        } catch {
+          ok = false;
+        }
+        done(ok && returned.current === seat);
+      })();
     },
     [controller, beginSend],
   );
   const onFollowUp = useCallback(
     (text: string) => {
-      const { merged, done } = beginSend({
-        model: defaults.model,
-        effort: defaults.effort,
-        permission: defaults.permission,
-      });
-      void controller.sendFollowUp(text, merged).then(done, done);
+      void (async () => {
+        const { merged, done } = await beginSend({
+          model: defaults.model,
+          effort: defaults.effort,
+          permission: defaults.permission,
+        });
+        const seat = returned.current;
+        let ok = true;
+        try {
+          await controller.sendFollowUp(text, merged);
+        } catch {
+          ok = false;
+        }
+        done(ok && returned.current === seat);
+      })();
     },
     [controller, defaults.model, defaults.effort, defaults.permission, beginSend],
   );
@@ -1288,6 +1718,8 @@ function ChatBody(props: ChatBodyProps) {
   // preview seats, so the row stands in every layout and `annTarget` decides
   // only whether `AnnStrip` draws anything inside it. The view toggle and the
   // picker stay narrow-only in there (`pickerHost`).
+  // PR3: the host pane's seats are gated on `ann.capable` at the `AnnStrip`
+  // call site — the strip itself stands, the seats go ("absent beats dead").
   // T:7566 `annFitStrip` — the strip's words collapse to icons only when they
   // MEASURABLY do not fit (QA #2: at 1280px with a pane the chat column is
   // ~308px and the three full labels overflowed it by 8px).
@@ -1408,8 +1840,17 @@ function ChatBody(props: ChatBodyProps) {
       back: currentUrl(),
       onNavigate,
       boxRef,
-      // Pictures alone are sendable, with no words at all (T:17903).
-      hasAttachments: attach.items.length > 0,
+      // Pictures — and NOTES — alone are sendable, with no words at all
+      // (T:17903, and ✓ Done's whole gesture: a round of comments IS the
+      // message).
+      // ...and the SAME predicate `overviewForSend` filters on
+      // (`useAnnotations.overviewForSend`): a chip with neither words nor a
+      // recording stamp is not a sendable note, so Send must not light up for
+      // one — a single click in Comment mode makes exactly that chip, and the
+      // two answers used to disagree about it.
+      hasAttachments:
+        attach.items.length > 0 ||
+        ann.chips.some((c) => !!c.note.content || typeof c.note.t === "number"),
       // ... but not while one of them is still on its way: `take()` leaves a
       // `pending` chip in the tray, so a send fired now would go out WITHOUT
       // the files whose chips made it sendable (Bugbot, PR #1064).
@@ -1429,14 +1870,22 @@ function ChatBody(props: ChatBodyProps) {
           paneNoun={pane.paneNoun}
           onOpen={setViewing}
           onRemove={attach.remove}
-        />
+        >
+          {/* The SAME pill a screenshot's chip is, in the same row: both are
+              things this message is about to carry and both come off with the
+              same ✕ (T:927). The tray renders them first. */}
+          <AnnChips items={ann.chips} onEdit={ann.editNote} onRemove={ann.removeNote} />
+        </AttachTray>
       ),
+      // T:8505 — whichever composer is mounted hands its send in, for the
+      // walkthrough's auto-submit and for ✓ Done.
+      submitRef: submitBox,
       onPaste,
       // The chip row is ABOVE the control row and changes the composer's height,
       // never the row's width — but T re-measures on exactly this kind of change
       // (its MutationObserver watches the rows' subtree), and the footnote's
       // two-line budget is measured in the same pass (T:12455-12474).
-      fitRevision: attach.items.length,
+      fitRevision: attach.items.length + ann.chips.length,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
@@ -1461,6 +1910,9 @@ function ChatBody(props: ChatBodyProps) {
       attach.remove,
       onPaste,
       pane.paneNoun,
+      ann.chips,
+      ann.editNote,
+      ann.removeNote,
     ],
   );
   const onAnchorSpent = useCallback(() => params.set({ msg: null }), [params]);
@@ -1476,7 +1928,15 @@ function ChatBody(props: ChatBodyProps) {
       ref={rootRef}
       className={rootClass(
         props,
-        [narrowView.classNames, split.dragging ? "dragging" : "", pane.noPane ? "nopane" : ""]
+        [
+          narrowView.classNames,
+          split.dragging ? "dragging" : "",
+          pane.noPane ? "nopane" : "",
+          // T:1466 — A MODE LOCKS THE CHAT: while Comment or Annotate is on, or
+          // a recording is still settling, the ways OUT are drawn inert. The
+          // notes belong to this chat and this app; leaving would strand them.
+          ann.locked ? "annlock" : "",
+        ]
           .filter(Boolean)
           .join(" "),
       )}
@@ -1494,8 +1954,25 @@ function ChatBody(props: ChatBodyProps) {
             flags={flags}
             watcher={watcher}
             frameRef={setPaneFrame}
+            // The frame's own `load` re-wires the six listeners inside the new
+            // document and repaints every pin against it (T:8544).
+            onFrameLoad={ann.onFrameLoad}
+            stageRef={setStage}
+            onRemeasure={ann.remeasure}
+            annBar={
+              <AnnBar
+                handlers={annBarHandlers}
+                paint={annBarPaint}
+                barRef={ann.bindBar}
+              />
+            }
           />
           <SplitDivider split={split} />
+          {/* The ring and the pin host, created into `.c-leftview` — ordinary
+              nodes of THIS document, because in the split layout the pane is
+              ours (the other two layouts build the same two boxes inside a
+              shadow root over there). */}
+          <AnnPins stage={stage} onBind={ann.bindPins} />
         </>
       ) : null}
       <div
@@ -1535,6 +2012,12 @@ function ChatBody(props: ChatBodyProps) {
                 type="button"
                 className="c-back"
                 aria-label="Back to chats"
+                // PR3: locked while a comment round or a walkthrough owns the
+                // page (`useAnnotations().locked`) — leaving mid-round would
+                // orphan the notes. Main moved Back from the top bar into this
+                // strip (P2-1), so the lock moved with it.
+                disabled={ann.locked}
+                aria-disabled={ann.locked ? "true" : "false"}
                 onClick={onBack}
               >
                 ← Chats
@@ -1545,15 +2028,32 @@ function ChatBody(props: ChatBodyProps) {
             <span className="c-hdr-slack" />
             <AnnStrip
               paneNoun={pane.paneNoun}
-              // The camera photographs whatever the annotate target is, so the
-              // seats go only when there is nothing to photograph. The narrow
-              // CHAT view parks OUR preview off screen (T:3823
-              // `body.view-chat .viewshot`) and is the one layout answer left in
-              // here; a hosted mount's target is the host's own column, which
-              // that view does not move.
-              shown={annTarget && !(paneShown && narrowView.narrow && narrowView.view === "chat")}
+              // The row itself follows the ANNOTATE TARGET — ours or the
+              // host's — because all three seats act on it
+              // (`enterNoPane`'s step 6 note).
+              shown={annTarget}
+              // The camera photographs the pane, so it alone goes when the pane
+              // is not on screen: the narrow CHAT view parks OUR preview off
+              // screen (T:3823 `body.view-chat .viewshot`). Only ours — a
+              // hosted mount's target is the host's own column, which that view
+              // does not move, so the flag is about `paneShown` and not about
+              // the breakpoint alone.
+              cameraShown={!(paneShown && narrowView.narrow && narrowView.view === "chat")}
+              capable={ann.capable}
+              mode={ann.mode}
               capturing={attach.capturing}
               onScreenshot={() => void attach.capture()}
+              onComment={ann.onCommentSeat}
+              recSeat={
+                <RecControls
+                  rec={recSnap}
+                  shown={micShown}
+                  commentArmed={ann.mode === "comment"}
+                  onBegin={() => void recorder.begin()}
+                  onEnd={() => void recorder.end()}
+                  onDiscard={() => void recorder.discard()}
+                />
+              }
             />
             {host === "anntools" ? (
               <LeftModePicker
@@ -1620,6 +2120,11 @@ function ChatBody(props: ChatBodyProps) {
             onOpenSession={onOpenSession}
           />
         )}
+        {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat
+            column while it is not lent to the target's document — and parked
+            OUTSIDE the home/chat branch, because the round of notes survives the
+            first send that leaves the landing. */}
+        <AnnPopover handlers={ann.popHandlers} popRef={ann.bindPop} />
       </div>
       <SentPop
         open={!!sent}

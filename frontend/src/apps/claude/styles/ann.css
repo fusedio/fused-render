@@ -1,0 +1,527 @@
+/* ---- the annotation subsystem's own sheet (PR3, inventory 02 §B) ----------
+   Source: T:628-900 (pins, ring, bar, composer) and T:1466-1470 (the nav lock).
+   Scoped under `.chat-root` like every other chat sheet.
+
+   THE CLASS NAMES ARE T's, not the `c-` prefixed ones the React components use
+   elsewhere, and deliberately: the bar, the composer card and the Element/Point
+   picker are ONE node each with three possible homes (this document, the
+   injected shadow layer in the app's document, the cross-origin overlay in the
+   parent's). `layer.ts`'s `ANN_LAYER_CSS` carries the same rules for the two
+   homes this sheet cannot reach — so a renamed class here would be a bar that
+   looks like a bar in one layout and like nothing in the other two. */
+
+/* the ring and the pin host, over the frame in `.c-leftview` (T:629-662) */
+.chat-root .c-annpins {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+.chat-root .c-annhl {
+  position: absolute;
+  z-index: 1;
+  display: none;
+  pointer-events: none;
+  border: 1.5px solid var(--c-accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--c-accent) 12%, transparent);
+}
+.chat-root .annpin {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
+  border: 1.5px solid var(--c-panel);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  box-shadow: 0 1px 4px var(--c-shadow);
+}
+
+/* the mode bar. A real ROW above the frame in this layout (Akshil, 2026-09-05:
+   "it covers the top of the page") — `.c-left` is a flex column and the bar's
+   seat goes in before `.c-leftview`, so arming pushes the app DOWN by 43px
+   instead of hiding its first 43px. The other two layouts push their document
+   with a margin instead (`createBarPush`). */
+.chat-root .c-annbar-host {
+  flex-shrink: 0;
+}
+.chat-root .annbar {
+  position: relative;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  height: 43px;
+  display: none;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--c-bg);
+  border-bottom: 1px solid var(--c-border);
+  color: var(--c-fg);
+  font-size: 12px;
+  line-height: 1.3;
+  pointer-events: auto;
+  /* NOT `overflow: hidden` (Akshil, 2026-09-07): the instant tooltip hangs
+     BELOW the bar, over the app. The lead and the sentence clip themselves. */
+}
+.chat-root .annbar.show {
+  display: flex;
+  animation: c-annbarin 0.18s ease;
+}
+@keyframes c-annbarin {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .annbar.show {
+    animation: none;
+  }
+}
+.chat-root .annbar .lead {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+}
+/* The mode TAG in the armed seat's own idiom — an accent outline on a faint
+   wash; the filled seat shouted (Akshil, 2026-08-19). Recording wears
+   `--c-error` like the ■/clock across the divider: one mode, one colour. */
+.chat-root .annbar .tag {
+  flex-shrink: 0;
+  height: 26px;
+  color: var(--c-accent);
+  font-weight: 400;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.chat-root .annbar .tag b {
+  font-weight: inherit;
+}
+.chat-root .annbar .tag svg,
+.chat-root .annbar .done svg,
+.chat-root .annbar .discard svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  flex-shrink: 0;
+}
+.chat-root .annbar .tag .ic-mic {
+  display: none;
+}
+.chat-root .annbar.rec .tag .ic-mic {
+  display: block;
+}
+.chat-root .annbar.rec .tag .ic-cmt {
+  display: none;
+}
+.chat-root .annbar.rec .tag {
+  color: var(--c-error);
+}
+/* The sentence at 13px, not the muted 12px the strip's words wear (Akshil,
+   2026-09-05: "not prominent enough") — and the mode's colour stays on the tag
+   alone, so nothing here shouts. */
+.chat-root .annbar .txt {
+  min-width: 0;
+  color: var(--c-fg);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-root .annbar .slot {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.chat-root .annbar .slot:empty {
+  display: none;
+}
+.chat-root .annbar .done {
+  border: 1px solid var(--c-accent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--c-accent);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  height: 26px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s;
+}
+.chat-root .annbar .done:hover {
+  background: color-mix(in srgb, var(--c-accent) 14%, transparent);
+}
+/* The quiet one beside the accent Done, red only on hover — destructive. */
+.chat-root .annbar .discard {
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--c-dim);
+  height: 26px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    color 0.12s,
+    border-color 0.12s;
+}
+.chat-root .annbar .discard:hover {
+  color: var(--c-error);
+  border-color: var(--c-error);
+}
+/* One node per bar, filled from the hovered button's `data-tip` and placed under
+   its right edge by the bar's own hover handler — the OS tooltip a `title`
+   produces waits about a second and cannot be hurried. */
+.chat-root .annbar .tip {
+  position: absolute;
+  top: calc(100% + 6px);
+  display: none;
+  z-index: 4;
+  padding: 3px 7px;
+  border-radius: 5px;
+  color: var(--c-fg);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  box-shadow: 0 2px 8px var(--c-shadow);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.chat-root .annbar .tip.show {
+  display: block;
+}
+.chat-root .annbar.rec .done {
+  display: none;
+}
+.chat-root .annbar .stop {
+  display: none;
+}
+.chat-root .annbar.rec .stop {
+  display: inline-flex;
+  border: 1px solid var(--c-error);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--c-error);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  height: 26px;
+  padding: 0 10px;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s;
+}
+.chat-root .annbar .stop:hover {
+  background: color-mix(in srgb, var(--c-error) 14%, transparent);
+}
+.chat-root .annbar .stop svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  stroke: none;
+  flex-shrink: 0;
+}
+.chat-root .annbar .stop .clk:empty {
+  display: none;
+}
+/* The folds, by MEASURE (`barFolds`): the sentence yields first, then the
+   buttons' words, the tag's word last of all. Controls never clip. */
+.chat-root .annbar.t1 .txt {
+  display: none;
+}
+.chat-root .annbar.t2 #anntool .lbl,
+.chat-root .annbar.t2 .done .lbl {
+  display: none;
+}
+.chat-root .annbar.t2 #anntool button,
+.chat-root .annbar.t2 .done {
+  padding: 0 8px;
+}
+.chat-root .annbar.t3 .tag b {
+  display: none;
+}
+
+/* the Element/Point picker, which RIDES the bar (`paintBar` adopts it) */
+.chat-root #anntool {
+  display: flex;
+  flex-shrink: 0;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  overflow: hidden;
+  height: 26px;
+}
+.chat-root #anntool[hidden] {
+  display: none;
+}
+.chat-root #anntool button {
+  border: 0;
+  background: transparent;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  margin: 0;
+  padding: 0 10px;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.chat-root #anntool button + button {
+  border-left: 1px solid var(--c-border);
+}
+.chat-root #anntool button:hover {
+  color: var(--c-fg);
+  background: var(--c-surface);
+}
+.chat-root #anntool button[aria-checked="true"] {
+  color: var(--c-on-accent);
+  background: var(--c-accent);
+}
+.chat-root #anntool svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  flex-shrink: 0;
+}
+.chat-root #anntool svg .fill {
+  fill: currentColor;
+  stroke: none;
+}
+.chat-root #anntool .lbl {
+  display: var(--c-annlbl, inline);
+}
+/* The exit glide back into the buttons (`createToolDoors`, 150ms). */
+.chat-root #anntool {
+  animation: c-annkitin 0.18s ease;
+}
+.chat-root #anntool.out {
+  animation: c-annkitout 0.15s ease forwards;
+}
+@keyframes c-annkitin {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+}
+@keyframes c-annkitout {
+  to {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root #anntool,
+  .chat-root #anntool.out {
+    animation: none;
+  }
+}
+
+/* the note composer (T:829-890). `.sidebar` is the PARKED seat and only that:
+   with a point to aim at, the card is portaled into the target document's layer
+   and dressed by `ANN_LAYER_CSS` instead — the shadow root has never heard of
+   this stylesheet. What is left for the parked rule is the case with no point to
+   aim at: a chip opened for a note whose element no longer resolves, or a host
+   showing nothing marked. */
+.chat-root .c-annpop-host {
+  display: contents;
+}
+.chat-root #annpop {
+  position: absolute;
+  z-index: 5;
+  display: none;
+  width: 280px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 12px;
+  padding: 10px;
+  box-shadow: 0 6px 24px var(--c-shadow);
+}
+.chat-root #annpop.sidebar {
+  position: fixed;
+  z-index: 40;
+  top: 51px;
+  left: 12px;
+  right: 12px;
+  width: auto;
+}
+.chat-root #annpop textarea {
+  width: 100%;
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  color: var(--c-fg);
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 9px;
+  resize: none;
+  outline: none;
+}
+.chat-root #annpop .hint {
+  color: var(--c-faint);
+  font-size: 11px;
+  margin-top: 5px;
+  display: flex;
+  align-items: center;
+}
+.chat-root #annpop #anndel {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--c-error);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+/* the nav lock (T:1466-1470). A mode holds the reader on THIS chat: the notes
+   are about the app beside it, and ← Chats or a recent row would carry them off
+   to a chat they are not about. `disabled` and the handlers' guards keep the
+   keyboard honest; this is only the drawing. */
+.chat-root.annlock .c-chat-row,
+.chat-root.annlock .c-art-row,
+.chat-root.annlock .c-snap-row,
+.chat-root.annlock .c-schedbtn,
+.chat-root .c-back:disabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* the armed seats in the strip (T:229-322). The accent fill is the mode's one
+   on-screen signal in this row; the way OUT is on the bar over the app. */
+.chat-root .c-anncta button.on {
+  border-color: var(--c-accent);
+  color: var(--c-accent);
+}
+/* INERT FACES, spoken by `aria-disabled` and drawn here: the camera and the mic
+   while a comment round is armed, the Comment seat while a walkthrough records
+   (Akshil, 2026-09-06). "Absent beats dead" applies to a control with nothing to
+   act on; these have something to act on and are merely not this mode's. */
+.chat-root .c-anncta:has(.c-annbtn.on) .c-viewshot,
+.chat-root .c-anncta:not(.busy):has(.c-annbtn.on):not(:has(.c-annrec.on)) .c-annrec,
+.chat-root .c-anncta:has(.c-annrec.on) .c-annbtn {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.chat-root .c-anncta:not(.busy) .c-annreclbl,
+.chat-root .c-annreclbl:empty {
+  display: none;
+}
+
+/* The chip's words are a BUTTON (a door to the editor), not a span with an
+   onclick: it is announced, focusable and Enter-able. Dressed as the text it
+   replaces, so the row still reads as one pill (T:6996's `cursor: pointer`). */
+.chat-root .c-annchip .c-annchip-txt {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* ONE SEAT, TWO FACES (T:297). Both glyphs and both words are baked into the
+   markup and the stylesheet picks one — a seat whose glyph is swapped in JS
+   re-lays the row out on every transition (T:3992) — so the rest state is the
+   bubble plus "Comment" and the armed comment round is the check plus "Done".
+
+   `display: none` on the resting half is what was MISSING, not the swap: the
+   two words rendered side by side as "Comment Done" on the hosted strip and in
+   the narrow bottom row (QA round 2, item 2). It read as one concatenated label
+   on first paint of a primary control.
+
+   The armed word goes back through the SAME token every other label reads
+   (`--c-annlbl`, chat.css), so a tight strip drops it with the rest instead of
+   winning a specificity war against the collapse.
+
+   `.c-anncta` IS IN EVERY CHAIN HERE for one reason: `.chat-root .c-anncta
+   .c-lbl { display: var(--c-annlbl, inline) }` (chat.css) is three classes and
+   comes later in the cascade, so the three-class `.chat-root .c-annbtn
+   .c-done-word` this used to be LOST to it — measured: the hosted strip showed
+   "Comment Done" while this very rule said `display: none`. Four classes wins
+   without `!important`. */
+.chat-root .c-anncta .c-annbtn .c-cmt-done,
+.chat-root .c-anncta .c-annbtn .c-done-word {
+  display: none;
+}
+/* Only for a COMMENT round: through a walkthrough (and its Stopping…/
+   Transcribing… settle) the seat is armed but resting — the Annotate seat
+   carries the status and the stop is the bar's ■ — so it keeps its own name. */
+.chat-root .c-anncta:not(.busy):not(:has(.c-annrec.on)) .c-annbtn.on .c-cmt-bubble,
+.chat-root .c-anncta:not(.busy):not(:has(.c-annrec.on)) .c-annbtn.on .c-cmt-word {
+  display: none;
+}
+.chat-root .c-anncta:not(.busy):not(:has(.c-annrec.on)) .c-annbtn.on .c-cmt-done {
+  display: block;
+}
+.chat-root .c-anncta:not(.busy):not(:has(.c-annrec.on)) .c-annbtn.on .c-done-word {
+  display: var(--c-annlbl, inline);
+}
+/* ONE ACTIVE SEAT (T:303): while a walkthrough records — and through
+   Stopping…/Transcribing…, when the mic's `.on` is down but the mode is still
+   armed — the Comment seat rests, and the Annotate seat carries the status. */
+.chat-root .c-anncta:has(.c-annrec.on) .c-annbtn.on,
+.chat-root .c-anncta.busy .c-annbtn.on {
+  color: var(--c-dim);
+  border-color: var(--c-border);
+}
+.chat-root .c-anncta.busy .c-annrec .c-rec-word {
+  display: none;
+}
+.chat-root .c-anncta.busy .c-annrec {
+  color: var(--c-accent);
+  border-color: var(--c-accent);
+}
+
+/* ---- the compact and peek cuts (T:1405-1438) -----------------------------
+   Both hosts take `#anntools` away — the row the three seats live in — so the
+   mode has no way IN on either surface, and a bookmarked `annmode=1` must not
+   leave the bar, the pins and the ring painted over a card nobody can disarm
+   from. Hidden and not torn down, like every other cut here: this is a class
+   away from being a whole chat again. */
+.chat-root.chat-compact .c-annbar-host,
+.chat-root.chat-compact .c-annpins,
+.chat-root.chat-compact .c-annhl,
+.chat-root.chat-compact .c-annpop-host,
+.chat-root.chat-peek .c-annbar-host,
+.chat-root.chat-peek .c-annpins,
+.chat-root.chat-peek .c-annhl,
+.chat-root.chat-peek .c-annpop-host {
+  display: none;
+}

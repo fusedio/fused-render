@@ -493,13 +493,19 @@ test("a send that never launched hands the very pictures it took back", async ()
 /**
  * A HOST'S CONTENT FRAME, which is what gives this chat-only mount a camera at
  * all (`annotateTarget`; ClaudeChat's `appFrame`). Only the two properties
- * `frameIsCrossOrigin` and the capture path read off it.
+ * `frameIsCrossOrigin` and the capture path read off it —
+ * PLUS A LISTENER SURFACE, because PR3's annotation coordinator subscribes to
+ * this frame's `load` to re-attach after a boot navigation (`ann/target.ts`
+ * `watch`). A stub without it does not fail the annotation feature under test
+ * here; it throws out of the mount effect and takes the whole chat with it.
  */
 function hostFrame(): () => HTMLIFrameElement | null {
   const frame = {
     isConnected: true,
     contentDocument: {},
     contentWindow: { document: {}, location: { href: "http://localhost/render" } },
+    addEventListener: () => {},
+    removeEventListener: () => {},
   } as unknown as HTMLIFrameElement;
   return () => frame;
 }

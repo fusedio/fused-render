@@ -16,6 +16,7 @@ import { statPath } from "@platform/lib/api";
 import { paneOfferable, paneSrcFor } from "../pane/paneUrl";
 import {
   attachFiles,
+  attachOverview,
   attachPane,
   attachPaths,
   dragHasAttachment,
@@ -55,6 +56,11 @@ export {
 export interface AttachApi {
   flash: typeof flash;
   attachPane: typeof attachPane;
+  /** PR3's send-time badged overview (`shots/attach.attachOverview`, T:10127).
+   *  In the seam and not imported at the call site for the same reason the other
+   *  eleven are: a send that has to take a picture must be testable without a
+   *  capture engine. */
+  attachOverview: typeof attachOverview;
   attachFiles: typeof attachFiles;
   attachPaths: typeof attachPaths;
   readDirs: typeof readDirs;
@@ -75,6 +81,7 @@ export interface AttachApi {
 export const ATTACH_API: AttachApi = {
   flash,
   attachPane,
+  attachOverview,
   attachFiles,
   attachPaths,
   readDirs,
