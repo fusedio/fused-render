@@ -126,11 +126,27 @@ LTX_SPLIT_MANIFEST = "split_model.json"
 #: Verified rather than assumed — `bn.running_mean`/`running_var` are
 #: bit-identical between the two repos (max|diff| = 0.0). A variant with no
 #: `vae` simply gets no preview.
+#: **Two klein sizes over ONE variant class, which is what the `config` field
+#: is for.** `Flux2Klein` takes its `ModelConfig` as an argument and only
+#: DEFAULTS to `flux2_klein_4b` when given none (read out of mflux 0.19.0's
+#: `flux2_klein.py`), and mflux's own `AVAILABLE_MODELS` carries
+#: `flux2-klein-9b` beside `flux2-klein-4b`, with the transformer and
+#: text-encoder overrides that describe the bigger checkpoint. So a second
+#: klein needs a row here and nothing else — no new class, no import path to
+#: get right, and no second `vae` key either: the two conversions' `vae/`
+#: index files list the same 266 tensor names, so they share one latent space
+#: and one `preview.PROJECTIONS` row.
 MFLUX_VARIANTS = {
     "mlx-community/FLUX.2-Klein-4B-4bit": {
         "variant": "Flux2Klein",
         "module": "mflux.models.flux2.variants",
         "config": "flux2_klein_4b",
+        "vae": "AutoencoderKLFlux2",
+    },
+    "mlx-community/flux2-klein-9b-4bit": {
+        "variant": "Flux2Klein",
+        "module": "mflux.models.flux2.variants",
+        "config": "flux2_klein_9b",
         "vae": "AutoencoderKLFlux2",
     },
 }
@@ -164,6 +180,18 @@ MFLUX_VARIANTS = {
 #: row in the table above already is.
 MFLUX_EDIT_VARIANTS = {
     "mlx-community/FLUX.2-Klein-4B-4bit": {
+        "variant": "Flux2KleinEdit",
+        "module": "mflux.models.flux2.variants.edit.flux2_klein_edit",
+    },
+    # The 9B klein edits through the same class as the 4B, over the config
+    # `mflux_edit_recipe` reads off its `MFLUX_VARIANTS` row — which is the
+    # whole reason that derivation exists rather than a repeated `config`
+    # key here. Present so `fused.ai.image({image})` is not refused on one of
+    # the two models this engine suggests: a missing edit row beside a
+    # present plain one is exactly the gap `_build_variant`'s "no edit variant
+    # class named for it" branch reports, and nothing about this repo makes it
+    # the one to have it.
+    "mlx-community/flux2-klein-9b-4bit": {
         "variant": "Flux2KleinEdit",
         "module": "mflux.models.flux2.variants.edit.flux2_klein_edit",
     },
