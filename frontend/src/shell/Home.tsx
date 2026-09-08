@@ -186,8 +186,7 @@ function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
           <span className="app-pcard-lines">
             <span className="skel-bar" style={{ width: "58%" }} />
             <span className="app-pcard-meta">
-              <span className="skel-bar" style={{ width: "46px" }} />
-              <span className="skel-bar" style={{ width: "64px" }} />
+              <span className="skel-bar" style={{ width: "110px" }} />
             </span>
           </span>
         </span>
