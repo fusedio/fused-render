@@ -26,10 +26,12 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, HardDrive } from "lucide-react";
 
+import { AI_MODELS_PREFIX } from "@apps/ai_models/routes";
 import { fitNote } from "@apps/ai_models/shared/fitNote";
 import { modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { downloadAiModel, getAiCatalog } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
+import { navigateUrl } from "@platform/lib/router";
 import {
   fetchJobs,
   isRunning,
@@ -467,6 +469,10 @@ function ModelRow({
   // (owner, 2026-09-04). Same for the engine: "MLX LM" answers a question
   // only somebody comparing backends is asking.
   const name = model.nickname || model.label;
+  const playgroundHref = `${AI_MODELS_PREFIX}/playground?${new URLSearchParams({
+    model: model.id,
+    cap: pick.capability,
+  })}`;
   // A fresh install builds the runner's environment before any bytes move
   // (`supervisor._env_install_worker`, states `venv` -> `downloading`), so the
   // job's own caption is what makes a row at 0 bytes read as working rather
@@ -498,13 +504,31 @@ function ModelRow({
           />
         )}
         <div className="min-w-0 flex-1">
-          <label
-            htmlFor={busy || here ? undefined : `model-${model.id}`}
-            className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium"
-          >
-            {name}
-            <span className="text-xs font-normal text-muted-foreground">{pick.capabilityLabel}</span>
-          </label>
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm font-medium">
+            {/* The NAME opens this model in the Playground (`?model=` +
+                `?cap=` seed its picker, ai_models/routes.ts) — for a reader
+                who wants to see what it does before spending the download,
+                or to try one that is already here. Leaving the wizard this
+                way is a close (OnboardingWizard's unmount dismisses). The
+                checkbox keeps the rest of the row, via the caption's label. */}
+            <a
+              href={playgroundHref}
+              onClick={(e) => {
+                e.preventDefault();
+                navigateUrl(playgroundHref);
+              }}
+              title="Open in Playground"
+              className="text-foreground no-underline hover:text-[var(--accent-soft)] hover:underline"
+            >
+              {name}
+            </a>
+            <label
+              htmlFor={busy || here ? undefined : `model-${model.id}`}
+              className="text-xs font-normal text-muted-foreground"
+            >
+              {pick.capabilityLabel}
+            </label>
+          </div>
           {fit && (
             <div
               className="mt-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground"
