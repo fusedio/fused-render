@@ -50,7 +50,13 @@ export function GitMark({ status }: { status?: string }) {
   const mark = gitMarkFor(status);
   if (!mark) return null;
   return (
-    <span className="git-mark" title={mark.label} aria-label={mark.label}>
+    // role="img": a plain `<span>` is `role=generic`, where `aria-label` is
+    // unsupported and dropped — a screen reader would announce the bare
+    // glyph ("!" as an exclamation mark), defeating the whole reason this
+    // badge carries a letter and a label instead of colour alone (see this
+    // file's header). Same trap, same fix, as ScheduleTaskViews.tsx's own
+    // status dot.
+    <span className="git-mark" role="img" title={mark.label} aria-label={mark.label}>
       {mark.letter}
     </span>
   );

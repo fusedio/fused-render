@@ -77,6 +77,20 @@ def test_parse_porcelain_skips_malformed_chunks():
     assert git_status.parse_porcelain(out) == [("??", "ok.txt")]
 
 
+def test_parse_porcelain_decodes_a_non_utf8_name_like_scandir_would():
+    """A name git can't render as UTF-8 (a latin-1 checkout, say) must decode
+    the same way `os.scandir` decodes the identical bytes off disk —
+    `os.fsdecode`'s surrogateescape — or the two will never compare equal and
+    the path loses its tint. `utf-8/replace` mangles the un-decodable byte
+    into U+FFFD, a DIFFERENT string that matches nothing `scandir` ever
+    yields."""
+    raw = b"caf\xe9.txt"  # "café.txt" in latin-1, not valid UTF-8
+    out = b"?? " + raw + b"\x00"
+    got = git_status.parse_porcelain(out)
+    assert got == [("??", os.fsdecode(raw))]
+    assert got[0][1] != raw.decode("utf-8", "replace")
+
+
 # ------------------------------------------------------- mapping and the rollup
 
 def test_entry_statuses_maps_files_in_the_listed_folder():
@@ -131,10 +145,51 @@ def test_entry_statuses_ignores_names_not_in_the_listing():
     assert git_status.entry_statuses("", records, ["here.txt"]) == {}
 
 
-def test_entry_statuses_ignores_the_listed_folders_own_record():
-    """Looking INSIDE a wholly untracked tree, `sub/` can arrive as a record for
-    the folder we are listing; stripping its prefix leaves nothing to name."""
+def test_entry_statuses_folds_case_on_the_leaf_name_when_the_platform_does():
+    """`_FOLDS_CASE` decides whether the PREFIX comparison folds case (A3); the
+    leaf-name lookup a few lines later must fold the same way or not at all.
+    `want` holds scandir's spelling (`Readme.md`) while git's index holds the
+    committed spelling (`README.md`) — on a case-folding filesystem those are
+    the same file, and the dict key handed back must be the CALLER's spelling
+    (`Readme.md`), because that is what the frontend joins rows against."""
+    records = [("??", "README.md")]
+    got = git_status.entry_statuses(
+        "", records, ["Readme.md"], _folds_case=True)
+    assert got == {"Readme.md": "untracked"}
+
+
+def test_entry_statuses_does_not_fold_case_when_the_platform_does_not():
+    records = [("??", "README.md")]
+    got = git_status.entry_statuses(
+        "", records, ["Readme.md"], _folds_case=False)
+    assert got == {}
+
+
+def test_entry_statuses_credits_every_listed_name_from_the_folders_own_record():
+    """Looking INSIDE a wholly untracked tree, `sub/` arrives as a record for
+    the folder we are listing rather than for anything inside it — git's
+    default `-u normal` collapses the whole subtree to that one record (see
+    the module header). Stripping the prefix leaves an empty `rel`, but the
+    record still means something: EVERY name this listing is about to render
+    is untracked, because the record's path is the listed folder itself
+    (recognisable by the trailing slash) and not some deeper path that merely
+    starts the same way. Dropping it here — as `sub/brand-new.txt` opened one
+    level down — would leave every child of a freshly created directory
+    looking clean, which is exactly the decoration this module exists to
+    avoid missing."""
     records = [("??", "sub/")]
+    assert git_status.entry_statuses("sub/", records, ["a.txt", "b.txt"]) == \
+        {"a.txt": "untracked", "b.txt": "untracked"}
+
+
+def test_entry_statuses_does_not_credit_a_non_directory_record_for_the_folder_itself():
+    """A record whose path equals the listed folder but does NOT end in `/`
+    (a submodule's own entry, say) names the folder as a path in its own
+    right — it is not git's untracked-directory collapse, and is not a
+    blanket statement about everything inside it. There is no name to credit
+    it to (the folder itself isn't one of the listed rows), so it is simply
+    dropped, unlike the trailing-slash case above."""
+    records = [(" M", "sub")]
     assert git_status.entry_statuses("sub/", records, ["a.txt"]) == {}
 
 
@@ -185,6 +240,52 @@ def test_listing_statuses_is_empty_outside_a_repository(tmp_path):
     os.makedirs(plain)
     write(plain, "a.txt", "hi\n")
     assert git_status.listing_statuses(plain, ["a.txt"]) == {}
+
+
+@pytestmark_git
+def test_listing_statuses_reuses_a_cached_status_within_the_ttl(tmp_path, monkeypatch):
+    """A9's motivating case: fanning out several listings of the SAME folder
+    (BookmarkCards' home-screen probes, fs-actions.ts's dedupe-by-listing
+    callers) must not each pay their own `git status` spawn."""
+    root = str(tmp_path / "repo")
+    build_repo(root)
+    git_status.invalidate_status_cache()
+
+    calls = []
+    orig = git_status._run_status_uncached
+
+    def counting(cwd):
+        calls.append(cwd)
+        return orig(cwd)
+
+    monkeypatch.setattr(git_status, "_run_status_uncached", counting)
+    git_status.listing_statuses(root, ["README.md"])
+    git_status.listing_statuses(root, ["README.md"])
+    git_status.listing_statuses(root, ["README.md"])
+    assert len(calls) == 1
+
+
+@pytestmark_git
+def test_invalidate_status_cache_forces_a_fresh_spawn(tmp_path, monkeypatch):
+    """The one lever `/api/run` pulls after every run (see the docstring on
+    `invalidate_status_cache`) — without it, staging through the git template
+    would show its OWN write as stale for up to `_STATUS_CACHE_TTL_S`."""
+    root = str(tmp_path / "repo")
+    build_repo(root)
+    git_status.invalidate_status_cache()
+
+    calls = []
+    orig = git_status._run_status_uncached
+
+    def counting(cwd):
+        calls.append(cwd)
+        return orig(cwd)
+
+    monkeypatch.setattr(git_status, "_run_status_uncached", counting)
+    git_status.listing_statuses(root, ["README.md"])
+    git_status.invalidate_status_cache()
+    git_status.listing_statuses(root, ["README.md"])
+    assert len(calls) == 2
 
 
 @pytestmark_git

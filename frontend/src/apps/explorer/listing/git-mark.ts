@@ -44,5 +44,18 @@ export function gitRowClass(status: string | undefined): string {
 /** The mark for an entry, or null when git has nothing to say about it. */
 export function gitMarkFor(status: string | undefined): GitMark | null {
   if (!status) return null;
-  return GIT_MARKS[status as GitEntryStatus] ?? null;
+  // `GIT_MARKS[status] ?? null` would resolve `Object.prototype` for a
+  // status this build doesn't know: `gitMarkFor("constructor")` returns
+  // `Object` (a truthy value, so `GitMark` would render `mark.letter` as
+  // `undefined`), and `gitRowClass("constructor")` would name a CSS class
+  // for a state that was never meant to exist.
+  //
+  // `Object.prototype.hasOwnProperty.call`, not `Object.hasOwn` (ES2022) —
+  // this project's tsconfig targets ES2020 — but the effect is identical:
+  // it checks only GIT_MARKS's own keys, never the prototype chain behind
+  // it, so a status matching an inherited property name is rejected the
+  // same as any other status this build has never heard of.
+  return Object.prototype.hasOwnProperty.call(GIT_MARKS, status)
+    ? GIT_MARKS[status as GitEntryStatus]
+    : null;
 }

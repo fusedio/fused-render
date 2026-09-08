@@ -27,6 +27,16 @@ describe("gitRowClass", () => {
     // leave the row looking decorated and coloured like nothing.
     expect(gitRowClass("deleted")).toBe("");
   });
+
+  it("does not resolve an inherited Object.prototype property", () => {
+    // `GIT_MARKS[status] ?? null` resolves the PROTOTYPE CHAIN, not just the
+    // object's own keys — `GIT_MARKS["constructor"]` is `Object`, a truthy
+    // value, so this class name must not fall out of a cross-version guard
+    // that only means to reject values this build has never heard of.
+    expect(gitRowClass("constructor")).toBe("");
+    expect(gitRowClass("toString")).toBe("");
+    expect(gitRowClass("hasOwnProperty")).toBe("");
+  });
 });
 
 describe("gitMarkFor", () => {
@@ -51,6 +61,13 @@ describe("gitMarkFor", () => {
     expect(gitMarkFor(undefined)).toBeNull();
     expect(gitMarkFor("")).toBeNull();
     expect(gitMarkFor("deleted")).toBeNull();
+  });
+
+  it("is null for an inherited Object.prototype property", () => {
+    // Same trap as gitRowClass above, on the other function that indexes
+    // GIT_MARKS: `gitMarkFor("constructor")` must not return `Object`.
+    expect(gitMarkFor("constructor")).toBeNull();
+    expect(gitMarkFor("toString")).toBeNull();
   });
 
   it("agrees with gitRowClass on every input", () => {
