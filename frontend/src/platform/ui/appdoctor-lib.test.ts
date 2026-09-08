@@ -38,9 +38,13 @@ const {
   rowStateAccessibleLabel,
   rowStateDetailText,
   rowVisibleDetailText,
+  sectionStartsOpen,
+  sectionSummary,
   severityDotLabel,
   SEVERITY_LABEL,
+  sortByAttention,
   splitFindings,
+  splitPassingTail,
   STATE_LABEL,
   summaryLine,
   tasksTabUrl,
@@ -88,6 +92,16 @@ test("a failing fact row is counted by severity, not as a flat total", () => {
     check("c", "fail", { severity: "warning" }),
   ];
   expect(summaryLine(checks)).toBe("1 critical, 1 warning to fix.");
+});
+
+test("summaryLine pluralizes the severity noun when more than one row fails at that severity", () => {
+  const checks = [
+    check("a", "fail", { severity: "warning" }),
+    check("b", "fail", { severity: "warning" }),
+    check("c", "fail", { severity: "warning" }),
+    check("d", "fail", { severity: "critical" }),
+  ];
+  expect(summaryLine(checks)).toBe("1 critical, 3 warnings to fix.");
 });
 
 test("a failing candidate row reads as 'to review', never merged into the fact tally, and never claims a pass", () => {
@@ -159,6 +173,47 @@ test("rows group into their sections in server order, without sorting", () => {
   ]);
 });
 
+// -------------------------------------------------------------- attention order
+
+test("sortByAttention orders fail, unrun, skip, pass, and returns a NEW array", () => {
+  const checks = [
+    check("a", "pass"),
+    check("b", "skip"),
+    check("c", "fail", { severity: "warning" }),
+    check("d", "unrun"),
+  ];
+  const sorted = sortByAttention(checks);
+  expect(sorted.map((c) => c.id)).toEqual(["c", "d", "b", "a"]);
+  expect(sorted).not.toBe(checks);
+  // The input is untouched.
+  expect(checks.map((c) => c.id)).toEqual(["a", "b", "c", "d"]);
+});
+
+test("sortByAttention ranks a failing row's severity via effectiveSeverity, so a candidate's discount applies here too", () => {
+  const checks = [
+    check("warn", "fail", { severity: "warning", kind: "fact" }),
+    check("secrets", "fail", { severity: "critical", kind: "candidate" }),
+    check("entry", "fail", { severity: "critical", kind: "fact" }),
+  ];
+  const sorted = sortByAttention(checks);
+  // "entry" is a real critical fact and sorts first; "secrets" is a critical
+  // candidate whose effectiveSeverity is discounted to warning, so it ties
+  // with "warn" and keeps its original relative order (stability) rather
+  // than jumping ahead of it.
+  expect(sorted.map((c) => c.id)).toEqual(["entry", "warn", "secrets"]);
+});
+
+test("sortByAttention is stable within a tier — ties keep the server's own order", () => {
+  const checks = [
+    check("a", "fail", { severity: "critical" }),
+    check("b", "fail", { severity: "critical" }),
+    check("c", "fail", { severity: "critical" }),
+    check("d", "pass"),
+    check("e", "pass"),
+  ];
+  expect(sortByAttention(checks).map((c) => c.id)).toEqual(["a", "b", "c", "d", "e"]);
+});
+
 // ------------------------------------------------------------------ severity
 
 test("worstSeverity is null when nothing failed", () => {
@@ -167,11 +222,11 @@ test("worstSeverity is null when nothing failed", () => {
 
 test("worstSeverity picks the worst FAILING severity, ignoring passes and skips", () => {
   const checks = [
-    check("a", "fail", { severity: "suggested" }),
+    check("a", "fail", { severity: "warning" }),
     check("b", "pass", { severity: "critical" }),
-    check("c", "fail", { severity: "warning" }),
+    check("c", "fail", { severity: "critical" }),
   ];
-  expect(worstSeverity(checks)).toBe("warning");
+  expect(worstSeverity(checks)).toBe("critical");
 });
 
 test("a failing candidate row never drives the worst severity above warning", () => {
@@ -210,6 +265,15 @@ test("severityDotLabel names the state in words for every case", () => {
   expect(
     severityDotLabel([check("secrets", "fail", { severity: "critical", kind: "candidate" })]),
   ).toBe("App Doctor: 1 warning");
+});
+
+test("severityDotLabel pluralizes the severity noun when more than one row fails at that severity", () => {
+  expect(
+    severityDotLabel([
+      check("a", "fail", { severity: "warning" }),
+      check("b", "fail", { severity: "warning" }),
+    ]),
+  ).toBe("App Doctor: 2 warnings");
 });
 
 // --------------------------------------------------------------- row wording
@@ -257,33 +321,41 @@ test("a failing CANDIDATE row's visible text keeps the N to review count", () =>
   expect(rowVisibleDetailText(c)).toBe("2 to review — looks like an API key or token");
 });
 
-test("a passing/skipped/unrun row's visible text is also just the detail", () => {
-  for (const state of ["pass", "skip", "unrun"] as const) {
-    const c = check("readme", state);
+test("a skipped/unrun row's visible text is just the detail", () => {
+  for (const state of ["skip", "unrun"] as const) {
+    const c = check("readme", state, { detail: `${state} detail sentence` });
     expect(rowVisibleDetailText(c)).toBe(c.detail);
   }
 });
 
+test("a passing row draws no visible detail sentence, even when the check carries one", () => {
+  // The checklist label is already a complete statement for a pass
+  // ("pyproject.toml is valid TOML"), so the detail line is dropped rather
+  // than echoed under it — AppDoctorModal.tsx skips `.appdoc-detail` entirely
+  // when this returns "".
+  const c = check("readme", "pass", { detail: "README.md exists" });
+  expect(rowVisibleDetailText(c)).toBe("");
+});
+
 // ---------------------------------------------------------- severity in words
 //
-// There is no visible severity chip in the dialog any more (owner request).
-// `rowStateAccessibleLabel` is now the only place a FAILING row's severity is
-// said in words at all, because it feeds the state mark's own
-// `aria-label`/`title` — this is what keeps severity from vanishing out of
-// the accessible tree. `rowStateDetailText` (the input to `rowVisibleDetailText`,
-// which builds the visible `.appdoc-detail` line's text) must NEVER say the
-// severity word — an earlier pass used one string for both callers and put
-// the severity word right back on screen inside the detail line ("Critical —
-// Failed — <detail>"), the exact words removing the chip was supposed to
-// erase.
+// There is no visible severity chip in the dialog. `rowStateAccessibleLabel`
+// is the only place a FAILING row's severity is said in words at all,
+// because it feeds the state mark's own `aria-label`/`title` — this is what
+// keeps severity from vanishing out of the accessible tree.
+// `rowStateDetailText` (the input to `rowVisibleDetailText`, which builds the
+// visible `.appdoc-detail` line's text) must NEVER say the severity word —
+// folding it into the same string both callers use would put the severity
+// word right back on screen inside the detail line ("Critical — Failed —
+// <detail>").
 
 test("a failing FACT row's accessible label names both its severity and its state", () => {
   expect(
     rowStateAccessibleLabel(check("readme", "fail", { kind: "fact", severity: "critical" })),
   ).toBe("Critical — Failed");
   expect(
-    rowStateAccessibleLabel(check("readme", "fail", { kind: "fact", severity: "suggested" })),
-  ).toBe("Suggested — Failed");
+    rowStateAccessibleLabel(check("readme", "fail", { kind: "fact", severity: "warning" })),
+  ).toBe("Warning — Failed");
 });
 
 test("a failing row's accessible label names its OWN checklist severity, not the discounted effectiveSeverity", () => {
@@ -303,8 +375,8 @@ test("the visible detail text never contains a severity word, only the accessibl
   // Pins the regression: a prior pass folded severity into the one string
   // both callers used, so the word leaked from the accessible label back
   // onto the screen via the visible detail line.
-  const severityWords = ["Critical", "Warning", "Suggested"];
-  for (const severity of ["critical", "warning", "suggested"] as const) {
+  const severityWords = ["Critical", "Warning"];
+  for (const severity of ["critical", "warning"] as const) {
     for (const kind of ["fact", "candidate"] as const) {
       const c = check("x", "fail", {
         kind,
@@ -319,4 +391,51 @@ test("the visible detail text never contains a severity word, only the accessibl
       expect(accessible).toContain(SEVERITY_LABEL[severity]);
     }
   }
+});
+
+// ------------------------------------------------------------ section disclosure
+
+test("sectionSummary joins the parts that apply and drops the rest, with no zero-count part", () => {
+  expect(sectionSummary([check("a", "pass"), check("b", "pass")])).toBe("2 passed");
+  expect(
+    sectionSummary([
+      check("a", "fail"),
+      check("b", "pass"),
+      check("c", "pass"),
+      check("d", "pass"),
+      check("e", "pass"),
+      check("f", "pass"),
+    ]),
+  ).toBe("1 to fix · 5 passed");
+  expect(
+    sectionSummary([check("a", "skip"), check("b", "unrun"), check("c", "pass")]),
+  ).toBe("2 not checked · 1 passed");
+  // A section with nothing of a given kind prints no part for it at all —
+  // never "0 to fix".
+  expect(sectionSummary([check("a", "pass")])).toBe("1 passed");
+});
+
+test("sectionStartsOpen opens a section with anything left to look at, collapses an all-pass one", () => {
+  expect(sectionStartsOpen([check("a", "pass"), check("b", "pass")])).toBe(false);
+  expect(sectionStartsOpen([check("a", "pass"), check("b", "fail")])).toBe(true);
+  expect(sectionStartsOpen([check("a", "skip")])).toBe(true);
+  expect(sectionStartsOpen([check("a", "unrun")])).toBe(true);
+});
+
+test("splitPassingTail splits off the trailing run of passes, keyed off the run itself", () => {
+  const fail = check("a", "fail");
+  const unrun = check("b", "unrun");
+  const pass1 = check("c", "pass");
+  const pass2 = check("d", "pass");
+  expect(splitPassingTail([fail, unrun, pass1, pass2])).toEqual({
+    rows: [fail, unrun],
+    passing: [pass1, pass2],
+  });
+  // No passing rows at all: nothing splits off.
+  expect(splitPassingTail([fail, unrun])).toEqual({ rows: [fail, unrun], passing: [] });
+  // Nothing BUT passes: the whole list is the trailing run.
+  expect(splitPassingTail([pass1, pass2])).toEqual({ rows: [], passing: [pass1, pass2] });
+  // A pass that isn't part of the trailing run (out of `sortByAttention`
+  // order) stays in `rows` — only the run touching the end splits off.
+  expect(splitPassingTail([pass1, fail])).toEqual({ rows: [pass1, fail], passing: [] });
 });

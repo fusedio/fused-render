@@ -73,13 +73,13 @@ _EXPECTED_META = {
     "entry": ("essentials", "critical", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
-    "readme": ("essentials", "suggested", "fact"),
-    "icon": ("essentials", "suggested", "fact"),
+    "readme": ("essentials", "warning", "fact"),
+    "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
     "git": ("sharing", "warning", "fact"),
     "pushed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
-    "preview": ("sharing", "suggested", "fact"),
+    "preview": ("sharing", "warning", "fact"),
 }
 
 
@@ -88,6 +88,17 @@ def test_every_check_carries_the_exact_table(workspace):
     report = app_doctor.report(str(d))
     got = {c["id"]: (c["section"], c["severity"], c["kind"]) for c in report["checks"]}
     assert got == _EXPECTED_META
+
+
+def test_no_checklist_row_is_ever_suggested():
+    """The checklist has two severities, not three — a suggestion row got no
+    tint, no rail, and no urgency in the dialog, so nobody ever acted on it.
+    `suggested` is a CI-floor-only tier (see `_STRUCTURE_META` in
+    `skills/fused-render-app-doctor/ci/app_check.py`); it must never appear
+    in `_CHECK_META` or `SEVERITIES`."""
+    assert "suggested" not in app_doctor.SEVERITIES
+    assert all(sev in app_doctor.SEVERITIES for _section, sev, _kind in
+              app_doctor._CHECK_META.values())
 
 
 def test_checks_are_grouped_essentials_then_sharing_in_server_order(workspace):
@@ -104,20 +115,20 @@ def test_the_report_carries_the_ordering_the_modal_reads(workspace):
     d = _app(workspace)
     report = app_doctor.report(str(d))
     assert report["sections"] == ["essentials", "sharing"]
-    assert report["severities"] == ["critical", "warning", "suggested"]
+    assert report["severities"] == ["critical", "warning"]
 
 
-def test_ok_ignores_a_failing_suggested_row(workspace):
-    """readme and preview are both severity "suggested" — failing either must
-    not turn the app "not ok"."""
+def test_ok_is_false_on_a_failing_warning_row(workspace):
+    """readme and preview are both severity "warning" — a warning row worth
+    the checklist at all is worth turning the app "not ok"."""
     d = _app(workspace, readme=False, preview=False)
     report = app_doctor.report(str(d))
     assert _state(report, "readme") == "fail"
     assert _state(report, "preview") == "fail"
-    assert report["ok"] is True
+    assert report["ok"] is False
 
 
-def test_ok_is_false_on_a_failing_warning_row(workspace):
+def test_ok_is_false_on_a_failing_pyproject_row(workspace):
     d = _app(workspace)
     (d / "pyproject.toml").write_text("[project\nbroken\n")
     report = app_doctor.report(str(d))

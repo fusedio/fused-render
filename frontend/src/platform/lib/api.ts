@@ -2422,7 +2422,7 @@ export function migrateApp(
 
 export type AppCheckState = "pass" | "fail" | "skip" | "unrun";
 export type AppCheckSection = "essentials" | "sharing";
-export type Severity = "critical" | "warning" | "suggested";
+export type Severity = "critical" | "warning";
 export type AppCheckKind = "fact" | "candidate";
 
 export interface AppCheckFinding {
@@ -2459,10 +2459,9 @@ export interface AppCheck {
 export interface AppDoctorReport {
   path: string;
   entry: string | null;
-  /** No FAILING check of severity critical or warning. A failing "suggested"
-   *  row does not turn an app not-ok, and a candidate row still counts at its
-   *  own severity — the modal (never this flag) is what tells a candidate's
-   *  unreviewed failure apart from a settled one. */
+  /** No FAILING check, critical or warning. A candidate row still counts at
+   *  its own severity — the modal (never this flag) is what tells a
+   *  candidate's unreviewed failure apart from a settled one. */
   ok: boolean;
   checks: AppCheck[];
   /** Section and severity ordering, server-defined once — read this rather

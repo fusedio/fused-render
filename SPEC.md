@@ -11740,7 +11740,7 @@ per-row fix.
   speaks, generated state outside `.fused/` (§47/D548), `pyproject.toml`/
   `icon.svg` parsing, and whether the folder's git repo is clean and pushed.
 - **AD-2** Every check carries `section` (`"essentials"` | `"sharing"`),
-  `severity` (`"critical"` | `"warning"` | `"suggested"`), and `kind`
+  `severity` (`"critical"` | `"warning"`), and `kind`
   (`"fact"` | `"candidate"`), in one server-side table
   (`app_doctor._CHECK_META`, mirrored by `ci/app_check.py`'s own `CHECK_META`
   for the two ids it computes) — `CHECK_ORDER`/`SECTIONS`/`SEVERITIES` are
@@ -11750,19 +11750,27 @@ per-row fix.
   families was a false positive, so those two are `"candidate"` — a pattern
   match that only LOCATES something to look at — while every other row (a
   file exists or does not, a version tag reads N or does not) is `"fact"`.
-  `ok` is "no FAILING check of severity critical or warning" — a failing
-  `suggested` row does not turn an app not-ok, and a candidate still counts
-  at its own severity for this one flag, though never in the modal's own
-  presentation of it (AD-4).
+  The checklist has two severities, not three: a `"suggested"` row got no
+  tint, no rail, and no urgency in the dialog, so nobody ever acted on it — a
+  row worth putting on the checklist at all is worth a `"warning"`, and a row
+  not worth a warning does not belong on the list (`ci/app_check.py` keeps its
+  own three-tier `"suggested"` for the two structural facts a missing push
+  should not fail over, see AD-7). `ok` is "no FAILING check at all" — every
+  row is critical or warning, so a candidate still counts at its own severity
+  for this one flag, though never in the modal's own presentation of it
+  (AD-4).
 - **AD-3** Eleven checks, essentials then sharing, exactly:
   `secrets` (critical, candidate), `entry` (critical, fact), `api-version`
-  (critical, fact), `pyproject` (warning, fact), `readme` (suggested, fact),
-  `icon` (suggested, fact) — then `device-paths` (warning, candidate), `git`
+  (critical, fact), `pyproject` (warning, fact), `readme` (warning, fact),
+  `icon` (warning, fact) — then `device-paths` (warning, candidate), `git`
   (warning, fact), `pushed` (warning, fact), `generated` (warning, fact),
-  `preview` (suggested, fact). `pushed` (new, D751) reads ahead-of-upstream
+  `preview` (warning, fact). `pushed` (new, D751) reads ahead-of-upstream
   commits via `git rev-list --count @{upstream}..HEAD` — no network call,
   ever — and skips with no upstream/remote configured rather than failing a
-  folder that was never pushed anywhere.
+  folder that was never pushed anywhere. Every label is a complete statement
+  on its own — the dialog does not print a detail sentence under a passing
+  row: `pyproject.toml is valid TOML`, `icon.svg is valid SVG`, `Has a README
+  explaining the app`, `Every change is committed`, `Every commit is pushed`.
 - **AD-4** The modal (`platform/ui/AppDoctorModal.tsx`) groups rows under a
   section heading in server order, shows a severity chip on each failing row,
   and gives each failing row its own action button: **Fix** for a `"fact"`

@@ -1,23 +1,22 @@
 // The pure half of the App Doctor dialog (AppDoctorModal.tsx) and its two
 // header entry points (shell/AppPage.tsx, apps/explorer/Preview.tsx): what the
-// summary line says, how a checklist groups into sections, which severity a
-// row's failure counts as once a candidate's unreviewed status discounts it,
-// how many findings a row draws, and the address of the app's Tasks tab. Split
-// out for the same reason modal/dirty-guard.ts is — the chassis renders
-// through a portal, which react-test-renderer cannot mount, so the decisions
-// worth pinning live where a test can call them.
+// summary line says, how a checklist groups into sections and orders within
+// them, which severity a row's failure counts as once a candidate's
+// unreviewed status discounts it, how many findings a row draws, the address
+// of the app's Tasks tab, and — since a section that is all green ticks is
+// mostly noise — a section's one-line disclosure summary, whether it starts
+// open, and where its trailing run of passing rows splits off to fold behind
+// its own disclosure. Split out for the same reason modal/dirty-guard.ts is —
+// the chassis renders through a portal, which react-test-renderer cannot
+// mount, so the decisions worth pinning live where a test can call them.
 //
-// There is no visible severity chip in the dialog any more (owner request —
-// colour, the row's ground/rail and the state mark's shape already carry
-// severity for a sighted reader). Severity used to leak back onto the screen
-// once already: the chip's removal folded the word into `rowStateLabel`, and
-// AppDoctorModal.tsx fed that SAME string to both the state mark's
-// `aria-label`/`title` (fine — screen readers should still hear it) AND the
-// row's visible detail line (not fine — the sentence a sighted reader sees
-// then read "Critical — Failed — <detail>", the exact words the chip's
-// removal was supposed to erase). `rowStateAccessibleLabel` and
-// `rowStateDetailText` below are the fix: two names, two callers, so a future
-// reader doesn't fold them back into one and reintroduce the leak.
+// There is no visible severity chip in the dialog — colour, the row's
+// ground/rail and the state mark's shape already carry severity for a
+// sighted reader. `rowStateAccessibleLabel` and `rowStateDetailText` below
+// are two separate names for two separate callers (the state mark's
+// `aria-label`/`title` vs. the row's visible detail line) precisely so
+// severity, which only the accessible label says in words, cannot fold back
+// into the visible sentence a sighted reader sees.
 import { encodeFsPathSegments } from "@platform/lib/router";
 import type { AppCheck, AppCheckFinding, AppCheckState, Severity } from "@platform/lib/api";
 
@@ -37,12 +36,11 @@ export const STATE_LABEL: Record<AppCheckState, string> = {
 // hardcoded ordering. The server sends the same order in `report.severities`;
 // this copy is the one the two header entry points and the modal actually
 // call against, so it exists regardless of whether a report has loaded yet.
-export const SEVERITY_ORDER: readonly Severity[] = ["critical", "warning", "suggested"];
+export const SEVERITY_ORDER: readonly Severity[] = ["critical", "warning"];
 
 export const SEVERITY_LABEL: Record<Severity, string> = {
   critical: "Critical",
   warning: "Warning",
-  suggested: "Suggested",
 };
 
 /** A row's severity for the purposes of ANY reduction across rows (the
@@ -88,9 +86,16 @@ export function severityDotLabel(checks: AppCheck[] | null): string {
     n: failing.filter((c) => effectiveSeverity(c) === sev).length,
   })).filter((x) => x.n > 0);
   return (
-    "App Doctor: " +
-    counts.map((x) => `${x.n} ${SEVERITY_LABEL[x.sev].toLowerCase()}`).join(", ")
+    "App Doctor: " + counts.map((x) => `${x.n} ${severityNoun(x.sev, x.n)}`).join(", ")
   );
+}
+
+/** `SEVERITY_LABEL[sev]` lowercased and pluralized for `n` — "1 critical",
+ *  "3 warnings". Both severity nouns take a plain trailing "s", so this is
+ *  the one place that "s" gets added rather than each caller re-deciding it. */
+function severityNoun(sev: Severity, n: number): string {
+  const noun = SEVERITY_LABEL[sev].toLowerCase();
+  return n === 1 ? noun : noun + "s";
 }
 
 /** Rows grouped into their sections, server order preserved (the server
@@ -109,10 +114,80 @@ export function groupBySection(
   return out;
 }
 
+/** A tier for `sortByAttention` — lower sorts first. Failures split by
+ *  `effectiveSeverity` (the same candidate discount `worstSeverity` applies,
+ *  since this is also a cross-row comparison), then the rows nothing is
+ *  known about yet, then the rows the doctor gave up on, then passes. */
+function attentionTier(check: AppCheck): number {
+  if (check.state === "fail") return effectiveSeverity(check) === "critical" ? 0 : 1;
+  if (check.state === "unrun") return 2;
+  if (check.state === "skip") return 3;
+  return 4;
+}
+
+/** Worst-first within a group of rows: failing (critical before warning),
+ *  then unrun, then skip, then pass. Returns a NEW array — `Array#sort` is
+ *  stable in every engine this runs on, so rows within one tier keep the
+ *  server's own order, which is what makes ties deterministic rather than
+ *  re-shuffled on every call. Sorts WITHIN a group only — compose with
+ *  `groupBySection` at the call site (AppDoctorModal.tsx) rather than
+ *  sorting across sections, which stay in their fixed server order. */
+export function sortByAttention(checks: AppCheck[]): AppCheck[] {
+  return [...checks].sort((a, b) => attentionTier(a) - attentionTier(b));
+}
+
 export const SECTION_LABEL: Record<string, string> = {
   essentials: "Essentials",
   sharing: "Sharing",
 };
+
+/** The section header's right-aligned summary (AppDoctorModal.tsx's section
+ *  disclosure button) — the parts that apply, joined with " · ", so a clean
+ *  section reads "6 passed" and a mixed one "1 to fix · 5 passed". A part is
+ *  left out entirely when its count is 0, never printed as "0 …". Counts by
+ *  raw `state`, not `effectiveSeverity` — this is "what does this section
+ *  contain", not a cross-row severity reduction. */
+export function sectionSummary(checks: AppCheck[]): string {
+  const toFix = checks.filter((c) => c.state === "fail").length;
+  const notChecked = checks.filter((c) => c.state === "skip" || c.state === "unrun").length;
+  const passed = checks.filter((c) => c.state === "pass").length;
+  const parts: string[] = [];
+  if (toFix > 0) parts.push(`${toFix} to fix`);
+  if (notChecked > 0) parts.push(`${notChecked} not checked`);
+  if (passed > 0) parts.push(`${passed} passed`);
+  return parts.join(" · ");
+}
+
+/** A section's default disclosure state: open when it has anything worth
+ *  looking at (any row that is not `pass`), collapsed when every row in it
+ *  passed — a collapsed section is one line, and `sectionSummary` above
+ *  already says everything it contains. AppDoctorModal.tsx seeds its
+ *  per-section open state from this once, on load, and never calls it again
+ *  for a section the user has since toggled by hand. */
+export function sectionStartsOpen(checks: AppCheck[]): boolean {
+  return checks.some((c) => c.state !== "pass");
+}
+
+/** Splits a section's (already `sortByAttention`-ordered) rows into the
+ *  leading rows worth showing and the trailing run of `pass` rows behind
+ *  them — the run that folds behind its own "N passed" disclosure inside an
+ *  open section. Keyed off the trailing run itself, by walking from the end
+ *  while `state === "pass"`, rather than filtering the whole list — that way
+ *  this stays correct even if the sort ever changes, and a stray pass that
+ *  ISN'T part of the trailing run (impossible under `sortByAttention`, but
+ *  this function doesn't assume it) stays in `rows` rather than getting
+ *  pulled out of place. `passing` is empty when the section has no passing
+ *  rows; `rows` is empty when the section is nothing BUT passes — the caller
+ *  treats that as "no fold to draw", since the section's own disclosure is
+ *  already the fold. */
+export function splitPassingTail(checks: AppCheck[]): {
+  rows: AppCheck[];
+  passing: AppCheck[];
+} {
+  let i = checks.length;
+  while (i > 0 && checks[i - 1].state === "pass") i--;
+  return { rows: checks.slice(0, i), passing: checks.slice(i) };
+}
 
 /** The per-row action button's label: a CANDIDATE row asks the session to
  *  judge each finding first (Review), a FACT row asks it to fix outright
@@ -131,14 +206,12 @@ export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
  *  `rowVisibleDetailText` chooses not to print it on screen any more — this
  *  function's job is naming the state, not deciding what is worth showing.
  *
- *  This does NOT say the row's severity, on purpose: severity used to live in
- *  a visible chip (`.appdoc-sev`) next to the label, and when that chip was
- *  removed (owner request — colour, the rail and the state mark's SHAPE
- *  already carry severity for a sighted reader) an earlier pass folded the
- *  severity word into this same string, which put it right back on the
- *  screen inside the detail line ("Critical — Failed — <detail>") — the exact
- *  words removing the chip was supposed to get rid of. Severity belongs only
- *  in `rowStateAccessibleLabel` below, which feeds the state mark's
+ *  This does NOT say the row's severity, on purpose: colour, the rail and the
+ *  state mark's SHAPE already carry severity for a sighted reader, so folding
+ *  the severity word into this same string would put it right back on the
+ *  screen inside the detail line ("Critical — Failed — <detail>"), a
+ *  regression this split exists to prevent. Severity belongs only in
+ *  `rowStateAccessibleLabel` below, which feeds the state mark's
  *  `aria-label`/`title`, not this one. */
 export function rowStateDetailText(check: AppCheck): string {
   if (check.state !== "fail") return STATE_LABEL[check.state];
@@ -147,9 +220,8 @@ export function rowStateDetailText(check: AppCheck): string {
 
 /** A failing row's ACCESSIBLE name — feeds `.appdoc-state`'s `aria-label`/
  *  `title` (AppDoctorModal.tsx) only, never the visible detail line. This is
- *  the one place that still names severity in words at all: with the chip
- *  gone, this is the only place a screen reader hears
- *  "critical"/"warning"/"suggested". Built on `rowStateDetailText` so the two
+ *  the one place that names severity in words at all — the only place a
+ *  screen reader hears "critical"/"warning". Built on `rowStateDetailText` so the two
  *  strings never drift apart on the state half — they differ by exactly the
  *  severity prefix. Uses `check.severity` (the checklist's own severity), not
  *  `effectiveSeverity` — that discount only applies to cross-row reductions
@@ -160,19 +232,26 @@ export function rowStateAccessibleLabel(check: AppCheck): string {
   return `${SEVERITY_LABEL[check.severity]} — ${rowStateDetailText(check)}`;
 }
 
-/** The visible `.appdoc-detail` line's full text (AppDoctorModal.tsx) — the
- *  checklist's own detail sentence, prefixed with `rowStateDetailText` only
- *  when that prefix carries information the sentence does not already: a
- *  candidate's "N to review" count. A settled fact failure's prefix is just
- *  `STATE_LABEL.fail` ("Failed"), and printing that added nothing the row
- *  was not already saying three other ways — the left rail and ground tint
- *  (app-doctor.css's `.appdoc-row-sev-*`) and the state mark's shape
- *  (StateIcon) — while stacking a third em dash onto an already
- *  dash-heavy sentence (owner request: drop it). `rowStateDetailText` itself
- *  still returns "Failed" for that row, unchanged — `rowStateAccessibleLabel`
- *  above needs it there to build a screen reader's "Critical — Failed"; only
- *  this visible-line function chooses not to print it. */
+/** The visible `.appdoc-detail` line's full text (AppDoctorModal.tsx), or ""
+ *  for a passing row — every checklist label is already a complete statement
+ *  ("pyproject.toml is valid TOML"), so a passing row needs no second
+ *  sentence under it, and AppDoctorModal.tsx skips the `.appdoc-detail`
+ *  element entirely when this returns "". A skip's or an unrun row's detail
+ *  is the only place its reason appears, so those keep it.
+ *
+ *  A failing row is prefixed with `rowStateDetailText` only when that prefix
+ *  carries information the sentence does not already: a candidate's "N to
+ *  review" count. A settled fact failure's prefix is just `STATE_LABEL.fail`
+ *  ("Failed"), and printing that adds nothing the row is not already saying
+ *  three other ways — the left rail and ground tint (app-doctor.css's
+ *  `.appdoc-row-sev-*`) and the state mark's shape (StateIcon) — while
+ *  stacking a third em dash onto an already dash-heavy sentence.
+ *  `rowStateDetailText` itself still returns "Failed" for that row,
+ *  unchanged — `rowStateAccessibleLabel` above needs it there to build a
+ *  screen reader's "Critical — Failed"; only this visible-line function
+ *  chooses not to print it. */
 export function rowVisibleDetailText(check: AppCheck): string {
+  if (check.state === "pass") return "";
   if (check.state === "fail" && check.kind === "candidate") {
     return `${rowStateDetailText(check)} — ${check.detail}`;
   }
@@ -225,8 +304,7 @@ export function summaryLine(checks: AppCheck[]): string {
       n: failingFacts.filter((c) => c.severity === sev).length,
     })).filter((x) => x.n > 0);
     parts.push(
-      bySeverity.map((x) => `${x.n} ${SEVERITY_LABEL[x.sev].toLowerCase()}`).join(", ") +
-        ` to fix.`,
+      bySeverity.map((x) => `${x.n} ${severityNoun(x.sev, x.n)}`).join(", ") + ` to fix.`,
     );
   }
   if (failingCandidates.length > 0) {

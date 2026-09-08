@@ -81,17 +81,23 @@ import sys
 
 # --------------------------------------------------------- severity, section, kind
 
-# One entry per check id this script's two content families answer for, in the
-# same vocabulary fused_render/app_doctor.py's checklist uses — `section`
-# ("essentials" | "sharing"), `severity` ("critical" | "warning" | "suggested"),
-# `kind` ("fact" | "candidate", see the module docstring for why that split
-# exists). This is the SINGLE table for these two ids: app_doctor.py reads it
-# rather than keeping a second copy, and a fix to one is a fix to both
-# surfaces. The three structure ids (`entry`, `readme`, `preview`, keyed here
-# by their full rule string rather than a family prefix — there is exactly one
-# rule each) are not read by app_doctor.py, which computes those rows itself
-# from the runtime's own knowledge; they are still needed here so `main` knows
-# which findings are facts.
+# One entry per check id this script's two content families answer for —
+# `section` ("essentials" | "sharing"), `severity` ("critical" | "warning" |
+# "suggested"), `kind` ("fact" | "candidate", see the module docstring for why
+# that split exists). `suggested` is a tier THIS engine's exit code uses (see
+# `main`) and app_doctor.py's checklist does not: `secrets` and
+# `device-paths`, the only two ids app_doctor.py reads from this table, are
+# always `critical`/`warning` here, so their vocabulary lines up with the
+# checklist's own two severities without app_doctor.py needing to know this
+# table has a third tier at all. This is the SINGLE table for these two ids:
+# app_doctor.py reads it rather than keeping a second copy, and a fix to one
+# is a fix to both surfaces. The three structure ids (`entry`, `readme`,
+# `preview`, keyed here by their full rule string rather than a family prefix
+# — there is exactly one rule each) are not read by app_doctor.py, which
+# computes those rows itself from the runtime's own knowledge; `suggested`
+# lives on two of them (below) precisely because app_doctor.py never sees it —
+# it is where this engine's own missing-readme/missing-thumbnail gap gets to
+# stay non-blocking without touching the checklist's severities at all.
 CHECK_META = {
     "secrets": ("essentials", "critical", "candidate"),
     "device-paths": ("sharing", "warning", "candidate"),

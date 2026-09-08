@@ -99,13 +99,13 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     "entry": ("essentials", "critical", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
-    "readme": ("essentials", "suggested", "fact"),
-    "icon": ("essentials", "suggested", "fact"),
+    "readme": ("essentials", "warning", "fact"),
+    "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
     "git": ("sharing", "warning", "fact"),
     "pushed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
-    "preview": ("sharing", "suggested", "fact"),
+    "preview": ("sharing", "warning", "fact"),
 }
 
 # The order every checklist is drawn in — sections in this order, and within
@@ -115,7 +115,7 @@ CHECK_ORDER = tuple(_CHECK_META.keys())
 SECTIONS = ("essentials", "sharing")
 # Worst first — the header button's "worst severity found" and the modal's
 # chip colouring both rank against this order.
-SEVERITIES = ("critical", "warning", "suggested")
+SEVERITIES = ("critical", "warning")
 
 
 def _meta(cid: str) -> tuple[str, str, str]:
@@ -470,7 +470,7 @@ def _readme_check(app_dir: str) -> dict:
     has_readme = any(n.lower().startswith("readme")
                      and os.path.isfile(os.path.join(app_dir, n)) for n in names)
     return _check(
-        "readme", "Has a README", PASS if has_readme else FAIL,
+        "readme", "Has a README explaining the app", PASS if has_readme else FAIL,
         "a README says what this is" if has_readme
         else "no README — say what this app does for whoever you share it with",
     )
@@ -501,18 +501,18 @@ def _optional_file_check(app_dir: str, cid: str, name: str, kind: str, label: st
 
 def _pyproject_check(app_dir: str) -> dict:
     return _optional_file_check(app_dir, "pyproject", "pyproject.toml", "toml",
-                                "pyproject.toml parses")
+                                "pyproject.toml is valid TOML")
 
 
 def _icon_check(app_dir: str) -> dict:
     return _optional_file_check(app_dir, "icon", app_listing.ICON_NAME, "xml",
-                                "icon.svg parses")
+                                "icon.svg is valid SVG")
 
 
 def _git_check(app_dir: str) -> dict:
     state, pending = _git_pending(app_dir)
     return _check(
-        "git", "Everything committed", state,
+        "git", "Every change is committed", state,
         "this folder is not in a git repository this server can read" if state == SKIP
         else f"{len(pending)} uncommitted path{'' if len(pending) == 1 else 's'} — "
              "commit them so what you share is what you tested" if state == FAIL
@@ -525,7 +525,7 @@ def _git_check(app_dir: str) -> dict:
 def _pushed_check(app_dir: str) -> dict:
     state, subjects, skip_reason = _pushed_pending(app_dir)
     return _check(
-        "pushed", "Everything pushed", state,
+        "pushed", "Every commit is pushed", state,
         # Two different SKIP causes get two different sentences — see
         # `_pushed_pending`'s `_SKIP_NO_REPO`/`_SKIP_NO_UPSTREAM`. Telling
         # someone in a folder that is not a git repository at all that they
@@ -566,13 +566,13 @@ def report(app_dir: str) -> dict:
     order `_CHECK_META` lists them — so the modal can group by reading
     `section` off consecutive rows rather than sorting them itself.
 
-    `ok` is "no FAILING check of severity critical or warning" — a failing
-    `suggested` row (a missing README, say) must not turn an app "not ok",
-    and a candidate row (`secrets`, `device-paths`) still counts at its own
-    severity: `ok` does not know or care whether a row is a fact or a
-    candidate, only whether it failed and how serious that would be if real.
-    The modal is what tells a failing candidate apart from a settled failure
-    (see appdoctor-lib.ts)."""
+    `ok` is "no FAILING check of severity critical or warning" — since those
+    are the only two severities a checklist row carries (see `SEVERITIES`),
+    this is "no failing row at all". A candidate row (`secrets`,
+    `device-paths`) still counts at its own severity: `ok` does not know or
+    care whether a row is a fact or a candidate, only whether it failed and
+    how serious that would be if real. The modal is what tells a failing
+    candidate apart from a settled failure (see appdoctor-lib.ts)."""
     app_dir = os.path.abspath(app_dir)
     entry = _compute_entry(app_dir)
 
