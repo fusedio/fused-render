@@ -139,6 +139,9 @@ _STATE_FNS = ["let schedBlockers", "const BOX_PLACEHOLDER",
 # there is one. Everything else here is a surface the state function writes to.
 _STATE_STUBS = """
 const fused = { params: { get: (k) => (k === "session_id" ? "S1" : "") } };
+// the annotation mode's lock (annNavLock) — off in these runs, which are about the schedule's block
+let annLocked = false;
+function annNavLocked() { return annLocked; }
 function followBottom() {}
 function scrollBottom() {}
 function schedLoadTaskRow() {}
@@ -337,10 +340,10 @@ def test_every_route_to_the_scheduler_is_closed_while_blocked(code):
     this template opens the Schedule page with a draft."""
     clicks = code[code.index('document.querySelectorAll(".schedbtn")'):]
     clicks = clicks[:clicks.index("\n});")]
-    assert "if (schedBlocked()) return;" in clicks
+    assert "if (schedBlocked() || annNavLocked()) return;" in clicks
     go = code[code.index('document.getElementById("schedpop-go").addEventListener'):]
     go = go[:go.index("\n});")]
-    assert "if (schedBlocked()) return;" in go
+    assert "if (schedBlocked() || annNavLocked()) return;" in go
     assert go.index("schedBlocked()") < go.index("openScheduler("), \
         "the guard has to come before the hop"
     # and only those two: no third entry point grew one

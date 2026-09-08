@@ -69,7 +69,6 @@ export function useMountHealth(): void {
       const id = pushToast({
         msg: `${name} disconnected`,
         tone: "error",
-        ttlMs: 0, // persist until acted on / dismissed
         action: {
           label: "Reconnect",
           onClick: async () => {

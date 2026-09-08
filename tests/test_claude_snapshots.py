@@ -224,19 +224,33 @@ def test_the_store_is_never_written(agent, claude_home, tmp_path):
 # ----------------------------------------- getting the chain written at all
 
 
+class _HostProc:
+    """Stands in for the session_host.py process `_start` now Popens instead
+    of the CLI itself; a fake stdin is enough here since only the Popen
+    kwargs (the child env) are under test, not the CLI's own argv."""
+    pid = 4242
+
+    class _Stdin:
+        def write(self, data):
+            pass
+
+        def close(self):
+            pass
+
+    def __init__(self):
+        self.stdin = _HostProc._Stdin()
+
+
 def _spawn_kw(agent, monkeypatch, target, tmp_path):
     """The Popen kwargs of one run — for asserting on the child ENV rather
     than the CLI flags. Mirrors the helper in test_fused_cli_export.py."""
     seen = {}
 
-    class _Proc:
-        pid = 4242
-
     agent.RUNS = str(tmp_path / "runs")
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent.subprocess, "Popen",
                         lambda cmd, **kw: (seen.__setitem__("kw", kw),
-                                           _Proc())[1])
+                                           _HostProc())[1])
     out = agent._start(str(target), "hi", "", "", "")
     assert "error" not in out, out
     return seen["kw"]

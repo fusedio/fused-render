@@ -335,6 +335,26 @@ def test_note_index_mutation_queues_normally_while_indexing_is_on(monkeypatch,
     assert noted == [(path,)]
 
 
+# ---------------------------------------------- the bridge wake (D732)
+#
+# `_real_start` is the sixth path that calls `runner.start` (the other five
+# live in routers/index.py and all wake the job bridge themselves). Without
+# the wake here, a mutation-triggered rescan's Activity row can lag behind
+# the idle backoff by up to INDEX_JOB_IDLE_S.
+
+def test_real_start_wakes_the_index_job_bridge(monkeypatch, tmp_path):
+    from fused_render.index import runner
+    from fused_render.server import index_touch
+    from fused_render.server.routers import index as index_router
+
+    monkeypatch.setattr(runner, "start", lambda cfg, root: {"run_id": "r1"})
+    woke = []
+    monkeypatch.setattr(index_router, "_wake_index_job_bridge",
+                        lambda: woke.append(True))
+    index_touch._real_start(str(tmp_path))
+    assert woke == [True]
+
+
 # ------------------------------------------------- what a write is worth
 #
 # The route half of the same argument.

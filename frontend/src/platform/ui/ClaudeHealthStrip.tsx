@@ -150,7 +150,16 @@ export function IssueRow({
         <div className="claude-health-actions">
           <button
             type="button"
-            className="claude-health-action"
+            // An OPTIONAL issue's button is quiet, for the same reason Cancel
+            // is: the accent is the app's "this is the next thing to do", and
+            // a row that changes nothing about whether the app works is never
+            // that. On the wizard's Claude step it would also be the one
+            // yellow button on the screen, out-shouting Next.
+            className={
+              issue.optional
+                ? "claude-health-action claude-health-action-quiet"
+                : "claude-health-action"
+            }
             onClick={() => onAct(issue)}
             disabled={busy || running || signingIn}
           >

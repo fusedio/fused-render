@@ -6,6 +6,7 @@ import {
   missingDefaults,
   patternsToText,
   scanErrorLine,
+  scanningLine,
   textToPatterns,
   unionWithDefaults,
 } from "./indexing-lib";
@@ -82,6 +83,29 @@ describe("unionWithDefaults", () => {
   it("keeps an interior blank line the user typed", () => {
     const text = "a\n\nb";
     expect(unionWithDefaults(text, ["node_modules"])).toBe("a\n\nb\nnode_modules");
+  });
+});
+
+describe("scanningLine", () => {
+  // Moved from Indexing.render.test.tsx (D736): the arithmetic here does not
+  // need a mounted IndexingPanel, and mounting it dragged in an unrelated
+  // cross-file effect leak (a prior test file's un-flushed `subscribeFda`
+  // passive effect committing during this file's `act()`, calling
+  // `window.setTimeout` in an environment with no `window` — these render
+  // tests are deliberately DOM-free). See DECISIONS.md D736.
+  it("adds reused to the live files count — a rescan that reuses most of a tree does not read as barely started", () => {
+    const line = scanningLine({ files: 200, reused: 9800, root: "/Users/tester" });
+    expect(line).toBe("Scanning now — 10,000 files so far under /Users/tester.");
+  });
+
+  it("no reused entries yet still reads correctly (files alone)", () => {
+    const line = scanningLine({ files: 42, reused: 0, root: "/Users/tester" });
+    expect(line).toBe("Scanning now — 42 files so far under /Users/tester.");
+  });
+
+  it("omits the root clause when there is no root yet", () => {
+    const line = scanningLine({ files: 5, reused: 0, root: "" });
+    expect(line).toBe("Scanning now — 5 files so far.");
   });
 });
 

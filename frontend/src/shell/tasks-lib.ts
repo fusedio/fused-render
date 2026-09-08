@@ -1452,11 +1452,15 @@ const LANE_EXITS: Record<BoardColumn, BoardLane[]> = {
   needs_attention: [],
   // Retry, or file it away.
   blocked: ["in_progress", "archived"],
-  // Locked (Akshil, 2026-08-19): the way out of Archive is the Unarchive
-  // BUTTON, not a gesture. The landing lane is derived server-side, never
-  // picked — a drop target would imply the reader picks it, which is exactly
-  // the lie the button avoids by not asking.
-  archived: [],
+  // Done only (Akshil, 2026-09-07 — "we don't allow dragging from archive to
+  // done, enable that"). The drop is the Unarchive button as a gesture: it
+  // un-files the task and nothing more, and the landing lane is still derived
+  // server-side (`api.unarchiveTask` takes no status), so a card dropped on
+  // Done lands wherever its thread puts it — Done for finished work, which is
+  // what an archived card almost always was. The other lanes stay shut: a drop
+  // on Upcoming or In Progress would read as a claim about a run, and
+  // unarchiving starts nothing.
+  archived: ["done"],
 };
 
 /**
@@ -1968,6 +1972,33 @@ export function filingIntent(task: Task): FilingIntent | null {
   };
 }
 
+/** The hint a blocked trash wears, and the words the server refuses in
+ *  (`/api/tasks/erase`: "that task is running — stop the run first, then
+ *  delete"). Said in the SHORT form on a 24px door, but it is the same sentence
+ *  — a control whose caption promises one reason and whose refusal gives another
+ *  is the divergence this page's vocabulary is written against. */
+export const ERASE_BLOCKED_HINT = "Stop the run first";
+
+/**
+ * Whether deleting this task for good must be REFUSED — the client half of the
+ * server's 409.
+ *
+ * `inFlight` and nothing else, so the trash and the endpoint cannot disagree
+ * about what "running" means: both lanes count (`in_progress` and the
+ * `needs_attention` run parked on a permission card, which is every bit as
+ * live), and a control that only checked `in_progress` would offer to erase the
+ * transcript a waiting `claude --resume` still has open.
+ *
+ * NOT a version of `filingIntent`: archiving a mid-run task is refused because
+ * filing work that is still happening is dishonest, and it is offered again the
+ * moment the run ends. This is refused because the file is in use. Same lanes
+ * today, two different reasons, and folding them together would tie an
+ * irreversible verb's guard to a reversible one's rules.
+ */
+export function eraseBlocked(task: Pick<Task, "status">): boolean {
+  return inFlight(taskColumn(task));
+}
+
 /**
  * Whether a row draws its ORDINARY actions — run, re-run, mark read.
  *
@@ -2190,8 +2221,15 @@ export function projectOptions(tasks: Task[]): string[] {
 }
 
 export function taskMatches(task: Task, filters: TaskFilters): boolean {
-  if (filters.statuses.length && !filters.statuses.includes(taskColumn(task)))
-    return false;
+  // By LANE (schedule-lib.laneOf): the Status menu offers the Board's lanes,
+  // and a Blocked tick means everything the Blocked lane holds — the run that
+  // broke and the run parked on a card (`needs_attention`). Lanes on BOTH
+  // sides, so a `needs_attention` in `statuses` — nothing writes one today, the
+  // type still admits it — means the same lane the menu would have ticked.
+  if (filters.statuses.length) {
+    const lane = laneOf(taskColumn(task));
+    if (!filters.statuses.some((s) => laneOf(s) === lane)) return false;
+  }
   if (filters.projects.length && !filters.projects.includes(task.project)) return false;
   const q = filters.search.trim().toLowerCase();
   if (!q) return true;
@@ -2836,211 +2874,174 @@ export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
 
 // ---- the Cards view's set ----------------------------------------------------
 // The fourth view (Akshil, 2026-09-03: "a eagle eye view of all chats streaming
-// in at the same time"). It is not another arrangement of the same rows — it is
-// a DIFFERENT SET: every task whose work is happening right now, each one
-// showing its live conversation rather than a title and a time.
+// in at the same time"). It is not another arrangement of the same rows — each
+// card shows the task's live conversation rather than a title and a time.
 //
-// So the only three decisions it makes are here, out of the component, because
-// they are the ones worth testing and a grid of iframes is the last place to
-// test anything.
+// EVERY TASK, EVERY STATUS (Akshil, 2026-09-05, later the same day: "show all
+// status tasks in cards even archived ones"). The wall began as the running set
+// alone, grew to every lane but Archive that morning, and now draws Archive too:
+// an archived conversation is still a conversation worth a glance, and the
+// Status filter — not the view — is where a reader narrows the wall. So the
+// membership test is the List's own rank order, whole, and the RANK is the
+// List's too: which lane comes first is written down exactly once (LIST_ORDER)
+// and this view reads it rather than keeping a second table in step. Needs
+// attention at the top, because a parked run is the one card that needs a
+// person; Archive at the bottom, under Done.
 //
-// WHICH LANES COUNT AS RUNNING is checked against BOARD_COLUMNS rather than
-// trusted on its own. Today that is two lanes — In Progress, the server's word
-// for "a turn is in flight or queued" (api.ts `Task.status`), and Needs
-// attention, the same turn parked on a question — but this is a NAME LIST
-// intersected with the board's columns, so a lane added there under one of these
-// names joins this view by existing, and a lane renamed out from under us drops
-// out of it instead of silently filtering to nothing. A hardcoded
-// `status === "in_progress"` would have to be found and edited on that day, and
-// the symptom of missing it is an empty page rather than an error.
+// And the ORDER inside a lane is the List's too — sortByLane, the same call
+// (Akshil, 2026-09-08: "for list as a reference in order the cards"). This view
+// once kept a clock of its own there (`started`) and its cards read out of order
+// against the times printed on their own heads; see cardsForTasks, below.
 //
-// AN ORDERED LIST, NOT A SET (Akshil, 2026-09-03: cards sorted "the same way we
-// have in list … blocked first and then in progress"). The list's own order IS
-// the wall's rank order — `cardsForTasks` reads the index of a card's lane in
-// `CARD_LANES` — so which lane comes first is written down exactly once, here,
-// instead of in a second rank table that would have to be kept in step with
-// this one. That is also why the order is no longer BOARD_COLUMNS': the board
-// draws its columns left to right for its own reasons (In Progress before Needs
-// attention, which shares Blocked's lane anyway — schedule-lib.laneOf), and a
-// wall of live chats wants the one that has STOPPED to ask something at the top.
-const LIVE_LANE_NAMES: readonly string[] = [
-  "needs_attention",
-  "in_progress",
-];
+// So the only decisions it makes — membership, dedupe, the page — are here, out
+// of the component, because they are the ones worth testing and a grid of
+// iframes is the last place to test anything.
 
-/** The lanes a Cards view draws, top rank first — see LIVE_LANE_NAMES. */
-export const CARD_LANES: BoardColumn[] = LIVE_LANE_NAMES.filter(
-  (name): name is BoardColumn => BOARD_COLUMNS.some((c) => c.key === name),
-);
+/** The lanes a Cards view draws, top rank first — LIST_ORDER, whole. Kept as
+ * its own name so the view's membership test reads as a decision, not a
+ * coincidence of the List's table. */
+export const CARD_LANES: BoardColumn[] = LIST_ORDER;
 
 /**
- * HOW MANY LIVE CHATS AT ONCE. Each card is an iframe running the chat template,
- * and that template polls its run every 400ms — so the cap is not a layout
- * choice, it is the budget: twelve documents polling four times what one does is
- * already the most a laptop should be asked for to answer "what is running".
+ * HOW MANY LIVE CHATS PER PAGE. Each card is an iframe running the chat template,
+ * and that template polls its run every 400ms — so the wall does not draw every
+ * task at once. It draws SIX, and a "Show more" strip under the grid adds the
+ * next six on request (Akshil, 2026-09-05: "have 6 cards loaded instead of
+ * nine, and show 6 more cards when we click on show more"). The budget is the
+ * reader's, taken a page at a time, rather than a ceiling the view imposes.
  *
- * Twelve rather than a rounder eight because the grid is 1-4 columns wide
- * (task-cards.css), and twelve is the number that fills every one of those
- * widths flush — a cap that leaves a ragged final row of one looks like a bug in
- * the grid rather than a limit that was chosen.
+ * Six because the grid is three across and two rows deep before the fold
+ * (task-cards.css): one page is exactly what is in view, and every page after
+ * it two more full rows — so no page ends on a ragged row that would read as a
+ * bug in the grid. (Nine was tried first: the third row sat under the fold,
+ * loading, for a wall nobody had asked to scroll yet.)
  */
-export const CARD_CAP = 12;
+export const CARD_PAGE = 6;
 
-/** What the Cards view draws: the live tasks it can afford, and how many it had
- * to leave out. `hidden` is 0 whenever nothing was dropped, so the trailing
- * "+N more running" card is drawn on a truthy number and never on a zero. */
+/** What the Cards view draws: the live tasks within the pages shown so far, and
+ * how many are still behind the fold. `hidden` is 0 whenever nothing was left
+ * out, so the trailing "Show N more" card is drawn on a truthy number and never
+ * on a zero. */
 export interface TaskCardSet {
   cards: Task[];
   hidden: number;
 }
 
-/**
- * WHAT A CARD IS, ACROSS THE ONE MOMENT ITS ROW CHANGES IDENTITY.
- *
- * A scheduled run is claimed and sent before anything knows which Claude session
- * it opened, so for that whole window the task is listed under `pending:<entry>`
- * — and the moment the session reports, the SAME task is relisted under the
- * session id and the pending key is declared gone (§5, routers/tasks.py). Keyed
- * on `task.key`, React sees that as one card leaving and another arriving: the
- * whole card is torn down and rebuilt. Measured on this branch, about two
- * seconds after every new task appeared — one of the "multiple" shifts the user
- * reported (Akshil, 2026-09-03).
- *
- * THE NUMBER IS WHAT USUALLY SURVIVES IT. `task_id` is allocated once and then
- * MOVED onto the session key by that same transition (tasks_store.ensure_ids'
- * `rekeys` pass, which exists for exactly this), so "TASK-097" names one task
- * across the handover while `key` does not.
- *
- * NOT ALWAYS, AND IT DOES NOT NEED TO BE — this is the part worth knowing. The
- * rekey is refused when the session key ALREADY holds a number, which happens
- * when the transcript is listed before the scheduled entry has been joined to
- * it: the session is numbered on its own, and the pending row's number is
- * SPENT (`ensure_ids` says so, and a live task_ids.json shows both outcomes —
- * three tasks whose number moved onto the session id, and one left stranded
- * under `pending:…` while its session took the next number). So the identity can
- * still change once.
- *
- * WHAT MAKES THAT HARMLESS is WHEN it can happen: only while the task has no
- * session id, which is exactly while its card has nothing to frame and is
- * showing "Starting…" (TaskCards). Once a card is streaming, its key is a
- * session key with a number already on it, and `ensure_ids` never renumbers what
- * it has numbered — so no conversation on this wall can be torn down. The worst
- * case is a placeholder replaced by a placeholder, in the same grid slot.
- *
- * THE PAIR, not the number alone: numbers are allocated per PROJECT, so two
- * projects may each hold a TASK-097 and the wall can show both. `\u0000` as the
- * joiner because it is the one character neither a path nor a task number can
- * contain, so no pair can be spelled two ways.
- *
- * FALLS BACK TO `key` when there is no number: `ensure_ids` answers `{}` on a
- * read-only state dir (the numbers stay blank until it is writable again), and a
- * card with no identity at all is worse than one that remounts.
- */
-export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string {
-  return task.task_id ? `${task.project}\u0000${task.task_id}` : task.key;
+/** What a Cards-view pane says when there is no frame to draw (TaskCards).
+ *  `folderMissing` is a folder the server answered 404 for: nothing will ever
+ *  be framed for it, and "Starting…" would be a promise the card cannot keep
+ *  (Akshil, 2026-09-06: "some cards are stuck at starting"). */
+export function emptyPaneText(task: Pick<Task, "status">, folderMissing: boolean): string {
+  if (folderMissing) return "Folder no longer exists";
+  return taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…";
 }
 
 /**
- * The Cards view's rows: the running tasks, by lane then newest first, capped.
+ * WHAT A CARD IS: the server's row key — the session id once there is one, the
+ * `pending:<entry>` key before it.
  *
- * BY LANE FIRST (Akshil, 2026-09-03: order the cards "based on status, the same
- * way we have in list … blocked first and then in progress … sort them by
- * recency" inside each group). The wall used to be one flat recency order, and
- * that buried the only card on it that needs a person: a run parked on a
- * question stops ticking `last_active` the moment it asks, so the longer it
- * waits the further down it sinks — exactly backwards. The rank is a card's
- * lane's index in `CARD_LANES`, which is the one place the order is written
- * (see LIVE_LANE_NAMES), so this cannot drift out of step with the set of lanes
- * the view draws. It is the LIST's rule too (`sortByLane`/`LIST_ORDER`), applied
- * to the two lanes this view has — the same rows in the same order in both
- * views, which is what makes switching between them a change of shape rather
- * than of subject.
+ * It was the (project, task number) pair from 2026-09-03 to 2026-09-06, so a
+ * scheduled run's card could carry across the pending → session handover
+ * without a remount (`task_id` is moved onto the session key by that
+ * transition — tasks_store.ensure_ids' `rekeys` pass). That rested on ONE NUMBER
+ * NAMING ONE TASK, and a live list showed it does not: four (project, number)
+ * pairs each held two different sessions — an archived "Current worktrees" and
+ * a done "Investigate Python 3.12" both as TASK-007, say — because the rekey is
+ * refused when the session key already holds a number and the pending row's
+ * number is respent. Keyed on the pair, the wall drew ONE of each twin (the
+ * dedupe below kept the first) and the popup, resolving the clicked card by the
+ * same pair, could land on the OTHER — a card saying one task and a modal
+ * opening another (Akshil, 2026-09-06). Showing Archive on the wall is what
+ * surfaced it: that is where the twins live.
  *
- * NEWEST TASK FIRST WITHIN A LANE, and `started` is what that means — when the
- * conversation BEGAN (server `_place`: the earliest of the scheduled entry's
- * `created` and the transcript's first record), not when it last said something.
+ * WHAT THE PAIR BOUGHT IS NOT WORTH THAT. The handover it smoothed happens only
+ * while the task has no session — while its card is a "Starting…" placeholder
+ * with nothing to frame — so what is torn down and rebuilt at the handover is a
+ * placeholder, in the same grid slot, and no streaming conversation is ever
+ * touched: a card that has a frame has a session key, and a session key never
+ * changes. The row key, on the other hand, is unique by construction (it IS the
+ * server's row identity), so two sessions are two cards and a click resolves to
+ * the card it landed on and nothing else.
  *
- * IT WAS `last_active`, AND THAT IS THE BUG THIS FIXES (Akshil, 2026-09-03: "in
- * cards view, when i create a new task the layout shifts multiple times, fix
- * that it should shift only one time"). `last_active` climbs every time a run
- * writes, and the page's fast lane (/api/tasks/changes, Scheduled.tsx) lands
- * those writes within a second of each one — so on a wall of live chats the sort
- * key of every card was changing continuously and the cards traded places for as
- * long as anything was talking. Measured on this branch: a new card appeared,
- * then dropped a slot nine seconds later because an unrelated run had written in
- * the meantime, then came back when that run finished. A wall whose whole claim
- * is "watch these" may not move while it is being watched.
+ * Still a function of its own rather than `task.key` at the call sites, because
+ * the identity is a decision this view makes and one that has already changed
+ * once; the seams that read it (the React key, the dedupe, the popup's lookup)
+ * should keep reading one name.
+ */
+export function cardKey(task: Pick<Task, "key" | "task_id" | "project">): string {
+  return task.key;
+}
+
+/**
+ * The Cards view's rows: the List's order, one card per row, capped.
  *
- * `started` never moves for the life of a task, so a card's place is decided once
- * — when it arrives — and then only by cards ARRIVING and LEAVING. Those two are
- * real events with something to say; "a run wrote a line" is not. Newest first
- * puts a task somebody has just created at the top, which is where they are
- * already looking.
+ * THE LIST'S ORDER, WHOLE (Akshil, 2026-09-08: "for list as a reference in
+ * order the cards"). Not the List's rank with a clock of this view's own — that
+ * is what was here, and it is the bug this fixes. The cards ranked by lane like
+ * the List and then ran by `started` (when the task was created) inside a lane,
+ * while every card's head printed `taskWhen` — the last run, the same stamp a
+ * List row prints. So the wall was ORDERED by one clock and LABELLED with another:
+ * a Done card reading "2h ago" sat above one reading "10m ago", the exact
+ * symptom the List had already cured in itself (sortRank), and a recurring task
+ * created weeks ago that had just run sat at the top of Done in the List and at
+ * the bottom of Done here. Switching views reshuffled the lane, which is the one
+ * thing the shared LIST_ORDER was there to prevent.
  *
- * Deliberately NOT `taskWhen`/`laneTime` either: those answer "which run does
- * this row print", a question with three fallbacks in it, and the card head
- * prints that time — but printing a time is not the same as being ordered by it,
- * and this view would rather hold still.
+ * So the order is `sortByLane`, the very function the List calls: rank by
+ * LIST_ORDER, and inside a rank by the time the row prints — last run, most
+ * recent first; Upcoming by the run ahead, soonest first, overdue at the top;
+ * Archive as the server lists it; a row with no time at all last in its rank.
+ * Same rows, same order, in both views, and a card's place on the wall is the
+ * place a reader can check against the stamp on its own head.
  *
- * TIES KEEP THE SERVER'S ORDER, by comparing the incoming index explicitly rather
- * than trusting the sort to be stable — sortLane's rule 1, and it matters more
- * here than it does on a lane: every card is a live iframe keyed by task, so two
- * cards trading places between polls is not a row moving, it is two conversations
- * swapping seats in front of somebody reading one of them.
+ * WHY `started` WAS HERE, AND WHY THE LIST'S KEY IS SAFE TOO. The wall first ran
+ * by `last_active`, which climbs on every write and reaches this page within a
+ * second (the /api/tasks/changes fast lane), so cards traded places for as long
+ * as anything was talking (Akshil, 2026-09-03: "when i create a new task the
+ * layout shifts multiple times"). `started` never moves, and that was the fix
+ * (PR #984) — but it over-corrected: it froze the wall against a clock nobody
+ * could see. The List's key is `lastRunAt`, a message's `ran_at`, which is
+ * written ONCE when the turn begins and does not tick while the run streams — so
+ * a card still holds still while its conversation talks, and moves only when a
+ * run starts, a run ends, or a lane changes: real events with something to say.
+ * The test that pins this ("does not re-sort when a run merely writes") is kept
+ * and still holds.
  *
- * A TASK WITH NO CLOCK AT ALL goes last IN ITS OWN LANE (rule 2, same reason: 0
- * is 1970, and a task whose start the server could not name must not be allowed
- * to claim either end of the order by accident). It also covers an older server
- * that sends no `started` at all: every card lands in the `null` bucket and the
- * wall falls back to the server's own listing order, which is stable enough.
+ * TIES KEEP THE SERVER'S ORDER (sortRank compares the incoming index), which
+ * matters more here than on a row: every card is a live iframe keyed by task,
+ * and two cards trading places between polls is two conversations swapping
+ * seats in front of somebody reading one of them.
+ *
+ * `now` is read ONCE for the whole wall and handed down, for sortByLane's own
+ * reason: a comparator that changes its mind halfway through a sort straddling a
+ * second is a comparator with no defined output.
  *
  * ONE CARD PER IDENTITY. Deduplicated on `cardKey`, which is what the view keys
  * its iframes on — two rows resolving to one card would be a React duplicate key
- * and two iframes fighting over one slot. The server does not emit such a pair
- * (a pending row is gone the moment its entry has a session — routers/tasks.py
- * on `/api/tasks/changes`), so this is a guard rather than a fix, and it keeps
- * the FIRST of the two, which is the one the sort already placed.
+ * and two iframes fighting over one slot. With the identity the row key (see
+ * cardKey) the server cannot emit such a pair, so this is a guard rather than a
+ * fix, and it keeps the FIRST of the two, which is the one the sort already
+ * placed.
  *
  * A new array; the input is never mutated (it is the polled list, which React is
  * still holding).
  */
-export function cardsForTasks(tasks: Task[], cap: number = CARD_CAP): TaskCardSet {
-  // `indexOf` rather than a Set: membership AND rank come off the one list, and
-  // -1 — "this lane is not drawn here" — is the filter.
-  const rank = (task: Task) => CARD_LANES.indexOf(taskColumn(task));
-  const rows = tasks
-    .map((task, index) => ({
-      task,
-      index,
-      lane: rank(task),
-      // `|| null` for laneTime's reason: `started` is a float that is 0.0 for
-      // "the server could not name a start", and 0 must be "no clock" rather
-      // than an instant in 1970. `?? 0` first, because an older server sends no
-      // field at all and `undefined || null` is not the same expression.
-      at: (task.started ?? 0) || null,
-    }))
-    .filter((r) => r.lane >= 0);
-  rows.sort((a, b) => {
-    if (a.lane !== b.lane) return a.lane - b.lane;
-    if (a.at === null || b.at === null) {
-      // Exactly one of them has a clock: the one that does comes first.
-      if (a.at !== b.at) return a.at === null ? 1 : -1;
-    } else if (a.at !== b.at) {
-      return b.at - a.at;
-    }
-    return a.index - b.index;
-  });
+export function cardsForTasks(
+  tasks: Task[],
+  cap: number = CARD_PAGE,
+  now: number = Date.now(),
+): TaskCardSet {
   const seen = new Set<string>();
   const all: Task[] = [];
-  for (const row of rows) {
-    const id = cardKey(row.task);
+  for (const task of sortByLane(tasks, now)) {
+    const id = cardKey(task);
     if (seen.has(id)) continue;
     seen.add(id);
-    all.push(row.task);
+    all.push(task);
   }
-  // A cap of 0 or less is "no cap" rather than an empty page: the argument
-  // exists so a test can shrink the budget, and the failure mode of a bad number
-  // reaching it should not be a view that shows nothing.
+  // A cap of 0 or less is "no cap" rather than an empty page: the view passes
+  // pages × CARD_PAGE and a test can shrink it, and the failure mode of a bad
+  // number reaching it should not be a view that shows nothing.
   if (cap <= 0 || all.length <= cap) return { cards: all, hidden: 0 };
   return { cards: all.slice(0, cap), hidden: all.length - cap };
 }
@@ -3560,6 +3561,26 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
     });
   }
   return rows;
+}
+
+/** What a dismissal of a waiting-task row expires against — the same idea
+ *  `repoDismissSignature` (repo-updates-lib.ts) uses for repo rows. `title` is
+ *  the question itself, so a dismissed row comes back the moment the run asks
+ *  something NEW, rather than staying hidden across an unrelated question
+ *  just because it reused the same key. Dismissing the row is not answering
+ *  it — the task stays parked either way, and the sidebar's Tasks dot keeps
+ *  saying so; this only governs whether the same question keeps a seat in
+ *  Notifications. */
+export function attentionDismissSignature(row: AttentionRow): string {
+  return row.title;
+}
+
+/** Which attention rows a dismissal still hides. */
+export function visibleAttentionRows(
+  rows: AttentionRow[],
+  dismissed: Record<string, string>
+): AttentionRow[] {
+  return rows.filter((row) => dismissed[row.key] !== attentionDismissSignature(row));
 }
 
 /**

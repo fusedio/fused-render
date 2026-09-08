@@ -20,11 +20,11 @@ WHY A NEW MODULE, MIRRORING RATHER THAN IMPORTING `templates/git/ops.py`.
 git companion's iframe (template.html) — the React activity card has no
 route to it, and it is exec'd standalone with no `fused_render` import
 allowed (SPEC PY-15), so a server-side caller cannot import it either. This
-is the same shape `server/routers/git_show.py` and `server/routers/
-git_repos.py` already use for the same reason (git_show.py:144-155): the
-non-interactive git environment, the repo-root resolution, and the mount
-refusal below are DUPLICATED from `ops.py`/`log.py` on purpose, each noting
-its twin. Keep them in step.
+is the same shape `server/routers/git_snapshot.py` and `server/routers/
+git_repos.py` already use for the same reason: the non-interactive git
+environment, the repo-root resolution, and the mount refusal below are
+DUPLICATED from `ops.py`/`log.py` on purpose, each noting its twin. Keep them
+in step.
 
 THE THROTTLE. Keyed on the repo ROOT, not the app folder, so several apps
 inside one repo share one entry — opening app after app in a monorepo must

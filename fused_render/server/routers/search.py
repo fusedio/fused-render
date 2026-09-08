@@ -55,7 +55,12 @@ from fastapi.concurrency import run_in_threadpool
 
 from fused_render.index.config import load_config
 from fused_render.index.query import dirs_src, files_src
-from fused_render.index.store import depth_expr, like_literal, read_manifest
+from fused_render.index.store import (
+    depth_expr,
+    like_literal,
+    read_manifest,
+    search_threads,
+)
 from fused_render.server.common import _error
 # The one screening standard for rows that did not come out of the walk itself;
 # it lives next to WALK_IGNORE_DIRS so the two sources cannot disagree. Bound to
@@ -358,6 +363,12 @@ def _index_entries(cfg, spec, cap, *, parts=None, dirs=False):
     import duckdb
 
     con = duckdb.connect()
+    # Capped like every other interactive index read (search_threads'
+    # docstring in store.py, D701 correction / D706): this is
+    # POST /api/search/files, the AI search's execution engine, squarely on
+    # the interactive path — a bare `duckdb.connect()` here defaulted to one
+    # thread per core same as the four call sites D701 already covered.
+    con.execute(f"SET threads TO {search_threads()}")
     # The reserve is a rule for SHARING the cap, so it only applies while both
     # branches are live. A folder-only search — `kind: "dir"`, or an index whose
     # file partitions are not there yet — has nothing competing with it and gets

@@ -599,6 +599,12 @@ globalThis.window = { location: { search: "?path=/page.html" } };
 // tests reassign it (it's a bare `var`, so the sliced runtime's own `handle`
 // closes over this same binding) before calling `runPython`.
 var IS_THUMBNAIL = false;
+// `runPython`'s `attempt` now chains off `snapshotReady` before rewriting
+// `params` (code review finding B1) — no test in this file exercises an
+// active `_snapshot`, so both stubs are the "nothing to resolve" shape:
+// an already-resolved promise and an identity rewrite.
+var snapshotReady = Promise.resolve(null);
+function rewritePath(p) { return p; }
 """
 
 

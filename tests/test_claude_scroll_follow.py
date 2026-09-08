@@ -300,13 +300,13 @@ console.log(JSON.stringify({ writes: writes.length, top: logwrap._top }));
     assert out["top"] == 200
 
 
-def test_both_children_of_the_scrollport_are_watched(html):
-    """#log and #queue: queued messages render as a sibling AFTER the log, so a
-    queue that grows moves the bottom just as a turn does."""
+def test_the_log_is_watched(html):
+    """#log is the scrollport's transcript child, and the only one a height
+    change needs to be caught on."""
     out = _run(html, """
 console.log(JSON.stringify({ observed }));
 """)
-    assert out["observed"] == ["log", "queue"]
+    assert out["observed"] == ["log"]
 
 
 def test_a_picture_finishing_its_load_is_followed_too(html):

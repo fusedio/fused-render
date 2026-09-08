@@ -396,3 +396,50 @@ def test_start_auto_checks_disabled_by_env(monkeypatch, paths):
 
     monkeypatch.setattr(update.threading, "Thread", fail)
     update.start_auto_checks(paths, lambda version: None)
+
+
+def test_download_verified_aborts_mid_stream_and_discards_the_partial(tmp_path):
+    """`should_abort` is what makes an in-flight update cancellable (the macOS
+    updater's Activity row, `update/mac.py`): it is consulted per chunk, and an
+    abort must leave nothing behind — a half-written DMG is worth exactly as
+    much as one that failed its checksum."""
+    from fused_render.update import common
+
+    class _Chunks:
+        def __init__(self, chunk: bytes, count: int):
+            self._chunk = chunk
+            self._left = count
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, size=-1):
+            if self._left <= 0:
+                return b""
+            self._left -= 1
+            return self._chunk
+
+        def getheader(self, name, default=None):
+            return default
+
+    manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
+                "sha256": "unused — the download never completes", "signature": "g"}
+    asked = []
+    seen = []
+
+    def should_abort():
+        asked.append(1)
+        return len(asked) > 1  # let exactly one chunk through, then stop
+
+    with pytest.raises(common.UpdateCancelled):
+        common.download_verified(
+            manifest, dir=str(tmp_path),
+            progress=lambda done, total: seen.append((done, total)),
+            should_abort=should_abort,
+            urlopen_fn=lambda url, timeout: _Chunks(b"z" * 8, 50))
+
+    assert seen == [(8, None)]  # one chunk got through before the abort
+    assert os.listdir(tmp_path) == []

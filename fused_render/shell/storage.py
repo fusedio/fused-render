@@ -25,8 +25,15 @@ def home_dir() -> str:
     (no ref) is the unnested dir, byte-identical to today."""
     from fused_render._branch import branch_dir
 
-    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    return branch_dir(base)
+    return branch_dir(base_home_dir())
+
+
+def base_home_dir() -> str:
+    """The unnested ``~/.fused-render`` (or FUSED_RENDER_HOME), whatever branch
+    ref is set. Its mere existence is the "this machine has run fused-render
+    before" witness ``workspace_migration`` gates on — a branch install's
+    nested dir may not exist yet while the baseline's does."""
+    return os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
 
 
 def read_json(path: str):

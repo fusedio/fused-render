@@ -105,6 +105,55 @@ def app_entry(dir_path: str) -> str | None:
     return None
 
 
+def enclosing_app_dir(path: str, stop_at: str) -> str | None:
+    """The app folder that `path` sits inside, or `path` itself when it already
+    is one — the first ancestor (inclusive) whose `app_entry()` is not None.
+
+    Walks upward from `path` (its containing directory, when `path` is a file)
+    towards `stop_at`, which bounds the climb: `stop_at` itself is checked, but
+    nothing above it ever is — a repo root is a reasonable place to end up with
+    no app, and this must never wander out past it into unrelated ancestors.
+
+    `OSError` from a level's own `app_entry()` call (an unreadable directory)
+    is swallowed and the walk keeps climbing — one unreadable intermediate
+    directory must not hide an app that sits higher up and is perfectly
+    readable.
+
+    None when no ancestor up to and including `stop_at` declares an app, or
+    when `path` does not sit under `stop_at` at all.
+
+    Returns the answer in the SAME (possibly symlinked) form `path` was given
+    in — never realpath'd — while still comparing against `stop_at` by real
+    identity, not by string. `stop_at` is realpath'd once, up front (callers
+    already tend to pass a realpath'd repo root, but this makes the function
+    correct standalone). `current` is NOT realpath'd once and then walked with
+    `os.path.dirname` — that would desynchronize the two the moment a symlink
+    changes the path's own segment count (macOS's `/tmp` -> `/private/tmp` is
+    one extra segment) — instead each iteration takes a fresh `os.path.realpath`
+    of the CURRENT (still-original-form) candidate just to test it against
+    `stop_at`, so a symlinked ancestor anywhere in `path` still reaches the
+    real `stop_at` at the right depth, and the walk still climbs and returns in
+    `path`'s own coordinate system (which is what a caller holding a live,
+    non-realpath'd UI path needs back — see git_snapshot.py's own comment on
+    why its response's `app_dir` must not be silently realpath'd).
+    """
+    path = os.path.abspath(path)
+    stop_at = os.path.realpath(stop_at)
+    current = path if os.path.isdir(path) else os.path.dirname(path)
+    while True:
+        try:
+            if app_entry(current) is not None:
+                return current
+        except OSError:
+            pass  # unreadable at this level: keep climbing regardless
+        if os.path.normcase(os.path.realpath(current)) == os.path.normcase(stop_at):
+            return None  # reached the ceiling with no app found
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None  # hit the filesystem root without reaching stop_at
+        current = parent
+
+
 # The one authored thumbnail name. A card's picture of an app is otherwise the
 # entry page rendered live in a scaled iframe, which is honest but is also a
 # whole page load per card and shows whatever the app looks like with no data in
@@ -149,6 +198,38 @@ def app_preview_image(dir_path: str) -> str | None:
     return os.path.abspath(p) if stat.S_ISREG(st.st_mode) and st.st_size > 0 else None
 
 
+# The one app icon name — `icon.svg` at the app folder's root. The same file
+# the sidebar's Projects row draws as its glyph and an app's pages serve as
+# their tab favicon (`current_apps.app_icon` delegates here), so an author who
+# drops one in gets the app's mark on every surface that lists the app rather
+# than on one at a time.
+ICON_NAME = "icon.svg"
+
+
+def app_icon(dir_path: str) -> dict | None:
+    """The app's optional icon: ``{"icon": <abs path>, "mtime": <epoch>}`` for
+    an `icon.svg` sitting directly in the folder, else None.
+
+    The mtime rides along because every reader turns this into a URL, and both
+    the browser's image cache and (far more stubbornly) its favicon cache will
+    keep serving yesterday's glyph — callers stamp it on as a cache key.
+
+    A stat, not the listdir `app_preview_image` pays for: this name is WRITTEN
+    by us (POST /api/apps/icon) rather than dropped in by hand, so there is no
+    `Icon.svg` for two filesystems to disagree about.
+
+    Never raises, like the two resolvers above it: an unreadable or vanished
+    folder is "no icon", which is exactly what a card then draws.
+    """
+    p = os.path.join(dir_path, ICON_NAME)
+    try:
+        if not os.path.isfile(p):
+            return None
+        return {"icon": os.path.abspath(p), "mtime": os.stat(p).st_mtime}
+    except OSError:
+        return None
+
+
 def app_category(dir_path: str) -> str | None:
     """The app's authored category: the `category` field of a `metadata.json`
     at the folder's root — the same per-app metadata shape the showcase repo
@@ -180,6 +261,7 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None, *,
     such ambiguity to hand back (see `app_preview_image`), so resolving it once
     in the shared shape keeps callers from having to remember it separately.
     """
+    icon = app_icon(path)
     return {
         "name": name,
         "tag": tag,
@@ -206,6 +288,12 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None, *,
         # The authored category from `metadata.json`, or None. Drives the apps
         # page's category filter; None means "All only".
         "category": app_category(path),
+        # The app's own `icon.svg` and its mtime, or None twice — the mark a
+        # card draws to the left of its name, the same file the sidebar row
+        # and the tab favicon draw. Resolved here for `preview_image`'s
+        # reason: one shape, one place, no caller left to remember it.
+        "icon": icon["icon"] if icon else None,
+        "icon_mtime": icon["mtime"] if icon else None,
         "title": entry_title(entry_html) if entry_html else None,
         # A recent-first caller already has `opened_at`, which outranks this
         # fallback timestamp. It may skip the direct-child stat sweep; the
@@ -430,6 +518,12 @@ def is_workspace_app_entry(fs_path: str, root: str) -> bool:
     # apply to all of them; descent rules apply to the ancestors ABOVE the
     # app folder — a symlinked or `.app`-package app folder still LISTS, but
     # a symlinked/package ancestor is never walked past.
+    # Bound before the loop, purely so a static checker can see it is always
+    # defined by the time the loop's final iteration (i == parent_depth - 1,
+    # the app-folder branch below) runs — which it always does, since the
+    # loop only exits early via `return`. The real value is set once, on that
+    # last iteration; this initial `None` is never read.
+    entry: str | None = None
     for i, seg in enumerate(segments[:-1]):
         lowered = seg.lower()
         if (seg.startswith(".") or lowered in PRUNE_DIR_NAMES

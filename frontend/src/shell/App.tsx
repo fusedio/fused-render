@@ -16,6 +16,7 @@
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { Job } from "@platform/lib/jobs";
+import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import {
   IS_EMBED,
   IS_PREVIEW,
@@ -53,6 +54,7 @@ import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
+import { onboardingUrl } from "@shell/onboarding/progress";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
 import ActivityDock from "@shell/ActivityDock";
@@ -65,6 +67,7 @@ import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { getClipboard, setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { reconcileOsClipboard } from "@apps/explorer/lib/os-clipboard";
 import { BreadcrumbBar, StaticBreadcrumb } from "@apps/explorer/Breadcrumb";
+import EmbedStrip from "@apps/explorer/EmbedStrip";
 import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
@@ -386,7 +389,9 @@ function StatView({
       live = false;
     };
   }, [fsPath]);
-  useFavicon(iconHref);
+  // Theme-resolved: a picker-written icon.svg names its colour and the
+  // favicon cannot read a token itself (app-icon-src.ts).
+  useFavicon(useThemedIconSrc(iconHref));
   // Recents: the explorer's own store, gated on a confirmed FILE, so a
   // directory never lands there. The app
   // builder's parallel (tag, name) store went with its route — nothing displays
@@ -457,6 +462,12 @@ function StatView({
           home={home}
           renderedTitle={renderedTitle}
         />
+        {/* The top-level embed's one piece of chrome (IS_TOP_EMBED): a
+            dismissable strip with the way back to the explorer and, for a
+            .fused, Clone. Here and not in Preview: the preview header is
+            CSS-hidden in embed, and the fusedapp template frames the entry
+            page as a SECOND embed, so only this outer shell is top-level. */}
+        <EmbedStrip fsPath={fsPath} isDir={isDir} />
         <div id="content">{content}</div>
       </div>
       <PreviewSideSlot />
@@ -642,14 +653,15 @@ export default function App({ config }: { config: Config }) {
   // door: a deep link (a bookmark, an app URL from the CLI) is honoured, and
   // leaving the wizard must not bounce back in. Same render-time rewrite as
   // "/" above; the flag the rule reads is the server's, so a completed or
-  // dismissed wizard stays gone across ports and browsers.
+  // dismissed wizard stays gone across ports and browsers. The URL names the
+  // server's stored step, so a restart mid-wizard resumes where it was.
   if (
     !IS_EMBED &&
     !autoShowDecided &&
     location.pathname === "/home" &&
     shouldAutoShow(config)
   ) {
-    history.replaceState(null, "", ONBOARDING_PATH);
+    history.replaceState(null, "", onboardingUrl(config.onboarding?.stages));
   }
   autoShowDecided = true;
   // Legacy: the CLAUDE.md explorer ("MD Files") was deleted from the Config

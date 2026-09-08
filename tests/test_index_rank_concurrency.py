@@ -202,6 +202,98 @@ def test_the_compaction_connection_caps_its_threads():
     assert 1 <= got <= store.MAX_COMPACTION_THREADS
 
 
+def test_search_threads_is_half_the_machine_capped():
+    """The interactive counterpart to `compaction_threads` — see its
+    docstring in store.py. Half rather than a quarter (a user IS waiting on
+    these), still capped so a burst of typing cannot saturate the box."""
+    got = store.search_threads()
+    assert 1 <= got <= store.MAX_SEARCH_THREADS
+    cpu = os.cpu_count() or 4
+    assert got == max(1, min(store.MAX_SEARCH_THREADS, cpu // 2))
+    # The whole point: half the machine is allowed at least as much as a
+    # quarter, on any core count, so the interactive path is never MORE
+    # throttled than the background one.
+    assert got >= store.compaction_threads()
+
+
+@pytest.mark.parametrize("cpu_count", [16, 32, 64])
+def test_search_threads_strictly_exceeds_compaction_threads_on_a_big_machine(
+        monkeypatch, cpu_count):
+    """`got >= compaction_threads()` above passes even when the two caps are
+    EQUAL — exactly what happened when both `MAX_SEARCH_THREADS` and
+    `MAX_COMPACTION_THREADS` were 4: on any machine with >=16 cores both
+    `// 4` and `// 2` clamp to their shared ceiling and the "half, not a
+    quarter" rationale (D701) went inert. Pin strict inequality on machines
+    with enough cores that the two ceilings would otherwise collide, with
+    `os.cpu_count()` monkeypatched so this does not depend on the host."""
+    monkeypatch.setattr(os, "cpu_count", lambda: cpu_count)
+    assert store.search_threads() > store.compaction_threads()
+
+
+def test_query_py_and_guarded_query_read_connections_cap_their_threads(home, tmp_path, monkeypatch):
+    """`stats`, `search_under`, `search_ranked` (query.py) and guarded_query's
+    `_connect` each open a bare `duckdb.connect()` — this pins that all four
+    apply `search_threads()` rather than defaulting to one thread per core.
+
+    NOT exhaustive over every bare `duckdb.connect()` on the interactive read
+    path (D701 correction / D706) — this repo also has POST /api/search/files
+    (routers/search.py, `_index_entries`) and GET /api/git-repos
+    (routers/git_repos.py, `_repos`), which are covered by their own tests
+    nearer their code (test_search_index.py / test_git_repos_api.py) rather
+    than duplicated here, since exercising them needs a running app and a
+    real index rather than a bare `IndexConfig`. `index/freshness.py`'s
+    `indexed_mtime_ns` is deliberately UNCAPPED and excluded from that claim
+    entirely — it is a single point lookup (`WHERE dir = '...' LIMIT 1`) on a
+    heavily-debounced background housekeeping path (at most once per root
+    every ~110s, see routers/index.py's FRESHNESS_CHECK_S comment), not a
+    per-request interactive query, and DuckDB's thread count buys it nothing
+    a single-row lookup can use."""
+    from fused_render.index import guarded_query
+    from fused_render.index.query import search_ranked, search_under, stats
+
+    root = str(home / "r")
+    cfg = _prime_index(tmp_path, root, n=100)
+
+    # Every caller here closes its connection in a `finally` before this test
+    # ever gets to inspect it, so the setting is read the moment the
+    # connection is opened — immediately after `duckdb.connect()`, which is
+    # also the ONLY point `guarded_query._connect` allows it (its `SET
+    # threads` has to run before the lockdown, same as production code).
+    seen_threads = []
+    import duckdb as real_duckdb
+    real_connect = real_duckdb.connect
+
+    class _SpyingConnection:
+        """Delegates everything to the real connection — `DuckDBPyConnection`
+        methods are native and read-only, so this is a thin Python-level
+        proxy rather than a monkeypatched instance method."""
+
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *ea, **ekw):
+            if "SET threads" in sql:
+                seen_threads.append(sql)
+            return self._con.execute(sql, *ea, **ekw)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def spying_connect(*a, **kw):
+        return _SpyingConnection(real_connect(*a, **kw))
+
+    monkeypatch.setattr(real_duckdb, "connect", spying_connect)
+
+    stats(cfg, root=root)
+    search_under(cfg, root)
+    search_ranked(cfg, root, q="alpha")
+    guarded_query._connect(cfg)
+
+    assert len(seen_threads) == 4
+    for sql in seen_threads:
+        assert sql == f"SET threads TO {store.search_threads()}"
+
+
 # -- the regression ----------------------------------------------------------
 
 def _tree(root, n_dirs=400, per_dir=100):

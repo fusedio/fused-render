@@ -9,6 +9,10 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default: "bg-primary text-primary-foreground hover:bg-primary/80",
+        // The fused yellow: the ONE next action on a screen (onboarding's
+        // forward step). Same fill as .claude-health-action, so a screen never
+        // shows two shades of "do this".
+        accent: "bg-[var(--accent)] text-[var(--on-accent)] hover:brightness-[1.06]",
         outline:
           "border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
         secondary:

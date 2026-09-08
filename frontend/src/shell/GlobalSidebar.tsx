@@ -15,11 +15,20 @@ import { ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import type { Config } from "@platform/lib/api";
+import type { Config, UpdateStatus } from "@platform/lib/api";
+import { updateInstall } from "@platform/lib/api";
+import {
+  pokeUpdateStatus,
+  setUpdateStatus,
+  updateLabel,
+  updateRelevant,
+  useUpdateStatus,
+} from "@platform/lib/update-status";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
+import { SetupProgressRing, SetupProgressRow, useSetupMeter } from "@shell/onboarding/SetupProgress";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
@@ -113,6 +122,33 @@ const PREFERENCES_ICON = (
   </svg>
 );
 
+// A download arrow into a tray: the update row's action IS a download and a
+// swap, and every one of its siblings in this popover wears a glyph — a lone
+// text row at the top of the list read as a stray status line rather than the
+// thing you click.
+// The install-in-flight glyph for the popover row: a ring that turns
+// (styles/sidebar.css `.update-spinner`), in the icon slot the download arrow
+// otherwise fills — same box, so the row does not shift.
+const UPDATE_SPINNER = <span className="update-spinner" aria-hidden="true" />;
+
+/** The popover row's word. Same as the badge's label except mid-install,
+ *  where the badge heading stays "Updating…" and this row names the half that
+ *  is running instead (Akshil, 2026-09-08: "downloading, installing, etc."). */
+function updateRowLabel(status: UpdateStatus): string {
+  if (status.state === "installing") {
+    return status.phase === "installing" ? "Installing…" : "Downloading…";
+  }
+  return updateLabel(status);
+}
+
+const UPDATE_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 3v12" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M4 18.5V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-.5" />
+  </svg>
+);
+
 // A circled question mark — the app's one help affordance, and what a reader
 // looks for when they want the walkthrough back.
 const TOURS_ICON = (
@@ -136,6 +172,9 @@ interface PrefsMenuEntry {
   /** Run this instead of navigating to `href` — the tour entries replay a
       walkthrough in place rather than going anywhere. */
   onPick?: () => void;
+  /** Drawn but inert — the update row while an install runs (Akshil,
+      2026-09-08): it says which half is running and takes no press. */
+  disabled?: boolean;
   /** A one-level flyout hung off this row (Tours). Its own entries never carry
       a `submenu` of their own — one level, like ContextMenu's. */
   submenu?: PrefsMenuEntry[];
@@ -256,6 +295,7 @@ function PrefsRow({
     "context-menu-item" +
     (hasSub ? " has-submenu" : "") +
     (open ? " open" : "") +
+    (entry.disabled ? " disabled" : "") +
     // A flyout parent is never "the page you are on": it has no page.
     (!hasSub && !entry.onPick && location.pathname === entry.href ? " active" : "");
   const content = (
@@ -306,8 +346,9 @@ function PrefsRow({
       role="menuitem"
       aria-haspopup={hasSub ? "menu" : undefined}
       aria-expanded={hasSub ? open : undefined}
+      aria-disabled={entry.disabled || undefined}
       className={className}
-      onClick={onActivate}
+      onClick={entry.disabled ? undefined : onActivate}
     >
       {content}
     </div>
@@ -423,6 +464,50 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // AI Models row itself now that it is primary nav.
   const aiRuntime = useAiRuntime();
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
+
+  // The same self-update poll UpdateBadge reads (platform/lib/update-status) —
+  // one store, so the collapsed rail's dot on Preferences and the popover row
+  // below agree with the expanded badge about what's happening, without a
+  // second timer.
+  const updateStatus = useUpdateStatus();
+  const updateIsRelevant = updateRelevant(updateStatus);
+  // Same action UpdateBadge's own button performs: the install downloads and
+  // swaps the bundle, whichever tool put it there — one install path for
+  // every install type (D767). Reached from the popover row rather than the
+  // expanded badge's own panel, so there's no panel here to flash a result in:
+  // the outcome shows up through the shared poll instead — the rail dot and
+  // the row's own label follow the store as the state moves.
+  const handleUpdatePick = () => {
+    if (!updateStatus) return;
+    // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the
+    // badge's own button and the ServerStatusBanner card use.
+    if (updateStatus.state === "installed") {
+      window.location.assign("fused-render://relaunch");
+      return;
+    }
+    // ONLY AN UPDATE THAT IS WAITING GETS INSTALLED (bugbot, PR #1049): the
+    // row is drawn for every relevant state, but "Updating…" must not start
+    // a second install under the first, and "Ready to restart" is the
+    // ServerStatusBanner's restart card's job — this row is a status line
+    // there, the same as UpdateBadge's installed state.
+    if (updateStatus.state !== "available" && updateStatus.state !== "error") return;
+    // Same order as UpdateBadge.install: the poke comes AFTER the install
+    // answers, so the poll it arms sees "installing" and runs at the busy
+    // interval — poked first it would still read "available" and arm the 60s
+    // idle timer, leaving the rail dot behind for a minute (bugbot, PR #1049).
+    void updateInstall()
+      .then(setUpdateStatus)
+      .catch(() => {
+        // Fall through — the re-armed poll picks up the real state.
+      })
+      .finally(pokeUpdateStatus);
+  };
+  const updateDot = updateIsRelevant ? (
+    <span
+      className="sidebar-rail-dot is-update"
+      title={updateLabel(updateStatus!)}
+    />
+  ) : undefined;
   // `.sidebar-rail-dot`, the SAME dot the Tasks row wears, since 2026-08-24
   // (Akshil: "the dots in left sidebar are not consistent, make dot on ai models
   // page similar to one we have in tasks page"). It wore
@@ -586,11 +671,29 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the former sidebar entries (Config), then the settings
   // pages. Same gates as before — an entry a machine can't use stays hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
+    // A first row for the same fact the collapsed rail's dot and the expanded
+    // badge both carry — the popover is the only one of the three with room
+    // for the actual action, so it gets one here rather than just a label,
+    // and an icon like every other row in the list. `href` is a stable key
+    // (see PrefsMenuEntry) — this row never navigates, it only runs
+    // `handleUpdatePick`.
+    ...(updateIsRelevant && updateStatus
+      ? [{
+          href: "#update",
+          // ONE WORD while the install runs (Akshil, 2026-09-08): which half is
+          // running, and the row takes no press — a spinner where the download
+          // arrow was says the same thing without words.
+          label: updateRowLabel(updateStatus),
+          icon: updateStatus.state === "installing" ? UPDATE_SPINNER : UPDATE_ICON,
+          disabled: updateStatus.state === "installing",
+          onPick: handleUpdatePick,
+        }, "separator" as const]
+      : []),
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
       : []),
   ];
-  if (menuEntries.length > 0) menuEntries.push("separator");
+  if (claudeConfigAvailable) menuEntries.push("separator");
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
@@ -676,6 +779,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     setPrefsPos({ left: r.left, bottom: window.innerHeight - r.top + 4 });
   };
 
+  // THE SETUP METER (shell/onboarding/progress): how far first-run setup has
+  // got, as a row above Settings and a ring on the rail, both leading back into
+  // the wizard. Null = nothing to show (never started, or finished).
+  const setupMeter = useSetupMeter(config);
+
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
     {
@@ -707,16 +815,34 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       active: aiModelsActive,
       badge: residentDot,
     },
+    // Same gate and same place as the expanded row: the rail is the whole
+    // sidebar when collapsed, and a meter that vanished on collapse would read
+    // as setup being done.
+    ...(setupMeter
+      ? [
+          {
+            key: "setup",
+            label: setupMeter.title,
+            icon: <SetupProgressRing percent={setupMeter.percent} />,
+            href: ONBOARDING_PATH,
+            pinBottom: true,
+          },
+        ]
+      : []),
     {
       key: "preferences",
       label: "Preferences",
       icon: PREFERENCES_ICON,
       href: "/preferences",
-      pinBottom: true,
+      pinBottom: !setupMeter,
       active: prefsActive,
       // Same Settings popover as the expanded row, not a straight nav — the
       // collapsed rail otherwise has no way to reach Templates/Mounts/etc.
       onClick: (e) => togglePrefsMenu(e.currentTarget),
+      // The rail's only signal that an update exists: collapsed, there is no
+      // Settings row for the UpdateBadge to sit above (see design.md §1) — so
+      // the same fact becomes a dot on the one rail icon that leads to it.
+      badge: updateDot,
     },
   ];
 
@@ -773,6 +899,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateBadge />
+          {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
+          {setupMeter && <SetupProgressRow meter={setupMeter} />}
           {/* The version rides the Settings row's trailing edge rather than the
               brand row it used to sit in. Two reasons it moved: the brand row is
               one click target for Home, so a version glued to the title read as

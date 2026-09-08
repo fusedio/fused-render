@@ -275,6 +275,22 @@ def indexing_enabled() -> bool:
     return read_prefs().get("indexing_enabled") is not False
 
 
+def ranked_search_enabled() -> bool:
+    """Whether index-backed search orders hits by relevance score (default ON
+    — D720). Off means the SQL branch that drops scoring entirely: hits come
+    back `depth ASC, rel ASC` (shallowest, then alphabetical) instead.
+
+    A sibling of `indexing_enabled`, NOT a member of `IndexConfig`/
+    config.json: `POST /api/index/config` reconciles ignore-rule fingerprints
+    and can kick off a rescan, and this is a query-time DISPLAY preference
+    that must never be able to trigger one. Same idiom as `indexing_enabled`
+    and `calls_enabled`: absence and any non-`false` stored value both read
+    as enabled, so a preference file that predates this setting — every
+    existing install — keeps the scored ordering exactly as before.
+    """
+    return read_prefs().get("ranked_search_enabled") is not False
+
+
 def calls_enabled() -> bool:
     """Whether the app call log records anything (default ON — see calls.py).
 
@@ -432,8 +448,10 @@ def _prefs_response() -> dict:
         # so the Preferences page renders the options the server will accept
         # rather than a second copy of this list that can drift from it.
         "model": {"default": default_model(), "choices": list(VALID_DEFAULT_MODELS)},
-        # Whether background file-index scanning may run (default ON).
-        "indexing": {"enabled": indexing_enabled()},
+        # Whether background file-index scanning may run (default ON), and
+        # whether index-backed search orders hits by relevance score (default
+        # ON — D720; off is `depth ASC, rel ASC` instead of scored).
+        "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled()},
         # Which local-model backend serves each capability (D302). The STORED
         # choice, what is actually resolving, and — when those differ — why, in
         # the registry's own words. Same discipline as `engine` above and
@@ -638,6 +656,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             from fused_render.server.routers.index import cancel_all_scans
 
             cancel_all_scans()
+    if "ranked_search_enabled" in body:
+        value = body.get("ranked_search_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'ranked_search_enabled' must be a boolean"},
+                                status_code=400)
+        prefs["ranked_search_enabled"] = value
+        changed = True
     if "calls_enabled" in body:
         value = body.get("calls_enabled")
         if not isinstance(value, bool):
@@ -675,7 +700,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', 'canvases_enabled', 'lan_enabled', "
-                      "'default_model', 'indexing_enabled', 'calls_enabled', "
+                      "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
+                      "'calls_enabled', "
                       "'calls_params', 'calls_retention_days' and/or "
                       "'ai_idle_unload_minutes')"},
             status_code=400,

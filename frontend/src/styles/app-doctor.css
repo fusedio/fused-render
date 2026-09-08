@@ -1,0 +1,116 @@
+/* App Doctor's dialog (platform/ui/AppDoctorModal.tsx). The chassis, the head
+ * and the footer buttons are the shared modal's (deploy.css / buttons-modal.css);
+ * everything here is the checklist inside it.
+ *
+ * The three states are told by COLOUR AND SHAPE together — a ✓, a (!) and a (–)
+ * — never by colour alone, so the list survives a monochrome or colour-blind
+ * reading. Colours are the palette's own semantic tokens (tokens.css), so both
+ * themes come for free. */
+
+.appdoc-summary {
+  margin: 0 0 12px;
+  color: var(--fg-muted);
+}
+
+.appdoc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.appdoc-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+
+/* Only a failure gets a ground of its own: a list where every row is tinted is
+ * a list with no signal in it. */
+.appdoc-row.appdoc-fail {
+  background: rgba(var(--error-rgb), 0.08);
+}
+
+.appdoc-state {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: 20px; /* the label's line box, so the mark sits on its first line */
+}
+
+.appdoc-pass .appdoc-state {
+  color: var(--success);
+}
+
+.appdoc-fail .appdoc-state {
+  color: var(--error);
+}
+
+.appdoc-skip .appdoc-state {
+  color: var(--fg-muted);
+}
+
+.appdoc-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.appdoc-label {
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.appdoc-skip .appdoc-label {
+  color: var(--fg-muted);
+}
+
+.appdoc-detail {
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* The lines a finding sits on. Scrollable in its own box rather than widening
+ * the dialog: a device path or a masked key is long, and a report must never
+ * make the page scroll sideways. */
+.appdoc-findings {
+  display: flex;
+  max-height: 160px;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.appdoc-findings li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.appdoc-findings code {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.appdoc-excerpt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.appdoc-more {
+  color: var(--fg-muted);
+  font-style: italic;
+}

@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
+import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
 import { notifyBookmarksChanged } from "@platform/lib/hooks";
@@ -53,7 +54,20 @@ declare global {
 // off ancestor URLs directly (D3/D4, D46) — same-origin by construction — and
 // installed here, beside the history wrapping, because both are contracts with
 // that runtime that must exist before any frame can load.
-window._fusedFsChanged = clearListPrefetch;
+//
+// Two effects, not one: `clearListPrefetch` protects a listing that mounts
+// LATER (within the 5s TTL) from painting pre-write contents, but it cannot
+// reach a listing that is ALREADY mounted — nothing pops its `refresh`
+// counter. `notifyFsChanged` (listing/fsChangeBus.ts) is that missing half:
+// every live `useDirListing` subscribes to it and re-fetches through the same
+// 300ms debounce its own dir-watch socket uses. Without it, staging a file
+// through the git template left an open Explorer pane showing what it had
+// before the stage — the write never touched the watched directory's own
+// mtime, so the socket-driven watch had nothing to notice either.
+window._fusedFsChanged = () => {
+  clearListPrefetch();
+  notifyFsChanged();
+};
 
 if (IS_EMBED) document.body.classList.add("embed");
 // Frozen-tree framing (router.ts IS_SNAPSHOT): a body class rather than props

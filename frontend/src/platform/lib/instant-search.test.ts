@@ -8,7 +8,6 @@ import {
   QUERY_MEMO_LIMIT,
   QueryMemo,
   STALE_CLEAR_MS,
-  searchDelay,
 } from "@platform/lib/instant-search";
 
 interface Answer {
@@ -22,20 +21,132 @@ const answer = (over: Partial<Answer> = {}): Answer => ({
   ...over,
 });
 
-describe("searchDelay", () => {
-  it("is ZERO on the leading edge — the first keystroke does not wait", () => {
-    // The debounce coalesces fast typing; it is not a delay on the first
-    // request. A selective query answers in ~40ms and must not sit behind a
-    // timer, or the box feels hesitant while doing less work than before.
-    expect(searchDelay(10_000, 0)).toBe(0);
-    expect(searchDelay(10_000, 10_000 - INSTANT_DEBOUNCE_MS)).toBe(0);
+// A minimal stand-in for what every call site actually does with
+// `INSTANT_DEBOUNCE_MS` — `window.setTimeout(run, INSTANT_DEBOUNCE_MS)`,
+// with the previous pending timer cleared on every new keystroke (the same
+// shape an effect's cleanup gives it) — so the debounce SHAPE itself is
+// exercised against the real constant rather than duplicated by re-mounting
+// FilesHome or useWalkSearch here. Those two files still own the "this wired
+// into the actual box" coverage (FilesHome.render.test.tsx); this is the
+// "this constant, used the documented way, behaves like a trailing debounce"
+// coverage, which nothing here asserted before.
+// A minimal virtual clock standing in for `window.setTimeout`/`clearTimeout`,
+// local to this file rather than imported from
+// `@apps/explorer/listing/hook-harness` — that harness is an app-local
+// module (it also pulls in react-test-renderer, which this file has no
+// other use for), and the import boundary keeps `platform/` from depending
+// on `apps/*`. Only the timer piece of that harness is needed here; the
+// smallest faithful copy of it lives in this file instead of being shared.
+interface Timer {
+  at: number;
+  fn: () => void;
+}
+
+class Clock {
+  now = 1_000_000;
+  private timers = new Map<number, Timer>();
+  private nextId = 1;
+  private priorWindow: unknown;
+  private hadWindow = false;
+
+  install(): void {
+    const self = this;
+    this.hadWindow = "window" in globalThis;
+    this.priorWindow = (globalThis as Record<string, unknown>).window;
+    (globalThis as Record<string, unknown>).window = {
+      setTimeout: (fn: () => void, ms = 0) => {
+        const id = self.nextId++;
+        self.timers.set(id, { at: self.now + ms, fn });
+        return id;
+      },
+      clearTimeout: (id: number) => void self.timers.delete(id),
+    };
+  }
+
+  restore(): void {
+    if (this.hadWindow) (globalThis as Record<string, unknown>).window = this.priorWindow;
+    else delete (globalThis as Record<string, unknown>).window;
+    this.timers.clear();
+  }
+
+  /** Move the clock, firing every timer that comes due, oldest first. */
+  advance(ms: number): void {
+    const target = this.now + ms;
+    for (;;) {
+      const due = [...this.timers.entries()]
+        .filter(([, t]) => t.at <= target)
+        .sort((a, b) => a[1].at - b[1].at);
+      if (!due.length) break;
+      const [id, timer] = due[0];
+      this.timers.delete(id);
+      this.now = Math.max(this.now, timer.at);
+      timer.fn();
+    }
+    this.now = target;
+  }
+}
+
+function debouncer(fired: string[]): (query: string) => void {
+  let timer: number | null = null;
+  return (query: string) => {
+    if (timer !== null) window.clearTimeout(timer);
+    timer = window.setTimeout(() => fired.push(query), INSTANT_DEBOUNCE_MS);
+  };
+}
+
+describe("INSTANT_DEBOUNCE_MS", () => {
+  it("collapses a burst of keystrokes into one request, for the LAST query typed", () => {
+    const clock = new Clock();
+    clock.install();
+    try {
+      const fired: string[] = [];
+      const type = debouncer(fired);
+      type("r");
+      clock.advance(50);
+      type("re");
+      clock.advance(50);
+      type("read");
+      // Well inside the debounce window of the last keystroke: nothing fired
+      // yet, and definitely not the earlier partial queries.
+      clock.advance(INSTANT_DEBOUNCE_MS - 1);
+      expect(fired).toEqual([]);
+      clock.advance(1);
+      expect(fired).toEqual(["read"]);
+    } finally {
+      clock.restore();
+    }
   });
 
-  it("waits out the REMAINDER of the window during a burst", () => {
-    // Not a fresh full window per keystroke: a fast typist's requests land one
-    // debounce apart rather than one per letter.
-    expect(searchDelay(10_000, 9_960)).toBe(INSTANT_DEBOUNCE_MS - 40);
-    expect(searchDelay(10_000, 10_000)).toBe(INSTANT_DEBOUNCE_MS);
+  it("still waits the FULL debounce for a single keystroke after a long pause", () => {
+    // The leading-edge throttle this replaced fired the first keystroke
+    // after a pause with NO delay — backwards, because that keystroke is
+    // always the shortest, broadest, most expensive query of the run. This
+    // pins that a keystroke arriving after an arbitrarily long idle period
+    // gets no special treatment: it waits the same full debounce as every
+    // other one.
+    const clock = new Clock();
+    clock.install();
+    try {
+      const fired: string[] = [];
+      const type = debouncer(fired);
+      clock.advance(10_000);
+      type("x");
+      clock.advance(INSTANT_DEBOUNCE_MS - 1);
+      expect(fired).toEqual([]);
+      clock.advance(1);
+      expect(fired).toEqual(["x"]);
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it("is a positive wait, and not nested inside PENDING_INDICATOR_MS", () => {
+    expect(INSTANT_DEBOUNCE_MS).toBeGreaterThan(0);
+    // NOT `toBeLessThan(PENDING_INDICATOR_MS)`: `PENDING_INDICATOR_MS` times
+    // the REQUEST's own round trip once fired, not the debounce before it
+    // fires — the two are sequential, not nested, so debounce > indicator is
+    // not a contradiction; flagged rather than asserted either way, since
+    // neither value is this test's to judge.
   });
 });
 

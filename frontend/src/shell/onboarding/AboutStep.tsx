@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 // Step 1 — what this is. Copy and video come from the download page
 // (scripts/download_page/index.html), which is what the user just came from;
 // the video streams from the same origin that page ships from rather than
@@ -29,7 +30,7 @@ const FEATURES = [
   },
 ];
 
-export function AboutStep({ eyebrow }: { eyebrow: string }) {
+export function AboutStep({ eyebrow }: { eyebrow: ReactNode }) {
   const [videoOk, setVideoOk] = useState(true);
   return (
     <div className="flex flex-col gap-6">

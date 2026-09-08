@@ -262,6 +262,16 @@ class Job:
     # constant is exactly what a multi-repo download in progress looks like,
     # not evidence the constant is wrong.
     total_scope: str = "phase"
+    # Whether `total` is a genuine count or a stand-in guess — today only the
+    # index-scan bridge sets this true (`routers/index.py`'s `prev_total`,
+    # last scan's row count standing in for a walk still in progress, which
+    # `done` can overtake before the walk finishes). Kept OFF the `detail`
+    # string it used to ride in there: `detail` there is the root path, and a
+    # qualifier concatenated onto a path (`~/proj (estimated)`) modifies the
+    # wrong noun — it means "the COUNT is a guess", not "the path is". A
+    # dedicated field lets the client attach it to the number instead
+    # (D733), and defaults false so every other job kind is unaffected.
+    total_estimated: bool = False
     unit: str = ""
     message: str = ""
     # The .html that raised it, from the X-Fused-Page header. Attribution only
@@ -448,6 +458,8 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
         if "total_scope" in body:
             job.total_scope = _one_of(body.get("total_scope"), TOTAL_SCOPES,
                                      "total_scope", job.total_scope)
+        if "total_estimated" in body:
+            job.total_estimated = bool(body.get("total_estimated"))
         if "cancellable" in body:
             job.cancellable = bool(body.get("cancellable"))
         if "waiting_for" in body and server:

@@ -28,6 +28,7 @@
 // shows.
 import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
+import { ChatFrame } from "@platform/ui/ChatFrame";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { ModeMenu } from "@apps/explorer/BarMenu";
@@ -73,11 +74,12 @@ export default function ListingPreviewPane({
   sideEntries: PaneSideEntries;
   onSelectSide: (side: PaneSideChoice) => void;
   // The FOLDER's entry page (`index.html`), or null when it has none — the
-  // "Open app" button in the strip.
+  // "Open in project" button in the strip (gates it: an app, not any folder).
   appEntry: string | null;
-  // Opens it. The caller's own `navigate`, for the reason the whole button lives in
-  // Listing: an EMBEDDED pane may not move the host view, and the way that stays
-  // true is that this component never navigates.
+  // Opens the folder as a project (its /apps page). The caller's own
+  // navigation, for the reason the whole button lives in Listing: an EMBEDDED
+  // pane may not move the host view, and the way that stays true is that this
+  // component never navigates.
   onOpenApp: () => void;
   // Shuts the pane (`_side=off`). The listing's search row grows the reopening
   // half of the affordance while the pane is down — SideChrome writes the split
@@ -119,7 +121,7 @@ export default function ListingPreviewPane({
   // It opens with the way OUT of the column and it ends with the mode pill,
   // which is the file sidebar's header exactly (SideChrome, PreviewSidebar) —
   // the two columns are the same column over a folder and over a file, so they
-  // wear the same bar. "Open app" rides in here too, ahead of the pill, in
+  // wear the same bar. "Open in project" rides in here too, ahead of the pill, in
   // every state including the skeleton — the subject (the open folder) is
   // known long before the pane has resolved what to show about it.
   const strip = () => (
@@ -129,11 +131,11 @@ export default function ListingPreviewPane({
         {appEntry && (
           <button
             type="button"
-            className="bar-ctl bar-ctl-strong"
-            title={"Open " + appEntry.slice(appEntry.lastIndexOf("/") + 1)}
+            className="bar-ctl bar-ctl-bordered"
+            title={"Open " + folder.slice(folder.lastIndexOf("/") + 1) + " as a project"}
             onClick={onOpenApp}
           >
-            Open app
+            Open in project
           </button>
         )}
         {sideMenu}
@@ -169,24 +171,30 @@ export default function ListingPreviewPane({
     // `_fusedClaudeAskTake`), and this component's `key` (Listing.tsx, folded
     // with `claudeAskInstance` for exactly the claude case) is what makes sure
     // a fresh ask gets a fresh mount to pull it into.
+    // `_noopen=1`, not `_preview=1` (D622): this pane is fully interactive —
+    // you type in it — so it must not carry the display-only stamp
+    // `runtime.js`'s `IS_THUMBNAIL` reads off `_preview`, which would silently
+    // disable `fused.daemon.*` for every app it frames (its own left preview
+    // pane included, two levels down). `_noopen=1` says only the one thing this
+    // call site actually wants: don't record this render as an app open.
+    const src = withNoFocus(
+      `/render?path=${encodeURIComponent(sideEntry.path)}` +
+        `&_file=${encodeURIComponent(folder)}${chatOnly}&_noopen=1`
+    );
+    // The claude companion is the one whose document restores a transcript
+    // before it has anything to show, so it is the one framed behind a cover
+    // that waits for `data-chat-ready` (platform/ui/ChatFrame — same as the
+    // Cards wall and its popup). git and mcp paint their own first frame and
+    // stamp nothing, so they stay plain: a cover revealed only by the 8s
+    // fallback would be a new wait, not a fix.
     return (
       <div className="listing-pane" ref={rootRef} {...guardProps}>
         {strip()}
-        <iframe
-          className="pane-frame"
-          src={withNoFocus(
-            // `_noopen=1`, not `_preview=1` (D622): this pane is fully
-            // interactive — you type in it — so it must not carry the
-            // display-only stamp `runtime.js`'s `IS_THUMBNAIL` reads off
-            // `_preview`, which would silently disable `fused.daemon.*` for
-            // every app it frames (its own left preview pane included, two
-            // levels down). `_noopen=1` says only the one thing this call
-            // site actually wants: don't record this render as an app open.
-            `/render?path=${encodeURIComponent(sideEntry.path)}` +
-              `&_file=${encodeURIComponent(folder)}${chatOnly}&_noopen=1`
-          )}
-          title={modeTitle(side)}
-        />
+        {side === "claude" ? (
+          <ChatFrame className="pane-frame" src={src} title={modeTitle(side)} />
+        ) : (
+          <iframe className="pane-frame" src={src} title={modeTitle(side)} />
+        )}
       </div>
     );
   }

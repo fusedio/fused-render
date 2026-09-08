@@ -172,6 +172,20 @@ export function useThemePref(): [ThemePref, (pref: ThemePref) => void] {
   return [pref, setThemePref];
 }
 
+// The theme actually painted, live: the preference resolved, re-resolved on
+// every signal subscribeThemePref knows (own menu, another window, an OS flip
+// under System). For the few places that need the answer as a VALUE rather
+// than through CSS — an `<img>` cannot read a token, so the app-icon
+// recolouring (app-icon-src.ts) picks the hex for this theme itself.
+export function useResolvedTheme(): Theme {
+  const [theme, setTheme] = useState<Theme>(() => resolveTheme(loadThemePref()));
+  useEffect(
+    () => subscribeThemePref(() => setTheme(resolveTheme(loadThemePref()))),
+    []
+  );
+  return theme;
+}
+
 // Keep `data-theme` on <html> in step with the preference for the lifetime of
 // the app. The FIRST application already happened in index.html's inline
 // bootstrap (before paint) — this only handles later changes, so mounting it

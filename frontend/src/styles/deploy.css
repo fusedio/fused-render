@@ -103,6 +103,29 @@
   color: var(--fg);
 }
 
+/* The head's action row (Modal `headActions`): between the title and the ✕,
+   pushed against the ✕ so the two read as one group of controls. The h2 keeps
+   `overflow: hidden` and gives way; the actions never wrap or shrink. The
+   buttons in it are the app's own `.btn` — icon and word — at the head's
+   height, so they match the page's toolbar behind the dialog rather than
+   inventing a third button. */
+.modal-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+  margin-right: 4px;
+}
+
+.modal-head-actions > .btn.modal-head-act {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  gap: 6px;
+  text-decoration: none;
+}
+
 .deploy-body {
   padding: 14px 16px 16px;
   overflow-y: auto;

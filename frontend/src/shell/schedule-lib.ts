@@ -591,6 +591,23 @@ export function cardFrameSrc(template: string, target: string, sessionId: string
   );
 }
 
+/** The same chat, framed at FULL size for the card's popup (TaskCards
+ *  `TaskPeek`; Akshil, 2026-09-05: a preview "so the user can directly type in
+ *  a message"). `chat_only` still — the popup is about the conversation, not
+ *  the folder — but NOT `compact`: compact is the card's read-only cut of the
+ *  template and hides its composer (`#inputbox`), which is the one thing the
+ *  popup exists to give back. `peek=1` instead, the template's third host cut:
+ *  its own strip (← Chats, ⋮) and top bar go, because the popup's head already
+ *  says which task this is and carries the doors (template.html `PEEK`). */
+export function peekFrameSrc(template: string, target: string, sessionId: string): string {
+  return (
+    `/render?path=${encodeURIComponent(template)}` +
+    `&_file=${encodeURIComponent(target)}` +
+    `&chat_only=1&peek=1` +
+    `&session_id=${encodeURIComponent(sessionId)}`
+  );
+}
+
 // ---- Calendar: the task chip grid ---------------------------------------------
 // The calendar shows the same unit the List and the Board show — a TASK — and
 // what the time axis adds is placement:

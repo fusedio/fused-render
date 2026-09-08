@@ -86,7 +86,7 @@ from fused_render.index import runner
 from fused_render.index.config import load_config
 from fused_render.index.ignore import MountGuard
 from fused_render.index.query import dirs_src
-from fused_render.index.store import applied_ignore_sig, read_manifest
+from fused_render.index.store import applied_ignore_sig, read_manifest, search_threads
 from fused_render.server.common import _error
 from fused_render.server.walk import junk_path
 
@@ -236,6 +236,12 @@ def _repos() -> dict:
     import duckdb
 
     con = duckdb.connect()
+    # Capped like every other interactive index read (search_threads'
+    # docstring in store.py, D701 correction / D706): this is a full-table
+    # scan over `dirs.parquet` with no LIMIT, fired every time the homepage's
+    # Repos tab opens — squarely on the interactive path, just not
+    # keystroke-rate.
+    con.execute(f"SET threads TO {search_threads()}")
     # `dir LIKE '%/.git'` would also match a directory literally named `x/.git`
     # on a platform where that is possible, and would not match a `.git` at the
     # filesystem root — neither matters, but comparing the final component is

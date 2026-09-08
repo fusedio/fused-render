@@ -24,7 +24,16 @@ def machine(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / ".fused-render"))
     legacy = tmp_path / "Documents" / "Fused"
     new = tmp_path / "Fused"
-    return legacy, new, tmp_path / ".fused-render"
+    home = tmp_path / ".fused-render"
+    # An existing user: shell state has been written here before. A fresh
+    # install has no home dir and is the one case the migration must never
+    # even look (see test_fresh_install_never_stats_inside_documents).
+    home.mkdir()
+    return legacy, new, home
+
+
+def _marker(home) -> str:
+    return os.path.join(str(home), wm._MARKER_NAME)
 
 
 def _view_url(path) -> str:
@@ -93,6 +102,114 @@ def test_no_op_when_the_legacy_dir_is_missing(machine):
 
     assert not legacy.exists()
     assert not new.exists()
+
+
+def _spy_documents(monkeypatch):
+    """Record every os.path.isdir / exists call whose path is under Documents."""
+    touched = []
+    real_isdir, real_exists = os.path.isdir, os.path.exists
+
+    def spy(fn):
+        def inner(p, *a, **k):
+            if "Documents" in str(p):
+                touched.append(str(p))
+            return fn(p, *a, **k)
+        return inner
+
+    monkeypatch.setattr(os.path, "isdir", spy(real_isdir))
+    monkeypatch.setattr(os.path, "exists", spy(real_exists))
+    return touched
+
+
+def test_fresh_install_never_stats_inside_documents(machine, monkeypatch):
+    """No shell home dir means no pre-D337 user. The legacy path must not be
+    stat'ed at all: on macOS that is a TCC folder access fired before the
+    wizard's FDA step, while the app is not frontmost."""
+    legacy, new, home = machine
+    home.rmdir()
+    legacy.mkdir(parents=True)  # even if one exists, we do not look
+    touched = _spy_documents(monkeypatch)
+
+    wm.run()
+
+    assert touched == []
+    assert legacy.is_dir()
+    assert not new.exists()
+    # Settled now, so the second launch (home dir created by the first
+    # session's stores) does not stat Documents either.
+    with open(_marker(home), encoding="utf-8") as f:
+        assert json.load(f)["outcome"] == "fresh-install"
+    wm.run()
+    assert touched == []
+    assert legacy.is_dir()
+
+
+def test_marker_is_written_and_stops_later_runs_from_looking(machine, monkeypatch):
+    legacy, new, home = machine
+    legacy.mkdir(parents=True)
+    (legacy / "a.html").write_text("a", encoding="utf-8")
+
+    wm.run()
+
+    with open(_marker(home), encoding="utf-8") as f:
+        assert json.load(f)["outcome"] == "done"
+    assert (new / "a.html").is_file()
+
+    # Second start: a legacy dir reappears, but the question is settled.
+    legacy.mkdir(parents=True)
+    touched = _spy_documents(monkeypatch)
+    wm.run()
+    assert touched == []
+    assert legacy.is_dir()
+
+
+def test_marker_records_a_refused_move(machine):
+    legacy, new, home = machine
+    legacy.mkdir(parents=True)
+    new.mkdir(parents=True)
+
+    wm.run()
+
+    with open(_marker(home), encoding="utf-8") as f:
+        assert json.load(f)["outcome"] == "destination-exists"
+
+
+def test_no_marker_when_the_move_itself_failed(machine, monkeypatch):
+    """A failed rename must re-enter next start, so nothing is settled."""
+    legacy, new, home = machine
+    legacy.mkdir(parents=True)
+
+    def boom(*a, **k):
+        raise OSError("nope")
+
+    monkeypatch.setattr(os, "rename", boom)
+    wm.run()
+
+    assert not os.path.exists(_marker(home))
+
+
+def test_no_marker_when_a_state_rewrite_failed(machine, monkeypatch):
+    """The folder moves, but a store that failed to rewrite is not settled:
+    the bookkeeping re-enters next start (and heals, since the move is a
+    no-op by then)."""
+    legacy, new, home = machine
+    legacy.mkdir(parents=True)
+
+    def boom(*a, **k):
+        raise RuntimeError("corrupt store")
+
+    # A nested MonkeyPatch, so lifting the fault does not also lift the
+    # fixture's fake HOME (a bare monkeypatch.undo() would).
+    with pytest.MonkeyPatch.context() as fault:
+        fault.setattr(wm, "_rewrite_recents", boom)
+        wm.run()
+
+    assert new.is_dir()
+    assert not os.path.exists(_marker(home))
+
+    wm.run()
+    with open(_marker(home), encoding="utf-8") as f:
+        assert json.load(f)["outcome"] == "done"
 
 
 def test_skipped_entirely_when_fused_render_dir_is_set(machine, tmp_path, monkeypatch):

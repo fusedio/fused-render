@@ -2161,6 +2161,28 @@ def test_every_suggestion_list_recommends_exactly_one_model():
             f"offers exactly one per engine, out of {[e['id'] for e in entries]}")
 
 
+def test_every_suggestion_list_offers_between_two_and_five_models():
+    """Two rows minimum, five maximum, per engine — `SUGGESTIONS`' own rule.
+
+    The two ends fail differently, which is why neither is left to the eye. A
+    ONE-ROW list is a mandate wearing a shortlist's clothes: the reader whose
+    first answer is not good enough has nothing else to click, and no way to
+    tell whether the model or the prompt was at fault. A SIXTH row costs the
+    thing the list is for — these cards are swept, not studied, and a page of
+    them is a research task rather than a pick.
+
+    Per runner rather than in total, for `recommended`'s reason directly above:
+    a list is what ONE machine sees, and a total would let a one-row engine
+    hide behind a well-stocked one.
+    """
+    for code, entries in catalog.SUGGESTIONS.items():
+        assert 2 <= len(entries) <= 5, (
+            f"{code} suggests {len(entries)} models "
+            f"({[e['id'] for e in entries]}); every engine's list carries two "
+            "to five — one row leaves a reader nowhere to go, six stops being "
+            "read")
+
+
 def test_recommended_is_written_opt_in_and_never_as_a_false():
     """`recommended` is present-and-True or absent, never `False` in the source.
 
@@ -2244,12 +2266,11 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch, tm
                 if row["capability"] == registry.TEXT_GENERATION)
     assert text["runner"] == "mlx-text"
     # The namespace set is a PROXY for "these are MLX conversions", and it
-    # grows: `prism-ml/` was added with the Bonsai row and `LiquidAI/` with the
-    # 8B-A1B, both because no `mlx-community/` conversion of them exists. What
-    # the assertion is really pinning is the Windows half above — that the two
-    # lists are disjoint — so a new publisher belongs here rather than being a
-    # reason to weaken it.
-    assert all(m["id"].startswith(("mlx-community/", "prism-ml/", "LiquidAI/"))
+    # grows: `prism-ml/` is here for the Bonsai row, because no
+    # `mlx-community/` conversion of it exists. What the assertion is really
+    # pinning is the Windows half above — that the two lists are disjoint — so
+    # a new publisher belongs here rather than being a reason to weaken it.
+    assert all(m["id"].startswith(("mlx-community/", "prism-ml/"))
                for m in text["models"])
 
 

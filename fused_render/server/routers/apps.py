@@ -60,6 +60,7 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, File, Form, Header, UploadFile
+from fastapi.responses import JSONResponse
 
 from fused_render import app_listing, fused_api_version, schedule
 from fused_render.server.common import _error, _require_fused
@@ -453,8 +454,9 @@ def api_app_entry(path: str):
         # The fused page API version the entry declares (`<meta
         # name="fused-api-version">`, 0 when undeclared — every app authored
         # before the tag existed) beside the version the runtime speaks now.
-        # The app page's "Migrate" button is `api_version < current_api_version`.
-        # Null when there is no entry to read it off.
+        # `api_version < current_api_version` is "behind", which is now one ROW
+        # of the App Doctor checklist (`app_doctor.report`) rather than a button
+        # of its own. Null when there is no entry to read it off.
         "api_version": fused_api_version.api_version(entry) if entry else None,
         "current_api_version": fused_api_version.current_version(),
         # A migration task on this entry that has not finished — the button
@@ -463,15 +465,19 @@ def api_app_entry(path: str):
     }
 
 
-def _live_migration_task(entry_html: str) -> dict | None:
-    """The stored migration task on `entry_html` that is still LIVE — pending,
-    sending, or sent with no `turn` verdict yet — as `{id, state, run_id}`, or
-    None. A migration is recognised by its prompt's fixed first words
-    (`fused_api_version.is_migration_prompt`); "finished" is the schedule's own
+def _live_app_task(entry_html: str, is_ours) -> dict | None:
+    """The stored task on `entry_html` that is still LIVE — pending, sending,
+    or sent with no `turn` verdict yet — and whose prompt `is_ours` claims, as
+    `{id, state, run_id}`, or None.
+
+    A task family is recognised by its prompt's fixed first words rather than
+    by a field of its own on the schedule entry: the entries are the New task
+    form's own shape, and a feature-specific column on them would be a second
+    schema for every consumer to know about. "Finished" is the schedule's own
     verdict (`turn` is stamped ok/failed/cancelled when the run closes), so a
-    session that died without writing the tag frees the button again rather
-    than pinning it forever. The tag on disk stays the one truth about whether
-    the migration LANDED — this only says whether one is underway."""
+    session that died halfway frees the button again rather than pinning it
+    forever — what LANDED is always read off the folder itself, never off the
+    task."""
     want = os.path.realpath(entry_html)
     try:
         entries = schedule.list_entries()
@@ -482,7 +488,7 @@ def _live_migration_task(entry_html: str) -> dict | None:
             continue
         if e.get("turn"):
             continue
-        if not fused_api_version.is_migration_prompt(e.get("message")):
+        if not is_ours(e.get("message")):
             continue
         target = str(e.get("target") or "")
         if not target or os.path.realpath(target) != want:
@@ -493,6 +499,13 @@ def _live_migration_task(entry_html: str) -> dict | None:
             "run_id": e.get("run_id") or None,
         }
     return None
+
+
+def _live_migration_task(entry_html: str) -> dict | None:
+    """The live fused-API migration task on `entry_html`, or None. The tag on
+    disk stays the one truth about whether the migration LANDED — this only
+    says whether one is underway."""
+    return _live_app_task(entry_html, fused_api_version.is_migration_prompt)
 
 
 @router.post("/api/apps/migrate")
@@ -506,7 +519,13 @@ def api_migrate_app(body: dict = Body(...), x_fused: str | None = Header(default
     the same shape and the same seam as the scaffolding task `/api/apps/new`
     creates, so the app's Tasks tab lists it and the Claude pane can attach to
     its run. The version tag itself is the session's to write: stamping it
-    here would declare a migration done before the code moved."""
+    here would declare a migration done before the code moved.
+
+    NO UI CALLS THIS ANY MORE. The Migrate button on the app page and on the
+    explorer's entry-page topbar became the App Doctor button, and a stale
+    version tag is one ROW of that checklist (`app_doctor.report`) — its fix
+    session routes that row through this same migration skill itself. This
+    endpoint stays as the narrow way to ask for exactly that one task."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -551,6 +570,102 @@ def api_migrate_app(body: dict = Body(...), x_fused: str | None = Header(default
         "entry_html": entry_html,
         "from_version": from_version,
         "to_version": to_version,
+        # Same two keys as /api/apps/new, same meaning: the stored entry with
+        # its `run_id` once the send resolved, and why no entry was stored.
+        "task": task,
+        "task_error": task_error,
+    }
+
+
+def _doctor_folder(path) -> tuple[str, JSONResponse | None]:
+    """`(folder, error)` for a doctor request's `path` — the shared preflight
+    both verbs run. A folder is enough: unlike migrate, the report says for
+    itself whether there is an entry page (it is the first row of the
+    checklist), so a folder with none is a REPORT, not a 404."""
+    from fused_render.index.ignore import MountGuard
+
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return "", _error("'path' must be an absolute folder path")
+    if MountGuard().blocks(path) or not os.path.isdir(path):
+        return "", _error("no such app folder", status=404)
+    return os.path.abspath(path), None
+
+
+@router.get("/api/apps/doctor")
+def api_app_doctor(path: str):
+    """The App Doctor report for one folder: the deterministic checklist the
+    modal draws (`app_doctor.report` — what it checks and why lives there),
+    beside the live fix task if one is already running.
+
+    Read-only and cheap enough for a button press: a bounded walk of the
+    folder plus one `git status`. Nothing here forms a judgment about a
+    finding — that is the fix task's job, and the fix task is a Claude session
+    running the skill (POST, below)."""
+    from fused_render import app_doctor
+
+    folder, err = _doctor_folder(path)
+    if err is not None:
+        return err
+    report = app_doctor.report(folder)
+    entry = report.get("entry")
+    # The same key shape /api/apps/entry uses for its migration task, and for
+    # the same reason: the button reads "in progress" instead of offering a
+    # second session over the same files.
+    report["task"] = (_live_app_task(entry, app_doctor.is_doctor_prompt)
+                      if entry else None)
+    return report
+
+
+@router.post("/api/apps/doctor")
+def api_app_doctor_fix(body: dict = Body(...),
+                       x_fused: str | None = Header(default=None)):
+    """Create the FIX task: one session that explains every App Doctor finding
+    and fixes what is safe to fix. The prompt is one line invoking the
+    `fused-render-app-doctor` skill (`app_doctor.doctor_prompt`) — the skill
+    owns the checks, the judgment about which hits are real, and where each
+    kind of fix belongs.
+
+    One task for the whole report, not one per finding: the findings are about
+    the same folder and often the same file, and two sessions rewriting one
+    app at once is a merge nobody asked for. Same shape and same seam as the
+    scaffolding task `/api/apps/new` creates, so the app's Tasks tab lists it
+    and the Claude pane can attach to its run."""
+    from fused_render import app_doctor
+
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    folder, err = _doctor_folder(body.get("path"))
+    if err is not None:
+        return err
+    model = body.get("model", "")
+    effort = body.get("effort", "")
+    for field, value, allowed in (("model", model, VALID_DEFAULT_MODELS),
+                                  ("effort", effort, _VALID_SESSION_EFFORTS)):
+        cerr = _session_choice_error(field, value, allowed)
+        if cerr is not None:
+            return _error(cerr)
+
+    try:
+        entry_html = app_listing.app_entry(folder)
+    except OSError:
+        entry_html = None
+    if not entry_html:
+        # A task has to land ON a page (that is what lets "open this task"
+        # reach the app rather than the folder), so the one finding the doctor
+        # cannot hand to a session is the missing entry itself.
+        return _error('this folder has no app entry page (no <meta name="fused-app">)',
+                      status=404)
+    if _live_app_task(entry_html, app_doctor.is_doctor_prompt) is not None:
+        return _error("an App Doctor task for this app is already in progress",
+                      status=409)
+
+    prompt = app_doctor.doctor_prompt(entry_html)
+    task, task_error = _create_app_task(entry_html, prompt, model, effort)
+    return {
+        "path": folder,
+        "entry_html": entry_html,
         # Same two keys as /api/apps/new, same meaning: the stored entry with
         # its `run_id` once the send resolved, and why no entry was stored.
         "task": task,

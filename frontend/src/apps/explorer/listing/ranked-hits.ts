@@ -1,34 +1,44 @@
 // A ranked answer from the server, as the rows the listing already renders.
 //
-// `/api/index/rank` returns the ORDER and the scoring fields, and deliberately
-// not the match positions: the client re-runs `fuzzyMatch` over the ~200 rows
-// it got back, so platform/lib/fuzzy.ts stays the single source of truth for
-// what highlights and the server's port of it (index/rank.py) stays free to
-// carry positions internally without them becoming a wire contract.
+// `/api/index/rank` returns the ORDER, not the scoring fields: `score`/
+// `tier`/`depth`/`longest_run` drove `_rank_sql`'s ORDER BY server-side, but
+// nothing downstream re-sorts a server-answered row — this file hands back
+// hits "in the order it returned them", full stop — so the server stops at
+// computing them and the wire (`IndexRankHit`) never carried them. `SearchHit`
+// still declares those fields (the live-walk path's `rankCompare` genuinely
+// needs them), so this function fills them with placeholders rather than
+// dropping them from the shared type; nothing reads a placeholder because
+// nothing re-sorts this path. Match positions are the same story: the client
+// re-runs `substringMatch` (platform/lib/fuzzy.ts) over the ~200 rows it got
+// back — not the looser `fuzzyMatch`, because every row here already passed
+// `/api/index/rank`'s own substring filter, so this is the exact test that
+// guarantee is stated in terms of, not merely a weaker test that happens to
+// agree with it.
 //
-// The two rankers agree — tests/fixtures/rank-parity.json pins that in both
-// languages — but this file does not depend on it: a row the browser's matcher
-// refuses loses its HIGHLIGHT and keeps its place. Dropping it instead would
-// mean a file that exists, that the server ranked, and that the search cannot
-// find.
-import { fuzzyMatch } from "@platform/lib/fuzzy";
+// The two rankers agree on substring hits (index-backed search is substring-
+// only; tests/fixtures/rank-parity.json, restricted to substring rows, pins
+// that in both languages) — but this file does not depend on it: a row the
+// browser's matcher refuses loses its HIGHLIGHT and keeps its place. Dropping
+// it instead would mean a file that exists, that the server ranked, and that
+// the search cannot find. In practice this rarely fires for a ranked hit: the
+// one known gap is a folding disagreement between DuckDB's `lower()` and
+// JS's, at the same kind of Unicode edge case `_rank_sql` (query.py) already
+// has to special-case server-side (D712).
+import { substringMatch } from "@platform/lib/fuzzy";
 import type { IndexRankHit } from "@platform/lib/api";
 import type { SearchHit } from "@apps/explorer/listing/types";
 
-function tierOf(tier: number): 1 | 2 | 3 {
-  // The wire is not the type system, and everything downstream orders on this.
-  return (tier <= 1 ? 1 : tier >= 3 ? 3 : 2) as 1 | 2 | 3;
-}
-
-/** The server's ranked hits as `SearchHit`s, in the order it returned them. */
+/** The server's ranked hits as `SearchHit`s, in the order it returned them.
+ * `score`/`longestRun`/`tier`/`depth` are placeholders — not on the wire, and
+ * not read on this path (see module comment). */
 export function hitsFromRank(hits: IndexRankHit[], q: string): SearchHit[] {
   if (!q) return [];
   return hits.map((h) => ({
     entry: { rel: h.rel, is_dir: h.is_dir, size: h.size, mtime: h.mtime },
-    positions: fuzzyMatch(q, h.rel)?.positions ?? [],
-    score: h.score,
-    longestRun: h.longest_run,
-    tier: tierOf(h.tier),
-    depth: h.depth,
+    positions: substringMatch(q, h.rel)?.positions ?? [],
+    score: 0,
+    longestRun: q.length,
+    tier: 1,
+    depth: 0,
   }));
 }

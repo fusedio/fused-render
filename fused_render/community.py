@@ -29,7 +29,9 @@ copy to keep in sync). Opening an app there IS opening your copy.
 The lock file (`.lock`, `_cache_lock`) stays under ~/.fused-render/community/.
 Every git call runs with GIT_TERMINAL_PROMPT=0 and a bounded timeout — a
 first clone that can't finish in time surfaces as a friendly retry error
-rather than a hang.
+rather than a hang. A machine with no usable git is refused BEFORE the clone
+(`_require_git`), naming git as the requirement, since every surface that
+would otherwise sit on "still downloading" forever renders that message.
 """
 import contextlib
 import json
@@ -258,6 +260,51 @@ def _clear_stale_staging():
         shutil.rmtree(leftover, ignore_errors=True)
 
 
+def _git_install_hint():
+    """The one-line "get git" instruction for this platform. macOS is called
+    out on its own because /usr/bin/git is a shim that EXISTS on every Mac
+    without the developer tools behind it — `which` finds it, so the missing
+    piece is the toolchain, not a download.
+
+    No backticks or other markup: every surface drops this into a plain text
+    node, so markup would render as literal characters."""
+    if sys.platform == "darwin":
+        return "run xcode-select --install to get it, then revisit this page"
+    if sys.platform == "win32":
+        return "install it from https://git-scm.com/download/win, then revisit this page"
+    return ("install it with your package manager (apt install git, brew "
+            "install git), then revisit this page")
+
+
+def _require_git():
+    """Refuse the clone up front when git can't run, with a message that says
+    so — the showcase is a git clone and there is no fallback.
+
+    `git --version` is the probe, not `shutil.which`: on macOS /usr/bin/git is
+    an xcode-select shim present on every machine whether or not the developer
+    tools are installed, so `which` succeeds and only actually RUNNING git
+    reveals `xcrun: error: invalid active developer path`. That failure used to
+    reach the page (when it reached it at all) as a raw xcrun line under
+    "could not fetch the community catalog"; a git that cannot report its own
+    version is unambiguously unusable, so it is named as such here instead of
+    pattern-matching stderr.
+
+    Cheap enough to run on every clone attempt (milliseconds, once — the clone
+    behind it is tens of seconds), and it never runs again after the first
+    successful clone, since _refresh returns early then."""
+    try:
+        r = _git(WORKSPACE, "--version", timeout=15)
+        ok = r.returncode == 0
+    except ActionError:
+        # _git already maps FileNotFoundError/timeout to a message, but both
+        # mean the same thing here and this one names the consequence.
+        ok = False
+    if not ok:
+        raise ActionError(
+            "could not download the showcase apps: git is required to clone "
+            f"them and it isn't available on this machine — {_git_install_hint()}")
+
+
 def _refresh():
     """Clone the showcase repo if it isn't there yet; once it exists this is
     a no-op that just serves the catalog. The clone is the user's tree —
@@ -274,6 +321,10 @@ def _refresh():
             f"{SHOWCASE_DIR} exists but is not the showcase clone — "
             "move it aside to let the catalog sync")
     os.makedirs(WORKSPACE, exist_ok=True)
+    # Ahead of mkdtemp, so a machine without git leaves no staging dir behind
+    # — and AFTER makedirs, since `_git` runs with `-C WORKSPACE` and a missing
+    # cwd fails even `--version`.
+    _require_git()
     # Clone into a hidden staging dir, then claim the final name with one
     # rename — no half-clone ever flashes up in the explorer listing.
     staging = tempfile.mkdtemp(dir=WORKSPACE, prefix=".showcase-clone-")

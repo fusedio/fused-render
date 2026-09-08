@@ -20,11 +20,16 @@ import hashlib
 import ipaddress
 import logging
 import os
+import threading
 
 logger = logging.getLogger("fused_render.lan_tls")
 
 CA_DAYS = 3650
 LEAF_DAYS = 365
+
+# The one CA this process uses, per state folder (see _ensure_ca).
+_ca_by_dir: dict = {}
+_ca_lock = threading.Lock()
 
 
 def _dir() -> str:
@@ -49,7 +54,24 @@ def _write_private(path: str, data: bytes) -> None:
 
 
 def _ensure_ca():
-    """Load or create the CA. Returns (cert, key)."""
+    """Load or create the CA. Returns (cert, key).
+
+    Memoised for the life of the process, and that is load-bearing, not a
+    speed-up: a pairing QR carries ``ca_fingerprint()`` and the phone then
+    fetches the bytes ``ca_pem()`` reads. If those two calls ever disagreed
+    — a half-present folder (a cert whose key is gone) makes this function
+    generate a fresh CA and overwrite ca.pem on EVERY call — no code could
+    pair, and the app could only report it as a certificate that did not
+    match. One CA per process, whatever the folder looks like.
+    """
+    folder = _dir()
+    with _ca_lock:
+        if folder not in _ca_by_dir:
+            _ca_by_dir[folder] = _load_or_create_ca()
+        return _ca_by_dir[folder]
+
+
+def _load_or_create_ca():
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -63,6 +85,12 @@ def _ensure_ca():
             key = serialization.load_pem_private_key(f.read(), password=None)
         if cert.not_valid_after_utc > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=30):
             return cert, key
+        logger.warning("lan_tls: local CA expires within 30 days - issuing a new one; phones must pair again")
+    elif os.path.exists(cert_path) or os.path.exists(key_path):
+        # Half a CA is no CA: every device paired against the old one is about
+        # to stop trusting this computer, so say so rather than churn quietly.
+        logger.warning("lan_tls: local CA is incomplete (cert %s, key %s) - issuing a new one; "
+                       "phones must pair again", os.path.exists(cert_path), os.path.exists(key_path))
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "Fused Render local CA"),
@@ -167,6 +195,10 @@ def ca_fingerprint() -> str:
 
 
 def ca_pem() -> bytes:
-    _ensure_ca()
-    with open(ca_pem_path(), "rb") as f:
-        return f.read()
+    """The CA the QR's fingerprint was taken from — the certificate in hand,
+    not a re-read of the file, so the bytes a phone fetches and the fingerprint
+    it checks them against cannot come from two different CAs."""
+    from cryptography.hazmat.primitives import serialization
+
+    cert, _ = _ensure_ca()
+    return cert.public_bytes(serialization.Encoding.PEM)

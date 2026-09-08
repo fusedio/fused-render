@@ -12,19 +12,25 @@ import {
   getIndexConfig,
   putIndexConfig,
   putIndexingEnabled,
+  putRankedSearchEnabled,
   runIndexQuery,
   startIndexScan,
 } from "@platform/lib/api";
 import type { IndexConfig, Prefs } from "@platform/lib/api";
+import { publishRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
 import { useIndexStatus } from "@platform/lib/index-status";
+import { useFda } from "@platform/lib/fda";
+import { INDEXING_FDA_COPY, IndexFdaCta } from "@apps/explorer/IndexFdaCta";
 import { formatMtimeFull } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import {
+  isFdaRefusal,
   missingDefaults,
   patternsToText,
   scanErrorLine,
+  scanningLine,
   textToPatterns,
   unionWithDefaults,
 } from "./indexing-lib";
@@ -72,6 +78,54 @@ function IndexingToggle({
   );
 }
 
+// Same pattern as `IndexingToggle` immediately above: local busy/error, a PUT
+// that returns the full Prefs, and the parent re-renders from it. Exported
+// (unlike `IndexingToggle`) so it can be rendered and tested on its own,
+// without the rest of `IndexingPanel`'s config/status fetches.
+export function RankedSearchToggle({
+  prefs,
+  onChange,
+}: {
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ranked = prefs.indexing.ranked;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putRankedSearchEnabled(!ranked);
+      // The explorer's two search boxes read this preference through their
+      // own module-level cache (ranked-search-pref.ts), not through `Prefs`
+      // — publish so a query fired right after this toggle settles doesn't
+      // race a GET that hasn't happened yet.
+      publishRankedSearchEnabled(next.indexing.ranked);
+      onChange(next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={ranked} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Rank search results by relevance.</b> Turning this off lists matches
+          shallowest-first, then alphabetically, instead of best-match-first.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </>
+  );
+}
+
 export function IndexingPanel({
   prefs,
   onChange,
@@ -89,6 +143,14 @@ export function IndexingPanel({
   const [nonce, setNonce] = useState(0);
   const status = useIndexStatus(true, nonce);
   const scanning = !!status?.scanning;
+  // The server's other reason to refuse a scan (shell/index_gate.py): the
+  // packaged mac app without Full Disk Access. Mirrors that gate — offered
+  // (the `fda` field exists) and not granted to THIS process — so the card
+  // is up before the user presses anything, not only after the 409 comes
+  // back. `pending_relaunch` is still "not granted here": the card's
+  // Relaunch face handles it.
+  const fda = useFda();
+  const fdaBlocked = !!fda && !fda.granted;
 
   useEffect(() => {
     let alive = true;
@@ -130,6 +192,11 @@ export function IndexingPanel({
       // rebuilds. The server starts that scan on save; say so, because the
       // alternative is a user wondering why an excluded folder is still
       // showing up in search.
+      // The server tries to start that rescan and swallows the refusal
+      // (logs it), so `needs_rescan` alone would promise a rebuild that never
+      // starts while the FDA gate is shut. Say what actually happens.
+      if (saved.needs_rescan && fdaBlocked)
+        return "Saved. The index rebuilds once Full Disk Access is granted and FusedRender relaunches.";
       return saved.needs_rescan
         ? "Saved. Rebuilding the index so the new rules apply."
         : "Saved.";
@@ -147,6 +214,14 @@ export function IndexingPanel({
   const dirty = config !== null && text !== patternsToText(config.ignore);
   const stale = config !== null ? missingDefaults(config.ignore, config.defaults) : [];
   const indexingOff = !prefs.indexing.enabled;
+  // Scan buttons have nothing to do while either gate is shut; the sentence
+  // under them says which. FDA outranks "off": with no access, flipping the
+  // toggle on does not get a scan either.
+  const scanBlockedTitle = indexingOff
+    ? "Indexing is off — turn it back on above to scan"
+    : fdaBlocked
+      ? "Indexing needs Full Disk Access — grant it below first"
+      : null;
 
   return (
     <>
@@ -159,6 +234,7 @@ export function IndexingPanel({
           survives restarts. It is rebuilt in the background when the app starts;
           unchanged folders cost one check each, so that is usually a second or two.
         </p>
+        <RankedSearchToggle prefs={prefs} onChange={onChange} />
         {!status && <SkeletonLines rows={2} label="Loading index status" />}
         {status && (
           <p className="deploy-muted">
@@ -174,9 +250,7 @@ export function IndexingPanel({
               <b>No index yet.</b>
             )}{" "}
             {scanning
-              ? `Scanning now — ${status.files.toLocaleString()} files so far${
-                  status.root ? ` under ${status.root}` : ""
-                }.`
+              ? scanningLine(status)
               : config?.roots.length
                 ? `Covers ${config.roots.join(", ")}.`
                 : ""}
@@ -201,11 +275,10 @@ export function IndexingPanel({
         <div className="prefs-actions">
           <button
             type="button"
-            disabled={busy || scanning || indexingOff}
+            disabled={busy || scanning || indexingOff || fdaBlocked}
             title={
-              indexingOff
-                ? "Indexing is off — turn it back on above to scan"
-                : "Check for changes since the last scan (fast — unchanged folders are skipped)"
+              scanBlockedTitle ??
+              "Check for changes since the last scan (fast — unchanged folders are skipped)"
             }
             onClick={() =>
               act(async () => {
@@ -218,11 +291,10 @@ export function IndexingPanel({
           </button>
           <button
             type="button"
-            disabled={busy || scanning || indexingOff}
+            disabled={busy || scanning || indexingOff || fdaBlocked}
             title={
-              indexingOff
-                ? "Indexing is off — turn it back on above to scan"
-                : "Rebuild from scratch, ignoring what the last scan recorded — use this if results look wrong"
+              scanBlockedTitle ??
+              "Rebuild from scratch, ignoring what the last scan recorded — use this if results look wrong"
             }
             onClick={() =>
               act(async () => {
@@ -254,8 +326,17 @@ export function IndexingPanel({
             above first.
           </p>
         )}
+        {/* No Full Disk Access: the fix, not the refusal. The 409 the scan
+            route answers ("indexing needs Full Disk Access on macOS") used to
+            land in the error banner below — a wall with no door. The card is
+            the same one the home search shows for this gate (explorer/
+            IndexFdaCta): open Settings, or Relaunch once the grant landed.
+            Only THAT refusal is kept out of the banner — matched by its text,
+            not by the gate — so a Save or Delete that fails for its own
+            reason while the card is up still says so. */}
+        {fdaBlocked && !indexingOff && <IndexFdaCta copy={INDEXING_FDA_COPY} />}
         {note && <p className="deploy-muted">{note}</p>}
-        {error && <ErrorBanner>{error}</ErrorBanner>}
+        {error && !(fdaBlocked && isFdaRefusal(error)) && <ErrorBanner>{error}</ErrorBanner>}
       </section>
 
       <section className="prefs-section">

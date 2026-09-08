@@ -192,9 +192,108 @@ def test_a_point_aim_shows_a_crosshair_and_hides_the_ring(html):
 # --------------------------------------------------- one commit path, awaited
 
 def test_typed_notes_save_through_the_one_commit_path(html):
-    """The Enter key calls annCommit — the one save-and-autosend path."""
+    """The Enter key calls annCommit — the one SAVE path. It never sends."""
     enter = _block(html, 'if (e.key === "Enter" && !e.shiftKey)', "});")
     assert "annCommit();" in enter
+    assert "annAutoSubmit" not in enter
+
+
+def test_a_portaled_composer_keeps_its_keystrokes(html):
+    """Hosted, the composer is a node of the APP's document, so a keystroke in
+    it bubbled into the app's own listeners — an app that focuses its search
+    box on any key stole the letters (Akshil, 2026-09-04). Every key-family
+    event stops at the composer, and focus is taken back on keydown in case a
+    capture-phase listener already moved it. Bubble phase, or Enter/Escape
+    would never reach the textarea's own handler."""
+    body = _block(html, "const ANN_KEY_EVENTS = [", "\n}\n")
+    for ev in ("keydown", "keyup", "keypress", "input", "beforeinput",
+               "compositionstart", "compositionend"):
+        assert '"%s"' % ev in body
+    assert "if (!annPortaled() && !(e.view && e.view !== window)) return;" in body, \
+        ("the parked seat's bindings are the chat's own — leave them alone; but "
+         "Enter unportals mid-dispatch, so the event's window decides too")
+    assert "e.stopPropagation();" in body
+    assert "annTa.focus();" in body
+    assert "host.shadowRoot.activeElement" in body, \
+        "activeElement retargets to the layer host; drill into the shadow root"
+    assert "}, true);" not in body, "bubble phase, not capture"
+
+
+def test_done_during_a_live_run_sends_the_notes_as_a_follow_up(html):
+    """Done (and a stopped recording) during a live run used to hold the notes
+    back behind a `!sending` gate and leave them as chips the reader had to
+    Enter out by hand (Akshil, 2026-09-04). Both now hand them to submitChat,
+    whose live-run branch sends an annotation-only follow-up to the running
+    claude (sendFollowUp, PR #979). The home form's Stop is never pressed by
+    an auto-send."""
+    done = _block(html, "async function annDone()", "\n}\n")
+    assert "if (pending && (activeRun || !sending)) annAutoSubmit();" in done
+    rec = _block(html, "async function annRecEnd()", "\n}\n")
+    assert "if (activeRun || !sending) annAutoSubmit();" in rec
+    submit = _block(html, "function submitChat()", "\n}\n")
+    live = submit[submit.index("if (activeRun) {"):]
+    assert "if (!message && !annPending().length && !shotAttached.length) return;" in live
+    assert "sendFollowUp(message);" in live
+    auto = _block(html, "function annAutoSubmit()", "\n}\n")
+    assert 'contains("home") && !activeRun' in auto
+    # nothing page-side parks notes any more
+    assert "annQueued" not in html and "annQueueChips" not in html
+
+
+def test_a_sent_note_draws_no_pin(html):
+    """Once a note has gone to Claude its pin leaves the app (Akshil,
+    2026-09-04): the muted ✓ that used to linger until the run resolved meant
+    the next round was commented over last round's marks. The note is kept —
+    the receipt and a failed send's un-marking still read it."""
+    body = _block(html, "  annotations.forEach((c, i) => {", "\n  });\n")
+    gate = "if (c.sent || (c.createdAt || 0) < annRoundStart) return;"
+    assert body.index(gate) < body.index("annPins.ownerDocument.createElement")
+
+
+def test_each_arm_starts_a_clean_round_of_pins(html):
+    """Arming the mode stamps the round (Akshil, 2026-09-04); only notes saved
+    since get pins. Older notes — queued behind a live run, or left pending —
+    keep their chips and still send, but no longer mark the page."""
+    assert "if (on) { annArmEpoch += 1; annRoundStart = Date.now(); }" in html
+    assert "let annRoundStart = 0;" in html
+
+
+def test_a_failed_follow_up_gives_the_notes_back(html):
+    """sendFollowUp stamps the notes `sent` before the inbox write; a run that
+    is gone, a send the session never took, or a thrown send are all failures
+    the claude never saw, so the notes go back to pending (chips return, Done
+    can resend) and the receipt is pulled — the rollback sendMessage already
+    does for a run that never launched (Bugbot, PR #996)."""
+    body = _block(html, "async function sendFollowUp(text)", "\n}\n")
+    assert "const giveBack = () => {" in body
+    give = _block(body, "const giveBack = () => {", "\n  };\n")
+    # back INTO the list, not just un-marked: annResolveSent has usually already
+    # dropped a sent note by the time a follow-up fails (session ended)
+    assert "if (!annotations.some((a) => a.id === c.id)) annotations.push(c);" in give
+    assert "c.sent = 0;" in give
+    assert "if (receipt) receipt.remove();" in give
+    assert "if (bareTurn) bareTurn.remove();" in give, "the wordless ghost row goes too"
+    assert "shotAttached = pics.concat(shotAttached); renderAnn();" in give, \
+        "attached pictures come back to the composer, as sendMessage's rollback does"
+    assert body.count("giveBack();") == 3, "no run, not sent, and thrown"
+    # the stream-split counter bumps only once the inbox took the message — a
+    # rolled-back send must not read to pollLoop as a landed follow-up
+    assert body.count("followupSeq++;") == 1
+    assert body.index("followupSeq++;") > body.index('"Could not send: the session ended')
+    assert body.index("giveBack();") < body.index('"Could not send: no run to attach')
+
+
+def test_a_saved_note_pools_until_done(html):
+    """Saving a typed note sends nothing (Akshil, 2026-09-04): the first note
+    of a review used to start a run while the reader was still giving
+    feedback. Notes pool as pending and go out together on Done — the shape a
+    recorded walkthrough already has (many marks, one send at stop)."""
+    body = _block(html, "async function annCommit()", "\n}\n")
+    assert "annAutoSubmit" not in body
+    assert "submitChat" not in body
+    assert "requestSubmit" not in body
+    assert "annSave();" in body
+    assert "annCloseComposer();" in body
 
 
 def test_a_note_saves_without_any_capture_of_its_own(html):
@@ -204,28 +303,40 @@ def test_a_note_saves_without_any_capture_of_its_own(html):
     body = _block(html, "async function annCommit()", "\n}\n")
     assert "shotPane" not in body
     assert "annRecPointShot" not in body
-    assert "annAutoSubmit()" in body
 
 
 # ------------------------------------------ two buttons, one mode at a time
 
-def test_the_comment_seat_is_the_modes_one_control(html):
-    """A mode ON takes the strip down to one button (Akshil, 2026-08-19): the
-    mic hides, and the Comment seat's click matches its face — stop a live
-    recording, Done for an armed comment mode, arm from rest. Cancelling
-    without sending is Esc's job now."""
-    assert ("() => (annRecOn ? annRecEnd() :"
-            " annOn ? annDone() : annSetMode(true)));") in html
-    # the mic only ever starts a walkthrough (the recording leg guards a
-    # click racing the hide, it is not a second stop control)
-    assert ("() => (annRecOn ? annRecEnd() : annRecBegin()));") in html
+def test_the_other_two_seats_are_inert_while_a_mode_is_on(html):
+    """One mode at a time (Akshil, 2026-09-06): while Comment is armed the
+    camera and the mic are inert; while a walkthrough records the camera and
+    the Comment seat are. Dimmed and pointer-less by the stylesheet, refused
+    by the handlers so a keyboard press is a no-op too. The Comment seat's
+    click is Done when armed and arm from rest; the mic's is stop when
+    recording and start from rest. ← Chats leaves the mode with the chat."""
+    assert ("() => (annRecOn ? null : annOn ? annDone() : annSetMode(true)));") in html
+    assert ("() => (annRecOn ? annRecEnd() : annOn ? null : annRecBegin()));") in html
+    assert ("#anncta:has(#annbtn.on) #viewshot,\n"
+            "  #anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on)) #annrec,\n"
+            "  #anncta:has(#annrec.on) #annbtn { opacity: .55; cursor: default; pointer-events: none; }") in html
+    shot = _block(html, "async function shotAttachPane()", "\n}\n")
+    assert "if (shotBusy || annOn || !annCapable()) return;" in shot
+    # Bugbot, PR #1022: the mic refuses the settle too, the resting Comment
+    # seat is not named "Stop", and aria-disabled follows the dimming
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert 'if (annRecOn || annCta.classList.contains("busy") || !annCapable()) return;' in begin
+    assert 'annBtn.setAttribute("aria-label", "Stop the recording");' not in html
+    aria = _block(html, "function annSeatsAria()", "\n}\n")
+    assert 'annRecBtn.setAttribute("aria-disabled", annOn && !annRecOn ? "true" : "false");' in aria
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert "annSeatsAria();" in paint
 
 
 def test_done_flushes_pending_notes_before_disarming(html):
-    """Done is the exit that also delivers: an open composer's words are
-    committed first (through the same annCommit the Enter key uses), notes
-    the auto-send guards left pending ride out through the same
-    prefill-and-submit, then the mode goes away."""
+    """Done is the exit that also delivers — the typed mode's ONE send: an open
+    composer's words are committed first (through the same annCommit the Enter
+    key uses), then every pending note goes out in one bare auto-submit, then
+    the mode goes away."""
     body = _block(html, "async function annDone()", "\n}\n")
     assert "await annCommit();" in body
     # one at a time: annCommit's await could span a re-entrant Done click,
@@ -234,8 +345,9 @@ def test_done_flushes_pending_notes_before_disarming(html):
     assert "annDoneBusy = false;" in body
     assert "a.content && !a.sent" in body
     # the flush is a bare auto-submit: annPrefillComposer returns nothing now,
-    # so gating on its return value would silently never send (Bugbot, #661)
-    assert "if (pending && !sending) annAutoSubmit();" in body
+    # so gating on its return value would silently never send (Bugbot, #661).
+    # A live run is not a gate: submitChat parks the notes in the queue.
+    assert "if (pending && (activeRun || !sending)) annAutoSubmit();" in body
     assert "annPrefillComposer" not in body, \
         "there is no canned prompt to seed — the notes are the content"
     assert "annSetMode(false);" in body
@@ -256,19 +368,18 @@ def test_a_mousedown_on_the_strip_does_not_drop_the_open_draft(html):
 
 
 def test_discard_throws_the_walkthrough_away(html):
-    """An outline trash seat, recording only, LEFT of the ■/clock (Akshil,
-    2026-08-19): the recording stops with nothing kept — no transcription, no
-    auto-send — and the clicks' empty marks are deleted with it. annRecEnd
-    no-ops after it, so a stop click racing the discard cannot resurrect the
-    walkthrough."""
-    assert "#anncta:has(#annrec.on) #anndiscard { display: inline-flex;" in html
-    # two ids on the hide: a bare #anndiscard loses to the base
-    # `#anncta button` display rule on specificity, and the trash sat on the
-    # strip in every state
-    assert "#anncta #anndiscard { display: none; }" in html
-    assert "\n  #anndiscard { display: none; }" not in html
-    view = _block(html, '<div id="anncta">', "</div>")
-    assert view.index('id="anndiscard"') < view.index('id="annbtn"')
+    """An outline trash on the annotation bar, LEFT of ✓ Done / ■ (Akshil,
+    2026-09-06; it was a strip seat from 2026-08-19): the recording stops with
+    nothing kept — no transcription, no auto-send — and the clicks' empty
+    marks are deleted with it. annRecEnd no-ops after it, so a stop click
+    racing the discard cannot resurrect the walkthrough. The strip has no
+    trash of its own any more."""
+    assert 'id="anndiscard"' not in html
+    assert "annDiscardBtn" not in html
+    node = _block(html, "function annBarNode(doc)", "\n}\n")
+    assert 'discard.className = "discard";' in node
+    assert "bar.append(lead, slot, discard, done, stop, tip);" in node
+    assert 'discard.addEventListener("click", () => annDiscard());' in node
     body = _block(html, "async function annRecDiscard()", "\n}\n")
     # cancel(), not stop(): the capture handle's cancel is the ending that
     # DELETES the file (SPEC CP-4), which is what a discard means — a stop
@@ -289,14 +400,15 @@ def test_discard_throws_the_walkthrough_away(html):
         assert fn.index("const armed = annArmEpoch;") < stop
         assert fn.index("annRecIds = [];") < stop
         assert fn.index("annRecHandle = null;") < stop
-    assert body.index('annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");') \
-        < body.index("await handle.cancel()")
+    # the mic is named for the settle BEFORE the cancel, idle again after it
+    assert body.index('annRecBtn.setAttribute("aria-label", "Discarding the recording");') \
+        < body.index("await handle.cancel()") < body.index("annRecIdleName();")
     assert "annotations = annotations.filter((a) => !ids.has(a.id));" in body
     assert "renderAnn();" in body, "discarded pins leave the screen even if Esc already disarmed"
     assert "fused.ai.transcribe" not in body and "annAutoSubmit" not in body
     assert "if (annOn && annArmEpoch === armed) annSetMode(false);" in body, \
         "a new arming that slipped into the settle is not this discard's to close"
-    assert 'annDiscardBtn.addEventListener("click", () => annRecDiscard());' in html
+    assert "function annDiscard() { return annRecOn ? annRecDiscard() : annNotesDiscard(); }" in html
 
 
 def test_the_busy_seat_is_a_status_not_a_button(html):
@@ -305,7 +417,17 @@ def test_the_busy_seat_is_a_status_not_a_button(html):
     finally re-enables it and the disarm renames it."""
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert "annBtn.disabled = true;" in end
-    assert 'annBtn.setAttribute("aria-label", "Transcribing the walkthrough");' in end
+    # the status is the ANNOTATE seat's (2026-09-06, Bugbot PR #1022): it is
+    # the seat that shows #annreclbl, so it is the seat named for it; the
+    # Comment seat is merely unavailable, and the settle's end idle-names the mic
+    assert 'annRecBtn.setAttribute("aria-label", "Transcribing the walkthrough");' in end
+    assert 'annRecBtn.setAttribute("aria-label", "Stopping the recording");' in end
+    assert 'annBtn.setAttribute("aria-label", "Comment — unavailable while the recording settles");' in end
+    assert 'annBtn.setAttribute("aria-label", "Transcribing the walkthrough");' not in html
+    assert "annRecIdleName();" in end
+    disc = _block(html, "async function annRecDiscard()", "\n}\n")
+    assert 'annRecBtn.setAttribute("aria-label", "Discarding the recording");' in disc
+    assert "annRecIdleName();" in disc
     assert "annBtn.disabled = false;" in end
     # ...and any mode TRANSITION ends the status's claim early: Esc during a
     # transcription disarms through annSetMode, which must not leave the seat
@@ -328,29 +450,37 @@ def test_the_live_recording_is_never_announced_as_done(html):
     begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert 'annRecBtn.setAttribute("aria-label", "Stop the recording");' in begin
     end = _block(html, "async function annRecEnd()", "\n}\n")
-    assert 'annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");' in end
+    assert "annRecIdleName();" in end   # the idle name comes back when the settle ends
 
 
-def test_the_seat_swaps_faces_off_the_two_state_classes(html):
-    """Every glyph and word is baked into the markup; the stylesheet derives
-    the seat's face from #annbtn.on / #annrec.on via :has on the wrapper —
-    no third writer to fall out of step. The mic hides whenever a mode is on,
-    so the strip is ONE control while armed or recording."""
-    assert "#anncta:has(#annbtn.on) #annrec { display: none; }" in html
-    # comment armed (and only then, and not while transcribing): ✓ Done
-    assert ("#anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on))"
-            " #annbtn .cmt-done { display: block; }") in html
-    # recording: the seat wears ■ plus the clock, in --error ink
-    assert "#anncta:has(#annrec.on) #annbtn .cmt-stop { display: block; }" in html
-    stop = _block(html, "#anncta:has(#annrec.on) #annbtn.on {", "}")
-    assert "var(--error)" in stop
-    # transcribing: annRecEnd stamps .busy and the status stands ALONE — the
-    # Done face is gated off busy at its own (higher-specificity) show rules,
-    # not fought with a weaker hide ("✓ Done Transcribing…", 2026-08-19)
-    assert ("#anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on))"
-            " #annbtn .cmt-done { display: block; }") in html
-    assert ("#anncta:not(.busy):has(#annbtn.on):not(:has(#annrec.on))"
-            " #annbtn .done-word { display: var(--annlbl, inline); }") in html
+def test_the_three_seats_stay_and_the_armed_one_reads_active(html):
+    """Screenshot · Comment · Annotate stay on the strip in every state
+    (Akshil, 2026-09-06); arming only draws the armed seat active. No face
+    swap: the ✓ Done / ■ exits are the bar's (annBarNode). Recording is the
+    mic's state, so the Comment seat underneath rests while it runs — one
+    active seat at a time."""
+    assert "#anncta:has(#annbtn.on) #annrec { display: none; }" not in html
+    assert "#anncta:has(#annbtn.on) #viewshot { display: none; }" not in html
+    assert ".cmt-done { display: block; }" not in html
+    assert ".cmt-stop { display: block; }" not in html
+    assert "#annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none; }" in html
+    assert "#annbtn.on { color: var(--accent); background: transparent; border-color: var(--accent); }" in html
+    assert "#annrec.on { color: var(--accent); border-color: var(--accent); }" in html
+    assert "annrecpulse" not in html   # steady, no flashing (2026-09-06)
+    assert ("#anncta:has(#annrec.on) #annbtn.on,\n"
+            "  #anncta.busy #annbtn.on { color: var(--dim); border-color: var(--border); }") in html
+    # transcribing: annRecEnd stamps .busy and the status stands ALONE on the
+    # ANNOTATE seat (2026-09-06) — the clock itself is the bar's, never the strip's
+    assert "#anncta:not(.busy) #annreclbl { display: none; }" in html
+    assert "#anncta.busy #annrec .rec-word { display: none; }" in html
+    assert "#anncta.busy #annrec { color: var(--accent); border-color: var(--accent); }" in html
+    rec = _block(html, '<button id="annrec"', "</button>")
+    assert 'id="annreclbl"' in rec
+    cmt = _block(html, '<button id="annbtn"', "</button>")
+    assert 'id="annreclbl"' not in cmt
+    # a mode SURVIVES switching chats for now (Akshil, 2026-09-06) — the
+    # discard-on-leave lands in its own PR
+    assert "annLeave" not in html
     end = _block(html, "async function annRecEnd()", "\n}\n")
     assert 'annCta.classList.add("busy");' in end
     assert 'annCta.classList.remove("busy");' in end
@@ -372,13 +502,6 @@ def test_the_words_yield_only_when_they_truly_collide(html):
     # NOT scrollWidth: a flex row's scrollWidth floors at clientWidth, so the
     # picker reserve added to it would read as overflow on a half-empty strip
     assert "scrollWidth" not in body
-    # the OFF-screen picker's width is reserved, so arming (which slides it
-    # in) can never flip the words under the click — the row folds early
-    assert "const reserve = annToolReserve();" in body
-    probe = _block(html, "function annToolReserve()", "\n}\n")
-    assert "if (!annToolEl.hidden) return 0;" in probe
-    assert "annXO || !annToolEl.isConnected || annBtn.hidden" in probe
-    assert "annToolEl.offsetWidth" in probe
     assert "@container" not in html, "collision detection, not a breakpoint"
     assert "container-type" not in html
     assert "new ResizeObserver(annFitStrip).observe(annToolsEl);" in html
@@ -412,7 +535,7 @@ def test_a_transcribed_walkthrough_autosends_only_when_words_landed(html):
     # during a live run parks its words in the composer to ride the next send
     # instead of evaporating (Bugbot, #661) — only the auto-submit is gated
     seed = body.index("annPrefillComposer(intro);")
-    submit = body.index("if (!sending) annAutoSubmit();")
+    submit = body.index("if (activeRun || !sending) annAutoSubmit();")
     assert send < seed < submit
 
 
@@ -552,14 +675,14 @@ console.log(JSON.stringify({seededValue: seededValue, joined: joined,
         "no seed means the composer is left exactly as the user had it"
 
 
-def test_a_new_note_autosends_bare_with_no_canned_message(html):
-    """Saving a note fires the send even with an empty composer: the message
-    may be empty, the annotations carry the content, and whatever the user had
-    typed is theirs and goes along as the message's own words."""
-    body = _block(html, "async function annCommit()", "\n}\n")
-    assert "if (isNew && !sending) annAutoSubmit();" in body
+def test_done_sends_bare_with_no_canned_message(html):
+    """Done fires the send even with an empty composer: the message may be
+    empty, the annotations carry the content, and whatever the user had typed
+    is theirs and goes along as the message's own words."""
+    body = _block(html, "async function annDone()", "\n}\n")
+    assert "if (pending && (activeRun || !sending)) annAutoSubmit();" in body
     assert "annPrefillComposer" not in body, \
-        "the save path seeds nothing — there is no canned prompt to seed"
+        "the send path seeds nothing — there is no canned prompt to seed"
 
 
 # ------------------------------------------- the app records, not this page
@@ -729,4 +852,287 @@ def test_the_capture_stream_state_is_declared_before_its_boot_time_teardown(html
     overlay stuck armed over the workbench."""
     assert html.index("let annXOStream = null;") \
         < html.index("function annXORemove()") \
-        < html.index('annSetMode(fused.params.get("annmode") === "1");')
+        < html.index("annBootMode();\n")
+
+
+# ------------------------------------------------------- the annotation bar
+
+def test_the_bar_stands_in_every_layer(html):
+    """One bar per layer the pins can land in — the split layout's #leftview,
+    the hosted shadow layer, the cross-origin overlay — all built by the one
+    builder, so annBarPaint writes to any of them by class."""
+    assert html.count("annBarNode(") == 5          # builder, boot, two layers, one comment
+    inject = _block(html, "function annInjectLayer(", "\n}\n")
+    xo = _block(html, "function annXOLayer(", "\n}\n")
+    for body in (inject, xo):
+        assert "annBarNode(" in body
+        assert "bar: " in body                        # handed back with pins/hl
+    assert "annBar = layer && layer.bar;" in html
+    assert 'view.parentNode.insertBefore(annBarNode(document), view)' in html   # a row, not an overlay
+    # both stylesheets carry it: tokens in the page, literals in the layer
+    assert ".annbar.show { display: flex;" in html
+    assert '".annbar.show { display: flex;' in html
+    # ...and the layer restates the picker's looks, which follow it in there
+    assert '#anntool button[aria-checked="true"] { color: var(--on-accent, #1a1a1a); background: var(--accent, #d97757); }' in html
+
+
+def test_the_bar_carries_the_picker_and_done(html):
+    """The mock (Akshil, 2026-09-04): Element/Point and ✓ Done sit on the bar
+    over the app; the strip keeps the exits. The picker is the strip's OWN
+    node, portaled — one state, one set of handlers — and a cross-origin
+    target, which has no elements to pick, gets the sentence and Done alone.
+    Recording has no Done on the bar: the stop is the strip's ■/clock."""
+    body = _block(html, "function annBarPaint(", "\n}\n")
+    assert 'annOn && !annCta.classList.contains("busy")' in body
+    assert 'annBar.classList.toggle("rec", annRecOn)' in body
+    assert "if (show && !annXO) {" in body
+    assert "slot.ownerDocument.adoptNode(annToolEl);" in body
+    node = _block(html, "function annBarNode(", "\n}\n")
+    assert 'done.addEventListener("click", () => annDone());' in node
+    assert ".annbar.rec .done { display: none; }" in html
+    # renderAnn paints it right after the sync that binds the node
+    render = _block(html, "function renderAnn() {", "// pins over the frame")
+    assert render.index("annSyncTarget();") < render.index("annBarPaint();")
+    # the mic's start repaints too — annSetMode painted before annRecOn was set
+    rec = _block(html, "async function annRecBegin(", "\n}\n")
+    assert rec.index("annRecOn = true;") < rec.index("annBarPaint();")
+    # the strip no longer makes room for a picker that never comes
+    assert "annToolReserve" not in html
+
+
+def test_the_bar_speaks_one_plain_line(html):
+    """The lead is the mode; the sentence is one plain line per mode (Akshil,
+    2026-09-05: "one liner but easy to understand")."""
+    assert '"Voice annotation", "Click on a spot and say what to change."' in html
+    assert '"Comment", "Click on a spot and type what to change."' in html
+    # the tag is a LABEL (no border, no wash — it read as a button), red while
+    # recording; the sentence carries full ink at the composer's 13px
+    assert ".annbar.rec .tag { color: var(--error); }" in html
+    assert '".annbar.rec .tag { color: var(--error, #f26d6d); }"' in html
+    assert "border: 1px solid #d97757; background: rgba(217, 119, 87, .14); color: #d97757;" not in html
+    assert '".annbar .txt { min-width: 0; color: var(--fg, #ececf1); font-size: 13px;' in html
+
+
+def test_the_bar_wears_the_shell_s_theme(html):
+    """Chrome, not a pin: the bar in another document reads the SHELL's tokens
+    (copied onto the node, re-copied on a data-theme flip), with the dark
+    literals only as fallbacks — a dark strip over a light shell was the wrong
+    theme (Akshil, 2026-09-05)."""
+    assert '"--bg", "--surface", "--border", "--fg", "--dim", "--accent",' in html
+    theme = _block(html, "function annBarTheme(", "\n}\n")
+    assert "annBar.ownerDocument === document) return;" in theme
+    assert "getComputedStyle(document.documentElement)" in theme
+    assert "annBar.style.setProperty(t, v);" in theme
+    assert 'attributeFilter: ["data-theme"] });' in html
+    assert '".annbar { position: absolute; top: 0; left: 0; right: 0; box-sizing: border-box;"' in html
+    assert "background: var(--bg, #191a1e); border-bottom: 1px solid var(--border, #34363e);" in html
+    assert '#anntool button[aria-checked="true"] { color: var(--on-accent, #1a1a1a); background: var(--accent, #d97757); }' in html
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert "annBarTheme();" in paint
+
+
+def test_the_bar_can_stop_the_recording(html):
+    """■ plus the live clock on the bar while a walkthrough records (Akshil,
+    2026-09-05), in the recording's --error, replacing ✓ Done; the strip's
+    clock is mirrored by its one writer, and the clock never folds."""
+    node = _block(html, "function annBarNode(", "\n}\n")
+    assert 'stop.addEventListener("click", () => annRecEnd());' in node
+    assert '<span class="clk"></span>' in node
+    assert ".annbar .stop { display: none; }" in html
+    assert ".annbar.rec .stop {" in html
+    assert ".annbar.rec .done { display: none; }" in html
+    rec = _block(html, "function annRecPaint(", "\n}\n")
+    assert "annBarClock();" in rec
+    fit = _block(html, "function annBarFit(", "\n}\n")
+    assert "stop.offsetWidth" in fit
+    assert ".annbar.t2 #anntool .lbl, .annbar.t2 .done .lbl { display: none; }" in html   # not .clk
+
+
+def test_the_bar_pushes_the_app_down_instead_of_covering_it(html):
+    """Split: a real row before #leftview in the #left column. Hosted: a
+    43px !important margin on the target document's root while the bar
+    shows, handed back on hide and when the target changes; never the
+    cross-origin overlay's host document."""
+    assert "#left > .annbar { position: relative; flex-shrink: 0; }" in html
+    push = _block(html, "function annBarPush(", "\n}\n")
+    assert 'setProperty("margin-top", "43px", "important")' in push
+    assert 'removeProperty("margin-top")' in push
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert "annBar.getRootNode() !== document && !annXO" in paint
+    assert "annBarPush(show ? hostedDoc : null);" in paint
+    # losing the bar (target gone) still hands the pushed margin back
+    assert "if (!annBar) { annBarPush(null); return; }" in paint
+    # the bar's Done is exempt from the outside-click dismiss, like the strip's
+    dismiss = _block(html, 'document.addEventListener("mousedown", (e) => {\n  if (annPop.style.display', "\n});")
+    assert 't.closest(".annbar")' in dismiss
+
+
+def test_the_bar_folds_by_measure_not_breakpoint(html):
+    """Sentence first, buttons' words second — decided by summing the parts
+    against the box (the strip's annFitStrip idiom), refit on every resize
+    through the bar's OWN window's observer (the node may be in another
+    document). Controls never clip."""
+    body = _block(html, "function annBarFit(", "\n}\n")
+    assert 'annBar.classList.remove("t1", "t2", "t3");' in body
+    assert "txt.scrollWidth" in body                # natural width, not the clipped one
+    assert 'classList.add("t1")' in body and 'classList.add("t2")' in body
+    node = _block(html, "function annBarNode(", "\n}\n")
+    assert "doc.defaultView.ResizeObserver" in node
+    assert "if (bar === annBar) annBarFit();" in node
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert "annBarFit();" in paint
+    assert ".annbar.t1 .txt { display: none; }" in html
+    # two ids' worth: the strip's `#anntool .lbl` rule would outrank a class
+    assert ".annbar.t2 #anntool .lbl, .annbar.t2 .done .lbl { display: none; }" in html
+    assert ".annbar.t3 .tag b { display: none; }" in html
+    assert "@container" not in html
+
+
+def test_escape_in_comment_mode_discards_the_round(html):
+    """Esc in a typed Comment mode is cancel (Akshil, 2026-09-06): the round's
+    unsent notes die with the mode, same as the bar's trash. A live recording
+    keeps Esc = stop-and-keep, and a settling one only leaves the mode."""
+    esc = _block(html, "function onEscape(e) {", "\n}\n")
+    assert 'else if (annRecOn || annCta.classList.contains("busy")) annSetMode(false);' in esc
+    assert "else annNotesDiscard();" in esc
+    assert esc.index("annCloseComposer();") < esc.index("annNotesDiscard();")
+
+
+def test_discard_covers_the_typed_round_too(html):
+    """The bar keeps BOTH exits in both modes (Akshil, 2026-09-04; onto the
+    bar 2026-09-06): the trash beside ✓ Done throws this round's unsent notes
+    away — an open draft with them — and leaves the mode; earlier rounds' and
+    sent notes stay. The label names what it throws, written by annBarPaint."""
+    paint = _block(html, "function annBarPaint(", "\n}\n")
+    assert 'annRecOn ? "Discard the recording" : "Discard the notes"' in paint
+    assert ".annbar .discard {\n    border: 1px solid var(--border);" in html
+    assert ".annbar .discard:hover { color: var(--error); border-color: var(--error); }" in html
+    assert '".annbar .discard { border: 1px solid var(--border, #34363e);' in html
+    body = _block(html, "function annNotesDiscard(", "\n}\n")
+    # not through Stopping…/Transcribing… either: annRecOn is already down and
+    # the marks are the recording's, waiting for words (Bugbot, PR #1008)
+    assert 'annRecOn || !annOn || annCta.classList.contains("busy")' in body
+    assert "annCloseComposer();" in body
+    assert "a.sent || (a.createdAt || 0) < annRoundStart" in body
+    assert "annSetMode(false);" in body
+    assert "return annRecOn ? annRecDiscard() : annNotesDiscard();" in html
+
+
+def test_the_picker_survives_the_app_document_reloading(html):
+    """Element | Point got stuck after repeated use (Akshil, 2026-09-07). The
+    picker is ONE node portaled into the app's document, and a document that
+    unloads strips every listener off the nodes in it — so the click handler
+    is one named function the bar's paint re-attaches after each adoption
+    (addEventListener with the same reference is idempotent)."""
+    assert "function annToolClick(e)" in html
+    assert 'annToolElBtn.addEventListener("click"' not in html
+    paint = _block(html, "function annBarPaint()", "\n}\n")
+    assert "slot.appendChild(annToolEl);" in paint
+    assert 'annToolEl.addEventListener("click", annToolClick);' in paint
+    assert paint.index("slot.appendChild(annToolEl);") \
+        < paint.index('annToolEl.addEventListener("click", annToolClick);')
+
+
+def test_the_bar_tooltips_are_instant_and_never_os_titles(html):
+    """Hovering Element/Point, the trash and Done waited on the OS tooltip
+    (Akshil, 2026-09-07: "show that instantly") — so those buttons carry
+    data-tip, the bar owns one .tip node, and none of them has a title."""
+    node = _block(html, "function annBarNode(doc)", "\n}\n")
+    for who in ("done", "stop", "discard"):
+        assert f"{who}.dataset.tip = " in node
+        assert f"{who}.title = " not in node
+    assert 'tip.className = "tip";' in node
+    assert 'bar.addEventListener("mouseover"' in node
+    picker = _block(html, '<div id="anntool"', "</div>")
+    assert picker.count("data-tip=") == 2 and "title=" not in picker
+    paint = _block(html, "function annBarPaint()", "\n}\n")
+    assert "discard.dataset.tip = annRecOn" in paint and "discard.title" not in paint
+    # the tip hangs below the bar, so the bar no longer clips its overflow;
+    # and it is the shell's [data-tip] panel — ink on surface with a hairline —
+    # in both sheets, so light and dark read alike (--shadow rides the token copy)
+    assert ".annbar .tip {" in html
+    tip = _block(html, ".annbar .tip {", "\n  }\n")
+    for prop in ("color: var(--fg);", "background: var(--surface);", "border: 1px solid var(--border);",
+                 "box-shadow: 0 2px 8px var(--shadow);"):
+        assert prop in tip
+    assert "background: var(--surface, #26282f);" in html
+    assert '"--on-accent", "--error", "--shadow"];' in html
+    assert 'pointer-events: auto; overflow: hidden;"' not in html
+
+
+def test_a_mode_locks_the_reader_on_this_chat(html):
+    """While Comment/Annotate is on (or the recording settles), ← Chats, the
+    recent-chat rows and the calendar are inert (Akshil, 2026-09-07): the
+    notes are about THIS app and this chat. One predicate, drawn by the
+    stylesheet off body.annlock and guarded in each handler for the keyboard."""
+    assert 'function annNavLocked() { return annOn || (annBusyHold && annCta.classList.contains("busy")); }' in html
+    # Esc during a settle that never answers must not hold the reader here:
+    # every disarm drops the settle's claim, and every settle raises it
+    mode = _block(html, "function annSetMode(on)", "\n}\n")
+    assert "if (!on) annBusyHold = false;" in mode
+    assert mode.index("annBusyHold = false;") < mode.index("if (!annCapable()) {")
+    assert html.count('annCta.classList.add("busy");\n  annBusyHold = true;') == 3
+    lock = _block(html, "function annNavLock()", "\n}\n")
+    assert 'document.body.classList.toggle("annlock", lock);' in lock
+    assert "back.disabled = lock;" in lock
+    paint = _block(html, "function annBarPaint()", "\n}\n")
+    assert "annNavLock();" in paint
+    back = _block(html, 'document.getElementById("back").onclick = () => {', "\n};\n")
+    assert "if (annNavLocked()) return;" in back
+    # both the calendar's click and the confirm's Continue (Bugbot, PR #1046),
+    # and an open confirm is taken down when the lock lands
+    assert html.count("if (schedBlocked() || annNavLocked()) return;") == 2
+    assert "if (blocked || locked) closeSchedConfirm();" in html
+    block = _block(html, "function applyComposerBlockState()", "\n}\n")
+    assert "const locked = !blocked && annNavLocked();" in block
+    assert "schedBtn.disabled = blocked || locked;" in block
+    for sel in ("#back:disabled {", "body.annlock #recentlist .chat-row,",
+                "body.annlock #artifactslist .art-row,", "body.annlock #snapslist .snap-row {",
+                "body.annlock .schedbtn {"):
+        assert sel in html
+    # artifacts open in a tab and snapshots expand — both guarded too
+    assert "const open = () => annNavLocked() ? null : window.open(" in html
+    assert "if (annNavLocked()) return;   // a mode holds the reader on this chat" in html
+
+
+def test_annmode_names_which_mode_so_a_reload_keeps_the_walkthrough(html):
+    """A reload in a walkthrough came back in Comment (Akshil, 2026-09-07):
+    `annmode` said only "on". Now "1" is Comment and "2" a recording — written
+    by both arms through one sync, read by one boot — and a mic that refuses
+    on that boot leaves the mode OFF rather than quietly Comment."""
+    assert 'function annModeWant() { return annRecOn ? "2" : annOn ? "1" : "0"; }' in html
+    mode = _block(html, "function annSetMode(on)", "\n}\n")
+    assert "annModeSync();" in mode
+    assert 'fused.params.set("annmode"' not in mode
+    boot = _block(html, "function annBootMode()", "\n}\n")
+    # a "2" boot — a reload mid-walkthrough — ENDS the mode (Akshil, 2026-09-07):
+    # the handle, marks and clock were this page's memory, pagehide kept the
+    # audio file, and a mic opened from a boot raced the pane's arrival
+    assert 'annSetMode(m === "1");' in boot
+    assert "annRecBegin" not in boot
+    for gone in ("annRecWant", "annResumeRec", ".resuming"):
+        assert gone not in html, gone
+    assert html.count("annBootMode();") == 2   # the boot default and the hosted re-arm
+    assert 'annSetMode(fused.params.get("annmode") === "1")' not in html
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert begin.index("annRecOn = true;") < begin.index("annModeSync();")
+    # one start request at a time, for programmatic callers too — and the flag
+    # is initialised before the boot that reads it (a TDZ here killed the script)
+    assert "if (annRecStarting) return;" in begin
+    assert html.index("let annRecStarting = false;") < html.index("\nannBootMode();\n")
+    mode = _block(html, "function annSetMode(on)", "\n}\n")
+    assert "if (!on) annBusyHold = false;" in mode
+
+
+def test_leaving_mid_walkthrough_asks_first(html):
+    """Option 1 for the reload-while-recording problem (Akshil, 2026-09-07): the
+    recording cannot survive the page, so a reload/close/back while one is live
+    goes through the browser's leave prompt. Only while recording — an armed
+    Comment round rides the URL and loses nothing — and registered before the
+    pagehide that stops and keeps the file."""
+    guard = _block(html, 'window.addEventListener("beforeunload", (e) => {', "\n});\n")
+    assert "if (!annRecOn) return;" in guard
+    assert "e.preventDefault();" in guard and "e.returnValue = " in guard
+    # top level, for EVERY layout — not inside the CHAT_ONLY block (Bugbot)
+    assert html.index('window.addEventListener("beforeunload"') < html.index("\nif (CHAT_ONLY) {\n")
+    assert html.index('addEventListener("beforeunload"') < html.index('addEventListener("pagehide"')

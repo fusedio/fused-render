@@ -59,7 +59,9 @@ test("Home sizes both row requests by the measured card count, never a constant"
   // width would ask for cards the row cannot show.
   expect(home).toContain("count: null");
   expect(home.match(/if \(limit === null\) return;/g)?.length).toBe(2);
-  expect(home.match(/\}, \[limit\]\);/g)?.length).toBe(2);
+  // Both effects hang off `limit`; the apps strip also re-fetches on the
+  // icon picker's nonce (#1062), so the dep list may carry a second name.
+  expect(home.match(/\}, \[limit(?:, \w+)?\]\);/g)?.length).toBe(2);
   // Grow-only, so narrowing the window refetches nothing.
   expect(home).toContain("limit: Math.max(prev.limit ?? 0, fits)");
   expect(home).not.toContain("useState(3)");

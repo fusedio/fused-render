@@ -14,7 +14,7 @@
 //   pane.ts                preview-pane split (usePreviewPane: width + drag)
 //   pane-side.ts           the pane's three modes + the `_side` param (pure)
 //   row-utils.ts           RowCtx batch helpers
-//   bits.tsx               skeleton rows, ClipMark, highlight, scroll anchor
+//   bits.tsx               skeleton rows, ClipMark, GitMark, highlight, anchor
 //   useDirListing.ts       /api/fs/list fetch, Load more, dir watch, new-row cue
 //   useWalkSearch.ts       streamed walk + scoring + throttles + result paging
 //   useListingSelection.ts selection state + keyboard nav + reconcile
@@ -36,12 +36,23 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { IS_PANEL_PANE, IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
+import {
+  IS_PANEL_PANE,
+  IS_SNAPSHOT,
+  encodeFsPathSegments,
+  navigate,
+  navigateUrl,
+  replaceSearch,
+} from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
-import { getAppEntry } from "@platform/lib/api";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { addCurrentApp, getAppEntry } from "@platform/lib/api";
+import { shortSha, snapshotListing } from "@platform/lib/snapshot-param";
+import { useSnapshotForFolder } from "@apps/explorer/listing/useSnapshotForFolder";
+import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
-import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
+import { basename, formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
@@ -66,9 +77,11 @@ import { resolveSort, sortEntries } from "@apps/explorer/listing/sorting";
 import {
   skeletonRows,
   ClipMark,
+  GitMark,
   renderHighlight,
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
+import { gitRowClass } from "@apps/explorer/listing/git-mark";
 import { usePreviewPane } from "@apps/explorer/listing/pane";
 import {
   activePaneSide,
@@ -122,8 +135,8 @@ const FLIP_BUDGET = 2;
 
 // (The folder-entry rule is the SERVER's — `app_listing.app_entry`, D301: the
 // first top-level page carrying `<meta name="fused-app">`. A filename tells
-// the client nothing under the marker rule, so the "Open app" button asks
-// GET /api/apps/entry instead of re-deriving anything from row names.)
+// the client nothing under the marker rule, so the "Open in project" button
+// asks GET /api/apps/entry instead of re-deriving anything from row names.)
 
 // The window global the injected runtime calls to hand this pane a prompt the
 // git companion's "Fix with AI" button built for a failed operation
@@ -164,8 +177,32 @@ export default function Listing({
   // its own `···`.
   barChrome?: boolean;
 }) {
+  // --- browsing this folder under a git snapshot (`_snapshot`) --------------
+  // The resolution itself lives in useSnapshotForFolder (listing/), extracted
+  // there so it can be driven through the listing's own hook harness rather
+  // than only through this 2100-line component. `useUrlVersion()` is passed
+  // in as a caller-supplied number, not read by the hook itself — see that
+  // hook's own comment for why (code review finding B5: a commit selection
+  // is a `replaceSearch`, which does not dispatch `fused:navigate`, only
+  // `fused:urlchange`; keyed on `[fsPath]` alone, the resolution never
+  // re-ran for a selection made while `fsPath` itself stayed put). This
+  // closes the gap in both directions: Preview.tsx's own `backToLive`/
+  // selection writes reach a mounted Listing even though neither writer is
+  // Listing's own state, and Listing's own `backToLive` reaches a mounted
+  // Preview the same way.
+  const urlVersion = useUrlVersion();
+  const { resolvedSnapshot, backToLive } = useSnapshotForFolder(fsPath, urlVersion);
+  // Under an active snapshot whose app folder actually ENCLOSES this folder,
+  // list the extracted tree instead of the live one — the same rewrite rule
+  // static/runtime.js applies to every template read, so the two cannot
+  // disagree about what a snapshotted read means. Elsewhere (this folder is
+  // outside the app, or nothing has resolved) `listPath` is just `fsPath`.
+  // The decision itself is `snapshotListing`, a pure function tested directly
+  // (Listing.test.tsx) rather than only through this component.
+  const { inSnapshot, listPath } = snapshotListing(fsPath);
+
   const { state, refresh, refetch, loadMore, loadingMore, newNames } =
-    useDirListing(fsPath);
+    useDirListing(fsPath, listPath);
 
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
@@ -901,14 +938,26 @@ export default function Listing({
     };
   }, [base]);
 
-  // The ONE "Open app" click, shared by the pane strip's button and its
-  // shut-pane fallback in the bar so they can't drift. The click just
-  // navigates: recording the open — recents for a workspace app, /apps hub
-  // registration for an external folder — is the SERVER's, done by GET /render
-  // when it serves the marker-carrying page this navigation renders (D301).
-  const openAppEntry = () => {
+  // The ONE "Open in project" click, shared by the pane strip's button and its
+  // shut-pane fallback in the bar so they can't drift. Gated on the folder
+  // having an entry page (it IS an app), it puts the folder on the sidebar's
+  // desk (POST /api/current-apps/add — a no-op when the row is already there,
+  // which then simply reads as the active row) and hops to the folder's app
+  // page, `/apps/<folder>` — spelled here rather than imported from
+  // shell/current-apps-lib's appPageUrl because an app may not import the
+  // shell (Preview.tsx's Migrate button does the same). The add is awaited
+  // and announced before the hop so the row is on top the moment the page
+  // paints; a failed add still opens the page — the desk is a convenience,
+  // the page is the point.
+  const openAppEntry = async () => {
     if (!appEntryPath) return;
-    navigate(appEntryPath, { isDir: false });
+    try {
+      await addCurrentApp(base);
+      announceCurrentAppsChanged();
+    } catch {
+      /* the page still opens; the row shows up on the next task under it */
+    }
+    navigateUrl("/apps/" + encodeFsPathSegments(base));
   };
 
   const paneSides = paneSideList(sideEntries);
@@ -1567,6 +1616,7 @@ export default function Listing({
           data-fs-drop-dir={entry.is_dir ? "1" : "0"}
           className={
             (entry.ignored ? "row ignored" : "row") +
+            gitRowClass(entry.git) + // git tints the NAME, not the row
             (newNames.has(entry.name) ? " row-new" : "") + // brief dir-watch tint
             (selectedSet.has(childPath) ? " selected" : "") +
             (childPath === selectedPath ? " lead" : "") + // scroll-into-view marker
@@ -1592,6 +1642,7 @@ export default function Listing({
               </span>
               {entry.name}
             </span>
+            <GitMark status={entry.git} />
             <ClipMark
               cut={cutSet.has(childPath)}
               copied={copiedSet.has(childPath)}
@@ -1726,6 +1777,27 @@ export default function Listing({
               down. `display: contents`, so the bar is a flex item of
               .listing-main exactly as it was of #main. */}
           {ownsBarChrome && <div className="listing-crumb-slot" ref={crumbSlotRef} />}
+          {/* The one piece of chrome `_snapshot` adds: everywhere else the
+              state is invisible by design (the plan's decisions log), but a
+              listing has no per-row "as of" heading the way a content pane's
+              template does, so silently showing a frozen tree with no
+              explanation would read as a bug, not a feature. */}
+          {inSnapshot && resolvedSnapshot && (
+            <div className="listing-snapshot-banner">
+              Showing this folder as of commit{" "}
+              <span className="listing-snapshot-sha">
+                {shortSha(resolvedSnapshot.sha)}
+              </span>
+              .
+              <button
+                type="button"
+                className="listing-snapshot-back"
+                onClick={backToLive}
+              >
+                Back to live
+              </button>
+            </div>
+          )}
           {inSearchSlot(barSearchSlot,
             /* `searching` (a non-empty query) is what tells the crumb bar to
                stand the crumbs down and give the row its whole width — see
@@ -1882,28 +1954,30 @@ export default function Listing({
                   Here rather than in the crumb bar because over a folder THIS ROW
                   is the bar (it portals into it — search-slot.ts), and this is the
                   folder's own chrome, beside the folder's own search box. */}
-              {/* OPEN APP, the SHUT-PANE FALLBACK. Its home is the pane's own strip,
-                  beside the chevron and the pill (ListingPreviewPane) — the button is
-                  about the pane's SUBJECT, so it belongs to the pane. With the pane
-                  shut there is no strip to live in, and this row is the folder's own
-                  chrome, so it lands here instead of vanishing with the column.
+              {/* OPEN IN PROJECT, the SHUT-PANE FALLBACK. Its home is the pane's own
+                  strip, beside the chevron and the pill (ListingPreviewPane) — the
+                  button is about the pane's SUBJECT, so it belongs to the pane. With
+                  the pane shut there is no strip to live in, and this row is the
+                  folder's own chrome, so it lands here instead of vanishing with the
+                  column.
 
                   `!paneOpen` and not `!pane.on`: a pane the user has closed
                   (`_side=off`) is the case this exists for. When the pane is open the
                   strip has it and a second copy here would be two buttons for one
                   action a few pixels apart, which reads as a rendering fault.
 
-                  Same `navigate(path, { isDir: false })` as the row's own
-                  open-on-click (onRowPointerUp), reused rather than reinvented: no
-                  new view and no `_mode`, just the file. */}
+                  It hops to the folder's app page (`/apps/<folder>`) and puts the
+                  folder on the sidebar's desk on the way — `openAppEntry`, above.
+                  It used to open the entry page itself ("Open app"); the app page's
+                  Overview tab frames that page, so nothing is lost. */}
               {!paneOpen && appEntryPath && (
                 <button
                   type="button"
-                  className="bar-ctl bar-ctl-strong"
-                  title={"Open " + appEntryPath.slice(appEntryPath.lastIndexOf("/") + 1)}
+                  className="bar-ctl bar-ctl-bordered"
+                  title={"Open " + basename(base) + " as a project"}
                   onClick={openAppEntry}
                 >
-                  Open app
+                  Open in project
                 </button>
               )}
               {pane.on && !sideState.open && (

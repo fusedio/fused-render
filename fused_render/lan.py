@@ -47,6 +47,7 @@ import logging
 import os
 import socket
 import threading
+import time
 from urllib.parse import parse_qs, urlencode
 
 from starlette.requests import Request
@@ -70,6 +71,12 @@ PORT_CANDIDATES = (80, 8080, 1888)
 #: which pins our private CA from the pairing QR; browsers keep http. 443
 #: first so the app's URL carries no port.
 TLS_PORT_CANDIDATES = (443, 8443, 1889)
+
+# How often the watcher looks at the network address (see _Controller._watch).
+WATCH_INTERVAL_S = 5.0
+# A watcher tick that took this much longer than WATCH_INTERVAL_S on the wall
+# clock was slept through (see _Controller._watch).
+SLEEP_GAP_S = 30.0
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "lan")
 
@@ -473,8 +480,7 @@ def _host_ok(scope) -> bool:
         return False
     if host in (HOSTNAME, ALIAS_HOSTNAME):
         return True
-    ip = _controller._ip or lan_ip()
-    return bool(ip) and host == ip
+    return host in (_controller._ips or lan_ips())
 
 
 _PAIR_PAGE = """<!doctype html><meta charset="utf-8">
@@ -855,6 +861,33 @@ def lan_ip() -> str | None:
     return None if ip.startswith("127.") else ip
 
 
+def lan_ips() -> list[str]:
+    """Every IPv4 address a device on some local network could reach us on,
+    the default-route one (lan_ip) first. Advertising and naming all of them
+    is what keeps a phone on Wi-Fi reaching the computer when a dock's
+    ethernet comes and goes: with only the default-route address advertised,
+    every such flap moved the records to the other interface and rebuilt the
+    certificate, and the phone lost the name for a while each time.
+    Loopback and link-local (169.254) are not addresses anyone dials."""
+    primary = lan_ip()
+    found: list[str] = []
+    try:
+        import ifaddr  # a zeroconf dependency
+
+        for adapter in ifaddr.get_adapters():
+            for entry in adapter.ips:
+                ip = entry.ip
+                if not isinstance(ip, str) or ip.startswith(("127.", "169.254.")):
+                    continue
+                if ip not in found:
+                    found.append(ip)
+    except Exception:  # noqa: BLE001 — the default-route address alone still works
+        logger.debug("lan: interface enumeration failed", exc_info=True)
+    if primary:
+        found = [primary] + [ip for ip in found if ip != primary]
+    return found
+
+
 class _Controller:
     def __init__(self):
         self._lock = threading.Lock()
@@ -863,15 +896,25 @@ class _Controller:
         self._thread: threading.Thread | None = None
         self._zeroconf = None
         self._infos: list = []
+        # Advertised addresses (lan_ips order: default-route first). `_ip` is
+        # the first — the one QR codes and `_host_ok` name.
+        self._ips: list[str] = []
         self._ip: str | None = None
         self.port: int | None = None
         self.error: str | None = None
+        # The stored preference as last applied — see apply().
+        self._want = False
         # The https listener (lan_tls.py) beside the http one.
         self._tls_server = None
         self._tls_thread: threading.Thread | None = None
-        self._tls_ip: str | None = None
+        self._tls_ips: list[str] = []
         self.tls_port: int | None = None
         self.tls_error: str | None = None
+        # The watcher that follows the network (see _watch). `_last_seen` is
+        # what the last poll OBSERVED; `_ips` above is what is advertised.
+        self._watch_thread: threading.Thread | None = None
+        self._watch_stop = threading.Event()
+        self._last_seen: list[str] | None = None
 
     # -- wiring
     def attach(self, inner) -> None:
@@ -896,19 +939,30 @@ class _Controller:
         return f"https://{HOSTNAME}/" if self.tls_port == 443 else f"https://{HOSTNAME}:{self.tls_port}/"
 
     def status(self) -> dict:
-        ip = lan_ip()
-        if self.running and ip and ip != self._ip:
-            # Wi-Fi changed under us: re-advertise the new address, and reissue
-            # the certificate (it names the address) on a fresh https listener.
-            # Under the controller lock: this runs on whatever thread asks for
-            # prefs, and must not race apply()'s start/stop of the same
-            # zeroconf and tls state.
+        ips = lan_ips()
+        ip = ips[0] if ips else None
+        # The http listener's thread is gone but the preference is still on
+        # (INCIDENT 2026-09-07 — why it died is not known; nothing in the log
+        # ahead of it). `apply()` only runs when the preference changes, so
+        # this read is the one place that notices, and a stale `port` here is
+        # what let a pairing code advertise a dead listener.
+        if self._want and self._thread is not None and not self._thread.is_alive():
             with self._lock:
-                if self.running and ip != self._ip:
-                    self._advertise(ip)
-                    if ip != self._tls_ip:
-                        self._stop_tls()
-                        self._start_tls(ip)
+                if self._want and self._thread is not None and not self._thread.is_alive():
+                    logger.warning("lan: http listener stopped on its own; restarting")
+                    self._server = self._thread = None
+                    self.port = None
+                    self._start()
+        if self.running and ips and ips != self._ips:
+            # Wi-Fi changed under us: re-advertise the new addresses, and
+            # reissue the certificate (it names them) on a fresh https
+            # listener. Under the controller lock: this runs on whatever
+            # thread asks for prefs, and must not race apply()'s start/stop of
+            # the same zeroconf and tls state.
+            with self._lock:
+                if self.running and ips != self._ips:
+                    self._advertise(ips)
+                    self._start_tls(ips)
         from fused_render import lan_tls
 
         try:
@@ -942,10 +996,22 @@ class _Controller:
     # -- start/stop
     def apply(self, enabled: bool) -> None:
         with self._lock:
+            # What the preference asks for, so status()'s restart of a dead
+            # listener cannot resurrect sharing the user switched off.
+            self._want = enabled
             if enabled and not self.running:
                 self._start()
-            elif not enabled and self.running:
+            elif not enabled and self._anything_up:
                 self._stop()
+
+    @property
+    def _anything_up(self) -> bool:
+        """Some piece of sharing is still live. NOT `running`: with the http
+        thread dead, that reads False while the https listener and the mDNS
+        records are still up, and switching sharing off has to take those
+        down too."""
+        return (self._thread is not None or self._tls_thread is not None
+                or self._zeroconf is not None)
 
     def _start(self) -> None:
         import uvicorn
@@ -978,26 +1044,108 @@ class _Controller:
                                   daemon=True, name="fused-lan")
         thread.start()
         self._server, self._thread = server, thread
-        ip = lan_ip()
+        ips = lan_ips()
         # https first: the mDNS record names its port.
-        self._start_tls(ip)
-        if ip:
-            self._advertise(ip)
+        self._start_tls(ips)
+        if ips:
+            self._advertise(ips)
         else:
             self.error = "no network address found"
-        logger.info("lan: sharing at %s / %s (%s)", self.url(), self.https_url(), ip)
+        self._last_seen = ips
+        self._start_watch()
+        logger.info("lan: sharing at %s / %s (%s)", self.url(), self.https_url(), ", ".join(ips))
 
-    def _start_tls(self, ip: str | None) -> None:
+    def _start_watch(self) -> None:
+        if self._watch_thread is not None and self._watch_thread.is_alive():
+            return
+        self._watch_stop.clear()
+        self._watch_thread = threading.Thread(target=self._watch, daemon=True, name="fused-lan-watch")
+        self._watch_thread.start()
+
+    def _watch(self) -> None:
+        """Follow the network. Joining a different Wi-Fi, or leaving one and
+        coming back, leaves the mDNS records pointing at an address that is
+        gone — and the records themselves gone with the interface they were
+        announced on, even when the address comes back the same. Nothing on
+        the phone can repair that, and until this existed nothing here
+        noticed either: the check lived in status(), which only runs when
+        something reads the preferences.
+        """
+        last_tick = time.time()
+        while not self._watch_stop.wait(WATCH_INTERVAL_S):
+            # Only the current watcher works. A stop while this one waited on
+            # the lock (`_stop` holds it) hands the job to whichever thread
+            # `_start_watch` made next, and this one retires.
+            if self._watch_thread is not threading.current_thread():
+                return
+            try:
+                # Sleep. The laptop closing takes the interface down and
+                # brings it back with (usually) the same address, and no poll
+                # runs in between to see the gap — to this loop it looks like
+                # nothing happened, while zeroconf's sockets went with the
+                # interface and the phone can no longer resolve the name.
+                # The only trace a suspended process keeps is the clock: a
+                # wait for WATCH_INTERVAL_S that took far longer on the wall
+                # clock was one we slept through. Wall clock on purpose —
+                # time.monotonic() stands still during sleep on macOS.
+                now = time.time()
+                slept = now - last_tick > SLEEP_GAP_S
+                last_tick = now
+                ips = lan_ips()
+                # A DOWN → UP transition re-announces even at the same
+                # address: the sockets those records were announced on went
+                # with the interface, and zeroconf does not announce again by
+                # itself. (A flap shorter than one interval at an unchanged
+                # address, with the process running, is the gap this leaves.)
+                moved = bool(ips) and (ips != self._ips or not self._last_seen or slept)
+                self._last_seen = ips
+                if not moved and not (self._want and self._thread is not None
+                                      and not self._thread.is_alive()):
+                    continue
+                with self._lock:
+                    if self._watch_thread is not threading.current_thread():
+                        return  # stopped (or replaced) while this waited for the lock
+                    if self._want and self._thread is not None and not self._thread.is_alive():
+                        logger.warning("lan: http listener stopped on its own; restarting")
+                        self._server = self._thread = None
+                        self.port = None
+                        self._start()
+                        continue  # _start advertised and reissued for `ip` itself
+                    if moved and self.running:
+                        logger.info("lan: %s (%s -> %s); re-advertising",
+                                    "woke from sleep" if slept else "network changed",
+                                    ", ".join(self._ips) or "-", ", ".join(ips))
+                        # `_advertise` closes the old zeroconf and opens a new
+                        # one — bounded (goodbye packets, python-zeroconf
+                        # 0.151), and on this thread rather than a request's.
+                        self._advertise(ips)
+                        self._start_tls(ips)
+            except Exception:  # noqa: BLE001 — a watcher that dies stops watching
+                logger.warning("lan: network watch failed", exc_info=True)
+
+    def _start_tls(self, ips: list[str]) -> None:
         """The https listener for the native shell (lan_tls.py). Best-effort:
         a failure here leaves http working and is reported in `tls_error`."""
         import uvicorn
 
         from fused_render import lan_tls
 
+        # Already listening — a restart of the http half (status()) must not
+        # start a second one, which would find 443 taken by us, land on 8443,
+        # and leave the first thread orphaned. An address the certificate
+        # does not name means reissuing it, so that one stops first. An
+        # address that merely went away (a dock unplugged) does not: a
+        # certificate naming one address too many is harmless, and tearing
+        # the listener down for it would cut every phone on the surviving
+        # address. No address at all: the live listener is the best we have.
+        if self.tls_running:
+            if not ips or set(ips) <= set(self._tls_ips):
+                return
+            self._stop_tls()
         self.tls_error = None
         try:
-            cert, key = lan_tls.ensure_server_cert([HOSTNAME, ALIAS_HOSTNAME], [ip] if ip else [])
-            self._tls_ip = ip
+            cert, key = lan_tls.ensure_server_cert([HOSTNAME, ALIAS_HOSTNAME], ips)
+            self._tls_ips = list(ips)
         except Exception as e:  # noqa: BLE001
             self.tls_error = f"certificate: {e}"
             logger.warning("lan: tls certificate failed: %s", e)
@@ -1029,6 +1177,13 @@ class _Controller:
         self._tls_server, self._tls_thread = server, thread
 
     def _stop(self) -> None:
+        # The watcher first: it restarts a listener that stopped, so leaving it
+        # running through a shutdown would bring sharing back. NOT joined —
+        # this runs holding the lock the watcher takes, so waiting for it here
+        # would wait out its own timeout every time. Dropping the reference is
+        # the signal: a watcher that is no longer `_watch_thread` retires.
+        self._watch_stop.set()
+        self._watch_thread = None
         self._unadvertise()
         server, thread = self._server, self._thread
         tls_server, tls_thread = self._tls_server, self._tls_thread
@@ -1043,7 +1198,7 @@ class _Controller:
         logger.info("lan: sharing stopped")
 
     # -- mDNS
-    def _advertise(self, ip: str) -> None:
+    def _advertise(self, ips: list[str]) -> None:
         try:
             from zeroconf import ServiceInfo, Zeroconf
         except ImportError:
@@ -1057,7 +1212,7 @@ class _Controller:
                 info = ServiceInfo(
                     "_http._tcp.local.",
                     f"Fused Render ({host})._http._tcp.local.",
-                    addresses=[socket.inet_aton(ip)],
+                    addresses=[socket.inet_aton(ip) for ip in ips],
                     port=self.port or 80,
                     server=host + ".",
                     # `https`: the port the native shell should prefer.
@@ -1065,7 +1220,7 @@ class _Controller:
                 )
                 zc.register_service(info)
                 infos.append(info)
-            self._zeroconf, self._infos, self._ip = zc, infos, ip
+            self._zeroconf, self._infos, self._ips, self._ip = zc, infos, list(ips), ips[0]
             # Advertising is the only thing that sets `error` while the
             # listener runs ("no network address found", a failed attempt) —
             # a later success, e.g. status() re-advertising once Wi-Fi is
@@ -1077,7 +1232,7 @@ class _Controller:
 
     def _unadvertise(self) -> None:
         zc, infos = self._zeroconf, self._infos
-        self._zeroconf, self._infos, self._ip = None, [], None
+        self._zeroconf, self._infos, self._ips, self._ip = None, [], [], None
         if zc is None:
             return
         try:
@@ -1123,8 +1278,19 @@ def api_lan_pair_token():
     """Mint a one-time pairing token and the URL to put in the QR code."""
     from fused_render import lan_tls
 
+    # NEVER a made-up base. A code naming `http://<host>/` while the http
+    # listener is down (INCIDENT 2026-09-07: the listener's thread had gone,
+    # `port` still said 80) points the phone at a port nothing answers on, and
+    # the app could only report it as a certificate that did not match. When
+    # http is down but https is up the app can still pair — it fetches the CA
+    # over https and the fingerprint below is what vouches for it — so the
+    # https base is the honest code; with neither, there is no code to give.
+    http_base, https_base = _controller.url(), _controller.https_url()
+    if not http_base and not https_base:
+        return JSONResponse(
+            {"error": _controller.error or "local-network sharing is not running"},
+            status_code=503)
     token = mint_pair_token()
-    base = _controller.url()
     # The QR is an http URL so a browser can use it as-is. Two extra params
     # ride along for the native shell: `ca`, the private CA's fingerprint, and
     # `s`, the https port — it fetches /lan/ca.pem, checks the fingerprint, pins
@@ -1136,12 +1302,17 @@ def api_lan_pair_token():
             params["s"] = str(_controller.tls_port)
         except Exception:  # noqa: BLE001 — https stays optional
             pass
-    url = (base or f"http://{HOSTNAME}/") + "pair?" + urlencode(params)
+    # http while it is up, so a phone browser can use the same code; https only
+    # as the fallback that keeps the native app pairing without it.
+    over_http = bool(http_base)
+    base = http_base if over_http else https_base
+    url = base + "pair?" + urlencode(params)
     ip = _controller._ip or lan_ip()
-    port = _controller.port
     ip_url = None
     if ip:
-        ip_url = f"http://{ip}{'' if port in (None, 80) else ':' + str(port)}/pair?" + urlencode(params)
+        scheme, port, default = ("http", _controller.port, 80) if over_http else ("https", _controller.tls_port, 443)
+        host = f"{ip}{'' if port in (None, default) else ':' + str(port)}"
+        ip_url = f"{scheme}://{host}/pair?" + urlencode(params)
     return {"url": url, "ip_url": ip_url, "ttl_s": PAIR_TOKEN_TTL_S,
             "https_url": _controller.https_url(), "ca_fingerprint": params.get("ca")}
 

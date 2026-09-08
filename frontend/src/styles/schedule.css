@@ -3314,38 +3314,45 @@ input.schedule-when-field {
    the lane's fill in both themes. The track itself paints nothing: a groove
    would be a second column drawn beside the cards.
 
-   ONE rule for all three of the page's content scrollers, though `.tasks-list`'s
-   box belongs to tasks.css and the other two to this file. Scrollbar chrome is
-   one decision about one kind of furniture, and two copies of it is how the
-   List and the Board end up wearing different bars.
+   ONE rule for all four of the page's content scrollers, though `.tasks-list`'s
+   box belongs to tasks.css and the Cards wall's to task-cards.css. Scrollbar
+   chrome is one decision about one kind of furniture, and two copies of it is
+   how the List and the Board end up wearing different bars — which is exactly
+   what happened when the Cards wall shipped without this rule: an overlay bar
+   on one view and a 10px column on the next (Akshil, 2026-09-05).
 
-   The three are the Board's lane, the List, and the CALENDAR's popover thread —
-   the one calendar scroller that has a bar at all, since the week grid hides
-   its own (`.schedule-cal-scroll`, above: the hour lines say where you are).
+   The four are the Board's lane, the List, the Cards wall, and the CALENDAR's
+   popover thread — the one calendar scroller that has a bar at all, since the
+   week grid hides its own (`.schedule-cal-scroll`, above: the hour lines say
+   where you are).
    The page's remaining scrollers are dropdown menus and pickers, which are
    floating surfaces a few rows tall rather than columns of content, and are
    deliberately left alone. */
 .schedule-tv-lane-body,
 .schedule-cal-thread,
-.tasks-list {
+.tasks-list,
+.task-cards-scroll {
   scrollbar-gutter: stable;
 }
 
 .schedule-tv-lane-body::-webkit-scrollbar,
 .schedule-cal-thread::-webkit-scrollbar,
-.tasks-list::-webkit-scrollbar {
+.tasks-list::-webkit-scrollbar,
+.task-cards-scroll::-webkit-scrollbar {
   width: 10px;
 }
 
 .schedule-tv-lane-body::-webkit-scrollbar-track,
 .schedule-cal-thread::-webkit-scrollbar-track,
-.tasks-list::-webkit-scrollbar-track {
+.tasks-list::-webkit-scrollbar-track,
+.task-cards-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .schedule-tv-lane-body::-webkit-scrollbar-thumb,
 .schedule-cal-thread::-webkit-scrollbar-thumb,
-.tasks-list::-webkit-scrollbar-thumb {
+.tasks-list::-webkit-scrollbar-thumb,
+.task-cards-scroll::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
   background-clip: padding-box;
   border: 3px solid transparent;
@@ -3354,7 +3361,8 @@ input.schedule-when-field {
 
 .schedule-tv-lane-body::-webkit-scrollbar-thumb:hover,
 .schedule-cal-thread::-webkit-scrollbar-thumb:hover,
-.tasks-list::-webkit-scrollbar-thumb:hover {
+.tasks-list::-webkit-scrollbar-thumb:hover,
+.task-cards-scroll::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--fg-muted) 48%, transparent);
   background-clip: padding-box;
 }

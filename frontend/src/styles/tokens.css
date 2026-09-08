@@ -31,6 +31,11 @@
    * value is the same in each palette — a token so the no-literals rule holds,
    * not because it varies. */
   --qr-paper: #fff;
+  /* The spinner drawn ON that paper: black at two strengths, the same in both
+   * themes for the same reason the paper is. Tokens so the no-literals rule
+   * holds (tests/test_theme.py), not because they vary. */
+  --qr-ink-soft: rgb(0 0 0 / 12%);
+  --qr-ink: rgb(0 0 0 / 45%);
 
   /* rgb triples for the translucent washes (see the note above). */
   --tint: 255, 255, 255;
@@ -145,6 +150,27 @@
   --series-5: #4fd1c5;
   --series-6: #ff8f8f;
 
+  /* Git decoration for a file listing's NAME — the explorer's row tinting
+     (styles/explorer.css, fused_render/server/git_status.py). Not the
+     --success/--warning/--error family, for the same reason --series-* is not:
+     those three carry SENTIMENT, and "you have edited this file" is not good
+     news or bad news. They are also not interchangeable with the chart hues,
+     which are chosen for mutual separation and mean nothing individually —
+     each of these does mean one specific thing, and the meanings are the
+     conventional ones (green new, amber edited) that a reader arrives with
+     from every other git UI.
+
+     The pairs that must stay separable are added-vs-modified (green/amber, the
+     commonest confusion under deuteranopia) and modified-vs-staged, which is
+     why staged is a blue rather than a second warm hue. The one-letter badge
+     beside the name carries the same distinction without hue at all
+     (listing/git-mark.ts), so the palette is a shortcut and never the only
+     signal. */
+  --git-untracked: #7ec699;
+  --git-modified: #e2c08d;
+  --git-staged: #7fb3f0;
+  --git-conflicted: #e4676b;
+
   /* Full-page failure card (.status-message.error). */
   --error-page-bg: rgba(30, 5, 5, 0.9);
   --error-page-border: #c0392b;
@@ -247,6 +273,21 @@
   --icon-db: #82abbf;
   --icon-file: #868c93;
 
+  /* App-icon palette — the icon picker's ten colours (Notion's set), the
+     swatches and the tinted grid. icon-color.ts carries the SAME hex as
+     literals for the icon.svg file itself, which cannot read a token: keep
+     the two in step. `default` is the --fg-muted pair. */
+  --app-icon-default: #9aa0a6;
+  --app-icon-gray: #9b9b9b;
+  --app-icon-brown: #ba856f;
+  --app-icon-yellow: #E5FF44;
+  --app-icon-orange: #c77d48;
+  --app-icon-green: #529e72;
+  --app-icon-blue: #5e87c9;
+  --app-icon-purple: #9d68d3;
+  --app-icon-pink: #d15796;
+  --app-icon-red: #df5452;
+
   /* Task chip hues — the Calendar's per-PROJECT colour (shell/ScheduleCalendar.tsx,
      indexed by schedule-lib.taskColour, which hashes the task's folder). Eight,
      hand-picked and evenly spread around the wheel, because the calendar's whole
@@ -310,6 +351,8 @@
   --success: #1a7f37;
   --warning: #8f6a10;
   --qr-paper: #fff; /* same in both themes — see the dark palette's note */
+  --qr-ink-soft: rgb(0 0 0 / 12%);
+  --qr-ink: rgb(0 0 0 / 45%);
 
   --tint: 0, 0, 0;
   --accent-rgb: 95, 115, 0;
@@ -378,6 +421,13 @@
   --series-5: #0f7c74;
   --series-6: #b03030;
 
+  /* The four git hues, darkened for white. Same hue order and same meanings —
+     a name that was green over the dark page is green over the light one. */
+  --git-untracked: #2f7d3f;
+  --git-modified: #8a5a06;
+  --git-staged: #1f5fa8;
+  --git-conflicted: #b02020;
+
   --error-page-bg: rgba(255, 236, 236, 0.95);
   --error-page-border: #c0392b;
   --error-page-fg: #7f1d1d;
@@ -421,6 +471,17 @@
   --icon-archive: #806341;
   --icon-db: #3d7b93;
   --icon-file: #6b7178;
+
+  --app-icon-default: #61656c;
+  --app-icon-gray: #787774;
+  --app-icon-brown: #9f6b53;
+  --app-icon-yellow: #5f7300;
+  --app-icon-orange: #d9730d;
+  --app-icon-green: #448361;
+  --app-icon-blue: #337ea9;
+  --app-icon-purple: #9065b0;
+  --app-icon-pink: #c14c8a;
+  --app-icon-red: #d44c47;
 
   --task-c0: #2563eb;
   --task-c1: #0d9488;

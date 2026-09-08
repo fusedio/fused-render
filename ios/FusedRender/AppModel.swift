@@ -124,7 +124,8 @@ final class AppModel: ObservableObject {
 
     /// The QR code (or a pasted URL) names `http://<host>[:port]/pair?t=…`,
     /// plus `ca` (the CA fingerprint) and `s` (the https port) from a server
-    /// that has https. With those, the CA is fetched over http, checked against
+    /// that has https. With those, the CA is fetched (https first, http as a
+    /// fallback — TLSTrust.fetchCA), checked against
     /// the fingerprint from the QR — the one channel an attacker on the Wi-Fi
     /// cannot touch — pinned, and the pairing happens over https, so the cookie
     /// lives on the https origin. A fingerprint that does not check out ends
@@ -149,11 +150,24 @@ final class AppModel: ObservableObject {
         pairProblem = nil
         var server = Server(name: discovered.first(where: { $0.host == host })?.name ?? host, host: host, port: httpPort)
         if let fingerprint, let httpsPort {
-            guard let ca = await TLSTrust.fetchCA(host: host, httpPort: httpPort, expected: fingerprint) else {
-                pairProblem = "The computer's certificate did not match this code. Try a fresh code from Preferences → Render local network."
+            switch await TLSTrust.fetchCA(host: host, httpPort: httpPort, httpsPort: httpsPort,
+                                          expected: fingerprint) {
+            case .success(let ca):
+                server = Server(name: server.name, host: host, port: httpsPort, scheme: "https", caDER: ca)
+            // Three different things go wrong here and they need three
+            // different sentences: a fresh code fixes none of the first two,
+            // and telling someone whose phone never reached the computer that
+            // a certificate did not match sends them nowhere.
+            case .failure(.unreachable):
+                pairProblem = "Could not reach \(host). Check that this phone and the computer are on the same Wi-Fi, and that Fused Render is allowed under Settings → Privacy & Security → Local Network."
+                return false
+            case .failure(.badResponse):
+                pairProblem = "\(host) answered, but not with the computer's certificate. Check that Render local network is still on in Preferences, then try a fresh code."
+                return false
+            case .failure(.mismatch):
+                pairProblem = "The computer's certificate did not match this code — another computer on this Wi-Fi may answer to \(host). Try a fresh code from Preferences → Render local network."
                 return false
             }
-            server = Server(name: server.name, host: host, port: httpsPort, scheme: "https", caDER: ca)
         }
         // Cancelled while the CA was being fetched (the sheet's Cancel): do
         // not connect behind the user's back. The token is only spent when

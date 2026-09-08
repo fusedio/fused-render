@@ -34,9 +34,11 @@
 // live preview (D365).
 import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
-import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
+import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
+import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
+import { AppStar } from "@platform/ui/AppStar";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
@@ -84,6 +86,11 @@ export function AppPreviewCard({
   // the browser gestures use the same href, so the two still can't disagree.
   href?: string;
 }) {
+  // The icon.svg recoloured for the live theme when it names a colour
+  // (picker-written), the raw file otherwise.
+  const iconSrc = useThemedIconSrc(
+    app.icon ? appIconUrl(app.icon, app.icon_mtime) : null,
+  );
   const title = app.title || app.name;
   // The same timestamp the grid SORTS by (last opened, modified standing in) —
   // a card ranked first for being opened just now must not label itself with a
@@ -225,12 +232,49 @@ export function AppPreviewCard({
       title={openTargetFor(app).path}
     >
       <span className="app-pcard-body">
-        <span className="app-pcard-title">{title}</span>
-        <span className="app-pcard-meta">
-          <span className="app-pcard-tag">{app.tag}</span>
-          {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
-          {badge && <span className="app-pcard-name">{badge}</span>}
-          {ago && <span className="app-pcard-ago">{ago}</span>}
+        {/* The app's own `icon.svg` to the left of its two text lines, tall
+            enough to span both — the same mark
+            the sidebar's Projects row and the app's tab favicon draw, so an
+            app reads as itself wherever it is listed. Drawn AS IS: the
+            author's colours, no mask or tint (owner, 2026-08-27).
+            An app with no icon.svg gets the same generic mark the sidebar row
+            falls back to — the brand's four-point star — so the slot is there
+            on every card and a name never shifts left for the want of a file.
+            `draggable={false}` for the reason the still's shield exists — an
+            <img> carries the browser's native drag-the-image gesture, which
+            starts a drag instead of the click that opens the card. */}
+        {iconSrc ? (
+          <img
+            className="app-pcard-icon"
+            src={iconSrc}
+            alt=""
+            draggable={false}
+          />
+        ) : (
+          // The generic mark (AppStar — the same drawing the sidebar row and
+          // the app page's header show), on currentColor so it takes the
+          // card's muted tone rather than competing with the name beside it.
+          <AppStar className="app-pcard-star" />
+        )}
+        {/* The two text lines, stacked beside the icon rather than under it —
+            the icon is a column of the head, spanning both (owner). Their own
+            element because the icon has to be a SIBLING of the pair for that:
+            with the icon inside the first line it could only ever be as tall
+            as the name. */}
+        <span className="app-pcard-lines">
+          <span className="app-pcard-title">{title}</span>
+          <span className="app-pcard-meta">
+            {/* Where the app lives, as one path — `local/short-builder` — in
+                place of a bordered tag chip beside the folder name (owner:
+                the chip was visual noise). Always the full path, even when the
+                title is the folder name: the tag alone is only half an
+                address. */}
+            <span className="app-pcard-name">
+              {app.tag}/{app.name}
+            </span>
+            {badge && <span className="app-pcard-name">{badge}</span>}
+            {ago && <span className="app-pcard-ago">{ago}</span>}
+          </span>
         </span>
       </span>
       {/* `data-capture-ready` marks the thumb as a picture of the APP — the

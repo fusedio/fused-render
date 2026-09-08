@@ -503,6 +503,27 @@ def test_changing_the_ignore_rules_forces_a_full_rescan(tmp_path):
     assert pq.read_table(part).column("path").to_pylist() == [_p(src / "a.txt")]
 
 
+def test_a_phase_names_the_hint_and_cache_race_before_it_starts(tmp_path):
+    """`derive_state`'s seeded "starting" placeholder (index/runner.py) is
+    shown until the first real `type="phase"` event lands. An incremental run
+    spends real, sometimes-slow time (fsevents.hint's journal replay racing
+    load_dir_cache's parquet read, scan.py's own comment: 0.1-2.9s typical, up
+    to ~20s worst case) with nothing countable to report before that — so a
+    phase naming that work must be emitted BEFORE either operation starts,
+    not left to the "scanning (...)" phase that only lands once both join."""
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+    run_dir = _run(cfg, str(src), run_name="run2")
+    phase_msgs = [e.get("msg") for e in _events(run_dir) if e.get("type") == "phase"]
+    assert "checking for changes" in phase_msgs
+    scanning_i = next(i for i, m in enumerate(phase_msgs)
+                      if (m or "").startswith("scanning ("))
+    assert phase_msgs.index("checking for changes") < scanning_i
+
+
 def test_a_full_run_does_not_take_the_journal_path(tmp_path, monkeypatch):
     """A run that has already decided to rescan everything asks the journal
     NOTHING — it does not merely discard the answer. The replay is scheduled on a
@@ -698,3 +719,65 @@ def test_threaded_scan_never_drops_entries_from_a_slow_worker(tmp_path, monkeypa
     scan_mod._scan_dirs_threaded(["/fast", "/slow"])
     assert slow_started.is_set()
     assert "/slow" in got
+
+
+def test_the_bulk_reuse_tail_credits_progress_more_than_once(tmp_path, monkeypatch):
+    """`_run_fsevents`'s "keep every cached dir that wasn't visited" loop
+    (scan.py ~641-664) used to credit tens/hundreds of thousands of reused
+    dirs in one silent pass, with the only progress emit AFTER the loop
+    finished — so `files + reused` sat near zero the whole time the loop ran
+    and then jumped to ~total in one step (Window 2 of the "stuck at 0"
+    report). It must now emit mid-loop, beat-gated exactly like the walk loop
+    above it, so the numerator climbs instead of leaping.
+
+    Driven with a synthetic cache (no real filesystem) and a controlled fake
+    clock (never real sleeping) so the beat gate's 0.5s cadence is exercised
+    deterministically instead of by chance."""
+    import io
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from fused_render.index import scan as scan_mod
+    from fused_render.index.store import Sink
+
+    cfg = _cfg(tmp_path)
+    guard = _guard(tmp_path)
+    rules = IgnoreRules([])
+    root = "/root"
+    # Enough cached dirs to cross the loop's amortized time-check gate
+    # (every 4096 dirs) at least twice, so two distinct beats can fire.
+    n_dirs = 8300
+    cache = {f"{root}/d{i}": ("sig", 3) for i in range(n_dirs)}
+    hint = ([], [])  # nothing for the walk itself to visit — an all-reuse run
+
+    shards_dir = str(tmp_path / "shards")
+    os.makedirs(shards_dir, exist_ok=True)
+    sink = Sink(shards_dir, "p", pa, pq, cfg.shard_rows)
+    ev = io.StringIO()
+    cancel_flag = str(tmp_path / "cancel")  # never created -> never cancelled
+
+    # A fake clock advancing a whole second on every call: the loop's own gate
+    # only calls time.time() once every 4096 iterations (not per-iteration),
+    # so this still lands well past the 0.5s beat threshold on each check.
+    clock = {"t": 0.0}
+
+    def fake_time():
+        clock["t"] += 1.0
+        return clock["t"]
+
+    monkeypatch.setattr(scan_mod.time, "time", fake_time)
+    monkeypatch.setattr(scan_mod, "compact",
+                        lambda *a, **k: {"rows": 0, "partitions": []})
+
+    scan_mod._run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev,
+                           cancel_flag, set(), 0.0, pa, pq, root_dev=None)
+
+    progress = [json.loads(line) for line in ev.getvalue().splitlines()
+               if json.loads(line).get("type") == "progress"]
+    # More than the single post-loop emit: the mid-loop beats landed too.
+    assert len(progress) > 1
+    # And the numerator actually climbs across those emits rather than
+    # sitting at 0 until the final one.
+    assert progress[0]["reused"] > 0
+    assert progress[0]["reused"] < progress[-1]["reused"]

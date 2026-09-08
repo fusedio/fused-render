@@ -34,6 +34,7 @@ function job(extra: Partial<Job> = {}): Job {
     done: 1_000,
     total: BIGGER_TOTAL,
     total_scope: "phase",
+    total_estimated: false,
     unit: "bytes",
     message: "",
     page: "",

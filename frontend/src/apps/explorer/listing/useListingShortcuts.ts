@@ -60,6 +60,12 @@ export function useListingShortcuts({
   globalKeys?: boolean;
 }) {
   const shortcutRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  // The "Still undoing…"/"Still redoing…" notice, keyed by id so a second
+  // (or third, or tenth) Cmd+Z landing on an in-flight batch replaces the
+  // standing toast instead of stacking another beside it — toasts carry no
+  // TTL, so without this every extra press would leave its own copy parked
+  // until someone dismisses it by hand.
+  const inFlightToastId = useRef<number | undefined>(undefined);
   shortcutRef.current = (e: KeyboardEvent) => {
     if (e.isComposing) return;
     // Same hard guard as the nav handler: while a context menu or dialog is
@@ -135,16 +141,17 @@ export function useListingShortcuts({
       // undo, we simply cannot start a second batch over the same paths — so it
       // is claimed and answered rather than dropped. It used to be
       // preventDefaulted on the stack check alone and then discarded inside
-      // runRelocation's guard, so during a long undo the second and third Cmd+Z
-      // did nothing, said nothing, and read as "undo is broken". Short-lived
-      // toast, since three quick presses should not leave three notices standing.
+      // runRelocation's guard, so a second and third Cmd+Z during a long undo
+      // did nothing, said nothing, and read as "undo is broken".
       if (isFsUndoInFlight()) {
         e.preventDefault();
-        pushToast({
-          msg: `Still ${action === "undo" ? "undoing" : "redoing"}…`,
-          tone: "info",
-          ttlMs: 1200,
-        });
+        inFlightToastId.current = pushToast(
+          {
+            msg: `Still ${action === "undo" ? "undoing" : "redoing"}…`,
+            tone: "info",
+          },
+          inFlightToastId.current,
+        );
         return;
       }
       e.preventDefault();

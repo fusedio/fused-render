@@ -639,11 +639,10 @@ def test_the_transcript_follows_growth_it_was_not_told_about(html):
     tool cards expand when their output lands, code blocks grow under the
     highlighter, pictures and artifact iframes take up room only once they load,
     the bubble re-renders as markdown at message end. So growth is OBSERVED
-    rather than announced — one ResizeObserver on the scrollport's two children,
+    rather than announced — one ResizeObserver on the scrollport's child,
     answering with the same follow flag every write site uses. Behaviour in
     tests/test_claude_scroll_follow.py."""
     assert "const followGrowth = new ResizeObserver(followBottom);" in html
-    assert ('for (const el of [log, document.getElementById("queue")]) '
-            "followGrowth.observe(el);") in html
+    assert "followGrowth.observe(log);" in html
     # `load` does not bubble, so the picture/iframe backstop must be in capture
     assert 'logwrap.addEventListener("load", followBottom, true);' in html

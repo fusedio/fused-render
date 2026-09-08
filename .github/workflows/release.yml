@@ -68,17 +68,18 @@ jobs:
   build-sign-notarize-release:
     needs: prepare-release
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
-    # macos-14, deliberately the OLDEST macOS image GH offers: build_dmg.sh
-    # bundles Homebrew's python@3.12 framework, and Homebrew ships PREBUILT
-    # PER-OS BOTTLES. A newer runner therefore stages a Python whose C
-    # extensions link the newer OS's system libraries -- which is exactly how
-    # v0.4.49-v0.4.51 shipped a pyexpat.so referencing
-    # XML_SetReparseDeferralEnabled, a symbol macOS 14's /usr/lib/libexpat.1.dylib
-    # does not export, so the app died at launch on macOS 14 with py2app's
-    # generic "Launch error". The app's own MACOSX_DEPLOYMENT_TARGET never
-    # entered into it: the deployment target governs code WE compile, not
-    # bottles we bundle. Keep this pinned to the oldest supported macOS.
-    runs-on: macos-14
+    # macos-26, the NEWEST image: the apple tier's Swift helper (D700) links
+    # FoundationModels and Speech, which exist only in the macOS 26 SDK, and it
+    # is built in place by build_dmg.sh step 4e. D468 had pinned this job to
+    # macos-14 because build_dmg.sh bundled Homebrew's python@3.12 — a per-OS
+    # bottle whose C extensions link the BUILD host's system libraries (the
+    # v0.4.49-v0.4.51 pyexpat/libexpat launch failure on macOS 14). That pin
+    # is lifted by changing the interpreter, not by trusting the runner: the
+    # build now uses the python.org-style framework `setup-python` installs
+    # (old deployment target, own libexpat/OpenSSL) and refuses Homebrew's for
+    # a release, and step 4f fails the build if ANY bundled Mach-O carries a
+    # minos above 14.0 — bottles and newer-tagged wheels alike.
+    runs-on: macos-26
     outputs:
       version: ${{ steps.artifacts.outputs.version }}
       dmg_sha256: ${{ steps.artifacts.outputs.dmg_sha256 }}
@@ -101,12 +102,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # build_dmg.sh's own version check needs `str | None` syntax (py>=3.10);
-      # macOS runners' default `python3` can resolve to an older CLT/system
-      # python that chokes on this (hit locally with Xcode's bundled 3.9).
+      # Two jobs at once: build_dmg.sh's own version check needs `str | None`
+      # syntax (py>=3.10), and — the load-bearing one — on macOS arm64 this
+      # installs a python.org-style FRAMEWORK build under /Library/Frameworks,
+      # which is the interpreter build_dmg.sh step 1 bundles (see runs-on).
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Select an Xcode with the macOS 26 SDK (apple tier helper)
+        run: |
+          set -euo pipefail
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [[ -n "$XCODE" ]]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
 
       # build_dmg.sh copies the host's uv INTO the bundle: the macOS app ships no
       # `venv`, `ensurepip` or `pip` module, so the install loader (SPEC PY-18) has
@@ -173,7 +183,7 @@ jobs:
         id: artifacts
         run: |
           set -euo pipefail
-          # Not `brew install awscli`: GH's macos-14 image doesn't have the
+          # Not `brew install awscli`: GH's macOS images don't have the
           # `aws/tap` cask pre-trusted, and Homebrew's tap-trust gate fails
           # the install outright. Apple's own .pkg installer sidesteps
           # Homebrew (and its taps) entirely.

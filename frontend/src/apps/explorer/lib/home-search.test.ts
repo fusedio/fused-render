@@ -34,10 +34,6 @@ function rankHit(rel: string, over: Partial<IndexRankHit> = {}): IndexRankHit {
     is_dir: false,
     size: 10,
     mtime: 1_800_000_000,
-    score: 1,
-    longest_run: 1,
-    tier: 1,
-    depth: 1,
     ...over,
   };
 }
@@ -45,14 +41,10 @@ function rankHit(rel: string, over: Partial<IndexRankHit> = {}): IndexRankHit {
 function rankResult(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
     covered: true,
-    fresh: true,
     reason: "",
-    root: HOME,
     hits: [rankHit("Downloads/a.csv")],
     truncated: false,
     total: 1,
-    updated: null,
-    age_s: null,
     ...over,
   };
 }
@@ -148,7 +140,8 @@ describe("answerFrom", () => {
 
   it("re-runs the matcher for highlights rather than trusting the wire", () => {
     // fuzzy.ts is the single source of truth for what highlights; the server
-    // deliberately does not send positions (index/rank.py's docstring).
+    // deliberately does not send positions (index/query.py's `search_ranked`
+    // docstring).
     const [row] = answerFrom(rankResult({ hits: [rankHit("docs/README.md")] }), "readme", HOME, 0).hits;
     expect(row.positions!.map((i) => "docs/README.md"[i]).join("")).toBe("README");
   });
@@ -528,6 +521,18 @@ describe("narrowAnswer", () => {
     // surviving order is the HELD order, not a re-sort.
     expect(narrowed.map((h) => h.rel)).toEqual(["code-file.txt", "one-file.txt"]);
   });
+
+  it("drops a held hit that is only a SUBSEQUENCE match, not a substring one (D708 correction)", () => {
+    // The index-backed server is substring-only (D708) — `search_ranked`'s
+    // `_rank_sql` filters on `lower(rel) LIKE '%q%'`, nothing weaker. Narrowing
+    // with `fuzzyMatch` (subsequence-accepting) could KEEP a row the server
+    // would never return: "rdme" is a valid subsequence of "readme.md"
+    // (r-e-a-d-m-e, skipping the "e" and "a") but never a substring of it, so
+    // a held answer for "readme" narrowed to "rdme" must drop it, matching
+    // what a fresh /api/index/rank request for "rdme" would answer.
+    const held = answer({ query: "readme", hits: [homeHit("readme.md")] });
+    expect(narrowAnswer(held, "rdme")).toEqual([]);
+  });
 });
 
 describe("redirectsToSearch", () => {
@@ -637,6 +642,15 @@ describe("indexGap", () => {
     // cannot start.
     expect(indexGap("disabled", true)).toBe("disabled");
     expect(indexGap("disabled", false)).toBe("disabled");
+  });
+
+  it("never claims a scan without Full Disk Access either", () => {
+    // Every trigger is gated on the grant (shell/index_gate.py), and the
+    // grant applies to the next launch, so nothing this process reports as
+    // scanning can be a scan that finishes.
+    expect(indexGap("fda", true)).toBe("fda");
+    expect(indexGap("fda", false)).toBe("fda");
+    expect(indexGap("fda", null)).toBe("fda");
   });
 
   it("calls the permanently uncoverable reasons what they are", () => {

@@ -39,7 +39,7 @@ import threading
 
 from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig
-from fused_render.index.store import parquet_src, partition_files
+from fused_render.index.store import parquet_src, partition_files, search_threads
 
 # Rows a single query may return, whatever the caller asks for.
 MAX_LIMIT = 5_000
@@ -113,6 +113,10 @@ def _connect(cfg: IndexConfig):
     import duckdb
 
     con = duckdb.connect()
+    # Capped like every other interactive index read (search_threads' docstring
+    # in store.py) — must run before the lockdown below: `SET threads` after
+    # `lock_configuration=true` would itself be refused.
+    con.execute(f"SET threads TO {search_threads()}")
     files = parquet_src(partition_files(cfg)) or _EMPTY_FILES
     dirs = (parquet_src([cfg.dirs_parquet])
             if os.path.exists(cfg.dirs_parquet) else None) or _EMPTY_DIRS

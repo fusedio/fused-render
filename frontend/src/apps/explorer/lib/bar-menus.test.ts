@@ -4,7 +4,19 @@
 import { expect, test } from "bun:test";
 
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
-import { crumbMenu, fileBarMenu, folderBarMenu, splitItems } from "@apps/explorer/lib/bar-menus";
+
+// bar-menus now reaches the router (via fs-actions, for dirname/normDir),
+// which reads `location` at module scope, so the stub has to precede the
+// (therefore dynamic) import — same trade as fs-actions.test.ts.
+(globalThis as { location?: unknown }).location = new URL("http://x/");
+const {
+  crumbMenu,
+  fileBarMenu,
+  folderBarMenu,
+  splitItems,
+  canRenameBase,
+  withFolderRename,
+} = await import("@apps/explorer/lib/bar-menus");
 
 // Labels in order, with separators spelled out — the whole point of these tests
 // is the SHAPE of the list, so a divider is part of the expectation.
@@ -160,4 +172,71 @@ test("fileBarMenu offers Set Current View as Preview only on an app entry, in it
     "—",
     "Set Current View as Preview",
   ]);
+});
+
+// -- canRenameBase / withFolderRename ----------------------------------------
+// The folder background menu (and, through folderBarMenu, the crumb bar over
+// the current folder) gains a "Rename…" item — this pins the guard that
+// decides when, and the shape it produces.
+
+test("canRenameBase allows an ordinary folder anywhere, including inside a mount", () => {
+  const guard = { home: "/Users/x", mountsRoot: "/Users/x/.fused-render/mounts" };
+  expect(canRenameBase("/Users/x/Projects", guard)).toBe(true);
+  expect(canRenameBase("/Users/x/Projects/sub", guard)).toBe(true);
+  // A folder nested INSIDE a mount (not the mount root itself) is ordinary.
+  expect(canRenameBase("/Users/x/.fused-render/mounts/bucket/inner", guard)).toBe(true);
+});
+
+test("canRenameBase refuses the filesystem root", () => {
+  const guard = {};
+  expect(canRenameBase("/", guard)).toBe(false);
+  expect(canRenameBase("", guard)).toBe(false); // "" normalizes to "/"
+});
+
+test("canRenameBase refuses the home folder", () => {
+  const guard = { home: "/Users/x", mountsRoot: "/Users/x/.fused-render/mounts" };
+  expect(canRenameBase("/Users/x", guard)).toBe(false);
+  expect(canRenameBase("/Users/x/Documents", guard)).toBe(true);
+});
+
+test("canRenameBase refuses a mount root but not what's inside or beside it", () => {
+  const guard = { home: "/Users/x", mountsRoot: "/Users/x/.fused-render/mounts" };
+  expect(canRenameBase("/Users/x/.fused-render/mounts/bucket", guard)).toBe(false);
+  expect(canRenameBase("/Users/x/.fused-render/mounts/bucket/inner", guard)).toBe(true);
+  // The mounts_root directory itself is refused too: renaming it breaks every
+  // mount at once (review, PR #1049). Trailing slashes in the config are fine.
+  expect(canRenameBase("/Users/x/.fused-render/mounts", guard)).toBe(false);
+  const slashed = { home: "/Users/x/", mountsRoot: "/Users/x/.fused-render/mounts/" };
+  expect(canRenameBase("/Users/x", slashed)).toBe(false);
+  expect(canRenameBase("/Users/x/.fused-render/mounts/bucket", slashed)).toBe(false);
+  expect(canRenameBase("/Users/x/Projects", slashed)).toBe(true);
+});
+
+test("canRenameBase fails closed while config hasn't loaded (home/mountsRoot undefined)", () => {
+  // Nothing is renameable until BOTH are known (bugbot, PR #1049): an empty
+  // guard used to allow home and mount roots through.
+  expect(canRenameBase("/", {})).toBe(false);
+  expect(canRenameBase("/Users/x", {})).toBe(false);
+  expect(canRenameBase("/Users/x/Projects", {})).toBe(false);
+  expect(canRenameBase("/Users/x/Projects", { home: "/Users/x" })).toBe(false);
+  expect(canRenameBase("/Users/x/Projects", { home: "/Users/x", mountsRoot: "/m" })).toBe(true);
+});
+
+test("withFolderRename leads the list with Rename… + a separator when allowed", () => {
+  const rest: MenuEntry[] = [{ label: "New Folder…" }, "separator", { label: "Refresh" }];
+  let renamed = false;
+  const items = withFolderRename(rest, "/Users/x/Projects", { home: "/Users/x", mountsRoot: "/m" }, () => {
+    renamed = true;
+  });
+  expect(labels(items)).toEqual(["Rename…", "—", "New Folder…", "—", "Refresh"]);
+  item(items, "Rename…").onClick?.();
+  expect(renamed).toBe(true);
+  expect(item(items, "Rename…").icon).not.toBeNull();
+});
+
+test("withFolderRename hands the list back untouched when the guard refuses", () => {
+  const rest: MenuEntry[] = [{ label: "New Folder…" }, "separator", { label: "Refresh" }];
+  const items = withFolderRename(rest, "/Users/x", { home: "/Users/x" }, () => {});
+  expect(items).toBe(rest); // same array, not just same shape
+  expect(labels(items)).toEqual(["New Folder…", "—", "Refresh"]);
 });

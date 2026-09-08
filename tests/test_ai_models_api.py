@@ -34,6 +34,7 @@ from fused_render.ai import catalog
 from fused_render.ai import registry as _ai_registry
 from fused_render.ai import hub_cache as ai_models_mod
 from fused_render.ai import tasks as ai_tasks
+from _hardware_probe_helpers import force_no_accelerators
 
 # Windows makes symlinks a privileged operation, and huggingface_hub itself
 # falls back to copies there — the dedup rule under test is a POSIX-cache one.
@@ -1530,16 +1531,25 @@ def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
 
 
 @requires_symlinks
-def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypatch):
+def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypatch,
+                                                          tmp_path):
     """`black-forest-labs/FLUX.2-klein-4B` is the FLUX.2 base pipeline the
     diffusers runner loads by id (it has a `_GGUF_RECIPES` row, and was
     `catalog.py`'s second diffusers suggestion until the int8 repo made it
     redundant), and its card's `pipeline_tag` says image-to-image — a label in
     NO_RUNNER_YET, so the page offered no Load for a model a user can reach. The card names the model FAMILY; the
     `model_index.json` in the snapshot names the pipeline that is actually
-    here, written by the library that will load it."""
+    here, written by the library that will load it.
+
+    Accelerators forced off (`force_no_accelerators`), because faking
+    `platform` alone does not make this a CPU machine: the `-cuda`/`-rocm`
+    rows probe the REAL host for a device node, so on a box with an AMD render
+    node the image engine resolves to `diffusers-image-rocm` and the assertion
+    below fails for a reason that has nothing to do with the pipeline label
+    under test."""
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    force_no_accelerators(monkeypatch, tmp_path)
     repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
                  snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: image-to-image\n---\n")
@@ -1553,7 +1563,7 @@ def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypat
 
 @requires_symlinks
 def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
-        client, hub, monkeypatch):
+        client, hub, monkeypatch, tmp_path):
     """Three names on the wire, because the card wants two different things.
 
     The card's TAG is a format claim, so it wears the family ("Diffusers") —
@@ -1564,9 +1574,15 @@ def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
     the payload is built at TWO sites in this router — the serving engine and
     the engine that merely reads the format — and one of them shipped without
     a key before now.
+
+    Accelerators forced off (`force_no_accelerators`) so "(CPU)" is what the
+    Linux half actually resolves to: both `shortLabel` assertions here are
+    about the NAME a base row carries, and a host with a real GPU would answer
+    "Diffusers (ROCm)" and fail them without the naming rule being wrong.
     """
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    force_no_accelerators(monkeypatch, tmp_path)
     repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
                  snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "model_index.json",

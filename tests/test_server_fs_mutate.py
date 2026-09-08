@@ -994,6 +994,50 @@ def test_rename_dir(tmp_path):
     assert out["is_dir"] is True
 
 
+def test_rename_dir_settles_the_claude_chats_now(tmp_path, monkeypatch):
+    """Akshil, 2026-09-07: rename a folder, open it, "Recent chats" is empty
+    until a reload. The migration rode the NEXT /render of the app entry — a
+    request unordered against the chat pane's read (and one the companion pane
+    never issues). The rename itself now relocates the chats and app state."""
+    from fused_render import app_state_move, claude_session_move
+
+    calls = []
+    monkeypatch.setattr(claude_session_move, "relocate",
+                        lambda a, b: calls.append(("relocate", a, b)))
+    monkeypatch.setattr(app_state_move, "rewrite_stores",
+                        lambda a, b: calls.append(("stores", a, b)))
+    src = tmp_path / "d1"
+    src.mkdir()
+    (src / "c").write_text("x")
+    dst = tmp_path / "d2"
+    _data(RENAME({"src": str(src), "dst": str(dst)}, x_fused="1"))
+    assert ("stores", str(src), str(dst)) in calls
+    assert ("relocate", str(src), str(dst)) in calls
+    # a settle that blows up is logged, and the rename still answers OK
+    monkeypatch.setattr(claude_session_move, "relocate",
+                        lambda a, b: (_ for _ in ()).throw(RuntimeError("boom")))
+    src2, dst2 = tmp_path / "e1", tmp_path / "e2"
+    src2.mkdir()
+    out = _data(RENAME({"src": str(src2), "dst": str(dst2)}, x_fused="1"))
+    assert out["is_dir"] is True and dst2.is_dir()
+    # a trip through the bin is not a move the chats follow (Bugbot, PR #1048)
+    calls.clear()
+    monkeypatch.setattr(claude_session_move, "relocate",
+                        lambda a, b: calls.append(("relocate", a, b)))
+    src3 = tmp_path / "t1"
+    src3.mkdir()
+    trash = tmp_path / "Trash" / "files"
+    trash.mkdir(parents=True)
+    _data(TRASH_MOVE({"from": str(src3), "to": str(trash / "t1")}, x_fused="1"))
+    assert calls == []
+    # a FILE rename has no chats to carry
+    calls.clear()
+    f = tmp_path / "a.txt"
+    f.write_text("y")
+    _data(RENAME({"src": str(f), "dst": str(tmp_path / "b.txt")}, x_fused="1"))
+    assert calls == []
+
+
 def test_rename_missing_src_404(tmp_path):
     resp = RENAME({"src": str(tmp_path / "ghost"), "dst": str(tmp_path / "x")}, x_fused="1")
     assert _status(resp) == 404

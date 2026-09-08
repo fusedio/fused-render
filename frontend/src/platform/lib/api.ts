@@ -3,6 +3,16 @@ import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshnes
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
 
+export interface FdaState {
+  // What THIS server process can read. Final for the process's lifetime.
+  granted: boolean;
+  // The two-stage verdict (shell/fda.py): this process cannot read, but a
+  // fresh child of the app can — the grant landed, only a relaunch remains.
+  pending_relaunch: boolean;
+  // An fs route was refused and nobody has dismissed it yet.
+  denied: boolean;
+}
+
 export interface Config {
   start_dir: string;
   home: string;
@@ -30,11 +40,14 @@ export interface Config {
   // the Windows/Linux packages (those update through their supervisor).
   update?: UpdateStatus;
   // Full Disk Access state (fused_render/shell/fda.py) — present only on the
-  // packaged mac app when the probe is conclusive. FdaStrip renders off this;
-  // absent means render nothing and stop watching. `denied` flips when this
-  // session hits a PermissionError on an fs route — the moment the warning
-  // is worth showing; dismissing clears it server-side until the next one.
-  fda?: { granted: boolean; denied: boolean };
+  // packaged mac app when the probe is conclusive. Read through the one store
+  // in platform/lib/fda.ts (FdaStrip + the onboarding FdaStep); absent means
+  // render nothing and stop watching. `pending_relaunch`: a fresh child of
+  // the app can read but this process cannot — the grant landed, relaunch to
+  // apply. `denied` flips when this session hits a PermissionError on an fs
+  // route — the moment the warning is worth showing; dismissing clears it
+  // server-side until the next one.
+  fda?: FdaState;
   // First-run wizard flag (fused_render/shell/onboarding.py). The shell
   // auto-shows the wizard while BOTH timestamps are null; `complete` and
   // `dismiss` are distinct writes (reached the end vs "skip for now").
@@ -52,7 +65,17 @@ export interface FsEntry {
   size: number | null;
   mtime: number | null;
   ignored?: boolean; // matched by .gitignore inside a git repo (dimmed in the UI)
+  // What git says about this entry, when the folder is inside a repo and git
+  // has something to say — the name is tinted with it (styles/explorer.css).
+  // A folder carries the most urgent state anywhere BENEATH it, so a collapsed
+  // subtree can't hide a change; see fused_render/server/git_status.py for the
+  // ranking. Absent means clean, not-in-a-repo, or a server that predates the
+  // field — all three render undecorated, which is the same true statement:
+  // there is nothing to point at.
+  git?: GitEntryStatus;
 }
+
+export type GitEntryStatus = "conflicted" | "modified" | "untracked" | "staged";
 
 export interface ListResult {
   path: string;
@@ -185,7 +208,26 @@ export function dismissFdaNudge(): Promise<{ ok: boolean }> {
 export interface OnboardingState {
   completed_at: number | null;
   dismissed_at: number | null;
+  // When the wizard was first on screen (stamped by the first step write).
+  // Third leg of the auto-show rule (shell/onboarding/state): a wizard that
+  // has been opened is never auto-shown again. Optional: older server.
+  opened_at?: number | null;
+  // Per-step progress (the meter): what each step last reported about itself,
+  // overruled server-side where the truth is cheap to see. Optional: an older
+  // server does not send it. Rules live in shell/onboarding/progress.ts.
+  stages?: Record<string, OnboardingStage>;
   version: number;
+}
+
+/** `n/a` = this machine has no such step; it leaves the denominator. */
+export type OnboardingStageStatus = "pending" | "partial" | "complete" | "n/a";
+
+export interface OnboardingStage {
+  status: OnboardingStageStatus;
+  /** Free-form notes the step left for reference (version found, account,
+      model ids started). Merged on write; never read by a rule. */
+  meta: Record<string, unknown>;
+  updated_at: number | null;
 }
 
 export function getOnboarding(): Promise<OnboardingState> {
@@ -198,6 +240,20 @@ export function completeOnboarding(): Promise<OnboardingState> {
 
 export function dismissOnboarding(): Promise<OnboardingState> {
   return postJson<OnboardingState>("/api/onboarding/dismiss", {});
+}
+
+/** The wizard is on screen — stamps `opened_at` (the auto-show's third leg)
+    without saying anything else. */
+export function openedOnboarding(): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/opened", {});
+}
+
+export function setOnboardingStage(
+  stage: string,
+  status: OnboardingStageStatus,
+  meta?: Record<string, unknown>,
+): Promise<OnboardingState> {
+  return postJson<OnboardingState>("/api/onboarding/stage", { stage, status, meta: meta ?? {} });
 }
 
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
@@ -384,8 +440,10 @@ export function runClaudeDoctor(): Promise<{
 export interface UpdateStatus {
   // idle | checking | available | installing | installed | error
   state: string;
-  // brew: the user runs `brew upgrade --cask` themselves (see manual_command);
-  // dmg: the app downloads and swaps its own bundle; none: not updatable.
+  // INFORMATIONAL ONLY — every method takes the same install path (D767): the
+  // app downloads the signed DMG and swaps its own bundle. brew: that bundle
+  // happens to be Homebrew-managed (the app still never runs brew); dmg: it
+  // is not; none: not updatable. Nothing in the UI branches on this.
   method: string;
   latest_version: string | null;
   // Bytes downloaded so far (dmg method only).
@@ -394,9 +452,13 @@ export interface UpdateStatus {
   // the manifest itself carries no size field. Null when the CDN omits that
   // header, in which case the UI falls back to showing MB downloaded.
   progress_total: number | null;
+  // Which half of an install is running: "downloading" while the DMG streams,
+  // "installing" from the mount to the swap; null outside state "installing".
+  phase?: "downloading" | "installing" | null;
   error: string | null;
-  // Set when the user must run the update themselves (brew-managed installs,
-  // state "available") — shown with a copy button.
+  // Always null since D767; kept for wire compatibility. There is one install
+  // path for every install type and no terminal command to hand the user, so
+  // no surface reads this field any more.
   manual_command: string | null;
 }
 
@@ -460,6 +522,14 @@ const listPrefetch = new Map<string, { promise: Promise<ListResult>; ts: number 
 //                              same-origin ancestor chain. This is the only cover
 //                              for a template view of a FILE, which mounts no
 //                              listing and so has no watcher at all.
+//
+// This map only protects a listing that mounts (or re-fetches) AFTER the
+// clear — it says nothing to a listing already sitting on screen, which is
+// why window._fusedFsChanged also calls listing/fsChangeBus.ts's
+// `notifyFsChanged` right alongside `clearListPrefetch`: that is the half
+// that reaches an ALREADY-MOUNTED useDirListing (e.g. an Explorer pane open
+// on a repo while the git template's stage/unstage runs in another pane,
+// which rewrites `.git/index` and so moves no watched directory's mtime).
 export function clearListPrefetch(): void {
   listPrefetch.clear();
 }
@@ -566,20 +636,18 @@ export async function walkDirStream(
 //
 // `positions` are NOT on the wire: the caller re-runs `fuzzyMatch(q, rel)`
 // over the rows it got back, so platform/lib/fuzzy.ts stays the single source
-// of truth for what highlights (and the server's port of it, index/rank.py,
-// stays free to change its internals). A miss is a normal 200 with
-// covered:false, same as the corpus.
+// of truth for what highlights. A miss is a normal 200 with covered:false,
+// same as the corpus.
+//
+// `score`/`tier`/`depth`/`longest_run` are also NOT on the wire: they drove
+// `_rank_sql`'s ORDER BY server-side, but nothing here re-sorts an already-
+// ranked row (`listing/ranked-hits.ts` returns hits in the order the server
+// sent them), so the server stops at computing them and never returns them.
 export interface IndexRankHit {
   rel: string;
   is_dir: boolean;
   size: number | null;
   mtime: number | null;
-  // The ranking that produced this order. Carried for debugging and for
-  // callers that want to group by tier; the ORDER is the contract.
-  score: number;
-  longest_run: number;
-  tier: number;
-  depth: number;
 }
 
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
@@ -593,41 +661,55 @@ export interface IndexRankHit {
 // does not wait around for that: it walks, exactly as it does for `mount` /
 // `package` / `ignored`, because there is no server signal to poll for "the
 // user flipped a switch in Preferences".
+// `fda` is `disabled`'s sibling: the packaged mac app has no Full Disk Access,
+// so no scan may start (shell/index_gate.py — a home walk would prompt per
+// protected folder). Fixable by the user, but only through a grant plus a
+// relaunch, so the client offers THAT and never a scan.
 export type RankReason =
   | ""
   | "mount"
   | "package"
   | "ignored"
   | "disabled"
+  | "fda"
   | "uncovered"
   | "scanning";
 
 export interface IndexRankResult {
   covered: boolean;
-  fresh: boolean;
   // WHY this answer is what it is — "" when the index answered outright, else
   // "mount" | "package" | "ignored" | "disabled" | "uncovered" | "scanning".
   // The in-folder search picks its source from this (listing/index-source);
   // the client deliberately holds no copy of the rules behind it, because the
   // mount policy is MountGuard's and the ignore list is the scan config's.
   reason: RankReason;
-  root: string;
   hits: IndexRankHit[];
-  // More matched than were returned — either more than `limit` survived
-  // ranking, or the server's candidate cap bit.
+  // More matched than were returned: more than `limit` survived ranking.
+  // (Was ALSO true when the server's candidate cap bit before D708 — that
+  // cap, and `RANK_CANDIDATE_CAP`, are gone; index-backed search scores every
+  // matched row in one SQL statement with no candidate cap to hit.)
   truncated: boolean;
   total: number;
-  updated: number | null;
-  age_s: number | null;
+  // No `fresh`/`age_s`/`updated`/`root`: those are `search_under`'s wire
+  // fields (`IndexCorpus`/the walk-search path), load-bearing there for the
+  // in-folder corpus box's "indexing…" caveat. `search_ranked` used to
+  // compute and return the same three by copy-paste from `search_under`
+  // directly above it, but nothing here ever read them — no caller
+  // destructured `fresh`/`age_s`/`updated`/`root` off an `indexRank()`
+  // response. See DECISIONS.md.
 }
 
 export function indexRank(
   fsPath: string,
   query: string,
-  opts: { signal?: AbortSignal; limit?: number } = {},
+  opts: { signal?: AbortSignal; limit?: number; ranked?: boolean } = {},
 ): Promise<IndexRankResult> {
   const params = new URLSearchParams({ root: fsPath, q: query });
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  // Omitted entirely when unset — the route defaults to `ranked=true`
+  // (D720), so a caller that never passes it (the warm-up/source-selection
+  // probes) gets exactly the same answer it always did.
+  if (opts.ranked !== undefined) params.set("ranked", String(opts.ranked));
   return getJson<IndexRankResult>("/api/index/rank?" + params.toString(), {
     signal: opts.signal,
   });
@@ -649,7 +731,14 @@ export interface IndexStatus {
   root: string | null;
   phase: string;
   dirs: number;
-  files: number; // this run's progress
+  files: number; // this run's NEWLY-walked count — a reused (unchanged) dir's
+  // files are NOT in here, they're in `reused` below (index/store.py's `Sink`
+  // keeps the two separate: `files` credits a dir this run actually re-stat'd,
+  // `reused` credits one it skipped via cache). A live "N files so far" line
+  // has to add the two together to mean the same thing `files_indexed` means
+  // once the scan finishes — `files` alone undercounts by however much of the
+  // tree was unchanged, which is usually most of it on a rescan.
+  reused: number;
   error: string | null;
 }
 
@@ -1068,7 +1157,11 @@ export interface Prefs {
   // opt-OUT, the opposite polarity from `reader`). Turning it off does not
   // delete the on-disk index or stop search from answering it; only new
   // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
-  indexing: { enabled: boolean };
+  // `ranked` (D720, also default ON) is a separate, sibling preference:
+  // whether index-backed search ORDERS its hits by relevance score at all —
+  // off means `/api/index/rank?ranked=false`'s shallowest-then-alphabetical
+  // order instead (`ranked_search_enabled` server-side).
+  indexing: { enabled: boolean; ranked: boolean };
 }
 
 export interface AiIdlePrefs {
@@ -1290,6 +1383,10 @@ export function putLanEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
+}
+
+export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { ranked_search_enabled: enabled });
 }
 
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
@@ -2171,6 +2268,13 @@ export interface AppInfo {
   // repo's per-app metadata shape), or null when absent/invalid. Undefined on
   // older backends. Apps without one only appear under the "All" filter.
   category?: string | null;
+  // The app's optional `icon.svg` at the folder's root (absolute path) and its
+  // mtime — the mark a card draws to the left of its name, the same file the
+  // sidebar's Projects row and the app's tab favicon draw. Null for an app
+  // without one (and for an exported `.fused`, which has no folder root),
+  // undefined on backends that predate the keys; draw it through appIconUrl.
+  icon?: string | null;
+  icon_mtime?: number | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.
@@ -2286,13 +2390,14 @@ export interface AppEntryInfo {
   // The fused page API version the entry declares via
   // `<meta name="fused-api-version">` — 0 when undeclared (every app authored
   // before the tag existed), null when there is no entry. Beside the version
-  // the runtime speaks now; the app page offers "Migrate" when it is behind.
-  // Both optional so an older server (entry only) still types.
+  // the runtime speaks now. No button hangs off these any more: the gap is a
+  // ROW of the App Doctor checklist (`getAppDoctor`), which is what replaced
+  // the standalone Migrate button. Both optional so an older server (entry
+  // only) still types.
   api_version?: number | null;
   current_api_version?: number;
   // A migration task on this entry that has not finished (pending, sending,
-  // or running with no verdict yet) — the button reads "in progress" instead
-  // of offering a second one. Null / absent when none.
+  // or running with no verdict yet). Null / absent when none.
   migration_task?: { id: string; state: string; run_id: string | null } | null;
 }
 
@@ -2351,6 +2456,11 @@ export function deployWorkbenchApp(
 // shape /api/apps/new creates, its prompt invoking the fused-render-api-migration
 // skill for the jump from the declared version to the current one. 409 when the
 // app is already current, 404 when the folder has no entry.
+//
+// No UI calls this any longer — the App Doctor button took the place of the
+// Migrate button on both surfaces, and its fix session routes a stale version
+// through the migration skill itself. The endpoint stays as the narrow,
+// single-purpose way to ask for exactly that one task.
 export interface MigrateAppResult extends NewAppResult {
   from_version: number;
   to_version: number;
@@ -2362,6 +2472,60 @@ export function migrateApp(
   effort: SessionEffort = "",
 ): Promise<MigrateAppResult> {
   return postJson<MigrateAppResult>("/api/apps/migrate", { path, model, effort });
+}
+
+// ---- App Doctor (fused_render/app_doctor.py) --------------------------------
+//
+// The share-readiness checklist for one app folder: deterministic checks only —
+// a row is `pass`, `fail`, or `skip` (the check could not run: no entry to read,
+// no git repo, an optional file that isn't there), never a judgment. The
+// judgment is the fix TASK's, which is a Claude session running the
+// fused-render-app-doctor skill (`runAppDoctor` below).
+
+export type AppCheckState = "pass" | "fail" | "skip";
+
+export interface AppCheckFinding {
+  rule: string;
+  path: string;
+  /** 0 for a finding about the folder rather than a line. */
+  line: number;
+  /** Already masked server-side when it came off a secret — safe to render. */
+  excerpt: string;
+}
+
+export interface AppCheck {
+  id: string;
+  label: string;
+  state: AppCheckState;
+  detail: string;
+  findings: AppCheckFinding[];
+}
+
+export interface AppDoctorReport {
+  path: string;
+  entry: string | null;
+  /** Nothing failed. A skipped check is not a pass, but it is not a problem. */
+  ok: boolean;
+  checks: AppCheck[];
+  /** A fix task on the entry that has not finished yet, or null. */
+  task?: { id: string; state: string; run_id: string | null } | null;
+}
+
+export function getAppDoctor(path: string): Promise<AppDoctorReport> {
+  return getJson<AppDoctorReport>(
+    `/api/apps/doctor?path=${encodeURIComponent(path)}`,
+  );
+}
+
+// Create the App Doctor FIX task on the app's entry page — one session for the
+// whole report, its prompt invoking the fused-render-app-doctor skill. 409 when
+// one is already running, 404 when the folder has no entry page.
+export function runAppDoctor(
+  path: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/doctor", { path, model, effort });
 }
 
 // ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------
@@ -2382,10 +2546,31 @@ export interface CurrentAppEntry {
   icon?: string | null;
   icon_mtime?: number | null;
   added_at: number | null;
+  /** Epoch (server clock) of the last `openCurrentApp`; 0 for a row a task
+   *  put on the desk that has never been opened. */
+  opened_at?: number | null;
+  /** A task under the app finished since `opened_at` — the sidebar's green
+   *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
+   *  and by nothing done to the tasks. */
+  unread?: boolean;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
   return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
+}
+
+/** The user opened the app: stamp its row `opened_at` (server clock) and clear
+ *  its `unread`. Touches no task. Answers with the whole table as it stands
+ *  after the stamp, so the caller can adopt it without a second read. */
+export interface OpenCurrentAppResult {
+  ok: boolean;
+  opened: boolean;
+  opened_at: number;
+  apps: CurrentAppEntry[];
+}
+
+export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
+  return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
@@ -2433,6 +2618,18 @@ export async function removeAppIcon(
   });
   if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
   return r.json();
+}
+
+/** Put an app folder on the desk by hand — the explorer's "Open in project"
+ *  button, ahead of the hop to `/apps/<folder>`. `added` is false when the
+ *  row was already there; the sidebar then focuses it rather than inserting. */
+export function addCurrentApp(
+  path: string,
+): Promise<{ ok: boolean; added: boolean; path: string }> {
+  return postJson<{ ok: boolean; added: boolean; path: string }>(
+    "/api/current-apps/add",
+    { path },
+  );
 }
 
 /** Take an app off the desk. SIDE EFFECT, by design: every task whose project
@@ -2711,6 +2908,12 @@ export interface Task {
   // server, which reads the same way.
   started?: number;
   last_active: number;
+  // WHEN SOMETHING LAST ACTUALLY HAPPENED — a run finishing, a transcript
+  // growing — and 0 when nothing has. Unlike `last_active` it never carries a
+  // scheduled due time or a creation stamp (tasks.py `_row`). The desk's
+  // unread flag is judged against it server-side, and the sidebar refetches the
+  // projects table when it moves. Absent on an older server.
+  happened_at?: number;
   message_count: number;
   // WHEN THIS NEXT RUNS, and WHICH schedule entry that run is: `min(at)` over
   // every PENDING entry the task has, epoch seconds, decided by the server
@@ -2758,6 +2961,7 @@ export type TaskPulseTask = Pick<
   | "status"
   | "unread"
   | "last_active"
+  | "happened_at"
   | "project"
   | "task_id"
   | "title"
@@ -2902,6 +3106,38 @@ export function deleteTask(
     cancelled: number;
     erased_transcript: boolean;
   }>("/api/tasks/delete", { key });
+}
+
+// Taking the SESSION away for good (Akshil, 2026-09-07). Delete's older
+// sibling and the one verb on this page that is not undoable: `/api/tasks/delete`
+// writes a tombstone and leaves the conversation on disk (D306), this one
+// removes the transcript itself — `~/.claude/projects/<slug>/<session_id>.jsonl`
+// and the sidecar directory beside it — along with the triage/read/task-id
+// bookkeeping that points at it, then tombstones the row like delete does.
+//
+// `erased_transcript` is therefore TRUE here where delete always answers false,
+// and `removed` counts the files that actually went. The task's NUMBER is still
+// never reallocated: the max-seen rule survives the session it was minted for.
+//
+// Refused with a 409 while the task is running, in delete's own words ("that
+// task is running — stop the run first, then delete"): erasing a transcript out
+// from under a live `claude --resume` is the one thing this verb must never do.
+export function eraseTask(
+  key: string,
+): Promise<{
+  ok: boolean;
+  key: string;
+  cancelled: number;
+  erased_transcript: boolean;
+  removed: number;
+}> {
+  return postJson<{
+    ok: boolean;
+    key: string;
+    cancelled: number;
+    erased_transcript: boolean;
+    removed: number;
+  }>("/api/tasks/erase", { key });
 }
 
 // Every scheduled message in a time window, which is the one question the
@@ -3565,7 +3801,7 @@ export interface AiCatalogModel {
    *  The Discover tab's "Suggested models" grid renders the CURATED half only:
    *  the Local tab is already the answer to "what is on my disk", and the same
    *  repo in both grids would read as two different things. */
-  source: "curated" | "cached";
+  source: "curated" | "cached" | "apple";
   /** Whether it is on this disk. Always true for a cached entry; on a curated
    *  one it is what the checkmark means. */
   downloaded: boolean;
@@ -3702,14 +3938,44 @@ export interface AiUnsupportedModel {
   reason: string;
 }
 
+/** One id the apple tier serves (D700): no size, no download, no version —
+ *  the OS owns the weights. Drawn by a picker that opts in, never mixed into
+ *  `capabilities[].models` (see `AiUnsupportedModel` for why a separate key). */
+export interface AiProviderModel {
+  id: string;
+  capability: string;
+  label: string;
+  nickname: string | null;
+  note: string | null;
+}
+
+/** The `provider: "apple"` tier as the catalog reports it. */
+export interface AiAppleProvider {
+  available: boolean;
+  /** `loading` = the OS is still fetching Apple's model; a wait, not a refusal. */
+  state: "available" | "loading" | "unavailable";
+  reason: string | null;
+  /** False on a machine whose class rules the tier out (Linux, Intel): the
+   *  reason is then not something a user can act on, so a picker stays quiet. */
+  relevant: boolean;
+  os: string | null;
+  /** Speech needs the helper, not Apple Intelligence — it can be usable while
+   *  `available` (the text model) is false. */
+  speechAvailable?: boolean;
+  models: AiProviderModel[];
+}
+
 export function getAiCatalog(): Promise<{
   capabilities: AiCatalogCapability[];
   /** Optional: an older server does not send it. */
   unsupported?: AiUnsupportedModel[];
+  /** Optional: an older server does not send it. */
+  providers?: { apple?: AiAppleProvider };
 }> {
   return getJson<{
     capabilities: AiCatalogCapability[];
     unsupported?: AiUnsupportedModel[];
+    providers?: { apple?: AiAppleProvider };
   }>("/api/ai/catalog");
 }
 
@@ -4027,6 +4293,68 @@ export interface GitRepos {
 
 export function getGitRepos(): Promise<GitRepos> {
   return getJson<GitRepos>("/api/git-repos");
+}
+
+// -- Git snapshot (GET /api/git/snapshot) -------------------------------------
+// The app folder enclosing `path`, materialised at `sha` (fused_render/server/
+// routers/git_snapshot.py). Backs the shell's `_snapshot=<sha>` URL state: the
+// explorer resolves this once per selection (and once per fresh load that
+// already carries the param) to learn `app_dir` — the live folder the carry
+// rule (platform/lib/snapshot-param.ts) is scoped to — and `entry`/`dir` for
+// whatever needs to open the extracted tree directly.
+export interface GitSnapshot {
+  ok: boolean;
+  dir: string;
+  entry: string | null;
+  app_dir: string;
+}
+
+export function getGitSnapshot(path: string, sha: string): Promise<GitSnapshot> {
+  return getJson<GitSnapshot>(
+    `/api/git/snapshot?path=${encodeURIComponent(path)}&sha=${encodeURIComponent(sha)}`,
+  );
+}
+
+// The cheap, sha-less sibling: does an app folder enclose `path` at all — the
+// same fail-closed probe templates/git/template.html's own `probeAppFolder()`
+// calls before offering its preview eye (D767 / review finding B4). Backs
+// AppVersionPicker's own gate: the picker renders only once this resolves ok.
+export interface GitAppFolder {
+  ok: boolean;
+  app_dir: string;
+}
+
+export function getGitAppFolder(path: string): Promise<GitAppFolder> {
+  return getJson<GitAppFolder>(
+    `/api/git/app-folder?path=${encodeURIComponent(path)}`,
+  );
+}
+
+// A bounded, recent-first log for the app folder enclosing `path` — the
+// version picker's own list. Deliberately smaller than the git template's own
+// reader: a label per commit, not a diff.
+export interface GitCommit {
+  sha: string;
+  short: string;
+  subject: string;
+  author: string;
+  when: number;
+}
+
+export interface GitCommits {
+  ok: boolean;
+  commits: GitCommit[];
+  has_more: boolean;
+  // ALL commits reachable from HEAD touching the app folder, not just the
+  // ones `limit` let through — the version picker needs this to label its
+  // newest row `v<total>` correctly even when the list is capped.
+  total: number;
+}
+
+export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
+  return getJson<GitCommits>(
+    `/api/git/commits?path=${encodeURIComponent(path)}&limit=${limit}`,
+  );
 }
 
 // -- AI completion (POST /api/ai) ---------------------------------------------

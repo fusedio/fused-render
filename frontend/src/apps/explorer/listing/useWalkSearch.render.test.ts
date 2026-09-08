@@ -3,19 +3,31 @@
 // request. Everything here is a sequence, which is precisely what the source
 // guards next door could not test.
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { IndexRankResult } from "@platform/lib/api";
+import type { IndexRankResult, Prefs } from "@platform/lib/api";
 import { Clock, Deferred, flush, renderHook } from "@apps/explorer/listing/hook-harness";
+import { INSTANT_DEBOUNCE_MS } from "@platform/lib/instant-search";
 
 // --- the module boundary ------------------------------------------------------
-const rankCalls: { root: string; q: string; reply: Deferred<IndexRankResult> }[] = [];
+const rankCalls: {
+  root: string;
+  q: string;
+  ranked: boolean | undefined;
+  reply: Deferred<IndexRankResult>;
+}[] = [];
 const scanCalls: string[] = [];
 let scanReply: { started: boolean; why: string } = { started: true, why: "started" };
 const walkCalls: string[] = [];
+// The owner's unranked-search preference (D720) — `useRankedSearchEnabled`
+// (ranked-search-pref.ts) reads it via `getPrefs`, which this stub answers
+// synchronously-resolved rather than deferred: the pref is not this file's
+// subject, and every existing test here asserts the FIRST rank call's shape,
+// before a real (deferred) GET could ever land anyway.
+let prefsRanked = true;
 
 mock.module("@platform/lib/api", () => ({
-  indexRank: (root: string, q: string) => {
+  indexRank: (root: string, q: string, opts?: { ranked?: boolean }) => {
     const reply = new Deferred<IndexRankResult>();
-    rankCalls.push({ root, q, reply });
+    rankCalls.push({ root, q, ranked: opts?.ranked, reply });
     return reply.promise;
   },
   requestFolderScan: (path: string) => {
@@ -26,31 +38,33 @@ mock.module("@platform/lib/api", () => ({
     walkCalls.push(path);
     return new Promise(() => {}); // a walk nobody resolves; its start is the fact
   },
+  getPrefs: () =>
+    Promise.resolve({ indexing: { enabled: true, ranked: prefsRanked } } as Prefs),
 }));
 
 mock.module("@platform/lib/router", () => ({ replaceSearch: () => {} }));
 
 const { useWalkSearch } = await import("@apps/explorer/listing/useWalkSearch");
 const freshness = await import("@platform/lib/index-freshness");
+// Imported directly (not through the `getPrefs` stub above) so a test can
+// pin the preference deterministically: the module-level cache in
+// ranked-search-pref.ts is process-global (bun runs every test file in one
+// process), so relying on the mocked GET alone would make this hook's
+// starting value whatever an earlier, unrelated test file last published.
+const { publishRankedSearchEnabled } = await import("@apps/explorer/lib/ranked-search-pref");
 
 function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
     covered: true,
-    fresh: true,
     reason: "",
-    root: "/d",
     hits: [],
     truncated: false,
     total: 0,
-    updated: 1,
-    age_s: 1,
     ...over,
   };
 }
 
-const hit = (rel: string) => ({
-  rel, is_dir: false, size: 1, mtime: 1, score: 10, longest_run: 3, tier: 1, depth: 1,
-});
+const hit = (rel: string) => ({ rel, is_dir: false, size: 1, mtime: 1 });
 
 const clock = new Clock();
 
@@ -59,15 +73,24 @@ beforeEach(() => {
   scanCalls.length = 0;
   walkCalls.length = 0;
   scanReply = { started: true, why: "started" };
+  prefsRanked = true;
+  publishRankedSearchEnabled(true);
   freshness.resetFsMutations();
   clock.install();
 });
 afterEach(() => clock.restore());
 
-/** Mount the hook and type `q` into it. */
+/** Mount the hook and type `q` into it.
+ *
+ * `useWalkSearch` debounces every query — including the first, now that
+ * instant-search dropped its leading-edge throttle for a plain trailing
+ * debounce — so this helper advances the fake clock past that wait itself.
+ * A test driving a SECOND query goes through `setQuery` directly and
+ * advances the clock on its own, same as before. */
 async function search(q: string, fsPath = "/d") {
   const box = renderHook((p: string, r: number) => useWalkSearch(p, r, false), fsPath, 0);
   await flush(() => box.current().setQuery(q));
+  await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
   return box;
 }
 
@@ -96,7 +119,16 @@ describe("an uncovered folder: scan, poll, rows", () => {
     expect(scanCalls).toHaveLength(1); // asked ONCE, however many polls
 
     // 3. rows land and the polling stops
+    //
+    // Unlike step 2 (where the re-ask fired ON THIS SAME advance, because a
+    // debounce timer from the polling flip a moment earlier was ALREADY
+    // pending and got swept up with the poll tick), nothing was pending
+    // going into this tick: the previous reply's `setPolling(true)` was a
+    // same-value no-op (already true), so the poll timer here only bumps
+    // `pollTick` — the fetch effect it triggers still owes its own trailing
+    // debounce before it actually asks.
     await flush(() => clock.advance(SCAN_POLL_MS));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     await flush(() => rankCalls[2].reply.resolve(
       answer({ hits: [hit("a/widget.md")], total: 1 })));
     expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["a/widget.md"]);
@@ -147,7 +179,7 @@ describe("what the rows are allowed to arm", () => {
     expect(box.current().rowsAnswerQuery).toBe(true);
 
     await flush(() => box.current().setQuery("readme"));
-    await flush(() => clock.advance(200)); // past the trailing debounce
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // past the trailing debounce
     // the previous query's rows are still on screen — deliberately, the list
     // is never blanked — and they must not arm Enter or auto-selection.
     expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["README.md"]);
@@ -219,7 +251,7 @@ describe("running out of patience with a scan", () => {
 
     // A new query, and the scan is still running.
     await flush(() => box.current().setQuery("gadget"));
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     const fresh = rankCalls[rankCalls.length - 1];
     expect(fresh.q).toBe("gadget");
     await flush(() => fresh.reply.resolve(
@@ -252,7 +284,7 @@ describe("closing the box mid-scan", () => {
 
     await flush(() => box.current().setQuery(""));   // Escape
     await flush(() => box.current().setQuery("widget")); // and back
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
 
     // A fresh episode: 35 more ticks is nowhere near a ceiling of 80, but it
     // was past one that started at 50.
@@ -285,7 +317,7 @@ describe("an answer served from the memo", () => {
 
     // a different query is asked and answered at the NEW generation
     await flush(() => box.current().setQuery("zeta"));
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     await flush(() => rankCalls[rankCalls.length - 1].reply.resolve(
       answer({ hits: [hit("zeta.md")], total: 1 })));
     expect(box.current().behind).toBe(false);
@@ -293,7 +325,7 @@ describe("an answer served from the memo", () => {
     // ...and now back to the memoised one, whose rows are the OLD generation
     const asked = rankCalls.length;
     await flush(() => box.current().setQuery("alpha"));
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls.length).toBe(asked); // answered from memory, as intended
     expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["alpha.md"]);
     expect(box.current().behind).toBe(true);
@@ -311,11 +343,54 @@ describe("a completed scan", () => {
     // a scan completes: lib/index-status turns that into a lifecycle bump
     await flush(() => freshness.noteIndexLifecycle());
     // ...which re-asks, after the same trailing coalesce any other query pays.
-    await flush(() => clock.advance(200));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
     await flush(() => rankCalls[1].reply.resolve(
       answer({ hits: [hit("a/widget.md")], total: 1 })));
     expect(box.current().behind).toBe(false);
+    box.unmount();
+  });
+});
+
+describe("the ranked-search preference (D720)", () => {
+  test("a user query sends `ranked` reflecting the current preference", async () => {
+    const box = await search("widget");
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].ranked).toBe(true);
+    box.unmount();
+  });
+
+  test("turning ranking off changes what the next request sends", async () => {
+    publishRankedSearchEnabled(false);
+    const box = await search("widget");
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].ranked).toBe(false);
+    box.unmount();
+  });
+
+  test("toggling the preference while mounted invalidates the memoised answer "
+    + "and re-asks with the new value", async () => {
+    const box = await search("widget");
+    await flush(() => rankCalls[0].reply.resolve(
+      answer({ hits: [hit("a/widget.md")], total: 1 })));
+    expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["a/widget.md"]);
+
+    // A second query, memoised, so a later return to "widget" would normally
+    // answer from memory without a new request — see the "answered from
+    // memory" case above. Toggling `ranked` must invalidate that memo: the
+    // remembered rows are in the WRONG order for the new preference.
+    await flush(() => box.current().setQuery("zeta"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[1].reply.resolve(
+      answer({ hits: [hit("zeta.md")], total: 1 })));
+
+    await flush(() => publishRankedSearchEnabled(false));
+    await flush(() => box.current().setQuery("widget"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    // Answered from a FRESH request, not the memo — and that request carries
+    // the new preference.
+    expect(rankCalls).toHaveLength(3);
+    expect(rankCalls[2].ranked).toBe(false);
     box.unmount();
   });
 });

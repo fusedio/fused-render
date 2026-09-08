@@ -166,20 +166,21 @@ def test_the_ask_is_queued_rather_than_dropped_if_the_user_sends_first(code):
     `window._fusedTakeClaudeAsk` earlier in this same branch.
 
     Fixed by checking `sending` after the wait and, if the user's own send
-    won the race, queuing the ask through the EXISTING `queueMessage`/
-    `drainQueue` mechanism (normally reached from `activeRun`, not a boot-time
-    race) instead of firing `sendMessage` into a call that will refuse it.
+    won the race, handing the ask to the EXISTING `sendFollowUp` mechanism
+    (normally reached from `activeRun`, not a boot-time race — it posts
+    straight to the live host's inbox, Task 6) instead of firing `sendMessage`
+    into a call that will refuse it.
     """
     boot = _boot(code)
     ask_branch = boot[boot.index("if (ask) {"):boot.index("} else if (session_id")]
     assert "if (sending) {" in ask_branch
-    assert "queueMessage(ask);" in ask_branch
+    assert "sendFollowUp(ask);" in ask_branch
     assert "} else {\n      sendMessage(ask);\n    }" in ask_branch
     # The check happens AFTER the bounded wait (the whole point is to look at
     # `sending` post-wait, not pre-wait) and BEFORE either send path fires.
     wait = ask_branch.index("Promise.race([")
     check = ask_branch.index("if (sending) {")
-    assert wait < check < ask_branch.index("queueMessage(ask)")
+    assert wait < check < ask_branch.index("sendFollowUp(ask)")
 
 
 def test_the_ask_is_never_reported_to_the_model_as_an_app_param(source):

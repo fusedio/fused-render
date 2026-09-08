@@ -134,5 +134,10 @@ test("the shell installs the hook the preview runtime reports writes through", (
   // hear about it. static/runtime.js walks the same-origin ancestor chain calling
   // this global (its noteFsChanged).
   const src = source("main.tsx");
-  expect(src).toContain("window._fusedFsChanged = clearListPrefetch");
+  const assignment = src.slice(src.indexOf("window._fusedFsChanged ="));
+  expect(assignment).toContain("clearListPrefetch()");
+  // Clearing the prefetch cache alone only protects a listing that mounts
+  // LATER — it does nothing for one already on screen. notifyFsChanged is the
+  // other half, reaching every currently-mounted useDirListing.
+  expect(assignment).toContain("notifyFsChanged()");
 });

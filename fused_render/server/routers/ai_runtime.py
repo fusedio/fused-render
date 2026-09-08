@@ -52,7 +52,9 @@ from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed
 # and a body this route refuses must be refused for the identical reason a
 # worker asked directly would give.
 from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
-from fused_render.server.common import AI_PROVIDERS, _error, _require_fused, ai_result
+from fused_render.server.common import (
+    AI_PROVIDERS, APPLE_MODELS, _error, _require_fused, ai_result, apple_model_for,
+    provider_of_model)
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
@@ -207,25 +209,75 @@ def _provider_rejection(body: dict, verb: str):
     error envelope (`_error` for the three job-backed routes, `_embed_error`
     for embed — the two wire shapes differ, so the wrapping is the caller's).
 
-    Omitted, or `"local"`: proceed — local is the only tier that serves these
-    verbs today, so it is also the default, with no shape inference needed
-    (every id here is a repo id). A value outside `AI_PROVIDERS` is a 400,
+    Omitted, or `"local"`: proceed — local is the default for these verbs,
+    with no shape inference needed (every local id here is a repo id). A
+    PINNED id (`afm-speech`, D700) infers its own tier when `provider` is
+    omitted, and is a 400 mismatch under any other tier — the same rule
+    `/api/ai` applies to `afm-text`. A value outside `AI_PROVIDERS` is a 400,
     same as `/api/ai`. A value INSIDE it that this verb has no tier for
-    (`"claude"`: the CLI speaks text and nothing else) is `unavailable` on a
-    409, not a 400 — the request is well formed and the tier simply lacks the
-    verb, which is the same sentence a machine with no image runner gets. The
-    vocabulary stays closed, and the day a gateway serves images this branch
-    becomes a real path with no change to any page.
+    (`"claude"`: the CLI speaks text and nothing else; `"apple"` on image and
+    video: Apple ships no programmatic model for either, and its ImageCreator
+    died in macOS 27) is `unavailable` on a 409, not a 400 — the request is
+    well formed and the tier simply lacks the verb, which is the same sentence
+    a machine with no image runner gets. The vocabulary stays closed, and the
+    day a gateway serves images this branch becomes a real path with no
+    change to any page.
+
+    Returns `("apple", None, None)` when the apple tier is to serve the call
+    (transcribe today; embed follows), so the caller can branch.
     """
     provider = body.get("provider")
+    model = body.get("model") if isinstance(body.get("model"), str) else None
+    pinned = provider_of_model(model)
+    if pinned is not None:
+        if provider is None:
+            provider = pinned
+        elif provider != pinned:
+            return ("bad_request",
+                    f"'provider': {provider!r} cannot run {model!r}: that id belongs "
+                    f"to the {pinned!r} tier — drop 'provider' or send {pinned!r}", 400)
     if provider is None or provider == "local":
         return None
     if provider not in AI_PROVIDERS:
         return ("bad_request",
                 "'provider' must be one of: %s" % ", ".join(AI_PROVIDERS), 400)
+    if provider == "apple":
+        wanted = _APPLE_VERB_CAPABILITY.get(verb)
+        served = apple_model_for(wanted) if wanted else None
+        if served is None or verb not in _APPLE_VERBS_SERVED:
+            why = _APPLE_VERB_REFUSALS.get(verb, f"provider 'apple' does not serve {verb}")
+            return ("unavailable", why, 409)
+        if model is not None and model != served:
+            return ("bad_request",
+                    f"'provider': 'apple' serves {verb} as {served!r} only; {model!r} "
+                    "is not an apple id for it"
+                    + (" (it is the apple id for another capability)" if model in APPLE_MODELS else ""),
+                    400)
+        return ("apple", None, None)
     return ("unavailable",
             f"provider {provider!r} does not serve {verb}; only 'local' does "
             "on this machine", 409)
+
+
+#: Which capability each job-backed verb is, in the apple tier's table.
+_APPLE_VERB_CAPABILITY = {
+    "image": registry.IMAGE_GENERATION,
+    "video": registry.VIDEO_GENERATION,
+    "transcribe": registry.SPEECH_TO_TEXT,
+    "embed": registry.EMBEDDINGS,
+}
+#: The verbs the apple tier serves in THIS build. `embed` has a pinned id
+#: (`afm-embedding`) but no path yet — it answers `unavailable` until its
+#: pyobjc runner lands, rather than 400, because the id is real and the
+#: refusal is this build's, not the request's.
+_APPLE_VERBS_SERVED = frozenset({"transcribe"})
+_APPLE_VERB_REFUSALS = {
+    "image": ("provider 'apple' does not serve image: Apple ships no programmatic image "
+              "model (ImageCreator was removed in macOS 27); use a local model"),
+    "video": "provider 'apple' does not serve video; use a local model",
+    "embed": ("provider 'apple' does not serve embed in this build yet ('afm-embedding' "
+              "is reserved for it); use a local model"),
+}
 
 
 def _side(value, default: int) -> int:
@@ -1314,7 +1366,50 @@ def api_ai_catalog():
     return {"capabilities": _catalog_with_downloads(),
             # Everything else on this disk, with the reason it is not above.
             "unsupported": _unsupported_downloads(),
+            # The OTHER on-device tier (D700). A separate key, NOT rows in
+            # `capabilities[].models` — every picker maps that list as "things
+            # I may download and load", and an apple id has neither action. A
+            # client opts in (the Playground does) and draws them its own way.
+            "providers": {"apple": _apple_catalog()},
             "ramGb": fit.machine_ram_gb()}
+
+
+#: What the catalog says about each apple id — the OS owns the weights, so
+#: there is no size, no download and no version; a label and a sentence.
+_APPLE_CATALOG_MODELS = {
+    "afm-text": {"label": "Apple on-device language model", "nickname": "Apple Intelligence",
+                 "note": "Apple's own ~3B model. Nothing to download; ~4k-token context; "
+                         "answers stay on this Mac."},
+    "afm-speech": {"label": "Apple speech model (SpeechAnalyzer)", "nickname": "Apple Speech",
+                   "note": "Apple's dictation-grade speech model. Nothing to download; "
+                           "2-3× faster than Whisper; no translate, no speaker labels."},
+}
+
+
+def _apple_catalog() -> dict:
+    """The apple tier's row of the catalog: availability plus the ids it serves
+    in this build. `relevant` says whether the reason is worth a pixel here —
+    on Linux or an Intel Mac the tier's absence is a fact about the machine's
+    class, not something a user can act on, so a client keeps quiet there."""
+    from fused_render.ai.apple import host as apple_host
+
+    problem = apple_host.platform_problem()
+    if problem:
+        return {"available": False, "state": "unavailable", "reason": problem,
+                "relevant": False, "os": None, "models": []}
+    availability = apple_host.probe()
+    models = [
+        {"id": model, "capability": capability, **_APPLE_CATALOG_MODELS[model]}
+        for model, capability in APPLE_MODELS.items()
+        if model in _APPLE_CATALOG_MODELS
+    ]
+    return {"available": availability.ok, "state": availability.state,
+            "reason": availability.reason or None, "relevant": True,
+            "os": availability.os or None,
+            # Speech rides on the helper, not on Apple Intelligence, so it is
+            # usable whenever the helper answered with locales at all.
+            "speechAvailable": bool(availability.speech_locales),
+            "models": models}
 
 
 def _engine_gap_refusal(model: str):
@@ -1432,6 +1527,16 @@ def api_ai_cancel(body: dict = Body(...), x_fused: str | None = Header(default=N
     capability = body.get("capability")
     if capability is not None and capability not in registry.capabilities():
         return _error(f"unknown capability {capability!r}", status=400)
+    # `provider: "apple"` stops the apple tier's text generation instead
+    # (D700): there is no resident worker to POST `/cancel` to, the helper is
+    # asked by request id. Text only — an apple transcription is a job and is
+    # cancelled through its row like any other.
+    provider = body.get("provider")
+    if provider is not None and provider not in AI_PROVIDERS:
+        return _error("'provider' must be one of: %s" % ", ".join(AI_PROVIDERS), status=400)
+    if provider == "apple":
+        from fused_render.ai.apple import host as apple_host
+        return {"cancelled": apple_host.cancel_text()}
     return {"cancelled": supervisor.cancel_generation(
         capability or registry.TEXT_GENERATION)}
 
@@ -1957,7 +2062,8 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     if rejection is not None:
         return rejection
     tier = _provider_rejection(body, "transcribe")
-    if tier is not None:
+    apple = tier is not None and tier[0] == "apple"
+    if tier is not None and not apple:
         return _error(tier[1], status=tier[2])
 
     source = body.get("path")
@@ -2045,6 +2151,9 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     # ask which one it is on. It is forwarded either way, and the worker honours
     # it or does not.
     wants_words = bool(body.get("words"))
+
+    if apple:
+        return _apple_transcribe(body, source, task, diarizing, wants_words)
 
     engine = registry.for_capability(registry.SPEECH_TO_TEXT)
     if engine is not None:
@@ -2139,6 +2248,97 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "provider": "local",
         "warnings": [],
         "task": task,
+    }
+
+
+def _apple_transcribe(body: dict, source: str, task: str, diarizing: bool, wants_words: bool):
+    """`afm-speech` (D700): the transcribe verb on Apple's SpeechAnalyzer.
+
+    Same reply shape and the same files as the local path — the page reads
+    the transcript off disk either way — with the tier's own option rules:
+
+    - `task: "translate"` → 400. SpeechTranscriber transcribes; a translation
+      is a different output, so dropping the flag would answer a different
+      question (the semantic rule, not the tunable one).
+    - `diarize` → 400. Speaker turns come from `runners/diarize.py`'s
+      sherpa-onnx models, which live in a worker venv this tier does not
+      have; a silently unlabelled transcript would be wrong, not degraded.
+    - `initialPrompt`, `vad` → `warnings[]`. Tunables the engine lacks
+      (it has its own voice-activity handling and no text conditioning).
+    - `language` → a locale. Whisper's ISO code becomes the BCP-47 tag Apple
+      wants (`speech.locale_for`), refused when Apple has no model for it.
+      Absent, the system locale. The locale that ran is in the transcript
+      file and in `providerMetadata.apple.locale`.
+    - `words` → honoured from `audioTimeRange` runs, like Whisper's.
+    """
+    from fused_render.ai.apple import host as apple_host
+    from fused_render.ai.apple import speech as apple_speech
+
+    if task != "transcribe":
+        return _error("'task': 'translate' is not supported by Apple's speech model, "
+                      "which transcribes in the spoken language only; use a local "
+                      "Whisper model to translate", status=400)
+    if diarizing:
+        return _error("'diarize' is not supported by provider 'apple' (speaker "
+                      "labelling runs in the local Whisper workers); drop it or "
+                      "use a local model", status=400)
+    warnings: list[dict] = []
+    for option, why in (("initialPrompt", "Apple's speech model takes no text conditioning"),
+                        ("vad", "Apple's speech model handles silence itself")):
+        if body.get(option) is not None:
+            warnings.append({"type": "unsupported-setting", "setting": option,
+                             "message": f"{option!r} is not supported by the apple tier "
+                                        f"and was ignored — {why}"})
+
+    availability = apple_host.probe()
+    # Speech needs the helper and the OS, not Apple Intelligence: the speech
+    # model is a separate system asset and works with the text model off. So
+    # a probe that failed for a text-model reason is only fatal when the
+    # helper itself is missing (no locales came back at all).
+    if not availability.speech_locales:
+        return _error(availability.reason or "Apple's speech model is unavailable on this Mac",
+                      status=409)
+    locale, problem = apple_speech.locale_for(body.get("language"), availability)
+    if problem:
+        return _error(problem, status=400)
+    # The container, BEFORE a row opens: Apple's model reads what AVFoundation
+    # opens and nothing else (no WebM/Ogg — see `speech.AVFOUNDATION_EXTENSIONS`
+    # for why no decoder ships), so a Chrome recording gets a 400 naming the
+    # formats and the two ways out, not a job that dies with "Cannot Open".
+    refusal = apple_speech.unsupported_container(source)
+    if refusal:
+        return _error(refusal, status=400)
+
+    model = apple_speech.MODEL
+    uid = secrets.token_hex(6)
+    job = supervisor.transcribe_job_id(uid)
+    stem = os.path.splitext(os.path.basename(source))[0][:60]
+    out_base = os.path.join(_transcripts_dir(),
+                            f"{time.strftime('%Y%m%d-%H%M%S')}-{stem}-{uid}")
+    request = {
+        "path": source,
+        "model": model,
+        "locale": locale,
+        "words": wants_words,
+        "out": out_base + ".json",
+        "outText": out_base + ".txt",
+        "outPartial": partial.partial_path(out_base + ".json"),
+    }
+    try:
+        apple_speech.start(request, job)
+    except apple_host.AppleError as e:
+        return _error(str(e), status=409)
+    return {
+        "jobId": job,
+        "path": canonical_fs_path(source),
+        "output": canonical_fs_path(request["out"]),
+        "outputText": canonical_fs_path(request["outText"]),
+        "outputPartial": canonical_fs_path(request["outPartial"]),
+        "model": model,
+        "provider": "apple",
+        "warnings": warnings,
+        "task": task,
+        "locale": locale,
     }
 
 

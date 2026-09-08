@@ -54,20 +54,25 @@ def _is_under_snapshot_root(path: str) -> bool:
     """True when `path` sits under home_dir()/app-versions/ — materialised git
     snapshots.
 
-    A snapshot tree is `git archive` output: the bytes of one commit, extracted so
-    a preview could be framed against them. Nothing a user types there can mean
-    anything — the real file is elsewhere and the commit is immutable — and the
-    extractor REUSED a tree whenever `.fused-snapshot-complete` existed, so a
-    write that lands here is served back as that revision's content from then on.
-    Machine-generated history that silently absorbs edits is worse than no history
-    at all.
+    A snapshot tree is `git archive` output: the app folder enclosing a
+    previewed path, extracted at one commit so the preview can be framed
+    against real files (`server/routers/git_snapshot.py`). Nothing a user
+    types there can mean anything — the real files are elsewhere and the
+    commit is immutable — and a `<key>/<sha>/` tree is REUSED once it exists
+    (the extractor's own cache), so a write that lands here would be served
+    back as that revision's content from then on. Machine-generated history
+    that silently absorbs edits is worse than no history at all.
 
-    NOTHING WRITES THIS DIRECTORY ANY MORE. The per-path timeline mode that
-    extracted these trees is gone, and the git view that replaced it resolves a
-    revision's bytes on read (`server/routers/git_show.py`) rather than
-    materialising anything. The guard stays because the trees an older version
-    already left on disk are still browsable, still immutable, and still framed
-    through views (`code`, `markdown`) that call `fused.writeFile`.
+    THIS HAS A PRODUCER AGAIN. `git_snapshot.py` is this guard's second
+    producer: the first (a per-path timeline mode) was retired, and for a
+    while nothing wrote here at all — the git view that replaced it resolved
+    a revision's bytes on read (`server/routers/git_show.py`, since deleted)
+    with nothing materialised. That design could not make a `.py` reader
+    truthful without changing the runtime's read contract, which is why
+    extraction came back: every read under an app folder — `readFile`,
+    `rawUrl`, `stat`, and now `runPython` too — resolves against a REAL file
+    under this root while a page carries `_snapshot=<sha>`. The guard's job
+    is unchanged either way: nothing here is ever writable through `/api/fs`.
 
     Lives here rather than in fs_mutate so `_writable` can read it without a cycle
     (fs_mutate imports this module, not the other way round) — and _writable is
@@ -80,10 +85,10 @@ def _is_under_snapshot_root(path: str) -> bool:
     directory the server is not using. Segment-compared, so a sibling named
     `app-versions-notes` is not caught by a string prefix.
 
-    The directory is spelled `app-versions` though it held no apps by the end;
-    that mismatch is deliberate. The path is a materialisation cache no user
-    ever sees or types, and renaming it would orphan every snapshot already on
-    disk.
+    The directory is spelled `app-versions` rather than something that says
+    "git snapshot" — a naming mismatch kept from the ORIGINAL producer, before
+    it was retired and revived. Renaming it now would orphan every tree the
+    current producer has already cached under the old name.
     """
     from fused_render.shell import storage as shell_storage
 
@@ -343,8 +348,7 @@ def _fs_stat(path: str):
         # historical "no such file" — a path the OS refused is not gone.
         if isinstance(e, PermissionError):
             from fused_render.shell import fda as shell_fda
-            shell_fda.note_denied(e)
-            return _error(f"cannot read {path}: {e}", status=403)
+            return shell_fda.refused(path, e)
         return _error(f"no such file or directory: {path}", status=404)
     return _stat_payload(path, stat_mod.S_ISDIR(st.st_mode), st)
 _STAT_TIMEOUT_S = 4.0  # a stat outliving this reports "unchanged" for this tick

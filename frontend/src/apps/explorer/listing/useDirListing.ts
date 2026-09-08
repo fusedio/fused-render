@@ -6,8 +6,20 @@ import { clearListPrefetch, listDir, prefetchListDir, type HttpError } from "@pl
 import { appearedKeys } from "@platform/lib/flip";
 import { pushToast } from "@platform/lib/toast";
 import { ROW_NEW_MS, type ListingState } from "@apps/explorer/listing/types";
+import { subscribeFsChanged } from "@apps/explorer/listing/fsChangeBus";
 
-export function useDirListing(fsPath: string) {
+// `listPath` is what actually gets fetched — `fsPath` itself, UNLESS this
+// folder sits under an active git snapshot, in which case it is the same
+// relative path rewritten onto the extracted tree (Listing.tsx's own
+// `rewriteSnapshotPath`, the identical rule static/runtime.js's `rewritePath`
+// applies to every template read). `fsPath` still drives everything ELSE
+// here — the dir-watch socket, the row identity via `entry.name` the caller
+// joins onto it — because `FsEntry` carries only a NAME, never a path
+// (see api.ts): the extracted tree's directory structure is identical to the
+// live one by construction, so listing it and joining names onto the LIVE
+// `fsPath` produces exactly the live-looking rows the carry rule and the
+// breadcrumb need, with no separate remapping step.
+export function useDirListing(fsPath: string, listPath: string = fsPath) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
   const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
   // loadMore captures the refresh generation it started in; a dir-watch refresh
@@ -33,7 +45,10 @@ export function useDirListing(fsPath: string) {
     // the loading scaffold (in parallel with stat) is reused when the real
     // preview remounts this component for the same path — no duplicate request.
     // A dir-watch refresh (refresh > 0) must see live data, so it bypasses.
-    (refresh === 0 ? prefetchListDir(fsPath) : listDir(fsPath)).then(
+    // (Under a snapshot `listPath` differs from `fsPath`, and the loading
+    // scaffold's own prefetch never knew that — a clean cache miss, not a
+    // wrong-content bug, since it just falls through to a real fetch.)
+    (refresh === 0 ? prefetchListDir(listPath) : listDir(listPath)).then(
       (data) =>
         alive &&
         setState({
@@ -48,7 +63,7 @@ export function useDirListing(fsPath: string) {
     return () => {
       alive = false;
     };
-  }, [fsPath, refresh]);
+  }, [fsPath, listPath, refresh]);
 
   // Fetch the next page of a truncated S3-direct listing and APPEND it (dedupe
   // by name). The accumulated set is still sorted by the active column —
@@ -60,7 +75,7 @@ export function useDirListing(fsPath: string) {
     const gen = refresh; // discard the response if a refresh supersedes it
     setLoadingMore(true);
     skipNewCue.current = true; // an appended page isn't a dir-watch change
-    listDir(fsPath, cursor).then(
+    listDir(listPath, cursor).then(
       (data) => {
         if (refreshRef.current !== gen) return; // stale: a refresh replaced the listing
         setLoadingMore(false);
@@ -97,6 +112,25 @@ export function useDirListing(fsPath: string) {
     let retry: ReturnType<typeof setTimeout> | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
+    // Same 300ms debounce as the socket path below, and deliberately the SAME
+    // timer variable: a stage-then-immediately-typed external `git add`
+    // (or any other pair of near-simultaneous changes) should coalesce into
+    // one refetch, not race two independent ones against each other.
+    const scheduleRefresh = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => setRefresh((n) => n + 1), 300);
+    };
+    // A write from inside a preview iframe (fused.writeFile/uploadFile/mkdir,
+    // or any runPython — including the git template's stage/unstage, which
+    // only rewrites `.git/index` and so never moves this directory's own
+    // mtime — see window._fusedFsChanged in main.tsx). The dir-watch socket
+    // below only ever hears about a change to `fsPath` ITSELF; this is the
+    // only way an already-mounted listing hears about a change whose origin
+    // isn't a plain filesystem write to the watched directory.
+    const unsubscribe = subscribeFsChanged(() => {
+      clearListPrefetch();
+      scheduleRefresh();
+    });
     const connect = () => {
       const proto = location.protocol === "https:" ? "wss://" : "ws://";
       sock = new WebSocket(proto + location.host + "/api/fs/events?path=" + encodeURIComponent(fsPath));
@@ -125,8 +159,7 @@ export function useDirListing(fsPath: string) {
         // Before the debounce, not inside it: the cache should be dead the moment
         // we know it is wrong, whether or not this listing goes on to refetch.
         clearListPrefetch();
-        if (timer !== null) clearTimeout(timer);
-        timer = setTimeout(() => setRefresh((n) => n + 1), 300);
+        scheduleRefresh();
       };
       // WebSockets don't auto-reconnect the way EventSource did.
       sock.onclose = () => {
@@ -136,6 +169,7 @@ export function useDirListing(fsPath: string) {
     connect();
     return () => {
       closed = true;
+      unsubscribe();
       if (retry !== null) clearTimeout(retry);
       if (timer !== null) clearTimeout(timer);
       sock?.close();

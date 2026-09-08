@@ -1312,14 +1312,32 @@ def test_poll_renders_segments_instead_of_the_flat_text_never_both(source):
     # join back to exactly `data.text`, so rendering both shows the reply
     # twice. Segments are authoritative (see _segments_from_rows' docstring) —
     # `data.text` is the fallback arm, not a second render.
-    region = _block(source, "const segs = Array.isArray(data.segments)",
+    #
+    # D695 sits directly on top of this same segs/data.text logic: the
+    # follow-up reply bubble slices both `data.segments` and `data.text` back
+    # to `segBase`/`textBase` (the lengths frozen at the mid-turn reset)
+    # before this same branch runs, so it never hands the fresh bubble the
+    # full, un-sliced arrays. `segs`/`flatText` below are the sliced views —
+    # the branch below them is unchanged and still mutually exclusive.
+    region = _block(source, "const fullSegs = Array.isArray(data.segments)",
                     "if (data.done) {")
     assert "renderSegments(" in region
-    flat_text = re.findall(r"typer\.update\(data\.text\)", region)
+    flat_text = re.findall(r"typer\.update\(flatText\)", region)
     assert len(flat_text) == 1, flat_text
-    assert re.search(r"\}\s*else[^{;]*typer\.update\(data\.text\)", region), (
-        "typer.update(data.text) must sit in the no-segments ELSE arm"
+    assert re.search(r"\}\s*else[^{;]*typer\.update\(flatText\)", region), (
+        "typer.update(flatText) must sit in the no-segments ELSE arm"
     )
+    # `segs`/`flatText` are sliced from the SAME base each iteration — one
+    # sliced and the other not would desync which sub-turn each is showing,
+    # even though the branch below stays structurally exclusive.
+    assert "const segs = fullSegs.slice(segBase);" in region
+    assert "const flatText = fullText.slice(textBase);" in region
+    # `segBase`/`textBase` are frozen together, off the SAME prior-iteration
+    # lengths, whenever a follow-up lands mid-turn — never independently.
+    reset = _block(source, "if (followupSeq !== seenFollowupSeq) {",
+                    "segBase = lastSegLen;\n        textBase = lastTextLen;")
+    assert "segBase = lastSegLen;" in reset
+    assert "textBase = lastTextLen;" in reset
     # The token estimate still reads data.text — it is byte-identical to what
     # it always was, and counting the segments instead would change the number.
     assert 'Math.round((data.text || "").length / 4)' in source

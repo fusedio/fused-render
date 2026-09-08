@@ -1,3 +1,4 @@
+import { useEffect, type ReactNode } from "react";
 // Step 2 — Claude Code. A CHECKLIST, not the strip: the strip renders only
 // what is wrong and nothing when all is well, which is right for a page
 // header and wrong for a setup step, where "installed ✓, signed in ✓" is the
@@ -17,6 +18,7 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { IssueRow } from "@platform/ui/ClaudeHealthStrip";
 
+import { reportStage, type StageStatus } from "./progress";
 import { StepHeader } from "./StepHeader";
 
 type RowState = "done" | "open" | "unknown";
@@ -104,12 +106,50 @@ function StateIcon({ state, optional }: { state: RowState; optional?: boolean })
 
 // `setup` is the wizard's single machine (OnboardingWizard owns it, so what
 // gets fixed here is what step 4 reads).
-export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: string }) {
+export function ClaudeStep({
+  setup,
+  eyebrow,
+  onWork,
+}: {
+  setup: ClaudeSetup;
+  eyebrow: ReactNode;
+  onWork: (busy: boolean) => void;
+}) {
   const { health, loaded, busy, load } = setup;
   const issues = claudeIssues(health);
   const rows = health ? rowsFor(health) : null;
-  const allDone = rows?.every((r) => r.state === "done" || (r.optional && r.state !== "open"));
-  const anyActionable = rows?.some((r) => r.state === "open" && issues.some((i) => r.issueIds.includes(i.id)));
+  // OPTIONAL ROWS ARE NOT WORK. PATH is a convenience — the app is finished
+  // with Claude Code without it — so "done" here means every REQUIRED row is
+  // done, whatever the optional one says. Counting it made the step look
+  // unfinished forever on the many machines whose shell rc we never edit.
+  const required = rows?.filter((r) => !r.optional);
+  const allDone = required?.every((r) => r.state === "done");
+  const optionalOpen = rows?.some((r) => r.optional && r.state === "open");
+  // Tell the wizard whether this step still has a button of its own to press:
+  // while it does (the strip's yellow actions), Next is not the yellow one.
+  // Only a REQUIRED row can claim the accent — the optional row's button is
+  // quiet (lib/claude-health `optional`), so Next stays the one yellow button
+  // once the three that matter are green.
+  const anyActionable = required?.some(
+    (r) => r.state === "open" && issues.some((i) => r.issueIds.includes(i.id)),
+  );
+  useEffect(() => onWork(anyActionable === true), [onWork, anyActionable]);
+  // THE STAGE (progress.ts): complete when every required row is done;
+  // partial when the CLI runs but a required row is open or unknown (an
+  // unknown is never a green check — same rule the PATH row states);
+  // pending when it does not run at all. Nothing until health has answered.
+  const runnable = health ? health.found && !health.broken : false;
+  const stage: StageStatus | null = !health ? null : allDone ? "complete" : runnable ? "partial" : "pending";
+  useEffect(() => {
+    if (!health || !stage) return;
+    reportStage("claude", stage, {
+      version: health.version,
+      outdated: health.outdated,
+      signed_in: health.signed_in,
+      account: health.account?.email ?? health.account?.method ?? null,
+      on_shell_path: health.on_shell_path,
+    });
+  }, [stage, health]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -131,13 +171,15 @@ export function ClaudeStep({ setup, eyebrow }: { setup: ClaudeSetup; eyebrow: st
         <p className="text-sm text-muted-foreground" role="status">
           {!loaded
             ? "Checking this machine…"
-            : allDone
-              ? "Everything is in place."
-              : anyActionable
-                ? "A few things still need doing — the open rows have buttons."
+            : anyActionable
+              ? "A few things still need doing — the open rows have buttons."
+              : allDone
+                ? optionalOpen
+                  ? "Claude Code is ready. The last row is optional."
+                  : "Everything is in place."
                 : "Nothing here will block you — carry on."}
         </p>
-        <Button variant="ghost" size="sm" onClick={() => load(true)} disabled={busy}>
+        <Button variant="outline" size="sm" onClick={() => load(true)} disabled={busy}>
           <RefreshCw data-icon="inline-start" className={busy ? "animate-spin" : undefined} />
           {busy ? "Checking…" : "Check again"}
         </Button>

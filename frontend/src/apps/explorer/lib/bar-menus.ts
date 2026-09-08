@@ -16,8 +16,70 @@ import { createElement } from "react";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { SplitDownIcon, SplitRightIcon } from "@platform/ui/SplitIcons";
+import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 
 export type SplitDir = "row" | "col";
+
+// The pieces of config a folder-rename decision needs — both optional because
+// the guard must fail CLOSED (no Rename offered) before /api/config has
+// answered, rather than briefly show a Rename that then can't act on the real
+// home/mounts paths. Backslashes are the caller's job to normalize (both
+// fields come from `Config`, same as every other consumer of `config.home`).
+export interface RenameBaseGuard {
+  home?: string;
+  mountsRoot?: string;
+}
+
+// Whether the CURRENT folder (not a row inside it) may be renamed from the
+// crumb bar / folder background menu. False for:
+//   - the filesystem/drive root (its own parent, per fs-actions.dirname)
+//   - the home folder (~) — the sidebar, bookmarks and countless "~/…" paths
+//     assume it never moves
+//   - a mount root (one level under `mounts_root` — every mount lives at
+//     `${mounts_root}/<name>`, so a dir whose PARENT is mounts_root IS one)
+// Nothing else is special-cased: an ordinary folder anywhere else, including
+// one nested inside a mount, is rename-able like any other.
+function stripSlash(p: string): string {
+  return p.length > 1 ? p.replace(/\/+$/, "") : p;
+}
+
+export function canRenameBase(dir: string, guard: RenameBaseGuard): boolean {
+  const norm = normDir(dir);
+  const parent = dirname(norm);
+  if (parent === norm) return false; // filesystem/drive root
+  // FAILS CLOSED until the config has answered (bugbot, PR #1049): with no
+  // home and no mounts root known, this cannot tell a renameable folder from
+  // the two it must never move, so it offers nothing rather than everything.
+  if (guard.home === undefined || guard.mountsRoot === undefined) return false;
+  // Compared with trailing slashes stripped on BOTH sides: `dirname` strips
+  // them, a config value might carry one (review, PR #1049).
+  const home = stripSlash(guard.home);
+  const mounts = stripSlash(guard.mountsRoot);
+  if (norm === home) return false;
+  // The mounts root, and every mount directly under it: renaming either breaks
+  // every mount at once.
+  if (norm === mounts || parent === mounts) return false;
+  return true;
+}
+
+// Prepends "Rename…" + a separator onto a folder's background-menu items when
+// canRenameBase allows it, or hands them back untouched when it doesn't. Its
+// own builder (rather than inlined where backgroundMenu assembles the rest of
+// the list) so the SHAPE of this one decision — leads with Rename, or omits it
+// — is checkable without instantiating useFileOps's hook state.
+export function withFolderRename(
+  items: MenuEntry[],
+  dir: string,
+  guard: RenameBaseGuard,
+  onRename: () => void
+): MenuEntry[] {
+  if (!canRenameBase(dir, guard)) return items;
+  return [
+    { label: "Rename…", icon: MenuIcons.rename, onClick: onRename },
+    "separator",
+    ...items,
+  ];
+}
 
 // The two split-entry rows, with the same glyphs the panel bar uses. One
 // definition, three callers (the bar's two menus and the listing's header `⋮`

@@ -59,6 +59,7 @@ const BASE: Job = {
   done: 28,
   total: 28,
   total_scope: "phase",
+  total_estimated: false,
   unit: "",
   message: "",
   page: "",
@@ -545,6 +546,30 @@ test("a task row reads its phase and step count as one sentence", () => {
   expect(text(findAll(findAll(row, "dl-row-head")[0], "dl-pct")[0])).toBe("0%");
 });
 
+test("an estimated total qualifies the COUNT, not the phase/path text (D733)", () => {
+  // Used to ride inside the server's `detail` field (the root path), so the
+  // row read "~/proj (estimated) · 700,000 / 672,424 files" — the qualifier
+  // modified the wrong noun. `total_estimated` moves it next to the number
+  // it actually describes.
+  const rescan: Job = {
+    ...BASE,
+    id: "sys:index:scan:1",
+    title: "Indexing files",
+    detail: "~/proj",
+    state: "running",
+    stalled: false,
+    message: "writing index",
+    done: 700_000,
+    total: 672_424,
+    total_estimated: true,
+    unit: "files",
+  };
+  const tree = renderCard([rescan]);
+  const row = findAll(tree, "dl-row")[0];
+  const status = text(findAll(row, "dl-status")[0]);
+  expect(status).toBe("writing index · ~/proj · 672,424 / 672,424 files (estimated)");
+});
+
 test("a download row with NO phase text still shows its byte counts", () => {
   // The regression guard: the old `(failure ?? status) &&` gate would have
   // dropped this row's amount entirely, which is worse than the problem D598
@@ -994,7 +1019,6 @@ describe("two sections sharing one Activity panel", () => {
       <DownloadManagerView
         reported={[]}
         engines={{ engines: [], onStop: async () => {} }}
-        ready
         refresh={() => {}}
         patch={() => {}}
       />,
@@ -1005,7 +1029,6 @@ describe("two sections sharing one Activity panel", () => {
         <DownloadManagerView
           reported={[]}
           engines={{ engines: [runningEngine()], onStop: async () => {} }}
-          ready
           refresh={() => {}}
           patch={() => {}}
         />,

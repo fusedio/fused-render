@@ -142,6 +142,40 @@ def test_the_endpoint_does_not_stat_anything(home, tmp_path, client, monkeypatch
     assert not any(str(repo) in p for p in probed)
 
 
+def test_the_endpoint_caps_its_connection_threads(home, tmp_path, client, monkeypatch):
+    """Review finding (D701 correction / D706): `_repos`'s bare
+    `duckdb.connect()` runs a full-table scan over `dirs.parquet` with no
+    LIMIT, every time the homepage's Repos tab opens — interactive even though
+    it is not keystroke-rate — and used to default to one thread per core."""
+    from fused_render.index.store import search_threads
+
+    repo = tmp_path / "repo"
+    _write_dirs_index([str(tmp_path), str(repo), _git(repo)])
+    seen_threads = []
+    import duckdb as real_duckdb
+    real_connect = real_duckdb.connect
+
+    class _SpyingConnection:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *a, **kw):
+            if "SET threads" in sql:
+                seen_threads.append(sql)
+            return self._con.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def spying_connect(*a, **kw):
+        return _SpyingConnection(real_connect(*a, **kw))
+
+    monkeypatch.setattr(real_duckdb, "connect", spying_connect)
+    body = client.get("/api/git-repos").json()
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
+    assert seen_threads == [f"SET threads TO {search_threads()}"]
+
+
 # -- screening -----------------------------------------------------------------
 
 def test_junk_path_screens_the_PARENT_not_the_dot_git_row(home, tmp_path, client):

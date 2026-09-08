@@ -1200,6 +1200,16 @@ def _read_cache() -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def cached() -> Optional[dict]:
+    """The cached snapshot if it is still trustworthy (same binary, not too
+    old), else None — and NEVER a measure. For readers on hot paths that may
+    say nothing rather than spawn (shell/onboarding's progress observer)."""
+    c = _read_cache()
+    if c and c.get("fingerprint") == _fingerprint(c.get("path")) and not _too_old(c):
+        return dict(c)
+    return None
+
+
 def snapshot(refresh: bool = False) -> dict:
     """The health snapshot: cached when still valid, re-measured when not.
 

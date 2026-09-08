@@ -39,9 +39,11 @@
 // this component is the shell's one place that fetches for it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getRunningEngines, stopEngine, type RunningEngine } from "@platform/lib/api";
-import { terminalNotifications, type Job } from "@platform/lib/jobs";
+import { isRunning, terminalNotifications, type Job } from "@platform/lib/jobs";
 import { pushToast } from "@platform/lib/toast";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
+
+import { noteProgressMayHaveMoved } from "./onboarding/progress";
 
 // Matches the (former) Engines chip's own cadence: a "what is running" readout,
 // not progress, so it does not need to tick every second.
@@ -184,12 +186,28 @@ export default function ActivityDock({
   const onTerminalRef = useRef(onTerminalJobs);
   onTerminalRef.current = onTerminalJobs;
   const terminalIdsRef = useRef("");
+  // The setup meter (onboarding/progress.ts) reads stage statuses the server
+  // observes on each read — and a model download starting or finishing is
+  // exactly when the Models stage moves. This poll is the shell's one view of
+  // every job, so it is the cheapest place to know that moment: re-read the
+  // meter when the set of RUNNING jobs or the set of terminal ones changes,
+  // not on every tick.
+  const runningIdsRef = useRef("");
   const onJobsReported = useCallback((next: Job[]) => {
+    const running = next.filter(isRunning).map((j) => j.id).join(" ");
+    let moved = false;
+    if (running !== runningIdsRef.current) {
+      runningIdsRef.current = running;
+      moved = true;
+    }
     const terminal = terminalNotifications(next);
     const key = terminal.map((j) => j.id).join(" ");
-    if (key === terminalIdsRef.current) return;
-    terminalIdsRef.current = key;
-    onTerminalRef.current?.(terminal);
+    if (key !== terminalIdsRef.current) {
+      terminalIdsRef.current = key;
+      onTerminalRef.current?.(terminal);
+      moved = true;
+    }
+    if (moved) noteProgressMayHaveMoved();
   }, []);
 
   const onStopEngine = async (engineId: string) => {

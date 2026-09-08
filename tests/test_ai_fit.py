@@ -293,7 +293,7 @@ def test_parse_params_covers_the_real_spread_of_catalog_forms(label, expected):
 
 
 def test_parse_params_moe_form_uses_the_total_not_the_active_count():
-    """`"8B (~1B active)"` (`LiquidAI/LFM2.5-8B-A1B-MLX-4bit`): the LEADING
+    """`"8B (~1B active)"` (`LFM2.5-8B-A1B-Q4_K_M.gguf`): the LEADING
     figure is total resident parameters, which is what a memory footprint
     scales with — inactive experts are ordinary tensors on disk and in
     memory, per that row's own catalog.py note. The parenthetical active

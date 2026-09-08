@@ -58,14 +58,18 @@ function depthOf(rel: string): number {
 // score. SHALLOW_FREE exempts normal project nesting (`src/foo/bar.ts`) from
 // any penalty at all; only past it does depth start to cost anything.
 //
-// Applied in `scoreEntries`/`rank_entries` (the ranking layer), not in
-// `fuzzyMatch`/`fuzzy_match` (the matcher): this must not move a single
-// highlight position or change what counts as a match, only how deep matches
-// are ORDERED against shallow ones. Any change here has to be mirrored into
-// rank.py and the fixture regenerated (index/rank.py's module docstring) — do
-// NOT promote `depth` above `score` in rankCompare instead; that ranks a
-// shallow `~/a.txt` over a perfect deep match on every query and breaks the
-// tier/longestRun invariants above.
+// Applied in `scoreEntries`/`rankCompare` (the ranking layer), not in
+// `fuzzyMatch` (the matcher): this must not move a single highlight position
+// or change what counts as a match, only how deep matches are ORDERED
+// against shallow ones. This module (and `fuzzy.ts`) stays the authority for
+// the live-streamed-walk ranker regardless of what the index-backed side
+// does — `fused_render/index/query.py`'s `_rank_sql` ports the SUBSTRING half
+// of this scoring into SQL (the index-backed side dropped the subsequence
+// escalation the deleted `index/rank.py` used to carry — an accepted feature
+// loss, `tests/fixtures/rank-parity.json`'s substring-restricted parity test
+// is what still pins the overlap). Do NOT promote `depth` above `score` in
+// rankCompare instead; that ranks a shallow `~/a.txt` over a perfect deep
+// match on every query and breaks the tier/longestRun invariants above.
 const DEPTH_PENALTY = 4;
 const SHALLOW_FREE = 3;
 

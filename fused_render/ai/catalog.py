@@ -125,12 +125,31 @@ from fused_render.ai import registry
 #: app stands behind on the AI Models page, and the marked one is what the
 #: Playground offers — recommended-or-downloaded is what its sidebar draws
 #: (D425). The two surfaces want different lengths for the same curation. The AI
-#: Models page is a place to SHOP: eight text entries from 0.7GB to 20GB is the
+#: Models page is a place to SHOP: five text entries from 0.7GB to 20GB is the
 #: range someone comparing downloads needs, and its Local tab exists to say what
 #: a disk already holds. The Playground is a place to TRY, reached by someone who
-#: wants to type a sentence and see what comes back — and a sidebar of eight
+#: wants to type a sentence and see what comes back — and a sidebar of five
 #: rows, most of them a multi-gigabyte download away from answering, is a
 #: decision where a text box was wanted.
+#:
+#: **TWO ROWS MINIMUM, FIVE MAXIMUM, PER LIST — and a test pins both ends.**
+#: A list is what ONE machine sees, so the bounds are per runner and not a
+#: total. The FLOOR is about having somewhere to go: a single-row list reads as
+#: a shortlist and behaves as a mandate, and the reader whose first image or
+#: first answer is not good enough has no second thing to click and no way to
+#: tell whether the model or the prompt was the problem. The CEILING is about
+#: being read at all: these lists are swept, not studied, and past five cards
+#: the rows stop being answers and become a research task — which is the same
+#: argument `recommended` won one row at a time, applied to the page that
+#: shortlist sits on.
+#:
+#: **The bounds are a budget, not a target.** Filling a list to five with rows
+#: that differ only in size is worse than a list of three where every row
+#: answers a different question, and the rule a row still has to pass is this
+#: file's own: it is SOMEBODY'S answer — the smallest thing that works, the
+#: strongest thing that fits, a second publisher to try when the first one
+#: reads a prompt badly, an architecture that changes what a size means. A row
+#: that is only "the one above but bigger" is what the ceiling is for.
 #:
 #: **EXACTLY ONE PER LIST — one per capability AND engine, since that is what a
 #: list IS — and a test pins the count both ways.** Not "a handful", which is
@@ -219,12 +238,14 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # interpret, which is a worse shortlist rather than a longer one.
     #
     # **The OptiQ premium is real and the model cards understate it.** They say
-    # "within ~5% of a stock uniform 4-bit quant"; measured, the 9B is 8.22GB
-    # against the uniform conversion's 5.98GB, which is 37% — 132 of its 248
-    # layers sit at 8-bit, and a multi-token-prediction file (~0.19GB) and a
-    # higher-precision vision tower ride along. The sizes here are the measured
-    # ones, because a user picking "the better 9B" and finding two extra
-    # gigabytes downloading is the surprise this column exists to prevent.
+    # "within ~5% of a stock uniform 4-bit quant"; measured on the Qwen3.5 9B
+    # conversion, `-OptiQ-4bit` is 8.22GB against the uniform conversion's
+    # 5.98GB, which is 37% — 132 of its 248 layers sit at 8-bit, and a
+    # multi-token-prediction file (~0.19GB) and a higher-precision vision tower
+    # ride along. Every `size_gb` on an OptiQ row here is the measured figure
+    # rather than the uniform quant's, because a user picking "the better one"
+    # and finding two extra gigabytes downloading is the surprise this column
+    # exists to prevent.
     # Their configs also carry keys mlx-lm ignores (`mtp_file`, `optiq_vision`,
     # `mlx_lm_extra_tensors`); nothing here reads them, and the `group_size`
     # and `bits` that `runners/formats.py` keys on are present at the top level
@@ -238,8 +259,10 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # mlx-lm resolves a checkpoint by importing `mlx_lm.models.<model_type>`,
     # and 0.31.3 ships `gemma4.py` and `gemma4_text.py` and no
     # `gemma4_unified.py` — so the load ends in "Model type gemma4_unified not
-    # supported." The `e4b`/`e2b` siblings below are `gemma4` and do load.
-    # Recheck when mlx-lm is next bumped.
+    # supported." The `e4b`/`e2b` siblings ARE `gemma4` and do load — they
+    # are addable the moment a Gemma row earns one of the five slots, and
+    # today all five go elsewhere on the size ladder. Recheck when mlx-lm
+    # is next bumped.
     #
     # Ordered SMALLEST FIRST, like every list in this file, which means the
     # 0.7GB LFM2.5 1.2B leads and is what a no-model chat call loads — see the
@@ -289,59 +312,18 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
         },
-        # The only MIXTURE-OF-EXPERTS row in this file, and it is here because
-        # the router changes what a size means: 8B of weights resident, ~1B of
-        # them multiplied per token, so it answers at roughly the speed of the
-        # 1.2B at the head of this list while knowing what an 8B knows. That
-        # is a different axis from every other row, which is why it earns a
-        # line 0.35GB from the Gemma below rather than duplicating it.
-        #
-        # **Nothing special is needed to load it, and that is worth stating
-        # because it is easy to assume otherwise.** MoE experts are ordinary
-        # tensors in the checkpoint; what is conditional is the COMPUTE, which
-        # the router does inside the model. There is no "load only the active
-        # experts" mode to miss — the whole 4.9GB is fetched and resident, and
-        # the win is arithmetic per token, not bytes.
-        #
-        # `LiquidAI/`, not `mlx-community/`: the publisher's own conversion is
-        # the only one (checked 2026-08-21), which is the same reason the
-        # prism-ml Bonsai row below is not an `mlx-community` id either.
-        # Mechanism-checked like the LFM2.5 row at position 0 and NOT loaded,
-        # for the same reason — `model_type` is `lfm2_moe`, and 0.31.3's wheel
-        # ships `lfm2_moe.py`, read out of it.
-        {
-            "id": "LiquidAI/LFM2.5-8B-A1B-MLX-4bit",
-            "params": "8B (~1B active)",
-            "quantization": "MLX 4-bit",
-            "label": "LFM2.5 8B-A1B (MLX 4-bit)",
-            "nickname": "Liquid 2.5",
-            "size_gb": 4.9,
-            "note": "8B of knowledge answering at about a 1B's speed — a "
-                    "mixture of experts, so only a fraction of it runs per "
-                    "token.",
-        },
-        {
-            "id": "mlx-community/gemma-4-e4b-it-4bit",
-            "params": "4B effective",
-            "quantization": "MLX 4-bit",
-            "label": "Gemma 4 E4B (4-bit)",
-            "nickname": "Gemma 4",
-            "size_gb": 5.2,
-            "note": "A second family at much the same size as the Qwen 4B, "
-                    "worth trying on a prompt Qwen handles badly.",
-        },
         # Bonsai 27B (prism-ml). The family ships eight repos and most of them
         # cannot run here: the GGUF builds are llama.cpp's format, and the AWQ
         # builds are both AWQ and image-text-to-text. The MLX ones are what is
         # left, and only the 2-bit is listed — the 1-bit sibling is omitted
         # deliberately rather than forgotten (see the note below).
         #
-        # KEPT through the 2026-08 refresh, and re-argued rather than assumed:
-        # it still loads (`model_type` is `qwen3_5`, which mlx-lm ships), and it
-        # is still the only way to have a 27B-class model inside this list's
-        # size budget — the other 27B here is 20GB. Its note names the Qwen 9B
-        # by name: under smallest-first the 9B now sits AFTER it, so the old
-        # "the 9B above" wording was the reordering's first casualty.
+        # Re-argued rather than assumed, every time this list is refreshed: it
+        # loads (`model_type` is `qwen3_5`, which mlx-lm ships), and it is the
+        # only way to have a 27B-class model inside this list's size budget —
+        # the other 27B here is 20GB, which is a 32GB machine. Two 27B rows
+        # 3.3x apart in download are not the same pick twice: they answer for
+        # two different machines, which is what earns this one a slot.
         {
             "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
             "params": "27B",
@@ -355,37 +337,29 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # a suggestion that overstates by 2.4GB is the one figure someone
             # plans a download around.
             "size_gb": 6.1,
-            "note": "27B for less disk than the Qwen 9B costs. Ternary "
-                    "quantization is new, so measure it against a 4-bit model "
-                    "you already trust.",
+            "note": "27B-class answers for under a third of the Qwen3.6 27B's "
+                    "download. Ternary quantization is new, so measure it "
+                    "against a 4-bit model you already trust.",
         },
+        # The 9B slot, and the list is worse without it: 4B and 27B leave a
+        # 2.25x parameter gap over the range most 16-32GB machines actually
+        # sit in, and "download the 4B or the 20GB one" is not a choice a
+        # 24GB Mac has an answer to. It costs the Gemma E4B row, which was
+        # the same parameter class as the recommended 4B at 1.3x its download
+        # — two picks answering one question, where these two answer two.
+        # The cost is real and named rather than glossed: this list no longer
+        # carries a Google family row.
         {
             "id": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
             "params": "9B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.5 9B (OptiQ 4-bit)",
             "nickname": "Qwen 3.5",
+            # The 8.22GB the OptiQ-premium paragraph above measures, rounded
+            # the way every other row here is.
             "size_gb": 8.2,
             "note": "Better answers than the Qwen 4B for twice the download — "
                     "tight on 16GB, so close other heavy apps first.",
-        },
-        # Qwen3.8 27B. The family ships two sizes and only this one is on the
-        # table: the other is 2.4T-A95B, which no laptop runs. Sits between the
-        # Qwen 9B and the Qwen3.6 27B on size, not at the bottom — smallest-first
-        # is about size_gb alone, not how confident the entry is.
-        {
-            "id": "mlx-community/Qwen3.8-27B-4bit",
-            "params": "27B",
-            "quantization": "MLX 4-bit",
-            "label": "Qwen3.8 27B (MLX 4-bit)",
-            "nickname": "Qwen 3.8",
-            # Measured from the repo's blob sizes, not estimated.
-            "size_gb": 16.1,
-            "note": "Newest Qwen, bigger than the 9B above — wants 32GB+, so it "
-                    "will not fit a 16GB machine. Its checkpoint is "
-                    "Qwen3_5ForConditionalGeneration, the same class mlx-lm "
-                    "already loads for the Qwen3.5 entries here, but that has "
-                    "not been confirmed on this specific repo.",
         },
         # LAST, and the only entry here that is not a 16GB-machine model. It
         # lands at the bottom on size alone now, which happens to agree with
@@ -803,6 +777,42 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "One repo instead of the Diffusers split, and quicker per "
                     "image — but it reserves far more memory while running.",
             # The same distilled model; the same D310 4-step benchmark.
+            "defaults": {"steps": 4},
+        },
+        # The 9B klein, and the reason this list has a second row at all: an
+        # engine whose whole shortlist is one model gives a reader nothing to
+        # do when its first image is not good enough, and klein publishes
+        # exactly one bigger sibling. Same architecture, same 4-bit MLX
+        # conversion by the same publisher, twice the transformer.
+        #
+        # **Loadable by the mechanism, not by a load**, the same standing the
+        # `mlx-text` LFM2.5 rows have and for the same reason — MLX does not
+        # install off Apple Silicon. What was checked, out of the published
+        # mflux 0.19.0 wheel rather than assumed: `ModelConfig.flux2_klein_9b`
+        # is in its `AVAILABLE_MODELS` (aliases `flux2-klein-9b`/`klein-9b`,
+        # `black-forest-labs/FLUX.2-klein-9B`, with its own transformer and
+        # text-encoder overrides), `Flux2Klein` takes the config as an
+        # argument and only DEFAULTS to the 4B one, and the snapshot carries
+        # the `transformer/`, `text_encoder/` and `vae/` subfolders
+        # `mflux_image/worker.py` checks for. Its `vae/` tensor map is the
+        # same 266 names as the 4B row's, which is what makes both rows share
+        # one `AutoencoderKLFlux2` key in `preview.PROJECTIONS`. Somebody on a
+        # Mac should still render one image with it.
+        {
+            "id": "mlx-community/flux2-klein-9b-4bit",
+            "params": "9B",
+            "quantization": "MLX 4-bit",
+            "label": "FLUX.2 klein 9B (MLX 4-bit)",
+            "nickname": "FLUX.2 klein",
+            # 2026-09-08 Hub metadata, the whole snapshot summed the way the
+            # 4B row above is: 9.54e9 bytes. Nothing is skipped here either.
+            "size_gb": 9.5,
+            "note": "The bigger klein — better prompt following and detail "
+                    "than the 4B, for twice the download and twice the memory "
+                    "while it runs.",
+            # Distilled like every klein row here, so it gets klein's 4 steps
+            # rather than the server's generic default. Not benchmarked on
+            # this repo — see the load note above.
             "defaults": {"steps": 4},
         },
     ],

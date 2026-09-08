@@ -625,3 +625,31 @@ def clear_triage(session_id: str) -> bool:
         with open(triage_path, "w", encoding="utf-8") as f:
             json.dump(triage, f, indent=2, ensure_ascii=False)
     return True
+
+
+def forget_triage(session_id: str) -> bool:
+    """Drop one session's WHOLE triage record — note, tags, read mark and all.
+    True when there was one to drop.
+
+    THE DIFFERENCE FROM `clear_triage`, which is the whole reason this is a
+    second function: that one un-files a session and deliberately keeps the
+    rest of the record, because a note or a tag on a live session is somebody
+    else's data and outlives the status the Board put on it. Here the session
+    itself is being erased (`POST /api/tasks/erase`), transcript included —
+    there is no session left for a note to be about, so a surviving record
+    would be a stranded key nothing can ever show again.
+
+    Same file, same lock, same posture as the two writers above."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    triage_path = os.path.join(STATE_DIR, "triage.json")
+    lock_path = triage_path + ".lock"
+    with open(lock_path, "w") as lock:
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        triage = _load_state("triage.json")
+        if session_id not in triage:
+            return False
+        triage.pop(session_id, None)
+        with open(triage_path, "w", encoding="utf-8") as f:
+            json.dump(triage, f, indent=2, ensure_ascii=False)
+    return True

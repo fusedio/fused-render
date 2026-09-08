@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 // Step 4 — the first app. The Home composer as-is (it names, scaffolds, starts
 // the Claude run and navigates), or one of the showcase's local-AI apps.
 // Either path is the wizard's "complete": this is the only step whose action
@@ -11,11 +12,12 @@
 // The showcase clone is fire-and-forget at startup and may not have landed
 // yet — the same catalog→refresh dance Apps.tsx does forces it, with a
 // skeleton row meanwhile.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle } from "lucide-react";
 
 import { HeroComposer } from "@apps/builder/HomeHero";
 import { getApps, type AppInfo, type ClaudeHealth } from "@platform/lib/api";
+import { hrefFor } from "@platform/lib/appEntry";
 import { runCommunity } from "@platform/lib/community";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
@@ -28,8 +30,14 @@ function isLocalAi(app: AppInfo): boolean {
   return app.tag === "showcase" && app.name.startsWith("local-");
 }
 
-function useLocalAiShowcase(): AppInfo[] | null {
+function useLocalAiShowcase(): { apps: AppInfo[] | null; error: string | null } {
   const [apps, setApps] = useState<AppInfo[] | null>(null);
+  // Why the clone produced nothing, when it produced nothing. An empty row
+  // used to read "still downloading" unconditionally — on a machine with no
+  // git that sentence is a lie that never resolves, and this step is the
+  // first place a new user meets the showcase. The backend composes the
+  // whole sentence (community.py `_require_git`), so it lands verbatim.
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     const fetchGrid = () =>
@@ -47,26 +55,48 @@ function useLocalAiShowcase(): AppInfo[] | null {
       if (!alive || local.status !== "no-cache") return;
       await runCommunity<ShowcaseCatalog>({ action: "refresh" });
       if (alive) fetchGrid();
-    })().catch(() => undefined);
+    })().catch((e: Error) => {
+      if (alive) setError(e.message);
+    });
     return () => {
       alive = false;
     };
   }, []);
-  return apps;
+  return { apps, error };
 }
 
 export function FirstAppStep({
   health,
   eyebrow,
   onComplete,
+  onShowcaseOpened,
 }: {
   health: ClaudeHealth | null;
-  eyebrow: string;
+  eyebrow: ReactNode;
   /** The composer created a folder — real progress, flag it. Showcase cards
-      need no hook: the navigation they perform is what the wizard reads. */
+      need no click hook: the navigation they perform is what the wizard reads. */
   onComplete: () => void;
+  /** A showcase card was OPENED: the step unmounted onto one of their pages.
+      Checked against the cards' own hrefs, not "any unmount from here" —
+      browser Back leaves the wizard from this step too, and built nothing. */
+  onShowcaseOpened: () => void;
 }) {
-  const showcase = useLocalAiShowcase();
+  const { apps: showcase, error: showcaseError } = useLocalAiShowcase();
+  const showcaseRef = useRef(showcase);
+  showcaseRef.current = showcase;
+  const openedRef = useRef(onShowcaseOpened);
+  openedRef.current = onShowcaseOpened;
+  useEffect(
+    () => () => {
+      const here = location.pathname + location.search;
+      const landed = (showcaseRef.current ?? []).find((app) => {
+        const u = new URL(hrefFor(app), location.origin);
+        return u.pathname + u.search === here;
+      });
+      if (landed) openedRef.current();
+    },
+    [],
+  );
   const claudeReady = health ? health.found && !health.broken && health.signed_in !== false : true;
 
   return (
@@ -88,7 +118,7 @@ export function FirstAppStep({
       )}
 
       <div className="onboarding-composer">
-        <HeroComposer onCreated={onComplete} />
+        <HeroComposer onCreated={onComplete} autoFocus />
       </div>
 
       <section className="flex flex-col gap-3">
@@ -98,7 +128,15 @@ export function FirstAppStep({
             Runs AI on this machine — the first open downloads the model.
           </span>
         </div>
-        {showcase === null ? (
+        {/* The failure outranks both the skeleton and the wait copy: once the
+            clone has refused there is nothing left to wait for, and the
+            message says what to do about it. */}
+        {showcaseError && (!showcase || showcase.length === 0) ? (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <span>{showcaseError}</span>
+          </div>
+        ) : showcase === null ? (
           <div className="grid gap-4 sm:grid-cols-2">
             {[0, 1, 2, 3].map((i) => (
               <Skeleton key={i} className="aspect-[16/10] w-full rounded-xl" />

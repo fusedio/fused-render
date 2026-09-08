@@ -82,6 +82,20 @@ _RELAUNCH_FORMS = frozenset(
     {"fused-render://relaunch", "fused-render://relaunch/", "fused-render:relaunch"}
 )
 
+# The relaunch action's one payload (D110: payloads are query params on the
+# same action): `reason=fda`. A Full Disk Access grant applies to the NEXT
+# process — macOS caches the running one's verdict — so the shell's "Relaunch
+# to apply" button (FdaStrip / FdaStep) needs a relaunch that respawns the SAME
+# version, which the bare relaunch refuses to do (it only acts when the disk
+# version differs). Exact forms, not a parser: the payload has one legal value.
+_RELAUNCH_FDA_FORMS = frozenset(
+    {
+        "fused-render://relaunch?reason=fda",
+        "fused-render://relaunch/?reason=fda",
+        "fused-render:relaunch?reason=fda",
+    }
+)
+
 _CLONE_PAGE = os.path.join(os.path.dirname(__file__), "static", "clone.html")
 
 # Conservative GitHub owner/repo shapes; blocks anything that could smuggle
@@ -121,6 +135,12 @@ def is_relaunch_url(src: str) -> bool:
     """True for a `fused-render://relaunch` deep link: quit-and-respawn so the
     version installed on disk takes over. Same strictness as is_launch_url."""
     return (src or "").strip().lower() in _RELAUNCH_FORMS
+
+
+def is_fda_relaunch_url(src: str) -> bool:
+    """True for `fused-render://relaunch?reason=fda`: quit-and-respawn the SAME
+    bundle so a freshly granted Full Disk Access takes effect."""
+    return (src or "").strip().lower() in _RELAUNCH_FDA_FORMS
 
 
 def github_url_from(src: str) -> str:

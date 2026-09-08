@@ -1,103 +1,97 @@
 // Sidebar self-update affordance. Renders nothing until /api/config's
 // `update` field says a newer version exists (packaged mac app only — the
 // field is absent everywhere else), then shows an "Update available" row that
-// expands into a small panel. DMG installs get an install button with download
-// progress; brew-managed installs get the exact `brew upgrade` command to run
-// by hand — the app never runs brew itself.
+// expands into a small panel — an accordion: the row wears a chevron, and row
+// and panel share one border so the open state reads as a single group.
 //
-// Owns its own slow poll (60s idle, 2s while installing) instead of riding
-// ServerStatusBanner's 5s one: the two components live in different trees and
-// update state changes rarely. Once the install lands, installed_version
-// drifts from the running version and ServerStatusBanner's restart card takes
-// over — so the row drops to a plain "Ready to restart" status line with
-// nothing to expand, and the restart card carries the button and the wording.
-import { useEffect, useRef, useState } from "react";
+// ONE install path for every install type (D767), so this panel has exactly
+// one button and never mentions Homebrew: the in-app install downloads and
+// swaps the same version-verified bundle whichever tool put it there, and the
+// app never runs brew on itself (the cask's `uninstall quit:` would quit the
+// app mid-upgrade — see fused_render/update/mac.py). Once the button is
+// pressed the panel only points at the Activity dock — the bytes, the phase
+// and the Cancel are on the dock's `sys:update:<version>` row, never here
+// (one word: Downloading… / Installing…).
+//
+// The poll itself lives in platform/lib/update-status.ts, shared with the
+// collapsed rail's dot and the Settings popover's own row — see that file's
+// header for why. Once the install lands, installed_version drifts from the
+// running version and ServerStatusBanner's restart card takes over — so the
+// row drops to a plain "Ready to restart" status line with nothing to expand
+// (no chevron either), and the restart card carries the wording.
+import { useId, useState } from "react";
 
-import { getConfig, updateInstall, type UpdateStatus } from "@platform/lib/api";
+import { updateInstall } from "@platform/lib/api";
+import {
+  pokeUpdateStatus,
+  setUpdateStatus,
+  updateLabel,
+  updateRelevant,
+  useUpdateStatus,
+} from "@platform/lib/update-status";
 
-const POLL_IDLE_MS = 60_000;
-const POLL_BUSY_MS = 2_000;
+// The install's progress lives in the Activity dock now — a server-owned
+// `sys:update:<version>` job (`fused_render/update/mac.py`'s `JOB_PREFIX`)
+// with the bytes, the phase and the Cancel on it. This panel says where to
+// look and stops there: a second counter here would be the same download
+// counted twice, in two places, by two different pollers — and only one of
+// them can offer the ✕.
 
-function formatProgress(done: number | null, total: number | null): string {
-  if (total) return `${Math.min(100, Math.round((100 * (done ?? 0)) / total))}%`;
-  if (!done) return "";
-  return `${Math.round(done / (1024 * 1024))} MB`;
-}
+// The accordion's disclosure mark: the row is a toggle, and a chevron is what
+// says so before it is clicked. One glyph, not two states of markup — CSS
+// rotates it 180° off the row's own `aria-expanded`, so the open state has a
+// single source of truth and the screen-reader answer and the visual one
+// cannot drift apart.
+const CHEVRON = (
+  <span className="update-badge-chev" aria-hidden="true">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  </span>
+);
 
 export default function UpdateBadge() {
-  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const status = useUpdateStatus();
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<number | undefined>(undefined);
-  const pollRef = useRef<() => void>(() => {});
+  // The row is the disclosure control; the panel is what it discloses, so the
+  // pair is wired together by id — `aria-expanded` alone says a thing opened
+  // without saying which.
+  const panelId = useId();
 
-  useEffect(() => {
-    let disposed = false;
-
-    async function poll() {
-      let next: UpdateStatus | null | undefined;
-      try {
-        const config = await getConfig();
-        next = config.update ?? null;
-        if (!disposed) setStatus(next);
-      } catch {
-        // Server down — ServerStatusBanner owns that story; keep last state.
-      }
-      if (disposed) return;
-      const busy = next?.state === "installing";
-      timerRef.current = window.setTimeout(poll, busy ? POLL_BUSY_MS : POLL_IDLE_MS);
-    }
-
-    pollRef.current = () => {
-      window.clearTimeout(timerRef.current);
-      poll();
-    };
-    poll();
-    return () => {
-      disposed = true;
-      window.clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  if (!status) return null;
-  const relevant = ["available", "installing", "installed", "error"].includes(status.state);
-  if (!relevant) return null;
+  if (!status || !updateRelevant(status)) return null;
 
   const install = async () => {
     setOpen(true);
     try {
-      setStatus(await updateInstall());
+      setUpdateStatus(await updateInstall());
     } catch {
       // Fall through — the re-armed poll picks up the real state.
     }
-    // Re-arm the poll now so installing-progress shows within POLL_BUSY_MS
-    // instead of waiting out the idle interval.
-    pollRef.current();
+    pokeUpdateStatus();
   };
 
-  const copyCommand = async () => {
-    if (!status.manual_command) return;
-    await navigator.clipboard.writeText(status.manual_command);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 2000);
-  };
-
-  const label =
-    status.state === "installing"
-      ? "Updating…"
-      : status.state === "installed"
-        ? "Ready to restart"
-        : `Update available${status.latest_version ? ` — v${status.latest_version}` : ""}`;
+  const label = updateLabel(status);
   const dot = <span className="update-badge-dot" aria-hidden="true" />;
 
-  // The installed state has no panel of its own — ServerStatusBanner's restart
-  // card says the rest — so the row is a status line, not a dead toggle.
+  // The installed state: a status line AND the way out, right here (Akshil,
+  // 2026-09-08: "have the action button there as well so we can restart it
+  // directly above the settings item"). Nothing to expand — the button is
+  // always drawn, so the row carries no chevron — and the same
+  // `fused-render://relaunch` link the ServerStatusBanner's restart card uses,
+  // so both surfaces restart the same way: the OS hands the link to the
+  // running app, which quits through its normal teardown and respawns from the
+  // bundle now on disk.
   if (status.state === "installed") {
     return (
       <div className="update-badge">
         <div className="update-badge-row update-badge-row-static">
           {dot}
           {label}
+        </div>
+        <div className="update-badge-panel">
+          <a className="update-badge-action" href="fused-render://relaunch">
+            Restart fused-render
+          </a>
         </div>
       </div>
     );
@@ -110,31 +104,18 @@ export default function UpdateBadge() {
         className="update-badge-row"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        aria-controls={panelId}
       >
         {dot}
         {label}
+        {CHEVRON}
       </button>
       {open && (
-        <div className="update-badge-panel">
-          {status.state === "available" && status.method === "brew" && (
+        <div className="update-badge-panel" id={panelId}>
+          {status.state === "available" && (
             <>
               <div className="update-badge-text">
-                Installed with Homebrew — run this in your terminal:
-              </div>
-              {status.manual_command && (
-                <div className="update-badge-command">
-                  <code>{status.manual_command}</code>
-                  <button type="button" className="update-badge-copy" onClick={copyCommand}>
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-          {status.state === "available" && status.method !== "brew" && (
-            <>
-              <div className="update-badge-text">
-                Downloads the new version and installs it in place.
+                Downloads and installs the new version.
               </div>
               <button type="button" className="update-badge-action" onClick={install}>
                 Update to v{status.latest_version}
@@ -142,25 +123,17 @@ export default function UpdateBadge() {
             </>
           )}
           {status.state === "installing" && (
+            // One word for where the install is (Akshil, 2026-09-08: "just words
+            // that give status quickly"); the numbers stay on the Activity row.
             <div className="update-badge-text">
-              Downloading… {formatProgress(status.progress, status.progress_total)}
+              {status.phase === "installing" ? "Installing…" : "Downloading…"}
             </div>
           )}
           {status.state === "error" && (
             <>
               <div className="update-badge-text update-badge-error">
-                {status.manual_command
-                  ? "Automatic update failed. Run this in your terminal:"
-                  : `Update failed: ${status.error ?? "unknown error"}`}
+                Update failed: {status.error ?? "unknown error"}
               </div>
-              {status.manual_command && (
-                <div className="update-badge-command">
-                  <code>{status.manual_command}</code>
-                  <button type="button" className="update-badge-copy" onClick={copyCommand}>
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                </div>
-              )}
               <button type="button" className="update-badge-action" onClick={install}>
                 Try again
               </button>

@@ -44,6 +44,35 @@ def agent():
     return _load_agent()
 
 
+class _HostProc:
+    """Stands in for the session_host.py process `_start` now Popens instead
+    of the CLI itself: the CLI's argv is built by `_claude_argv` inside THAT
+    process, from the JSON request written to this stub's stdin — so a test
+    that wants the argv has to capture the request and rebuild it, the same
+    call session_host.py's own `main()` makes."""
+    pid = 4242
+
+    class _Stdin:
+        def __init__(self, seen):
+            self._seen = seen
+            self._buf = b""
+
+        def write(self, data):
+            self._buf += data
+
+        def close(self):
+            self._seen["req"] = json.loads(self._buf.decode("utf-8"))
+
+    def __init__(self, seen):
+        self.stdin = _HostProc._Stdin(seen)
+
+
+def _argv_from_req(agent, req, run_dir):
+    return agent._claude_argv(
+        run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+
+
 def _export_with_stub(monkeypatch, tmp_path, external=True):
     # Own home per test: the wrapper path derives from home_dir(), and a
     # shared one is a write-write race under xdist.
@@ -193,34 +222,28 @@ def test_wrapper_default_matches_the_canvases_default(monkeypatch):
 
 
 def _spawn(agent, monkeypatch, target, tmp_path):
+    """Run `_start` and return the argv `_claude_argv` builds from the
+    request it hands the session host."""
     seen = {}
-
-    class _Proc:
-        pid = 4242
-
     agent.RUNS = str(tmp_path / "runs")
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
-    monkeypatch.setattr(agent.subprocess, "Popen",
-                        lambda cmd, **kw: (seen.__setitem__("cmd", cmd),
-                                           _Proc())[1])
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
     out = agent._start(str(target), "hi", "", "", "")
     assert "error" not in out, out
-    return seen["cmd"]
+    return _argv_from_req(agent, seen["req"], os.path.join(agent.RUNS, out["run_id"]))
 
 
 def _spawn_kw(agent, monkeypatch, target, tmp_path):
-    """Like `_spawn`, but returns the Popen kwargs instead of the argv —
-    for asserting on the child env rather than the CLI flags."""
+    """Like `_spawn`, but returns the Popen kwargs `_start` itself passes to
+    the session host — for asserting on the child env, which the host
+    inherits as-is and passes straight on to the CLI in turn."""
     seen = {}
-
-    class _Proc:
-        pid = 4242
 
     agent.RUNS = str(tmp_path / "runs")
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent.subprocess, "Popen",
                         lambda cmd, **kw: (seen.__setitem__("kw", kw),
-                                           _Proc())[1])
+                                           _HostProc({}))[1])
     out = agent._start(str(target), "hi", "", "", "")
     assert "error" not in out, out
     return seen["kw"]

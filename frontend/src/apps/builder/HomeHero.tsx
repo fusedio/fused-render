@@ -247,7 +247,14 @@ function ComposerPick<T extends string>({
 // + button (shell/CurrentAppsSection.tsx, D489), which opens THIS composer in a
 // modal: same naming, same scaffold, same landing in the new app's chat. One
 // create path, three doors.
-export function HeroComposer({ onCreated }: { onCreated: () => void }) {
+export function HeroComposer({
+  onCreated,
+  autoFocus = false,
+}: {
+  onCreated: () => void;
+  /** Focus the prompt on mount (onboarding: the focus ring IS the step's cue). */
+  autoFocus?: boolean;
+}) {
   const [prompt, setPrompt] = useState("");
   // The chip above the box — set by the Playground's "Build an app with this
   // AI" button (?annot=). null means no model is annotated; the composer
@@ -304,6 +311,10 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
+
+  useEffect(() => {
+    if (autoFocus) requestAnimationFrame(() => inputRef.current?.focus());
+  }, [autoFocus]);
 
   const busy = phase !== "idle";
   const canSubmit = prompt.trim().length > 0 && !busy;

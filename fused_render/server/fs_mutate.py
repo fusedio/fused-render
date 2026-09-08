@@ -1,5 +1,6 @@
 import ctypes
 import datetime
+import logging
 import errno
 import json
 import os
@@ -27,6 +28,8 @@ from fused_render.server.gitignore import _is_repo_root
 from fused_render.server.index_touch import note_index_mutation
 from fused_render.server.mount import _invalidate_stat_cache, _is_under_snapshot_root, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
 from fused_render.server.walk import _mount_list_error_response
+
+logger = logging.getLogger(__name__)
 
 
 # An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
@@ -1196,7 +1199,12 @@ def _fs_trash_move(body: dict, x_fused: str | None):
     info_out = _xdg_trash_entry_info(src)   # leaving the trash → drop its sidecar
     info_in = _xdg_trash_entry_info(dst)    # entering the trash → write one
 
-    result = _fs_rename({"src": src, "dst": dst, "overwrite": False}, x_fused)
+    # `settle=False`: a trip into or out of the bin is not a move the chats
+    # follow (Bugbot, PR #1048) — rehoming them under a trash path would leave
+    # them pointing at nothing after an OS-level restore. The sessions stay
+    # keyed to the folder's real path and are there again when it comes back.
+    result = _fs_rename({"src": src, "dst": dst, "overwrite": False}, x_fused,
+                        settle=False)
     # Any refusal comes back verbatim and the sidecars are left exactly as they
     # were: nothing moved, so nothing about the bin's bookkeeping has changed.
     if isinstance(result, JSONResponse):
@@ -1242,7 +1250,7 @@ def _fs_trash_move(body: dict, x_fused: str | None):
     return result
 
 
-def _fs_rename(body: dict, x_fused: str | None):
+def _fs_rename(body: dict, x_fused: str | None, *, settle: bool = True):
     # Move/rename src -> dst. dst must be absolute and its parent writable
     # (same "outside"/readonly guards as elsewhere). An existing dst is a 409
     # unless overwrite=true; a missing src is a 404. shutil.move handles the
@@ -1345,6 +1353,33 @@ def _fs_rename(body: dict, x_fused: str | None):
         shutil.move(src, dst)
     except OSError as e:
         return _error(f"cannot rename {src} -> {dst}: {e}")
+    # A FOLDER moved: carry its Claude chats and app state along NOW (Akshil,
+    # 2026-09-07 — "rename a folder, go into it, recent chats don't show up;
+    # reload and they do"). The settle used to ride the next /render of the
+    # app's entry page (app_fused_dir.ensure via record_app_open), a request
+    # unordered against the chat pane's one read of the session list — and one
+    # that never fires while the companion pane is what opened the folder
+    # (`_noopen`). Same two doors /api/current-apps/rename uses: the witness
+    # (`.fused/meta.json` naming the old path) settles through `ensure`'s full
+    # machinery; a folder with no witness settles best-effort by hand.
+    if settle and os.path.isdir(dst) and not os.path.islink(dst):
+        try:
+            from fused_render import (app_fused_dir, app_state_move,
+                                      claude_session_move)
+
+            s0, d0 = os.path.abspath(src), os.path.abspath(dst)
+            recorded = app_fused_dir.recorded_app_dir(d0)
+            if recorded and (os.path.normcase(os.path.abspath(recorded))
+                             == os.path.normcase(s0)):
+                app_fused_dir.ensure(d0)
+            else:
+                app_state_move.rewrite_stores(s0, d0)
+                claude_session_move.relocate(s0, d0)
+        except Exception:
+            # The rename itself is done and must answer OK; the chats not
+            # following is worth a line in the log, not a failed move.
+            logger.warning("rename %s -> %s: chat/app-state settle failed",
+                           src, dst, exc_info=True)
     # A WHOLE app folder moved: record both sides in the shared repo, or the
     # old name's deletion sits uncommitted forever (see _record_app_removal).
     # The dst-only case is the RESTORE path — undo-from-trash comes back as a
