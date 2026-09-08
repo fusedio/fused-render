@@ -114,6 +114,7 @@ export {
   capturePaneBitmap,
   captureOverview,
   flash,
+  frameIsCrossOrigin,
   type CaptureOptions,
   type CaptureStrategies,
 } from "./capture";

@@ -1199,6 +1199,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
   };
 
+  /**
+   * A SEND THAT NEVER HAPPENED owes the composer back what it was carrying.
+   *
+   * `ClaudeChat.beginSend` empties the tray and parks the pictures under the
+   * very `Receipt[]` it hands down here BEFORE this function runs, so every road
+   * out of a send has to say whether it went — including the two that refuse
+   * before anything is attempted (already sending; disposed). Returning silently
+   * from those left the tray empty and the map holding the only handle to the
+   * user's pictures, which is the picture disappearing (Bugbot, PR #1064).
+   */
+  const returnSend = (text: string, opts: SendOptions): void => {
+    deps.onSendReturned?.({
+      text,
+      ...(opts.attachments ? { attachments: opts.attachments } : {}),
+    });
+  };
+
   async function sendMessage(text: string, opts: SendOptions = {}): Promise<void> {
     // DISPOSED IS A CLOSED DOOR, not a race to lose. `dispose()` is the
     // unmount, and every entry point below it emits into a store nobody reads
@@ -1206,8 +1223,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // SPAWN a run. Callers hold the controller across awaits by construction
     // (ClaudeChat's boot walks it), so refusing here is the one place that can
     // be sure (Bugbot, PR #1061).
-    if (disposed) return;
-    if (sending) return;
+    if (disposed) {
+      returnSend(text, opts);
+      return;
+    }
+    // ONE TURN AT A TIME, and the refused one is refused OUT LOUD: its pictures
+    // are already out of the tray by now.
+    if (sending) {
+      returnSend(text, opts);
+      return;
+    }
     sending = true;
     const seat = ++sendSeq;
     // Sampled BEFORE anything is awaited: a Back landing mid-start outdates this
@@ -1217,6 +1242,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const blocks = opts.blocks || [];
     if (!text && !blocks.length) {
       sending = false;
+      returnSend(text, opts);
       return;
     }
     clearTrouble();
@@ -1331,7 +1357,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         dropTurn(bubble.key);
         // ... and the attachments go back to the tray with the words, because
         // the agent never saw either (T:16693-16720).
-        deps.onSendReturned?.({ text, ...(opts.attachments ? { attachments: opts.attachments } : {}) });
+        returnSend(text, opts);
       }
       reportTrouble(troubleFromError(err));
     } finally {
@@ -1342,10 +1368,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- follow-ups (T:16024-16185) ----------------------------------------
 
   async function sendFollowUp(text: string, opts: SendOptions = {}): Promise<void> {
-    if (disposed) return;
+    if (disposed) {
+      returnSend(text, opts);
+      return;
+    }
     const gen = logGen;
     const blocks = opts.blocks || [];
-    if (!text && !blocks.length) return;
+    if (!text && !blocks.length) {
+      returnSend(text, opts);
+      return;
+    }
     // Every send carries the app state, a follow-up included: T calls
     // `appStatePush()` from `sendFollowUp` too (T:16101), and a message typed
     // three tool calls into a turn is describing a pane that has moved since
@@ -1384,7 +1416,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // The same road sendMessage takes for a run that never launched: the
       // usual way a follow-up fails is the session having already ended, and
       // the pictures the user attached deliberately are owed back (T:16080-16093).
-      deps.onSendReturned?.({ text, ...(opts.attachments ? { attachments: opts.attachments } : {}) });
+      returnSend(text, opts);
     };
 
     // `activeRun` is set synchronously the moment pollLoop is entered, but

@@ -28,7 +28,9 @@ afterAll(() => {
   });
 });
 
-const { capturePane, capturePaneBitmap, captureOverview } = await import("./capture");
+const { capturePane, capturePaneBitmap, captureOverview, frameIsCrossOrigin } = await import(
+  "./capture"
+);
 const { resetWebpLatchForTests, setCanvasFactory } = await import("./encode");
 const { APP_STATE_UNREADABLE } = await import("../pane/paneUrl");
 type PaneBitmap = import("./types").PaneBitmap;
@@ -124,6 +126,44 @@ describe("capturePaneBitmap order (T:9958)", () => {
     });
     expect(asked).toEqual(["native", "tab"]);
     expect(out.via).toBe("tab");
+  });
+
+  test("A CROSS-ORIGIN FRAME REACHES THE TAB STRATEGY, detected off the frame itself", async () => {
+    // The whole point of `frameIsCrossOrigin`: the camera reads it at gesture
+    // time and hands it down, and without it `xo` was never true — so a pane
+    // this page cannot open fell through to a DOM clone of a document it cannot
+    // read, which is no picture at all (Bugbot, PR #1064).
+    const xoFrame = {
+      isConnected: true,
+      get contentDocument(): Document {
+        throw new Error("cross-origin");
+      },
+    } as unknown as HTMLIFrameElement;
+    expect(frameIsCrossOrigin(xoFrame)).toBe(true);
+    const asked: string[] = [];
+    const out = await capturePaneBitmap(xoFrame, Date.now() + 1000, {
+      xo: frameIsCrossOrigin(xoFrame),
+      strategies: {
+        native: () => (asked.push("native"), Promise.resolve(null)),
+        tab: () => (asked.push("tab"), Promise.resolve(bitmap())),
+        dom: () => (asked.push("dom"), Promise.resolve(bitmap())),
+      },
+    });
+    expect(asked).toEqual(["native", "tab"]);
+    expect(out.via).toBe("tab");
+  });
+
+  test("frameIsCrossOrigin: a reachable document is ours, no frame is nothing at all", () => {
+    // T's `annXO` exactly (T:6123-6129, 6567): a frame is there AND its document
+    // is out of reach. No frame is not a cross-origin pane — there is no pane.
+    expect(frameIsCrossOrigin(null)).toBe(false);
+    expect(
+      frameIsCrossOrigin({ contentDocument: {} as Document } as HTMLIFrameElement),
+    ).toBe(false);
+    // A frame mid-navigation reads the same as a cross-origin one for a beat and
+    // resolves on the next gesture: the cost of being wrong this way is one tab
+    // prompt, the cost of the other way is a capture that can only fail.
+    expect(frameIsCrossOrigin({ contentDocument: null } as HTMLIFrameElement)).toBe(true);
   });
 
   test("a readable one takes the DOM clone, and never the tab share", async () => {

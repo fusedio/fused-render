@@ -58,13 +58,13 @@ function fakeApi(over: Partial<AttachApi> = {}): { api: AttachApi; spy: Spy } {
   return { api, spy };
 }
 
-function mountTray(api: AttachApi) {
+function mountTray(api: AttachApi, frame: HTMLIFrameElement | null = null) {
   let hook: Attachments | undefined;
   function Host() {
     hook = useAttachments({
       api,
       agentDir: "/t/claude",
-      frame: () => null,
+      frame: () => frame,
       flashHost: () => null,
       paneNoun: "preview",
       shotsDir: "/shots",
@@ -410,4 +410,64 @@ test("the tray's own record is what a send and an unmount read — not the last 
     tray.unmount();
   });
   expect(spy.revoked).toEqual([back]);
+});
+
+test("THE CAMERA TELLS THE PIPELINE WHETHER THE PANE IS OURS TO READ (Bugbot #1064)", async () => {
+  // `xo` is the only thing that admits the tab share (T:9963), and the camera is
+  // the only caller that knows which frame is being photographed. Asked for with
+  // no options at all — as it was — a cross-origin pane the native path could
+  // not shoot fell through to a DOM clone of a document this page cannot open.
+  const seen: (boolean | undefined)[] = [];
+  const { api } = fakeApi({
+    attachPane: async (_dir, _frame, opts) => {
+      seen.push(opts?.xo);
+      return att({ kind: "pane", seat: "pane", thumb: "blob:pane" });
+    },
+  });
+  const xoFrame = {
+    get contentDocument(): Document {
+      throw new Error("cross-origin");
+    },
+  } as unknown as HTMLIFrameElement;
+  const xo = mountTray(api, xoFrame);
+  await act(async () => {
+    await xo.get().capture();
+  });
+  expect(seen).toEqual([true]);
+
+  // And a pane on our own origin is NOT offered the tab share: it has a document
+  // to clone, and a share prompt for a page we can read is a prompt for nothing.
+  const ours = mountTray(api, { contentDocument: {} as Document } as HTMLIFrameElement);
+  await act(async () => {
+    await ours.get().capture();
+  });
+  expect(seen).toEqual([true, false]);
+});
+
+test("A PLACEHOLDER ALWAYS BECOMES A CHIP, even when the pipeline throws", async () => {
+  // `attachFile` is written never to throw, and the tray must not depend on it:
+  // a rejected iteration used to have the placeholder REMOVED, so the picture the
+  // user dropped vanished with no chip, no error and nothing to retry from
+  // (Bugbot, PR #1064). Every gesture gets an answer, even a refusal.
+  const { api } = fakeApi({
+    attachFiles: async function* (_dir, files) {
+      yield att({ kind: "file", name: files[0]!.name, view: "/shots/one.csv" });
+      throw new Error("disk full");
+    },
+  });
+  const tray = mountTray(api);
+  await act(async () => {
+    await tray.get().addFiles([{ name: "one.csv" } as File, { name: "two.csv" } as File]);
+  });
+  const items = tray.get().items;
+  expect(items.map((s) => s.name)).toEqual(["one.csv", "two.csv"]);
+  // The one that landed is an ordinary attachment; the one that did not says so
+  // ON THE ROW, and rides the message as a refusal exactly as a failed upload
+  // does (T:11305).
+  expect(items[0]!.view).toBe("/shots/one.csv");
+  expect(items[1]!.view).toBeNull();
+  expect(items[1]!.why).toBe("could not be saved");
+  expect(items[1]!.viewNote).toBe("not attached: it could not be saved (disk full)");
+  // And no placeholder is left claiming a file is still on its way.
+  expect(items.every((s) => !s.pending)).toBe(true);
 });

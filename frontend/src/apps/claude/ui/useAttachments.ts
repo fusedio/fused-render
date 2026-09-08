@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { paneShotBlock } from "../protocol/wire";
+import { frameIsCrossOrigin } from "../shots";
 import type { Attachment, Receipt } from "../shots/types";
 import { ATTACH_API, type AttachApi } from "./attachApi";
 
@@ -69,6 +70,10 @@ export interface Attachments {
   take(): OutgoingAttachments;
   /** The send never landed: put them back, prepended. */
   giveBack(items: readonly Attachment[]): void;
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export function useAttachments(opts: UseAttachmentsOptions): Attachments {
@@ -141,7 +146,15 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     // opened (T:11267).
     api.flash(flashHost());
     try {
-      const shot = await api.attachPane(agentDir, frame());
+      // READ AT GESTURE TIME, and handed DOWN: `xo` is the only thing that
+      // admits the tab share, and the camera is the only caller that knows which
+      // frame is being photographed. Asked for with no options at all, a
+      // cross-origin pane the native path could not shoot went to a DOM clone of
+      // a document this page cannot open (Bugbot, PR #1064).
+      const target = frame();
+      const shot = await api.attachPane(agentDir, target, {
+        xo: frameIsCrossOrigin(target),
+      });
       if (!alive.current) {
         // No chip will ever show it, so this is the last handle to its Blob.
         api.revoke(shot);
@@ -182,6 +195,9 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         ),
       ]);
       let i = 0;
+      /** Why the iteration stopped, when it stopped badly: the sentence the
+       *  chips left standing get to say. */
+      let broke: unknown = null;
       try {
         for await (const att of api.attachFiles(agentDir, [...files])) {
           const id = ids[i++];
@@ -194,13 +210,33 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
           }
           commit((prev) => prev.map((s) => (s.id === id ? att : s)));
         }
+      } catch (err) {
+        // `attachFile` is written never to throw, and a pipeline that does
+        // anyway (a rejected generator, an injected fake) must not be the reason
+        // a gesture the user made goes unanswered.
+        broke = err;
       } finally {
-        // Anything the pipeline never answered for (an aborted iteration, a
-        // shorter answer than the question) must not sit in the tray claiming a
-        // file is on its way.
-        const unspent = new Set(ids.slice(i));
-        if (unspent.size && alive.current) {
-          commit((prev) => prev.filter((s) => !unspent.has(s.id)));
+        // ANYTHING THE PIPELINE NEVER ANSWERED FOR BECOMES A REFUSAL CHIP, never
+        // a hole: a placeholder must not sit in the tray claiming a file is
+        // still on its way, and removing it outright — what stood here — is the
+        // dropped picture vanishing with no answer at all (Bugbot, PR #1064).
+        const unspent = ids.slice(i);
+        if (unspent.length && alive.current) {
+          const why = broke ? " (" + errText(broke) + ")" : "";
+          const refused = new Map<string, Attachment>(
+            unspent.map((id, n) => [
+              id,
+              {
+                id,
+                kind: "file",
+                view: null,
+                name: files[i + n]?.name || "attached file",
+                viewNote: "not attached: it could not be saved" + why,
+                why: "could not be saved",
+              },
+            ]),
+          );
+          commit((prev) => prev.map((s) => refused.get(s.id) ?? s));
         }
       }
     },

@@ -51,6 +51,31 @@ export interface CaptureOptions {
   timeoutMs?: number;
 }
 
+/**
+ * IS THE PANE'S DOCUMENT OURS TO READ? T's `annXO`, and the same test verbatim:
+ * a frame is there and its `contentDocument` cannot be reached — either the
+ * getter throws or it answers null (T:6123-6129 `annTargetDoc`, T:6567).
+ *
+ * The ONE thing the tab share is tried for (T:9963). `capture` used to ask
+ * `attachPane` for a picture with no options at all, so `xo` was never true and
+ * a cross-origin pane that the native path could not shoot fell through to a DOM
+ * clone of a document this page cannot open — which is no picture at all
+ * (Bugbot, PR #1064).
+ *
+ * A same-origin frame mid-navigation reads cross-origin for a beat and simply
+ * resolves on the next gesture, exactly as it does in T: the cost of being wrong
+ * that way is one tab-share prompt, where the cost of the opposite is a capture
+ * that can only fail.
+ */
+export function frameIsCrossOrigin(frame: HTMLIFrameElement | null): boolean {
+  if (!frame) return false;
+  try {
+    return !frame.contentDocument;
+  } catch {
+    return true; // cross-origin: the getter itself is refused
+  }
+}
+
 function appWindowOf(frame: HTMLIFrameElement | null): Window | null {
   try {
     if (!frame || !frame.isConnected) return null;

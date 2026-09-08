@@ -258,6 +258,18 @@ function message(err: unknown): string {
 
 // ── pasted and dropped BYTES (T:11530-11628) ────────────────────────────────
 
+/** `shotPixels`, which is a decode and can therefore reject (a codec that gives
+ *  up mid-frame, a browser that refuses the bytes). An undecodable picture is
+ *  not a refusal — it is the road that asks the server for a PNG — so a
+ *  rejection here answers exactly as `null` does. */
+async function pixelsOf(file: File): Promise<Awaited<ReturnType<typeof shotPixels>>> {
+  try {
+    return await shotPixels(file);
+  } catch {
+    return null;
+  }
+}
+
 /** Take one thing the user brought in. Never throws.
  *
  *  AN OVERSIZE PICTURE IS RESIZED, NOT REFUSED (D615): the 4 MiB number was
@@ -275,7 +287,7 @@ export async function attachFile(agentDir: string, file: File): Promise<Attachme
   let pic = kind === "image";
   let undecodable = false;
   if (kind === "image") {
-    const pix = await shotPixels(file);
+    const pix = await pixelsOf(file);
     if (!pix) {
       // Still attached, and still called an image — but the note is NOT written
       // here, because what it should say is not known yet: the server gets asked
@@ -310,6 +322,19 @@ export async function attachFile(agentDir: string, file: File): Promise<Attachme
               ")";
           }
         }
+      } catch {
+        // THE DOWNSCALE IS A TRIGGER, NOT A GATE (T:11518): the 4 MiB number is
+        // about the agent's read of the pixels, never about whether the picture
+        // may be attached at all. `drawImage` on a tainted or zero-dimension
+        // canvas throws, and that throw used to escape this function entirely —
+        // `addFiles` then removed the placeholder without a chip in its place,
+        // so a dropped picture vanished with no answer (Bugbot, PR #1064).
+        //
+        // So the original bytes go up instead, unresized and unannotated: a
+        // picture the agent has to downscale its own read of is worth
+        // immeasurably more than no picture.
+        blob = file;
+        note = "";
       } finally {
         pix.free();
       }

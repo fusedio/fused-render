@@ -95,6 +95,9 @@ function makeController(
   const agent = fakeAgent(handlers);
   const activity: number[] = [];
   const stranded: string[][] = [];
+  /** Every send that reported itself NOT SENT — the road the composer takes its
+   *  words and its pictures back on. */
+  const returned: { text: string; attachments?: unknown[] }[] = [];
   const controller = createChatController({
     ...over,
     file: "/proj/app.py",
@@ -108,8 +111,9 @@ function makeController(
     hasPane: () => true,
     onActivity: () => activity.push(1),
     onStranded: (t) => stranded.push(t),
+    onSendReturned: (info) => returned.push(info),
   });
-  return { controller, agent, params, activity, stranded };
+  return { controller, agent, params, activity, stranded, returned };
 }
 
 const assistants = (c: ChatController) =>
@@ -275,6 +279,51 @@ describe("start → poll → done", () => {
     expect(users(controller)[0].text).toBe("🖼 pane screenshot");
     expect(users(controller)[0].raw).toBe(block);
     expect(agent.of("start")[0].fields.read_dirs).toBe('["/tmp/shots"]');
+  });
+
+  // ---- every road out of a send says whether it went (Bugbot, PR #1064) -----
+  //
+  // `ClaudeChat.beginSend` empties the tray and parks the pictures under the
+  // `Receipt[]` it hands down here BEFORE the controller runs, and the only way
+  // they ever come back is `onSendReturned`. A road that returns silently is a
+  // picture the user attached deliberately — a capture of a moment that has
+  // passed — gone with no chip, no error and no way to retake it.
+
+  test("a send refused because one is already in flight hands its pictures back", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((res) => (release = res));
+    const { controller, agent, returned } = makeController({
+      start: async () => {
+        await held;
+        return { run_id: "r1" };
+      },
+      poll: () => poll({ done: true }),
+    });
+    const first = controller.sendMessage("one");
+    const shots = [{ kind: "pane" as const, label: "attached", view: "/shots/v.png" }];
+    await controller.sendMessage("two", { attachments: shots });
+    // Refused, and refused OUT LOUD: the same array the caller handed down, so
+    // the map it parked the Attachments under can be unlocked by identity.
+    expect(returned).toEqual([{ text: "two", attachments: shots }]);
+    release();
+    await first;
+    expect(agent.of("start").length).toBe(1);
+    expect(users(controller).map((t) => t.text)).toEqual(["one"]);
+  });
+
+  test("a send into a DISPOSED controller hands its pictures back", async () => {
+    const { controller, agent, returned } = makeController({ start: () => ({ run_id: "r1" }) });
+    controller.dispose();
+    const shots = [{ kind: "image" as const, label: "attached", view: "/shots/a.png" }];
+    await controller.sendMessage("hi", { attachments: shots });
+    await controller.sendFollowUp("also this", { attachments: shots });
+    expect(agent.calls.length).toBe(0);
+    // Both roads, because both refuse before anything is attempted — and on an
+    // unmount the hand-back is what releases the blob URLs.
+    expect(returned).toEqual([
+      { text: "hi", attachments: shots },
+      { text: "also this", attachments: shots },
+    ]);
   });
 
   test("nothing to send at all is a no-op", async () => {

@@ -441,12 +441,17 @@ describe("attachFile", () => {
     expect(uploads[0].bytes).toBe(1024);
   });
 
-  test("THE DECODE IS RELEASED EVEN WHEN THE SIZE LADDER THROWS", async () => {
+  test("A DOWNSCALE THAT THROWS UPLOADS THE ORIGINAL BYTES, and releases the decode", async () => {
     // `shotPixels` hands back a full-size decode — a bitmap, or an `<img>` over
     // an object URL — and `drawImage` on a tainted or zero-dimension canvas
-    // THROWS. Released in the branch's last statement rather than a `finally`,
-    // that throw pinned the whole decode for the life of the page, and the
-    // caller sees only the rejection.
+    // THROWS. That throw used to escape `attachFile` outright: the tray then
+    // removed the placeholder with no chip in its place, and a picture the user
+    // dropped vanished with no answer (Bugbot, PR #1064).
+    //
+    // THE DOWNSCALE IS A TRIGGER, NOT A GATE (T:11518) — the 4 MiB number is
+    // about the agent's read of the pixels, never about whether the picture may
+    // be attached — so the original bytes go up instead. And the decode is still
+    // released, which is what the `finally` was put there for.
     let closed = 0;
     Object.assign(globalThis, {
       createImageBitmap: () =>
@@ -470,15 +475,44 @@ describe("attachFile", () => {
           }),
         }) as unknown as HTMLCanvasElement,
     );
-    await expect(
-      attachFile("/tpl", fileOf("a.png", "image/png", SHOT_ATTACH_MAX_BYTES + 1)),
-    ).rejects.toThrow("tainted");
+    const att = await attachFile("/tpl", fileOf("a.png", "image/png", SHOT_ATTACH_MAX_BYTES + 1));
     expect(closed).toBe(1);
-    // Nothing was written either: the throw is before the upload.
-    expect(uploads).toEqual([]);
+    // The file's own bytes, under the file's own extension — nothing was
+    // re-encoded, so there is no note claiming it was.
+    expect(uploads.length).toBe(1);
+    expect(uploads[0].path).toMatch(/\.png$/);
+    expect(uploads[0].bytes).toBe(1);
+    expect(att.view).toBe(uploads[0].path);
+    expect(att.why).toBeUndefined();
+    expect(att.viewNote).toBeUndefined();
   });
 
-  test("and the <img> road's object URL goes with it", async () => {
+  test("...and if the upload of those bytes fails too, THEN it is the refusal chip", async () => {
+    // The one refusal left in this function, reached through the downscale road:
+    // never a throw, always a chip that says what happened.
+    Object.assign(globalThis, {
+      createImageBitmap: () => Promise.resolve({ width: 4000, height: 3000, close: () => {} }),
+    });
+    setCanvasFactory(
+      () =>
+        ({
+          width: 0,
+          height: 0,
+          getContext: () => ({
+            drawImage: () => {
+              throw new Error("tainted");
+            },
+          }),
+        }) as unknown as HTMLCanvasElement,
+    );
+    Object.assign(globalThis, { fetch: () => Promise.reject(new Error("readonly")) });
+    const att = await attachFile("/tpl", fileOf("a.png", "image/png", SHOT_ATTACH_MAX_BYTES + 1));
+    expect(att.view).toBeNull();
+    expect(att.why).toBe("could not be saved");
+    expect(att.viewNote).toBe("not attached: it could not be saved (readonly)");
+  });
+
+  test("and the <img> road's object URL goes with the same fallback", async () => {
     // The other half of `shotPixels`: no `createImageBitmap`, so the decode is an
     // `<img>` over an object URL and `free()` is a `revokeObjectURL`. Same
     // `finally`, observable end.
@@ -505,10 +539,11 @@ describe("attachFile", () => {
           }),
         }) as unknown as HTMLCanvasElement,
     );
-    await expect(
-      attachFile("/tpl", fileOf("a.png", "image/png", SHOT_ATTACH_MAX_BYTES + 1)),
-    ).rejects.toThrow("tainted");
+    const att = await attachFile("/tpl", fileOf("a.png", "image/png", SHOT_ATTACH_MAX_BYTES + 1));
     expect(revoked).toEqual(["blob:fake/1"]);
+    // Same fallback, and the picture is still attached.
+    expect(att.view).toBe(uploads[0].path);
+    expect(uploads[0].bytes).toBe(1);
   });
 
   test("an undecodable picture is converted server-side, and becomes drawable (T:11574)", async () => {
