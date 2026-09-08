@@ -220,12 +220,41 @@ test("a failing candidate reads as N to review, never as a settled failure", () 
     kind: "candidate",
     findings: [finding("app.py", 3), finding("app.py", 9)],
   });
-  expect(rowStateLabel(c)).toBe("2 to review");
+  // The `check()` helper defaults to "warning" severity.
+  expect(rowStateLabel(c)).toBe("Warning — 2 to review");
 });
 
 test("every other row's state label falls back to STATE_LABEL", () => {
-  expect(rowStateLabel(check("readme", "fail", { kind: "fact" }))).toBe("Failed");
   expect(rowStateLabel(check("readme", "pass"))).toBe("Passed");
   expect(rowStateLabel(check("readme", "skip"))).toBe("Not checked");
   expect(rowStateLabel(check("readme", "unrun"))).toBe("Not run yet");
+});
+
+// ---------------------------------------------------------- severity in words
+//
+// There is no visible severity chip in the dialog any more (owner request).
+// `rowStateLabel` is now the only place a FAILING row's severity is said in
+// words at all, because it feeds the state mark's own `aria-label`/`title` —
+// this is what keeps severity from vanishing out of the accessible tree.
+
+test("a failing FACT row's label names both its severity and its state", () => {
+  expect(rowStateLabel(check("readme", "fail", { kind: "fact", severity: "critical" }))).toBe(
+    "Critical — Failed",
+  );
+  expect(rowStateLabel(check("readme", "fail", { kind: "fact", severity: "suggested" }))).toBe(
+    "Suggested — Failed",
+  );
+});
+
+test("a failing row names its OWN checklist severity, not the discounted effectiveSeverity", () => {
+  // secrets is "critical" in the checklist even though a candidate's
+  // effectiveSeverity is capped at "warning" for cross-row reductions (the
+  // header dot). A row naming itself always says what the checklist actually
+  // found.
+  const c = check("secrets", "fail", {
+    kind: "candidate",
+    severity: "critical",
+    findings: [finding("app.py", 3)],
+  });
+  expect(rowStateLabel(c)).toBe("Critical — 1 to review");
 });

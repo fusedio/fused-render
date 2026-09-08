@@ -21,6 +21,18 @@
 // `effectiveSeverity`). Judging a candidate is the fix session's job, which is
 // why its button says Review rather than Fix.
 //
+// A FAILING row's SEVERITY (critical/warning/suggested) used to be spelled
+// out in a chip next to the label. It no longer is (owner request: "remove
+// the critical/warning labels, just keep the colors") — severity is still
+// told apart three other ways that all stay: the row's left rail and ground
+// tint (app-doctor.css's `.appdoc-row-sev-*`), and the state mark's SHAPE
+// (filled alert circle for critical, triangle for warning, a quieter outline
+// dot for suggested — StateIcon below). Colour is therefore not the only
+// carrier even without the chip; shape does the work the chip used to. What
+// the chip WAS the only carrier of is the word itself for a screen reader —
+// `rowStateLabel` (appdoctor-lib.ts) now folds severity into the state mark's
+// own `aria-label`/`title` so that doesn't vanish along with the chip.
+//
 // Per-row Fix/Review creates ONE task on just that row; the footer's "Fix
 // all" creates one task covering every currently failing row at once. Both
 // share the same one-live-fix-session-per-app rule server-side (409): two
@@ -50,7 +62,6 @@ import {
   rowActionLabel,
   rowStateLabel,
   SECTION_LABEL,
-  SEVERITY_LABEL,
   splitFindings,
   summaryLine,
   tasksTabUrl,
@@ -163,15 +174,10 @@ function CheckRow({
       <div className="appdoc-text">
         <div className="appdoc-label-row">
           <span className="appdoc-label">{check.label}</span>
-          {failing && (
-            <span className={"appdoc-sev appdoc-sev-" + check.severity}>
-              {SEVERITY_LABEL[check.severity]}
-            </span>
-          )}
-          {/* Trailing edge of the FIRST line, same baseline as the label and
-              the chip — not after the detail text or the findings list. Every
-              row's action then lands in the same column, so scanning the
-              list finds every actionable row in one vertical sweep instead of
+          {/* Trailing edge of the FIRST line, same baseline as the label —
+              not after the detail text or the findings list. Every row's
+              action then lands in the same column, so scanning the list
+              finds every actionable row in one vertical sweep instead of
               hunting for a button whose height depends on how much detail
               text or how many findings the row above it happened to have.
               `flex: none` (appdoc-row-actions) keeps it from being squeezed;

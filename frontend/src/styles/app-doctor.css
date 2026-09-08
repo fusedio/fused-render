@@ -19,8 +19,8 @@
  * free.
  *
  * A FAILING row's action (Fix/Review, `.appdoc-fix-btn`) sits at the trailing
- * edge of the row's FIRST line — same baseline as the label and the severity
- * chip — not below the detail text or the findings list. A button whose
+ * edge of the row's FIRST line — same baseline as the label — not below the
+ * detail text or the findings list. A button whose
  * vertical position differs on every row gives the eye nowhere to land;
  * pinning it to one column lets scanning the list find every actionable row
  * in one vertical sweep. It is also coloured to the row's own severity
@@ -78,7 +78,7 @@
 }
 
 /* A suggestion gets neither ground nor rail — it stays at the list's own
- * resting weight, told apart only by its muted mark and its chip's label. */
+ * resting weight, told apart only by its muted, quieter state mark. */
 .appdoc-row.appdoc-fail.appdoc-row-sev-suggested {
   background: none;
 }
@@ -116,18 +116,18 @@
 }
 
 /* align-items: flex-start (not center) so a long label that wraps to a
- * second line doesn't drag the chip and the action down with it — both stay
- * pinned to the row's first line, which is the whole point of putting the
- * action here (see AppDoctorModal.tsx's comment on `.appdoc-row-actions`). */
+ * second line doesn't drag the action down with it — both stay pinned to the
+ * row's first line, which is the whole point of putting the action here (see
+ * AppDoctorModal.tsx's comment on `.appdoc-row-actions`). */
 .appdoc-label-row {
   display: flex;
   align-items: flex-start;
   gap: 8px;
 }
 
-/* The one flexible element in the row: it grows to fill whatever the chip
- * and the action don't need and wraps instead of pushing them off the
- * dialog's edge (or off the dialog entirely below 620px). */
+/* The one flexible element in the label row: it grows to fill whatever the
+ * action doesn't need and wraps instead of pushing it off the dialog's edge
+ * (or off the dialog entirely below 620px). */
 .appdoc-label {
   min-width: 0;
   flex: 1 1 auto;
@@ -141,45 +141,20 @@
   color: var(--fg-muted);
 }
 
-/* One severity palette, reused by the row chip here AND the header status
- * dot (shell/AppPage.tsx, apps/explorer/Preview.tsx) — see appdoctor-lib.ts's
- * `effectiveSeverity`/`worstSeverity` for the one place severity is ranked.
+/* There used to be a `.appdoc-sev` chip here spelling out the severity word
+ * next to the label. Removed (owner request: "remove the critical/warning
+ * labels, just keep the colors") — severity still has three OTHER carriers
+ * that all stay (see this file's header comment and AppDoctorModal.tsx's):
+ * the row's ground + rail (`.appdoc-row-sev-*` below), and the state mark's
+ * shape. The word itself, for a screen reader, moved into the state mark's
+ * own `aria-label`/`title` (`rowStateLabel`, appdoctor-lib.ts) rather than
+ * disappearing — that is what made deleting the chip safe instead of a
+ * regression.
  *
- * The chip's ground is `--bg`, the same "recessed against the dialog surface"
- * token the modal's own inputs use (deploy.css), not a translucent wash of the
- * severity hue: a wash sits ON TOP of the row's own tint, and the two together
- * pull the chip's background toward the same hue as its text, which is what
- * made the light theme fail 4.5:1 (measured: CRITICAL 3.71, WARNING 3.49,
- * SUGGESTED 3.99 — see /private/tmp/.../contrast.py). An opaque recessed chip
- * decouples the text's contrast from the row's own tint entirely; the hairline
- * border (currentColor, so it never needs its own token) is what still reads
- * as "chip" rather than a plain label. */
-.appdoc-sev {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  padding: 0 5px;
-  border: 1px solid currentColor;
-  border-radius: 999px;
-  background: var(--bg);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1.6;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-}
-
-.appdoc-sev-critical {
-  color: var(--error);
-}
-
-.appdoc-sev-warning {
-  color: var(--warning);
-}
-
-.appdoc-sev-suggested {
-  color: var(--fg-muted);
-}
+ * One severity palette (the tokens `.appdoc-row-sev-*` and `.appdoc-fix-btn`
+ * below key off) reused by the header status dot too (shell/AppPage.tsx,
+ * apps/explorer/Preview.tsx) — see appdoctor-lib.ts's
+ * `effectiveSeverity`/`worstSeverity` for the one place severity is ranked. */
 
 /* Lives in the label row now (F4), on the row's own first line — never
  * squeezed by the label (which wraps instead, see .appdoc-label) and never

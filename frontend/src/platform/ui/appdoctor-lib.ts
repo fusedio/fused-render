@@ -6,6 +6,13 @@
 // out for the same reason modal/dirty-guard.ts is — the chassis renders
 // through a portal, which react-test-renderer cannot mount, so the decisions
 // worth pinning live where a test can call them.
+//
+// There is no visible severity chip in the dialog any more (owner request —
+// colour, the row's ground/rail and the state mark's shape already carry
+// severity for a sighted reader). `rowStateLabel` is the one place severity
+// still gets said in words, because it feeds the state mark's `aria-label`/
+// `title` — the only place a screen reader hears "critical"/"warning"/
+// "suggested" at all now.
 import { encodeFsPathSegments } from "@platform/lib/router";
 import type { AppCheck, AppCheckFinding, AppCheckState, Severity } from "@platform/lib/api";
 
@@ -112,13 +119,22 @@ export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
 /** A failing row's own state word: a candidate never reads as a settled
  *  failure ("Failed") — it reads as "N to review", because the pattern that
  *  flagged it has not been judged yet. Every other state reads as
- *  `STATE_LABEL` already does. */
+ *  `STATE_LABEL` already does.
+ *
+ * A FAILING row also names its own severity here, not just its state. This
+ * used to live in a visible chip (`.appdoc-sev`) next to the label; now that
+ * the chip is gone (owner request — colour, the rail and the state mark's
+ * SHAPE already carry severity for a sighted reader, see AppDoctorModal.tsx's
+ * header comment), this string is the ONLY place a screen reader hears the
+ * word "critical"/"warning"/"suggested" at all, since it feeds `aria-label`
+ * and `title` on `.appdoc-state` (AppDoctorModal.tsx). Uses `check.severity`
+ * (the checklist's own severity), not `effectiveSeverity` — that discount
+ * only applies to cross-row reductions (the header dot, worstSeverity); a
+ * row naming itself always says what the checklist actually found. */
 export function rowStateLabel(check: AppCheck): string {
-  if (check.state === "fail" && check.kind === "candidate") {
-    const n = check.findings.length;
-    return `${n} to review`;
-  }
-  return STATE_LABEL[check.state];
+  if (check.state !== "fail") return STATE_LABEL[check.state];
+  const state = check.kind === "candidate" ? `${check.findings.length} to review` : STATE_LABEL.fail;
+  return `${SEVERITY_LABEL[check.severity]} — ${state}`;
 }
 
 /** The app's Tasks tab. Spelled here, not imported from the shell's
