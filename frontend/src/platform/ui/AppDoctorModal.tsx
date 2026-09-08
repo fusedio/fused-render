@@ -42,6 +42,7 @@ import {
   type AppCheck,
   type AppCheckState,
   type AppDoctorReport,
+  type Severity,
 } from "@platform/lib/api";
 import {
   findingWhere,
@@ -64,7 +65,15 @@ import { basename } from "@platform/lib/format";
 
 // Inline rather than lucide: this dialog is rendered inside the explorer too,
 // which draws its own icons and imports no icon library.
-function StateIcon({ state }: { state: AppCheckState }) {
+//
+// A FAILING state also draws by severity, not just by colour: a critical
+// failure is the filled alert circle this mark has always been, a warning is
+// a triangle (the shape everyone already reads as "caution"), and a
+// suggestion is a quieter outline dot — thinner stroke, no interior mark — so
+// a suggestion never reads as urgently as a settled failure even in
+// monochrome. `severity` is only meaningful (and only passed) for `state ===
+// "fail"`; every other state ignores it.
+function StateIcon({ state, severity }: { state: AppCheckState; severity?: Severity }) {
   const common = {
     width: 16,
     height: 16,
@@ -82,13 +91,28 @@ function StateIcon({ state }: { state: AppCheckState }) {
         <path d="M20 6 9 17l-5-5" />
       </svg>
     );
-  if (state === "fail")
+  if (state === "fail") {
+    if (severity === "warning")
+      return (
+        <svg {...common}>
+          <path d="M12 3.5 21.5 20h-19z" />
+          <path d="M12 9.5v4M12 16.5h.01" />
+        </svg>
+      );
+    if (severity === "suggested")
+      return (
+        <svg {...common} strokeWidth={1.5}>
+          <circle cx="12" cy="12" r="8" />
+          <path d="M12 12h.01" />
+        </svg>
+      );
     return (
       <svg {...common}>
         <circle cx="12" cy="12" r="9" />
         <path d="M12 8v4M12 16h.01" />
       </svg>
     );
+  }
   if (state === "unrun")
     return (
       <svg {...common}>
@@ -121,14 +145,20 @@ function CheckRow({
   const { shown, hidden } = splitFindings(check.findings);
   const failing = check.state === "fail";
   return (
-    <li className={"appdoc-row appdoc-" + check.state}>
+    <li
+      className={
+        "appdoc-row appdoc-" +
+        check.state +
+        (failing ? " appdoc-row-sev-" + check.severity : "")
+      }
+    >
       <span
         className="appdoc-state"
         role="img"
         aria-label={rowStateLabel(check)}
         title={rowStateLabel(check)}
       >
-        <StateIcon state={check.state} />
+        <StateIcon state={check.state} severity={failing ? check.severity : undefined} />
       </span>
       <div className="appdoc-text">
         <div className="appdoc-label-row">
@@ -142,23 +172,11 @@ function CheckRow({
         <span className="appdoc-detail">
           {failing ? rowStateLabel(check) + " — " + check.detail : check.detail}
         </span>
-        {shown.length > 0 && (
-          <ul className="appdoc-findings">
-            {shown.map((f, i) => (
-              <li key={f.rule + f.path + f.line + i}>
-                <code>{findingWhere(f)}</code>
-                {/* Already masked server-side when it came off a secret
-                    (app_check.py's `_mask`), so this is safe to draw. */}
-                <span className="appdoc-excerpt">{f.excerpt}</span>
-              </li>
-            ))}
-            {hidden > 0 && (
-              <li className="appdoc-more">
-                and {hidden} more — the fix task sees all of them
-              </li>
-            )}
-          </ul>
-        )}
+        {/* Rendered right after the detail line, BEFORE the findings list: a
+            row's own action has to sit in the same place on every row, and a
+            26-finding `device-paths` row previously pushed it below a 160px
+            scroll box, off-screen while the row's own heading was still
+            visible. */}
         {failing && (
           <div className="appdoc-row-actions">
             {check.task ? (
@@ -186,6 +204,23 @@ function CheckRow({
               </button>
             )}
           </div>
+        )}
+        {shown.length > 0 && (
+          <ul className="appdoc-findings">
+            {shown.map((f, i) => (
+              <li key={f.rule + f.path + f.line + i}>
+                <code>{findingWhere(f)}</code>
+                {/* Already masked server-side when it came off a secret
+                    (app_check.py's `_mask`), so this is safe to draw. */}
+                <span className="appdoc-excerpt">{f.excerpt}</span>
+              </li>
+            ))}
+            {hidden > 0 && (
+              <li className="appdoc-more">
+                and {hidden} more — the fix task sees all of them
+              </li>
+            )}
+          </ul>
         )}
       </div>
     </li>
@@ -277,7 +312,6 @@ export function AppDoctorModal({
       // The fix task keeps running server-side whether or not this dialog is
       // open, so closing mid-create abandons nothing.
       busy={false}
-      dialogClassName="appdoc-modal"
       width={620}
       footer={
         liveTask ? (
