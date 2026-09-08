@@ -434,3 +434,66 @@ def test_pending_strips_the_app_state_block(agent, run_dir):
     agent._send("run", from_tag + "fix the footer", "")
     poll = agent._poll("run")
     assert _pending_texts(poll) == ["fix the footer"]
+
+
+# ------------------------------------------------------------- client_id (D764)
+
+def test_send_client_id_is_reported_back_in_pending(agent, run_dir):
+    """The page mints the bubble's id itself (`crypto.randomUUID()`) and
+    passes it into `_send` as `client_id` rather than waiting for `_send` to
+    name something and hand it back. `_pending_messages` must report that
+    SAME id, not a freshly generated filename, so the bubble the page already
+    drew (stamped with its own id before the send call even returned) is the
+    one a later poll matches against."""
+    _write_out(run_dir, [_out_user_row("turn one"), _out_text_row("Working")])
+    _setup_run(agent, run_dir)
+
+    sent = agent._send("run", "and also fix the footer", "",
+                        client_id="page-minted-id-1")
+    assert sent["sent"] is True
+    assert sent["id"] == "page-minted-id-1"
+
+    poll = agent._poll("run")
+    assert poll["pending"] == [
+        {"id": "page-minted-id-1", "text": "and also fix the footer"}]
+
+
+def test_start_action_takes_a_client_id_and_a_matching_pending_entry_is_reported(
+        tmp_path, monkeypatch):
+    """`action: "start"` — a new chat's first message — previously named
+    nothing at all for the inbox entry it writes, so nothing on that path
+    could ever be deduped by id (finding 1). `_start` must accept the same
+    `client_id` `_send` does and thread it through to the queued entry."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "claude_agent_start_client_id",
+        os.path.join(TEMPLATE_DIR, "agent.py"))
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+
+    class FakeStdin:
+        def write(self, data):
+            pass
+
+        def close(self):
+            pass
+
+    class FakeProc:
+        pid = 4242
+        stdin = FakeStdin()
+
+    def fake_popen(cmd, **kwargs):
+        return FakeProc()
+
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    agent.RUNS = str(tmp_path / "runs")
+    monkeypatch.setattr(agent.subprocess, "Popen", fake_popen)
+
+    result = agent._start(str(target), "hello", "", "", "",
+                           client_id="page-minted-id-2")
+    run_id = result["run_id"]
+    run_dir = os.path.join(agent.RUNS, run_id)
+
+    pending = agent._pending_messages(run_dir)
+    assert pending == [{"id": "page-minted-id-2", "text": "hello"}]

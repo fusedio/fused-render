@@ -2257,14 +2257,27 @@ def _write_inbox_row(run_dir: str, row: dict) -> str:
     return name
 
 
-def _write_inbox_entry(run_dir: str, message: str) -> str:
+def _write_inbox_entry(run_dir: str, message: str, client_id: str = "") -> str:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
-    `_send` (every follow-up) write from. Returns the inbox entry's own
-    filename (see `_write_inbox_row`)."""
-    return _write_inbox_row(run_dir, {"type": "user", "message": {
+    `_send` (every follow-up) write from.
+
+    `client_id` is the identity the PAGE minted for the bubble it already
+    drew — it stamps `dataset.pendingId` before this entry even exists, so
+    the id has to come from the caller rather than from whatever this
+    function decides to name the file. Carried as its own field in the row
+    (the filename still has to sort in write order, which a client-chosen
+    id has no reason to respect) and echoed straight back as this call's
+    return value, so a caller with no id to offer (none today) still gets
+    something to key on: the entry's own filename, same as before.
+    """
+    row = {"type": "user", "message": {
         "role": "user",
-        "content": [{"type": "text", "text": message}]}})
+        "content": [{"type": "text", "text": message}]}}
+    if client_id:
+        row["client_id"] = client_id
+    name = _write_inbox_row(run_dir, row)
+    return client_id or name
 
 
 def _write_control_request(run_dir: str, subtype: str, **fields) -> str:
@@ -2350,7 +2363,8 @@ def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False,
            has_pane: bool | None = None,
-           extra_read_dirs: list | None = None) -> dict:
+           extra_read_dirs: list | None = None,
+           client_id: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -2412,7 +2426,11 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (a later follow-up) writes the exact same shape into the exact same
     # directory, and the host does not know or care which one started the
     # session versus which one rode in on the CLI's own queue mid-turn.
-    _write_inbox_entry(run_dir, message)
+    # `client_id`: the page mints an id and draws its bubble with it stamped
+    # BEFORE this call even returns (a new chat's first send has no run id
+    # yet to poll with, so the id could not arrive any later than this) —
+    # carried through exactly as `_send` carries it for a follow-up.
+    _write_inbox_entry(run_dir, message, client_id=client_id)
 
     # The session host owns the CLI's stdin pipe for the life of the session
     # — see session_host.py's own module docstring for the fork-safety and
@@ -2991,7 +3009,8 @@ def _live_host(file: str, session_id: str = "",
 
 
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
-         effort: str = "", permission_mode: str = "") -> dict:
+         effort: str = "", permission_mode: str = "",
+         client_id: str = "") -> dict:
     """Hand a follow-up to a LIVE host's own inbox, instead of starting a new
     process for it.
 
@@ -3097,14 +3116,13 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         pending_offset = 0
     with open(os.path.join(run_dir, "pending_echo"), "w", encoding="utf-8") as f:
         f.write(str(pending_offset))
-    name = _write_inbox_entry(run_dir, message)
-    # `id` is the inbox entry's own filename — the same value
-    # `_pending_messages` reports each of its entries under, so the page can
-    # stamp it on the bubble it draws immediately and match against it later
-    # (pollLoop's pending dedup, resumeRun's renderPending) instead of
-    # comparing bubble text, which collides for a wordless send (one marker
-    # text for all of them) and for a verbatim repeat.
-    return {"sent": True, "id": name}
+    # `client_id` is the id the PAGE minted before this call even landed and
+    # already stamped on the bubble it drew optimistically — passed through
+    # to the inbox entry so `_pending_messages` reports the SAME id back for
+    # this same message. A caller with no id to offer falls back to the
+    # entry's own filename, same as `_write_inbox_entry` always returned.
+    entry_id = _write_inbox_entry(run_dir, message, client_id=client_id)
+    return {"sent": True, "id": entry_id}
 
 
 def _retry_info(row: dict):
@@ -3937,7 +3955,13 @@ def _pending_messages(run_dir: str) -> list:
             continue
         text = "".join(b.get("text", "") for b in content
                         if isinstance(b, dict) and b.get("type") == "text")
-        messages.append((os.path.basename(path), text))
+        # `client_id`, when the entry carries one, is the id the page minted
+        # for the bubble it drew before this entry existed — the same value
+        # this queue has to report back so that bubble's dedup matches. Falls
+        # back to the filename for an entry with none (there should not be
+        # one, now that `_send`/`_start` always pass the page's id through).
+        entry_id = row.get("client_id") or os.path.basename(path)
+        messages.append((entry_id, text))
     return [{"id": name, "text": _strip_app_state(text)} for name, text in messages]
 
 
@@ -5398,7 +5422,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "", custom: str = "",
-         read_dirs: str = "", path: str = "") -> dict:
+         read_dirs: str = "", path: str = "", id: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -5410,7 +5434,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         # real no, so it must not be read as absence.
         return _start(file, message, session_id, model, effort, permission_mode,
                       has_pane=None if has_pane == "" else has_pane != "0",
-                      extra_read_dirs=_attach_dirs(read_dirs))
+                      extra_read_dirs=_attach_dirs(read_dirs), client_id=id)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
@@ -5504,5 +5528,5 @@ def main(action: str = "start", file: str = "", message: str = "",
         # itself decides which of the three (if any) actually changed, and
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
-                    permission_mode)
+                    permission_mode, client_id=id)
     return {"error": f"unknown action: {action}"}
