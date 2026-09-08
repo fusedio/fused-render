@@ -32,13 +32,15 @@ PUBLIC_KEY = base64.b64decode("u4eiDvccdWmsVCN0nifCEXqmU+xVGIDPe8LP5KRlDns=")
 SIGNING_CONTEXT = "fused-render-update"
 FETCH_TIMEOUT_S = 15.0
 DOWNLOAD_TIMEOUT_S = 300.0
-# Effectively immediate: the first check runs right after boot, so the sidebar
-# badge (UpdateBadge, 60s idle poll on top of this) appears on the first poll
-# rather than a minute or two into the session. Still off the startup critical
-# path — the whole loop lives on a background thread, so this delay only keeps
-# the manifest fetch out of the very first tick of a booting process; every
-# check after it is CHECK_INTERVAL_S apart as before.
-STARTUP_DELAY_S = 1.0
+# Short — the sidebar's first badge (UpdateBadge, 60s idle poll on top of this)
+# used to be up to ~2 minutes late after launch: 60s startup delay plus up to
+# 60s until the first poll landed. 10s keeps the manifest check off the
+# earliest, busiest moment of startup while getting the badge on screen within
+# about a minute of launch instead of two.
+# Shared with the Windows tray updater (supervisor/_win32/update.py), which
+# competes with a whole app launch at this moment; the mac manager wants the
+# check sooner and uses MAC_STARTUP_DELAY_S instead.
+STARTUP_DELAY_S = 10.0
 CHECK_INTERVAL_S = 6 * 60 * 60
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_BYTES = 600 * 1024 * 1024

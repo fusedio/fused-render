@@ -453,9 +453,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const updateIsRelevant = updateRelevant(updateStatus);
   // Same action UpdateBadge's own button performs: the install downloads and
   // swaps the bundle, whichever tool put it there — one install path for
-  // every install type (D742). Reached from the popover row rather than the
-  // expanded badge's own panel, so there's no panel here to flash a result in
-  // — a toast says it instead.
+  // every install type (D746). Reached from the popover row rather than the
+  // expanded badge's own panel, so there's no panel here to flash a result in:
+  // the outcome shows up through the shared poll instead — the rail dot and
+  // the row's own label follow the store as the state moves.
   const handleUpdatePick = () => {
     if (!updateStatus) return;
     // "Ready to restart" restarts (Akshil, 2026-09-08) — the same link the

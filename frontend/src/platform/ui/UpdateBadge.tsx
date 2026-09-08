@@ -4,7 +4,7 @@
 // expands into a small panel — an accordion: the row wears a chevron, and row
 // and panel share one border so the open state reads as a single group.
 //
-// ONE install path for every install type (D742), so this panel has exactly
+// ONE install path for every install type (D746), so this panel has exactly
 // one button and never mentions Homebrew: the in-app install downloads and
 // swaps the same version-verified bundle whichever tool put it there, and the
 // app never runs brew on itself (the cask's `uninstall quit:` would quit the
@@ -19,7 +19,7 @@
 // running version and ServerStatusBanner's restart card takes over — so the
 // row drops to a plain "Ready to restart" status line with nothing to expand
 // (no chevron either), and the restart card carries the wording.
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { updateInstall } from "@platform/lib/api";
 import {
@@ -54,6 +54,10 @@ const CHEVRON = (
 export default function UpdateBadge() {
   const status = useUpdateStatus();
   const [open, setOpen] = useState(false);
+  // The row is the disclosure control; the panel is what it discloses, so the
+  // pair is wired together by id — `aria-expanded` alone says a thing opened
+  // without saying which.
+  const panelId = useId();
 
   if (!status || !updateRelevant(status)) return null;
 
@@ -101,13 +105,14 @@ export default function UpdateBadge() {
         className="update-badge-row"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        aria-controls={panelId}
       >
         {dot}
         {label}
         {CHEVRON}
       </button>
       {open && (
-        <div className="update-badge-panel">
+        <div className="update-badge-panel" id={panelId}>
           {status.state === "available" && (
             <>
               <div className="update-badge-text">

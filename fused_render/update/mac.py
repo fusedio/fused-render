@@ -89,6 +89,14 @@ PHASE_INSTALLING = "Installing"
 # outright — after which the final `done` upsert lands on a dismissed id and
 # the "Installed — restart to finish" line is never drawn.
 INSTALL_HEARTBEAT_S = 10.0
+# The first check runs right after boot, so the sidebar badge (UpdateBadge,
+# 60s idle poll on top of this) appears on the first poll rather than a minute
+# or two into the session. Not `common.STARTUP_DELAY_S`, which the Windows tray
+# updater also drives and wants to keep clear of a whole app launch; here the
+# check loop is a background thread, so it is off the startup path anyway and
+# the delay only keeps the manifest fetch out of a booting process's first
+# tick. Every check after it is CHECK_INTERVAL_S apart as before.
+MAC_STARTUP_DELAY_S = 1.0
 DONE_MESSAGE = "Installed — restart to finish"
 CANCELLED_MESSAGE = "Cancelled"
 _DOWNLOAD_PREFIX = "FusedRender-"
@@ -151,10 +159,7 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
 def _discard_old_bundle(old: str) -> None:
     """Best-effort removal of the bundle the swap renamed away."""
     try:
-        if os.path.islink(old):
-            os.remove(old)
-        else:
-            shutil.rmtree(old, ignore_errors=True)
+        shutil.rmtree(old, ignore_errors=True)
     except OSError:
         logger.debug("could not remove old bundle %s", old, exc_info=True)
 
@@ -219,7 +224,7 @@ class UpdateManager:
                 "progress": self._progress,
                 "progress_total": self._progress_total,
                 "error": self._error,
-                # Always None since D742 — kept on the wire so the client's
+                # Always None since D746 — kept on the wire so the client's
                 # UpdateStatus shape is unchanged. There is no terminal
                 # command to offer for any method (see the class docstring).
                 "manual_command": None,
@@ -240,10 +245,18 @@ class UpdateManager:
             return
 
         def loop():
-            time.sleep(common.STARTUP_DELAY_S)
-            self._sweep_stale_downloads()
+            time.sleep(MAC_STARTUP_DELAY_S)
+            swept = False
             while True:
                 try:
+                    # Inside the try, like the Windows loop's sweep: it walks
+                    # the updates dir, and an OSError there must cost one tick,
+                    # not the whole auto-check thread. Still only once per
+                    # process — the leftovers it clears are a previous
+                    # session's.
+                    if not swept:
+                        self._sweep_stale_downloads()
+                        swept = True
                     self.check()
                 except Exception:  # noqa: BLE001 - a tick must never kill the loop
                     logger.exception("auto update tick failed")
@@ -363,10 +376,13 @@ class UpdateManager:
 
     def _install(self, manifest: dict) -> None:
         try:
-            if self.method() in ("dmg", "brew"):
-                self._install_dmg(manifest)
-            else:
+            # ONE install path for every install type (D746): nothing branches
+            # on `method()` any more, so the only real precondition left is
+            # having a bundle to swap. (`_install_dmg` re-checks it — it is
+            # also reachable on its own.)
+            if self._bundle is None:
                 raise RuntimeError("not running from an installed bundle")
+            self._install_dmg(manifest)
         except common.UpdateCancelled:
             # Not a failure: the update is still there to install, so the
             # manager goes back to exactly where the ✕ was pressed from —
@@ -621,11 +637,9 @@ class UpdateManager:
             beat_stop.set()
             beat.join(timeout=INSTALL_HEARTBEAT_S + 5)
         # Old bundle: best-effort removal on a worker; open files keep working
-        # on the unlinked inodes until this process exits. `rmtree` REFUSES a
-        # symlink (and would follow it if it didn't), so the link case unlinks
-        # instead — `bundle` is realpath'd above, but an .app that is itself a
-        # symlink on the resolved path is cheap to survive rather than leave a
-        # dangling `.FusedRender-old-<pid>.app` behind forever.
+        # on the unlinked inodes until this process exits. `old` is a name this
+        # function just renamed a realpath'd `bundle` to, so it is a real
+        # directory, never a symlink — `rmtree` is the whole story.
         if old is not None:
             threading.Thread(target=_discard_old_bundle, args=(old,),
                              daemon=True).start()

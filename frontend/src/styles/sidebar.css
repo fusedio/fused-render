@@ -1054,6 +1054,13 @@ a.bookmark-name::after {
   background: rgba(var(--tint), 0.12);
 }
 
+/* `.update-badge` clips to its radius (`overflow: hidden` above), so an
+   outside focus ring on the row would be cut away — inset it instead. */
+.update-badge-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* Installed state: the row is a status line, not a toggle — nothing to click. */
 .update-badge-row-static,
 .update-badge-row-static:hover {
@@ -1084,11 +1091,7 @@ a.bookmark-name::after {
   transform: rotate(180deg);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .update-badge-chev {
-    transition: none;
-  }
-}
+/* The chevron's rotation holds still under prefers-reduced-motion — styles/reduced-motion.css blankets every transition. */
 
 /* The seam between the row and the panel — the container's border draws the
    outside, this draws the fold. */

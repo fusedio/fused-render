@@ -3,9 +3,8 @@
 The signed-manifest crypto path is shared with the Windows updater and covered
 by tests/test_win_supervisor_update.py; these tests cover what's new on mac:
 the brew/dmg method decision, the manager's state machine (including that a
-brew-managed bundle installs down the same DMG path while ALSO carrying the
-`brew upgrade` command as a secondary way), and the /api/update endpoints'
-guards.
+brew-managed bundle installs down the same DMG path and carries no terminal
+command at all), and the /api/update endpoints' guards.
 """
 import os
 import subprocess
@@ -174,7 +173,7 @@ def test_install_retry_allowed_from_error(monkeypatch):
 
 
 def test_brew_available_has_no_manual_command_either(monkeypatch):
-    """The method is informational only (D742): a brew-managed bundle gets the
+    """The method is informational only (D746): a brew-managed bundle gets the
     same status shape as a dmg one, `manual_command` included — the app never
     offers a brew command because it never runs brew on itself."""
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
@@ -194,7 +193,7 @@ def test_dmg_available_has_no_manual_command(monkeypatch):
 def test_brew_install_takes_the_dmg_path(monkeypatch, tmp_path):
     """A brew-managed install used to be a no-op on POST /install (the user ran
     the brew command). It now installs exactly like a DMG one — one install
-    path for every install type (D742) — and carries no command with it."""
+    path for every install type (D746) — and carries no command with it."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     manager._method = "brew"
     manager.check()
