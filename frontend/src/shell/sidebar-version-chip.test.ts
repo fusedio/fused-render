@@ -1,5 +1,5 @@
 // WHERE the version chip sits in the Settings row, and why that is a structural
-// claim rather than a cosmetic one (SPEC §48).
+// claim rather than a cosmetic one (SPEC §49).
 //
 // Read out of the source, the same way sidebar-tasks.test.ts reads the claims a
 // DOM-less test cannot otherwise hold. What is being pinned is a relationship

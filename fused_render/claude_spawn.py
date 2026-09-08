@@ -131,7 +131,7 @@ print(json.dumps(mod._start(req["file"], req["message"], req["session_id"],
 # error string.
 #
 # This is the ONLY place the sentence lives. A pre-check that knew the CLI was
-# missing (SPEC §48, SF-13f) still routes its click through here rather than
+# missing (SPEC §49, SF-13f) still routes its click through here rather than
 # answering from a copy, so there is no second copy to keep in step.
 CLAUDE_MISSING_ERROR = (
     "Claude Code isn't installed (or couldn't be found). "

@@ -1,5 +1,5 @@
 // Self-fix — asking Claude to repair this installation, and what it leaves
-// behind (fused_render/selffix.py, SPEC §48).
+// behind (fused_render/selffix.py, SPEC §49).
 //
 // Two halves that meet at a file on disk:
 //

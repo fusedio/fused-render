@@ -1,4 +1,4 @@
-"""Self-fix — the HTTP surface over `fused_render/selffix.py` (SPEC §48).
+"""Self-fix — the HTTP surface over `fused_render/selffix.py` (SPEC §49).
 
 Three routes, and the split between them is what each costs:
 

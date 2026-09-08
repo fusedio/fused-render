@@ -242,7 +242,7 @@ function PreferencesTrigger({
   // place this row departs from `NavItem`, and the reason is what goes in it.
   // Tasks puts a count there, which is text and sits happily inside a button.
   // This row's is the VERSION CHIP, and once a self-fix session has modified
-  // the install that chip becomes a control of its own (SPEC §48). A button
+  // the install that chip becomes a control of its own (SPEC §49). A button
   // inside a button is invalid, and worse than invalid here: the click that
   // should open the report bubbles to this trigger and opens the Settings menu
   // instead, so the badge's one job cannot be done.
@@ -931,7 +931,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
                 /* VersionChip rather than a plain span: a version string is a
                    claim about which bytes are running, so when a self-fix
                    session has changed this install the chip is what says so and
-                   opens its report (SPEC §48). Until then it renders the same
+                   opens its report (SPEC §49). Until then it renders the same
                    v-string this slot always showed. */
                 <VersionChip
                   version={config.version}

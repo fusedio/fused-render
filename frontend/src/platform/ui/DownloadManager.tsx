@@ -295,7 +295,7 @@ function jobProgress(job: Job): number | null | undefined {
   return fraction;
 }
 
-// "Fix this" — the self-fix trigger (SPEC §48, SF-1). Offered on a FAILED row
+// "Fix this" — the self-fix trigger (SPEC §49, SF-1). Offered on a FAILED row
 // and nowhere else, which is the whole of its placement argument: a failure is
 // the one moment where the app has already admitted it cannot do the thing, so
 // an offer to go and look at why is not an interruption. On a running row it

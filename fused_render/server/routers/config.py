@@ -102,7 +102,7 @@ def api_config(
 
     if (update_manager := mac_update.manager()) is not None:
         config["update"] = update_manager.status()
-    # A Claude session changed this installation (selffix.py, SPEC §48) — the
+    # A Claude session changed this installation (selffix.py, SPEC §49) — the
     # sidebar's version chip turns amber and leads to the report. Rides this
     # endpoint rather than getting a poll of its own, like `update` above; it is
     # one small JSON read, and the PANEL's contents (report list, reinstall
@@ -111,7 +111,7 @@ def api_config(
     if (modified := selffix.status()) is not None:
         config["modified_install"] = modified
     # This installation cannot be written to, so a self-fix session here can only
-    # DIAGNOSE (SPEC §48, SF-13). PRESENT ONLY WHEN READ-ONLY, like
+    # DIAGNOSE (SPEC §49, SF-13). PRESENT ONLY WHEN READ-ONLY, like
     # `modified_install` above and for the same reason: the ordinary install is
     # one the user owns, and a field that is always there invites a truthiness
     # check that `{"read_only": False}` would silently pass.

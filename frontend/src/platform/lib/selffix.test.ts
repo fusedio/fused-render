@@ -1,4 +1,4 @@
-// Self-fix's pure parts (SPEC §48). Everything here is a decision that is
+// Self-fix's pure parts (SPEC §49). Everything here is a decision that is
 // wrong in a way no screenshot shows: a handoff URL that drops the run id
 // lands the user in an empty chat beside a session that is already working, an
 // issue URL that forgets the version is a bug report nobody can act on, and a
@@ -381,7 +381,7 @@ test("a diagnostic start does not arm the fast poll", () => {
   ).toBe(false);
 });
 
-// The Preferences button's empty-body window (SPEC §48, SF-13f1). `recheck`
+// The Preferences button's empty-body window (SPEC §49, SF-13f1). `recheck`
 // already stops a stale "Claude Code is missing" mis-wording the BUTTON; this
 // is the same belief one layer down, where it licensed the empty REQUEST BODY.
 describe("claudeArrivedMidClick", () => {

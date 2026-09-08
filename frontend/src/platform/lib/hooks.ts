@@ -230,7 +230,7 @@ export interface SelfFixReadinessState extends SelfFixReadiness {
 }
 
 // The two preconditions a surface can check before it offers a self-fix session
-// (SPEC §48, SF-13f). They come from two places because they are two kinds of
+// (SPEC §49, SF-13f). They come from two places because they are two kinds of
 // fact, and each already has an owner:
 //
 //   readOnly       /api/config — an `os.access` on the install root, cheap
