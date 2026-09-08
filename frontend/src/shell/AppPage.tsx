@@ -98,7 +98,7 @@ import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
 import AppApi from "./AppApi";
 import AppVersionPicker from "./AppVersionPicker";
-import { useAppVersionLabel } from "./appVersionLabel";
+import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import SnapshotError from "./SnapshotError";
 import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnapshot";
 

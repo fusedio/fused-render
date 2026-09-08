@@ -38,7 +38,7 @@ import { getGitAppFolder, getGitCommits, type GitCommit } from "@platform/lib/ap
 import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
 import { isSha, shortSha } from "@platform/lib/snapshot-param";
-import { versionLabel } from "./appVersionLabel";
+import { versionLabel } from "@platform/lib/appVersionLabel";
 
 /** The shell URL param a selection writes — shared with AppPage's own resolve
  *  effect (task 3), which reads exactly this param off the same URL. */

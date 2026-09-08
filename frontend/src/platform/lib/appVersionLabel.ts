@@ -4,6 +4,13 @@
 // same rule a second way and risking the two disagreeing about what "v7"
 // means for the same sha.
 //
+// LIVES HERE, in platform/lib/ rather than shell/ (where it started): a third
+// surface (apps/explorer/Preview.tsx's own Export App button) needs the same
+// label, and shell imports apps/, never the reverse (see
+// platform/lib/snapshot-param.ts's own comment on the same platform/apps
+// boundary) — a module both sides of that boundary need lives in platform/,
+// the same call this codebase already made for snapshot-param.ts.
+//
 // PURE arithmetic, no fetch of its own: `commits`/`total` are whatever the
 // caller already loaded (`GET /api/git/commits`'s own `commits`/`total`,
 // AppVersionPicker's own state shape) — see that component's header comment

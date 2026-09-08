@@ -87,7 +87,7 @@ import {
 } from "@platform/lib/snapshot-param";
 import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
-import { useAppVersionLabel } from "@shell/appVersionLabel";
+import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
