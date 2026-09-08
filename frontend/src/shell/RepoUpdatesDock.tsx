@@ -492,7 +492,15 @@ export function RepoUpdatesCardView({
   // `olderShown` is local UI state, not a prop: once the reader opens the
   // fold there is no reason for anything outside this view to know or care.
   const [olderShown, setOlderShown] = useState(false);
-  const shownTerminal = olderShown ? terminal : terminal.slice(0, TERMINAL_VISIBLE_CAP);
+  // `terminal` arrives oldest-first (jobs.py's `list_jobs`), so the NEWEST
+  // jobs are the ones at the end of the array — a plain `slice(0, CAP)`
+  // would show the oldest five and fold away whatever just finished, which
+  // is backwards from what the cap is for. Slicing off the tail keeps the
+  // newest `TERMINAL_VISIBLE_CAP` visible, still oldest-first among
+  // themselves, so the panel's reading order never changes.
+  const shownTerminal = olderShown
+    ? terminal
+    : terminal.slice(Math.max(0, terminal.length - TERMINAL_VISIBLE_CAP));
   const olderTerminalCount = terminal.length - shownTerminal.length;
   // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
   // The count on the chip, the idle predicate and the empty state all read
@@ -592,6 +600,31 @@ export function RepoUpdatesCardView({
                     onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
                   />
                 ))}
+                {/* THE VOLUME CAP: only TERMINAL jobs ever collapse — a
+                    waiting task, a repo row and a pairing are always drawn in
+                    full, uncounted by `TERMINAL_VISIBLE_CAP`, because none of
+                    them pile up the way a finished job does (a repo stays
+                    behind until fixed, one row; a pairing is dismissed the
+                    moment it is read). Nothing is dropped, only folded: the
+                    count names exactly how many more `JobRow`s are one click
+                    away, and clicking it is the only thing that changes
+                    `olderShown` — a fresh terminal job arriving never
+                    re-collapses a panel the user already opened wide.
+                    ABOVE `shownTerminal`, not below it (D761): `terminal`
+                    arrives oldest-first and the fold now keeps the newest
+                    rows visible, so the folded rows are chronologically
+                    earlier than every rendered one — putting the expander
+                    here keeps the panel reading top-to-bottom in time order
+                    whether it is folded or open. */}
+                {olderTerminalCount > 0 && (
+                  <button
+                    type="button"
+                    className="dl-panel-more"
+                    onClick={() => setOlderShown(true)}
+                  >
+                    {olderTerminalCount} older notification{olderTerminalCount === 1 ? "" : "s"}
+                  </button>
+                )}
                 {shownTerminal.map((job) => (
                   <JobRow
                     key={job.id}
@@ -608,25 +641,6 @@ export function RepoUpdatesCardView({
                   />
                 ))}
               </div>
-              {/* THE VOLUME CAP: only TERMINAL jobs ever collapse —
-                  a waiting task, a repo row and a pairing are always drawn in
-                  full, uncounted by `TERMINAL_VISIBLE_CAP`, because none of
-                  them pile up the way a finished job does (a repo stays
-                  behind until fixed, one row; a pairing is dismissed the
-                  moment it is read). Nothing is dropped, only folded: the
-                  count names exactly how many more `JobRow`s are one click
-                  away, and clicking it is the only thing that changes
-                  `olderShown` — a fresh terminal job arriving never
-                  re-collapses a panel the user already opened wide. */}
-              {olderTerminalCount > 0 && (
-                <button
-                  type="button"
-                  className="dl-panel-more"
-                  onClick={() => setOlderShown(true)}
-                >
-                  {olderTerminalCount} older notification{olderTerminalCount === 1 ? "" : "s"}
-                </button>
-              )}
               {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed
                   up"). These bulk actions used to render ABOVE the rows, where
                   a full-width padded band holding one small right-aligned

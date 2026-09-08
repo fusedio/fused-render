@@ -435,6 +435,24 @@ test("five or fewer terminal jobs draw with no fold row at all", () => {
   expect(findAll(tree, "dl-panel-more")).toHaveLength(0);
 });
 
+test("the fold keeps the NEWEST five, not the oldest — `terminal` arrives oldest-first", () => {
+  // j0 is the oldest job, j6 the newest (jobs.py's `list_jobs` order). The
+  // visible five must be j2..j6, in that same oldest-first reading order —
+  // j0 and j1 are what the fold hides.
+  const terminal = Array.from({ length: 7 }, (_, i) =>
+    doneJob({ id: `j${i}`, detail: `job ${i}` })
+  );
+  const tree = renderView({ rows: [], terminal });
+  const rows = findAll(tree, "dl-row");
+  expect(rows.map((r) => text(r))).toEqual([
+    expect.stringContaining("job 2"),
+    expect.stringContaining("job 3"),
+    expect.stringContaining("job 4"),
+    expect.stringContaining("job 5"),
+    expect.stringContaining("job 6"),
+  ]);
+});
+
 test("a 6th terminal job folds behind an 'N older notifications' row — nothing is dropped", () => {
   const terminal = Array.from({ length: 7 }, (_, i) => doneJob({ id: `j${i}` }));
   const tree = renderView({ rows: [], terminal });
