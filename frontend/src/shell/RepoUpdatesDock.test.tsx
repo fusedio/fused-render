@@ -10,7 +10,7 @@
 // stub, installed and torn down once at file load so router.ts's real
 // module can be imported (see the comment just below), and a per-test
 // `globalThis.fetch` stub in the one test that presses a row's own button.
-import { expect, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 import type { Job } from "@platform/lib/jobs";
 
@@ -153,6 +153,8 @@ function renderInstance(
       terminal={props.terminal ?? []}
       pairings={props.pairings ?? []}
       attention={props.attention ?? []}
+      attentionDismissed={props.attentionDismissed ?? {}}
+      onAttentionDismiss={props.onAttentionDismiss}
       collapsed={props.collapsed ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onDismiss={props.onDismiss ?? (() => {})}
@@ -858,17 +860,48 @@ test("a waiting task draws a row that names the task and says what it wants", ()
   expect(text(rows[0])).toContain("Pull today's news");
 });
 
-test("the whole row is the button, and it has no dismiss", () => {
-  // One action, so the row IS the control rather than a small target inside a
-  // large one — and a real <button>, so it is reachable by keyboard.
+test("the whole row is a click target, reachable by keyboard, and it also has a dismiss", () => {
+  // One action besides dismissing, so the row itself is the control rather
+  // than a small target inside a large one — `NotificationCard`'s `rowClick`
+  // draws it as `role="button"` (not a real <button>, since the row also
+  // nests a real <button> for the ✕, and a button cannot nest in a button).
   const tree = renderView({ rows: [], attention: [asking()] });
   const row = findAll(tree, "dl-row")[0];
-  expect(row.type).toBe("button");
+  expect(row.type).toBe("div");
+  expect(row.props.role).toBe("button");
+  expect(row.props.tabIndex).toBe(0);
   expect(findAll(tree, "dl-row-open")).toHaveLength(1);
-  // NO ✕. Every other row here can be dismissed because its subject already
-  // happened; this one's has not — the run is still parked. Dismissing it would
-  // take the notification away and leave the task exactly as stuck.
-  expect(findAll(tree, "dl-x")).toHaveLength(0);
+  // The ✕ dismisses the ROW, not the question — the task stays exactly as
+  // parked either way, and the sidebar's Tasks dot is unaffected.
+  expect(findAll(tree, "dl-x")).toHaveLength(1);
+});
+
+test("dismissing a waiting-task row calls the attention-dismiss callback with its key and signature", () => {
+  const onAttentionDismiss = mock(() => {});
+  const tree = renderView({ rows: [], attention: [asking()], onAttentionDismiss });
+  const x = findAll(tree, "dl-x")[0];
+  x.props.onClick();
+  expect(onAttentionDismiss).toHaveBeenCalledWith("sess-7", "Pull today's news");
+});
+
+test("a dismissed waiting-task row disappears, and does not count toward the numeral", () => {
+  const tree = renderView({
+    rows: [],
+    attention: [asking()],
+    attentionDismissed: { "sess-7": "Pull today's news" },
+  });
+  expect(findAll(tree, "dl-row")).toHaveLength(0);
+  expect(numeral(tree)).toBe(null);
+  expect(toggleClasses(tree)).toContain("is-idle");
+});
+
+test("a dismissed waiting-task row comes back once the question changes", () => {
+  const tree = renderView({
+    rows: [],
+    attention: [asking({ title: "A brand new question" })],
+    attentionDismissed: { "sess-7": "Pull today's news" },
+  });
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
 });
 
 test("a task with nowhere to go still draws, as a row that is not a button", () => {

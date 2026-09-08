@@ -50,6 +50,7 @@ import { navigate, navigateUrl } from "@platform/lib/router";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
+import type { NotificationCardDismiss } from "@platform/ui/NotificationCard";
 // `JobRow` reused verbatim for a terminal job (D586) — shell may import
 // platform (frontend/scripts/check-boundaries.mjs); the reverse is what is
 // forbidden, which is also why the failures reach this section as a PROP
@@ -57,7 +58,12 @@ import NotificationCard from "@platform/ui/NotificationCard";
 import { JobRow } from "@platform/ui/DownloadManager";
 import { clearFinishedJobs, isFailure, jobsAfterClear } from "@platform/lib/jobs";
 import type { Job } from "@platform/lib/jobs";
-import { attentionRows, type AttentionRow } from "@shell/tasks-lib";
+import {
+  attentionRows,
+  attentionDismissSignature,
+  visibleAttentionRows,
+  type AttentionRow,
+} from "@shell/tasks-lib";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 import {
   repoActionLabel,
@@ -117,12 +123,6 @@ function useRepoUpdates() {
   // surface. Server-side store (lan.py `_recent_pairings`), so a dismissal
   // holds across shells and reloads for as long as the server runs.
   const [pairings, setPairings] = useState<LanPairingEvent[]>([]);
-  // Has /api/git-upstream answered ONCE? `repos` starts `[]` and stays `[]`
-  // for a repo-free machine, so the list alone cannot tell "not asked yet"
-  // from "genuinely nothing" — and `useAutoExpandOnNew` needs exactly that
-  // distinction to avoid calling every pre-existing repo an arrival on load
-  // (D574 bug 2, autoExpand.ts's `ready`).
-  const [settled, setSettled] = useState(false);
   const pollRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -155,7 +155,6 @@ function useRepoUpdates() {
         if (!disposed && mine === generation) {
           setRepos(data.repos || []);
           if (paired) setPairings(paired.pairings || []);
-          setSettled(true);
         }
       } catch {
         // Best-effort, like every other poll in this card: a failed read
@@ -173,7 +172,7 @@ function useRepoUpdates() {
   }, []);
 
   const refresh = useCallback(() => pollRef.current(), []);
-  return { repos, pairings, setPairings, settled, refresh };
+  return { repos, pairings, setPairings, refresh };
 }
 
 // A device that just paired over the LAN (lan.py): title is the device's
@@ -204,56 +203,65 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
 // decides what it says and where it goes, off the pulse poll the shell already
 // runs — no endpoint and no second loop of this card's own.
 //
-// THE WHOLE ROW IS THE BUTTON, rather than a `<div>` with an "Open" control in
-// its corner. Every other row here has something to do BESIDES being read (fix
-// the repo, dismiss the failure), so its controls have to be aimed at
-// individually; this row has exactly one thing to do, and a row with one action
-// should not make a person aim at a 60px target inside a 320px one. A real
-// `<button>` and not a clickable div, so it is reachable by keyboard and
-// announced as an action — notifications.css strips the UA chrome back to
-// `.dl-row`'s own box.
+// THE WHOLE ROW IS ALSO A CLICK TARGET, when it has somewhere to go — rather
+// than a corner "Open" control on an otherwise inert row. Every other row here
+// has something to do BESIDES being read (fix the repo, dismiss the failure),
+// so its controls have to be aimed at individually; this row has exactly one
+// thing to do besides dismiss, and a row with one action should not make a
+// person aim at a 60px target inside a 320px one. `NotificationCard`'s
+// `rowClick` draws it as a `role="button"` div rather than a real `<button>`,
+// because this row also carries the ✕ below, and a button cannot nest inside
+// a button.
 //
-// AND IT HAS NO ✕. Every other row here can be dismissed because its subject
-// has already happened — a repo is behind, a job failed — so "I have seen this"
-// is the whole of what dismissing means. This row's subject has NOT happened
-// yet: the run is still parked, waiting. A ✕ would take the notification away
-// and leave the task exactly as stuck as it was, which is a lie about what the
-// click did. The row leaves on its own, on the next pulse, when the question is
-// answered.
-function AttentionRowView({ row }: { row: AttentionRow }) {
+// THE ✕ DISMISSES THE ROW, NOT THE QUESTION. The task stays exactly as parked
+// as it was — this only clears its seat in Notifications, the same way
+// dismissing a repo row clears a stale "behind" notice without touching the
+// repo. The sidebar's Tasks dot is the surface that still says a run is
+// waiting; dismissing here never dims it. `tasks-lib.attentionDismissSignature`
+// keys the dismissal on the question's own title, so a run asking something
+// NEW earns a fresh row even if its key is unchanged.
+function AttentionRowView({
+  row,
+  onDismiss,
+}: {
+  row: AttentionRow;
+  onDismiss: () => void;
+}) {
   const title = `${row.taskId} needs your input`;
+  const dismiss: NotificationCardDismiss = {
+    onClick: onDismiss,
+    ariaLabel: `Dismiss ${row.taskId} needs your input`,
+  };
   // Nowhere to go — a task naming no folder at all — is drawn as a plain row
   // rather than dropped: the news is still true, and a button that navigates
   // nowhere is worse than text (`attentionRows` on why `href` can be null).
   if (!row.href) {
     return (
-      <div className="dl-row">
-        <div className="dl-row-head">
-          <span className="dl-title">{title}</span>
-        </div>
-        <div className="dl-status dl-status-one" title={row.title}>{row.title}</div>
-      </div>
+      <NotificationCard
+        title={title}
+        status={row.title}
+        statusOneLine
+        statusTooltip={row.title}
+        onDismiss={dismiss}
+      />
     );
   }
   const href = row.href;
   return (
-    <button
-      type="button"
-      className="dl-row dl-row-open"
+    <NotificationCard
+      title={title}
+      status={row.title}
+      statusOneLine
+      statusTooltip={row.title}
+      onDismiss={dismiss}
       // `navigateUrl`, not `navigate`: these hrefs are whole /explorer urls with
       // the `_side=claude` handoff and the session id on the query string, and
       // `navigate` takes an fs path and builds its own. No `isDir` hint, for
       // the same reason the calendar popover's thread button — the identical
       // call on the identical value — gives none: a task's target is a folder
       // OR the file the chat was on, and this row cannot tell which.
-      onClick={() => navigateUrl(href)}
-      title={`Open ${row.taskId}`}
-    >
-      <div className="dl-row-head">
-        <span className="dl-title">{title}</span>
-      </div>
-      <div className="dl-status dl-status-one" title={row.title}>{row.title}</div>
-    </button>
+      rowClick={{ onClick: () => navigateUrl(href), title: `Open ${row.taskId}` }}
+    />
   );
 }
 
@@ -265,10 +273,17 @@ function AttentionRowView({ row }: { row: AttentionRow }) {
 // tears this component down and back up) does not forget what the user just
 // dismissed either.
 const DISMISSED_KEY = "fused-render:repo-updates-dismissed";
+// A waiting-task dismissal (Task 4's remaining piece) gets its OWN key rather
+// than sharing `DISMISSED_KEY`'s map: the two are keyed on different id
+// spaces (a repo root vs. a task's session/pending key) and expire against
+// different signatures (`repoDismissSignature` vs. `attentionDismissSignature`)
+// — folding them into one map would risk a collision the moment either id
+// space grows a value that looks like the other's.
+const ATTENTION_DISMISSED_KEY = "fused-render:attention-dismissed";
 
-function loadDismissed(): Record<string, string> {
+function loadDismissed(key: string): Record<string, string> {
   try {
-    const raw = localStorage.getItem(DISMISSED_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object") return {};
@@ -282,15 +297,15 @@ function loadDismissed(): Record<string, string> {
   }
 }
 
-function saveDismissed(next: Record<string, string>): void {
+function saveDismissed(key: string, next: Record<string, string>): void {
   try {
-    localStorage.setItem(DISMISSED_KEY, JSON.stringify(next));
+    localStorage.setItem(key, JSON.stringify(next));
   } catch {
     // storage unavailable — dismissal is best-effort, so a failed write is fine
   }
 }
 
-let moduleDismissed: Record<string, string> = loadDismissed();
+let moduleDismissed: Record<string, string> = loadDismissed(DISMISSED_KEY);
 
 function useDismissed() {
   const [dismissed, setDismissedState] = useState<Record<string, string>>(moduleDismissed);
@@ -299,7 +314,7 @@ function useDismissed() {
   // a re-check that changes nothing must not resurrect a dismissed row.
   const dismissOne = useCallback((root: string, signature: string) => {
     moduleDismissed = { ...moduleDismissed, [root]: signature };
-    saveDismissed(moduleDismissed);
+    saveDismissed(DISMISSED_KEY, moduleDismissed);
     setDismissedState(moduleDismissed);
   }, []);
 
@@ -307,11 +322,26 @@ function useDismissed() {
     const next = { ...moduleDismissed };
     for (const row of rows) next[row.repo.root] = repoDismissSignature(row.repo);
     moduleDismissed = next;
-    saveDismissed(next);
+    saveDismissed(DISMISSED_KEY, next);
     setDismissedState(next);
   }, []);
 
   return { dismissed, dismissOne, dismissAll };
+}
+
+let moduleAttentionDismissed: Record<string, string> = loadDismissed(ATTENTION_DISMISSED_KEY);
+
+function useAttentionDismissed() {
+  const [dismissed, setDismissedState] =
+    useState<Record<string, string>>(moduleAttentionDismissed);
+
+  const dismissOne = useCallback((key: string, signature: string) => {
+    moduleAttentionDismissed = { ...moduleAttentionDismissed, [key]: signature };
+    saveDismissed(ATTENTION_DISMISSED_KEY, moduleAttentionDismissed);
+    setDismissedState(moduleAttentionDismissed);
+  }, []);
+
+  return { dismissed, dismissOne };
 }
 
 // MIGRATED ONTO `.dl-row`/`.dl-row-head`/`.dl-title`/`.dl-status` (status-bar
@@ -447,6 +477,8 @@ export function RepoUpdatesCardView({
   terminal = [],
   pairings = [],
   attention = [],
+  attentionDismissed = {},
+  onAttentionDismiss,
   onPairingGone,
   onJobsChanged,
   onTerminalPatch,
@@ -459,6 +491,10 @@ export function RepoUpdatesCardView({
   pairings?: LanPairingEvent[];
   /** Tasks parked on a question — the fourth row kind (2026-09-03). */
   attention?: AttentionRow[];
+  /** Which waiting-task rows a dismissal still hides — keyed and expired the
+   *  way `dismissed` is for repo rows, but on `attentionDismissSignature`. */
+  attentionDismissed?: Record<string, string>;
+  onAttentionDismiss?: (key: string, signature: string) => void;
   onPairingGone?: (id: string) => void;
   /** A terminal row was acted on — ask the jobs poll to re-read. */
   onJobsChanged?: () => void;
@@ -476,6 +512,7 @@ export function RepoUpdatesCardView({
   onDone: (result: MutationResult) => void;
 }) {
   const visible = visibleRepoRows(rows, dismissed);
+  const visibleAttention = visibleAttentionRows(attention, attentionDismissed);
   // ONLY TERMINAL JOBS FOLD (Task 3) — a waiting task, a repo row and a
   // pairing are always shown in full below, never counted toward this cap.
   // `olderShown` is local UI state, not a prop: once the reader opens the
@@ -489,7 +526,7 @@ export function RepoUpdatesCardView({
   // holds — a count that still counted only repo rows was the likeliest bug
   // in this change.
   const total =
-    visible.length + terminal.length + pairings.length + attention.length;
+    visible.length + terminal.length + pairings.length + visibleAttention.length;
   const idle = total === 0;
   // The failure tint MOVED HERE from the Jobs chip (D586), and D662 broadened
   // `terminal` to hold every finished job — done and cancelled as well as
@@ -508,7 +545,7 @@ export function RepoUpdatesCardView({
   // sidebar's Tasks dot is red for the same state; the two agree rather than
   // one of them staying quiet — this corner is where the reader looks for
   // what wants them, and a neutral pill there read as "nothing urgent".
-  const asking = attention.length > 0;
+  const asking = visibleAttention.length > 0;
   const tone = hasFailure || asking ? "failure" : total > 0 ? "on" : "idle";
   const ariaLabel =
     total === 0
@@ -559,8 +596,14 @@ export function RepoUpdatesCardView({
                     all facts about the past, which will still be true in ten
                     minutes. A parked run is a person being waited on, and the
                     thing being waited on goes first. */}
-                {attention.map((row) => (
-                  <AttentionRowView key={row.key} row={row} />
+                {visibleAttention.map((row) => (
+                  <AttentionRowView
+                    key={row.key}
+                    row={row}
+                    onDismiss={() =>
+                      (onAttentionDismiss ?? NOOP)(row.key, attentionDismissSignature(row))
+                    }
+                  />
                 ))}
                 {/* Then pairings: the newest kind of news, and the only one
                     with nothing to act on beyond reading it. */}
@@ -687,21 +730,20 @@ export function RepoUpdatesCardView({
  * 3), never a refreshed `checked_at` — a throttled re-check that moved
  * nothing used to resurrect the row every five minutes.
  *
- * TERMINAL JOBS CANNOT OPEN THIS PANEL (D586/D588, broadened by D662): they
- * reach this section as a prop and fill the circle, but they go to the hook
- * as `alsoDrawn`, never as announceable ids — which is what makes "a
- * background job finishing never throws a panel over the page" structural
- * rather than a flag. They DO count for occupancy, so an emptying repo list
- * no longer closes the panel out from under them (code review 2026-08-28,
- * finding 1).
+ * TERMINAL JOBS CANNOT OPEN THIS PANEL: `useStatusChip` has no arrival-driven
+ * path at all — `open = pinned || hovered`, full stop — so there is no notion
+ * of an "announceable" id for anything to reach here as. They DO count for
+ * occupancy, so an emptying repo list no longer closes the panel out from
+ * under them (code review 2026-08-28, finding 1).
  */
 export function RepoUpdatesDockView({
   rows,
   dismissed,
-  ready,
   terminal = [],
   pairings = [],
   attention = [],
+  attentionDismissed,
+  onAttentionDismiss,
   onPairingGone,
   onDismiss,
   onDismissAll,
@@ -712,22 +754,23 @@ export function RepoUpdatesDockView({
 }: {
   rows: RepoRow[];
   dismissed: Record<string, string>;
-  /** Has the upstream read answered once (kept for callers; the chip no longer auto-opens on it)? Optional
-   *  so a caller that mounts this with a fixed list keeps the old behaviour. */
-  ready?: boolean;
   /** TERMINAL JOBS (D586, broadened by D662 to done/error/cancelled — not only
    *  `state: "error"`) re-routed out of the Jobs section, drawn beside the
    *  repo rows. Optional and defaulted so every existing caller and test
    *  keeps working unchanged. */
   terminal?: Job[];
-  /** LAN pairings — announceable rows: a pairing while the chip is collapsed
-   *  auto-opens the panel, which is the whole point of announcing one. */
+  /** LAN pairings — the panel opens only on hover or click (`useStatusChip`'s
+   *  `open = pinned || hovered`); a pairing arriving never opens it by
+   *  itself. The chip's own numeral is what announces one. */
   pairings?: LanPairingEvent[];
-  /** Tasks parked on a question (2026-09-03). NOT announceable, for D673's
-   *  reason and one of its own: the sidebar's red Tasks dot already says this
-   *  is happening, and a panel that threw itself over the page every time a run
-   *  asked a permission question would cover the very chat holding the answer. */
+  /** Tasks parked on a question (2026-09-03). Same as pairings: the sidebar's
+   *  red Tasks dot already says a run is waiting, and nothing here throws the
+   *  panel open over the chat holding the answer — hover or click still
+   *  decide when it shows. */
   attention?: AttentionRow[];
+  /** Which waiting-task rows a dismissal still hides. */
+  attentionDismissed?: Record<string, string>;
+  onAttentionDismiss?: (key: string, signature: string) => void;
   onPairingGone?: (id: string) => void;
   onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
@@ -760,6 +803,8 @@ export function RepoUpdatesDockView({
       terminal={terminal}
       pairings={pairings}
       attention={attention}
+      attentionDismissed={attentionDismissed}
+      onAttentionDismiss={onAttentionDismiss}
       onPairingGone={onPairingGone}
       collapsed={!chip.open}
       onToggle={chip.toggle}
@@ -781,9 +826,11 @@ export default function RepoUpdatesDock({
   terminal?: Job[];
   onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
 } = {}) {
-  const { repos, pairings, setPairings, settled, refresh } = useRepoUpdates();
+  const { repos, pairings, setPairings, refresh } = useRepoUpdates();
   const rows = repoRows(repos);
   const { dismissed, dismissOne, dismissAll } = useDismissed();
+  const { dismissed: attentionDismissed, dismissOne: attentionDismissOne } =
+    useAttentionDismissed();
   // THE SHELL'S EXISTING TASKS POLL, subscribed to — not a fifth timer in this
   // file. `tasksPulse.ts` is one store with one poll behind it (and none at all
   // while the Tasks page is feeding it), which is the whole reason it exists;
@@ -800,10 +847,11 @@ export default function RepoUpdatesDock({
     <RepoUpdatesDockView
       rows={rows}
       dismissed={dismissed}
-      ready={settled}
       terminal={terminal}
       pairings={pairings}
       attention={attention}
+      attentionDismissed={attentionDismissed}
+      onAttentionDismiss={attentionDismissOne}
       onPairingGone={pairingGone}
       onTerminalPatch={onTerminalPatch}
       onDismiss={dismissOne}
