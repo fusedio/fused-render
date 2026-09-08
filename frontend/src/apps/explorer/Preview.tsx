@@ -2188,8 +2188,7 @@ function TemplatePreview({
                   Showing this file as of commit{" "}
                   <span className="listing-snapshot-sha">
                     {shortSha(snapshotResolved.sha)}
-                  </span>
-                  .
+                  </span>.
                   <button
                     type="button"
                     className="listing-snapshot-back"
