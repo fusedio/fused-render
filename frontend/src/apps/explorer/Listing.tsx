@@ -14,7 +14,7 @@
 //   pane.ts                preview-pane split (usePreviewPane: width + drag)
 //   pane-side.ts           the pane's three modes + the `_side` param (pure)
 //   row-utils.ts           RowCtx batch helpers
-//   bits.tsx               skeleton rows, ClipMark, highlight, scroll anchor
+//   bits.tsx               skeleton rows, ClipMark, GitMark, highlight, anchor
 //   useDirListing.ts       /api/fs/list fetch, Load more, dir watch, new-row cue
 //   useWalkSearch.ts       streamed walk + scoring + throttles + result paging
 //   useListingSelection.ts selection state + keyboard nav + reconcile
@@ -77,9 +77,11 @@ import { resolveSort, sortEntries } from "@apps/explorer/listing/sorting";
 import {
   skeletonRows,
   ClipMark,
+  GitMark,
   renderHighlight,
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
+import { gitRowClass } from "@apps/explorer/listing/git-mark";
 import { usePreviewPane } from "@apps/explorer/listing/pane";
 import {
   activePaneSide,
@@ -1614,6 +1616,7 @@ export default function Listing({
           data-fs-drop-dir={entry.is_dir ? "1" : "0"}
           className={
             (entry.ignored ? "row ignored" : "row") +
+            gitRowClass(entry.git) + // git tints the NAME, not the row
             (newNames.has(entry.name) ? " row-new" : "") + // brief dir-watch tint
             (selectedSet.has(childPath) ? " selected" : "") +
             (childPath === selectedPath ? " lead" : "") + // scroll-into-view marker
@@ -1639,6 +1642,7 @@ export default function Listing({
               </span>
               {entry.name}
             </span>
+            <GitMark status={entry.git} />
             <ClipMark
               cut={cutSet.has(childPath)}
               copied={copiedSet.has(childPath)}

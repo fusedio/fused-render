@@ -37,6 +37,9 @@ DOWNLOAD_TIMEOUT_S = 300.0
 # 60s until the first poll landed. 10s keeps the manifest check off the
 # earliest, busiest moment of startup while getting the badge on screen within
 # about a minute of launch instead of two.
+# Shared with the Windows tray updater (supervisor/_win32/update.py), which
+# competes with a whole app launch at this moment; the mac manager wants the
+# check sooner and uses MAC_STARTUP_DELAY_S instead.
 STARTUP_DELAY_S = 10.0
 CHECK_INTERVAL_S = 6 * 60 * 60
 MAX_MANIFEST_BYTES = 64 * 1024
