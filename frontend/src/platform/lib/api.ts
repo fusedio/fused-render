@@ -2432,12 +2432,22 @@ export function migrateApp(
 // ---- App Doctor (fused_render/app_doctor.py) --------------------------------
 //
 // The share-readiness checklist for one app folder: deterministic checks only —
-// a row is `pass`, `fail`, or `skip` (the check could not run: no entry to read,
-// no git repo, an optional file that isn't there), never a judgment. The
-// judgment is the fix TASK's, which is a Claude session running the
-// fused-render-app-doctor skill (`runAppDoctor` below).
+// a row is `pass`, `fail`, `skip` (the check could not run: no entry to read,
+// no git repo, an optional file that isn't there), or `unrun` (a check that
+// needs a Claude session to answer at all, not yet asked — no check emits this
+// today, see app_doctor.py's own note on `UNRUN`), never a judgment on its own.
+// `kind` tells a "fact" row (the check IS the judgment — a file exists or does
+// not) from a "candidate" row (`secrets`, `device-paths`: a pattern match that
+// only LOCATES something to look at — see app_doctor.py's module docstring for
+// the measurement behind that split). The judgment on a candidate, and the fix
+// on either kind, is the per-row fix TASK's, a Claude session running the
+// fused-render-app-doctor skill against that one row (`runAppDoctorCheck`,
+// `runAppDoctorAll` below).
 
-export type AppCheckState = "pass" | "fail" | "skip";
+export type AppCheckState = "pass" | "fail" | "skip" | "unrun";
+export type AppCheckSection = "essentials" | "sharing";
+export type Severity = "critical" | "warning";
+export type AppCheckKind = "fact" | "candidate";
 
 export interface AppCheckFinding {
   rule: string;
@@ -2448,22 +2458,40 @@ export interface AppCheckFinding {
   excerpt: string;
 }
 
+export interface AppDoctorTask {
+  id: string;
+  state: string;
+  run_id: string | null;
+}
+
 export interface AppCheck {
   id: string;
+  section: AppCheckSection;
+  severity: Severity;
+  kind: AppCheckKind;
   label: string;
   state: AppCheckState;
   detail: string;
   findings: AppCheckFinding[];
+  /** A fix task on THIS row that has not finished yet, or null. Per-row now —
+   *  there is no report-level task any more, since the fix session is one per
+   *  row (or, for "Fix all", one covering every failing row at once, still
+   *  attached the same way a stored prompt is: by which check id it names). */
+  task: AppDoctorTask | null;
 }
 
 export interface AppDoctorReport {
   path: string;
   entry: string | null;
-  /** Nothing failed. A skipped check is not a pass, but it is not a problem. */
+  /** No FAILING check, critical or warning. A candidate row still counts at
+   *  its own severity — the modal (never this flag) is what tells a
+   *  candidate's unreviewed failure apart from a settled one. */
   ok: boolean;
   checks: AppCheck[];
-  /** A fix task on the entry that has not finished yet, or null. */
-  task?: { id: string; state: string; run_id: string | null } | null;
+  /** Section and severity ordering, server-defined once — read this rather
+   *  than hardcoding a second copy of either order. */
+  sections: AppCheckSection[];
+  severities: Severity[];
 }
 
 export function getAppDoctor(path: string): Promise<AppDoctorReport> {
@@ -2472,15 +2500,38 @@ export function getAppDoctor(path: string): Promise<AppDoctorReport> {
   );
 }
 
-// Create the App Doctor FIX task on the app's entry page — one session for the
-// whole report, its prompt invoking the fused-render-app-doctor skill. 409 when
-// one is already running, 404 when the folder has no entry page.
-export function runAppDoctor(
+export interface AppDoctorFixResult extends NewAppResult {
+  check: string;
+}
+
+// Create the App Doctor FIX task for ONE row — its prompt invokes the
+// fused-render-app-doctor skill, pointed at that row's own section, with that
+// row's findings inline. 409 while ANY App Doctor task on this app (any row,
+// or "Fix all") is still running, 404 when the folder has no entry page.
+export function runAppDoctorCheck(
+  path: string,
+  check: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<AppDoctorFixResult> {
+  return postJson<AppDoctorFixResult>("/api/apps/doctor", { path, check, model, effort });
+}
+
+/** "Fix all": one session covering every currently FAILING row, section
+ *  order, each with its own findings inline — the footer's one button. Same
+ *  409/404 rules as a single-row fix, and the same one-live-task-per-app
+ *  lock: this and a single row's fix can never both be running. */
+export function runAppDoctorAll(
   path: string,
   model: DefaultModel = "",
   effort: SessionEffort = "",
-): Promise<NewAppResult> {
-  return postJson<NewAppResult>("/api/apps/doctor", { path, model, effort });
+): Promise<AppDoctorFixResult> {
+  return postJson<AppDoctorFixResult>("/api/apps/doctor", {
+    path,
+    check: "all",
+    model,
+    effort,
+  });
 }
 
 // ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------

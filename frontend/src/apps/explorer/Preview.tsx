@@ -26,6 +26,8 @@ import {
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
+import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
+import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, encodeFsPathSegments, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
@@ -299,6 +301,10 @@ function AppDoctorButton({ fsPath }: { fsPath: string }) {
       alive = false;
     };
   }, [fsPath, dir]);
+  // Fetched after first paint, never blocking it — see useAppDoctorChecks.
+  // Opening the modal re-fetches its own copy; this one is only for the
+  // header dot and is never reused to seed the dialog.
+  const doctorChecks = useAppDoctorChecks(isEntry ? dir : null);
   if (!isEntry) return null;
   return (
     <>
@@ -313,6 +319,7 @@ function AppDoctorButton({ fsPath }: { fsPath: string }) {
         onClick={() => setOpen(true)}
       >
         App Doctor
+        <AppDoctorStatusDot checks={doctorChecks} />
       </button>
       {open && <AppDoctorModal dir={dir} onClose={() => setOpen(false)} />}
     </>

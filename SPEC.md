@@ -11732,3 +11732,116 @@ the rules around it.
 - **Sequenced-after, deliberately absent here**: any cache eviction the app
   does not write itself, any UI that shows or clears an app's `.fused/`, and
   any `window.fused` accessor for the paths.
+
+---
+
+## 48. App Doctor — The Share-Readiness Checklist (D301, D548, D767)
+
+Goal: sharing an app is the moment its folder stops being private, and most of
+what could go wrong is deterministic to check. One button, on the app page's
+header and the explorer's entry-page topbar, runs the checklist and offers a
+per-row fix.
+
+- **AD-1** `fused_render/app_doctor.py` owns the report — a full folder
+  content scan plus one `git status`/`git rev-list` — beside the
+  `fused-render-app-doctor` skill (`skills/fused-render-app-doctor/`), which
+  owns the JUDGMENT and the per-check fix. The skill's `ci/app_check.py` is a
+  stdlib-only, deterministic FLOOR of that judgment: the secret shapes, the
+  device-path roots, and the three structural gaps (entry page, README,
+  thumbnail) it can answer without the runtime. `app_doctor.py` loads that
+  script by path (it lives under a skill directory, never importable as part
+  of the package) and adds the rows the floor deliberately omits because they
+  need the runtime's own knowledge: the ENTRY rule (D301 — a page carrying
+  `<meta name="fused-app">`, since a repo checkout alone has only filenames to
+  go on), the declared `fused-api-version` against the one the runtime
+  speaks, generated state outside `.fused/` (§47/D548), `pyproject.toml`/
+  `icon.svg` parsing, and whether the folder's git repo is clean and pushed.
+- **AD-2** Every check carries `section` (`"essentials"` | `"sharing"`),
+  `severity` (`"critical"` | `"warning"`), and `kind`
+  (`"fact"` | `"candidate"`), in one server-side table
+  (`app_doctor._CHECK_META`, mirrored by `ci/app_check.py`'s own `CHECK_META`
+  for the two ids it computes) — `CHECK_ORDER`/`SECTIONS`/`SEVERITIES` are
+  read off that table, never hardcoded a second time by the modal. `kind` is
+  MEASURED, not assumed (D767): a run of the floor engine over 8 real apps
+  found every one of 40 content findings from the `secrets`/`device-paths`
+  families was a false positive, so those two are `"candidate"` — a pattern
+  match that only LOCATES something to look at — while every other row (a
+  file exists or does not, a version tag reads N or does not) is `"fact"`.
+  The checklist has two severities, not three: a `"suggested"` row got no
+  tint, no rail, and no urgency in the dialog, so nobody ever acted on it — a
+  row worth putting on the checklist at all is worth a `"warning"`, and a row
+  not worth a warning does not belong on the list (`ci/app_check.py` keeps its
+  own three-tier `"suggested"` for the two structural facts a missing push
+  should not fail over, see AD-7). `ok` is "no FAILING check at all" — every
+  row is critical or warning, so a candidate still counts at its own severity
+  for this one flag, though never in the modal's own presentation of it
+  (AD-4).
+- **AD-3** Eleven checks, essentials then sharing, exactly:
+  `secrets` (critical, candidate), `entry` (critical, fact), `api-version`
+  (critical, fact), `pyproject` (warning, fact), `readme` (warning, fact),
+  `icon` (warning, fact) — then `device-paths` (warning, candidate), `git`
+  (warning, fact), `pushed` (warning, fact), `generated` (warning, fact),
+  `preview` (warning, fact). `pushed` (new, D767) reads ahead-of-upstream
+  commits via `git rev-list --count @{upstream}..HEAD` — no network call,
+  ever — and skips with no upstream/remote configured rather than failing a
+  folder that was never pushed anywhere. Every label is a complete statement
+  on its own — the dialog does not print a detail sentence under a passing
+  row: `pyproject.toml is valid TOML`, `icon.svg is valid SVG`, `Has a README
+  explaining the app`, `Every change is committed`, `Every commit is pushed`.
+- **AD-4** The modal (`platform/ui/AppDoctorModal.tsx`) groups rows under a
+  section heading in server order, shows a severity chip on each failing row,
+  and gives each failing row its own action button: **Fix** for a `"fact"`
+  row, **Review** for a `"candidate"` row that reads as "N to review" rather
+  than a settled failure. The footer's one button, **Fix all**, covers every
+  currently failing row in one task; there is no Re-run button — the report
+  is fetched fresh every time the dialog opens (the caller mounts it behind
+  `{open && <AppDoctorModal/>}`, so a fresh mount already re-runs everything).
+  Both the header entry points also carry a small status dot, coloured by the
+  worst FAILING severity (`appdoctor-lib.ts`'s `worstSeverity`, the one
+  reduction both surfaces call) — a failing candidate never drives the dot
+  past `"warning"` on its own, since it is unreviewed by definition. The dot
+  is fetched once after first paint, never blocking render; a failed or slow
+  fetch leaves it neutral. Colour is never the only carrier: every state
+  names itself in `title`/`aria-label`.
+- **AD-5** The fix task is per-check. `doctor_prompt(entry_html, check_id,
+  findings)` embeds the check id in the stored prompt (`` check `<id>` ``,
+  read back by `doctor_task_check_id`) and points at that check's own
+  section in the skill by name — SKILL.md's section names match check ids
+  exactly. A candidate row's prompt asks for triage first: judge each finding
+  real or not, say which and why, then fix only the real ones.
+  `doctor_prompt_all` builds the "Fix all" prompt the same way, one block per
+  currently failing row. `POST /api/apps/doctor` takes `check` in the body
+  (400 for an unknown id, `"all"` included) and 404/409 exactly as before —
+  one live fix session per APP, not per row, since two sessions rewriting one
+  folder is a merge nobody asked for. `app_doctor.report_one` still exists —
+  the POST handler uses it to gather one row's findings without paying for a
+  full report — but `GET /api/apps/doctor` no longer takes a `check` query
+  param: an earlier build had one (re-run just one row after its own fix task
+  lands), but creating a fix task navigates away and closes the dialog, so
+  that moment never occurs and the client helper that would have called it
+  had no caller; both were removed rather than left as untested surface
+  (review finding, post-D767). A row's `task` is EITHER its own live fix
+  session or a live "Fix all" session (`app_doctor.ALL`) — `GET`'s response
+  attaches the Fix-all task to every row, not just a row literally named
+  `"all"` (no row ever is), so the modal's per-row buttons and its footer
+  both read a live Fix-all session as in-progress rather than idle.
+- **AD-6** `skills/fused-render-app-doctor/SKILL.md` does not re-derive any of
+  the above: the panel already computed and displays it. The skill is one
+  anchored playbook section per check id — how to judge a hit, what is safe
+  to change, and where the fix belongs if it belongs to another skill — plus
+  the routing table to the sibling API skills, the CI setup procedure, the
+  masking rule, and a short whole-app path for a direct invocation with no
+  panel in front of the session. The two candidate sections lead with triage,
+  using D767's own false positives (a repeated path across committed run
+  logs, a vendored stdlib docstring, markdown code spans, a deliberate
+  system-path constant, a test fixture) as worked examples.
+- **AD-7** The CI floor's exit code (`ci/app_check.py`'s `main`, wired up by
+  `.github/workflows/app-check.yml` on every push) gates on `kind == "fact"`
+  **and** `severity in ("critical", "warning")` — not `kind == "fact"` alone.
+  A `suggested` fact (a missing `preview.png`) still prints, since it is a
+  real, worth-fixing gap, but it must not redden a push the way a `critical`
+  candidate correctly does not either: gating on `kind` alone briefly had a
+  missing thumbnail failing a build while a leaked AWS key printed and exited
+  0, the exact inverted urgency AD-2's severity table exists to prevent.
+  Every finding still prints regardless of whether it blocks — only the exit
+  code changes.
