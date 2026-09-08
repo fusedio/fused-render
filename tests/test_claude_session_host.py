@@ -315,7 +315,8 @@ def test_a_message_that_arrives_during_the_reap_decision_is_still_drained(
             pass
 
     fake_cli = _FakeCli()
-    host._reap_loop(agent, str(run_dir), fake_cli, str(host_json))
+    req = {"session_id": "", "file": str(tmp_path / "file.py")}
+    host._reap_loop(agent, str(run_dir), fake_cli, str(host_json), req)
 
     assert len(calls) >= 2, "the race must actually have had a chance to occur"
     inbox_left = list((run_dir / "inbox").glob("*.json"))
@@ -370,3 +371,160 @@ def test_start_never_clobbers_a_pid_the_host_already_wrote(agent, monkeypatch,
         pid = f.read().strip()
     assert pid == "999999", \
         "the host's own write must survive _start's later placeholder write"
+
+
+# --------------------------------------------- D757: the open-exchange mark
+
+class _MarkFakeStdin:
+    """A `cli_stdin` stand-in for driving `_drain_inbox` directly, without a
+    real subprocess — the mark is written before any bytes reach this."""
+    def __init__(self):
+        self.written = []
+
+    def write(self, data):
+        self.written.append(data)
+
+    def flush(self):
+        pass
+
+
+def _transcript_path(agent, projects_root, file, session_id):
+    return os.path.join(str(projects_root), agent._munge(agent._workdir(file)),
+                        session_id + ".jsonl")
+
+
+def _make_transcript(agent, projects_root, file, session_id, content):
+    path = _transcript_path(agent, projects_root, file, session_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+
+def _read_mark(run_dir):
+    with open(os.path.join(run_dir, "open_exchange.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_feeding_a_user_message_with_no_mark_writes_a_fresh_one(
+        agent, tmp_path, monkeypatch):
+    """Acceptance test 1: a fresh mark carries the transcript path, the
+    transcript's byte size, and out.jsonl's byte size, all sampled before
+    the message's bytes reach either file."""
+    host = _load_host()
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(agent, "PROJECTS", str(projects))
+    file = str(tmp_path / "proj" / "page.html")
+    os.makedirs(os.path.dirname(file), exist_ok=True)
+
+    transcript = _make_transcript(agent, projects, file, "sess1", "hello\n")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text("12345")  # 5 bytes already on disk
+
+    agent._write_inbox_entry(str(run_dir), "hi")
+    req = {"session_id": "sess1", "file": file}
+    host._drain_inbox(agent, str(run_dir), _MarkFakeStdin(), req)
+
+    mark = _read_mark(str(run_dir))
+    assert mark == {"transcript": transcript, "offset": 6, "out_offset": 5}
+
+
+def test_a_control_request_never_touches_the_mark(agent, tmp_path, monkeypatch):
+    """Acceptance test 2: a control request fed through the inbox neither
+    creates nor moves the mark."""
+    host = _load_host()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text("")
+
+    agent._write_control_request(str(run_dir), "interrupt")
+    req = {"session_id": "sess1", "file": str(tmp_path / "page.html")}
+    host._drain_inbox(agent, str(run_dir), _MarkFakeStdin(), req)
+
+    assert not os.path.exists(os.path.join(str(run_dir), "open_exchange.json"))
+
+
+def test_a_follow_up_while_open_leaves_the_mark_byte_identical(
+        agent, tmp_path, monkeypatch):
+    """Acceptance test 3: a follow-up fed while the exchange is open (no
+    `result` row at or after the mark's `out_offset`) leaves the mark
+    untouched — a follow-up folds into the exchange already in flight."""
+    host = _load_host()
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(agent, "PROJECTS", str(projects))
+    file = str(tmp_path / "proj" / "page.html")
+    os.makedirs(os.path.dirname(file), exist_ok=True)
+    transcript = _make_transcript(agent, projects, file, "sess1", "hello\n")
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text("")  # open: no result row anywhere
+    original = {"transcript": transcript, "offset": 6, "out_offset": 0}
+    mark_path = run_dir / "open_exchange.json"
+    with open(mark_path, "w", encoding="utf-8") as f:
+        json.dump(original, f)
+    original_bytes = mark_path.read_bytes()
+
+    agent._write_inbox_entry(str(run_dir), "a follow-up")
+    req = {"session_id": "sess1", "file": file}
+    host._drain_inbox(agent, str(run_dir), _MarkFakeStdin(), req)
+
+    assert mark_path.read_bytes() == original_bytes
+
+
+def test_a_result_row_at_the_out_offset_makes_the_next_message_write_a_new_mark(
+        agent, tmp_path, monkeypatch):
+    """Acceptance test 4: once a `result` row has landed at or after the
+    existing mark's `out_offset`, the next user message writes a NEW mark at
+    the current offsets rather than leaving the closed one in place."""
+    host = _load_host()
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(agent, "PROJECTS", str(projects))
+    file = str(tmp_path / "proj" / "page.html")
+    os.makedirs(os.path.dirname(file), exist_ok=True)
+    _make_transcript(agent, projects, file, "sess1", "hello\n")
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    stale = {"transcript": "does-not-matter.jsonl", "offset": 0, "out_offset": 0}
+    with open(run_dir / "open_exchange.json", "w", encoding="utf-8") as f:
+        json.dump(stale, f)
+    # A `result` row landed at/after out_offset=0: the exchange has closed.
+    (run_dir / "out.jsonl").write_text(json.dumps({"type": "result"}) + "\n")
+
+    # The transcript grows before the next message is fed (the prior
+    # exchange's own turns were appended in the meantime).
+    _make_transcript(agent, projects, file, "sess1", "hello\nworld\n")
+    new_out_size = os.path.getsize(str(run_dir / "out.jsonl"))
+    new_transcript_size = os.path.getsize(
+        _transcript_path(agent, projects, file, "sess1"))
+
+    agent._write_inbox_entry(str(run_dir), "a new exchange")
+    req = {"session_id": "sess1", "file": file}
+    host._drain_inbox(agent, str(run_dir), _MarkFakeStdin(), req)
+
+    mark = _read_mark(str(run_dir))
+    assert mark["out_offset"] == new_out_size
+    assert mark["offset"] == new_transcript_size
+    assert mark != stale
+
+
+def test_a_brand_new_session_records_a_null_transcript_and_zero_offset(
+        agent, tmp_path, monkeypatch):
+    """Acceptance test 5: a brand-new session — no resume id, and no init
+    row has landed in out.jsonl yet — records `{"transcript": null,
+    "offset": 0}`: this can only be a session's first exchange, and offset 0
+    is exactly right because the transcript that will exist begins there."""
+    host = _load_host()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text("")  # no session_id announced yet
+
+    agent._write_inbox_entry(str(run_dir), "hello")
+    req = {"session_id": "", "file": str(tmp_path / "page.html")}
+    host._drain_inbox(agent, str(run_dir), _MarkFakeStdin(), req)
+
+    mark = _read_mark(str(run_dir))
+    assert mark["transcript"] is None
+    assert mark["offset"] == 0

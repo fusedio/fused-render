@@ -83,13 +83,63 @@ def _append_private(path: str):
     return os.fdopen(fd, "ab")
 
 
-def _drain_inbox(agent, run_dir: str, cli_stdin) -> None:
+def _mark_open_exchange(agent, run_dir: str, req: dict) -> None:
+    """Stamp `run_dir/open_exchange.json` with where the exchange a user
+    message about to be fed begins, or leave an already-open mark untouched
+    — see `agent._read_open_exchange`/`agent._write_open_exchange` for the
+    shape and the read side (`agent._history`) that consumes it. Called only
+    for a `type: "user"` inbox entry, immediately before its bytes reach the
+    CLI's stdin: this is the one instant anything knows an exchange opens
+    (see DECISIONS.md D757).
+
+    An existing mark that is still open — no `result` row at or after its
+    own `out_offset` — is a follow-up folding into the exchange already in
+    flight, and the exchange still begins where it began. Anything else
+    (absent, unparseable, or closed) gets a fresh mark at the CURRENT sizes
+    of the transcript and `out.jsonl`, taken before this message's bytes
+    reach either file.
+
+    The session id a not-yet-resumed transcript may not have yet is resolved
+    in order: `req["session_id"]` (a resume), then `agent._session_from_out`
+    (the CLI's own minted id, once its init row has landed), then neither —
+    a brand-new session's very first exchange, where a `null` transcript and
+    `offset: 0` is exactly right."""
+    existing = agent._read_open_exchange(run_dir)
+    if existing is not None and not agent._out_has_result_since(
+            run_dir, existing.get("out_offset", 0)):
+        return
+    session_id = req.get("session_id") or agent._session_from_out(run_dir)
+    if session_id:
+        transcript = os.path.join(
+            agent.PROJECTS, agent._munge(agent._workdir(req["file"])),
+            session_id + ".jsonl")
+        try:
+            offset = os.path.getsize(transcript)
+        except OSError:
+            offset = 0
+    else:
+        transcript = None
+        offset = 0
+    try:
+        out_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        out_offset = 0
+    agent._write_open_exchange(run_dir, {
+        "transcript": transcript, "offset": offset, "out_offset": out_offset})
+
+
+def _drain_inbox(agent, run_dir: str, cli_stdin, req: dict) -> None:
     """Write every queued `run_dir/inbox/*.json` entry to the CLI's stdin
     pipe, oldest name first, moving each to `inbox/done/` once written.
     Entries appear here from two callers that never coordinate directly with
     each other: `_start` (the turn's opening message) and `_send` (every
     later follow-up) — this loop is the only thing that knows the order
-    they should reach the CLI in, which is exactly filename order."""
+    they should reach the CLI in, which is exactly filename order.
+
+    A `type: "user"` entry also stamps `open_exchange.json` (see
+    `_mark_open_exchange`) before its bytes are handed to the CLI — a
+    control request (`_write_control_request` — cancel, model and mode
+    changes) is not a turn opening and must never move that mark."""
     inbox = os.path.join(run_dir, "inbox")
     done = os.path.join(inbox, "done")
     try:
@@ -110,6 +160,12 @@ def _drain_inbox(agent, run_dir: str, cli_stdin) -> None:
                 data = f.read()
         except FileNotFoundError:
             continue  # raced with something else draining it; not our job
+        try:
+            entry = json.loads(data.decode("utf-8", "replace"))
+        except ValueError:
+            entry = {}
+        if isinstance(entry, dict) and entry.get("type") == "user":
+            _mark_open_exchange(agent, run_dir, req)
         cli_stdin.write(data)
         cli_stdin.flush()
         os.replace(src, os.path.join(done, name))
@@ -230,10 +286,10 @@ def main() -> None:
             "read_dirs": req["extra_read_dirs"],
         }, f)
 
-    _reap_loop(agent, run_dir, cli, host_json)
+    _reap_loop(agent, run_dir, cli, host_json, req)
 
 
-def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
+def _reap_loop(agent, run_dir: str, cli, host_json: str, req: dict) -> None:
     """Drain `run_dir/inbox` into `cli`'s stdin and watch
     `agent._turn_state` until idle-with-nothing-pending has held for
     `_IDLE_REAP_SECONDS`, then tear the session down. Extracted out of
@@ -257,7 +313,7 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
     turn_state_cache = {}
     try:
         while cli.poll() is None:
-            _drain_inbox(agent, run_dir, cli.stdin)
+            _drain_inbox(agent, run_dir, cli.stdin, req)
             turn_open, tasks_pending = _turn_state_if_grown(
                 agent, run_dir, turn_state_cache)
             if turn_open or tasks_pending:
@@ -283,7 +339,7 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str) -> None:
             pass
     finally:
         try:
-            _drain_inbox(agent, run_dir, cli.stdin)
+            _drain_inbox(agent, run_dir, cli.stdin, req)
         except Exception:
             pass  # the CLI may already be gone; nothing left to hand it
         try:

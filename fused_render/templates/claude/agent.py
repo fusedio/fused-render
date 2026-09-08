@@ -2645,6 +2645,59 @@ def _session_from_out(run_dir: str) -> str:
     return ""
 
 
+def _open_exchange_path(run_dir: str) -> str:
+    return os.path.join(run_dir, "open_exchange.json")
+
+
+def _read_open_exchange(run_dir: str) -> dict | None:
+    """The mark `session_host._mark_open_exchange` wrote, or None when it is
+    absent or unparseable. Never raises — a torn or missing mark reads the
+    same as "nothing recorded", which is the safe default on both the write
+    side (write a fresh one) and the read side (`open_from = None`)."""
+    try:
+        with open(_open_exchange_path(run_dir), encoding="utf-8") as f:
+            mark = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(mark, dict):
+        return None
+    return mark
+
+
+def _write_open_exchange(run_dir: str, mark: dict) -> None:
+    """Write the mark atomically — tmp file plus `os.replace`, the same
+    pattern `_write_inbox_row` uses, so a read racing this write never sees
+    a half-written file."""
+    path = _open_exchange_path(run_dir)
+    tmp_path = path + ".tmp"
+    with _private_open(tmp_path) as f:
+        json.dump(mark, f)
+    os.replace(tmp_path, path)
+
+
+def _out_has_result_since(run_dir: str, out_offset: int) -> bool:
+    """Whether a `type: "result"` row begins at or after byte `out_offset`
+    in `run_dir/out.jsonl` — the pure, two-file test that closes a mark
+    (see `open_exchange.json`'s docstring at its writer). Reads only the
+    tail past `out_offset`, not the whole file."""
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            fh.seek(out_offset)
+            blob = fh.read()
+    except OSError:
+        return False
+    for raw_line in blob.split(b"\n"):
+        if not raw_line:
+            continue
+        try:
+            row = json.loads(raw_line.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        if row.get("type") == "result":
+            return True
+    return False
+
+
 # How far back a live-run lookup bothers to look. Run dirs are named
 # "<YYYYmmdd-HHMMSS>-<hex>", so a reverse sort is newest-first and a run that is
 # still going is by construction among the newest few — a turn does not outlive
