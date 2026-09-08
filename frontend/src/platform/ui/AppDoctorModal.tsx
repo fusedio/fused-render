@@ -423,6 +423,9 @@ export function AppDoctorModal({
             {report === null ? "" : reviewNote(report.checks)}
           </span>
           <div className="flex flex-none gap-2">
+          <Button variant="outline" size="sm" onClick={onClose}>
+            Close
+          </Button>
           {liveTask ? (
             <Button
               variant="default"
