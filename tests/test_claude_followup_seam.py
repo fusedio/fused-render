@@ -23,6 +23,7 @@ the same window:
 import importlib.util
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -84,6 +85,39 @@ def _setup(agent, run_dir, alive=True):
     with open(run_dir / "host.json", "w", encoding="utf-8") as fh:
         json.dump({"pid": 4242, "session_id": "s", "file": "", "mode": "",
                    "model": "", "effort": "", "read_dirs": []}, fh)
+
+
+def _record_tree_kills(agent, monkeypatch):
+    """Record the pids `_kill_tree` ends, on whichever road THIS platform takes.
+
+    `_kill_tree` is the same platform split `_cancel`'s tail always had: POSIX
+    signals the process group (`start_new_session=True` makes the pid the pgid),
+    while Windows has neither `os.killpg` nor a console for CTRL_BREAK to reach
+    (the run is spawned DETACHED_PROCESS) and shells out to `taskkill /T /F` to
+    walk the tree instead.
+
+    A test that patches `os.killpg` alone therefore records nothing on Windows
+    AND lets a real `taskkill /F` loose on whatever process happens to own that
+    pid on the runner — which is how the R2-12 stops went red on
+    `test-python-windows` while passing everywhere else. Patching the road the
+    platform actually takes keeps the assertion honest on both, and the
+    `/T`/`/F` check pins the tree-walking flags the Windows road depends on.
+
+    Returns a list of pids, appended to in call order.
+    """
+    killed = []
+    if os.name == "nt":
+        def _run(cmd, **kwargs):
+            assert cmd[:2] == ["taskkill", "/PID"], cmd
+            assert "/T" in cmd, "must walk the tree, not just the named pid"
+            assert "/F" in cmd, "the CLI does not answer a polite close"
+            killed.append(int(cmd[2]))
+            return subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(agent.subprocess, "run", _run)
+    else:
+        monkeypatch.setattr(agent.os, "killpg",
+                            lambda pid, _sig: killed.append(pid))
+    return killed
 
 
 # ---------------------------------------------------- the seam itself (#9)
@@ -321,7 +355,7 @@ def test_a_landed_interrupt_retires_the_pending_echo(agent, run_dir):
 
 
 def test_an_interrupt_that_never_answers_leaves_the_gate_to_the_tree_kill(
-        agent, run_dir):
+        agent, run_dir, monkeypatch):
     """No control response inside the timeout falls through to ending the whole
     process tree, and a dead process is `_poll`'s own hard stop — so the gate
     does not have to be touched on that road, and is not."""
@@ -333,11 +367,11 @@ def test_an_interrupt_that_never_answers_leaves_the_gate_to_the_tree_kill(
     agent._host_alive = lambda _run_dir: True
     agent._write_control_request = lambda _d, _kind, **kw: "req-1"
     agent._await_control_response = lambda _d, _rid, start_offset=0: None
-    killed = []
-    agent.os.killpg = lambda pid, sig: killed.append(pid)
+    killed = _record_tree_kills(agent, monkeypatch)
 
     agent._cancel("run")
-    assert killed, "no answer inside the timeout means end the whole tree"
+    assert killed == [4242], (
+        "no answer inside the timeout means end the whole tree")
     agent._alive = lambda _run_dir: False
     assert agent._poll("run")["done"] is True
 
@@ -369,7 +403,8 @@ def test_the_undrained_inbox_is_discarded_by_a_stop(agent, run_dir):
         "come back to the composer (R1 #11)")
 
 
-def test_a_stop_with_anything_queued_ends_the_session(agent, run_dir):
+def test_a_stop_with_anything_queued_ends_the_session(
+        agent, run_dir, monkeypatch):
     """The CLI reports what it dropped in `still_queued` and was observed
     ANSWERING it anyway, and there is no control request that clears its queue.
     Legacy T does nothing about this (its `stopRun` only pastes the text back),
@@ -381,15 +416,15 @@ def test_a_stop_with_anything_queued_ends_the_session(agent, run_dir):
     agent._write_control_request = lambda _d, _kind, **kw: "req-1"
     agent._await_control_response = lambda _d, _rid, start_offset=0: {
         "still_queued": ["msg2"]}
-    killed = []
-    agent.os.killpg = lambda pid, sig: killed.append(pid)
+    killed = _record_tree_kills(agent, monkeypatch)
 
     assert agent._cancel("run")["still_queued"] == ["msg2"]
     assert killed == [4242], (
         "a live host would keep answering past the stop")
 
 
-def test_a_stop_with_an_EMPTY_queue_leaves_the_host_alive(agent, run_dir):
+def test_a_stop_with_an_EMPTY_queue_leaves_the_host_alive(
+        agent, run_dir, monkeypatch):
     """The ordinary Stop, and the whole reason `interrupt` is tried first: the
     session survives, background tasks with it, and the next message continues
     it instead of resuming a dead one."""
@@ -400,8 +435,7 @@ def test_a_stop_with_an_EMPTY_queue_leaves_the_host_alive(agent, run_dir):
     agent._write_control_request = lambda _d, _kind, **kw: "req-1"
     agent._await_control_response = lambda _d, _rid, start_offset=0: {
         "still_queued": []}
-    killed = []
-    agent.os.killpg = lambda pid, sig: killed.append(pid)
+    killed = _record_tree_kills(agent, monkeypatch)
 
     assert agent._cancel("run") == {"cancelled": "run", "still_queued": []}
     assert killed == []
