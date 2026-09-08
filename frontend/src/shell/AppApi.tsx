@@ -35,6 +35,9 @@ import {
 } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { replaceSearch } from "@platform/lib/router";
+import { rewritePathAgainst } from "@platform/lib/snapshot-param";
+import type { AppPageSnapshotState } from "./useAppPageSnapshot";
+import SnapshotError from "./SnapshotError";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -125,10 +128,22 @@ const MONO = "font-mono text-[12.5px]";
 export default function AppApi({
   dir,
   folderHref,
+  snapshot,
 }: {
   /** The app folder, absolute forward-slash. */
   dir: string;
   folderHref: string;
+  /** AppPage's own snapshot resolution — rewritten against directly, never a
+   *  shared singleton. Under a selected commit the endpoint list (and so
+   *  every Execute call, which runs whatever `.py` that listing names) comes
+   *  from the extracted tree instead of the working tree: the API tab lists
+   *  — and runs — that commit's own code. While `snapshot.pending` (a
+   *  `_snapshot` sha is claimed but not yet resolved), `effectiveDir` is null
+   *  rather than falling back to the live `dir` — code review finding 4: the
+   *  endpoint list used to load from the live tree in this window, and an
+   *  Execute clicked in it ran live code under a URL claiming a past
+   *  commit. */
+  snapshot: AppPageSnapshotState;
 }) {
   useUrlVersion();
   // Absent `ep` means "nothing chosen yet" — the first endpoint opens so the
@@ -147,10 +162,18 @@ export default function AppApi({
   const [runs, setRuns] = useState<Record<string, Run>>({});
   const [invalid, setInvalid] = useState<Record<string, string | null>>({});
 
+  const effectiveDir = snapshot.pending ? null : rewritePathAgainst(snapshot.snap, dir);
   useEffect(() => {
+    // Pending: nothing honest to list yet (see this component's own prop
+    // comment) — stay on the loading skeleton rather than list live and let
+    // Execute run the LIVE tree's code under a URL claiming a past commit.
+    if (!effectiveDir) {
+      setLoad({ kind: "loading" });
+      return;
+    }
     let live = true;
     setLoad({ kind: "loading" });
-    getAppPy(dir)
+    getAppPy(effectiveDir)
       .then((data) => live && setLoad({ kind: "ok", data }))
       .catch(
         (e) =>
@@ -159,7 +182,7 @@ export default function AppApi({
     return () => {
       live = false;
     };
-  }, [dir]);
+  }, [effectiveDir]);
 
   const toggle = (rel: string) => {
     const next = new URLSearchParams(location.search);
@@ -238,7 +261,12 @@ export default function AppApi({
   // scrolls here. The list inside hugs its rows (flex-none).
   return (
     <div className="app-api flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
-      {load.kind === "loading" && (
+      {/* `error` (finding 1, second round): a transient resolve failure
+          leaves `effectiveDir` null forever (the same as an ordinary
+          in-flight resolve, so `load` never leaves "loading" either way) —
+          this must not be an indefinite skeleton with no way out. */}
+      {snapshot.error && <SnapshotError onRetry={snapshot.retry} />}
+      {!snapshot.error && load.kind === "loading" && (
         <SkeletonLines rows={3} label="Reading Python files" />
       )}
       {load.kind === "error" && (

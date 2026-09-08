@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App page version dropdown</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --fg: #1c1a17; --muted: #6b6459; --line: #e0dcd4;
+    --card: #ffffff; --accent: #8a5a2b; --accent-soft: #f4ece2;
+    --del: #a33; --del-soft: #fbeeee; --add: #2f6b45; --add-soft: #ecf5ef;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161513; --fg: #ece8e1; --muted: #9b9387; --line: #322f2a;
+      --card: #1e1c19; --accent: #d9a066; --accent-soft: #2a231b;
+      --del: #e08585; --del-soft: #2b1e1e; --add: #7dc79b; --add-soft: #1b2a21;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 27px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 44px 0 14px; font-weight: 600; }
+  h3 { font-size: 16px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; }
+  .goal { font-size: 17px; margin-bottom: 14px; }
+  .lede { color: var(--muted); max-width: 68ch; }
+  code, .path { font-family: var(--mono); font-size: 0.88em; }
+  .path { color: var(--accent); word-break: break-all; }
+  .card { background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px 20px; margin: 0 0 14px; }
+  .task-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+  .num { flex: none; width: 26px; height: 26px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent);
+    font: 600 13px/26px var(--mono); text-align: center; }
+  ul.files { list-style: none; margin: 0 0 14px; padding: 0; }
+  ul.files li { padding: 7px 0; border-top: 1px solid var(--line); }
+  ul.files li:first-child { border-top: 0; }
+  .tag { display: inline-block; font: 600 10px/1.6 var(--mono); letter-spacing: 0.04em;
+    padding: 0 6px; border-radius: 4px; margin-right: 8px; vertical-align: 1px; }
+  .t-new { background: var(--add-soft); color: var(--add); }
+  .t-mod { background: var(--accent-soft); color: var(--accent); }
+  .t-del { background: var(--del-soft); color: var(--del); }
+  .t-test { background: var(--line); color: var(--muted); }
+  .verify { font-family: var(--mono); font-size: 12.5px; background: var(--accent-soft);
+    border-radius: 6px; padding: 8px 10px; margin: 0 0 8px; overflow-x: auto; white-space: pre; }
+  .commit { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .commit::before { content: "commit  "; opacity: 0.6; }
+  dl.dec { margin: 0; }
+  dl.dec dt { font-weight: 600; margin-top: 14px; }
+  dl.dec dt:first-child { margin-top: 0; }
+  dl.dec dd { margin: 2px 0 0; color: var(--muted); }
+  .figure { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px; margin-bottom: 14px; overflow-x: auto; }
+  .figure figcaption { color: var(--muted); font-size: 13px; margin-top: 12px; }
+  svg { display: block; max-width: 100%; height: auto; }
+  .svg-label { font: 12px var(--mono); fill: var(--fg); }
+  .svg-muted { font: 11px var(--mono); fill: var(--muted); }
+  .svg-box { fill: var(--card); stroke: var(--line); }
+  .svg-box-hot { fill: var(--accent-soft); stroke: var(--accent); }
+  .svg-box-gone { fill: var(--del-soft); stroke: var(--del); stroke-dasharray: 4 3; }
+  .svg-line { stroke: var(--muted); fill: none; }
+  .note { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>App page version dropdown</h1>
+<p class="goal">The app page gets a <strong>version dropdown</strong> that puts the whole page — Overview, Files and API — on a past commit, and the <strong>Git tab is deleted</strong>.</p>
+<p class="lede">
+  The snapshot machinery already exists from the preceding work on this branch: <code>GET /api/git/snapshot</code> extracts an app folder at a sha, and <code>_snapshot</code> is URL state that resolves to an extracted tree. This applies both to the app page. What is missing is a way to <em>choose</em> a commit outside the git sidebar — hence a commits route and a dropdown — and the Git tab, which was the app page's only git surface, goes away rather than sitting beside a second one.
+</p>
+<p class="lede">
+  Owner's calls, both settled: the app page becomes <strong>read-only about git</strong> (staging, committing, branches and push/pull leave the app page entirely — they remain in the explorer's folder view, where the <code>git</code> template still lives), and picking a version affects the <strong>whole page</strong>, not just the Overview frame.
+</p>
+
+<h2>Amendment — version numbers, not shas (owner, after approval)</h2>
+<p class="lede">
+  The app page is for basic users, so the picker reads <strong><code>v1</code>, <code>v2</code>, <code>v3</code></strong> — the commit's ordinal among commits touching this app folder — rather than a short sha. <code>v1</code> is the oldest such commit; the newest is <code>v&lt;total&gt;</code>.
+</p>
+<p class="lede">
+  <strong>The label is presentation; the sha stays the identity.</strong> <code>_snapshot</code> in the URL remains a hex sha, never a version number — a v-number counts commits reachable from HEAD touching that folder, so it renumbers on a rebase or a branch switch, and a shared link keyed on it would silently come to mean a different commit. Keep the short sha available as the row's <code>title</code> for anyone who wants it, but it is not the label.
+</p>
+<p class="lede">
+  <strong>This is a cosmetic change, and should stay one.</strong> The numbering is client-side index arithmetic over the list the picker already has. The only server-side part is one integer: the route reports the TOTAL number of commits touching the app folder (one <code>git rev-list --count</code> beside the log it already runs), so that a capped list still numbers its newest row correctly — without it, <code>v7</code> silently becomes <code>v5</code> when the row limit changes. Do not add a per-commit version field, a second round trip, or any numbering state.
+</p>
+
+<h2>Visual overview</h2>
+<figure class="figure">
+<svg viewBox="0 0 820 250" role="img" aria-label="Version dropdown drives the whole app page">
+  <rect x="0" y="10" width="200" height="44" rx="6" class="svg-box-hot"/>
+  <text x="12" y="30" class="svg-label">Version dropdown</text>
+  <text x="12" y="45" class="svg-muted">Live · 7 recent commits</text>
+
+  <path d="M200 32 H270" class="svg-line" marker-end="url(#a)"/>
+  <rect x="270" y="10" width="250" height="44" rx="6" class="svg-box"/>
+  <text x="282" y="30" class="svg-label">GET /api/git/commits</text>
+  <text x="282" y="45" class="svg-muted">scoped to the app folder</text>
+
+  <path d="M100 54 V96" class="svg-line" marker-end="url(#a)"/>
+  <rect x="0" y="96" width="280" height="44" rx="6" class="svg-box-hot"/>
+  <text x="12" y="116" class="svg-label">app page url  ?_snapshot=sha</text>
+  <text x="12" y="131" class="svg-muted">carried across tabs already</text>
+
+  <path d="M280 118 H350" class="svg-line" marker-end="url(#a)"/>
+  <rect x="350" y="96" width="240" height="44" rx="6" class="svg-box"/>
+  <text x="362" y="116" class="svg-label">GET /api/git/snapshot</text>
+  <text x="362" y="131" class="svg-muted">extracted dir + entry</text>
+
+  <path d="M140 140 V182" class="svg-line" marker-end="url(#a)"/>
+  <rect x="0" y="182" width="150" height="44" rx="6" class="svg-box-hot"/>
+  <text x="12" y="202" class="svg-label">Overview</text>
+  <text x="12" y="217" class="svg-muted">extracted entry</text>
+
+  <rect x="170" y="182" width="150" height="44" rx="6" class="svg-box-hot"/>
+  <text x="182" y="202" class="svg-label">Files</text>
+  <text x="182" y="217" class="svg-muted">extracted tree</text>
+
+  <rect x="340" y="182" width="150" height="44" rx="6" class="svg-box-hot"/>
+  <text x="352" y="202" class="svg-label">API</text>
+  <text x="352" y="217" class="svg-muted">that commit's .py</text>
+
+  <rect x="510" y="182" width="150" height="44" rx="6" class="svg-box-gone"/>
+  <text x="522" y="202" class="svg-label">Git tab</text>
+  <text x="522" y="217" class="svg-muted">deleted</text>
+
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="currentColor" style="color: var(--muted)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption>One selection, one param, three tabs. The dropdown is the only new decision point; everything below <code>_snapshot</code> already exists.</figcaption>
+</figure>
+
+<h2>Task breakdown</h2>
+<p class="note">TDD throughout; one commit per task; scoped tests only — the orchestrator runs the full suite once at the end.</p>
+
+<div class="card">
+  <div class="task-head"><span class="num">1</span><div><h3>A commits route for the app folder</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-mod">mod</span><span class="path">fused_render/server/routers/git_snapshot.py</span> — add <code>GET /api/git/commits?path=&lt;abs&gt;&amp;limit=&lt;n&gt;</code> as a third sibling route, reusing this module's <code>_resolve</code>, <code>_repo_root</code>, <code>_popen_kwargs</code> and <code>_Refused</code> shapes so the discipline is not copied a third time. Scope the log to the enclosing app folder with the same <code>--</code> + <code>:(literal)</code> pathspec rule the module already follows. Machine format only (<code>%x00</code>-delimited, one commit per line), bounded output, a timeout, and the same mount refusal.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">fused_render/server/routers/git_snapshot.py</span> — response <code>{ok, commits: [{sha, short, subject, author, when}], has_more}</code>. Deliberately smaller than <span class="path">templates/git/log.py</span>'s reader: a dropdown needs a label, not a diff. Say so in the module docstring, which currently describes two routes.</li>
+    <li><span class="tag t-test">test</span><span class="path">tests/test_git_commits.py</span> — fixtures modelled on <span class="path">tests/test_git_snapshot.py</span>: commits scoped to the app folder and not the whole repo; a path with no app folder 404s; relative path and mount-backed refuse; <code>limit</code> honoured and <code>has_more</code> truthful; an empty repository (no commits) returns <code>ok</code> with an empty list rather than an error.</li>
+  </ul>
+  <div class="verify">.venv/bin/pytest tests/test_git_commits.py -q</div>
+  <div class="commit">git: list an app folder's recent commits for the version picker</div>
+</div>
+
+<div class="card">
+  <div class="task-head"><span class="num">2</span><div><h3>The dropdown, writing <code>_snapshot</code></h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-new">new</span><span class="path">frontend/src/shell/AppVersionPicker.tsx</span> — the control: "Live" plus the recent commits from task 1, each as short sha + subject + relative date. Selecting writes <code>_snapshot</code> to the app page URL; "Live" clears it. Offered only when <code>GET /api/git/app-folder</code> says an app folder encloses this one — the same fail-closed probe the git template's eye uses, so the picker never appears where a snapshot cannot resolve.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/shell/AppPage.tsx</span> — mount the picker in the header beside the tab strip. Navigation already preserves the query (<code>appPageUrl(dir, tab, location.search)</code> at <span class="path">AppPage.tsx:356,367,517</span>), so <code>_snapshot</code> carries across tabs with no second carry rule; do not add one.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/platform/lib/api.ts</span> — a typed client for the commits route beside the existing <code>getGitSnapshot</code>.</li>
+    <li><span class="tag t-test">test</span><span class="path">frontend/src/shell/AppVersionPicker.test.tsx</span> — the probe says no app folder so nothing renders; a commit list renders and selection writes the param; "Live" clears it; a failed commits fetch leaves the page live rather than half-selected.</li>
+  </ul>
+  <div class="verify">bun test frontend/src/shell</div>
+  <div class="commit">app page: a version picker for the app's own commits</div>
+</div>
+
+<div class="card">
+  <div class="task-head"><span class="num">3</span><div><h3>Overview, Files and API honour the snapshot</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/shell/AppPage.tsx:133-148</span> — the Overview frame src is <code>/render?path=${entry}</code>; under a snapshot it must address the EXTRACTED entry, exactly as <span class="path">Preview.tsx</span> does for its <code>_render</code> frame. Rewrite against this page's own resolution using <code>rewritePathAgainst</code> from <span class="path">platform/lib/snapshot-param.ts</span> — not the module singleton, which is the defect code review found in the explorer (round 2, finding 1).</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/shell/AppFiles.tsx:101</span> — the tree is one <code>walkDir(dir)</code> call; under a snapshot walk the extracted dir so the tab lists that commit's files.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/shell/AppApi.tsx</span> — the endpoint list comes from <code>GET /api/apps/py</code> for the folder; under a snapshot ask it about the extracted dir, so the tab lists that commit's <code>.py</code> endpoints.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/shell/AppPage.tsx</span> — one visible marker that the page is on a commit rather than the working tree, and the way back to Live. The picker itself is that marker if it shows the selected sha; do not add a second banner.</li>
+    <li><span class="tag t-test">test</span><span class="path">frontend/src/shell/AppPage.test.tsx</span> — under <code>_snapshot</code>: Overview's src addresses the extracted entry; Files walks the extracted dir; API asks about it; clearing returns all three to live. Assert the rewrite comes from the page's own resolution, not a singleton written by another mounted view.</li>
+  </ul>
+  <div class="verify">bun test frontend/src/shell</div>
+  <div class="commit">app page: put the whole page on the selected version</div>
+</div>
+
+<div class="card">
+  <div class="task-head"><span class="num">4</span><div><h3>Delete the Git tab</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/shell/current-apps-lib.ts:144</span> — drop <code>"git"</code> from <code>APP_PAGE_TABS</code>. The type is derived from this list and <code>TAB_DEFS</code> is a <code>Record</code> over it, so the compiler will point at everything that must follow. Update the comment above it, which explains that <code>git</code> shows only inside a work tree.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/shell/AppPage.tsx:175-186, 301-318</span> — remove the <code>git</code> entry from <code>TAB_DEFS</code>, the <code>gitTplRaw</code>/<code>gitAllowed</code>/<code>gitTpl</code> resolution, the <code>git</code> branch of <code>visibleTabs</code>, and the now-unused <code>GitBranch</code> import and <code>templateFrame</code> helper if nothing else uses it. A stale <code>?_tab=git</code> deep link must fall back to the default tab, which is the existing behaviour for an unknown tab — verify rather than assume.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">frontend/src/shell/AppPage.tsx:1-40</span> — the header comment describes six tabs including Git and explains why the tab frames the template rather than rebuilding it. Rewrite it for what the page now is: five tabs, and a version picker that makes all of them historical.</li>
+    <li><span class="tag t-test">test</span><span class="path">frontend/src/shell/AppPage.test.tsx</span> — the strip never offers Git even inside a work tree; <code>?_tab=git</code> lands on Overview.</li>
+  </ul>
+  <div class="verify">bun test frontend/src/shell &amp;&amp; bunx tsc --noEmit</div>
+  <p class="note">Expected: the typecheck is the real check here — the derived tab type makes a missed call site a compile error.</p>
+  <div class="commit">app page: remove the Git tab</div>
+</div>
+
+<div class="card">
+  <div class="task-head"><span class="num">5</span><div><h3>Say what changed</h3></div></div>
+  <ul class="files">
+    <li><span class="tag t-mod">mod</span><span class="path">SPEC.md</span>, <span class="path">DECISIONS.md</span> — amend whatever asserts the app page has a Git tab, and add a decision recording that the app page is now read-only about git, that the write actions live only in the explorer's folder view, and that the version picker drives the whole page.</li>
+    <li><span class="tag t-mod">mod</span><span class="path">DECISIONS-app-snapshot-preview.md</span> — extend the running log with this round's decisions.</li>
+  </ul>
+  <div class="verify">grep -rn "_tab=git" --include=*.ts --include=*.tsx --include=*.md .</div>
+  <p class="note">Expected: no live reference to a Git tab left outside historical decision text.</p>
+  <div class="commit">docs: the app page is read-only about git</div>
+</div>
+
+<h2>Key decisions &amp; risks</h2>
+<dl class="dec">
+  <dt>The commits route lives in <code>git_snapshot.py</code>, not a new module.</dt>
+  <dd>It needs the same repo-root resolution, app-folder scoping, mount refusal, posix_spawn-safe kwargs and refusal shapes. A separate module means a third copy of that discipline, and the parity is not test-enforced.</dd>
+
+  <dt>A deliberately smaller log than <code>templates/git/log.py</code>.</dt>
+  <dd>That reader answers diffs, pagination, rename detection and working-tree state. A dropdown needs a label per commit. Two implementations of "git log" now exist; the mitigation is that this one is small enough to read at a glance, and it is scoped to a single question.</dd>
+
+  <dt>No second carry rule for the app page.</dt>
+  <dd><code>appPageUrl(dir, tab, location.search)</code> already preserves the query across tab hops, so <code>_snapshot</code> travels for free. The explorer's <code>carries()</code> rule exists because <code>navigate()</code> deliberately drops the query; that problem does not exist here.</dd>
+
+  <dt>Execution stays enabled under a snapshot.</dt>
+  <dd>The API tab's Execute runs the commit's own <code>.py</code> against the extracted tree. Refusing would be inconsistent with Overview, which runs the whole app at that commit — the point of the feature.</dd>
+
+  <dt>Rewrite against the page's own resolution, never the singleton.</dt>
+  <dd>Two apps in one repo share shas and several views mount at once; the explorer already shipped this defect once (round 2, finding 1). <code>rewritePathAgainst(snap, path)</code> exists precisely so a caller with its own validated resolution uses it.</dd>
+
+  <dt>Risk: the app page loses git write actions with no in-page pointer.</dt>
+  <dd>Owner's call — "preview only", no link kept. Someone who used the Git tab to commit must now open the folder in the explorer. Worth watching for as feedback rather than pre-emptively softening.</dd>
+
+  <dt>Risk: <code>AppPage.tsx</code> has no render-test precedent.</dt>
+  <dd>The explorer's <code>Preview.tsx</code> wiring for the same mechanism shipped reviewed-but-not-test-verified for this reason. Tasks 2–4 add <code>AppPage.test.tsx</code> and <code>AppVersionPicker.test.tsx</code>; if a render test proves impractical here too, say so in the decisions log rather than quietly dropping the coverage.</dd>
+</dl>
+
+<h2>How we'll know it works</h2>
+<p>
+  Open an app that lives in a git repo from the sidebar. The header shows a version picker reading "Live"; there is no Git tab. Pick a commit from before a change to one of the app's readers: Overview re-renders the app as it behaved then, Files lists that commit's tree, API lists that commit's endpoints, and switching between the three tabs keeps the selection. Pick "Live" and all three return to the working tree. Open an app that is not inside a git repo and no picker appears at all.
+</p>
+
+</div>
+</body>
+</html>
