@@ -78,7 +78,6 @@ import {
   sectionSummary,
   sortByAttention,
   splitFindings,
-  splitPassingTail,
   summaryLine,
   tasksTabUrl,
 } from "./appdoctor-lib";
@@ -281,18 +280,14 @@ export function AppDoctorModal({
   const [report, setReport] = useState<AppDoctorReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // Two independent disclosure levels, both keyed by section id, both plain
-  // component state (no localStorage — the report is fetched fresh on every
-  // open, so there is nothing to restore across opens). `sectionOpen` is
-  // seeded from `sectionStartsOpen` the moment the report lands (below) and
-  // then left alone: the seeding effect only ever fills in a key that isn't
-  // there yet, so a section the user has since toggled by hand keeps that
-  // choice for the life of the dialog instead of being reseeded out from
-  // under them on some later render. `passFoldOpen` needs no seeding — every
-  // passing-tail fold starts collapsed, so a missing key already reads as
-  // closed.
+  // One disclosure level, keyed by section id, in plain component state (no
+  // localStorage — the report is fetched fresh on every open, so there is
+  // nothing to restore across opens). Seeded from `sectionStartsOpen` the
+  // moment the report lands (below) and then left alone: the seeding effect
+  // only ever fills in a key that isn't there yet, so a section the user has
+  // since toggled by hand keeps that choice for the life of the dialog
+  // instead of being reseeded out from under them on some later render.
   const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({});
-  const [passFoldOpen, setPassFoldOpen] = useState<Record<string, boolean>>({});
   const alive = useRef(true);
   useEffect(() => {
     // Re-arm on every mount: a remount (or React's dev double-invoke under
@@ -380,8 +375,6 @@ export function AppDoctorModal({
 
   const toggleSection = (section: string) =>
     setSectionOpen((prev) => ({ ...prev, [section]: !prev[section] }));
-  const togglePassFold = (section: string) =>
-    setPassFoldOpen((prev) => ({ ...prev, [section]: !prev[section] }));
 
   return (
     <Modal
@@ -432,19 +425,11 @@ export function AppDoctorModal({
             const isOpen = sectionOpen[group.section] ?? sectionStartsOpen(group.checks);
             const listId = "appdoc-list-" + group.section;
             const sorted = sortByAttention(group.checks);
-            // The trailing run of passes folds behind its own disclosure
-            // ONLY when there is something else in the list for it to fold
-            // behind — a section that is nothing but passes already reads as
-            // one line at the section level (`sectionStartsOpen` keeps it
-            // collapsed by default), so nesting a second "N passed" fold
-            // inside it here would just repeat that same disclosure once
-            // the user opens it by hand.
-            const { rows, passing } = splitPassingTail(sorted);
-            const showFold = rows.length > 0 && passing.length > 0;
-            const foldOpen = passFoldOpen[group.section] ?? false;
-            const foldListId = listId + "-passed";
             return (
-              <div className="appdoc-section" key={group.section}>
+              <div
+                className={"appdoc-section" + (isOpen ? " appdoc-section-open" : "")}
+                key={group.section}
+              >
                 <h3 className="appdoc-section-title">
                   <button
                     type="button"
@@ -470,7 +455,7 @@ export function AppDoctorModal({
                 </h3>
                 {isOpen && (
                   <ul className="appdoc-list" id={listId}>
-                    {(showFold ? rows : sorted).map((c) => (
+                    {sorted.map((c) => (
                       <CheckRow
                         key={c.id}
                         check={c}
@@ -479,33 +464,6 @@ export function AppDoctorModal({
                         onFix={fixRow}
                       />
                     ))}
-                    {showFold && (
-                      <li className="appdoc-fold">
-                        <button
-                          type="button"
-                          className="appdoc-fold-btn"
-                          aria-expanded={foldOpen}
-                          aria-controls={foldListId}
-                          onClick={() => togglePassFold(group.section)}
-                        >
-                          <ChevronIcon open={foldOpen} />
-                          <span>{passing.length} passed</span>
-                        </button>
-                        {foldOpen && (
-                          <ul className="appdoc-list appdoc-fold-list" id={foldListId}>
-                            {passing.map((c) => (
-                              <CheckRow
-                                key={c.id}
-                                check={c}
-                                busy={busy}
-                                otherTaskLive={!!liveTask && !c.task}
-                                onFix={fixRow}
-                              />
-                            ))}
-                          </ul>
-                        )}
-                      </li>
-                    )}
                   </ul>
                 )}
               </div>

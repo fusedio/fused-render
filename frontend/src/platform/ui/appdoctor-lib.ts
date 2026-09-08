@@ -4,9 +4,8 @@
 // them, which severity a row's failure counts as once a candidate's
 // unreviewed status discounts it, how many findings a row draws, the address
 // of the app's Tasks tab, and — since a section that is all green ticks is
-// mostly noise — a section's one-line disclosure summary, whether it starts
-// open, and where its trailing run of passing rows splits off to fold behind
-// its own disclosure. Split out for the same reason modal/dirty-guard.ts is —
+// mostly noise — a section's one-line disclosure summary and whether it
+// starts open. Split out for the same reason modal/dirty-guard.ts is —
 // the chassis renders through a portal, which react-test-renderer cannot
 // mount, so the decisions worth pinning live where a test can call them.
 //
@@ -166,27 +165,6 @@ export function sectionSummary(checks: AppCheck[]): string {
  *  for a section the user has since toggled by hand. */
 export function sectionStartsOpen(checks: AppCheck[]): boolean {
   return checks.some((c) => c.state !== "pass");
-}
-
-/** Splits a section's (already `sortByAttention`-ordered) rows into the
- *  leading rows worth showing and the trailing run of `pass` rows behind
- *  them — the run that folds behind its own "N passed" disclosure inside an
- *  open section. Keyed off the trailing run itself, by walking from the end
- *  while `state === "pass"`, rather than filtering the whole list — that way
- *  this stays correct even if the sort ever changes, and a stray pass that
- *  ISN'T part of the trailing run (impossible under `sortByAttention`, but
- *  this function doesn't assume it) stays in `rows` rather than getting
- *  pulled out of place. `passing` is empty when the section has no passing
- *  rows; `rows` is empty when the section is nothing BUT passes — the caller
- *  treats that as "no fold to draw", since the section's own disclosure is
- *  already the fold. */
-export function splitPassingTail(checks: AppCheck[]): {
-  rows: AppCheck[];
-  passing: AppCheck[];
-} {
-  let i = checks.length;
-  while (i > 0 && checks[i - 1].state === "pass") i--;
-  return { rows: checks.slice(0, i), passing: checks.slice(i) };
 }
 
 /** The per-row action button's label: a CANDIDATE row asks the session to

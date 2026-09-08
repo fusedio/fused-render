@@ -43,30 +43,44 @@
   color: var(--fg-muted);
 }
 
+/* Each section is a card: a hairline and a raised ground, so "essentials"
+ * and "sharing" separate by edge rather than by a gap the reader has to
+ * measure. The card clips its own corners, which is what lets the header
+ * button run edge to edge and still sit inside the radius. */
+.appdoc-section {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+}
+
 .appdoc-section + .appdoc-section {
-  margin-top: 22px;
+  margin-top: 10px;
 }
 
 .appdoc-section-title {
-  margin: 0 0 6px;
+  margin: 0;
 }
 
-/* The section header is now a real disclosure control, not inert text: a
- * full-width button carrying `aria-expanded`/`aria-controls` (AppDoctorModal.tsx)
- * so the section's own `<ul>` can be toggled. `background: none; border: none`
- * strips the browser's own button chrome so it reads as the same header text
- * the old bare `<h3>` was; the uppercase/weight/tracking treatment moves onto
- * this button unchanged. The hover ground and radius match `.appdoc-row`
- * below it, so the whole row reads as one clickable surface consistent with
- * every other row in the list. */
+/* An OPEN card's header is a lid over its rows, so it takes the hairline
+ * that divides the two. Closed, the header IS the card and needs none. */
+.appdoc-section-open .appdoc-section-title {
+  border-bottom: 1px solid var(--border);
+}
+
+/* The header is a disclosure control: a full-width button carrying
+ * `aria-expanded`/`aria-controls` (AppDoctorModal.tsx) so the section's own
+ * `<ul>` can be toggled. `border: none; background: transparent` strips the
+ * browser's own button chrome, leaving the heading treatment — uppercase,
+ * weight, tracking — to carry it. It spans the card's full width so the whole
+ * top edge is the hit target. */
 .appdoc-section-btn {
   display: flex;
   width: 100%;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: 8px;
+  padding: 9px 12px;
   border: none;
-  border-radius: 6px;
   background: transparent;
   color: var(--fg);
   font: inherit;
@@ -77,19 +91,18 @@
   cursor: pointer;
 }
 
-/* Hover moves the CHEVRON, not a ground. A filled plate behind a section
- * header reads as a control bar sitting on the list rather than as the list's
- * own heading, and at one plate per section it is the loudest thing in a
- * dialog whose actual signal is a severity rail three rows down. The chevron
- * brightening from muted to full foreground is affordance enough for a
- * header whose whole job is to be a heading. */
-.appdoc-section-btn:hover .appdoc-chevron {
-  color: var(--fg);
+/* The whole header lightens on hover — a plate behind it would be the
+ * loudest thing in a dialog whose actual signal is a severity rail two rows
+ * down, and the card already draws every edge this control needs. */
+.appdoc-section-btn:hover {
+  background: rgba(var(--tint), 0.04);
 }
 
+/* Inset, because the button meets the card's own edge on three sides — an
+ * offset ring would be drawn outside the radius that clips it. */
 .appdoc-section-btn:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .appdoc-section-name {
@@ -108,15 +121,14 @@
   letter-spacing: normal;
 }
 
-/* Shared by the section header and the passing-tail fold row inside an open
- * section (`.appdoc-fold-btn` below) — both are disclosures, both draw the
- * same chevron. Rotation is a transform, not a redraw, so it composites
- * cheaply; `reduced-motion.css`'s blanket `transition-duration: 0.01ms`
- * already collapses it for anyone who asked for that, so there is no local
- * `prefers-reduced-motion` block to duplicate here. */
+/* The chevron takes the header's own colour rather than a dimmer one of its
+ * own: it is part of the heading, not a second element beside it. Rotation is
+ * a transform, not a redraw, so it composites cheaply; `reduced-motion.css`'s
+ * blanket `transition-duration: 0.01ms` already collapses it for anyone who
+ * asked for that, so there is no local `prefers-reduced-motion` block to
+ * duplicate here. */
 .appdoc-chevron {
   flex: none;
-  color: var(--fg-muted);
   transition: transform 0.15s ease;
 }
 
@@ -126,10 +138,10 @@
 
 .appdoc-list {
   display: flex;
+  padding: 6px;
   flex-direction: column;
   gap: 2px;
   margin: 0;
-  padding: 0;
   list-style: none;
 }
 
@@ -139,46 +151,6 @@
   align-items: flex-start;
   padding: 8px 10px;
   border-radius: 6px;
-}
-
-/* The passing-tail fold: a `<li>` sibling of the `.appdoc-row`s inside the
- * same `.appdoc-list`, not a row itself — it carries no state mark or
- * severity ground, just its own disclosure button. Sits at the list's own
- * left inset (10px, matching `.appdoc-row`'s own padding) so it reads as
- * part of the list rather than a second nested panel. */
-.appdoc-fold-btn {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-/* Same as the section header: the text and its chevron brighten, no plate.
- * This row is the quietest thing in the list on purpose — everything it
- * hides has already passed. */
-.appdoc-fold-btn:hover {
-  color: var(--fg);
-}
-
-.appdoc-fold-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* The revealed passing rows sit in their own nested list rather than flush
- * with the fold button — `gap` on the OUTER `.appdoc-list` already spaces the
- * fold row itself from its neighbours; this inner one needs the same
- * row-to-row rhythm once expanded. */
-.appdoc-fold-list {
-  margin-top: 2px;
 }
 
 /* Both severities get a ground AND a rail — see the header comment. The

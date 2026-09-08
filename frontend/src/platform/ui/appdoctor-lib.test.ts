@@ -44,7 +44,6 @@ const {
   SEVERITY_LABEL,
   sortByAttention,
   splitFindings,
-  splitPassingTail,
   STATE_LABEL,
   summaryLine,
   tasksTabUrl,
@@ -422,20 +421,3 @@ test("sectionStartsOpen opens a section with anything left to look at, collapses
   expect(sectionStartsOpen([check("a", "unrun")])).toBe(true);
 });
 
-test("splitPassingTail splits off the trailing run of passes, keyed off the run itself", () => {
-  const fail = check("a", "fail");
-  const unrun = check("b", "unrun");
-  const pass1 = check("c", "pass");
-  const pass2 = check("d", "pass");
-  expect(splitPassingTail([fail, unrun, pass1, pass2])).toEqual({
-    rows: [fail, unrun],
-    passing: [pass1, pass2],
-  });
-  // No passing rows at all: nothing splits off.
-  expect(splitPassingTail([fail, unrun])).toEqual({ rows: [fail, unrun], passing: [] });
-  // Nothing BUT passes: the whole list is the trailing run.
-  expect(splitPassingTail([pass1, pass2])).toEqual({ rows: [], passing: [pass1, pass2] });
-  // A pass that isn't part of the trailing run (out of `sortByAttention`
-  // order) stays in `rows` — only the run touching the end splits off.
-  expect(splitPassingTail([pass1, fail])).toEqual({ rows: [pass1, fail], passing: [] });
-});
