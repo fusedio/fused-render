@@ -493,3 +493,63 @@ scriptProbes([{ done: false, message: "still going", pending: [] }]);
     assert out["assistantTurnsDrawn"] == 0, \
         "the open exchange's assistant reply belongs to pollLoop, not resumeRun"
     assert out["pollLoopCalls"] == [["r1", 0]]
+
+
+def test_a_mid_turn_reload_draws_each_region_exactly_once(html):
+    """SPEC.md PR-7, acceptance test 10: a mid-turn reload draws the open
+    exchange's user turns exactly once and its assistant reply exactly once.
+
+    This runs the three real owners in the order a reload actually calls
+    them: `renderHistoryTurns` draws everything BEFORE `open_from` (the
+    closed history), then `resumeRun`'s live path draws the open exchange's
+    user turn once (from the reserved rows the probe confirms) and hands the
+    reply to exactly one `pollLoop` call rather than drawing an assistant
+    bubble of its own. Each piece already has its own test above; this one
+    pins that running them together does not double anything and does not
+    drop anything — the actual failure mode a wrong `open_from` produces."""
+    src = _addUser_src(html) + "\n" + _render_history_turns_src(html) + "\n" \
+        + _resume_run_src(html)
+    out = _run(html, _RESUME_STUB + src + """
+// The closed history render: everything before open_from, exactly once.
+renderHistoryTurns([
+  { role: "user", text: "earlier turn", uuid: "u0" },
+  { role: "assistant", text: "earlier reply", segments: [] },
+]);
+const afterHistory = classNamesOf(log).length;
+const assistantTurnsAfterHistory = assistantTurnsDrawn;
+
+// loadHistory's own reservation for the still-open exchange, off open_from.
+let pendingOpenTurns = { some: "reservation" };
+
+// The live attach: a genuine, current run is found, so it draws the open
+// exchange's user turn itself and clears the reservation.
+scriptProbes([{ done: false, message: "still open", pending: [] }]);
+(async () => {
+  await resumeRun("r1", {});
+  console.log(JSON.stringify({
+    afterHistory,
+    assistantTurnsAfterHistory,
+    order: classNamesOf(log),
+    assistantTurnsDrawn,
+    pollLoopCalls,
+    pendingOpenTurnsAfter: pendingOpenTurns,
+  }));
+})();
+""")
+    assert out["afterHistory"] == 2, \
+        "the closed history must be on screen before the attach ever runs"
+    assert out["assistantTurnsAfterHistory"] == 1, \
+        "the closed history's own assistant turn (not this exchange's) " \
+        "renders once, before the attach ever runs"
+    assert out["order"] == ["turn user", "turn assistant", "turn user"], \
+        "the open exchange's user turn must land exactly once, after the " \
+        "closed history and never duplicated by it"
+    assert out["assistantTurnsDrawn"] == out["assistantTurnsAfterHistory"], \
+        "resumeRun must not draw the open exchange's assistant reply itself " \
+        "-- only the closed history's own turn is counted"
+    assert out["pollLoopCalls"] == [["r1", 0]], \
+        "the reply is handed to exactly one pollLoop call, the exchange's " \
+        "one and only source for it"
+    assert out["pendingOpenTurnsAfter"] is None, \
+        "the attach drawing this exchange must spend the reservation, or a " \
+        "fallback call elsewhere would draw it a second time"
