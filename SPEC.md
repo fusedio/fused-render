@@ -7854,6 +7854,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   target are untouched and still tested — the removal is of a UI that asked a
   reader to think in git commits about a folder whose only real question is what
   it costs.
+- **AI-7j** **Every suggestion list carries TWO models minimum and FIVE
+  maximum, per ENGINE.** `catalog.SUGGESTIONS` is keyed by runner (AI-7f), and
+  the bound is per key rather than per capability or in total, because a list
+  is what ONE machine sees: a total would let a one-row engine hide behind a
+  well-stocked sibling. The two ends fail differently, which is why neither is
+  left to editorial judgement. A ONE-ROW list is a mandate wearing a
+  shortlist's clothes — the reader whose first answer is not good enough has
+  nothing else to click and no way to tell whether the model or the prompt was
+  at fault. A SIXTH row costs the thing the list is FOR: these cards are swept,
+  not studied, and a page of them is a research task rather than a pick. **The
+  bounds are a budget, not a target** — a fifth row that only restates a
+  neighbour a size class away is worse than four rows, and adding one to a list
+  of five means arguing which existing row it beats. A model already curated
+  for a DIFFERENT engine is not coverage for this one: the lists serve
+  different machines, and no user sees both. `tests/test_ai_runtime.py` asserts
+  both ends per runner code, beside the ordering rule (AI-7d) and the
+  single-`recommended` rule.
 
 - **AI-7h** **The card's own surface states the disk facts, and one hue per engine
   states the identity** (D436). **Have and not-have are one NEUTRAL axis with two
@@ -11729,7 +11746,7 @@ the rules around it.
   any `window.fused` accessor for the paths.
 ---
 
-## 48. Self-Fix — A Claude Session on This Installation (D746)
+## 48. Self-Fix — A Claude Session on This Installation (D782)
 
 Goal: when the app fails on a machine we cannot see, the user has one more
 option than "dismiss it and hope" — they can ask Claude to look at the failure

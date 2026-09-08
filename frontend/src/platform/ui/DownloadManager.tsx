@@ -76,6 +76,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStatusChip } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
+import NotificationCard from "@platform/ui/NotificationCard";
 import {
   jobTypeLabel,
   aggregateProgress,
@@ -84,6 +85,7 @@ import {
   engineDuration,
   fetchJobs,
   isRunning,
+  isTerminal,
   jobAmount,
   jobDetail,
   jobFraction,
@@ -134,11 +136,6 @@ import type { RunningEngine } from "@platform/lib/api";
 // Python worker) writes no ping, so the idle poll below is the floor that
 // guarantees the row shows up either way.
 function useJobs(): {
-  /** Has /api/jobs answered once? `jobs` starts `[]` and stays `[]` on an idle
-   *  machine, so the list cannot tell "not asked yet" from "genuinely
-   *  nothing" — the distinction `useAutoExpandOnNew` needs to avoid reading
-   *  pre-existing jobs as arrivals on load (D574 bug 2). */
-  settled: boolean;
   jobs: Job[];
   /** The SERVER's clock at the last successful read (`JobsSnapshot.now`) —
    *  what `jobDetail` measures a running job's age against (C4 fix), never
@@ -151,7 +148,6 @@ function useJobs(): {
 } {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [now, setNow] = useState<number>(() => Date.now() / 1000);
-  const [settled, setSettled] = useState(false);
   // Read by the scheduler without re-arming it: the poll loop re-reads the
   // cadence after every response, so `jobs` must not be in its dependency list
   // or every tick would tear the timer down and build a new one.
@@ -211,7 +207,6 @@ function useJobs(): {
       try {
         const snapshot = await fetchJobs();
         if (disposed) return;
-        setSettled(true);
         if (at === epochRef.current) {
           setJobs(snapshot.jobs);
           setNow(snapshot.now);
@@ -271,40 +266,33 @@ function useJobs(): {
     setJobs(fn);
   }, []);
 
-  return { jobs, now, settled, refresh, patch };
+  return { jobs, now, refresh, patch };
 }
 
-function Bar({ job }: { job: Job }) {
+/** `NotificationCard`'s `progress`: `undefined` draws no bar, `null` draws
+ *  the indeterminate sweep, a `number` fills to that fraction.
+ *
+ *  A terminal job draws no bar at all: success, failure and cancellation are
+ *  told by the card's own glyph on the status line instead of by a bar frozen
+ *  at whatever fraction the job happened to be at when it stopped —
+ *  `jobFraction` is not even consulted for a terminal job.
+ *
+ *  No fraction to draw and still running = indeterminate (`null`): a narrow
+ *  fill that travels, rather than a width that grows. The alternative —
+ *  parking a real bar at some invented percentage — is what makes a live
+ *  download read as frozen (the same lesson as the install loader's D213
+ *  sweep).
+ *
+ *  Nothing to say (`undefined`): a job that ended (or stalled) without ever
+ *  reporting a total has no progress to draw, and an empty track under an
+ *  error message is decoration that reads as "0% done" — which is not what
+ *  happened. */
+function jobProgress(job: Job): number | null | undefined {
+  if (!isRunning(job) && !job.stalled) return undefined;
   const fraction = jobFraction(job);
-  const tone =
-    job.state === "error"
-      ? " is-error"
-      : job.state === "done"
-        ? " is-done"
-        : job.stalled
-          ? " is-stalled"
-          : "";
-  // No fraction to draw and still running = indeterminate: a narrow fill that
-  // travels, rather than a width that grows. The alternative — parking a real
-  // bar at some invented percentage — is what makes a live download read as
-  // frozen (the same lesson as the install loader's D213 sweep).
   const indeterminate = fraction === null && isRunning(job) && !job.stalled;
-  // Nothing to say: a job that ended (or stalled) without ever reporting a
-  // total has no progress to draw, and an empty track under an error message is
-  // decoration that reads as "0% done" — which is not what happened.
-  if (fraction === null && !indeterminate) return null;
-  return (
-    <div className={"dl-bar" + tone}>
-      <div
-        className={"dl-bar-fill" + (indeterminate ? " is-indeterminate" : "")}
-        // `data-indeterminate` is the DOM-observable contract (the install
-        // loader's convention): no headless test can see whether an animation
-        // LOOKS right, but it can see which mode the bar is in.
-        data-indeterminate={indeterminate ? "1" : undefined}
-        style={indeterminate ? undefined : { width: `${(fraction as number) * 100}%` }}
-      />
-    </div>
-  );
+  if (fraction === null && !indeterminate) return undefined;
+  return fraction;
 }
 
 // "Fix this" — the self-fix trigger (SPEC §48, SF-1). Offered on a FAILED row
@@ -499,25 +487,22 @@ function EngineRow({
     }
   };
 
+  // The failure REPLACES the detail line rather than stacking under it: a
+  // row whose Stop just failed has one thing worth reading. It clears itself
+  // on the next poll (the `useEffect` above), so it stays there only until
+  // the row has something fresh to say.
   return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span
-          className="dl-title dl-title-id"
-          title={`${engine.folder || engine.engine_id} — pid ${engine.pid}`}
-        >
-          {engineLabel(engine)}
-        </span>
-        <button className="dl-row-cancel" onClick={stop} disabled={busy}>
-          {busy ? "Stopping…" : "Stop"}
-        </button>
-      </div>
-      {/* The failure REPLACES the detail line rather than stacking under it:
-          a row whose Stop just failed has one thing worth reading. It clears
-          itself on the next poll (the `useEffect` above), so it stays there
-          only until the row has something fresh to say. */}
-      <div className="dl-status">{failure || engineDetail(engine)}</div>
-    </div>
+    <NotificationCard
+      title={engineLabel(engine)}
+      titleMode="id"
+      titleTooltip={`${engine.folder || engine.engine_id} — pid ${engine.pid}`}
+      liveAction={{
+        label: busy ? "Stopping…" : "Stop",
+        onClick: stop,
+        disabled: busy,
+      }}
+      status={failure || engineDetail(engine)}
+    />
   );
 }
 
@@ -713,89 +698,97 @@ export function JobRow({
   // of THIS file's own Jobs section is `DownloadManagerView`'s job — it only
   // ever hands `JobRow` `inFlightJobs`, so a "done" row never reaches this
   // component from there at all.
+  // THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
+  // the jobs card. why are we truncating stuff instead of placing things
+  // elsewhere?"). Drawn as `secondary` rather than a suffix competing with the
+  // title for one line's width, which is what let a running FLUX row render
+  // `update picture to be ghibli st…` then a lone `F…`: a field minced to one
+  // character plus an ellipsis conveys nothing while still costing width.
+  // `jobs.ts`'s own comment already calls this a redundant restatement
+  // whenever the title names the model, so it is the field that stays
+  // relegated. As `secondary` it gets the panel's full width and needs no
+  // shrink factor.
+  // Suppressed when it just repeats the title (`_start_resident`/`load` set
+  // both `title` and `model` to the same model id) — otherwise a model-load
+  // row would draw the model name twice. The MODEL name only, not the whole
+  // `owner/model` repo id: the owner is identical for every row a given
+  // model ever draws. Full id stays on hover, since shortening makes two
+  // owners' same-named models identical.
+  const showModel = job.model && job.model !== job.title;
+
+  // A local action's own failure takes the status line over the job's
+  // ordinary status sentence — it is more urgent and it is about the very
+  // button the user just pressed. `status` (the server's report) comes back
+  // once a later poll succeeds or the row's own next action clears
+  // `failure`.
   return (
-    <div className={"dl-row" + (job.stalled ? " is-stalled" : "")}>
-      <div className="dl-row-head">
-        <span className="dl-title" title={job.page || undefined}>
-          {job.title}
-        </span>
-        {fraction !== null && running && (
+    <NotificationCard
+      title={job.title}
+      titleTooltip={job.page || undefined}
+      stalled={job.stalled}
+      trailing={
+        fraction !== null && running ? (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
-        )}
-        {job.state === "error" && (
-          <FixButton
-            job={job}
-            onError={showFixFailure}
+        ) : job.state === "error" ? (
+          // THE SELF-FIX OFFER RIDES THE HEAD LINE'S NODE SLOT, just left of
+          // the ✕ — the placement `.dl-fix` in notifications.css is written
+          // for, and the two options a failure leaves you with (look at it, or
+          // close it) side by side. It cannot collide with the percentage
+          // above it: a row drawing progress is RUNNING, and this button only
+          // exists on one that has already failed.
+          //
+          // Not `extraAction`, which is this card's other fix-shaped slot
+          // (RepoUpdatesDock's "Fix with Claude"): that takes a label and an
+          // onClick, and this button is a component — three labels chosen by
+          // `useSelfFixReadiness`, its own `busy`, and a hook that must mount
+          // only for the rows that can offer it.
+          <FixButton job={job} onError={showFixFailure} />
+        ) : undefined
+      }
+      liveAction={
+        canCancel
+          ? {
+              label: "Cancel",
+              onClick: cancel,
+              disabled: busy,
+              title: "Cancel",
+              ariaLabel: `Cancel ${job.title}`,
+            }
+          : undefined
+      }
+      onDismiss={
+        canDismiss
+          ? {
+              onClick: dismiss,
+              disabled: busy,
+              title: "Dismiss",
+              ariaLabel: `Dismiss ${job.title}`,
+            }
+          : undefined
+      }
+      secondary={showModel ? repoName(job.model) : undefined}
+      secondaryTooltip={showModel ? job.model : undefined}
+      progress={jobProgress(job)}
+      terminal={isTerminal(job) ? (job.state as "done" | "error" | "cancelled") : undefined}
+      status={statusLine || undefined}
+      footer={
+        // The compact trouble card rather than a bare red line: the most
+        // likely failure here is Claude Code missing or signed out, and
+        // "Claude didn't start" with nowhere to go is the shape of message
+        // this whole surface exists to replace. Facts are not fetched for
+        // this one — the card sits in a notification and the Preferences tab
+        // is where the full report lives.
+        // `fixFailure`, NOT `failure` — the caption names starting a fix
+        // session, so it may only render for a failure that IS one.
+        fixFailure ? (
+          <TroubleCard
+            compact
+            what={`starting a fix session for "${job.title || job.id}"`}
+            error={fixFailure}
           />
-        )}
-        {canCancel && (
-          <button
-            className="dl-row-cancel"
-            onClick={cancel}
-            disabled={busy}
-            title="Cancel"
-            aria-label={`Cancel ${job.title}`}
-          >
-            Cancel
-          </button>
-        )}
-        {canDismiss && (
-          <button
-            className="dl-x"
-            onClick={dismiss}
-            disabled={busy}
-            title="Dismiss"
-            aria-label={`Dismiss ${job.title}`}
-          >
-            ✕
-          </button>
-        )}
-      </div>
-      {/* THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
-          the jobs card. why are we truncating stuff instead of placing things
-          elsewhere?"). It used to be a suffix on the head line, competing with
-          the title for one line's width under D571's shrink ladder — which is
-          how a running FLUX row rendered `update picture to be ghibli st…` then
-          a lone `F…`: a field minced to one character plus an ellipsis, which
-          conveys nothing while still costing width. `jobs.ts`'s own comment
-          already calls this a redundant restatement whenever the title names
-          the model, so it is the field that should be RELEGATED rather than the
-          one that should be minced. Off the head line it gets the panel's full
-          width and needs no shrink factor at all.
-          Suppressed when it just repeats the title (`_start_resident`/`load`
-          set both `title` and `model` to the same model id) — otherwise a
-          model-load row would draw the model name twice. The MODEL name only,
-          not the whole `owner/model` repo id: the owner is identical for every
-          row a given model ever draws. Full id stays on hover, since shortening
-          makes two owners' same-named models identical. */}
-      {job.model && job.model !== job.title && (
-        <div className="dl-model" title={job.model}>
-          {repoName(job.model)}
-        </div>
-      )}
-      <Bar job={job} />
-      {/* A local action's own failure takes this line over the job's
-          ordinary status sentence — it is more urgent and it is about the
-          very button the user just pressed. `status` (the server's report)
-          comes back once a later poll succeeds or the row's own next action
-          clears `failure`. */}
-      {statusLine && <div className="dl-status">{statusLine}</div>}
-      {/* The compact trouble card rather than a bare red line: the most likely
-          failure here is Claude Code missing or signed out, and "Claude didn't
-          start" with nowhere to go is the shape of message this whole surface
-          exists to replace. Facts are not fetched for this one — the card sits
-          in a notification and the Preferences tab is where the full report
-          lives.
-          `fixFailure`, NOT `failure` — the caption below names starting a fix
-          session, so it may only render for a failure that IS one. */}
-      {fixFailure && (
-        <TroubleCard
-          compact
-          what={`starting a fix session for "${job.title || job.id}"`}
-          error={fixFailure}
-        />
-      )}
-    </div>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -809,7 +802,6 @@ export function JobRow({
 // global `mock.module` on it does not scope to one file).
 export function DownloadManagerView({
   reported,
-  ready,
   initialCollapsed,
   engines,
   onJobsReported,
@@ -834,9 +826,6 @@ export function DownloadManagerView({
    *  `mock.module`: a process-wide replacement has contaminated unrelated
    *  suites here before. */
   initialCollapsed?: boolean;
-  /** Has the first /api/jobs read landed (kept for callers; the chip no longer auto-opens on it)? Optional
-   *  so a test mounting this view with a fixed list keeps the old behaviour. */
-  ready?: boolean;
   /** The Background tasks section (formerly EnginesDock's own chip). Optional
    *  and data-only — see `EnginesSlot`'s own doc. */
   engines?: EnginesSlot;
@@ -1054,11 +1043,10 @@ export default function DownloadManager({
   engines?: EnginesSlot;
   onJobsReported?: (jobs: Job[]) => void;
 }) {
-  const { jobs: reported, now, settled, refresh, patch } = useJobs();
+  const { jobs: reported, now, refresh, patch } = useJobs();
   return (
     <DownloadManagerView
       reported={reported}
-      ready={settled}
       engines={engines}
       onJobsReported={onJobsReported}
       refresh={refresh}

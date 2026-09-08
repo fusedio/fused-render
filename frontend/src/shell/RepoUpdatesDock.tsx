@@ -49,6 +49,8 @@ import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
+import NotificationCard from "@platform/ui/NotificationCard";
+import type { NotificationCardDismiss } from "@platform/ui/NotificationCard";
 // `JobRow` reused verbatim for a terminal job (D586) — shell may import
 // platform (frontend/scripts/check-boundaries.mjs); the reverse is what is
 // forbidden, which is also why the failures reach this section as a PROP
@@ -56,8 +58,14 @@ import StatusChip from "@platform/ui/StatusChip";
 import { JobRow } from "@platform/ui/DownloadManager";
 import { clearFinishedJobs, isFailure, jobsAfterClear } from "@platform/lib/jobs";
 import type { Job } from "@platform/lib/jobs";
-import { attentionRows, type AttentionRow } from "@shell/tasks-lib";
+import {
+  attentionRows,
+  attentionDismissSignature,
+  visibleAttentionRows,
+  type AttentionRow,
+} from "@shell/tasks-lib";
 import { useTasksPulseRows } from "@shell/tasksPulse";
+import { loadDismissed, saveDismissed } from "./dismiss-store";
 import {
   repoActionLabel,
   repoDismissSignature,
@@ -80,6 +88,11 @@ const NOOP = () => {};
  *  fixed `terminal` list (the tests). A real one comes from the shell, which
  *  owns the state these rows are drawn from (D586). */
 const NOOP_PATCH = () => {};
+// THE VOLUME CAP: how many terminal jobs draw before the rest fold
+// behind "N older notifications". Nothing is ever deleted by this — the
+// full list is still there, one click away — it only bounds how tall the
+// panel gets on a machine that has finished a great many jobs.
+const TERMINAL_VISIBLE_CAP = 5;
 const POLL_MS = 6000;
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
@@ -111,12 +124,6 @@ function useRepoUpdates() {
   // surface. Server-side store (lan.py `_recent_pairings`), so a dismissal
   // holds across shells and reloads for as long as the server runs.
   const [pairings, setPairings] = useState<LanPairingEvent[]>([]);
-  // Has /api/git-upstream answered ONCE? `repos` starts `[]` and stays `[]`
-  // for a repo-free machine, so the list alone cannot tell "not asked yet"
-  // from "genuinely nothing" — and `useAutoExpandOnNew` needs exactly that
-  // distinction to avoid calling every pre-existing repo an arrival on load
-  // (D574 bug 2, autoExpand.ts's `ready`).
-  const [settled, setSettled] = useState(false);
   const pollRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -149,7 +156,6 @@ function useRepoUpdates() {
         if (!disposed && mine === generation) {
           setRepos(data.repos || []);
           if (paired) setPairings(paired.pairings || []);
-          setSettled(true);
         }
       } catch {
         // Best-effort, like every other poll in this card: a failed read
@@ -167,7 +173,7 @@ function useRepoUpdates() {
   }, []);
 
   const refresh = useCallback(() => pollRef.current(), []);
-  return { repos, pairings, setPairings, settled, refresh };
+  return { repos, pairings, setPairings, refresh };
 }
 
 // A device that just paired over the LAN (lan.py): title is the device's
@@ -184,16 +190,11 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
     }
   };
   return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span className="dl-title">{event.name} paired</span>
-        <button type="button" className="dl-x" onClick={dismiss} title="Dismiss"
-                aria-label={`Dismiss ${event.name} paired`}>
-          ✕
-        </button>
-      </div>
-      <div className="dl-status">It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network.</div>
-    </div>
+    <NotificationCard
+      title={`${event.name} paired`}
+      onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${event.name} paired` }}
+      status="It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network."
+    />
   );
 }
 
@@ -203,67 +204,82 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
 // decides what it says and where it goes, off the pulse poll the shell already
 // runs — no endpoint and no second loop of this card's own.
 //
-// THE WHOLE ROW IS THE BUTTON, rather than a `<div>` with an "Open" control in
-// its corner. Every other row here has something to do BESIDES being read (fix
-// the repo, dismiss the failure), so its controls have to be aimed at
-// individually; this row has exactly one thing to do, and a row with one action
-// should not make a person aim at a 60px target inside a 320px one. A real
-// `<button>` and not a clickable div, so it is reachable by keyboard and
-// announced as an action — notifications.css strips the UA chrome back to
-// `.dl-row`'s own box.
+// THE WHOLE ROW IS ALSO A CLICK TARGET, when it has somewhere to go — rather
+// than a corner "Open" control on an otherwise inert row. Every other row here
+// has something to do BESIDES being read (fix the repo, dismiss the failure),
+// so its controls have to be aimed at individually; this row has exactly one
+// thing to do besides dismiss, and a row with one action should not make a
+// person aim at a 60px target inside a 320px one. `NotificationCard`'s
+// `rowClick` draws it as a `role="button"` div rather than a real `<button>`,
+// because this row also carries the ✕ below, and a button cannot nest inside
+// a button.
 //
-// AND IT HAS NO ✕. Every other row here can be dismissed because its subject
-// has already happened — a repo is behind, a job failed — so "I have seen this"
-// is the whole of what dismissing means. This row's subject has NOT happened
-// yet: the run is still parked, waiting. A ✕ would take the notification away
-// and leave the task exactly as stuck as it was, which is a lie about what the
-// click did. The row leaves on its own, on the next pulse, when the question is
-// answered.
-function AttentionRowView({ row }: { row: AttentionRow }) {
+// THE ✕ DISMISSES THE ROW, NOT THE QUESTION. The task stays exactly as parked
+// as it was — this only clears its seat in Notifications, the same way
+// dismissing a repo row clears a stale "behind" notice without touching the
+// repo. The sidebar's Tasks dot is the surface that still says a run is
+// waiting; dismissing here never dims it. `tasks-lib.attentionDismissSignature`
+// keys the dismissal on the question's own title, so a run asking something
+// NEW earns a fresh row even if its key is unchanged.
+function AttentionRowView({
+  row,
+  onDismiss,
+}: {
+  row: AttentionRow;
+  onDismiss: () => void;
+}) {
   const title = `${row.taskId} needs your input`;
+  const dismiss: NotificationCardDismiss = {
+    onClick: onDismiss,
+    ariaLabel: `Dismiss ${row.taskId} needs your input`,
+  };
   // Nowhere to go — a task naming no folder at all — is drawn as a plain row
   // rather than dropped: the news is still true, and a button that navigates
   // nowhere is worse than text (`attentionRows` on why `href` can be null).
   if (!row.href) {
     return (
-      <div className="dl-row">
-        <div className="dl-row-head">
-          <span className="dl-title">{title}</span>
-        </div>
-        <div className="dl-status dl-status-one" title={row.title}>{row.title}</div>
-      </div>
+      <NotificationCard
+        title={title}
+        status={row.title}
+        statusOneLine
+        statusTooltip={row.title}
+        onDismiss={dismiss}
+      />
     );
   }
   const href = row.href;
   return (
-    <button
-      type="button"
-      className="dl-row dl-row-open"
+    <NotificationCard
+      title={title}
+      status={row.title}
+      statusOneLine
+      statusTooltip={row.title}
+      onDismiss={dismiss}
       // `navigateUrl`, not `navigate`: these hrefs are whole /explorer urls with
       // the `_side=claude` handoff and the session id on the query string, and
       // `navigate` takes an fs path and builds its own. No `isDir` hint, for
       // the same reason the calendar popover's thread button — the identical
       // call on the identical value — gives none: a task's target is a folder
       // OR the file the chat was on, and this row cannot tell which.
-      onClick={() => navigateUrl(href)}
-      title={`Open ${row.taskId}`}
-    >
-      <div className="dl-row-head">
-        <span className="dl-title">{title}</span>
-      </div>
-      <div className="dl-status dl-status-one" title={row.title}>{row.title}</div>
-    </button>
+      rowClick={{ onClick: () => navigateUrl(href), title: `Open ${row.taskId}` }}
+    />
   );
 }
 
-// Held at MODULE level, not component state, so a remount (switching panes
-// or panels tears this component down and back up) does not forget what the
-// user just dismissed — the same reason a page reload is the one case this
-// deliberately does NOT survive: there is no server state backing a
-// dismissal (decision C), only this in-memory map, and a reload starting
-// fresh is an acceptable, documented trade rather than reaching for
-// localStorage for something this ephemeral.
-let moduleDismissed: Record<string, string> = {};
+// Persisted (dismiss-store.ts) so a repo dismissal survives reload. Held at
+// MODULE level, not component state, so a remount (switching panes or panels
+// tears this component down and back up) does not forget what the user just
+// dismissed either.
+const DISMISSED_KEY = "fused-render:repo-updates-dismissed";
+// A waiting-task dismissal gets its OWN key rather than sharing
+// `DISMISSED_KEY`'s map: the two are keyed on different id spaces (a repo
+// root vs. a task's session/pending key) and expire against different
+// signatures (`repoDismissSignature` vs. `attentionDismissSignature`) —
+// folding them into one map would risk a collision the moment either id
+// space grows a value that looks like the other's.
+const ATTENTION_DISMISSED_KEY = "fused-render:attention-dismissed";
+
+let moduleDismissed: Record<string, string> = loadDismissed(DISMISSED_KEY);
 
 function useDismissed() {
   const [dismissed, setDismissedState] = useState<Record<string, string>>(moduleDismissed);
@@ -272,6 +288,7 @@ function useDismissed() {
   // a re-check that changes nothing must not resurrect a dismissed row.
   const dismissOne = useCallback((root: string, signature: string) => {
     moduleDismissed = { ...moduleDismissed, [root]: signature };
+    saveDismissed(DISMISSED_KEY, moduleDismissed);
     setDismissedState(moduleDismissed);
   }, []);
 
@@ -279,10 +296,26 @@ function useDismissed() {
     const next = { ...moduleDismissed };
     for (const row of rows) next[row.repo.root] = repoDismissSignature(row.repo);
     moduleDismissed = next;
+    saveDismissed(DISMISSED_KEY, next);
     setDismissedState(next);
   }, []);
 
   return { dismissed, dismissOne, dismissAll };
+}
+
+let moduleAttentionDismissed: Record<string, string> = loadDismissed(ATTENTION_DISMISSED_KEY);
+
+function useAttentionDismissed() {
+  const [dismissed, setDismissedState] =
+    useState<Record<string, string>>(moduleAttentionDismissed);
+
+  const dismissOne = useCallback((key: string, signature: string) => {
+    moduleAttentionDismissed = { ...moduleAttentionDismissed, [key]: signature };
+    saveDismissed(ATTENTION_DISMISSED_KEY, moduleAttentionDismissed);
+    setDismissedState(moduleAttentionDismissed);
+  }, []);
+
+  return { dismissed, dismissOne };
 }
 
 // MIGRATED ONTO `.dl-row`/`.dl-row-head`/`.dl-title`/`.dl-status` (status-bar
@@ -344,56 +377,38 @@ function RepoRowView({
     navigate(row.repo.root, { isDir: true });
   };
 
+  // THE ONE ACTION, THEN THE DISMISS ✕ — the same left-to-right order every
+  // row in this card follows. The ✕ is not merely next, though:
+  // notifications.css pins it to the row's right edge with an auto margin
+  // (D609, user: "the x icon should always be at the very right of the
+  // card"), so any slack in the head falls between the action and the ✕
+  // rather than after it — a statement about what the ✕ is (a dismissal of
+  // this ROW, not a third step in the action group it would otherwise read
+  // as part of) rather than an accident of order.
+  //
+  // Refusal, not error text alone, on failure — the same failure-toast rule
+  // the git companion's own rows follow: a refusal is spoken AND offers a
+  // way out, never just swallowed. This surface has no chat of its own
+  // (unlike the git companion), so the way out is navigating to the repo and
+  // staging the ask for whatever Claude-capable surface mounts there
+  // (pending-claude-ask.ts) rather than calling `window._fusedClaudeAsk`
+  // directly — `extraAction` (`.q-all`, below the status line).
   return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span className="dl-title" title={row.repo.root}>
-          {row.name}
-        </span>
-        {/* The one action, then the dismiss ✕ — the same left-to-right
-            order every row in this card follows. The ✕ is not merely NEXT,
-            though: notifications.css pins it to the row's right edge with an
-            auto margin (D609, user: "the x icon should always be at the very
-            right of the card"), so any slack in the head falls between the
-            action and the ✕ rather than after it. That is a statement about
-            what the ✕ is — a dismissal of this ROW, not a third step in the
-            action group it would otherwise read as part of — so it belongs on
-            the row's boundary. The ORDER here is unchanged; only where the
-            leftover width goes is. */}
-        <button
-          type="button"
-          className="q-all"
-          onClick={() => run(row.primaryAction)}
-          disabled={busyAction !== null}
-        >
-          {busyAction === row.primaryAction
+    <NotificationCard
+      title={row.name}
+      titleTooltip={row.repo.root}
+      navAction={{
+        label:
+          busyAction === row.primaryAction
             ? "Working…"
-            : repoActionLabel(row.primaryAction, row.repo.default_branch)}
-        </button>
-        <button
-          type="button"
-          className="dl-x"
-          onClick={onDismiss}
-          title="Dismiss"
-          aria-label={`Dismiss ${row.name}`}
-        >
-          ✕
-        </button>
-      </div>
-      <div className="dl-status">{failure ? failure.message : repoStatusText(row)}</div>
-      {/* Refusal, not error text alone — the same failure-toast rule the git
-          companion's own rows follow: a refusal is spoken AND offers a way
-          out, never just swallowed. This surface has no chat of its own
-          (unlike the git companion), so the way out is navigating to the
-          repo and staging the ask for whatever Claude-capable surface mounts
-          there (pending-claude-ask.ts) rather than calling
-          `window._fusedClaudeAsk` directly. */}
-      {failure && (
-        <button type="button" className="q-all" onClick={fixWithClaude}>
-          Fix with Claude
-        </button>
-      )}
-    </div>
+            : repoActionLabel(row.primaryAction, row.repo.default_branch),
+        onClick: () => run(row.primaryAction),
+        disabled: busyAction !== null,
+      }}
+      onDismiss={{ onClick: onDismiss, ariaLabel: `Dismiss ${row.name}` }}
+      status={failure ? failure.message : repoStatusText(row)}
+      extraAction={failure ? { label: "Fix with Claude", onClick: fixWithClaude } : undefined}
+    />
   );
 }
 
@@ -436,6 +451,8 @@ export function RepoUpdatesCardView({
   terminal = [],
   pairings = [],
   attention = [],
+  attentionDismissed = {},
+  onAttentionDismiss,
   onPairingGone,
   onJobsChanged,
   onTerminalPatch,
@@ -448,6 +465,10 @@ export function RepoUpdatesCardView({
   pairings?: LanPairingEvent[];
   /** Tasks parked on a question — the fourth row kind (2026-09-03). */
   attention?: AttentionRow[];
+  /** Which waiting-task rows a dismissal still hides — keyed and expired the
+   *  way `dismissed` is for repo rows, but on `attentionDismissSignature`. */
+  attentionDismissed?: Record<string, string>;
+  onAttentionDismiss?: (key: string, signature: string) => void;
   onPairingGone?: (id: string) => void;
   /** A terminal row was acted on — ask the jobs poll to re-read. */
   onJobsChanged?: () => void;
@@ -465,13 +486,29 @@ export function RepoUpdatesCardView({
   onDone: (result: MutationResult) => void;
 }) {
   const visible = visibleRepoRows(rows, dismissed);
+  const visibleAttention = visibleAttentionRows(attention, attentionDismissed);
+  // ONLY TERMINAL JOBS FOLD — a waiting task, a repo row and a
+  // pairing are always shown in full below, never counted toward this cap.
+  // `olderShown` is local UI state, not a prop: once the reader opens the
+  // fold there is no reason for anything outside this view to know or care.
+  const [olderShown, setOlderShown] = useState(false);
+  // `terminal` arrives oldest-first (jobs.py's `list_jobs`), so the NEWEST
+  // jobs are the ones at the end of the array — a plain `slice(0, CAP)`
+  // would show the oldest five and fold away whatever just finished, which
+  // is backwards from what the cap is for. Slicing off the tail keeps the
+  // newest `TERMINAL_VISIBLE_CAP` visible, still oldest-first among
+  // themselves, so the panel's reading order never changes.
+  const shownTerminal = olderShown
+    ? terminal
+    : terminal.slice(Math.max(0, terminal.length - TERMINAL_VISIBLE_CAP));
+  const olderTerminalCount = terminal.length - shownTerminal.length;
   // EVERY SOURCE DECIDES EVERY DERIVED NUMBER (D586; pairings joined later).
   // The count on the chip, the idle predicate and the empty state all read
   // this one total, so none of them can disagree about what this section
   // holds — a count that still counted only repo rows was the likeliest bug
   // in this change.
   const total =
-    visible.length + terminal.length + pairings.length + attention.length;
+    visible.length + terminal.length + pairings.length + visibleAttention.length;
   const idle = total === 0;
   // The failure tint MOVED HERE from the Jobs chip (D586), and D662 broadened
   // `terminal` to hold every finished job — done and cancelled as well as
@@ -490,7 +527,7 @@ export function RepoUpdatesCardView({
   // sidebar's Tasks dot is red for the same state; the two agree rather than
   // one of them staying quiet — this corner is where the reader looks for
   // what wants them, and a neutral pill there read as "nothing urgent".
-  const asking = attention.length > 0;
+  const asking = visibleAttention.length > 0;
   const tone = hasFailure || asking ? "failure" : total > 0 ? "on" : "idle";
   const ariaLabel =
     total === 0
@@ -534,6 +571,28 @@ export function RepoUpdatesCardView({
                   failure sentence and the ✕, and it already carries D572's
                   rejected-request surfacing, which is the behaviour a dismiss
                   here most needs to keep. */}
+              {/* THE VOLUME CAP: only TERMINAL jobs ever collapse — a waiting
+                  task, a repo row and a pairing are always drawn in full
+                  below, uncounted by `TERMINAL_VISIBLE_CAP`, because none of
+                  them pile up the way a finished job does (a repo stays
+                  behind until fixed, one row; a pairing is dismissed the
+                  moment it is read). Nothing is dropped, only folded: the
+                  count names exactly how many more `JobRow`s are one click
+                  away, and clicking it is the only thing that changes
+                  `olderShown` — a fresh terminal job arriving never
+                  re-collapses a panel the user already opened wide.
+                  ABOVE `.dl-rows`, not inside it (D762): `terminal` arrives
+                  oldest-first and the fold keeps the newest rows visible, so
+                  the folded rows are chronologically earlier than every
+                  rendered one — a pinned line above the scrolling list keeps
+                  the panel reading top-to-bottom in time order whether it is
+                  folded or open, and keeps `.dl-rows` holding nothing but the
+                  rows it scrolls. */}
+              {olderTerminalCount > 0 && (
+                <button type="button" className="dl-panel-more" onClick={() => setOlderShown(true)}>
+                  {olderTerminalCount} older notification{olderTerminalCount === 1 ? "" : "s"}
+                </button>
+              )}
               <div className="dl-rows">
                 {/* A WAITING TASK GOES ABOVE EVERYTHING (2026-09-03). It is the
                     only row in this panel whose subject has not finished
@@ -541,8 +600,14 @@ export function RepoUpdatesCardView({
                     all facts about the past, which will still be true in ten
                     minutes. A parked run is a person being waited on, and the
                     thing being waited on goes first. */}
-                {attention.map((row) => (
-                  <AttentionRowView key={row.key} row={row} />
+                {visibleAttention.map((row) => (
+                  <AttentionRowView
+                    key={row.key}
+                    row={row}
+                    onDismiss={() =>
+                      (onAttentionDismiss ?? NOOP)(row.key, attentionDismissSignature(row))
+                    }
+                  />
                 ))}
                 {/* Then pairings: the newest kind of news, and the only one
                     with nothing to act on beyond reading it. */}
@@ -557,7 +622,7 @@ export function RepoUpdatesCardView({
                     onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
                   />
                 ))}
-                {terminal.map((job) => (
+                {shownTerminal.map((job) => (
                   <JobRow
                     key={job.id}
                     job={job}
@@ -582,19 +647,13 @@ export function RepoUpdatesCardView({
                   both and left a header with nothing to head. Under the list,
                   the same button reads as acting on what is above it, which is
                   what it does. */}
-              {/* TWO SEPARATE CLEAR BUTTONS, never one: a repo row's dismissal
-                  is client-side and expires when the repo moves
+              {/* ONE "Clear all", not two: a repo row's dismissal is
+                  client-side and expires when the repo moves
                   (`repoDismissSignature`), while a terminal job's is
                   server-side and permanent (`dismissJob`/`clearFinishedJobs`)
-                  — sweeping both under one button would hide two different
-                  promises behind it. Each is omitted entirely when its own
-                  row kind has nothing to clear, rather than offering a
-                  button that would do nothing. Labelled "Clear updates" and
-                  "Clear finished" rather than sharing the word "Clear": the
-                  two buttons sit adjacent in the same band, and with only a
-                  `title` telling them apart, a pointer user has no on-screen
-                  way to know which one is the irreversible, server-side one
-                  before clicking it. */}
+                  — two different promises, but the reader does not need two
+                  buttons to know that; each mechanism just fires for the
+                  row kind it owns, best-effort, behind the one click. */}
               {/* PLURALITY, NOT PRESENCE (D604, user with a screenshot of a
                   one-row panel: "the notification card size is still not
                   done"). Clear is dismiss-ALL, so at exactly one row it is
@@ -602,51 +661,28 @@ export function RepoUpdatesCardView({
                   click, adjacent to the thing it affects — and the band it
                   needs cost 32px of an 88px card, ~36% of the height, most of
                   it empty to the left of one small button with a hairline
-                  making the emptiness look deliberate.
-                  `queue-dock-lib.ts`'s `showCancelAll` ALREADY required two
-                  withdrawable rows for exactly this reason ("for a single one
-                  the row's own ✕ — right there on screen — is the same action
-                  with a better name on it"); this brings the sibling controls
-                  into line with a rule the codebase had already settled. The
-                  jobs Clear (Part A item 2, D663) follows the identical rule
-                  for the identical reason. */}
-              {(visible.length > 1 || terminal.length > 1) && (
+                  making the emptiness look deliberate. The threshold is now
+                  the COMBINED count of repo rows and terminal jobs, not
+                  either counted alone: one stuck repo plus one failed job is
+                  two dismissable rows, and a reader looking at two rows and
+                  no bulk action has the same "did this break" reaction a
+                  count of two of the SAME kind would give them. */}
+              {visible.length + terminal.length > 1 && (
                 <div className="dl-head">
-                  {visible.length > 1 && (
-                    <button
-                      className="dl-clear"
-                      onClick={() => onDismissAll(visible)}
-                      title="Dismiss every visible update"
-                    >
-                      Clear updates
-                    </button>
-                  )}
-                  {/* D663 keeps every terminal job until it is dismissed, and
-                      Activity's own bulk Clear was deleted in the same PR
-                      (D661) — so `POST /api/jobs/clear` had no reachable UI
-                      left at all. "Until dismissed" only earns its keep if
-                      dismissing is possible, so this reuses that endpoint via
-                      `clearFinishedJobs`, patching the shell's own terminal
-                      list through `jobsAfterClear` the instant the server
-                      confirms, the same optimistic-patch pattern `JobRow`'s
-                      own dismiss already uses. Best-effort: a rejected
-                      request leaves the list as it was for the next poll to
-                      reconcile, mirroring every other best-effort mutation in
-                      this card (`PairingRowView`'s dismiss, `useRepoUpdates`'s
-                      poll). */}
-                  {terminal.length > 1 && (
-                    <button
-                      className="dl-jobs-clear"
-                      onClick={() => {
+                  <button
+                    className="dl-clear"
+                    onClick={() => {
+                      if (visible.length > 0) onDismissAll(visible);
+                      if (terminal.length > 0) {
                         clearFinishedJobs()
                           .then(() => onTerminalPatch?.(jobsAfterClear))
                           .catch(() => {});
-                      }}
-                      title="Dismiss every finished job"
-                    >
-                      Clear finished
-                    </button>
-                  )}
+                      }
+                    }}
+                    title="Dismiss every notification"
+                  >
+                    Clear all
+                  </button>
                 </div>
               )}
             </>
@@ -679,21 +715,20 @@ export function RepoUpdatesCardView({
  * 3), never a refreshed `checked_at` — a throttled re-check that moved
  * nothing used to resurrect the row every five minutes.
  *
- * TERMINAL JOBS CANNOT OPEN THIS PANEL (D586/D588, broadened by D662): they
- * reach this section as a prop and fill the circle, but they go to the hook
- * as `alsoDrawn`, never as announceable ids — which is what makes "a
- * background job finishing never throws a panel over the page" structural
- * rather than a flag. They DO count for occupancy, so an emptying repo list
- * no longer closes the panel out from under them (code review 2026-08-28,
- * finding 1).
+ * TERMINAL JOBS CANNOT OPEN THIS PANEL: `useStatusChip` has no arrival-driven
+ * path at all — `open = pinned || hovered`, full stop — so there is no notion
+ * of an "announceable" id for anything to reach here as. They DO count for
+ * occupancy, so an emptying repo list does not close the panel out from
+ * under them (code review 2026-08-28, finding 1).
  */
 export function RepoUpdatesDockView({
   rows,
   dismissed,
-  ready,
   terminal = [],
   pairings = [],
   attention = [],
+  attentionDismissed,
+  onAttentionDismiss,
   onPairingGone,
   onDismiss,
   onDismissAll,
@@ -704,22 +739,23 @@ export function RepoUpdatesDockView({
 }: {
   rows: RepoRow[];
   dismissed: Record<string, string>;
-  /** Has the upstream read answered once (kept for callers; the chip no longer auto-opens on it)? Optional
-   *  so a caller that mounts this with a fixed list keeps the old behaviour. */
-  ready?: boolean;
   /** TERMINAL JOBS (D586, broadened by D662 to done/error/cancelled — not only
    *  `state: "error"`) re-routed out of the Jobs section, drawn beside the
    *  repo rows. Optional and defaulted so every existing caller and test
    *  keeps working unchanged. */
   terminal?: Job[];
-  /** LAN pairings — announceable rows: a pairing while the chip is collapsed
-   *  auto-opens the panel, which is the whole point of announcing one. */
+  /** LAN pairings — the panel opens only on hover or click (`useStatusChip`'s
+   *  `open = pinned || hovered`); a pairing arriving never opens it by
+   *  itself. The chip's own numeral is what announces one. */
   pairings?: LanPairingEvent[];
-  /** Tasks parked on a question (2026-09-03). NOT announceable, for D673's
-   *  reason and one of its own: the sidebar's red Tasks dot already says this
-   *  is happening, and a panel that threw itself over the page every time a run
-   *  asked a permission question would cover the very chat holding the answer. */
+  /** Tasks parked on a question (2026-09-03). Same as pairings: the sidebar's
+   *  red Tasks dot already says a run is waiting, and nothing here throws the
+   *  panel open over the chat holding the answer — hover or click still
+   *  decide when it shows. */
   attention?: AttentionRow[];
+  /** Which waiting-task rows a dismissal still hides. */
+  attentionDismissed?: Record<string, string>;
+  onAttentionDismiss?: (key: string, signature: string) => void;
   onPairingGone?: (id: string) => void;
   onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
@@ -752,6 +788,8 @@ export function RepoUpdatesDockView({
       terminal={terminal}
       pairings={pairings}
       attention={attention}
+      attentionDismissed={attentionDismissed}
+      onAttentionDismiss={onAttentionDismiss}
       onPairingGone={onPairingGone}
       collapsed={!chip.open}
       onToggle={chip.toggle}
@@ -773,9 +811,11 @@ export default function RepoUpdatesDock({
   terminal?: Job[];
   onTerminalPatch?: (fn: (jobs: Job[]) => Job[]) => void;
 } = {}) {
-  const { repos, pairings, setPairings, settled, refresh } = useRepoUpdates();
+  const { repos, pairings, setPairings, refresh } = useRepoUpdates();
   const rows = repoRows(repos);
   const { dismissed, dismissOne, dismissAll } = useDismissed();
+  const { dismissed: attentionDismissed, dismissOne: attentionDismissOne } =
+    useAttentionDismissed();
   // THE SHELL'S EXISTING TASKS POLL, subscribed to — not a fifth timer in this
   // file. `tasksPulse.ts` is one store with one poll behind it (and none at all
   // while the Tasks page is feeding it), which is the whole reason it exists;
@@ -792,10 +832,11 @@ export default function RepoUpdatesDock({
     <RepoUpdatesDockView
       rows={rows}
       dismissed={dismissed}
-      ready={settled}
       terminal={terminal}
       pairings={pairings}
       attention={attention}
+      attentionDismissed={attentionDismissed}
+      onAttentionDismiss={attentionDismissOne}
       onPairingGone={pairingGone}
       onTerminalPatch={onTerminalPatch}
       onDismiss={dismissOne}

@@ -3563,6 +3563,26 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
   return rows;
 }
 
+/** What a dismissal of a waiting-task row expires against — the same idea
+ *  `repoDismissSignature` (repo-updates-lib.ts) uses for repo rows. `title` is
+ *  the question itself, so a dismissed row comes back the moment the run asks
+ *  something NEW, rather than staying hidden across an unrelated question
+ *  just because it reused the same key. Dismissing the row is not answering
+ *  it — the task stays parked either way, and the sidebar's Tasks dot keeps
+ *  saying so; this only governs whether the same question keeps a seat in
+ *  Notifications. */
+export function attentionDismissSignature(row: AttentionRow): string {
+  return row.title;
+}
+
+/** Which attention rows a dismissal still hides. */
+export function visibleAttentionRows(
+  rows: AttentionRow[],
+  dismissed: Record<string, string>
+): AttentionRow[] {
+  return rows.filter((row) => dismissed[row.key] !== attentionDismissSignature(row));
+}
+
 /**
  * The dismissal a visit to /tasks earns: every DONE task on screen, stamped with
  * the completion that was on screen — MERGED over what was already known.

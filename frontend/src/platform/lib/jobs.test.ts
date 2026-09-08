@@ -80,8 +80,8 @@ test("a done that outgrows an ESTIMATED total (an index rescan's tree grew since
   );
 });
 
-test("a done job reads as complete even if its last numbers never caught up", () => {
-  expect(jobFraction(job({ state: "done", done: 7, total: 10 }))).toBe(1);
+test("a done job draws no bar — jobFraction is not consulted for terminal jobs, and Bar returns null for them directly", () => {
+  expect(jobFraction(job({ state: "done", done: 7, total: 10 }))).toBeCloseTo(0.7);
 });
 
 // -------------------------------------------------------------------- amount
