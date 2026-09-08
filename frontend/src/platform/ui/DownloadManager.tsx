@@ -76,6 +76,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStatusChip } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
+import NotificationCard from "@platform/ui/NotificationCard";
 import {
   jobTypeLabel,
   aggregateProgress,
@@ -445,25 +446,22 @@ function EngineRow({
     }
   };
 
+  // The failure REPLACES the detail line rather than stacking under it: a
+  // row whose Stop just failed has one thing worth reading. It clears itself
+  // on the next poll (the `useEffect` above), so it stays there only until
+  // the row has something fresh to say.
   return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span
-          className="dl-title dl-title-id"
-          title={`${engine.folder || engine.engine_id} — pid ${engine.pid}`}
-        >
-          {engineLabel(engine)}
-        </span>
-        <button className="dl-row-cancel" onClick={stop} disabled={busy}>
-          {busy ? "Stopping…" : "Stop"}
-        </button>
-      </div>
-      {/* The failure REPLACES the detail line rather than stacking under it:
-          a row whose Stop just failed has one thing worth reading. It clears
-          itself on the next poll (the `useEffect` above), so it stays there
-          only until the row has something fresh to say. */}
-      <div className="dl-status">{failure || engineDetail(engine)}</div>
-    </div>
+    <NotificationCard
+      title={engineLabel(engine)}
+      titleMode="id"
+      titleTooltip={`${engine.folder || engine.engine_id} — pid ${engine.pid}`}
+      liveAction={{
+        label: busy ? "Stopping…" : "Stop",
+        onClick: stop,
+        disabled: busy,
+      }}
+      status={failure || engineDetail(engine)}
+    />
   );
 }
 
