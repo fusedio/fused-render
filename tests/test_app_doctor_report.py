@@ -292,6 +292,20 @@ def test_a_sibling_apps_uncommitted_work_is_not_this_apps_finding(workspace):
 
 # --------------------------------------------------------------- pushed
 
+def test_a_folder_that_is_not_a_repo_skips_the_pushed_row_with_the_right_reason(
+    workspace,
+):
+    """A folder with no git repo at all must not be told it has "no upstream
+    configured" — that implies a repo that just needs a remote wired up, a
+    different and wrong fact from "this isn't a git repository". The wording
+    matches `_git_check`'s own NO_REPO sentence for the `git` row, since it
+    is the same condition."""
+    d = _app(workspace)
+    row = _rows(app_doctor.report(str(d)))["pushed"]
+    assert row["state"] == "skip"
+    assert row["detail"] == "this folder is not in a git repository this server can read"
+
+
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
 def test_no_remote_at_all_skips_the_pushed_row(workspace):
     """A folder with no remote configured is not a failing app — there is
@@ -316,7 +330,12 @@ def test_a_branch_with_no_upstream_skips_the_pushed_row(workspace):
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
                    capture_output=True, close_fds=False)
     _git(repo, "remote", "add", "origin", str(remote))
-    assert _state(app_doctor.report(str(d)), "pushed") == "skip"
+    row = _rows(app_doctor.report(str(d)))["pushed"]
+    assert row["state"] == "skip"
+    # A REAL, readable repo with no upstream gets a different sentence than
+    # "not a git repository" (see the non-repo test above) — this one is
+    # actually about the missing upstream.
+    assert row["detail"] == "no upstream branch configured for this folder — nothing to compare against"
 
 
 @pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
@@ -354,6 +373,36 @@ def test_a_branch_pushed_up_to_date_passes_the_pushed_row(workspace):
     _git(repo, "remote", "add", "origin", str(remote))
     _git(repo, "push", "-q", "-u", "origin", "HEAD")
     assert _state(app_doctor.report(str(d)), "pushed") == "pass"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="git not on PATH")
+def test_a_sibling_apps_unpushed_commit_is_not_this_apps_finding(workspace):
+    """Same D626 scoping problem as the git row's own sibling test above, but
+    for `pushed`: `rev-list --count @{upstream}..HEAD` and the `log` that
+    names the subjects both walk the WHOLE shared repo's history unless
+    scoped with `-- .`, so a neighbour app's unpushed commit would otherwise
+    count against every app in the workspace and hand its commit subject to
+    a fix session that has nothing to do with it."""
+    mine = _app(workspace, "mine")
+    theirs = _app(workspace, "theirs")
+    repo = workspace / "local"
+    remote = workspace.parent / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True,
+                   capture_output=True, close_fds=False)
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "in")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "HEAD")
+
+    (theirs / "wip.py").write_text("half a thought\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "theirs only")
+
+    assert _state(app_doctor.report(str(mine)), "pushed") == "pass"
+    theirs_row = _rows(app_doctor.report(str(theirs)))["pushed"]
+    assert theirs_row["state"] == "fail"
+    assert any("theirs only" in f["excerpt"] for f in theirs_row["findings"])
 
 
 def test_a_missing_folder_reports_rather_than_raising(tmp_path):

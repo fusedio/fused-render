@@ -279,12 +279,25 @@ def _git_pending(app_dir: str) -> tuple[str, list[str]]:
     return FAIL, out
 
 
-def _pushed_pending(app_dir: str) -> tuple[str, list[str]]:
-    """`(state, subjects)` for whether the current branch is ahead of its
-    upstream: FAIL with the unpushed commits' subject lines, PASS when there
-    is nothing to push, SKIP when there is no upstream configured, no remote,
-    or git cannot answer — a folder with no remote at all is not a failing
-    app, it just has nothing to compare against.
+# `_pushed_pending`'s SKIP reasons — distinct enough that `_pushed_check` can
+# say something TRUE instead of one catch-all sentence. `NO_REPO` covers "not
+# a git repository this server can read" in all its shapes (no `.git` at all,
+# `git` missing from PATH, a hung call past `_GIT_TIMEOUT`) — the same
+# condition `_git_check` already reports for the `git` row, worded the same
+# way here. `NO_UPSTREAM` is the one case that is actually about THIS
+# question: a real, readable repo whose current branch has no upstream
+# configured, so there is nothing to compare against.
+_SKIP_NO_REPO = "no-repo"
+_SKIP_NO_UPSTREAM = "no-upstream"
+
+
+def _pushed_pending(app_dir: str) -> tuple[str, list[str], str]:
+    """`(state, subjects, skip_reason)` for whether the current branch is
+    ahead of its upstream: FAIL with the unpushed commits' subject lines,
+    PASS when there is nothing to push, SKIP — with `skip_reason` telling
+    apart WHY — when there is no upstream configured, no remote, this folder
+    is not a git repository this server can read, or git cannot answer at
+    all. `skip_reason` is `""` except when `state` is SKIP.
 
     NO NETWORK CALL. `@{upstream}..HEAD` is answered entirely from the local
     refs git already has — never `git fetch`, never `git ls-remote` — so this
@@ -293,32 +306,50 @@ def _pushed_pending(app_dir: str) -> tuple[str, list[str]]:
     read-only, degrade-to-skip discipline `_git_pending` follows above, and
     for the same reason — scoped with `-C app_dir` so a subdirectory of the
     shared `local` repo (D626) still resolves through git's own upward
-    search, exactly like `_git_pending`."""
+    search, exactly like `_git_pending`.
+
+    SCOPED WITH `-- .`, exactly like `_git_pending` (D626): sibling apps share
+    one `local` repo, so an unpathspec'd `rev-list`/`log` counts and quotes
+    EVERY app's unpushed commits, not just this one's — a neighbour's commit
+    subjects handed to this app's fix session would be actively misleading,
+    not just noisy.
+
+    A cheap `rev-parse --is-inside-work-tree` decides `NO_REPO` vs
+    `NO_UPSTREAM` up front rather than sniffing `rev-list`'s stderr for a
+    particular sentence — git's error text is not a stable API across
+    versions or locales, a boolean answer from a purpose-built flag is."""
     from fused_render import app_git
 
     try:
-        r = app_git._git(app_dir, "rev-list", "--count", "@{upstream}..HEAD")
+        probe = app_git._git(app_dir, "rev-parse", "--is-inside-work-tree")
     except Exception:  # noqa: BLE001 — includes a hung git past _GIT_TIMEOUT
-        return SKIP, []
+        return SKIP, [], _SKIP_NO_REPO
+    if probe.returncode != 0 or (probe.stdout or "").strip() != "true":
+        return SKIP, [], _SKIP_NO_REPO
+
+    try:
+        r = app_git._git(app_dir, "rev-list", "--count", "@{upstream}..HEAD", "--", ".")
+    except Exception:  # noqa: BLE001
+        return SKIP, [], _SKIP_NO_REPO
     if r.returncode != 0:
-        # No upstream configured, no remote tracking ref, or not a repo at
-        # all — every one of those reads as "nothing to compare against"
-        # rather than a failure.
-        return SKIP, []
+        # A readable repo, but this branch has no upstream tracking ref (or
+        # no remote at all) — the one SKIP cause that is actually about
+        # "nothing to compare against" rather than "can't read git here".
+        return SKIP, [], _SKIP_NO_UPSTREAM
     try:
         count = int((r.stdout or "").strip() or "0")
     except ValueError:
-        return SKIP, []
+        return SKIP, [], _SKIP_NO_UPSTREAM
     if count <= 0:
-        return PASS, []
+        return PASS, [], ""
     try:
-        r2 = app_git._git(app_dir, "log", "--format=%s", "@{upstream}..HEAD")
+        r2 = app_git._git(app_dir, "log", "--format=%s", "@{upstream}..HEAD", "--", ".")
     except Exception:  # noqa: BLE001
-        return SKIP, []
+        return SKIP, [], _SKIP_NO_REPO
     if r2.returncode != 0:
-        return SKIP, []
+        return SKIP, [], _SKIP_NO_UPSTREAM
     subjects = [ln for ln in (r2.stdout or "").splitlines() if ln.strip()]
-    return FAIL, subjects
+    return FAIL, subjects, ""
 
 
 # --------------------------------------------------------------- file parsing
@@ -492,10 +523,19 @@ def _git_check(app_dir: str) -> dict:
 
 
 def _pushed_check(app_dir: str) -> dict:
-    state, subjects = _pushed_pending(app_dir)
+    state, subjects, skip_reason = _pushed_pending(app_dir)
     return _check(
         "pushed", "Everything pushed", state,
-        "no upstream branch configured for this folder — nothing to compare against"
+        # Two different SKIP causes get two different sentences — see
+        # `_pushed_pending`'s `_SKIP_NO_REPO`/`_SKIP_NO_UPSTREAM`. Telling
+        # someone in a folder that is not a git repository at all that they
+        # have "no upstream configured" is a different, wrong fact — the
+        # NO_REPO wording matches `_git_check`'s own "not in a git
+        # repository this server can read" verbatim, since it is the same
+        # condition.
+        "this folder is not in a git repository this server can read"
+        if state == SKIP and skip_reason == _SKIP_NO_REPO
+        else "no upstream branch configured for this folder — nothing to compare against"
         if state == SKIP
         else f"{len(subjects)} commit{'' if len(subjects) == 1 else 's'} sitting only "
              "on this machine — push them so what you shared is reachable"
