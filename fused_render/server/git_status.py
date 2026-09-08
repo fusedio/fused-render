@@ -41,20 +41,25 @@ last because it is the one already recorded.
 BEST-EFFORT, LIKE EVERY OTHER GIT READ HERE
 git may be missing, the folder may not be a repo, the index may be locked by a
 concurrent commit. A tint is a display hint, so every failure returns `{}` and
-the listing renders undecorated — never an error. Same discipline, and the same
-spawn rules (absolute git, `-C`, `close_fds=False`), as gitignore.py; its
-`_spawn_kwargs` and warning helpers are reused rather than re-derived, because
-the fork-vs-posix_spawn trap they exist for is not per-module (see the note at
-the top of that file, and tests/test_git_posix_spawn.py).
+the listing renders undecorated — never an error. Same discipline, and the
+same spawn rules (absolute git, `-C`, `close_fds=False`), as gitignore.py;
+`git_bin` and the warning helpers are reused from there because they carry no
+state of their own. `_spawn_kwargs` is NOT imported the same way: it is spread
+into the call with `**`, and `tests/test_git_posix_spawn.py`'s static sweep
+resolves a `**helper()` spread by reading the helper's dict literal out of THIS
+file's own AST — it does not follow the call into another module. So this file
+keeps its own copy of the dict literal, one field at a time identical to
+gitignore's, rather than importing the function and leaving the spread
+unverifiable.
 """
 import logging
 import os
 import subprocess
+import sys
 
 from fused_render.server.gitignore import (
     _is_ordinary_negative,
     _repo_toplevel,
-    _spawn_kwargs,
     _warn_git_refused,
     _warn_git_unusable,
     git_bin,
@@ -193,6 +198,25 @@ def _prefix_of(cwd: str, top: str) -> str | None:
     if rel == os.pardir or rel.startswith(os.pardir + os.sep):
         return None
     return rel.replace(os.sep, "/") + "/"
+
+
+def _spawn_kwargs() -> dict:
+    """The kwargs the status spawn needs to reach posix_spawn, not fork.
+
+    A plain dict literal, not a call into gitignore.py's copy: the static sweep
+    in `tests/test_git_posix_spawn.py` resolves a `**_spawn_kwargs()` spread by
+    reading this function's `return {...}` out of THIS file's AST, and it does
+    not follow an import to check another module's literal. Kept field-for-
+    field identical to gitignore.py's `_spawn_kwargs` on purpose — `close_fds`
+    is the half of the posix_spawn condition git_bin()'s absolute path does not
+    cover, and `creationflags` keeps a spawned git from popping a console
+    window on Windows.
+    """
+    return {
+        "close_fds": False,
+        "creationflags": (subprocess.CREATE_NO_WINDOW
+                          if sys.platform == "win32" else 0),
+    }
 
 
 def _run_status(cwd: str) -> list[tuple[str, str]] | None:

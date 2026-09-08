@@ -752,6 +752,12 @@ def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=N
         cmd = ["explorer", win_path] if is_dir else f'explorer /select,"{win_path}"'
     else:
         cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
+    # posix-spawn-exempt: `cmd` is assembled above as "open"/"explorer"/
+    # "xdg-open" (or a Windows format string for the /select case) — the OS's
+    # file-manager launcher, never git. The static sweep in
+    # tests/test_git_posix_spawn.py cannot see through the variable to know
+    # that, and this file's own `e["git"] = status` a few lines up (a JSON
+    # field name, not an argv) is enough to put it in the sweep's scope.
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return JSONResponse({"ok": True})
 
