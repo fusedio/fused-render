@@ -571,6 +571,28 @@ export function RepoUpdatesCardView({
                   failure sentence and the ✕, and it already carries D572's
                   rejected-request surfacing, which is the behaviour a dismiss
                   here most needs to keep. */}
+              {/* THE VOLUME CAP: only TERMINAL jobs ever collapse — a waiting
+                  task, a repo row and a pairing are always drawn in full
+                  below, uncounted by `TERMINAL_VISIBLE_CAP`, because none of
+                  them pile up the way a finished job does (a repo stays
+                  behind until fixed, one row; a pairing is dismissed the
+                  moment it is read). Nothing is dropped, only folded: the
+                  count names exactly how many more `JobRow`s are one click
+                  away, and clicking it is the only thing that changes
+                  `olderShown` — a fresh terminal job arriving never
+                  re-collapses a panel the user already opened wide.
+                  ABOVE `.dl-rows`, not inside it (D762): `terminal` arrives
+                  oldest-first and the fold keeps the newest rows visible, so
+                  the folded rows are chronologically earlier than every
+                  rendered one — a pinned line above the scrolling list keeps
+                  the panel reading top-to-bottom in time order whether it is
+                  folded or open, and keeps `.dl-rows` holding nothing but the
+                  rows it scrolls. */}
+              {olderTerminalCount > 0 && (
+                <button type="button" className="dl-panel-more" onClick={() => setOlderShown(true)}>
+                  {olderTerminalCount} older notification{olderTerminalCount === 1 ? "" : "s"}
+                </button>
+              )}
               <div className="dl-rows">
                 {/* A WAITING TASK GOES ABOVE EVERYTHING (2026-09-03). It is the
                     only row in this panel whose subject has not finished
@@ -600,31 +622,6 @@ export function RepoUpdatesCardView({
                     onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
                   />
                 ))}
-                {/* THE VOLUME CAP: only TERMINAL jobs ever collapse — a
-                    waiting task, a repo row and a pairing are always drawn in
-                    full, uncounted by `TERMINAL_VISIBLE_CAP`, because none of
-                    them pile up the way a finished job does (a repo stays
-                    behind until fixed, one row; a pairing is dismissed the
-                    moment it is read). Nothing is dropped, only folded: the
-                    count names exactly how many more `JobRow`s are one click
-                    away, and clicking it is the only thing that changes
-                    `olderShown` — a fresh terminal job arriving never
-                    re-collapses a panel the user already opened wide.
-                    ABOVE `shownTerminal`, not below it (D761): `terminal`
-                    arrives oldest-first and the fold now keeps the newest
-                    rows visible, so the folded rows are chronologically
-                    earlier than every rendered one — putting the expander
-                    here keeps the panel reading top-to-bottom in time order
-                    whether it is folded or open. */}
-                {olderTerminalCount > 0 && (
-                  <button
-                    type="button"
-                    className="dl-panel-more"
-                    onClick={() => setOlderShown(true)}
-                  >
-                    {olderTerminalCount} older notification{olderTerminalCount === 1 ? "" : "s"}
-                  </button>
-                )}
                 {shownTerminal.map((job) => (
                   <JobRow
                     key={job.id}

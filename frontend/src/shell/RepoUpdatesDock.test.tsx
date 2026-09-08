@@ -464,6 +464,14 @@ test("a 6th terminal job folds behind an 'N older notifications' row — nothing
   expect(numeral(tree)).toBe("7");
 });
 
+test("the fold row sits above `.dl-rows`, not inside it — `.dl-rows` scrolls the terminal rows alone", () => {
+  const terminal = Array.from({ length: 7 }, (_, i) => doneJob({ id: `j${i}` }));
+  const tree = renderView({ rows: [], terminal });
+  const dlRows = findAll(tree, "dl-rows")[0];
+  expect(findAll(dlRows, "dl-panel-more")).toHaveLength(0);
+  expect(findAll(dlRows, "dl-row")).toHaveLength(5);
+});
+
 test("clicking the fold row reveals every job", () => {
   const terminal = Array.from({ length: 7 }, (_, i) => doneJob({ id: `j${i}` }));
   const renderer = renderInstance({ rows: [], terminal });

@@ -667,17 +667,20 @@
   color: var(--fg-muted);
 }
 
-/* THE VOLUME CAP'S OWN ROW: a plain, full-width button between the row list
-   and the footer, naming how many older terminal jobs are folded rather than
+/* THE VOLUME CAP'S OWN ROW: a plain, full-width button pinned above
+   `.dl-rows`, naming how many older terminal jobs are folded rather than
    drawn. Text-only and centred, the same weight `.dl-panel-empty` wears,
    because it is reporting a fact about the panel rather than offering a
-   distinct action the way `.dl-clear` does. */
+   distinct action the way `.dl-clear` does. `border-bottom`, not `border-top`
+   (D762): sitting directly under `.dl-panel`'s own top edge, a `border-top`
+   here would draw a line where none belongs — the bottom edge reads as a
+   caption dividing this line from the row list below it. */
 .dl-panel-more {
   display: block;
   width: 100%;
   padding: 7px 10px;
   border: 0;
-  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   background: none;
   font-size: 11px;
   color: var(--fg-muted);
