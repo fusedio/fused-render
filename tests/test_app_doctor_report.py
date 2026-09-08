@@ -608,6 +608,24 @@ def test_get_with_an_unknown_check_is_a_400(client, workspace):
     assert r.status_code == 400
 
 
+def test_doctor_prompt_reads_kind_from_the_engine_not_the_fallback_table(monkeypatch):
+    """`doctor_prompt` must ask `_meta` for `kind`, not read `_CHECK_META`
+    directly — `_meta` prefers the floor engine's own `CHECK_META` for
+    `secrets`/`device-paths`, the single source of truth for their
+    classification (see the module docstring). If the engine ever
+    reclassifies one of those two ids, the fix prompt has to follow: asking
+    for a fix-outright when triage-first was needed is exactly the mistake
+    the candidate/fact split exists to prevent."""
+
+    class FakeEngine:
+        CHECK_META = {"secrets": ("essentials", "critical", "fact")}
+
+    monkeypatch.setattr(app_doctor, "engine", lambda: FakeEngine())
+    prompt = app_doctor.doctor_prompt("app/index.html", "secrets", [])
+    assert "Fix what is safe to fix here" in prompt
+    assert "CANDIDATE row" not in prompt
+
+
 def test_a_live_task_attaches_to_its_own_row_only(client, workspace, monkeypatch):
     d = _app(workspace)
     entry = str(d / "index.html")

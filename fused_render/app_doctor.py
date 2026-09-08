@@ -720,9 +720,15 @@ def doctor_prompt(entry_html: str, check_id: str, findings: list[dict]) -> str:
     checks itself.
 
     A candidate row (`secrets`, `device-paths`) asks for triage FIRST — see
-    `_triage_ask`."""
+    `_triage_ask`. `kind` comes from `_meta`, not a direct `_CHECK_META`
+    read — `_meta` prefers the floor engine's own `CHECK_META` for `secrets`/
+    `device-paths`, the single source of truth for their classification. A
+    direct `_CHECK_META` read would keep asking for a triage-first fix (or a
+    fix-outright one) based on this module's fallback copy even after the
+    engine reclassified an id — fix-outright where triage-first was needed
+    is exactly the failure the candidate/fact split exists to prevent."""
     entry_name = os.path.basename(entry_html)
-    _section, _severity, kind = _CHECK_META.get(check_id, ("", "", "fact"))
+    _section, _severity, kind = _meta(check_id)
     lines = _findings_block(findings)
     ask = _triage_ask(kind)
 
