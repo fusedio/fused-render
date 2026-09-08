@@ -65,6 +65,7 @@ import {
   type AttentionRow,
 } from "@shell/tasks-lib";
 import { useTasksPulseRows } from "@shell/tasksPulse";
+import { loadDismissed, saveDismissed } from "./dismiss-store";
 import {
   repoActionLabel,
   repoDismissSignature,
@@ -265,45 +266,18 @@ function AttentionRowView({
   );
 }
 
-// Persisted to localStorage (Task 4) — a repo dismissal used to live only in
-// a module-level map, forgotten on reload. Same defensive, best-effort
-// pattern as sidebarstate.ts: a private window, a full quota or malformed
-// JSON all just behave as "nothing dismissed" rather than throwing. Held at
+// Persisted (dismiss-store.ts) so a repo dismissal survives reload. Held at
 // MODULE level, not component state, so a remount (switching panes or panels
 // tears this component down and back up) does not forget what the user just
 // dismissed either.
 const DISMISSED_KEY = "fused-render:repo-updates-dismissed";
-// A waiting-task dismissal (Task 4's remaining piece) gets its OWN key rather
-// than sharing `DISMISSED_KEY`'s map: the two are keyed on different id
-// spaces (a repo root vs. a task's session/pending key) and expire against
-// different signatures (`repoDismissSignature` vs. `attentionDismissSignature`)
-// — folding them into one map would risk a collision the moment either id
+// A waiting-task dismissal gets its OWN key rather than sharing
+// `DISMISSED_KEY`'s map: the two are keyed on different id spaces (a repo
+// root vs. a task's session/pending key) and expire against different
+// signatures (`repoDismissSignature` vs. `attentionDismissSignature`) —
+// folding them into one map would risk a collision the moment either id
 // space grows a value that looks like the other's.
 const ATTENTION_DISMISSED_KEY = "fused-render:attention-dismissed";
-
-function loadDismissed(key: string): Record<string, string> {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Record<string, string> = {};
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof v === "string") out[k] = v;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function saveDismissed(key: string, next: Record<string, string>): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(next));
-  } catch {
-    // storage unavailable — dismissal is best-effort, so a failed write is fine
-  }
-}
 
 let moduleDismissed: Record<string, string> = loadDismissed(DISMISSED_KEY);
 
