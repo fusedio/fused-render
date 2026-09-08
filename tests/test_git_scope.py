@@ -238,7 +238,16 @@ def test_the_identity_moves_into_the_selected_state(source):
     # a commit selection shows can change without touching how a diff renders.
     assert "function commitMeta(" in source
     assert "function diffPane(title, sub, payload, meta)" in source
-    assert "commitMeta(meta, rev, revertBtn)" in source
+    # The third argument used to be a single `revertBtn`; it is now an
+    # `actions` container holding both Revert and Reset (D745), but the
+    # identity line's own wiring — the selected commit's `meta`/`rev` still
+    # reaching `commitMeta`, with SOME trailing action alongside it — is
+    # exactly what this test protects, so it must still fail if that wiring
+    # breaks.
+    assert re.search(
+        r'const actions = el\("div", \{ className: "meta-action commit-actions" \},\s*'
+        r'\[revertBtn, resetBtn\]\);', source)
+    assert "commitMeta(meta, rev, actions)" in source
     # The placeholder pane is built from the row the user clicked, so the
     # heading does not swap under them when the read lands.
     assert "commitMeta(known, rev)" in source
