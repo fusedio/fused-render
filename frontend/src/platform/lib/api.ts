@@ -430,7 +430,7 @@ export function runClaudeDoctor(): Promise<{
 export interface UpdateStatus {
   // idle | checking | available | installing | installed | error
   state: string;
-  // INFORMATIONAL ONLY — every method takes the same install path (D746): the
+  // INFORMATIONAL ONLY — every method takes the same install path (D767): the
   // app downloads the signed DMG and swaps its own bundle. brew: that bundle
   // happens to be Homebrew-managed (the app still never runs brew); dmg: it
   // is not; none: not updatable. Nothing in the UI branches on this.
@@ -446,7 +446,7 @@ export interface UpdateStatus {
   // "installing" from the mount to the swap; null outside state "installing".
   phase?: "downloading" | "installing" | null;
   error: string | null;
-  // Always null since D746; kept for wire compatibility. There is one install
+  // Always null since D767; kept for wire compatibility. There is one install
   // path for every install type and no terminal command to hand the user, so
   // no surface reads this field any more.
   manual_command: string | null;
@@ -4254,7 +4254,7 @@ export function getGitSnapshot(path: string, sha: string): Promise<GitSnapshot> 
 
 // The cheap, sha-less sibling: does an app folder enclose `path` at all — the
 // same fail-closed probe templates/git/template.html's own `probeAppFolder()`
-// calls before offering its preview eye (D746 / review finding B4). Backs
+// calls before offering its preview eye (D767 / review finding B4). Backs
 // AppVersionPicker's own gate: the picker renders only once this resolves ok.
 export interface GitAppFolder {
   ok: boolean;

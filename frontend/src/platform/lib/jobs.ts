@@ -238,13 +238,15 @@ export function terminalNotifications(jobs: Job[]): Job[] {
 }
 
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
+// Terminal jobs (done/error/cancelled) draw no bar at all — `Bar` in
+// DownloadManager.tsx returns null outright for those states, so this
+// function's return value is only ever consulted for a running job.
 //
 // `total` of 0 is null, not 1: a reporter that has not learned the size yet
 // sends 0, and painting that as a full bar says the opposite of the truth. A
 // `done` past `total` is clamped rather than dropped — an over-count is a
 // reporter rounding, and a bar past its own end is worse than a full one.
 export function jobFraction(job: Job): number | null {
-  if (job.state === "done") return 1;
   // `== null`, not `=== null` (D577): covers `undefined` as well, so a payload
   // missing these keys yields null rather than `undefined / undefined` ->
   // `NaN` -> a literal `NaN%` painted into the bar. Not user-reachable today

@@ -4,7 +4,7 @@
 // expands into a small panel — an accordion: the row wears a chevron, and row
 // and panel share one border so the open state reads as a single group.
 //
-// ONE install path for every install type (D746), so this panel has exactly
+// ONE install path for every install type (D767), so this panel has exactly
 // one button and never mentions Homebrew: the in-app install downloads and
 // swaps the same version-verified bundle whichever tool put it there, and the
 // app never runs brew on itself (the cask's `uninstall quit:` would quit the

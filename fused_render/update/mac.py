@@ -225,7 +225,7 @@ class UpdateManager:
                 "progress": self._progress,
                 "progress_total": self._progress_total,
                 "error": self._error,
-                # Always None since D746 — kept on the wire so the client's
+                # Always None since D767 — kept on the wire so the client's
                 # UpdateStatus shape is unchanged. There is no terminal
                 # command to offer for any method (see the class docstring).
                 "manual_command": None,
@@ -383,7 +383,7 @@ class UpdateManager:
 
     def _install(self, manifest: dict) -> None:
         try:
-            # ONE install path for every install type (D746): nothing branches
+            # ONE install path for every install type (D767): nothing branches
             # on `method()` any more, so the only real precondition left is
             # having a bundle to swap. (`_install_dmg` re-checks it — it is
             # also reachable on its own.)

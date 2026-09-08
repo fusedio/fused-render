@@ -195,6 +195,14 @@ def _run(action: str, cmd, display: str) -> None:
     """
     tail: list = []
     timed_out = threading.Event()
+    # A NAMED STEP BEFORE THE SPAWN, because the process itself may say
+    # nothing for a while once it starts — `curl -fsSL` is silent by
+    # construction (see the watchdog comment below), so without this the bar
+    # sits on "Starting…" for however long the download takes. `claude
+    # update` genuinely checks a remote version before touching anything, so
+    # it gets its own wording rather than reusing the installer's.
+    _publish(detail="Downloading the installer" if action == "install"
+             else "Checking for updates")
     try:
         proc = subprocess.Popen(
             cmd,
