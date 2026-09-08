@@ -530,6 +530,33 @@ def _public(marker: dict) -> dict:
     install root moves — a bundle is dragged from the DMG to /Applications, a
     venv is relocated — and a marker holding absolute paths would then point at
     a directory that is not this one.
+
+    A path that resolves to NOTHING is dropped rather than handed over. Records
+    are written to one home (`record_homes`), and on a writable install that
+    home is the state dir — inside the very tree the fix session is invited to
+    edit. A session that deletes `.fused-render-selffix` deletes its own report
+    with it, and the badge now outlives that deletion: the session pointer goes
+    to every home, so `resume` re-raises the badge across the restart the
+    session itself caused (`note_session`). Handing the path over anyway is what
+    gives the chip an "Open the report" that opens nothing, and the preferences
+    list a row with the same dead click.
+
+    Dropping it is also what lets the readers' EXISTING fallback fire: with no
+    `latest_report` the panel offers the newest report still ON DISK, which is
+    what it already does for a marker that names no report at all. The incident
+    is checked on the same rule — nothing renders it today, but it is the same
+    promise about the same directory, and the exception would be the part
+    nobody remembers when a reader for it arrives.
+
+    Nothing is repaired here, only described: the marker keeps what it recorded,
+    so a file that comes back — a restored copy, a home that was briefly
+    unreadable — is named again on the very next read.
+
+    The cost is one `stat` per stored path, at most 40 of them (`MAX_FIXES`
+    fixes, two paths each) and two in the ordinary case. Measured at ~50µs for
+    the worst case against the ~30µs the marker read on this same path already
+    costs, which is the budget `status` has to fit inside for the config poll. A
+    stat per path fits; looking for the file anywhere else would not.
     """
     root = state_dir()
     fixes = []
@@ -539,8 +566,9 @@ def _public(marker: dict) -> dict:
         entry = dict(fix)
         for key in ("report", "incident"):
             rel = entry.get(key)
-            entry[key] = (os.path.normpath(os.path.join(root, rel))
-                          if isinstance(rel, str) and rel else None)
+            full = (os.path.normpath(os.path.join(root, rel))
+                    if isinstance(rel, str) and rel else "")
+            entry[key] = full if full and os.path.exists(full) else None
         fixes.append(entry)
     latest = fixes[-1] if fixes else None
     return {
@@ -561,8 +589,9 @@ def _public(marker: dict) -> dict:
 def status() -> dict | None:
     """What the shell shows on the version chip, or None for an unmodified install.
 
-    Cheap by construction — one small JSON read, no walk — because /api/config
-    carries this and the shell polls /api/config every few seconds.
+    Cheap by construction — one small JSON read, plus a `stat` for each path
+    that read names (`_public`), and no walk — because /api/config carries this
+    and the shell polls /api/config every few seconds.
 
     The one thing it does beyond reading is **delete a marker left by a version
     that is no longer installed**. That check has to live on the read path and

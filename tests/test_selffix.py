@@ -2319,6 +2319,66 @@ def test_a_session_that_deleted_the_state_dir_is_still_stamped_after_a_restart(
     assert selffix.status()["fixes"][0]["run_id"] == "r-wiper"
 
 
+def test_a_badge_that_outlived_its_REPORT_does_not_offer_to_open_it(
+        install, monkeypatch):
+    """The pointer survives the state dir. The report inside it does not.
+
+    Records stop at the first home that will have them, so on a writable install
+    the report is written INSIDE the tree the session is editing — and the
+    session that deletes `.fused-render-selffix` deletes the report along with
+    it. The badge coming back is right (the patch is real; the test above is
+    about exactly that), but the path it carries in now names a file that is not
+    there: the chip's "Open the report" would open nothing, the preferences list
+    would offer the same dead click, and the panel's fallback to the newest
+    report still on disk never gets a chance to fire.
+    """
+    before = _pristine()
+    incident, report = selffix.record_incident({"title": "download failed"})
+    selffix.note_session("r-wiper", before=before, report=report,
+                         incident=incident, title="download failed")
+
+    (install / "jobs.py").write_text("patched\n")
+    shutil.rmtree(selffix.state_dir())  # and the report goes with it
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+
+    REAL_RESUME()
+
+    state = selffix.status()
+    assert state is not None and state["fixes"][0]["run_id"] == "r-wiper"
+    assert not os.path.exists(report)
+    assert state["latest_report"] is None, (
+        "the chip was handed a report the session had deleted")
+    assert state["fixes"][0]["report"] is None
+    assert state["fixes"][0]["incident"] is None
+
+
+def test_a_report_that_COMES_BACK_is_named_again(install):
+    """The wire shape describes the disk; it does not edit the marker.
+
+    A path can be missing for a reason that ends — a directory briefly
+    unreadable while an installer works, a home restored from a backup — and the
+    marker is the only record of WHICH report belonged to which fix. Leaving it
+    alone and dropping the path from the READ costs one `stat` and is reversible
+    by itself; dropping it from the marker would be a repair nobody asked for,
+    made permanent on the strength of one poll.
+    """
+    _pristine()
+    incident, report = selffix.record_incident({"title": "boom"})
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1", report=report,
+                   incident=incident)
+    assert selffix.status()["latest_report"] == report
+
+    kept = open(report, encoding="utf-8").read()
+    os.unlink(report)
+    assert selffix.status()["latest_report"] is None
+
+    with open(report, "w", encoding="utf-8") as f:
+        f.write(kept)
+    assert selffix.status()["latest_report"] == report
+
+
 def test_a_stamp_that_FAILED_keeps_the_digest_for_the_next_start(
         install, monkeypatch):
     """A `settle` that raised has recorded nothing, so its `before` is still
