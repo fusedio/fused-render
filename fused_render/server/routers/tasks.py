@@ -1452,12 +1452,15 @@ def _place(task: dict) -> None:
     # WHY THE TWO CANNOT BE THE SAME VALUE (bugbot, PR #984). `order` SWITCHES
     # SOURCE the moment a transcript exists: before that it is the entry's
     # `created`, and after it is the transcript's first record. For allocation
-    # that is harmless — a number is allocated once and then kept — but the Cards
-    # wall orders itself by `started` precisely so a card cannot move after it
-    # appears (shell/tasks-lib.cardsForTasks), and a value that changes under a
-    # listed row is exactly the thing that would move one. Two tasks created
-    # seconds apart could swap places when the second's transcript landed; a run
-    # scheduled days before it fires would jump the moment it spoke.
+    # that is harmless — a number is allocated once and then kept — but a row's
+    # `started` is a listed fact, and a fact that changes under a listed row is
+    # the kind of thing a view sorting by it would move on. (The Cards wall did
+    # sort by it for a while; it now shares the List's order — the time each
+    # row prints, shell/tasks-lib.sortByLane — and nothing on the client orders
+    # by `started` today. The field stays fixed regardless, for whoever next
+    # reads it.) Two tasks created seconds apart could swap places when the
+    # second's transcript landed; a run scheduled days before it fires would
+    # jump the moment it spoke.
     #
     # So: THE EARLIEST CLOCK WE HAVE. `created` is written when the message is
     # scheduled and always precedes the first thing the run says, so once a task
@@ -1761,9 +1764,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # explains the choice at length): the scheduled entry's `created`, else
         # the transcript's first record. It is the one time on this row that
         # never moves — `last_active` climbs on every write, and `order` beside
-        # it switches source when a transcript appears — which is why the Cards
-        # wall orders by it: a view that re-sorts itself while its runs are
-        # merely talking is one nobody can watch (shell/tasks-lib.cardsForTasks).
+        # it switches source when a transcript appears. The Cards wall ordered by
+        # it for a while; it now takes the List's order (shell/tasks-lib
+        # sortByLane), and the field stays on the row as the one fixed clock.
         # 0.0 for a row that has neither a transcript nor an entry to date, the
         # way every other absent time on this row reads.
         "started": task.get("started") or 0.0,
