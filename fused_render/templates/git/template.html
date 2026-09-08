@@ -910,22 +910,30 @@
     font-variant-numeric: tabular-nums;
   }
   .row .subject, .row .path {
-    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The auto margin sits on the marker slot (the eye / previewing pill),
-     not on .when: that pushes marker + sha + when as ONE right-aligned
-     cluster, so the cluster's left edge is fixed regardless of how long
-     the subject is, instead of the old behavior where the slack landed
-     after the marker and let subject+marker pack left together. Both
-     marker states get the same margin so the swap between them (see the
-     inline-eye comment below) never shifts the cluster. */
-  .row .inline-eye,
-  .row .where.is-preview.marker {
-    margin-left: auto;
+  /* `.subject` GROWS (unlike `.path` below, which only shrinks): it is the
+     one field in a commit row guaranteed to absorb the row's slack no matter
+     which optional children are present. The marker slot is null whenever
+     `canPreview` is false (the folder-listing preview pane, which has no
+     content pane for a marker to drive — see THE MARKER SLOT below), so an
+     auto margin on the marker cannot be what pins the sha/when cluster to
+     the right edge: with no marker in the row, nothing would carry it. Growing
+     the subject instead means marker + sha + when pack against the right
+     edge in every combination — marker present or absent, sha present or
+     absent — because the cluster's left edge is wherever the (possibly
+     zero-width) subject stops, not a margin on one of the cluster's own
+     members. `.path` stays shrink-only: change rows don't carry this
+     sha/when cluster, and growing `.path` would shift the "moved" tag that
+     can follow it for no reason tied to this fix. */
+  .row .subject {
+    flex: 1 1 auto;
+  }
+  .row .path {
+    flex: 0 1 auto;
   }
   /* The inline Preview control: drawn AT REST, not revealed by the row's
      hover (D703) — hover-only meant nothing on screen ever said a commit
@@ -3575,8 +3583,11 @@ function commitLine(entry, selected) {
   const previewingHere = previewed === entry.sha;
 
   /* THE MARKER SLOT, right-aligned with the sha/when cluster regardless of
-     how long the subject is (an auto margin on the marker itself does the
-     pushing — see the CSS). Three states:
+     how long the subject is (`.subject` growing to absorb the row's slack
+     does the pushing — see the CSS — rather than a margin on the marker
+     itself, since this slot is null below whenever `canPreview` is false and
+     a margin on a slot that isn't there could not push anything). Three
+     states:
        previewing this commit -> a green dot + "previewing", clickable to go
                                  back to now (it stands where the eye was);
        canPreview             -> the eye, drawn AT REST (D703) — not
