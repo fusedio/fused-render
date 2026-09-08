@@ -909,6 +909,16 @@
     font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
+  /* Present on every row (see commitLine()), not just the selected one, so
+     the space it occupies is identical whether or not the row is selected —
+     only VISIBILITY toggles. `visibility: hidden` (not `display: none`)
+     keeps the slot's width in the flex layout, which is the whole point: a
+     row going from unselected to selected must not narrow `.subject` by the
+     sha's width and shove every sibling after it (the marker, `.when`) to
+     the left. */
+  .row .sha.sha-hidden {
+    visibility: hidden;
+  }
   .row .subject, .row .path {
     min-width: 0;
     overflow: hidden;
@@ -988,8 +998,17 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* A fixed floor, not just `tabular-nums` (which only equalises DIGITS):
+     `shortWhen()`'s widest real output is "11mo" (4 characters, and letters —
+     "mo" is far wider than a lone "d" or "now"'s three letters), so every
+     shorter result is right-aligned into the same column instead of shifting
+     the Preview button beside it. 40px comfortably fits "11mo"/"12mo" in this
+     11px proportional font with room to spare; nothing `shortWhen` emits
+     (`now`, `Nm`, `Nh`, `Nd`, `Nw`, `Nmo`, `Ny`) is wider. */
   .row .when {
     flex: none;
+    min-width: 40px;
+    text-align: right;
     color: var(--ink-3);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
@@ -3636,10 +3655,18 @@ function commitLine(entry, selected) {
   },
     el("span", { className: "subject", textContent: entry.subject || "(no subject)" }),
     marker,
-    /* The short id APPEARS on the selected row (only there — on every row it
-       turned the list into a table), on the RIGHT, out of the reading line.
-       Once a commit is picked, the row and the pane say the same identity. */
-    selected ? el("span", { className: "sha", textContent: entry.short }) : null,
+    /* The short id is VISIBLE only on the selected row (only there — on every
+       row it turned the list into a table), on the RIGHT, out of the reading
+       line. Once a commit is picked, the row and the pane say the same
+       identity. The element itself, though, is always in the DOM — only
+       `sha-hidden` toggles — so the space it reserves never changes when a
+       row is selected or deselected; only its visibility does. Without that,
+       selecting a row would narrow `.subject` by the sha's width and shove
+       the marker beside it to the left of every other row's. */
+    el("span", {
+      className: selected ? "sha" : "sha sha-hidden",
+      textContent: entry.short,
+    }),
     el("span", { className: "when", textContent: shortWhen(entry), title: entry.relative }));
   if (selected) line.setAttribute("aria-current", "true");
   /* The FULL object name, never the abbreviation the row displays: this value is
