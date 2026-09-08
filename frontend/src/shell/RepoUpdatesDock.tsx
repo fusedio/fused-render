@@ -49,6 +49,7 @@ import type { LanPairingEvent } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
+import NotificationCard from "@platform/ui/NotificationCard";
 // `JobRow` reused verbatim for a terminal job (D586) — shell may import
 // platform (frontend/scripts/check-boundaries.mjs); the reverse is what is
 // forbidden, which is also why the failures reach this section as a PROP
@@ -189,16 +190,11 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
     }
   };
   return (
-    <div className="dl-row">
-      <div className="dl-row-head">
-        <span className="dl-title">{event.name} paired</span>
-        <button type="button" className="dl-x" onClick={dismiss} title="Dismiss"
-                aria-label={`Dismiss ${event.name} paired`}>
-          ✕
-        </button>
-      </div>
-      <div className="dl-status">It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network.</div>
-    </div>
+    <NotificationCard
+      title={`${event.name} paired`}
+      onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${event.name} paired` }}
+      status="It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network."
+    />
   );
 }
 
