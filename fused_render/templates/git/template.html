@@ -916,10 +916,17 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The when-field is pushed to the row's end by an auto margin, so whatever
-     sits after the title (the eye, the previewing marker, the selected sha)
-     lands where the title ENDS rather than at the far edge. */
-  .row .when { margin-left: auto; }
+  /* The auto margin sits on the marker slot (the eye / previewing pill),
+     not on .when: that pushes marker + sha + when as ONE right-aligned
+     cluster, so the cluster's left edge is fixed regardless of how long
+     the subject is, instead of the old behavior where the slack landed
+     after the marker and let subject+marker pack left together. Both
+     marker states get the same margin so the swap between them (see the
+     inline-eye comment below) never shifts the cluster. */
+  .row .inline-eye,
+  .row .where.is-preview.marker {
+    margin-left: auto;
+  }
   /* The inline Preview control: drawn AT REST, not revealed by the row's
      hover (D703) — hover-only meant nothing on screen ever said a commit
      could be previewed at all until the pointer happened to land on its
@@ -3567,7 +3574,9 @@ function commitLine(entry, selected) {
   const line = el("div", { className: "line" });
   const previewingHere = previewed === entry.sha;
 
-  /* THE MARKER SLOT, right where the title ends. Three states:
+  /* THE MARKER SLOT, right-aligned with the sha/when cluster regardless of
+     how long the subject is (an auto margin on the marker itself does the
+     pushing — see the CSS). Three states:
        previewing this commit -> a green dot + "previewing", clickable to go
                                  back to now (it stands where the eye was);
        canPreview             -> the eye, drawn AT REST (D703) — not
