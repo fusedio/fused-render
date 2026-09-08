@@ -2,10 +2,21 @@
  * and the footer buttons are the shared modal's (deploy.css / buttons-modal.css);
  * everything here is the checklist inside it.
  *
- * The three states are told by COLOUR AND SHAPE together — a ✓, a (!) and a (–)
- * — never by colour alone, so the list survives a monochrome or colour-blind
- * reading. Colours are the palette's own semantic tokens (tokens.css), so both
- * themes come for free. */
+ * The three STATES are told by COLOUR AND SHAPE together — a ✓, a fail mark
+ * and a "–" — never by colour alone, so the list survives a monochrome or
+ * colour-blind reading.
+ *
+ * A FAILING row also carries a SEVERITY (critical/warning/suggested), and
+ * that is its own axis, told apart the same disciplined way: its own hue for
+ * the row's ground and state mark, its own SHAPE for the state mark (a filled
+ * alert circle for critical, a triangle for warning, a quieter outline dot for
+ * suggested), and a severity-hued rail down the row's left edge — so the three
+ * tiers are told apart by position and weight as well as hue, and a critical
+ * failure never reads at the same volume as a suggestion. Only critical and
+ * warning rows get a tinted ground at all: a suggestion is not an alarm, and a
+ * list where nearly every row is tinted has no signal left in it. Colours are
+ * the palette's own semantic tokens (tokens.css), so both themes come for
+ * free. */
 
 .appdoc-summary {
   margin: 0 0 12px;
@@ -13,15 +24,15 @@
 }
 
 .appdoc-section + .appdoc-section {
-  margin-top: 14px;
+  margin-top: 22px;
 }
 
 .appdoc-section-title {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   padding: 0 10px;
-  color: var(--fg-muted);
+  color: var(--fg);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -43,10 +54,23 @@
   border-radius: 6px;
 }
 
-/* Only a failure gets a ground of its own: a list where every row is tinted is
- * a list with no signal in it. */
-.appdoc-row.appdoc-fail {
+/* Only critical/warning get a ground AND a rail — see the header comment.
+ * The rail is an inset box-shadow rather than a border so it doesn't shove
+ * the row's own padding around. */
+.appdoc-row.appdoc-fail.appdoc-row-sev-critical {
   background: rgba(var(--error-rgb), 0.08);
+  box-shadow: inset 2px 0 0 var(--error);
+}
+
+.appdoc-row.appdoc-fail.appdoc-row-sev-warning {
+  background: rgba(var(--warning-rgb), 0.08);
+  box-shadow: inset 2px 0 0 var(--warning);
+}
+
+/* A suggestion gets neither ground nor rail — it stays at the list's own
+ * resting weight, told apart only by its muted mark and its chip's label. */
+.appdoc-row.appdoc-fail.appdoc-row-sev-suggested {
+  background: none;
 }
 
 .appdoc-state {
@@ -60,10 +84,15 @@
   color: var(--success);
 }
 
-.appdoc-fail .appdoc-state {
+.appdoc-row-sev-critical .appdoc-state {
   color: var(--error);
 }
 
+.appdoc-row-sev-warning .appdoc-state {
+  color: var(--warning);
+}
+
+.appdoc-row-sev-suggested .appdoc-state,
 .appdoc-skip .appdoc-state,
 .appdoc-unrun .appdoc-state {
   color: var(--fg-muted);
@@ -94,13 +123,25 @@
 
 /* One severity palette, reused by the row chip here AND the header status
  * dot (shell/AppPage.tsx, apps/explorer/Preview.tsx) — see appdoctor-lib.ts's
- * `effectiveSeverity`/`worstSeverity` for the one place severity is ranked. */
+ * `effectiveSeverity`/`worstSeverity` for the one place severity is ranked.
+ *
+ * The chip's ground is `--bg`, the same "recessed against the dialog surface"
+ * token the modal's own inputs use (deploy.css), not a translucent wash of the
+ * severity hue: a wash sits ON TOP of the row's own tint, and the two together
+ * pull the chip's background toward the same hue as its text, which is what
+ * made the light theme fail 4.5:1 (measured: CRITICAL 3.71, WARNING 3.49,
+ * SUGGESTED 3.99 — see /private/tmp/.../contrast.py). An opaque recessed chip
+ * decouples the text's contrast from the row's own tint entirely; the hairline
+ * border (currentColor, so it never needs its own token) is what still reads
+ * as "chip" rather than a plain label. */
 .appdoc-sev {
   display: inline-flex;
   flex: none;
   align-items: center;
-  padding: 1px 6px;
+  padding: 0 5px;
+  border: 1px solid currentColor;
   border-radius: 999px;
+  background: var(--bg);
   font-size: 10px;
   font-weight: 600;
   line-height: 1.6;
@@ -110,26 +151,39 @@
 
 .appdoc-sev-critical {
   color: var(--error);
-  background: rgba(var(--error-rgb), 0.14);
 }
 
 .appdoc-sev-warning {
   color: var(--warning);
-  background: rgba(var(--warning-rgb), 0.14);
 }
 
 .appdoc-sev-suggested {
   color: var(--fg-muted);
-  background: rgba(var(--fg-muted-rgb), 0.14);
 }
 
 .appdoc-row-actions {
-  margin-top: 4px;
+  margin: 4px 0 0;
 }
 
+/* Scoped override, not a change to .btn-secondary (buttons-modal.css) — many
+ * other modals rely on that one staying as-is. Measured: `--border` (what
+ * .btn-secondary uses) against this row's tinted ground is 1.10:1 in dark and
+ * 1.13:1 in light — nowhere near the 3:1 a control boundary needs, so the
+ * button visually disappeared into the row. `--fg-muted` measures 5.74:1 dark
+ * / 4.75:1 light against the same ground and clears the bar; the fill/hover
+ * pair is the existing "quiet control chrome" tokens (tokens.css), reused
+ * rather than invented so this button reads like the rest of the app's quiet
+ * chrome instead of a one-off. */
 .appdoc-fix-btn {
   padding: 3px 10px;
+  background: var(--ctl-quiet-bg);
+  border-color: var(--fg-muted);
   font-size: 12px;
+}
+
+.appdoc-fix-btn:hover:not(:disabled) {
+  background: var(--ctl-quiet-bg-hover);
+  border-color: var(--ctl-quiet-border-hover);
 }
 
 /* The header status dot (shell/AppPage.tsx, apps/explorer/Preview.tsx): the
@@ -169,18 +223,24 @@
   line-height: 1.45;
 }
 
-/* The lines a finding sits on. Scrollable in its own box rather than widening
- * the dialog: a device path or a masked key is long, and a report must never
- * make the page scroll sideways. */
+/* The lines a finding sits on. Its own inset surface (a quiet ground + a
+ * hairline) rather than sitting flush on the row's own ground: at up to 26
+ * findings on one row (`device-paths`), this needs to read as its own scroll
+ * region the row is showing you, not as the dialog clipping content. Capped
+ * lower than before (120px, was 160px) so the row's action — rendered above
+ * this now, see AppDoctorModal.tsx — never scrolls out of view under it. */
 .appdoc-findings {
   display: flex;
-  max-height: 160px;
+  max-height: 120px;
   flex-direction: column;
   gap: 2px;
   overflow: auto;
-  margin: 4px 0 0;
-  padding: 0;
+  margin: 6px 0 0;
+  padding: 6px 8px;
   list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
   font-size: 12px;
 }
 
