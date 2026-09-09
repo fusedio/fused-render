@@ -126,10 +126,82 @@ async function settle(ms = 0): Promise<void> {
 
 const started = () => runs.filter((c) => c.action === "start");
 
+/**
+ * A HOST'S OWN CONTENT FRAME, stubbed to exactly what the app-state walk reads
+ * (see `pane/appState.test.ts` for the same shape and the same admission that
+ * this is not a browser). It is what `Preview.tsx` hands the sidebar in the
+ * `?_side=claude` layout: a same-origin `/render` document that IS the app.
+ */
+function hostFrameStub(): () => HTMLIFrameElement | null {
+  const body = {
+    tagName: "BODY",
+    children: [],
+    childNodes: [{ nodeType: 3, nodeValue: "the sine app" }],
+    textContent: "the sine app",
+    hasAttribute: () => false,
+  };
+  const win = {
+    document: { title: "Sine", body },
+    location: {
+      href: "http://localhost/render?path=%2Fw%2Fp%2Fsine.html&freq=0.3",
+      pathname: "/render",
+      search: "?path=%2Fw%2Fp%2Fsine.html&freq=0.3",
+    },
+    console: { error() {}, warn() {} },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const frame = { isConnected: true, contentWindow: win } as unknown as HTMLIFrameElement;
+  return () => frame;
+}
+
+test("the HOSTED layout's pane is the host's frame: has_pane 1 and a pushed block (R3-5)", async () => {
+  // `chat_only` takes the chat's OWN column away; it does not take the app off
+  // the screen. In the `?_side=claude` split the app is the middle column, and
+  // the host hands that frame over as `annotateTarget` — which is what T did
+  // through `parent.document` (`annFrame` is `annMarkedFrame()` in CHAT_ONLY).
+  //
+  // Getting this wrong cost three separate things at once, which is why they are
+  // asserted together: no `<live-app-state>` block (so the model could not see
+  // the app and no receipt was drawn), `has_pane: "0"` (so agent.py wrote an
+  // `mcp.json` with no app-state channel and the CLI reported
+  // `mcp__fused_approvals__app_state` as not connected), and — because
+  // `_pane_file` reads the pane off the LEADING block — a session recorded as a
+  // FOLDER chat, which then never appeared in the file's Recent list (R3-1/R3-3).
+  await mountChat({ initialAsk: "what can you see?", annotateTarget: hostFrameStub() });
+  await settle(20);
+  expect(started().length).toBe(1);
+  expect(started()[0].params.has_pane).toBe("1");
+  const message = started()[0].params.message;
+  expect(message).toContain("<live-app-state>");
+  // The app's own facts, not this chat's: the title and the url the pane is on,
+  // which is the pane the reader is describing when they type.
+  expect(message).toContain('"title":"Sine"');
+  expect(message).toContain("freq=0.3");
+  // …and the user's words are still the user's words.
+  expect(message).toContain("what can you see?");
+});
+
+test("a hosted mount whose host has marked NOTHING sends has_pane EMPTY (R3-5)", async () => {
+  // The sidebar's copy of R2-10's race: the mark rides the frame the host is
+  // SHOWING, so it lands when that frame paints. A `"0"` guessed before then
+  // would cost the whole session its `app_state` tool with no way back, so the
+  // answer is "you decide" and agent.py resolves it off the filesystem.
+  await mountChat({ initialAsk: "fix the chart", annotateTarget: () => null });
+  await settle(20);
+  expect(started().length).toBe(1);
+  expect(started()[0].params.has_pane).toBe("");
+  // Nothing to describe, so nothing is claimed about it.
+  expect(started()[0].params.message).not.toContain("<live-app-state>");
+});
+
 test("a chat-only mount's first send says has_pane: 0", async () => {
   // CHAT_ONLY has no pane of ours whatever the target turns out to be
   // (`decidePane` answers `kind: "none"` for every kind there), so the status is
   // "none" from the first render and never spends a round-trip in "resolving".
+  // A host that offers no frame either — a cards tile, a peek — is the case this
+  // pins: there really is nothing to see, and saying so is what keeps the
+  // `app_state` tool out of a roster that could only time out.
   // Pinned with the pane's own stat held: the ask leaves with nothing answered.
   holdPaneStat = true;
   await mountChat({ initialAsk: "fix the chart" });

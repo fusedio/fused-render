@@ -7,7 +7,7 @@ installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
-const { useTaskId, forgetTaskCaches, ASK_AGAIN_MS } = await import("./Kebab");
+const { Kebab, useTaskId, forgetTaskCaches, ASK_AGAIN_MS } = await import("./Kebab");
 const { TASKS_CHANGED_EVENT } = await import("@platform/lib/tasksChanged");
 const { readFileSync } = await import("node:fs");
 const { join } = await import("node:path");
@@ -180,6 +180,93 @@ test("the poke is ignored once the number is known — a number does not change"
   } finally {
     restore();
   }
+});
+
+// ── R3-2: the menu's own state follows the task row ────────────────────────
+//
+// `useTaskId` stops asking the moment the NUMBER lands — which is right for a
+// number that never changes, and exactly wrong for the STATUS beside it. So the
+// menu keeps its own watch: `taskRunning` is cached TRUE for the whole of a
+// turn, the popup reads `disabled` as it mounts its items, and a read landing
+// mid-open does not lift it — so Archive and Delete stayed greyed out after the
+// run had finished and only came back on a second open (owner, R3-2).
+//
+// The trigger is all that renders here (base-ui mounts no content without a
+// real pointer event), which is fine: what is under test is the READ, and the
+// read is what the items are decided from.
+function kebab(running: boolean): ReactTestRenderer {
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(<Kebab agentDir="/tpl" file="/proj/app.py" sessionId={SESSION} running={running} />);
+  });
+  mounted.push(r);
+  return r;
+}
+
+test("the menu re-reads the row when the run ends, and on every announcement (R3-2)", async () => {
+  const restore = liveWindowEvents();
+  try {
+    // A turn is live, and the listing agrees.
+    answer = async () => ({
+      tasks: [{ key: SESSION, task_id: 42, status: "in_progress" }],
+    });
+    const r = kebab(true);
+    await settle();
+    expect(calls).toBe(1);
+
+    // The turn ends. `running` moving is this page's own news — it knows one
+    // render before any listing does — and it must buy a fresh read.
+    answer = async () => ({ tasks: [{ key: SESSION, task_id: 42, status: "done" }] });
+    await act(async () => {
+      r.update(
+        <Kebab agentDir="/tpl" file="/proj/app.py" sessionId={SESSION} running={false} />,
+      );
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    expect(calls).toBe(2);
+
+    // …and an announcement re-reads it too, which is the case `useTaskId`
+    // refuses: the number has already landed, so that hook has gone quiet for
+    // good, and the status is only now starting to matter.
+    await act(async () => {
+      window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    expect(calls).toBe(3);
+  } finally {
+    restore();
+  }
+});
+
+test("the menu's watch goes with the mount", async () => {
+  const restore = liveWindowEvents();
+  try {
+    answer = async () => ({ tasks: [{ key: SESSION, task_id: 42, status: "done" }] });
+    const r = kebab(false);
+    await settle();
+    const before = calls;
+    act(() => r.unmount());
+    mounted.length = 0;
+    await act(async () => {
+      window.dispatchEvent(new Event(TASKS_CHANGED_EVENT));
+      await new Promise((done) => setTimeout(done, 0));
+    });
+    expect(calls).toBe(before);
+  } finally {
+    restore();
+  }
+});
+
+test("the landing's menu has no session and reads nothing", async () => {
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(<Kebab agentDir="/tpl" file="/proj" sessionId="" running={false} landing />);
+  });
+  mounted.push(r);
+  await settle();
+  // Six of these on a cards wall would be six `/api/tasks` reads for a menu
+  // whose one item needs no session at all (T:13415).
+  expect(calls).toBe(0);
 });
 
 // ── R2-8: Archive closes the menu before it does anything ──────────────────

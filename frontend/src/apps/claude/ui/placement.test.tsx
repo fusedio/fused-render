@@ -232,6 +232,15 @@ function pin(r: ReturnType<typeof create>): string[] {
   return cls(found);
 }
 
+/** The `.chat-logwrap` scroller's classes (R3-4's lock rides here). */
+function wrap(r: ReturnType<typeof create>): string[] {
+  let found: Json | undefined;
+  walk(r.toJSON() as Json, (n) => {
+    if (cls(n).includes("chat-logwrap")) found = n;
+  });
+  return cls(found);
+}
+
 const toolTurn = (key: string, tools: Array<{ id: string; name: string }>) => ({
   role: "assistant" as const,
   key,
@@ -386,8 +395,8 @@ test("`[Request interrupted by user]` renders as a note, not a user bubble (R2-2
   expect(isInterruptMark("why did [Request interrupted by user] appear?")).toBe(false);
 });
 
-// ── R2-4: the pin is capped and scrolls itself ─────────────────────────────
-test("the pinned tail is capped at a fraction of the scrollport and scrolls (R2-4)", () => {
+// ── R3-4: ONE scroller, and R2-4's 70% cap is gone ─────────────────────────
+test("a pinned card may fill the scrollport, and past it nothing else scrolls (R3-4)", () => {
   const r = mount(
     <Transcript
       state={state({
@@ -397,17 +406,30 @@ test("the pinned tail is capped at a fraction of the scrollport and scrolls (R2-
       actions={actions}
     />,
   );
-  // The cap and the inner scroll are one rule keyed off `is-pinned` (see
+  // The ceiling and the inner scroll are one rule keyed off `is-pinned` (see
   // styles/transcript.css) — a card that is not blocking the run must not take
   // a ceiling, because nothing is sticking it anywhere.
   expect(pin(r)).toContain("is-pinned");
   const sheet = readFileSync(join(import.meta.dir, "../styles/transcript.css"), "utf8");
   const rule = sheet.slice(sheet.indexOf(".chat-root .chat-tailpin.is-pinned {"));
   const body = rule.slice(0, rule.indexOf("}"));
-  expect(body).toContain("max-height: 70cqh");
+  // R2-4's 70% ceiling is exactly what put a second scrollbar beside the
+  // transcript's, so it is gone and the pin may be the whole port.
+  expect(body).not.toContain("70cqh");
+  expect(body).toContain("max-height: 100cqh");
   expect(body).toContain("overflow-y: auto");
+  // …and past that the transcript behind it stops scrolling altogether, which
+  // is the half of the rule that makes "no double scroll" TRUE rather than
+  // merely quieter.
+  const lock = sheet.slice(sheet.indexOf(".chat-root .chat-logwrap.is-locked {"));
+  expect(lock).not.toBe("");
+  expect(lock.slice(0, lock.indexOf("}"))).toContain("overflow-y: hidden");
   // `cqh` only means anything if the scrollport is a size container.
   expect(sheet).toContain("container-type: size");
+  // The lock is MEASURED and starts OFF: this renderer has no layout to
+  // overflow, and a transcript locked because nothing could be measured would
+  // be the worse of the two bugs.
+  expect(wrap(r)).not.toContain("is-locked");
 });
 
 // ── R2-11: one paint, not two ─────────────────────────────────────────────

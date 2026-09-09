@@ -469,17 +469,31 @@
   margin: 0 -20px;
   padding: 10px 20px 0;
   background: var(--c-bg);
-  /* AT MOST 70% OF THE SCROLLPORT (R2-4). A four-question card with an open
-     "Other" box filled the whole port, so the reply it is asking about was off
-     screen — and the thing a pinned card is FOR is being readable next to the
-     text that prompted it. Past the ceiling the pin itself scrolls; the reply
-     above keeps the other 30% either way.
+  /* AT MOST THE WHOLE SCROLLPORT, and the 70% ceiling that used to be here is
+     GONE (R3-4, owner: "remove the 70% cap — it causes double scroll").
+     R2-4 asked for the reply to stay readable beside the card and got it by
+     capping the pin, which put a SECOND scrollbar next to the transcript's on
+     every card taller than that — and two scrollers on one axis mean the wheel
+     is answered by whichever box the pointer is over. So the pin may fill the
+     port, and the two states are now told apart by MEASUREMENT rather than by a
+     fraction (`Transcript`'s `pinFull`): a card that fits leaves the transcript
+     scrollable behind it, and a card that does not fit becomes the only
+     scroller there is (`.chat-logwrap.is-locked` below).
      `overscroll-behavior: contain` so reaching the end of the card does not
      hand the wheel on to the transcript behind it — the reader would lose the
      card they were reading. */
-  max-height: 70cqh;
+  max-height: 100cqh;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+/* THE SECOND HALF OF "ONE SCROLLER" (R3-4): while a pinned card is taller than
+   the port it covers the transcript completely, so the transcript's own
+   scrolling is not something the reader can see the effect of — only its
+   scrollbar, sitting beside the card's. It is locked for exactly as long as
+   that is true, and `Transcript` parks and restores `scrollTop` across the
+   lock because `overflow: hidden` clamps it to 0. */
+.chat-root .chat-logwrap.is-locked {
+  overflow-y: hidden;
 }
 /* THE PIN IS NOW THE SCROLLER, so the card inside it must not be a second one:
    two nested scrollers on the same axis mean the reader's wheel is answered by

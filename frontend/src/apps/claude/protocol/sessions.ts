@@ -14,6 +14,7 @@
 //   * only the NEWEST read may write, because reads overlap by design (the back
 //     handler retries over a just-left run's spawn window) — the same seat idiom
 //     `sendSeq`/`loopSeq` use (T:18402-18407, Bugbot PR #653).
+import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { runAgent } from "./agent";
 import type { ErrorOnly, SessionRow, SessionsResponse } from "./types";
 
@@ -21,6 +22,31 @@ import type { ErrorOnly, SessionRow, SessionsResponse } from "./types";
 export const CHANGES_WAIT_S = 25;
 /** T:18379 — how long a failed change-poll waits before trying again. */
 export const CHANGES_BACKOFF_MS = 3000;
+
+/**
+ * T:13066-13072 — TWO MORE LOOKS AFTER LANDING, and they are the difference
+ * between a chat you just had being in this list and not (R3-1).
+ *
+ * The list is the transcripts in the cwd's project dir (agent.py `_sessions`),
+ * and a brand-new session's transcript only appears once the CLI has written
+ * its first rows — which is SECONDS after the read this mount fires. T covers
+ * exactly that window from its Back handler, and it is not a poll loop: two
+ * looks a few seconds apart cover the write, and after that the list is what it
+ * honestly is.
+ *
+ * Unconditional here where T gates them on having left a live chat (`leftLive`),
+ * because a native landing has no such handler to gate in: this module is
+ * subscribed by a MOUNT of the landing view, and a mount is precisely T's "path
+ * onto this view". The cost is two cheap directory scans per visit, and
+ * `load`'s own skeleton rule means neither can blink rows that are already up.
+ */
+export const RECENT_RETRY_MS = [2500, 6000];
+
+/** ClaudeChat's `CHAT_ACTIVITY_KEY`, restated rather than imported: the chat
+ *  imports this module, and a list cannot be made to depend on the view that
+ *  draws it to know the name of a localStorage key. One string, in three places
+ *  (see `ui/Kebab.tsx`), unchanged since T:16435. */
+const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
 
 /** GET /api/tasks/changes' answer (fused_render/tasks_watch.py). */
 interface ChangesResponse {
@@ -48,6 +74,40 @@ export interface RecentEnv {
   whenVisible(): { promise: Promise<void>; cancel(): void };
   sleep(ms: number): Promise<void>;
   run?: typeof runAgent;
+  /**
+   * THE PUSH SIDE OF THE LIST, alongside the long-poll's pull side: subscribe
+   * `fn` to every signal that says a chat just moved, and return the disposer.
+   *
+   * The long-poll alone was not enough, and the gap has a shape: the poll's
+   * first call is a HANDSHAKE that only learns the current generation, so every
+   * change made before this subscription existed is already spent — and a run
+   * started and finished while the reader was inside the chat is exactly that.
+   * On landing there is then one read, racing the CLI's own transcript write,
+   * and if it loses nothing ever comes back to fix it (R3-1).
+   *
+   * `RECENT_RETRY_MS` covers the write; these cover everything else. Three
+   * signals, all pokes and no payloads, so they land on one handler:
+   *   * `fused-render:tasks-changed` — THIS document's run controller, which
+   *     announces at the start and end of every turn (`noteChatActivity`);
+   *   * `storage` on `CHAT_ACTIVITY_KEY` — every OTHER document's chat saying
+   *     the same thing (T:16435; `storage` never fires in the writer);
+   *   * `focus` — coming back to a window that was away while something else
+   *     (a terminal, another window) had the conversation.
+   *
+   */
+  pokes?(fn: () => void): () => void;
+  /**
+   * The retry schedule's clock (`RECENT_RETRY_MS`), and deliberately NOT
+   * `sleep`: that one is the long-poll's backoff, awaited inside its loop, and
+   * a test that resolves it instantly to drive the loop would spend the whole
+   * retry schedule in the same microtask. Returns the canceller.
+   */
+  after?(ms: number, fn: () => void): () => void;
+}
+
+function browserAfter(ms: number, fn: () => void): () => void {
+  const id = setTimeout(fn, ms);
+  return () => clearTimeout(id);
 }
 
 function browserEnv(): RecentEnv {
@@ -69,6 +129,21 @@ function browserEnv(): RecentEnv {
       };
     },
     sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+    pokes: (fn) => {
+      const onStorage = (ev: StorageEvent) => {
+        // A `null` key is a `clear()`, which may well have taken the stamp with
+        // it — treat it as news rather than working out whether it was ours.
+        if (!ev.key || ev.key === CHAT_ACTIVITY_KEY) fn();
+      };
+      window.addEventListener(TASKS_CHANGED_EVENT, fn);
+      window.addEventListener("storage", onStorage);
+      window.addEventListener("focus", fn);
+      return () => {
+        window.removeEventListener(TASKS_CHANGED_EVENT, fn);
+        window.removeEventListener("storage", onStorage);
+        window.removeEventListener("focus", fn);
+      };
+    },
   };
 }
 
@@ -188,6 +263,24 @@ export function subscribeRecent(
   void load();
   void watch();
 
+  /** The two extra looks that cover the CLI's transcript write — see
+   *  `RECENT_RETRY_MS`. Both measured from the subscription, so a slow first
+   *  read cannot push the schedule out behind itself. */
+  const after = env.after ?? browserAfter;
+  const retries = RECENT_RETRY_MS.map((wait) =>
+    after(wait, () => {
+      if (!stopped) void load();
+    }),
+  );
+
+  // Every "something moved" signal there is, on one handler — a poke, never a
+  // payload, so the answer to all three is the same read. `load`'s seat idiom
+  // is what makes a burst of them safe: they overlap, and only the newest may
+  // paint.
+  const unpoke = env.pokes?.(() => {
+    if (!stopped) void load();
+  });
+
   /** T:18358-18361 — abort the in-flight long-poll rather than letting it run
    *  out its 25 s, so a quick enter-and-back never has two loops going (Bugbot
    *  #892). */
@@ -200,5 +293,10 @@ export function subscribeRecent(
     // A hidden tab's `watch` is parked on a promise nothing else will resolve.
     waking?.cancel();
     waking = null;
+    // Listeners on `window` and a pending timer both outlive this closure
+    // otherwise, and six card mounts leak six — the same rule `whenVisible`'s
+    // disposer exists for.
+    unpoke?.();
+    for (const cancel of retries) cancel();
   };
 }

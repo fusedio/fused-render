@@ -219,3 +219,94 @@ describe("subscribeRecent", () => {
     expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a"]);
   });
 });
+
+// ── R3-1: the list does not wait for the long-poll to notice ────────────────
+//
+// The long-poll's first call is a HANDSHAKE that only learns the current
+// generation, so everything that moved before this subscription existed is
+// already spent — and a run started and finished while the reader was inside the
+// chat is exactly that. Landing then spends ONE read, racing the CLI's own
+// transcript write, and when it lost, nothing ever came back: "new task from
+// Home → Back: not in Recent chats, needed a refresh" (owner, R3-1).
+describe("subscribeRecent — the push side (R3-1)", () => {
+  /** The env, plus a hand-driven poke channel and retry clock. */
+  function pushEnv(sessions: unknown[]) {
+    const e = env([], sessions);
+    const fired: Array<() => void> = [];
+    const timers: Array<{ ms: number; fn: () => void; cancelled: boolean }> = [];
+    const wrapped: RecentEnv = {
+      ...e,
+      pokes: (fn) => {
+        fired.push(fn);
+        return () => {
+          const i = fired.indexOf(fn);
+          if (i >= 0) fired.splice(i, 1);
+        };
+      },
+      after: (ms, fn) => {
+        const t = { ms, fn, cancelled: false };
+        timers.push(t);
+        return () => {
+          t.cancelled = true;
+        };
+      },
+    };
+    return { env: wrapped, poke: () => fired.forEach((f) => f()), fired, timers };
+  }
+
+  test("a poke re-reads the list", async () => {
+    const seen: (SessionRow[] | null)[] = [];
+    const p = pushEnv([{ sessions: [row("a")] }, { sessions: [row("a"), row("b")] }]);
+    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), p.env);
+    await settle();
+    expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a"]);
+    // The turn that just ended, announced by this document's own controller —
+    // or by any other document's, through the activity stamp.
+    p.poke();
+    await settle();
+    off();
+    expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a", "b"]);
+    // The skeleton is still spent exactly once: a re-read over a drawn list
+    // repaints in place (T:18411).
+    expect(seen.filter((s) => s === null).length).toBe(1);
+  });
+
+  test("two more looks a few seconds apart cover the CLI's transcript write", async () => {
+    const p = pushEnv([{ sessions: [] }, { sessions: [row("a")] }]);
+    const seen: (SessionRow[] | null)[] = [];
+    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), p.env);
+    await settle();
+    // T's own schedule, from its Back handler (T:13066).
+    expect(p.timers.map((t) => t.ms)).toEqual([2500, 6000]);
+    p.timers[0].fn();
+    await settle();
+    off();
+    expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a"]);
+  });
+
+  test("unsubscribing takes the listeners AND the pending retries with it", async () => {
+    const p = pushEnv([{ sessions: [] }]);
+    const off = subscribeRecent("/tpl", "/proj/app.py", () => {}, p.env);
+    await settle();
+    expect(p.fired.length).toBe(1);
+    off();
+    // A listener on `window` and a pending timer both outlive this closure
+    // otherwise, and six card mounts leak six.
+    expect(p.fired.length).toBe(0);
+    expect(p.timers.every((t) => t.cancelled)).toBe(true);
+  });
+
+  test("a poke after unsubscribing reads nothing", async () => {
+    const p = pushEnv([{ sessions: [] }]);
+    const seen: (SessionRow[] | null)[] = [];
+    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), p.env);
+    await settle();
+    const fn = p.fired[0];
+    off();
+    fn(); // a handler the host has not detached yet, mid-teardown
+    await settle();
+    // Nothing painted after the teardown: `stopped` guards the read, and the
+    // seat guards the paint.
+    expect(seen.filter((s) => s !== null).length).toBe(1);
+  });
+});

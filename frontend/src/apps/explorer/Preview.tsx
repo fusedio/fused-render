@@ -684,6 +684,27 @@ const FRAME_FADE_MS = 150;
 // previous mode's content forever — past this the swap completes regardless.
 const FRAME_SWAP_TIMEOUT_MS = 4000;
 
+/**
+ * THE CONTENT PANE THE SIDEBAR SITS BESIDE, found by its own mark.
+ *
+ * The `_side` split puts the chat next to this file's preview, and that preview
+ * IS the app: it is the document the sidebar's notes point at and the document
+ * its app-state reads describe (`ClaudeChat`'s `annotateTarget`). The legacy
+ * template found it by reaching up through `parent.document` for the mark
+ * (template.html `annMarkedFrame`, T:6117); natively the sidebar is a subtree of
+ * THIS document, so the lookup is a plain `querySelector` and nothing crosses a
+ * frame boundary at all.
+ *
+ * BY MARK, NOT BY POSITION, for the reason the attribute exists (see where it is
+ * stamped below): the held-frame swap keeps two frames mounted and only the
+ * SHOWN one carries the mark, so this cannot be fooled by a mode switch — and a
+ * view with no content pane at all (a listing, a pending gate, the fallback
+ * card) answers `null`, which the chat reads as "no pane" exactly as the
+ * template did.
+ */
+const annotateTargetFrame = (): HTMLIFrameElement | null =>
+  document.querySelector<HTMLIFrameElement>("iframe[data-fused-annotate-target]");
+
 // THIS FILE ONCE HOSTED NO SNAPSHOT INDICATOR OF ITS OWN — the reasoning was
 // that a content pane is the ordinary template rendering ordinary bytes, the
 // code editor looks exactly like the code editor, with no room to say "these
@@ -2308,6 +2329,16 @@ function TemplatePreview({
                 title={modeTitle(CHAT_MODE)}
                 file={fsPath}
                 chatOnly
+                /* `chat_only` takes the chat's OWN pane away, not the pane:
+                   the app is still on screen in the middle column, and that
+                   frame is what the sidebar reads app state from and points its
+                   notes at. Handing it over is the whole of the shell's side of
+                   that contract — the same one attribute, read the same way the
+                   template read it (see `annotateTargetFrame`). Without it the
+                   chat reported `has_pane:"0"`, pushed no `<live-app-state>`
+                   block, and its sessions were recorded as FOLDER chats that
+                   never appeared in this file's Recent list. */
+                annotateTarget={annotateTargetFrame}
                 paramsSource="url"
                 {...(stat.remote ? { remote: true } : {})}
                 {...(IS_PREVIEW ? { preview: true, noFocus: true } : {})}

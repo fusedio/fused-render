@@ -309,6 +309,53 @@ export function Kebab({
     }
   }, [sessionId]);
 
+  /**
+   * THE ROW BEHIND THIS CHAT, RE-READ WHENEVER IT MOVES (R3-2).
+   *
+   * `refresh` used to run only on OPEN, and a menu corrected that late argues
+   * with itself: `taskRunning` is cached TRUE for the whole of a turn, the popup
+   * reads `disabled` as it mounts its items, and a listing read landing 200 ms
+   * into the open does not lift it — so Archive and Delete stayed greyed out
+   * after the run had finished and only came back on a SECOND open (owner, R3-2:
+   * "kebab Archive/Delete stayed disabled after done").
+   *
+   * So the cache is corrected BEFORE the menu can be opened, on every signal
+   * that says the row moved:
+   *   * `running` in the deps — our own turn starting and ending, which this
+   *     page knows one render before any listing does;
+   *   * `tasks-changed` — this document's run controller, which announces at
+   *     both ends of every turn (`noteChatActivity`);
+   *   * `storage` — every OTHER document's chat saying the same (T:16435).
+   *
+   * `useTaskId` cannot do this job and is not asked to: it stops asking the
+   * moment the NUMBER lands, which is precisely when the STATUS starts
+   * mattering. This is also what makes the two items APPEAR at all for a chat
+   * whose task row was created after that hook went quiet — `hasTask` is read
+   * off the same map.
+   *
+   * One `/api/tasks` read per turn boundary, and it FAILS CLOSED exactly as
+   * `refresh` does everywhere else: a listing we could not read leaves the
+   * previously confirmed reading standing rather than guessing a new one.
+   */
+  useEffect(() => {
+    if (!sessionId) return;
+    let live = true;
+    const poke = () => {
+      if (live) void refresh();
+    };
+    poke();
+    const onStorage = (ev: StorageEvent) => {
+      if (!ev.key || ev.key === CHAT_ACTIVITY_KEY) poke();
+    };
+    window.addEventListener(TASKS_CHANGED_EVENT, poke);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      live = false;
+      window.removeEventListener(TASKS_CHANGED_EVENT, poke);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [sessionId, running, refresh]);
+
   const onOpenChange = useCallback(
     (next: boolean) => {
       setOpen(next);

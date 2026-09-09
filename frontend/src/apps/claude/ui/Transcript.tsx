@@ -181,6 +181,63 @@ export const Transcript = memo(function Transcript({
     if (openCards && port.current) port.current.scrollTop = port.current.scrollHeight;
   }, [openCards]);
 
+  // ── ONE SCROLLER, NEVER TWO (R3-4) ───────────────────────────────────────
+  //
+  // The pin used to be capped at 70% of the scrollport, which bought a second
+  // scrollbar on every card taller than that — the transcript's behind the
+  // card's, side by side, and the reader's wheel answered by whichever box the
+  // pointer happened to be over (owner: "remove the 70% cap — it causes double
+  // scroll"). The cap is gone: a pinned card may now be as tall as the whole
+  // scrollport, and a card TALLER than that becomes the only thing that scrolls.
+  //
+  // Which of those two states we are in cannot be asked in CSS, so it is
+  // MEASURED — overflow, off the two boxes, never a breakpoint or a fraction.
+  // A card that fits leaves the transcript scrollable, because that is what the
+  // pin is for: re-reading the reply the card is asking about. A card that does
+  // not fit covers the transcript completely, so locking it costs the reader
+  // nothing and takes the second scrollbar away.
+  const pin = useRef<HTMLDivElement>(null);
+  const [pinFull, setPinFull] = useState(false);
+  /** Where the transcript was when the lock went on. `overflow: hidden` clamps
+   *  `scrollTop` to 0, and handing back the TOP of a conversation the reader was
+   *  part-way down is its own bug — so the offset is parked across the lock and
+   *  put back when the card is answered. */
+  const parkedTop = useRef(0);
+  const locked = useRef(false);
+  useEffect(() => {
+    const box = pin.current;
+    const wrap = port.current;
+    if (!box || !wrap || !openCards) {
+      setPinFull(false);
+      locked.current = false;
+      return;
+    }
+    const measure = () => {
+      // `+ 1` because both numbers are rounded off fractional layout, and a
+      // half-pixel is not an overflow worth locking a scroller for.
+      const full = box.scrollHeight > wrap.clientHeight + 1;
+      // Read BEFORE the class lands: by the time an effect keyed on `pinFull`
+      // runs, the browser has already clamped this to 0.
+      if (full && !locked.current) parkedTop.current = wrap.scrollTop;
+      locked.current = full;
+      setPinFull(full);
+    };
+    measure();
+    // OBSERVED, not measured once: a card grows after it mounts (an "Other"
+    // field opening, a diff arriving, a question's options wrapping), which is
+    // the same argument the follow-bottom rules make above.
+    const ro = new ResizeObserver(measure);
+    ro.observe(box);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [openCards]);
+  useLayoutEffect(() => {
+    const wrap = port.current;
+    if (!wrap || pinFull || !parkedTop.current) return;
+    wrap.scrollTop = parkedTop.current;
+    parkedTop.current = 0;
+  }, [pinFull]);
+
   // ── the first paint lands at the bottom (#26) ────────────────────────────
   //
   // "Opening a session with an open card flashes the top of the chat then
@@ -269,7 +326,7 @@ export const Transcript = memo(function Transcript({
   ]);
 
   return (
-    <div className="chat-logwrap" ref={port}>
+    <div className={cn("chat-logwrap", pinFull && "is-locked")} ref={port}>
       <div className={cn("chat-log", !settled && "is-settling")} ref={log}>
         {state.historyLoading ? (
           <HistorySkeleton />
@@ -330,7 +387,10 @@ export const Transcript = memo(function Transcript({
                 it — "Waiting for your approval" and the thing to approve are one
                 statement. Answered cards are NOT in here: they have already been
                 parked back into their turn above, at the chip they answered. */}
-            <div className={cn("chat-tailpin", openCards && "is-pinned")}>
+            <div
+              className={cn("chat-tailpin", openCards && "is-pinned")}
+              ref={pin}
+            >
               <CardStack
                 rows={state.permissions}
                 placement="open"

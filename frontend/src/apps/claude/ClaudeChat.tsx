@@ -94,6 +94,14 @@ export const ASK_DETECTION_TIMEOUT_MS = 1500;
  *  swallow each other's poke. */
 export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
 
+/** How often the HOST's app-state frame is looked up again (`annotateTarget`).
+ *  The mark moves with the host's own mode switcher and goes when it shows a
+ *  listing, so this is a live fact and not a boot one — T re-reads it on the
+ *  same kind of tick (`annPollTarget`). Fast enough that the mark is in hand
+ *  long before the reader's first message, cheap enough to be a `querySelector`
+ *  twice a second. */
+export const HOST_PANE_POLL_MS = 500;
+
 export interface ClaudeChatProps {
   /** `_file`: folder | file | null. */
   file: string | null;
@@ -109,8 +117,13 @@ export interface ClaudeChatProps {
   initialAsk?: ClaudeAsk;
   /** `!IS_PREVIEW && !_nofocus`. */
   autoFocus: boolean;
-  /** Replaces the `parent.document` lookup for the annotate target (T:6117).
-   *  Carried in PR1 so the hosts can already pass it; PR3 reads it. */
+  /**
+   * Replaces the `parent.document` lookup for the annotate target (T:6117).
+   *
+   * It is the APP-STATE frame as well as the annotation one, and in the hosted
+   * `?_side=claude` layout it is the ONLY one — see `hostFrame` in the body.
+   * PR3 hangs the notes off the same getter.
+   */
   annotateTarget?: () => HTMLIFrameElement | null;
   /** `_remote=1`. */
   remote?: boolean;
@@ -274,7 +287,46 @@ function ChatBody(props: ChatBodyProps) {
   const setPaneFrame = useCallback((el: HTMLIFrameElement | null) => {
     paneFrame.current = el;
   }, []);
-  const [watcher] = useState(() => createAppStateWatcher(() => paneFrame.current));
+  // THE HOST'S OWN PANE, and in the hosted layout it is THE pane (R3-5).
+  //
+  // `?_side=claude` frames this chat as a sidebar beside the shell's content
+  // pane, so `chat_only` takes OUR column away — but the app is still on screen,
+  // in the middle column, and that frame's document is the app's document. T has
+  // exactly this seam: `annFrame` is `annMarkedFrame()` in CHAT_ONLY (T:6026),
+  // and `appWindow()` — the one thing every app-state read goes through — reads
+  // off `annFrame` whichever of the two it is (T:4865). So the sidebar's pushed
+  // block, its `app_state` answers and its receipt all came from the host's
+  // frame, and only OUR layout was gone.
+  //
+  // Natively that frame arrives as `annotateTarget`, a getter the host owns
+  // (Preview.tsx looks its own mark up; CanvasWorkspace hands over its workbench
+  // frame). Without it `hasPane` was false in the sidebar, no block was pushed,
+  // `has_pane:"0"` took `mcp__fused_approvals__app_state` out of the run's
+  // roster — and, because `agent.py`'s `_pane_file` reads the pane off the
+  // LEADING app-state block, every chat had in that layout was recorded as a
+  // FOLDER chat and vanished from the file's Recent list (R3-1/R3-3).
+  //
+  // A REF, and every call GUARDED: the getter is a host callback that may reach
+  // across a document (`parent.document` throws cross-origin), and a chat must
+  // never fail to send because a host's lookup did.
+  const annotate = useRef(props.annotateTarget);
+  annotate.current = props.annotateTarget;
+  const hostFrame = useCallback((): HTMLIFrameElement | null => {
+    try {
+      return annotate.current?.() ?? null;
+    } catch {
+      return null;
+    }
+  }, []);
+  /** The frame whose document IS the app: ours when we have a pane, the host's
+   *  marked one when we do not. Resolved on every call, never cached — the
+   *  host's mark MOVES with its own mode switcher and goes when it shows a
+   *  listing (T:6136 `annCapable` is a live fact, not a boot one). */
+  const appFrame = useCallback(
+    () => paneFrame.current ?? hostFrame(),
+    [hostFrame],
+  );
+  const [watcher] = useState(() => createAppStateWatcher(appFrame));
   // The framed document's console stays the app's own once we are gone.
   useEffect(() => () => watcher.dispose(), [watcher]);
   // A thumbnail's pane must neither pull the keyboard nor be recorded as the
@@ -316,8 +368,39 @@ function ChatBody(props: ChatBodyProps) {
   // or of any target whose stat had not landed yet, told the model it could see
   // the app when there was nothing to see. "error" does not count either — the
   // frame has been swapped for the message (usePaneState's catch).
+  // IS THE HOST SHOWING SOMETHING MARKED — polled, because it is a live fact.
+  // The mark rides the frame the shell is SHOWING (Preview.tsx `m === shown`),
+  // so it appears when that frame paints, moves when the reader switches the
+  // pane's mode, and goes when the host shows a listing instead. T polls it for
+  // the same reason (`annPollTarget`); this is the app-state half of that.
+  //
+  // The interval only exists where a host offered a getter at all: a cards tile,
+  // a peek modal and the listing pane pass none, and a timer per mount on a
+  // six-tile wall for a fact that can never become true is pure cost.
+  const hasHostTarget = !!props.annotateTarget;
+  const [hostPane, setHostPane] = useState(false);
+  useEffect(() => {
+    if (!hasHostTarget) {
+      setHostPane(false);
+      return;
+    }
+    const look = () => {
+      const frame = hostFrame();
+      setHostPane(!!frame);
+      // The host's document is the app's, so its console is the console the
+      // agent asks about — wrapped exactly as `AppPane` wraps ours on load
+      // (T:8544/8833 → `watchApp`). Idempotent per document, and the re-wrap
+      // after a reload is how "that error was there before your edit" stays
+      // answerable.
+      if (frame) watcher.watchApp();
+    };
+    look();
+    const id = window.setInterval(look, HOST_PANE_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [hasHostTarget, hostFrame, watcher]);
+
   const hasPane = useRef(false);
-  hasPane.current = !pane.noPane && pane.status === "ready";
+  hasPane.current = (!pane.noPane && pane.status === "ready") || hostPane;
   // …BUT "not ready yet" IS NOT "no pane" for the field that goes on the wire.
   //
   // `has_pane` is what agent.py builds the session's MCP roster off, once, at
@@ -335,8 +418,20 @@ function ChatBody(props: ChatBodyProps) {
   // "error" still answers false: the frame really has been swapped for a
   // message, so nothing would respond to an app-state read.
   const paneAnswer = useRef<() => boolean | null>(() => null);
-  paneAnswer.current = () =>
-    pane.noPane ? false : pane.status === "resolving" ? null : hasPane.current;
+  paneAnswer.current = () => {
+    // A frame we can see RIGHT NOW settles it, ours or the host's.
+    if (hasPane.current || appFrame()) return true;
+    // Our own decision is outstanding.
+    if (!pane.noPane && pane.status === "resolving") return null;
+    // Or the HOST has an app-state slot it has not marked yet — the sidebar's
+    // copy of the same race, and the one with the same price: the mark lands
+    // when the content frame paints, and a message typed before that would
+    // otherwise cost the whole session its `app_state` tool. `null` sends the
+    // field empty and lets agent.py answer off the filesystem (`_has_pane`),
+    // which for the file targets this layout is built on is the same answer.
+    if (hasHostTarget) return null;
+    return false;
+  };
 
   // ── the controller ─────────────────────────────────────────────────────────
   // Rebuilt only for a new target: the model / effort / pane answers it reads at
@@ -374,15 +469,17 @@ function ChatBody(props: ChatBodyProps) {
         // THE PUSH CHANNEL. Read at SEND time from the watcher, which is the
         // same object the pull channel answers through — `blockForSend` does
         // push → offload → block, in T's order (T:16483, 5177-5218). Gated on
-        // a pane being ACTUALLY there, the same `hasPane.current` the backend
-        // is told about, so a chat-only mount never claims to describe an app
-        // it cannot see.
+        // `appFrame()` — A FRAME, RESOLVED HERE, not the polled `hasPane` flag:
+        // this is the moment whose state the user is describing, and asking the
+        // frame directly cannot be a render behind a mark that has just landed.
+        // A mount with neither pane still sends nothing, so a cards tile never
+        // claims to describe an app it cannot see.
         //
         // Through a ref, like every other send-time read here: the watcher
         // outlives a pane reload and rebuilding the controller for it would
         // restart the run loop.
         appStateBlock: () =>
-          hasPane.current ? watcher.blockForSend() : Promise.resolve(""),
+          appFrame() ? watcher.blockForSend() : Promise.resolve(""),
         // PR4 hangs the artifacts read and the snapshot invalidation here
         // (T:16229, 16321-16330); the ticks already run on T's clock.
         onArtifactsTick: () => {},
