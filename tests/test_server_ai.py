@@ -431,6 +431,23 @@ def test_relay_remote_job_row_closes_on_missing_binary(monkeypatch):
     assert jobs.list_jobs() == []
 
 
+def test_relay_remote_job_row_page_defaults_to_claude_config(monkeypatch):
+    # No caller page (a direct module-level call, or a test, may never set
+    # X-Fused-Page at all) falls back to where this model is configured
+    # rather than leaving the row with nowhere to go.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["page"] == "/claude-config"
+
+
+def test_relay_remote_job_row_page_is_the_callers_page_when_given(monkeypatch):
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    asyncio.run(_server_ai._ai_relay({"prompt": "hello"}, page="/tasks"))
+    row = jobs.list_jobs()[0]
+    assert row["page"] == "/tasks"
+
+
 def test_relay_stream_dismisses_its_job_row_immediately_on_success(monkeypatch):
     _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi ", "there"]))
     resp, frames = _stream({"prompt": "hello", "stream": True})

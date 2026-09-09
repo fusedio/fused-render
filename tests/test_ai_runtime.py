@@ -4906,6 +4906,27 @@ def test_ai_without_a_model_still_means_claude(client, monkeypatch):
     assert "claude" in body["error"]["message"].lower()
 
 
+def test_api_ai_threads_X_Fused_Page_into__ai_relay(client, monkeypatch):
+    """`/api/ai` reads `X-Fused-Page` the same way `routers/jobs.py` and
+    `routers/capture.py` do — pinned here at the route, since what `page=`
+    then does once inside `_ai_relay` (the Claude-tier row, the
+    `/claude-config` fallback) is covered directly in
+    `tests/test_server_ai.py`."""
+    from fused_render.server import ai as ai_mod
+
+    captured = {}
+
+    async def fake_relay(body, session=None, page=""):
+        captured["page"] = page
+        return ai_mod.JSONResponse({"ok": True, "result": {
+            "text": "hi", "model": "m", "usage": None}})
+
+    monkeypatch.setattr(ai_mod, "_ai_relay", fake_relay)
+    client.post("/api/ai", json={"prompt": "hi"},
+               headers={"X-Fused": "1", "X-Fused-Page": "/tasks"})
+    assert captured["page"] == "/tasks"
+
+
 def test_a_slash_bearing_model_goes_local(client, monkeypatch):
     """…and the same call with a repo id does NOT reach for the CLI at all.
 
@@ -4970,6 +4991,24 @@ def _wait_job(job_id, timeout=20.0):
             return row
         time.sleep(0.05)
     raise AssertionError(f"{job_id} never finished: {row}")
+
+
+def test_an_image_rows_page_is_the_caller_supplied_X_Fused_Page(
+        client, fake_image_runner):
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == "/tasks"
+    _wait_job(started["jobId"])
+
+
+def test_an_image_row_with_no_X_Fused_Page_has_no_page(client, fake_image_runner):
+    started = client.post("/api/ai/image", json={"prompt": "a red square"},
+                          headers={"X-Fused": "1"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == ""
+    _wait_job(started["jobId"])
 
 
 def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
@@ -7041,6 +7080,16 @@ def test_the_video_bridge_base_option_reaches_the_route(
     assert response.status_code == 200, response.json()
 
 
+def test_a_video_rows_page_is_the_caller_supplied_X_Fused_Page(
+        client, fake_video_runner):
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == "/tasks"
+    _wait_job(started["jobId"])
+
+
 # -- transcription (SPEC §40) ---------------------------------------------------
 # Job-backed like an image and for the same reason — a 90-minute recording is
 # not a chat turn — with one addition: the transcript is a FILE, so the work
@@ -7049,6 +7098,16 @@ def test_the_video_bridge_base_option_reaches_the_route(
 
 def _post_transcribe(client, **body):
     return client.post("/api/ai/transcribe", json=body, headers={"X-Fused": "1"})
+
+
+def test_a_transcript_rows_page_is_the_caller_supplied_X_Fused_Page(
+        client, fake_transcribe_runner, recording):
+    started = client.post(
+        "/api/ai/transcribe", json={"path": recording},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["page"] == "/tasks"
+    _wait_job(started["jobId"])
 
 
 def test_a_transcript_is_written_to_disk_and_the_job_finishes(
