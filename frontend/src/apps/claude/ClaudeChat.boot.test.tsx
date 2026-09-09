@@ -158,7 +158,14 @@ function hostFrameStub(): () => HTMLIFrameElement | null {
     addEventListener() {},
     removeEventListener() {},
   };
-  const frame = { isConnected: true, contentWindow: win } as unknown as HTMLIFrameElement;
+  // PR3's annotation target `watch`es the frame it is handed (`load` listener,
+  // T:6127), so the stub has to carry a listener surface too.
+  const frame = {
+    isConnected: true,
+    contentWindow: win,
+    addEventListener() {},
+    removeEventListener() {},
+  } as unknown as HTMLIFrameElement;
   return () => frame;
 }
 
