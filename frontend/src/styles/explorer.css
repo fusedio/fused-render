@@ -1546,8 +1546,23 @@ table.listing-table tr.skel-row:hover {
   display: none;
 }
 
-.listing-search-crumbs .path-crumb {
+/* Scoped to the anchor tag, not `.path-crumb` generally: the LAST segment
+   (the current folder, path-crumbs.tsx's `<span class="path-crumb last">`)
+   has no navigate handler — it's a no-op to click, you're already there.
+   Re-enabling pointer-events on it would only create a dead zone that
+   swallows presses meant for the input underneath, worst at narrow widths
+   where the tail-pin scrolls the strip so the current folder fills most of
+   the visible field. Leaving it at `pointer-events: none` (inherited from
+   `.listing-search-crumbs` above) lets a click on it fall through to the
+   input, the same way the magnifier already does. Do not widen this
+   selector back to `.path-crumb` — that's the bug this comment guards.
+   `.path-crumb.last` is unaffected either way (spans don't take `href`). */
+.listing-search-crumbs a.path-crumb {
   pointer-events: auto;
+  flex: 0 0 auto;
+}
+
+.listing-search-crumbs span.path-crumb {
   flex: 0 0 auto;
 }
 
@@ -1723,6 +1738,28 @@ table.listing-table tr.skel-row:hover {
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--fg-muted);
+  /* A plain block sibling of `.listing-completion-rows` below, not inside
+     its scroll container — it labels the whole dropdown, not a list item,
+     so it must not scroll away with the rows. */
+}
+
+/* Decision 2 fixup: the rows scroll under the fixed header above once there
+   are more than fit at rest. `max-height` is set inline from Listing.tsx,
+   computed off a rendered row's own `offsetHeight` rather than duplicated
+   here as a second, driftable guess at this rule's own padding/font-size —
+   see the comment on `rowsMaxHeight` there. Undefined (no inline
+   max-height) when 5 or fewer rows exist, so a short list still sizes to
+   its own content instead of padding out to a fixed height.
+   `scrollbar-width`/`::-webkit-scrollbar` hide the bar a real scroll
+   container would otherwise render, same pattern `.listing-search-crumbs`
+   above uses. */
+.listing-completion-rows {
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.listing-completion-rows::-webkit-scrollbar {
+  display: none;
 }
 
 .listing-completion-row {

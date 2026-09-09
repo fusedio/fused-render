@@ -116,7 +116,18 @@ export type ListingState =
 export type SearchState =
   | { status: "idle" }
   | { status: "pending"; forRefresh: number }
-  | { status: "ok"; truncated: boolean; total: number; forRefresh: number }
+  | {
+      status: "ok";
+      truncated: boolean;
+      total: number;
+      forRefresh: number;
+      // Decision 10: wall-clock cost of the request this answer came from —
+      // `Date.now()` at issue to `Date.now()` when applied, same measurement
+      // FilesHome.tsx's home search reports beside its own count (`elapsedMs`
+      // doc comment, home-search.ts). A memoized answer keeps the value it
+      // was measured with; see useListingSearch's `RankAnswer`.
+      elapsedMs: number;
+    }
   | { status: "error"; message: string; forRefresh: number };
 
 export const IDLE_SEARCH: SearchState = { status: "idle" };

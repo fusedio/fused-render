@@ -81,6 +81,14 @@ interface RankAnswer {
   // SPEC-one-search-language.md), never re-derived client-side: it is what
   // decides which cap applies below (listing/result-cap).
   mode: "substring" | "glob";
+  // Decision 10: `Date.now()` at issue to `Date.now()` when this answer was
+  // applied — end-to-end latency the user actually felt, matching
+  // FilesHome.tsx's home search (home-search.ts's `elapsedMs` doc). Baked
+  // into the answer at fetch time and never recomputed: a memoized reply
+  // (the `memo.current.get(q)` hit below) hands this same object back
+  // verbatim, so a cache hit reports the real cost of the request that
+  // actually ran, not ~0ms for a reply that just came from memory.
+  elapsedMs: number;
 }
 
 // `urlSync=false` (an embedded Listing, e.g. the preview pane's `_listing`
@@ -337,6 +345,10 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
       // raw`, unconditionally) — asked here only to pick how many rows are
       // worth fetching before the answer says which mode actually ran.
       const limit = q.includes("*") ? SEARCH_GLOB_RANK_LIMIT : SEARCH_RANK_LIMIT;
+      // Decision 10: measured at issue, applied at the response — the same
+      // two endpoints home-search.ts's `elapsedMs` uses, so the two boxes
+      // report the same kind of number.
+      const issuedAt = Date.now();
       indexRank(fsPath, q, { signal: ctl.signal, limit, ranked: rankedPref }).then(
         (res) => {
           if (ctl.signal.aborted || sourceEpoch.current !== epoch) return;
@@ -352,6 +364,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
             total: res.total,
             reason: res.reason ?? "",
             mode: res.mode,
+            elapsedMs: Date.now() - issuedAt,
           };
           // Remembered only once nothing is on its way to change it: an answer
           // taken mid-scan is a snapshot of a folder still being indexed.
@@ -524,7 +537,13 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
       ? { status: "error", message: failure, forRefresh: pinned }
       : answer === null
         ? { status: "pending", forRefresh: pinned }
-        : { status: "ok", truncated: answer.truncated, total: answer.total, forRefresh: pinned };
+        : {
+            status: "ok",
+            truncated: answer.truncated,
+            total: answer.total,
+            forRefresh: pinned,
+            elapsedMs: answer.elapsedMs,
+          };
 
   // Two questions, not one (listing/index-source): whether an answer is still
   // coming, and whether the wait is the momentary kind. A scan landing rows is

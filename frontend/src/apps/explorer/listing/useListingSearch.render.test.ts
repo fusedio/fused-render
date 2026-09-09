@@ -385,3 +385,48 @@ describe("closing the box mid-scan", () => {
     box.unmount();
   });
 });
+
+describe("decision 10: elapsedMs is the true round-trip, and a held answer keeps it", () => {
+  test("measures issue-to-apply, not just the debounce wait", async () => {
+    const box = await search("widget");
+    // The debounce has already elapsed (search() advances it); this models
+    // the server itself taking 250ms to reply.
+    await flush(() => clock.advance(250));
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("widget.md")], total: 1 })));
+    const state = box.current().searchState;
+    expect(state.status).toBe("ok");
+    if (state.status === "ok") expect(state.elapsedMs).toBe(250);
+    box.unmount();
+  });
+
+  test("a memoized reply keeps the elapsedMs it was measured with, not ~0ms", async () => {
+    const box = await search("alpha");
+    await flush(() => clock.advance(400));
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("alpha.md")], total: 1 })));
+    const first = box.current().searchState;
+    expect(first.status).toBe("ok");
+    if (first.status === "ok") expect(first.elapsedMs).toBe(400);
+
+    // A second, different query — a real request, answered quickly.
+    await flush(() => box.current().setQuery("beta"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() =>
+      rankCalls[rankCalls.length - 1].reply.resolve(
+        answer({ hits: [hit("beta.md")], total: 1 }),
+      ),
+    );
+    const asked = rankCalls.length;
+
+    // Back to "alpha" — served from the memo, no new request.
+    await flush(() => box.current().setQuery("alpha"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls.length).toBe(asked);
+
+    const replay = box.current().searchState;
+    expect(replay.status).toBe("ok");
+    // Still 400ms — the real cost of the request that actually ran, not the
+    // ~0ms a re-timed cache hit would report.
+    if (replay.status === "ok") expect(replay.elapsedMs).toBe(400);
+    box.unmount();
+  });
+});

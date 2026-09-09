@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { completionTarget, displayDir } from "@apps/explorer/listing/completion-target";
+import {
+  applyQueryNotation,
+  completionTarget,
+  displayDir,
+  isExactSingleMatch,
+} from "@apps/explorer/listing/completion-target";
 
 const FS_PATH = "/home/dev/project";
 const HOME = "/home/dev";
@@ -101,5 +106,82 @@ describe("displayDir", () => {
 
   test("an unresolved home renders the directory unchanged", () => {
     expect(displayDir(FS_PATH, undefined)).toBe(FS_PATH);
+  });
+});
+
+describe("applyQueryNotation", () => {
+  test("a tilde-relative query stays tilde-relative", () => {
+    expect(
+      applyQueryNotation(HOME + "/work/ai_utils/", "~/work/ai", FS_PATH, HOME),
+    ).toBe("~/work/ai_utils/");
+  });
+
+  test("bare ~ stays tilde-relative", () => {
+    expect(applyQueryNotation(HOME + "/Documents/", "~", FS_PATH, HOME)).toBe(
+      "~/Documents/",
+    );
+  });
+
+  test("a tilde query resolving outside home falls back to absolute", () => {
+    // Can't happen via completionTarget's own resolution today, but
+    // displayDir's own fallback is what applyQueryNotation defers to, so it
+    // stays honest rather than fabricating a "~" that doesn't apply.
+    expect(applyQueryNotation("/usr/local/", "~/x", FS_PATH, HOME)).toBe(
+      "/usr/local/",
+    );
+  });
+
+  test("an absolute query stays absolute", () => {
+    expect(applyQueryNotation("/usr/local/", "/usr/loc", FS_PATH, HOME)).toBe(
+      "/usr/local/",
+    );
+  });
+
+  test("a relative query stays relative to the folder being searched", () => {
+    expect(
+      applyQueryNotation(FS_PATH + "/src/app.py", "src/ap", FS_PATH, HOME),
+    ).toBe("src/app.py");
+  });
+
+  test("a relative query resolving to the folder itself writes back empty", () => {
+    expect(applyQueryNotation(FS_PATH, "", FS_PATH, HOME)).toBe("");
+  });
+
+  test("the trailing slash marking a directory survives every notation", () => {
+    expect(
+      applyQueryNotation(FS_PATH + "/src/", "src/", FS_PATH, HOME),
+    ).toBe("src/");
+    expect(applyQueryNotation("/usr/local/", "/usr/loc", FS_PATH, HOME)).toBe(
+      "/usr/local/",
+    );
+  });
+});
+
+describe("isExactSingleMatch", () => {
+  const target = { dir: FS_PATH, partial: "working_as_a_team" };
+
+  test("one row whose name equals the typed partial exactly is redundant", () => {
+    expect(isExactSingleMatch([{ name: "working_as_a_team" }], target)).toBe(true);
+  });
+
+  test("one row that only PREFIXES the partial still has more to type", () => {
+    expect(isExactSingleMatch([{ name: "working_as_a_team_2" }], target)).toBe(false);
+  });
+
+  test("more than one row is never redundant, even with an exact match among them", () => {
+    expect(
+      isExactSingleMatch(
+        [{ name: "working_as_a_team" }, { name: "working_as_a_team_2" }],
+        target,
+      ),
+    ).toBe(false);
+  });
+
+  test("no target (dropdown not path-shaped at all) is never redundant", () => {
+    expect(isExactSingleMatch([{ name: "working_as_a_team" }], null)).toBe(false);
+  });
+
+  test("zero rows is never redundant — that's a plain empty dropdown", () => {
+    expect(isExactSingleMatch([], target)).toBe(false);
   });
 });

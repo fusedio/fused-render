@@ -67,8 +67,11 @@ import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { PathCrumbs } from "@apps/explorer/listing/path-crumbs";
 import { subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";
 import { useTypedPathAddress } from "@apps/explorer/listing/useTypedPathAddress";
-import { useCompletion } from "@apps/explorer/listing/useCompletion";
-import { displayDir } from "@apps/explorer/listing/completion-target";
+import { useCompletion, type CompletionItem } from "@apps/explorer/listing/useCompletion";
+import { completionKeyAction, moveHighlight } from "@apps/explorer/listing/completion-keys";
+import { displayDir, isExactSingleMatch } from "@apps/explorer/listing/completion-target";
+import { enterPrompt } from "@apps/explorer/listing/enter-prompt";
+import { formatElapsed } from "@apps/explorer/lib/home-search";
 import { getConfig } from "@platform/lib/api";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import {
@@ -300,12 +303,80 @@ export default function Listing({
   // The highlight tracks the CURRENT list by position, not by identity — a
   // stale index pointing past a page that just narrowed would either select
   // nothing (out of range) or silently pick a different row than what was
-  // lit a keystroke ago. Resetting to the top on every list change keeps
-  // "the highlighted row" meaning the same thing the eye is looking at.
+  // lit a keystroke ago. Resetting on every list change keeps "the
+  // highlighted row" meaning the same thing the eye is looking at.
+  //
+  // Resets to -1 (nothing highlighted), NOT 0. A dropdown opening with its
+  // first row pre-lit made Enter's `highlight >= 0` gate true the instant
+  // the dropdown rendered — before the user had arrowed to anything — so
+  // Enter on a fully-typed real path silently accepted a completion row
+  // instead of navigating, and whether Enter committed the search or took a
+  // row depended on typing speed relative to the debounce that opens the
+  // dropdown. Starting unselected makes Enter's meaning depend only on
+  // whether the user actually arrowed to a row: ArrowDown's wraparound
+  // ((-1 + 1) % length) already lands on 0 from here, so the dropdown is
+  // still one keystroke from the first row. Do not change this back to 0.
   useEffect(() => {
-    setHighlight(completion.items.length > 0 ? 0 : -1);
+    setHighlight(-1);
   }, [completion.target?.dir, completion.items.length]);
-  const showCompletion = completion.target !== null && completion.items.length > 0;
+  // Whether the field itself is the thing focused right now — distinct from
+  // `pinnedOpen` below, which deliberately OUTLIVES a blur once there is a
+  // query (`.searching` keeps the strip expanded and the border lit after
+  // focus moves on). The dropdown needs the opposite: it must close the
+  // moment focus leaves, so a click elsewhere in the app does not sit under
+  // a stale dropdown still naming the last-typed path. Set unconditionally
+  // on focus and blur (the field's own onFocus/onBlur below), so dismissal
+  // and re-opening are just "did focus come back", with nothing extra to
+  // suppress on the next keystroke or resurrect on the next click in.
+  const [fieldActive, setFieldActive] = useState(false);
+  const showCompletion =
+    fieldActive &&
+    completion.target !== null &&
+    completion.items.length > 0 &&
+    // Decision 9: a single row that already spells exactly what was typed
+    // has nothing left to offer — the user finished typing that segment —
+    // and it was sitting over the "Press Enter to..." prompt that names the
+    // same thing once the query resolves.
+    !isExactSingleMatch(completion.items, completion.target);
+  // Tab and a row's own mousedown both COMPLETE TEXT: write the row's path
+  // into the field so the dropdown re-keys on the new directory, without
+  // navigating. This is what makes walking several segments by Tab cheap —
+  // `navigate()` takes no "replace" option, so navigating per accepted
+  // segment would push one history entry per Tab and make Back unwind the
+  // typed path one segment at a time instead of returning to where the
+  // user started. Factored out so the two text-completion paths cannot
+  // drift from each other; navigating (Enter — see `navigateToCompletion`
+  // near `pinnedOpen` below) is deliberately a separate function.
+  const acceptCompletion = (item: CompletionItem) => {
+    setQuery(item.path);
+    searchInputRef.current?.focus();
+  };
+  // Decision 4 (this pass): the dropdown shows at most 5 rows at rest and
+  // scrolls for the rest — `MAX_ITEMS` in useCompletion.ts stays 50, this
+  // only bounds visible HEIGHT. Measured off the first row's own rendered
+  // height rather than a hardcoded pixel guess, so it tracks
+  // `.listing-completion-row`'s padding/font-size in explorer.css without
+  // drifting out of sync. Row index 0 specifically: `:last-child` adds
+  // extra bottom padding in CSS, and index 0 is only ever last-child when
+  // there is exactly one row — a case with nothing to cap anyway (see the
+  // `> 5` guard below, which never applies then).
+  const firstRowRef = useRef<HTMLDivElement>(null);
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const [rowsMaxHeight, setRowsMaxHeight] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (completion.items.length > 5 && firstRowRef.current) {
+      setRowsMaxHeight(firstRowRef.current.offsetHeight * 5);
+    } else {
+      setRowsMaxHeight(undefined);
+    }
+  }, [completion.items.length, completion.target?.dir]);
+  // Keeps the highlighted row in view as Down/Up move past the visible
+  // window — "nearest" so a row already fully visible causes no jump.
+  useLayoutEffect(() => {
+    if (highlight < 0) return;
+    const row = rowsRef.current?.querySelector<HTMLElement>(`[data-idx="${highlight}"]`);
+    row?.scrollIntoView({ block: "nearest" });
+  }, [highlight]);
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
   // so an idle listing never polls.
@@ -517,6 +588,24 @@ export default function Listing({
   // `.expanded`. A non-empty query outranks it the same way: `.searching`
   // stands the crumbs down and takes the whole strip too.
   const [pinnedOpen, setPinnedOpen] = useState(false);
+  // Enter on an explicitly highlighted completion row NAVIGATES into it —
+  // a completed folder path is a destination, not just more text (unlike
+  // Tab's `acceptCompletion` above). Sets query/pin state the same explicit
+  // way Escape's own handler does rather than trusting onBlur to catch up:
+  // onBlur reads `e.currentTarget.value`, which still holds the pre-clear
+  // text at the moment blur fires (React hasn't flushed the DOM write yet),
+  // so leaving it to onBlur would keep the box pinned open. Clearing the
+  // query and blurring afterward is what returns the field to showing
+  // crumbs for the folder just entered, instead of leaving the old path
+  // text sitting in the field next to (and duplicating) those crumbs, with
+  // a dropdown still open over the folder the user just arrived in.
+  const navigateToCompletion = (item: CompletionItem) => {
+    navigate(item.absPath, { isDir: item.is_dir });
+    setQuery("");
+    setPinnedOpen(false);
+    setFieldActive(false);
+    searchInputRef.current?.blur();
+  };
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (assigned each
   // render from the rowCtxByPath memo below).
@@ -1466,7 +1555,11 @@ export default function Listing({
       body = (
         <tr>
           <td colSpan={cols} className="status-message">
-            Press Enter to search
+            {/* Decision 9: what Enter actually does is `typedAddress`'s
+                verdict, not this gate's own idea of it — a resolved real
+                path names itself instead of promising a search Enter will
+                not run. */}
+            {enterPrompt(typedAddress)}
           </td>
         </tr>
       );
@@ -1670,6 +1763,19 @@ export default function Listing({
     searchCount = withCaveat(searchCount, caveat);
     searchCountFull = caveat.title;
     widePin = true;
+  } else if (searchState.status === "ok" && searchCount !== null) {
+    // Decision 10: the latency readout home's box already shows beside its
+    // own count (formatElapsed, home-search.ts) — reused rather than
+    // reimplemented so the two boxes speak the same units. Only alongside a
+    // SETTLED count, and only once nothing above has already folded a
+    // caveat into the chip: `behind` (a stale count) always produces one
+    // (index-caveat.ts), so this branch only runs when the count is both
+    // present and current — a stale count paired with a fresh latency
+    // figure would describe two different requests.
+    const elapsed = formatElapsed(searchState.elapsedMs);
+    searchCount = `${searchCount} · ${elapsed}`;
+    searchCountFull = `${searchCountFull} · ${elapsed}`;
+    widePin = true;
   }
 
   // Select-all covers every FETCHED row (navRows === visibleHits while
@@ -1816,13 +1922,22 @@ export default function Listing({
                   // must not fold away under the caret.
                   onFocus={() => {
                     setPinnedOpen(true);
+                    setFieldActive(true);
                     prefetchIndex();
                   }}
                   // A pinned-open box that blurs still empty folds back to the
                   // magnifier (the pin exists only to be typed into); with a
                   // query it stays — .searching owns the strip from there.
+                  // `fieldActive` unconditionally goes false, unlike the pin
+                  // above: the dropdown has to close the moment focus leaves
+                  // regardless of whether text is left behind, so a click
+                  // elsewhere doesn't land under a dropdown still naming the
+                  // last-typed path. A row's own mousedown calls
+                  // `preventDefault`, so clicking a row never fires this in
+                  // the first place — focus stays on the input throughout.
                   onBlur={(e) => {
                     if (!e.currentTarget.value) setPinnedOpen(false);
+                    setFieldActive(false);
                   }}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => {
@@ -1837,79 +1952,118 @@ export default function Listing({
                       e.currentTarget.blur();
                       return;
                     }
-                    // Decision 2: Down/Up move the highlight through the
-                    // dropdown without touching the query — the row under it
-                    // is a candidate, not yet something typed.
-                    if (showCompletion && e.key === "ArrowDown") {
+                    // completion-keys.ts's `completionKeyAction` is the pure
+                    // decision (key + highlight + row count -> what this key
+                    // means); everything below is just carrying out its
+                    // answer. See that file for why `highlight` starting at
+                    // -1 (the reset effect above) is what keeps Enter's
+                    // meaning independent of whether the dropdown has
+                    // rendered yet.
+                    const action = completionKeyAction(
+                      e.key,
+                      showCompletion,
+                      highlight,
+                      completion.items.length,
+                    );
+                    if (action.type === "move") {
                       e.preventDefault();
-                      setHighlight((h) => (h + 1) % completion.items.length);
+                      setHighlight((h) => moveHighlight(h, action.delta, completion.items.length));
                       return;
                     }
-                    if (showCompletion && e.key === "ArrowUp") {
+                    if (action.type === "tab-accept") {
+                      // Tab COMPLETES TEXT ONLY — see `acceptCompletion`'s
+                      // own comment for why navigating per Tab would be the
+                      // wrong call for History.
                       e.preventDefault();
-                      setHighlight(
-                        (h) => (h - 1 + completion.items.length) % completion.items.length,
-                      );
+                      acceptCompletion(completion.items[action.index]);
+                      return;
+                    }
+                    if (action.type === "enter-accept") {
+                      // Enter on an EXPLICITLY highlighted row NAVIGATES —
+                      // see `navigateToCompletion`'s own comment.
+                      e.preventDefault();
+                      navigateToCompletion(completion.items[action.index]);
                       return;
                     }
                     if (e.key !== "Enter") return;
-                    e.preventDefault();
-                    // Decision 2: Enter with a highlighted row takes it —
-                    // writes the row's path into the field rather than
-                    // falling through to decision 5's resolve-and-navigate,
-                    // since a directory row's path ends in "/" and is not a
-                    // destination yet, only a narrower one to keep typing
-                    // (or completing) from.
-                    if (showCompletion && highlight >= 0) {
-                      const item = completion.items[highlight];
-                      setQuery(item.path);
-                      return;
-                    }
                     // Decision 5: Enter resolves the field three ways. A real
                     // folder navigates; a real file navigates too (the
                     // destination view's own stat handles opening it — see
                     // DECISIONS-one-field-search.md for why this pass skips
                     // a separate "Open" row above the results). Anything
                     // else — including "still checking" — falls through to
-                    // committing the search (decision 4's gate).
+                    // committing the search (decision 4's gate). Reached
+                    // whenever nothing was explicitly highlighted
+                    // (`action.type === "enter-passthrough"`), including
+                    // while no dropdown is showing at all — so what Enter
+                    // does here never depends on the dropdown's own timing.
+                    //
+                    // `preventDefault` moves INTO each branch below rather
+                    // than firing unconditionally the moment a key turns out
+                    // to be Enter. A plain search word is neither a real
+                    // address nor path-shaped, so both branches decline —
+                    // and an unconditional preventDefault here used to eat
+                    // that Enter anyway, before `useListingSelection.ts`'s
+                    // own document-level Enter handler (registered to run
+                    // for `inSearch` too, specifically so Enter can open the
+                    // top search hit without leaving the field) ever saw it:
+                    // that handler's first line is `if (e.defaultPrevented)
+                    // return`. Leaving the event un-prevented when nothing
+                    // here acts is what lets that handler open the
+                    // highlighted (or top, per its own `rowsAnswerQuery`
+                    // guard) result instead.
                     if (typedAddress.status === "exists") {
+                      e.preventDefault();
                       navigate(typedAddress.path, { isDir: typedAddress.is_dir });
                       return;
                     }
-                    if (pathLike) commitSearch();
+                    if (pathLike) {
+                      e.preventDefault();
+                      commitSearch();
+                    }
                   }}
                 />
                 {showCompletion && (
                   <div className="listing-completion" role="listbox">
+                    {/* Stays put while the rows below scroll — it labels the
+                        whole dropdown, not a list item, so it must not
+                        scroll away and leave the rows unlabelled. */}
                     <div className="listing-completion-header">
                       In {displayDir(completion.target!.dir, home)}
                     </div>
-                    {completion.items.map((item, i) => (
-                      <div
-                        key={item.path}
-                        role="option"
-                        aria-selected={i === highlight}
-                        className={
-                          "listing-completion-row" +
-                          (i === highlight ? " highlight" : "")
-                        }
-                        // mousedown, not click: click fires after the input's
-                        // own blur, which by then has already folded a query-
-                        // less box back to the magnifier and unmounted this
-                        // row underneath the pointer.
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          setQuery(item.path);
-                          searchInputRef.current?.focus();
-                        }}
-                        onMouseEnter={() => setHighlight(i)}
-                      >
-                        <span className="listing-completion-name">{item.name}</span>
-                        <span className="listing-completion-hint">
-                          {item.is_dir ? "folder" : formatSize(item.size)}
-                        </span>
-                      </div>
-                    ))}
+                    <div
+                      className="listing-completion-rows"
+                      ref={rowsRef}
+                      style={rowsMaxHeight !== undefined ? { maxHeight: rowsMaxHeight } : undefined}
+                    >
+                      {completion.items.map((item, i) => (
+                        <div
+                          key={item.path}
+                          ref={i === 0 ? firstRowRef : undefined}
+                          data-idx={i}
+                          role="option"
+                          aria-selected={i === highlight}
+                          className={
+                            "listing-completion-row" +
+                            (i === highlight ? " highlight" : "")
+                          }
+                          // mousedown, not click: click fires after the input's
+                          // own blur, which by then has already folded a query-
+                          // less box back to the magnifier and unmounted this
+                          // row underneath the pointer.
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            acceptCompletion(item);
+                          }}
+                          onMouseEnter={() => setHighlight(i)}
+                        >
+                          <span className="listing-completion-name">{item.name}</span>
+                          <span className="listing-completion-hint">
+                            {item.is_dir ? "folder" : formatSize(item.size)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
                 {/* Only once being busy is information rather than a flicker

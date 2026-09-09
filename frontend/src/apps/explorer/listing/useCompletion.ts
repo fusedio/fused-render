@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { listDir } from "@platform/lib/api";
 import { INSTANT_DEBOUNCE_MS } from "@platform/lib/instant-search";
 import {
+  applyQueryNotation,
   completionTarget,
   type CompletionTarget,
 } from "@apps/explorer/listing/completion-target";
@@ -21,7 +22,19 @@ export interface CompletionItem {
   // resolved path, with a trailing "/" on a directory so the dropdown moves
   // straight into it rather than closing on a segment that is not the query
   // yet, per useCompletion's own note above.
+  // Written in whatever notation the typed query used (tilde, absolute, or
+  // relative to the folder being searched) — see `applyQueryNotation` — so
+  // taking a row continues what was being typed instead of rewriting it
+  // into a different form mid-keystroke. This is a TEXT value: Tab (and a
+  // row's own click) write it into the field to keep completing, but it is
+  // not what navigation should be given — a tilde or relative form is not
+  // a real filesystem path, and `navigate()` needs one.
   path: string;
+  // The real filesystem path `path` above is a notation of — always
+  // absolute, with the same trailing "/" on a directory. What Enter passes
+  // to `navigate()` when the row is taken as a destination rather than
+  // more text to type.
+  absPath: string;
 }
 
 export interface Completion {
@@ -89,11 +102,15 @@ export function useCompletion(
   const items = entries
     .filter((e) => partial === "" || e.name.toLowerCase().startsWith(partial))
     .slice(0, MAX_ITEMS)
-    .map((e) => ({
-      name: e.name,
-      is_dir: e.is_dir,
-      size: e.size,
-      path: base + "/" + e.name + (e.is_dir ? "/" : ""),
-    }));
+    .map((e) => {
+      const absPath = base + "/" + e.name + (e.is_dir ? "/" : "");
+      return {
+        name: e.name,
+        is_dir: e.is_dir,
+        size: e.size,
+        path: applyQueryNotation(absPath, query, fsPath, home),
+        absPath,
+      };
+    });
   return { target, items };
 }

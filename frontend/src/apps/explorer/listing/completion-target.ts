@@ -58,3 +58,52 @@ export function displayDir(dir: string, home: string | undefined): string {
   }
   return dir;
 }
+
+// A completion row's write-back value has to read as a continuation of what
+// the user was already typing, not a rewrite into whatever notation
+// happens to be convenient to compute. `absPath` is always absolute
+// (`useCompletion.ts` builds it from `completionTarget`'s resolved `dir`);
+// this re-derives whichever of the three notations `query` was actually
+// typed in — tilde, absolute, or relative to `fsPath` — the same three-way
+// split `completionTarget` above already makes when going the other
+// direction. Reuses `displayDir`'s own `~` substitution rather than a
+// second one, since the two need to agree on what counts as "under home".
+// A trailing "/" on `absPath` (decision 2's "moves the dropdown into the
+// folder" marker) survives untouched — every branch below is a slice off
+// one end of the string, never a rebuild.
+export function applyQueryNotation(
+  absPath: string,
+  query: string,
+  fsPath: string,
+  home: string | undefined,
+): string {
+  if (query === "~" || query.startsWith("~/")) {
+    return displayDir(absPath, home);
+  }
+  if (query.startsWith("/")) {
+    return absPath;
+  }
+  // Relative: typed against the folder being searched, same base
+  // `completionTarget` resolves a relative query against.
+  const base = fsPath.replace(/\/+$/, "");
+  if (absPath === base) return "";
+  if (absPath.startsWith(base + "/")) {
+    return absPath.slice(base.length + 1);
+  }
+  return absPath;
+}
+
+// Decision 9: a dropdown holding exactly one row, whose name is already
+// exactly what was typed, has nothing left to offer — the user finished
+// typing that segment, and the row hands them back the text they just wrote.
+// That panel only gets in the way: it sits over the "Press Enter to..."
+// prompt the user is trying to read once the whole thing resolves to a real
+// path. `items` is kept structural (just `name`) rather than importing
+// `CompletionItem` from `useCompletion.ts`, so this stays a leaf the hook can
+// depend on instead of the other way around.
+export function isExactSingleMatch(
+  items: { name: string }[],
+  target: CompletionTarget | null,
+): boolean {
+  return items.length === 1 && target !== null && items[0].name === target.partial;
+}

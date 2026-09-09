@@ -162,6 +162,272 @@ placeholder swap — both are exercised only by the pure functions underneath
 them (`completion-target.test.ts`) and by hand/visual review; see "Deferred"
 below.
 
+## What landed — browser-review fixups
+
+Three items came back from an in-browser pass at 1400x900 and 900x700.
+
+- **Current-folder crumb was a click dead zone (defect).** `explorer.css`'s
+  `.listing-search-crumbs .path-crumb` rule re-enabled `pointer-events: auto`
+  on every `.path-crumb`, but `path-crumbs.tsx` renders the LAST segment (the
+  current folder) as a plain `<span class="path-crumb last">` with no click
+  handler — parent segments are `<a class="path-crumb">`. The span caught the
+  press, did nothing (no handler), and did not let it fall through to the
+  input beneath (pointer-events had been turned back on), so a click on the
+  current folder's name was silently swallowed. Worst at narrow widths,
+  where the tail-pin scrolls the strip to its end and the current folder
+  fills most of the visible field. Fixed by splitting the rule into
+  `.listing-search-crumbs a.path-crumb` (pointer-events: auto — the segments
+  that actually navigate) and `.listing-search-crumbs span.path-crumb` (no
+  pointer-events override, so it inherits `none` from the strip and a press
+  falls through to the input, same trick the magnifier already uses). No
+  click handler was added to the last segment — navigating to the folder you
+  are already in is a no-op, so there is nothing for a handler to do.
+  Verified both still hold: a parent crumb navigates, the current-folder
+  crumb focuses the field.
+
+- **Magnifier accent-on-focus (polish) — already landed, no change made.**
+  The brief asked for the glyph to go accent alongside the border in the
+  live states. `explorer.css` already had
+  `.crumb-search-slot .listing-search.expanded .listing-search-glyph,
+  .crumb-search-slot .listing-search.searching .listing-search-glyph { color:
+  var(--accent); }` from the decision-1/2 pass (commit `3d3829e6`), reusing
+  the exact `.expanded`/`.searching` states the border rule keys off, and it
+  is present in the built bundle (`grep`-confirmed in the shipped CSS). No
+  competing rule sets `color` on `.listing-search-glyph` after it, and the
+  SVG's `stroke="currentColor"` inherits from the span. Left untouched;
+  logged here so the built-and-shipped state is on record and this item
+  reads as resolved rather than silently dropped.
+
+- **Completion write-back preserved the typed notation (polish).**
+  `useCompletion.ts`'s `CompletionItem.path` used to always build an
+  absolute path (`base + "/" + e.name + …`), so taking a row after typing
+  `~/Work/fusedudfs/ai` rewrote the field to
+  `/home/iamsdas/Work/fusedudfs/ai_utils/` — a visible notation jump
+  mid-typing. `completion-target.ts` gained `applyQueryNotation(absPath,
+  query, fsPath, home)`: a tilde query (`"~"` or `"~/…"`) stays tilde
+  (reusing `displayDir`'s own `~` substitution rather than a second one), an
+  absolute query (`"/…"`) stays absolute, and anything else is re-relativized
+  against `fsPath`, the same base `completionTarget` resolves a relative
+  query against going the other direction. Every branch is a string slice
+  off one end, so the trailing `/` decision 2 already relies on (it moves
+  the dropdown into the folder) survives untouched in all three notations.
+  `useCompletion.ts` now runs each row's built absolute path through this
+  before assigning it to `CompletionItem.path`.
+
+  Tests: `completion-target.test.ts` gained an `applyQueryNotation` describe
+  block — tilde round-trip, bare `~`, a tilde query whose resolved path falls
+  outside home (defers to `displayDir`'s own absolute fallback), absolute
+  round-trip, relative round-trip, a relative query resolving to the search
+  root itself (writes back `""`), and the trailing-slash-survives check
+  across notations.
+
+## What landed — items 4 through 10 (dropdown behavior and the search chip)
+
+Six more items came back, four of them behavioral bugs rather than polish.
+Verified live at `localhost:2021` (`agent-browser`) against this worktree's
+own build, in addition to `bunx tsc --noEmit` and the scoped test run.
+
+- **Item 4 — the dropdown is capped at 5 visible rows, scrolling for the
+  rest.** `MAX_ITEMS` (50, `useCompletion.ts`) is unchanged — it still bounds
+  what is FETCHED and rendered into the DOM. What is capped here is how much
+  of that list is visible at once. The rows moved into their own
+  `.listing-completion-rows` wrapper (`overflow-y: auto`, native scrollbar
+  hidden via `scrollbar-width: none` / the WebKit pseudo-element, same
+  pattern the rest of this file already uses to hide a scrollbar it wants to
+  keep functional but not draw) as a SIBLING of `.listing-completion-header`,
+  not a child of it — the header had to stay put while only the rows
+  scrolled. The 5-row height comes from a `useLayoutEffect` measuring the
+  first rendered row's real `offsetHeight` (`firstRowRef`) rather than a
+  guessed pixel constant, so it tracks whatever the CSS actually renders a
+  row at; `rowsMaxHeight` is only set once there are more than 5 items,
+  otherwise the container sizes to its content (a 3-entry folder shows 3
+  rows, no dead space). A second `useLayoutEffect` calls
+  `scrollIntoView({ block: "nearest" })` on the highlighted row whenever
+  `highlight` changes, so ArrowDown/ArrowUp past the visible 5 scrolls the
+  highlight into view without over-scrolling once it's already visible.
+  Verified in the browser: `~/` at 1400×900 shows exactly 5 rows with a 6th
+  visibly clipped underneath.
+
+- **Items 5 and 7 — Enter's meaning in the dropdown, and its final split
+  from Tab.** These landed together because item 7 revises item 5 before
+  item 5 ever shipped on its own; the account below is the FINAL behavior,
+  not the intermediate one.
+
+  The bug (item 5): `highlight` reset to `0` on every list change, so the
+  dropdown's `enter-accept` gate (`highlight >= 0`) was true the INSTANT a
+  dropdown rendered, before the user had touched an arrow key. That made
+  Enter on a fully-typed real folder path silently take row 0 of the
+  dropdown instead of navigating, and whether it did depended on typing
+  speed relative to the dropdown's own open debounce — the same keystroke,
+  two different outcomes. Fixed by resetting `highlight` to `-1`
+  (unselected) instead of `0`; `moveHighlight` in the new
+  `listing/completion-keys.ts` special-cases `-1` explicitly (ArrowDown → 0,
+  ArrowUp → last row) rather than trusting the general wraparound formula,
+  which gives the wrong answer for ArrowUp from `-1` (see that file's
+  comment). **This `-1` starting point is load-bearing — do not change it
+  back to `0`.** Reverting it silently reintroduces the timing-dependent
+  Enter bug this decision exists to close.
+
+  The split (item 7, superseding decision 5's original text — see below):
+  **Tab completes text only.** It fills the field with the row's `path`
+  (notation-preserving, decision 3) and lets the dropdown re-key on the new
+  directory; it never navigates. **Enter navigates.** An explicitly
+  highlighted row (the user arrowed to it) is taken as a DESTINATION —
+  `navigateToCompletion` calls `navigate(item.absPath, { isDir: item.is_dir
+  })` and then clears the query (`setQuery("")`), so the field shows crumbs
+  for the folder just arrived at instead of a stale query sitting next to a
+  now-pointless open dropdown. The reason for the split is history churn,
+  not taste: `platform/lib/router.ts`'s `navigate` has no history-replace
+  option, so if Tab navigated per keystroke, walking three directory
+  segments by Tab would push three entries onto the Back stack for what is,
+  from the user's point of view, one act of typing a path. Tab staying
+  text-only means only Enter — one deliberate commit — ever touches
+  history. Nothing highlighted (dropdown closed, or open with nothing
+  arrowed to) still falls through to decision 5's original `typedAddress`
+  resolve-and-navigate, then decision 4's search commit, unchanged.
+
+  **This supersedes decision 2's "a directory row's path is not a
+  destination yet" framing above** — that was true when accepting a row
+  only ever filled text (both Tab and Enter did). It is no longer true for
+  Enter: an explicitly highlighted row's `absPath` IS the destination Enter
+  hands to `navigate()`. It stays true for Tab, which is exactly the split's
+  point.
+
+  A row's own click does exactly what Tab does (fills text, does not
+  navigate) via one shared `acceptCompletion` function both call, so the two
+  cannot drift apart — a row's mousedown already calls
+  `e.preventDefault()` to keep focus on the input (needed for item 6 below
+  to not fire on a row click), and Tab's key handler and the click handler
+  both go through the same function afterward.
+
+  Tests (`completion-keys.test.ts`): Enter with no highlight passes through
+  whether the dropdown is showing or not; Enter after an ArrowDown accepts
+  the highlighted row; Tab accepts the first row with nothing highlighted
+  and the highlighted row when one is arrowed to; Tab and Enter deliberately
+  disagree with nothing highlighted; a zero-item dropdown behaves as not
+  showing at all. `moveHighlight`'s own tests cover both wraparound
+  directions and both `-1`-start directions separately, since a first,
+  wrong implementation (plain modulo) passed the Down case by coincidence
+  and failed the Up case — see completion-keys.ts's own comment.
+
+- **Item 6 — the dropdown outlived focus leaving the field.** Clicking
+  anywhere else in the app while a path-shaped query sat in the field left
+  the dropdown open and pinned over whatever was now focused, still naming
+  the last-typed path. Fixed with a new `fieldActive` boolean, set
+  unconditionally in the input's `onFocus`/`onBlur` — deliberately separate
+  from `pinnedOpen`, which intentionally OUTLIVES a blur once there is a
+  query (that's what keeps the crumb strip expanded and the border lit
+  after focus moves on; the dropdown needs the opposite). `showCompletion`
+  is now `fieldActive && completion.target !== null && completion.items.length
+  > 0` (plus item 9's exact-match suppression below). A row's `onMouseDown`
+  already called `e.preventDefault()` before this change specifically to
+  keep the input focused through a click — that guard is what stops this
+  fix from closing the dropdown out from under its own row click. Refocusing
+  the field and retyping re-opens it correctly, since dismissal and
+  reopening are both just "does focus match", nothing to separately
+  suppress or resurrect.
+
+- **Item 8 — Enter did not open a highlighted search result for a plain
+  search word.** The input's `onKeyDown` called `e.preventDefault()` the
+  instant `e.key === "Enter"`, before checking whether any branch would
+  actually act. For a plain filter word (no `/`, no `*`) none of this
+  file's branches act on Enter — but the `preventDefault()` had already
+  fired, and `useListingSelection.ts`'s document-level Enter handler (which
+  is what actually opens the top/highlighted search hit while the search
+  box has focus) starts with `if (e.defaultPrevented) return;` and bailed
+  every time. Fixed by moving `preventDefault()` OUT of the top of the Enter
+  branch and INTO only the branches that actually act: the completion
+  dropdown's `move`/`tab-accept`/`enter-accept` cases (unchanged, they
+  already did this), the `typedAddress.status === "exists"` branch, and the
+  `pathLike` → `commitSearch()` branch. The genuine passthrough case — not
+  path-shaped, not a resolved address, dropdown not claiming the key — now
+  calls `preventDefault()` nowhere, so the event reaches
+  `useListingSelection.ts` un-prevented and its own guard (`leadIdx === -1 &&
+  !rowsAnswerQueryRef.current` → bail, so stale rows never get opened by
+  accident) decides whether to open row 0 or the arrowed row. `completion-
+  keys.ts`'s `enter-passthrough` action was already the right shape for this
+  — the fix was entirely about the CALLER never calling `preventDefault()`
+  for it, not about the action type itself. Escape's unconditional
+  `preventDefault()` in the same handler is untouched; it is a documented,
+  separate contract (clipboard-cancel precedence) this fix does not touch.
+  Verified in the browser: typing "ai_utils" (matching a real folder) and
+  pressing Enter navigated into it — no arrowing needed, top hit taken.
+
+- **Item 9 — the "Press Enter to search" prompt lied once the field held a
+  resolved path, and a completion row could be pointless.** The prompt shown
+  while a path/pattern query sits uncommitted (decision 4's gate) was a flat
+  constant, derived only from that gate and never from decision 5's
+  `typedAddress` — which is what Enter actually checks FIRST (item 8's fix
+  above didn't change that order). A complete, real folder in the field
+  showed "Press Enter to search" right next to a dropdown naming the exact
+  folder Enter was about to open. New pure function `listing/enter-
+  prompt.ts`'s `enterPrompt(typedAddress)` reads the same `TypedAddress` the
+  Enter handler branches on, so the two cannot disagree: `status ===
+  "exists"` names the resolved file or folder ("Press Enter to open
+  ai_utils"); `"checking"` keeps the search wording rather than flashing a
+  third state mid-resolve (Enter falls through to the search commit while
+  unresolved, so that wording is also what's actually true); `"idle"` and
+  `"missing"` keep it too, unchanged from before.
+
+  Also fixed while in there: a dropdown holding exactly one row whose name
+  is already an exact match for the typed partial has nothing left to offer
+  — the user finished typing that segment — and it was the panel sitting
+  over the prompt in the screenshot that reported this bug. New
+  `completion-target.ts` export `isExactSingleMatch(items, target)` (kept
+  structural — `{ name: string }[]` — rather than importing
+  `CompletionItem`, so `completion-target.ts` stays a leaf `useCompletion.ts`
+  depends on, not the reverse) folds into `showCompletion` alongside the
+  existing `fieldActive` gate from item 6.
+
+  Tests: `enter-prompt.test.ts` covers all four `TypedAddress` states, both
+  file and folder naming for `"exists"`. `completion-target.test.ts` gained
+  an `isExactSingleMatch` describe block: the redundant single-exact-match
+  case, a single row that only prefixes the partial (still has more to
+  type, not redundant), multiple rows including an exact match among them
+  (never redundant — the OTHER rows are still useful), no target, and zero
+  rows.
+
+- **Item 10 — search timing next to the match count.** Reused
+  `formatElapsed` from `apps/explorer/lib/home-search.ts` rather than
+  writing a second one — same "42 ms" under a second / "1.2 s" at or above
+  it. `useListingSearch.ts`'s `RankAnswer` gained an `elapsedMs` field,
+  measured the same way `home-search.ts` measures its own (`Date.now()` at
+  request issue to `Date.now()` when the response is applied — end-to-end
+  latency the user actually felt), and `SearchState`'s `"ok"` variant
+  (`listing/types.ts`) carries it through. The measurement is baked into the
+  `RankAnswer` object at fetch time and never recomputed: a query answered
+  from `memo.current.get(q)` hands back that same object, so a cache hit
+  reports the real cost of the request that actually produced it rather
+  than ~0 ms for a reply that just came from memory — the same rule
+  `home-search.ts`'s own doc comment states for its held answers.
+
+  `Listing.tsx` appends `" · " + formatElapsed(...)` to both the terse chip
+  text and `searchCountFull` (the title/aria-label sentence), but only in a
+  new `else` branch alongside the existing scan-caveat fold — i.e. only once
+  `caveat === null` AND `searchState.status === "ok"` AND a count is already
+  present. `behind` (a stale count) always produces a caveat
+  (`index-caveat.ts`'s `indexCaveat` returns non-null whenever `behind` is
+  true), so gating on "no caveat" is sufficient to keep timing off a stale
+  count without a second `behind` check — a stale count paired with a fresh
+  latency figure would describe two different requests, which is exactly
+  the case being avoided. This branch also sets `widePin = true`, reusing
+  the existing wider chip reservation (`.wide-pin`, 210px) that was already
+  sized for the longest scan-caveat text ("building index… 12,345 files",
+  29 characters) — comfortably wider than the longest settled count-plus-
+  timing string ("top 100 of 4.9K+ · 1.2 s", 25 characters), so no new CSS
+  rule was needed. Verified in the browser: a plain 2-character query shows
+  "1 · 68 ms"; a `~/` dropdown query (uncommitted, `not refreshed`) shows no
+  timing, confirming the `behind`-gates-via-caveat path.
+
+  Tests: `useListingSearch.render.test.ts` gained a "decision 10" describe
+  block using the file's existing fake `Clock` (it already controls
+  `Date.now()` deterministically) — one test advances the clock between
+  issuing a request and resolving it and asserts `searchState.elapsedMs`
+  equals exactly that gap; a second establishes a 400ms-measured answer,
+  moves on to a different query, then returns to the first and asserts the
+  answer served back from the memo (`rankCalls.length` unchanged — no new
+  request) still reports 400ms rather than being re-timed to ~0ms.
+
 ## Deferred edge cases
 
 - The completion dropdown and the focused-empty placeholder state have no
