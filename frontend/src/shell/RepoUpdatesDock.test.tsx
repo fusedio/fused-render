@@ -45,6 +45,29 @@ import type { Job } from "@platform/lib/jobs";
   pushState: () => {},
 };
 
+// A rowClick's `onClick` calls `navigateUrl`, which touches `history` and
+// `window` — both deleted right after the import below, the same as
+// `location` (see the block comment above). Most tests never press a
+// rowClick, so they never need these back; the few that do restore them only
+// for the press itself, via this helper, so nothing here leaks between tests.
+function withNav<T>(run: (pushed: string[]) => T): T {
+  const pushed: string[] = [];
+  const realHistory = (globalThis as Record<string, unknown>).history;
+  const realWindow = (globalThis as Record<string, unknown>).window;
+  (globalThis as Record<string, unknown>).history = {
+    state: null,
+    replaceState: () => {},
+    pushState: (_s: unknown, _t: string, u: string) => pushed.push(u),
+  };
+  (globalThis as Record<string, unknown>).window = { dispatchEvent: () => true };
+  try {
+    return run(pushed);
+  } finally {
+    (globalThis as Record<string, unknown>).history = realHistory;
+    (globalThis as Record<string, unknown>).window = realWindow;
+  }
+}
+
 const { RepoUpdatesCardView, RepoUpdatesDockView } = await import("@shell/RepoUpdatesDock");
 const { repoRows } = await import("@shell/repo-updates-lib");
 import type { RepoRow, RepoStatus } from "@shell/repo-updates-lib";
@@ -161,6 +184,7 @@ function renderInstance(
       onDismissAll={props.onDismissAll ?? (() => {})}
       onDone={props.onDone ?? (() => {})}
       onTerminalPatch={props.onTerminalPatch}
+      onPairingGone={props.onPairingGone}
     />,
   );
 }
@@ -929,14 +953,37 @@ test("a dismissed waiting-task row comes back once the question changes", () => 
   expect(findAll(tree, "dl-row")).toHaveLength(1);
 });
 
-test("a task with nowhere to go still draws, as a row that is not a button", () => {
-  // The news is true whether or not there is a door; an inert row beats
-  // dropping it, and beats a button that navigates nowhere.
-  const tree = renderView({ rows: [], attention: [asking({ href: null })] });
-  const row = findAll(tree, "dl-row")[0];
-  expect(row.type).toBe("div");
-  expect(text(row)).toContain("TASK-097 needs your input");
-  expect(findAll(tree, "dl-row-open")).toHaveLength(0);
+test("clicking a pairing row opens LAN preferences and clears the row", () => {
+  withNav((pushed) => {
+    const onPairingGone = mock(() => {});
+    const tree = renderInstance({
+      rows: [],
+      pairings: [{ id: "p1", name: "Suryas iPhone", at: 1000 }],
+      onPairingGone,
+    });
+    const row = findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row")[0];
+    expect(findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (row.props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/preferences?tab=lan");
+    expect(onPairingGone).toHaveBeenCalledWith("p1");
+  });
+});
+
+test("a task naming no folder still opens as a row — its door is /tasks itself", () => {
+  // `attentionRows` falls back to "/tasks" when a task names no folder at all
+  // (tasks-lib.ts) — every row here is clickable now, so there is no more
+  // inert case to draw around.
+  withNav((pushed) => {
+    const tree = renderView({ rows: [], attention: [asking({ href: "/tasks" })] });
+    const row = findAll(tree, "dl-row")[0];
+    expect(findAll(tree, "dl-row-open")).toHaveLength(1);
+    act(() => {
+      (row.props as { onClick: () => void }).onClick();
+    });
+    expect(pushed).toContain("/tasks");
+  });
 });
 
 test("waiting tasks fill the numeral like every other source, and end the idle state", () => {

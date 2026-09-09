@@ -179,6 +179,13 @@ function useRepoUpdates() {
 // A device that just paired over the LAN (lan.py): title is the device's
 // UA-derived name, the sentence says what pairing means, the ✕ dismisses the
 // EVENT server-side (the device itself stays; revoking lives in Preferences).
+//
+// THE ROW ITSELF ALSO OPENS Preferences → Render local network, where the
+// paired device can actually be managed — the only row kind here whose click
+// target is a fixed shell route rather than something specific to the event.
+// Clicking clears the row exactly as the ✕ does (reuses `dismiss`): the news
+// was "a device paired", and having read it (by going to look) is as much an
+// acknowledgement as swatting it would have been.
 function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id: string) => void }) {
   const dismiss = async () => {
     // Optimistic: the row is news, and news the user swatted must go now.
@@ -194,6 +201,13 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
       title={`${event.name} paired`}
       onDismiss={{ onClick: dismiss, ariaLabel: `Dismiss ${event.name} paired` }}
       status="It can now open your apps from this Wi-Fi. Manage devices in Preferences → Render local network."
+      rowClick={{
+        onClick: () => {
+          navigateUrl("/preferences?tab=lan");
+          void dismiss();
+        },
+        title: "Open Preferences → Render local network",
+      }}
     />
   );
 }
@@ -204,8 +218,8 @@ function PairingRowView({ event, onGone }: { event: LanPairingEvent; onGone: (id
 // decides what it says and where it goes, off the pulse poll the shell already
 // runs — no endpoint and no second loop of this card's own.
 //
-// THE WHOLE ROW IS ALSO A CLICK TARGET, when it has somewhere to go — rather
-// than a corner "Open" control on an otherwise inert row. Every other row here
+// THE WHOLE ROW IS ALSO A CLICK TARGET — rather than a corner "Open" control
+// on an otherwise inert row. Every other row here
 // has something to do BESIDES being read (fix the repo, dismiss the failure),
 // so its controls have to be aimed at individually; this row has exactly one
 // thing to do besides dismiss, and a row with one action should not make a
@@ -233,20 +247,6 @@ function AttentionRowView({
     onClick: onDismiss,
     ariaLabel: `Dismiss ${row.taskId} needs your input`,
   };
-  // Nowhere to go — a task naming no folder at all — is drawn as a plain row
-  // rather than dropped: the news is still true, and a button that navigates
-  // nowhere is worse than text (`attentionRows` on why `href` can be null).
-  if (!row.href) {
-    return (
-      <NotificationCard
-        title={title}
-        status={row.title}
-        statusOneLine
-        statusTooltip={row.title}
-        onDismiss={dismiss}
-      />
-    );
-  }
   const href = row.href;
   return (
     <NotificationCard
@@ -255,12 +255,11 @@ function AttentionRowView({
       statusOneLine
       statusTooltip={row.title}
       onDismiss={dismiss}
-      // `navigateUrl`, not `navigate`: these hrefs are whole /explorer urls with
-      // the `_side=claude` handoff and the session id on the query string, and
-      // `navigate` takes an fs path and builds its own. No `isDir` hint, for
-      // the same reason the calendar popover's thread button — the identical
-      // call on the identical value — gives none: a task's target is a folder
-      // OR the file the chat was on, and this row cannot tell which.
+      // `navigateUrl`, not `navigate`: `attentionRows` hands back either a whole
+      // /explorer url with the `_side=claude` handoff and the session id on the
+      // query string, or the plain "/tasks" fallback when the task names no
+      // folder at all — both are URLs, never an fs path, so `navigate` (which
+      // takes an fs path and builds its own url) is the wrong call here.
       rowClick={{ onClick: () => navigateUrl(href), title: `Open ${row.taskId}` }}
     />
   );
