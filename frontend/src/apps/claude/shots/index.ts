@@ -14,7 +14,6 @@ export type {
 } from "./types";
 export {
   FUSED_PATH_MIME,
-  SHOT_ATTACH_MAX_BYTES,
   SHOT_FLASH_MS,
   SHOT_IMG_MAX,
   SHOT_IMG_MAX_BYTES,
@@ -59,7 +58,6 @@ export {
   setCanvasFactory,
   shotExt,
   shotPixels,
-  shrink,
   shrinkImage,
   toBlob,
   webpLatch,

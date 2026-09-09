@@ -19,7 +19,7 @@ import { runAgent } from "../protocol/agent";
 import type { PaneShotWire } from "../protocol/wire";
 import { capturePane, captureOverview, type CaptureOptions } from "./capture";
 import { viewNoteFrom } from "./dom-capture";
-import { shotExt, shotPixels, shrink } from "./encode";
+import { shotExt, shotPixels } from "./encode";
 import {
   SHOT_MIME_EXT,
   SHOT_SUFFIX_OVERVIEW,
@@ -33,7 +33,6 @@ import {
   shotsDirSeen,
 } from "./dir";
 import {
-  SHOT_ATTACH_MAX_BYTES,
   SHOT_PATH_TYPE,
   type Attachment,
   type PaneShotEntry,
@@ -284,10 +283,20 @@ async function pixelsOf(file: File): Promise<Awaited<ReturnType<typeof shotPixel
 
 /** Take one thing the user brought in. Never throws.
  *
- *  AN OVERSIZE PICTURE IS RESIZED, NOT REFUSED (D615): the 4 MiB number was
- *  never about the disk, it is about the agent's read of the pixels, and a
- *  picture too big for it is one downscale away from being exactly as useful.
- *  There is no cap at all behind it for a file or an undecodable image (D612). */
+ *  NO CAP OF ANY KIND, ON ANY FILE (Akshil, 2026-09-09, P2-6: "any and every
+ *  file, size and type must not matter"). There was never a size REFUSAL here
+ *  (D615) or a type gate (D612) — what there was is now gone too: a picture over
+ *  4 MiB used to be re-encoded down before the upload, on T's argument that the
+ *  number is about the agent's read of the pixels rather than about the disk
+ *  (T:11355, T:11518). It is still the bytes the agent reads, and the owner's
+ *  answer to that is the agent's problem: an attachment is handed over AS IT IS,
+ *  and a downscale the user did not ask for is this app quietly changing the
+ *  evidence someone attached. `SHOT_IMG_MAX_BYTES` stays where it belongs — on
+ *  the PANE SCREENSHOT this app takes ITSELF (`shots/dom-capture`), which is a
+ *  picture it composed and therefore gets to size.
+ *
+ *  The HEIC→PNG server transcode below stays: it is a conversion for a format
+ *  nothing here can read, not a refusal, and the chip says it happened. */
 export async function attachFile(agentDir: string, file: File): Promise<Attachment> {
   const kind = kindFor(file);
   const name = file.name || (kind === "image" ? "pasted image" : "attached file");
@@ -307,49 +316,15 @@ export async function attachFile(agentDir: string, file: File): Promise<Attachme
       pic = false;
       undecodable = true;
     } else {
-      // `pix` holds an object URL the <img> road minted, and `shrink`/`encode`
-      // can THROW — `drawImage` on a tainted or zero-dimension canvas does — so
-      // the release is a finally and not the branch's last statement. A leak
-      // here pins the full-size decode for the life of the page.
-      try {
-        if (file.size > SHOT_ATTACH_MAX_BYTES) {
-          const small = await shrink(pix, SHOT_ATTACH_MAX_BYTES);
-          if (small) {
-            blob = small.blob;
-            note =
-              (small.width < pix.width
-                ? "downscaled from " +
-                  pix.width +
-                  "×" +
-                  pix.height +
-                  " to " +
-                  small.width +
-                  "×" +
-                  small.height
-                : "re-encoded") +
-              " for the agent's read (" +
-              sizeLabel(file.size) +
-              " → " +
-              sizeLabel(blob.size) +
-              ")";
-          }
-        }
-      } catch {
-        // THE DOWNSCALE IS A TRIGGER, NOT A GATE (T:11518): the 4 MiB number is
-        // about the agent's read of the pixels, never about whether the picture
-        // may be attached at all. `drawImage` on a tainted or zero-dimension
-        // canvas throws, and that throw used to escape this function entirely —
-        // `addFiles` then removed the placeholder without a chip in its place,
-        // so a dropped picture vanished with no answer (Bugbot, PR #1064).
-        //
-        // So the original bytes go up instead, unresized and unannotated: a
-        // picture the agent has to downscale its own read of is worth
-        // immeasurably more than no picture.
-        blob = file;
-        note = "";
-      } finally {
-        pix.free();
-      }
+      // NOTHING IS DONE TO THE PIXELS (P2-6). The decode happened for one
+      // reason only — to learn whether a 22px view of this would show anything,
+      // which is what `pic` answers — so the object URL the <img> road minted is
+      // released and the FILE'S OWN BYTES are what goes up. There used to be a
+      // re-encode over 4 MiB here, and with it a `try`/`finally` guarding
+      // `drawImage`'s throw on a tainted or zero-dimension canvas (Bugbot, PR
+      // #1064); with the encode gone there is nothing left in this branch that
+      // can throw.
+      pix.free();
     }
   }
   try {

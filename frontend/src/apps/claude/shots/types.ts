@@ -90,7 +90,13 @@ export interface CaptureResult {
   why?: string;
 }
 
-export const SHOT_ATTACH_MAX_BYTES = 4 * 1024 * 1024; // T:11355 downscale trigger
+/* THERE IS NO ATTACHMENT SIZE CONSTANT (Akshil, 2026-09-09, P2-6). T re-encoded
+   a dropped picture over 4 MiB before the upload (T:11355) — never a refusal,
+   but still this app changing the bytes someone attached without being asked —
+   and the owner's rule is that "any and every file, size and type must not
+   matter". Only the PANE SCREENSHOT this app takes itself has a budget
+   (`SHOT_IMG_MAX_BYTES` below, and the ladder in `shots/encode`): that is a
+   picture it composed, so it gets to size it. */
 export const SHOT_VIEW_EDGE = 1600; // T:4755
 export const SHOT_VIEW_BYTES = 900 * 1024; // T:4756
 export const SHOT_MAX_EDGE = 640; // T:4702 crops

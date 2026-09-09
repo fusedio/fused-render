@@ -310,23 +310,12 @@ export async function shotPixels(file: Blob): Promise<ShotPixels | null> {
   }
 }
 
-/** One oversize picture, re-encoded small enough to attach. The ladder is
- *  `encode`'s and not a new one, capped at SHOT_VIEW_EDGE — a photo the user
- *  brought in is never carried at a size the app's own screenshots are not.
- *  `null` means even the halvings could not reach the budget (T:11518). */
-export async function shrink(
-  pix: ShotPixels,
-  maxBytes: number,
-): Promise<{ blob: Blob; width: number; height: number } | null> {
-  const size: EncodeSize = { width: 0, height: 0 };
-  const blob = await encode(
-    pix,
-    { left: 0, top: 0, width: pix.width, height: pix.height },
-    { maxEdge: SHOT_VIEW_EDGE, maxBytes },
-    size,
-  );
-  return blob ? { blob, width: size.width, height: size.height } : null;
-}
+/* THERE IS NO `shrink` ANY MORE (Akshil, 2026-09-09, P2-6). It re-encoded a
+   dropped picture over 4 MiB down before the upload; an attachment is handed
+   over as it is now, whatever its size, so nothing calls it. `shrinkImage`
+   below is a DIFFERENT job and stays: it shrinks an oversized <img> found
+   inside a page this app is rasterising, where the alternative is a 4 MB photo
+   inlined as base64 inside the screenshot's own markup. */
 
 /** Re-encode an oversized image found INSIDE a capture down to something worth
  *  embedding: base64 adds a third on top of the bytes and the result is inlined
