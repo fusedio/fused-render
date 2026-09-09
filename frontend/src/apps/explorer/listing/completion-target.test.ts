@@ -89,6 +89,24 @@ describe("completionTarget", () => {
       partial: "",
     });
   });
+
+  test("a drive-letter path narrows the last segment, backslashes folded to /", () => {
+    expect(completionTarget("C:/Users/me", FS_PATH, HOME)).toEqual({
+      dir: "C:/Users",
+      partial: "me",
+    });
+    expect(completionTarget("C:\\Users\\me", FS_PATH, HOME)).toEqual({
+      dir: "C:/Users",
+      partial: "me",
+    });
+  });
+
+  test("a bare drive root lists that drive, keeping its own slash in dir", () => {
+    expect(completionTarget("C:/", FS_PATH, HOME)).toEqual({
+      dir: "C:/",
+      partial: "",
+    });
+  });
 });
 
 describe("displayDir", () => {
