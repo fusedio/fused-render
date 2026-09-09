@@ -119,6 +119,7 @@ import { searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
+import { EmptyResultMessage } from "@apps/explorer/listing/empty-result";
 
 // The search row hangs in the crumb bar when there is one to hang in, and
 // stays put otherwise. Either way it is the SAME React element — the query,
@@ -262,6 +263,7 @@ export default function Listing({
     visibleHits,
     rowsAnswerQuery,
     cappedAway,
+    reason,
   } = useListingSearch(fsPath, refresh);
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
@@ -1539,12 +1541,22 @@ export default function Listing({
         </tr>
       );
     } else {
-      // A settled, empty answer: honestly "No matches" — the index covers the
-      // whole folder, so there is no truncated-walk nuance left to report.
+      // A settled, empty answer. `reason` is only ever non-"" when the index
+      // could not cover this folder at all (mount / package / ignored /
+      // disabled / no Full Disk Access / still building / gave up waiting) —
+      // "No matches" on its own would blame the user's files for the app's
+      // state in every one of those cases. `EmptyResultMessage` (below) is
+      // the render for each of those, sharing `indexGap`'s classification and
+      // copy with the home page's own search box rather than inventing new
+      // wording for the same states.
       body = (
         <tr>
           <td colSpan={cols} className="status-message">
-            No matches
+            <EmptyResultMessage
+              reason={reason}
+              scanning={indexScan === null ? null : indexScan.scanning}
+              filesScanned={indexScan?.files ?? 0}
+            />
           </td>
         </tr>
       );
