@@ -131,12 +131,22 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // The specific query text Enter was last pressed for. A ref, not state: it
   // must not itself cause a render, only unlock the fetch effect below (which
   // re-runs on `gateNonce`).
+  //
+  // Committed against `query` (live), never `q` (deferred): under load the
+  // deferred value can still be trailing the keystroke Enter was pressed
+  // right after, and a commit recorded against that stale trailing value
+  // would stop matching once the deferred render catches up a moment later
+  // — reopening the gate would then need a second Enter. Recording the live
+  // text instead means `committedGate.current === q` starts true the instant
+  // the deferred value reaches what was actually committed, with no second
+  // press needed.
   const committedGate = useRef<string | null>(null);
   const [gateNonce, setGateNonce] = useState(0);
   const gateOpen = !pathLike || committedGate.current === q;
   const commitSearch = () => {
-    if (committedGate.current === q) return;
-    committedGate.current = q;
+    const live = query.trim();
+    if (committedGate.current === live) return;
+    committedGate.current = live;
     setGateNonce((n) => n + 1);
   };
 
