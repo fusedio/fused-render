@@ -54,11 +54,23 @@ export interface NamedBlob {
 /** Whether this file is a picture at all. `type` first because it is what the
  *  clipboard supplies and what the browser sniffed; the extension is the fallback
  *  for a drag whose source gave no type. It no longer decides whether the
- *  attachment HAPPENS — every file type is accepted now (T:11392). */
+ *  attachment HAPPENS — every file type is accepted now (T:11392).
+ *
+ *  THE FALLBACK LIST COVERS THE FORMATS NO BROWSER DECODES, and that is the
+ *  point of it: Safari drops the MIME on a drag of `IMG_4031.HEIC`, so the type
+ *  test says nothing and the extension is all there is. Called a `file`, such a
+ *  drop skipped the image road entirely — no decode attempt, so no
+ *  `image_to_png` ask and no undecodable note either: the one format on this
+ *  machine that NEEDS the server's Pillow was the one format never offered to
+ *  it (Bugbot, PR #1064). heic/heif and tif/tiff take the image road, fail the
+ *  browser decode, and come back converted.
+ *
+ *  T:11392 carried only the browser-decodable six; it is extended in the same
+ *  breath (`shotIsImage`), so the two lists still read as one rule. */
 export function isImage(file: NamedBlob | null | undefined): boolean {
   if (!file) return false;
   if ((file.type || "").slice(0, 6) === "image/") return true;
-  return /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(file.name || "");
+  return /\.(png|jpe?g|webp|gif|bmp|avif|heic|heif|tiff?)$/i.test(file.name || "");
 }
 
 /** WHAT the attachment will be called on the wire (T:11366). */

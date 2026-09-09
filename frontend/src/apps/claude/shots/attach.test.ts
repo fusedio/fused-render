@@ -171,6 +171,20 @@ describe("kindFor / isImage", () => {
     expect(kindFor({ name: "Makefile", type: "" })).toBe("file");
     expect(isImage(null)).toBe(false);
   });
+
+  // Bugbot, PR #1064. Safari drops the MIME on a drag, and HEIC is the one
+  // format on this machine that NEEDS the server's converter — classified a
+  // `file` it never reached the decode that asks for it.
+  test("a typeless HEIC/HEIF/TIFF is a picture, not a file (Bugbot, PR #1064)", () => {
+    expect(kindFor({ name: "IMG_4031.HEIC", type: "" })).toBe("image");
+    expect(kindFor({ name: "IMG_4031.heic", type: "" })).toBe("image");
+    expect(kindFor({ name: "scan.heif", type: "" })).toBe("image");
+    expect(kindFor({ name: "scan.tif", type: "" })).toBe("image");
+    expect(kindFor({ name: "scan.TIFF", type: "" })).toBe("image");
+    // …and the neighbours a loose regex would swallow are still files.
+    expect(kindFor({ name: "notes.heicx", type: "" })).toBe("file");
+    expect(kindFor({ name: "a.tiffany", type: "" })).toBe("file");
+  });
 });
 
 describe("saveExt", () => {
@@ -554,6 +568,22 @@ describe("attachFile", () => {
     expect(att.view).toBe("/shots/a.png");
     expect(att.thumb).toBe("/api/fs/raw?path=%2Fshots%2Fa.png");
     expect(att.size).toBeUndefined();
+    expect(att.viewNote).toBe(
+      "converted from HEIC to PNG on the server (4032×3024 → 800×600) because neither the browser nor the agent can read that format",
+    );
+  });
+
+  test("a TYPELESS HEIC takes the same road — decode, fail, convert (Bugbot, PR #1064)", async () => {
+    // The Safari drag: no MIME at all, so only the extension says "picture".
+    undecodable();
+    convert = { path: "/shots/a.png", width: 800, height: 600, source_w: 4032, source_h: 3024 };
+    const att = await attachFile("/tpl", fileOf("IMG_4031.HEIC", "", 5000));
+    expect(att.kind).toBe("image");
+    // The copy on disk keeps the extension the bytes actually are…
+    expect(uploads[0].path).toMatch(/\.heic$/);
+    // …and the server was asked, which is the whole point.
+    expect(runs.some((r) => r.action === "image_to_png")).toBe(true);
+    expect(att.view).toBe("/shots/a.png");
     expect(att.viewNote).toBe(
       "converted from HEIC to PNG on the server (4032×3024 → 800×600) because neither the browser nor the agent can read that format",
     );

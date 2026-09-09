@@ -316,6 +316,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * It is what `stopRun` needs to tell "the CLI never got this" from "the CLI
    * got it and, on the measured behaviour of the held-open stdin, echoed it
    * straight away" (feedback #11 — see `stopRun`).
+   *
+   * `opts` IS THE SEND'S OWN OPTIONS, kept for exactly one reason: the pictures.
+   * `ClaudeChat.beginSend` parked them under `opts.attachments` before the send
+   * began, and a strand is a send that did not go — so whoever strands the entry
+   * owes them back through `returnSend`, not just the words through `onStranded`
+   * (Bugbot, PR #1064). `handedBack` keeps that from happening twice when the
+   * still-in-flight POST later settles into `giveBack`.
    */
   const queued: {
     seq: number;
@@ -323,6 +330,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     typed: string;
     bubble: string;
     landed: boolean;
+    opts: SendOptions;
+    handedBack: boolean;
   }[] = [];
   let queuedSeq = 0;
   const publishQueued = () => emit({ queued: queued.map((q) => q.typed || q.wire) });
@@ -1411,6 +1420,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // Flipped below, when the inbox confirms — see `queued`'s own note and
       // `stopRun`'s handback rule.
       landed: false,
+      // The pictures ride here so a STOP can give them back; `giveBack` reads
+      // the same `opts` off its closure.
+      opts,
+      handedBack: false,
     };
     queued.push(entry);
     publishQueued();
@@ -1426,6 +1439,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // The same road sendMessage takes for a run that never launched: the
       // usual way a follow-up fails is the session having already ended, and
       // the pictures the user attached deliberately are owed back (T:16080-16093).
+      //
+      // ONCE, THOUGH: a Stop landing on an unconfirmed send already handed these
+      // very pictures back, and this POST is only now settling behind it. A
+      // second hand-back would re-add the same chips (or, for a host that keys
+      // by the receipt array, be silently dropped) — either way the entry says
+      // it is done.
+      if (entry.handedBack) return;
+      entry.handedBack = true;
       returnSend(text, opts);
     };
 
@@ -1573,6 +1594,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const back = at >= 0 || !entry.landed;
         if (!back) continue;
         stranded.push(entry.typed || entry.wire);
+        // AND ITS PICTURES, but only for a send the inbox never confirmed. The
+        // words go back through `onStranded`; the attachments are parked in
+        // `ClaudeChat`'s `inFlight` map under this send's own `Receipt[]` and
+        // come back only through `onSendReturned`, so a strand that returned
+        // text alone dropped the bubble holding the only visible trace of them
+        // and left the map holding the only handle — the picture disappearing
+        // until the POST settled, and lost outright if it answered `sent`
+        // (Bugbot, PR #1064).
+        //
+        // A LANDED follow-up the CLI named in `still_queued` is deliberately not
+        // this: its bytes are already on disk in the agent's hands and its
+        // receipts already rode a wire block, so only the words are owed back
+        // (`onSendReturned`'s own note).
+        if (!entry.landed && !entry.handedBack) {
+          entry.handedBack = true;
+          returnSend(entry.typed, entry.opts);
+        }
         // The optimistic bubble goes with it. A follow-up the interrupt
         // stranded was never answered, so leaving the row posted claims the
         // agent read it — and QA saw exactly that: the text committed as a
