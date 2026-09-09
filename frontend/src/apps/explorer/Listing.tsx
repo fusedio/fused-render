@@ -112,6 +112,7 @@ import {
 } from "@apps/explorer/listing/selection";
 import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
+import { statusLine } from "@apps/explorer/listing/status-line";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
@@ -1768,6 +1769,28 @@ export default function Listing({
     searchCount !== null ||
     sel.paths.length > 1;
 
+  // The status strip's inputs. A search hit carries no size (the comment on
+  // its row explains why), so the byte sum is only ever taken over the plain
+  // listing — statusLine's own "searching" branch never reads either number.
+  let selectedBytes = 0;
+  let selectedFolders = 0;
+  if (!searching) {
+    for (const entry of sortedEntries) {
+      if (!selectedSet.has(base + "/" + entry.name)) continue;
+      if (entry.is_dir) selectedFolders++;
+      else selectedBytes += entry.size ?? 0;
+    }
+  }
+  const statusText = statusLine({
+    total: sortedEntries.length,
+    selected: sel.paths.length,
+    selectedBytes,
+    folderCount: selectedFolders,
+    truncated: state.status === "ok" && state.truncated,
+    searching,
+    hits: hits.length,
+  });
+
   return (
     <div className="listing">
       <div className="listing-split" ref={splitRef}>
@@ -2091,6 +2114,13 @@ export default function Listing({
               <tbody>{body}</tbody>
             </table>
           </div>
+          {/* Spans the list column only, never the preview pane beside it —
+              it sits INSIDE .listing-main, after the scroller, the same way
+              the crumb slot sits inside it before. statusLine decides the
+              string; this only renders it. */}
+          <footer className="listing-status" title={statusText}>
+            {statusText}
+          </footer>
         </div>
         {paneOpen && (
           <>

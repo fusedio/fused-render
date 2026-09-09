@@ -870,6 +870,25 @@
   pointer-events: none;
 }
 
+/* The count strip under the list (Listing.tsx, listing/status-line.ts). A
+   hairline rather than the row's own border weight, since this is chrome
+   about the list and not one more row of it. tabular-nums keeps a selection
+   count from jittering sideways as its digits change; nowrap + ellipsis
+   because the line can carry a size and a folder count on top of the counts
+   themselves, and a folder's worth of text should never wrap the strip to a
+   second line. */
+.listing-status {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* The list's floor: with the pane on, flexbox must refuse to shrink the table
    below this sliver however wide the pane is. The drag clamps to the same
    number (clampPaneWidth's LIST_MIN_W), so this only backstops a window
