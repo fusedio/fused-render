@@ -180,7 +180,16 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
 
   const next = blockers[0] ?? null;
   const nextId = next ? String(next.id) : "";
-  const blocked = blockers.length > 0;
+  /**
+   * THE LANDING PAGE IS NEVER BLOCKED, and asserted HERE rather than trusted
+   * from the poller. `schedPendingHere` already answers `[]` with no session,
+   * but that answer only arrives on a TICK — so leaving a blocked chat by Back
+   * left the home composer shut, with the banner (which only ever draws inside
+   * a chat) not there to say why, for up to a poll interval. The session id is
+   * a render-time fact, so the block reads it directly and the home composer is
+   * open on the same paint that leaves the conversation (Bugbot PR #1075).
+   */
+  const blocked = blockers.length > 0 && !!sessionId;
 
   // ── the poller ────────────────────────────────────────────────────────────
   //
@@ -216,12 +225,24 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   );
   useEffect(() => watcher.start(), [watcher]);
 
+  /**
+   * A CANCEL IN FLIGHT BELONGS TO THE TRANSCRIPT IT WAS PRESSED IN. Bumped by
+   * `reset`, read by `onStop`'s continuation: without it a replaced transcript
+   * left `stopping` true until the request returned — which is a DISABLED stop
+   * button on the next conversation's banner — and the continuation then went
+   * on to write a refusal, or a `blockers` edit, against a list that is no
+   * longer the same list (Bugbot PR #1075).
+   */
+  const stopGen = useRef(0);
+
   /** T:16776-16786. Cleared LOCALLY as well as in the watcher: unblocking is the
    *  safe direction to be briefly wrong in, and the poll fired underneath
    *  re-establishes the block for this session immediately. */
   const reset = useCallback(() => {
+    stopGen.current += 1;
     setArmedId("");
     setRefusedId("");
+    setStopping(false);
     setRec(null);
     watcher.resetForNewTranscript();
   }, [watcher]);
@@ -325,18 +346,22 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     const repeat = schedIsRepeat(next);
     const target = schedStopTarget(next);
     if (!target) return;
+    /** The entry the press was made AGAINST, captured now: the poll answers
+     *  every 15 s and `blockers` is re-read by the continuation below. */
+    const id = String(next.id);
     // TWO PRESSES for a repeat, and only for a repeat. The write below stops the
     // recurring task, which spends every run it would ever have made, and
     // nothing on this page can restore them — so the first press only arms, and
     // the label it arms into names that loss. A one-off is a single press:
     // cancelling it loses one message the user can schedule again, and a confirm
     // on that would be ceremony.
-    if (repeat && armedId !== String(next.id)) {
-      setArmedId(String(next.id));
+    if (repeat && armedId !== id) {
+      setArmedId(id);
       return;
     }
     setArmedId("");
     setStopping(true);
+    const gen = stopGen.current;
     void (async () => {
       try {
         // The one write this chat makes to the schedule store, and it exists
@@ -346,24 +371,38 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         // cancels the materialized occurrence with it, so one endpoint serves
         // both cases. (`postJson` carries `X-Fused: 1` — D3.)
         await api.cancelScheduledMessage(target);
+        if (gen !== stopGen.current) return;
         // Applied LOCALLY so the box opens on the click rather than on the next
         // poll — 15 seconds of dead composer after a successful cancel reads as
         // a button that did nothing. The poll is still the source of truth.
         //
-        // A stopped repeat takes EVERY blocker that belongs to it, not just the
-        // first: the template is cancelled, so an occurrence of it left in the
-        // list would have the banner naming a run the server has dropped.
+        // BY ID, never by position. A stopped repeat takes EVERY blocker that
+        // belongs to its template — the template is cancelled, so an occurrence
+        // of it left in the list would have the banner naming a run the server
+        // has dropped — and a one-off takes ITS OWN ENTRY. `slice(1)` was the
+        // same thing only while the list had not moved underneath the press: a
+        // poll that reordered it, or a transcript replacement, and the cancel
+        // dropped a row that is still pending while leaving its own (Bugbot
+        // PR #1075).
         setRefusedId("");
         setBlockers((prev) =>
-          repeat ? prev.filter((e) => schedStopTarget(e) !== target) : prev.slice(1),
+          prev.filter((e) =>
+            repeat ? schedStopTarget(e) !== target : String(e.id) !== id,
+          ),
         );
       } catch {
         // A cancel that raced the send is refused, not silently swallowed: the
         // entry is away, the composer stays shut, and that is the true state.
-        setRefusedId(String(next.id));
+        if (gen !== stopGen.current) return;
+        setRefusedId(id);
       } finally {
-        setStopping(false);
-        void watcher.tick();
+        // The transcript this press belonged to may be gone, and `reset` has
+        // already published the open state for the new one — so a late
+        // continuation says nothing at all rather than re-deciding it.
+        if (gen === stopGen.current) {
+          setStopping(false);
+          void watcher.tick();
+        }
       }
     })();
   }, [next, armedId, watcher, api]);

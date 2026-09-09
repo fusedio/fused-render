@@ -1972,11 +1972,25 @@ function ChatBody(props: ChatBodyProps) {
     [dispatchSend, defaults.model, defaults.effort, defaults.permission],
   );
   const onStop = useCallback(() => void controller.stopRun(), [controller]);
+  /**
+   * `sched.reset` — declared HERE, ahead of the hook that fills it, because
+   * `onBack` is one of its two callers and is itself declared before the PR4
+   * block below. A ref rather than the value: both callers are gestures, so
+   * they read it when pressed and neither needs re-binding for a new identity.
+   */
+  const schedReset = useRef<() => void>(() => {});
   const onBack = useCallback(() => {
     // A fresh transcript is a fresh card policy: an override from the
     // conversation that WAS on screen must not leak a card open in one the user
     // has never touched (ui/cardPolicy.ts).
     resetCardPolicy(cardPolicy);
+    // AND A FRESH SCHEDULE. `newChat` puts `transcriptGen` back to 0, and the
+    // reset effect below skips gen 0 by construction (a mount must not
+    // re-baseline the poller) — so Back alone left the block that belonged to
+    // the conversation just closed standing over the landing composer until the
+    // next 15 s tick. Called directly, the way `openSession` gets it from the
+    // generation bump (Bugbot PR #1075).
+    schedReset.current();
     controller.newChat();
     setEntered(false);
     // AND THE STRANDED TEXT GOES WITH THE CONVERSATION IT WAS TYPED IN. It was
@@ -2262,7 +2276,6 @@ function ChatBody(props: ChatBodyProps) {
    *
    * `transcriptGen` starts at 0, so the mount is skipped by construction.
    */
-  const schedReset = useRef(sched.reset);
   schedReset.current = sched.reset;
   const transcriptGen = state.transcriptGen;
   useEffect(() => {
