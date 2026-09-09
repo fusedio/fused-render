@@ -532,32 +532,36 @@ function ChatBody(props: ChatBodyProps) {
    * successful send of a pasted or captured picture ended in "screenshot no
    * longer on disk" (Bugbot, PR #1064).
    *
-   * So the spent handles go in STATE and are released from an effect: a passive
-   * effect runs after React has mutated the tree, so by the time it fires every
-   * receipt is drawn with `rawUrl(view)` and nothing on screen is holding a
-   * `blob:` handle any more.
+   * So the spent handles are released from an EFFECT: a passive effect runs
+   * after React has mutated the tree, so by the time it fires every receipt is
+   * drawn with `rawUrl(view)` and nothing on screen is holding a `blob:` handle
+   * any more.
+   *
+   * ONE QUEUE, in a ref, and the state is only the TRIGGER. A second copy in
+   * state was two bookkeepers for one list, and they diverged: the effect
+   * cleared the ref wholesale while state legitimately kept a NEWER send's
+   * handles, so those lost their unmount path and were pinned for the life of
+   * the document (Bugbot, PR #1064). The effect now drains whatever the ref
+   * holds at commit time — every entry in it has had its store write already —
+   * and anything queued after that gets its own tick, its own effect run, or the
+   * unmount below.
    */
-  const [spentBlobs, setSpentBlobs] = useState<readonly Attachment[]>([]);
-  /** The same queue, where an UNMOUNT can still reach it. A chat closed between
-   *  the store write and its commit would otherwise leave handles nothing has a
-   *  reference to any more — the tray gave them up and `inFlight` has already
-   *  deleted the send — pinned for the life of the document. */
   const spentAlive = useRef<Attachment[]>([]);
-  useEffect(() => {
-    if (!spentBlobs.length) return;
-    for (const att of spentBlobs) ATTACH_API.revoke(att);
+  const [spentTick, setSpentTick] = useState(0);
+  const dropSpent = useCallback(() => {
+    const go = spentAlive.current;
+    if (!go.length) return;
     spentAlive.current = [];
-    // Emptied, so a later swap's queue is its own; `revoke` is idempotent, so a
-    // re-run before that lands (StrictMode) costs nothing.
-    setSpentBlobs((q) => (q === spentBlobs ? [] : q));
-  }, [spentBlobs]);
-  useEffect(
-    () => () => {
-      for (const att of spentAlive.current) ATTACH_API.revoke(att);
-      spentAlive.current = [];
-    },
-    [],
-  );
+    for (const att of go) ATTACH_API.revoke(att);
+  }, []);
+  // `spentTick` is not read in the body: it IS the message ("a swap has been
+  // committed"), and the drain deliberately takes the whole queue rather than
+  // the one send that raised the tick.
+  useEffect(dropSpent, [dropSpent, spentTick]);
+  // AND AT UNMOUNT, when there is no screen left to keep them for: the tray gave
+  // these up and `inFlight` has already deleted the send, so nothing else has a
+  // reference to release.
+  useEffect(() => dropSpent, [dropSpent]);
   const attachBack = useRef<((items: readonly Attachment[]) => void) | null>(null);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
@@ -1141,7 +1145,7 @@ function ChatBody(props: ChatBodyProps) {
           // (`spentBlobs` above).
           controller.settleAttachments(key, settled.receipts);
           spentAlive.current = spentAlive.current.concat(settled.spent);
-          setSpentBlobs((q) => (q.length ? q.concat(settled.spent) : settled.spent));
+          setSpentTick((n) => n + 1);
         },
       };
     },
