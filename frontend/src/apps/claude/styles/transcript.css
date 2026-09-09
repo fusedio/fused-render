@@ -1793,3 +1793,21 @@
 
 /* Push-channel receipt under a user bubble (T:1802). */
 .chat-root .turn.user .attach { margin-top: 4px; font-size: 11px; color: var(--c-faint); text-align: right; }
+/* THE RECEIPT AS THE DOOR (R4-1): the same 11px faint line, now a button that
+   opens "what was sent" (ui/Turn). Every one of these declarations is a button
+   reset — the typography above is what the reader must still see. Underline on
+   hover/focus rather than a permanent link colour: the row is a caption in the
+   quietest text the chat has, and colouring it would make a footnote shout. */
+.chat-root .turn.user button.attach {
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.chat-root .turn.user button.attach:hover,
+.chat-root .turn.user button.attach:focus-visible {
+  color: var(--c-fg);
+  text-decoration: underline;
+}

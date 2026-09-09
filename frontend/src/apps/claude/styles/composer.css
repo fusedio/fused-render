@@ -557,48 +557,27 @@ select.c-pill {
   display: none;
 }
 
-/* ---- "what was sent" (T:1145-1185) ------------------------------------- */
-/* Position and box size come from the Dialog primitive's own utilities; what
-   lives here is the skin (T:1149-1156). */
-.c-sentpop-box {
-  max-height: calc(100vh - 64px);
-  background: var(--c-bg);
-  border: 1px solid var(--c-border);
-  border-radius: 10px;
-  box-shadow: 0 12px 40px var(--c-shadow);
-  overflow: hidden;
-}
-.c-sentpop-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--c-border);
-  font-weight: 600;
-  font-size: 13px;
-}
-.c-sentpop-bar .c-spacer {
-  flex: 1;
-}
-.c-sentpop-body {
-  overflow: auto;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.c-sentpop-body h4 {
-  margin: 6px 0 0;
+/* ---- "what was sent" (T:1145-1185) -------------------------------------
+   THE BOX IS THE APP'S MODAL now (R4-1): overlay, card, head, ✕, footer and
+   focus handling all come from `platform/ui/modal/Modal` — the chassis the
+   Delete task dialog uses — so nothing about the chrome is styled here any
+   more (the old sentpop box/bar/body skin is gone with it).
+   What is left is the two things inside the body, and they paint with the
+   PLATFORM palette (`--bg`, `--border`, `--fg-muted`), not the chat's `--c-*`
+   aliases: the dialog is portaled to <body>, outside .chat-root's cascade, and
+   it is now a dialog of the app rather than a popup of the chat. */
+.c-sent-head {
+  margin: 0;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--c-dim);
+  color: var(--fg-muted);
 }
 .c-sent-wire {
   margin: 0;
   padding: 10px;
-  background: var(--c-panel);
-  border: 1px solid var(--c-border);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 11px;
   line-height: 1.45;
