@@ -2100,10 +2100,18 @@ export default function Listing({
           {/* Spans the list column only, never the preview pane beside it —
               it sits INSIDE .listing-main, after the scroller, the same way
               the crumb slot sits inside it before. statusLine decides the
-              string; this only renders it. */}
-          <footer className="listing-status" title={statusText}>
-            {statusText}
-          </footer>
+              string; this only renders it.
+
+              Gated on the folder having an actual answer — loaded
+              (`state.status === "ok"`) or a search in flight or done — because
+              `sortedEntries` is `[]` for every other state (still loading,
+              failed, access denied) and an ungated footer would read
+              "Empty folder" for a folder the app has not read yet. */}
+          {(state.status === "ok" || searching) && (
+            <footer className="listing-status" title={statusText}>
+              {statusText}
+            </footer>
+          )}
         </div>
         {paneOpen && (
           <>
