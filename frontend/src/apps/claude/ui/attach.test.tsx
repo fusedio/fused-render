@@ -127,6 +127,41 @@ test("the pane seat is unique: a second capture REPLACES the first (D285, T:1130
   expect(tray.get().items[0]!.name).toBe("note.csv");
 });
 
+test("a REFUSED recapture keeps the picture already in the seat (Bugbot #1064)", async () => {
+  // The seat is unique, so the second click replaces the first — but a capture
+  // that timed out or failed to encode is still an attachment, with `view: null`
+  // and the reason in `viewNote`. Swapping it in threw away a screenshot the
+  // reader already had and could still send. The picture stays, and the refusal
+  // speaks through its caveat instead.
+  let shots = 0;
+  const { api, spy } = fakeApi({
+    attachPane: async () => {
+      shots += 1;
+      return shots === 1
+        ? att({ kind: "pane", seat: "pane", thumb: "blob:pane" })
+        : att({ kind: "pane", seat: "pane", view: null, viewNote: "the pane did not answer" });
+    },
+  });
+  const tray = mountTray(api);
+  await act(async () => {
+    await tray.get().capture();
+  });
+  const good = tray.get().items.find((s) => s.kind === "pane")!;
+  expect(good.view).toBeTruthy();
+  await act(async () => {
+    await tray.get().capture();
+  });
+  const panes = tray.get().items.filter((s) => s.kind === "pane");
+  expect(panes.length).toBe(1);
+  // THE PICTURE SURVIVED, and it is the same one.
+  expect(panes[0]!.id).toBe(good.id);
+  expect(panes[0]!.view).toBe(good.view);
+  // …and it never had its only handle pulled.
+  expect(spy.revoked.map((a) => a.id)).not.toContain(good.id);
+  // …while the attempt is still reported.
+  expect(panes[0]!.viewNote).toBe("the pane did not answer");
+});
+
 test("the camera is inert while a capture is in flight (T:11203 shotBusy)", async () => {
   let release: ((a: Attachment) => void) | null = null;
   const { api } = fakeApi({

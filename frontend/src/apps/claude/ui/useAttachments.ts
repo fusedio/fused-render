@@ -163,8 +163,26 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
       commit((prev) => {
         const seat = prev.findIndex((s) => s.kind === "pane");
         if (seat === -1) return [...prev, shot];
+        const held = prev[seat]!;
+        // A REFUSAL NEVER EVICTS A PICTURE (Bugbot, PR #1064). The pane seat is
+        // unique, so a second click REPLACES what is in it — and a capture that
+        // timed out or failed to encode still comes back as an attachment, with
+        // `view: null` and the reason in `viewNote` (`uploadCapture`). Swapping
+        // that in threw away a screenshot the reader already had and could still
+        // send: one flaky retry, and the evidence was gone with no way back.
+        //
+        // So the picture stays and the refusal's reason rides ONTO it as the
+        // caveat. The attempt is still reported, which is the whole point of a
+        // failed capture becoming a chip at all (T:11305) — it just no longer
+        // costs the picture to say it.
+        if (!shot.view && held.view) {
+          api.revoke(shot); // nothing of its own to hold, but symmetrical
+          const next = prev.slice();
+          next[seat] = shot.viewNote ? { ...held, viewNote: shot.viewNote } : held;
+          return next;
+        }
         // The replaced picture's blob URL is the only handle to it.
-        api.revoke(prev[seat]);
+        api.revoke(held);
         const next = prev.slice();
         next[seat] = shot;
         return next;
