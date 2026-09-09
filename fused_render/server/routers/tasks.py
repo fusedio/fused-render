@@ -2031,8 +2031,8 @@ def load_scan_cache() -> int:
     # Heads are keyed by size alone in `tasks_store.head` — a same-size rewrite
     # (a compaction, a resume) kept a stale cwd and first prompt for the life of
     # the process, and a restart was what healed it. Persisting them would end
-    # that, so a head comes back ONLY for a file whose size AND mtime still
-    # match what the scan record saved beside it; anything else is left for
+    # that, so a head comes back ONLY for a file whose size, mtime AND inode
+    # still match what the scan record saved beside it; anything else is left for
     # `head` to parse afresh (Bugbot, #1081). One stat per head, once per boot.
     heads = data.get("head")
     if isinstance(heads, dict):
@@ -2045,7 +2045,8 @@ def load_scan_cache() -> int:
                 st = os.stat(path)
             except OSError:
                 continue
-            if st.st_size == rec["size"] and st.st_mtime == rec["mtime"]:
+            if (st.st_size == rec["size"] and st.st_mtime == rec["mtime"]
+                    and st.st_ino == rec["ino"]):
                 fresh[path] = entry
         tasks_store.import_heads(fresh)
     return taken

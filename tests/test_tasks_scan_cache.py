@@ -427,6 +427,7 @@ def test_a_file_replaced_by_rename_is_read_from_zero_even_with_size_and_mtime_ke
 
     _new_process()
     tasks_mod.load_scan_cache()
+    assert str(path) not in tasks_store._HEAD_CACHE, "the head is not trusted either"
     rows = tasks_mod._task_rows()
 
     assert rows[0]["title"] == "Pull today's newz"
