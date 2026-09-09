@@ -403,8 +403,30 @@ def test_a_file_written_by_another_app_version_is_read_afresh(projects_dir, stat
     cache = state_dir / tasks_mod.SCAN_CACHE_FILE
     data = json.loads(cache.read_text())
     assert data["version"].endswith("/" + __import__("fused_render").__version__)
-    data["version"] = "2/0.0.1"
+    data["version"] = "3/0.0.1"
     cache.write_text(json.dumps(data))
 
     _new_process()
     assert tasks_mod.load_scan_cache() == 0
+
+
+def test_a_file_replaced_by_rename_is_read_from_zero_even_with_size_and_mtime_kept(projects_dir):
+    """An editor or a restore writes a new file and renames it over the old one.
+    Force the worst case — same size, same mtime — and the inode still tells."""
+    path = _transcript(projects_dir)
+    tasks_mod.warm()
+    st = path.stat()
+    before = path.read_bytes()
+    after = before.replace(b"Pull today's news", b"Pull today's newz")
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(after)
+    os.utime(tmp, (st.st_mtime, st.st_mtime))
+    os.replace(tmp, path)
+    assert path.stat().st_size == st.st_size and path.stat().st_mtime == st.st_mtime
+    assert path.stat().st_ino != st.st_ino
+
+    _new_process()
+    tasks_mod.load_scan_cache()
+    rows = tasks_mod._task_rows()
+
+    assert rows[0]["title"] == "Pull today's newz"

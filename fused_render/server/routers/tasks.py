@@ -323,7 +323,7 @@ def _new_scan() -> dict:
     # Every reader of `command` uses `.get`, so a record built before this key
     # existed — one already in `_SCAN` when the module is hot-reloaded under the
     # dev server — degrades to "no command" instead of raising.
-    return {"offset": 0, "size": -1, "mtime": 0.0, "count": 0, "tail": [],
+    return {"offset": 0, "size": -1, "mtime": 0.0, "ino": 0, "count": 0, "tail": [],
             "title": "", "command": "", "anchor": ""}
 
 
@@ -356,7 +356,7 @@ def _scan(path: str) -> dict | None:
         st = os.stat(path)
     except OSError:
         return None  # vanished mid-listing: costs this task, not the listing
-    size, mtime = st.st_size, st.st_mtime
+    size, mtime, ino = st.st_size, st.st_mtime, st.st_ino
     rec = _SCAN.get(path)
     # A hit is the same size AND the same mtime. Size alone let a transcript
     # rewritten to the same length with different content (a compaction, a
@@ -366,12 +366,17 @@ def _scan(path: str) -> dict | None:
     # with coarse mtimes (FAT's two seconds) can hide a same-size rewrite that
     # lands within one tick of the write before it; no content hash is kept,
     # and that is the accepted cost.
-    if rec is not None and rec["size"] == size and rec.get("mtime") == mtime:
+    # ...and the same inode: a restore or an editor writes a new file and
+    # renames it over the old one, and that shows here whatever the mtime says.
+    # Free — it is in the stat we already took.
+    if (rec is not None and rec["size"] == size and rec.get("mtime") == mtime
+            and rec.get("ino", ino) == ino):
         _SCAN_STATS["hit"] += 1
         return rec
-    if rec is None or size < rec["offset"] or (rec["size"] == size and rec["offset"] > 0):
-        # New, shrunk, or same length with a different mtime: the bytes we hold
-        # may not be the bytes on disk, so read from the top.
+    if (rec is None or size < rec["offset"] or rec.get("ino", ino) != ino
+            or (rec["size"] == size and rec["offset"] > 0)):
+        # New, shrunk, replaced, or same length with a different mtime: the
+        # bytes we hold may not be the bytes on disk, so read from the top.
         rec = _new_scan()
         _SCAN_STATS["zero"] += 1
     else:
@@ -404,6 +409,7 @@ def _scan(path: str) -> dict | None:
                 _absorb(rec, line)
     rec["size"] = size
     rec["mtime"] = mtime
+    rec["ino"] = ino
     _SCAN[path] = rec
     return rec
 
@@ -1968,11 +1974,11 @@ SCAN_CACHE_FILE = "tasks-scan.json"
 # whose bytes have not changed is never re-parsed. Without this, a release that
 # changed how a title or a count is derived would keep the old answer for every
 # unchanged transcript for good. One full read per upgrade is the price, once.
-_SCAN_CACHE_VERSION = f"2/{fused_render.__version__}"
+_SCAN_CACHE_VERSION = f"3/{fused_render.__version__}"
 # A listing that read bytes writes the file at most this often; the warm and
 # the shutdown write unconditionally.
 SCAN_CACHE_SAVE_EVERY_S = 30.0
-_SCAN_KEYS = ("offset", "size", "mtime", "count", "tail", "title", "command", "anchor")
+_SCAN_KEYS = ("offset", "size", "mtime", "ino", "count", "tail", "title", "command", "anchor")
 
 
 def _scan_cache_path() -> str:
@@ -1985,6 +1991,7 @@ def _valid_scan_record(rec) -> bool:
             and isinstance(rec["offset"], int) and rec["offset"] >= 0
             and isinstance(rec["size"], int)
             and isinstance(rec["mtime"], (int, float))
+            and isinstance(rec["ino"], int)
             and isinstance(rec["count"], int)
             and isinstance(rec["tail"], list)
             and isinstance(rec["title"], str)
