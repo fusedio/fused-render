@@ -2308,8 +2308,25 @@ export function createChatController(deps: ControllerDeps): ChatController {
        */
       const unseen = (neverShown || quiet) && !!probeMsg && !onScreen(probeMsg);
       /** Already on screen and the caller is one of the two that must not
-       *  double it up: print nothing at all. */
+       *  double it up: print no USER LINE at all (the failure below is a
+       *  separate question — see `errorShown`). */
       const shownAlready = (neverShown || quiet) && onScreen(probeMsg);
+      /**
+       * IS THIS FAILURE ALREADY IN THE TRANSCRIPT? (Bugbot PR #1075, third
+       * pass.)
+       *
+       * The prompt and the failure arrive on screen by DIFFERENT roads, so
+       * "the turn is already shown" cannot answer for both: `refreshHistory`
+       * renders whatever rows the transcript file holds, while `poll.error` is
+       * the RUN DIR's verdict — a CLI that died before it could write a row
+       * leaves the prompt on screen and no failure anywhere. Asking the log
+       * for the error text itself is therefore the only test that tells the
+       * two apart, and it is exact: `historyToTurns` maps a transcript
+       * `error` row to `text` verbatim, the same string `addError` would
+       * classify.
+       */
+      const errorShown = (msg: string) =>
+        !!msg && state.turns.some((t) => t.role === "error" && t.text === msg);
       /** Drop the partial assistant rows under a matched user line: `pollLoop`
        *  re-streams the whole turn, and the done branch re-renders it from the
        *  probe payload (T:17831 / 17857). */
@@ -2378,6 +2395,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // transcript is already showing, so with none there is no turn to
             // append and neither flag has anything to be quiet about.
             addUser(probeMsg);
+            addError(poll.error);
+          } else if (shownAlready && !errorShown(poll.error)) {
+            // THE PROMPT IS UP AND THE FAILURE IS NOT (Bugbot PR #1075, third
+            // pass). `unseen` above asks whether the TURN is news, and it is
+            // the wrong question for a failed run: the two-clock race this
+            // code already guards for successful turns — the 5 s
+            // `refreshHistory` pulls the prompt in from the transcript, the
+            // 15 s watch then attaches the same id — leaves a scheduled or
+            // adopted run's error with nowhere to go, because the turn no
+            // longer counts as unseen. So the failure is printed on its own,
+            // under the line that is already there, and only `errorShown`
+            // stops it: if the transcript happened to carry the failure too,
+            // the row is there and there is nothing to add.
             addError(poll.error);
           }
           return;

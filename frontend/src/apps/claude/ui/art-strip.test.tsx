@@ -141,3 +141,39 @@ test("no session is no read: nothing has been written to look for", async () => 
   await settle();
   expect(reads).toBe(0);
 });
+
+test("A TICK THAT BEAT THE SESSION ID is replayed when the id lands", async () => {
+  // Bugbot PR #1075: the run loop notes a brand-new chat's session id and fires
+  // `onArtifactsTick` inside the SAME poll, so the first tick (and the end tick
+  // of a short first turn) reach this hook before React has re-rendered it with
+  // the id. Dropping them left the strip empty until a reload.
+  reads = 0;
+  rows = [{ remote_url: "https://x.test/a", title: "A" }];
+  let api: ArtStripStore | null = null;
+  let sid = "";
+  const H = () => {
+    api = useArtStrip("/tpl", "/proj", sid, read);
+    return null;
+  };
+  let tree: ReactTestRenderer;
+  act(() => {
+    tree = create(createElement(H));
+  });
+  await act(async () => api!.poll());
+  await settle();
+  expect(reads).toBe(0);
+  // The id lands on the next render — the tick is owed, so it is paid.
+  sid = "s1";
+  await act(async () => {
+    tree!.update(createElement(H));
+  });
+  await settle();
+  expect(reads).toBe(1);
+  expect(api!.items.map((a) => a.remote_url)).toEqual(["https://x.test/a"]);
+  // ONE flag, spent: a later render is not another read.
+  await act(async () => {
+    tree!.update(createElement(H));
+  });
+  await settle();
+  expect(reads).toBe(1);
+});

@@ -10,7 +10,7 @@
 // fires every 8th poll (~3.2 s) and once at the run's end, which is where T
 // hangs it (T:16229, 16330). A read that fails is a console line, never an
 // interruption of the poll for the reply.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "../styles/sched.css";
 import {
   artLabel,
@@ -84,9 +84,28 @@ export function useArtStrip(
 
   const readRef = useRef(read);
   readRef.current = read;
+  /**
+   * A TICK THAT ARRIVED TOO EARLY, KEPT (Bugbot PR #1075).
+   *
+   * On a brand-new chat the run loop notes the session id and fires
+   * `onArtifactsTick` inside the SAME poll, so the first tick — and the end
+   * tick of a short first turn — reach this hook before React has re-rendered
+   * it with the id. Dropping those was a strip that stayed empty until a
+   * reload, however many pages the turn published. So the tick is remembered
+   * and replayed the moment the id lands, which is the same shape `useTaskId`
+   * and `useSnapshots` take: the session id is the effect's key, not something
+   * a callback closes over.
+   */
+  const owed = useRef(false);
   const poll = useCallback(() => {
     const { agentDir: dir, file: target, sessionId: sid } = live.current;
-    if (!dir || !sid || busy.current) return;
+    if (!dir || !sid) {
+      // Not a read and not a retry loop: one flag, spent by the next render
+      // that has an id. A chat that never gets one never reads.
+      owed.current = true;
+      return;
+    }
+    if (busy.current) return;
     busy.current = true;
     void (async () => {
       try {
@@ -111,6 +130,14 @@ export function useArtStrip(
       }
     })();
   }, []);
+
+  // The re-arm. Keyed on the two facts a read needs, so it fires on the render
+  // that brings either of them and on no other.
+  useEffect(() => {
+    if (!owed.current || !agentDir || !sessionId) return;
+    owed.current = false;
+    poll();
+  }, [agentDir, sessionId, poll]);
 
   const clear = useCallback(() => {
     if (!chips.current.size) return;

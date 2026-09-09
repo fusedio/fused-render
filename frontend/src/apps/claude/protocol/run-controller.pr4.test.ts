@@ -327,6 +327,69 @@ describe("resumeRun reconciles against what is already on screen", () => {
     expect(users(controller).map((t) => t.text)).toEqual(["count the rows"]);
     expect(controller.getState().trouble).toBe(null);
   });
+
+  test("THE TWO CLOCKS, FAILED: the prompt is on screen and the failure still lands", async () => {
+    // The two-clock race, on the failing side (Bugbot PR #1075, third pass):
+    // the 5 s `refreshHistory` pulls the scheduled turn in from the transcript,
+    // so at the 15 s attach the turn is no longer `unseen` — and the error,
+    // which lives in the RUN DIR and not in the transcript, used to be dropped
+    // with it. The prompt is not doubled and the failure is not lost.
+    const rig = makeController({
+      history: (_f, n) => ({
+        turns:
+          n === 0
+            ? [{ role: "user", text: "count the rows", uuid: "u1" }]
+            : [
+                { role: "user", text: "count the rows", uuid: "u1" },
+                { role: "user", text: "nightly report", uuid: "u2" },
+              ],
+        transcript: { path: "/p/s1.jsonl", mtime: n + 1, size: (n + 1) * 10 },
+      }),
+      live_run: () => ({ run_id: "" }),
+      poll: () => poll({ done: true, error: "the CLI died", message: "nightly report" }),
+    });
+    await rig.controller.openSession("s1");
+    await rig.controller.refreshHistory("s1");
+    await rig.controller.resumeRun("r-sched", { neverShown: true });
+    expect(users(rig.controller).map((t) => t.text)).toEqual([
+      "count the rows",
+      "nightly report",
+    ]);
+    const rows = rig.controller.getState().turns;
+    expect(rows.filter((t) => t.role === "error").map((t) => t.text)).toEqual([
+      "the CLI died",
+    ]);
+    expect(rig.controller.getState().trouble?.message).toContain("the CLI died");
+    // ...and under the line it belongs to, not floating above it.
+    expect(rows[rows.length - 1].role).toBe("error");
+  });
+
+  test("A FAILURE THE TRANSCRIPT ALREADY CARRIES is not printed twice", async () => {
+    // `historyToTurns` renders a transcript `error` row verbatim, so a run
+    // whose failure was written down before the attach is already on screen —
+    // the error text itself is the test, and it says there is nothing to add.
+    //
+    // `neverShown` rather than `quiet`, because that is the caller this can
+    // happen to: with it identical text is never `matches`, so the attach
+    // reaches the on-screen branch instead of repairing its own line.
+    const rig = makeController({
+      history: () => ({
+        turns: [
+          { role: "user", text: "nightly report", uuid: "u1" },
+          { role: "error", text: "the CLI died" },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 10 },
+      }),
+      live_run: () => ({ run_id: "" }),
+      poll: () => poll({ done: true, error: "the CLI died", message: "nightly report" }),
+    });
+    await rig.controller.openSession("s1");
+    await rig.controller.resumeRun("r-sched", { neverShown: true });
+    expect(users(rig.controller).map((t) => t.text)).toEqual(["nightly report"]);
+    expect(
+      rig.controller.getState().turns.filter((t) => t.role === "error").map((t) => t.text),
+    ).toEqual(["the CLI died"]);
+  });
 });
 
 // ---- what the page has already shown ---------------------------------------
