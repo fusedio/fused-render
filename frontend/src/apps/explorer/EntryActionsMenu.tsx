@@ -73,10 +73,14 @@ export interface EntryActionsMenuProps {
   // Opens this page under the chrome-free embed prefix in a new tab. The URL
   // (and its `_mode` stamp) is Preview.tsx's rule, so it builds it.
   onOpenEmbed: () => void;
-  // The MCP row: `null` when the parent folder offers no MCP companion (not an
-  // app, a mount) — the row is then listed disabled, since a menu that changes
-  // shape per file reads as broken; `pending` while the parent's probe is out.
-  mcp: { available: boolean; pending: boolean; reason?: string };
+  // The MCP row. `available: false` when the parent folder offers no MCP
+  // companion (not an app, a mount) — the row is then listed disabled with the
+  // reason, since a menu that changes shape per file reads as broken; `pending`
+  // while the parent's probe is out. OMITTED (undefined) by a surface that never
+  // probes the parent at all — a panel/tab pane (Preview's `splitCapable` is
+  // false there) — so the menu says nothing about MCP rather than "not an app"
+  // over a folder that may well be one.
+  mcp?: { available: boolean; pending: boolean; reason?: string };
   onOpenMcp: () => void;
 }
 
@@ -222,17 +226,21 @@ export function EntryActionsMenu({
       title: "Open this page in a new tab, without the sidebar and toolbar",
       onClick: onOpenEmbed,
     },
-    {
-      label: "MCP config",
-      icon: mcp.pending ? <span className="mode-icon-spinner" /> : <Plug {...LUCIDE} />,
-      title: mcp.pending
-        ? "Checking if this folder publishes MCP tools…"
-        : mcp.available
-          ? "The MCP tools " + name + " publishes"
-          : mcp.reason ?? "This folder publishes no MCP tools",
-      disabled: mcp.pending || !mcp.available,
-      onClick: onOpenMcp,
-    },
+    ...(mcp
+      ? [
+          {
+            label: "MCP config",
+            icon: mcp.pending ? <span className="mode-icon-spinner" /> : <Plug {...LUCIDE} />,
+            title: mcp.pending
+              ? "Checking if this folder publishes MCP tools…"
+              : mcp.available
+                ? "The MCP tools " + name + " publishes"
+                : mcp.reason ?? "This folder publishes no MCP tools",
+            disabled: mcp.pending || !mcp.available,
+            onClick: onOpenMcp,
+          } satisfies OverflowEntry,
+        ]
+      : []),
   ];
 
   return (

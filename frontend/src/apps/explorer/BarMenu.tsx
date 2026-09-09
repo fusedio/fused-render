@@ -311,9 +311,9 @@ export function OverflowMenu({
 }: {
   items: OverflowEntry[];
   title?: string;
-  // Something pinned to the trigger's corner while the menu is SHUT — the App
-  // Doctor's status dot, whose whole job is to be seen without a click. A dot
-  // that only shows on a row inside a closed menu is a dot nobody sees.
+  // Something pinned to the trigger's corner — the App Doctor's status dot,
+  // whose whole job is to be seen without a click. A dot that only shows on a
+  // row inside a closed menu is a dot nobody sees.
   badge?: ReactNode;
 }) {
   const { pos, rootRef, toggle, close } = useMenuAnchor("right");

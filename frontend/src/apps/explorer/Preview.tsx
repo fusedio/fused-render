@@ -733,17 +733,19 @@ function TemplatePreview({
   const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
   const parts = partitionModes(templates);
 
-  // --- the BORROWED companions: `git` and `mcp`, from this file's parent folder -
+  // --- the BORROWED companion `git`, and the parent's `mcp`, from this file's parent folder -
   // A working tree belongs to the FOLDER (templates/git/condition.py), and so does
   // an app's MCP manifest (templates/mcp/condition.py), so the registry keeps both
   // on the universal "/" key alone and this file's own template list will never
   // carry either. "What has changed in here" and "what tools does this app
-  // publish" are worth just as much while reading one of its files, so the sidebar
+  // publish" are worth just as much while reading one of its files, so this view
   // asks the PARENT DIRECTORY for its entries through the ordinary stat +
   // condition machinery every mode surface uses (lib/dir-mode — which is also
   // where the caching lives, so walking a folder file by file costs one probe per
   // mode rather than one per file). A parent outside a repository, or one that is
   // not an app, or one on a mount, denies the gate and there is simply no pill.
+  // Only `git` is a SIDEBAR companion; the `mcp` probe feeds the crumb bar's
+  // kebab and its dialog instead (`mcpSrc`, below).
   //
   // Unless the file HAS one of its own: a user registry may bind either mode to a
   // file extension, and then the entry is the file's, aimed at the file, and there
@@ -1871,11 +1873,18 @@ function TemplatePreview({
               : (search ? search + "&" : "?") + "_mode=" + encodeURIComponent(entry.mode);
             window.open(embedUrlForFsPath(fsPath, stamped), "_blank", "noopener");
           }}
-          mcp={{
-            available: mcpSrc !== null,
-            pending: !parts.sidebar.some((e) => e.mode === "mcp") && parentMcp.pending,
-            reason: unavailableReason("mcp"),
-          }}
+          /* No MCP row on a surface that never probed the parent (a panel/tab
+             pane): the prop's own comment says why silence beats a wrong
+             reason there. */
+          mcp={
+            splitCapable
+              ? {
+                  available: mcpSrc !== null,
+                  pending: !parts.sidebar.some((e) => e.mode === "mcp") && parentMcp.pending,
+                  reason: unavailableReason("mcp"),
+                }
+              : undefined
+          }
           onOpenMcp={() => setMcpOpen(true)}
         />
       )}
