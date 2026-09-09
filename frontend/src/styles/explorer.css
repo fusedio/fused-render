@@ -1361,27 +1361,18 @@ table.listing-table tr.skel-row:hover {
   min-width: 120px;
 }
 
-/* …and once the box is in use, the crumbs get out of the way entirely.
-   Sharing the row is a compromise that only pays while both halves are in
-   use, and the moment someone reaches for the box, the path is the half they
-   are not looking at — the results below no longer belong to it anyway. So the
-   crumbs stand down and the box takes the whole strip (max-width off), which
-   is the state where a long query most needs the room.
+/* There is no `.crumbs`-hides-while-searching rule here. A claimed folder
+   never renders a `.crumbs` element at all (Breadcrumb.tsx: `claimed ? null
+   : <div className="crumbs">`) — the in-field strip that stands in for it
+   (`.listing-search-crumbs`, path-crumbs.tsx) is a different class on
+   purpose, and its own visibility is Listing.tsx's `query === ""` React
+   conditional, not CSS. A `:has(.listing-search.searching) .crumbs` rule
+   used to sit here on the belief it was that hide; it never matched
+   anything, since the two conditions it names (claimed field, `.crumbs`
+   present) are mutually exclusive.
 
-   TWO CLASSES, one geometry. `.searching` is a non-empty query; `.expanded` is
-   the box pinned open (focused, or the in-field magnifier clicked — Listing's
-   `pinnedOpen`). Neither implies the other: a query outlives the focus that
-   typed it, and a box is pinned open long before there is anything in it. The
-   full-width state is the same in both, so every rule down to the grow pair
-   below names both rather than picking one and leaving the other narrow.
-
-   Reversible: clearing the query (or Esc), or blurring an empty box, brings
-   the path straight back, so nothing is lost, only deferred. */
-#breadcrumb:has(.listing-search.searching) .crumbs,
-#breadcrumb:has(.listing-search.expanded) .crumbs {
-  display: none;
-}
-
+   The ★ and the history arrows still get out of the way below, for the
+   reason the path would have: */
 /* …and so do the ★ and the history arrows, for the same reason the path did.
    Neither acts on the search — the star bookmarks the folder, which has not
    changed, and the arrows leave it entirely — but between them they are the
@@ -1511,12 +1502,22 @@ table.listing-table tr.skel-row:hover {
    A narrow field still has to keep the CURRENT folder readable rather than
    the root, so PathCrumbs.tsx pins the strip's scrollLeft to its own end —
    the same tail-pin `#breadcrumb .crumbs` runs — instead of this rule
-   packing the content against the right edge. Packing it right kept the
-   tail visible too, but it also right-aligned the strip when nothing
-   overflowed at all, which is the detached arrangement this pin avoids: at
-   rest the crumbs sit flush against the glyph, and only an actual overflow
-   moves the visible window. `scrollbar-width`/`::-webkit-scrollbar` hide the
-   bar a real scroll container would otherwise render. */
+   packing the content against the right edge. `scrollbar-width`/
+   `::-webkit-scrollbar` hide the bar a real scroll container would
+   otherwise render.
+
+   This class does NOT double as `.crumbs` (PathCrumbs.tsx no longer renders
+   that class at all). It used to, purely so this strip could borrow the
+   plain-file bar's look, but every `#breadcrumb .crumbs`/`.crumbs`-keyed
+   rule in this file — several written for a sibling strip that does not
+   exist once a folder is claimed — matched this element too by the same
+   accident, at a specificity this class could not out-rank; one of them
+   (`#breadcrumb:has(.listing-search.expanded) .crumbs { display: none }`)
+   was silently hiding this strip the moment the field was focused, whether
+   or not it still had a path to show. So this rule declares everything it
+   needs on its own name instead: the monospace face the plain strip wears,
+   left-aligned with no packing, visible for exactly as long as the JSX
+   above renders it (query === "") and no longer. */
 .listing-search-crumbs {
   position: absolute;
   inset: 0;
@@ -1524,10 +1525,12 @@ table.listing-table tr.skel-row:hover {
   right: 10px;
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
   white-space: nowrap;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 13px;
   pointer-events: none;
 }
