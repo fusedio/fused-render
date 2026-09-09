@@ -162,11 +162,16 @@ def test_changes_listing_does_not_prune_current_apps(claude_home, monkeypatch):
     _transcript(claude_home, SID)
     _transcript(claude_home, SID2)
     with TestClient(create_app(str(claude_home))) as client:
-        gen = client.get("/api/tasks").json()["generation"]
+        # Startup warms the listing on a thread (app.py `_startup_tasks_warm`),
+        # and that warm is a full listing, so it tells the desk once too. Let it
+        # finish before counting, or the count depends on a race.
+        client.app.state.tasks_warm.join(10)
         assert calls == [2]
+        gen = client.get("/api/tasks").json()["generation"]
+        assert calls == [2, 2]
         tasks_watch.notify({SID})
         client.get(f"/api/tasks/changes?since={gen}&wait=0")
-        assert calls == [2]  # the partial listing told the desk nothing
+        assert calls == [2, 2]  # the partial listing told the desk nothing
 
 
 def test_registry_row_without_status_has_no_opinion(claude_home):

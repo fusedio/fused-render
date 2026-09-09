@@ -2947,6 +2947,12 @@ export interface Task {
   // this list is built by a tail parse because it runs for every row, and a
   // full transcript parse per task would not survive a few hundred of them.
   messages: TaskMessage[];
+  // CLIENT-ONLY, never sent by the server: this row was built from the
+  // /api/tasks/pulse fields (shell/tasks-lib.provisionalTasks) while the full
+  // listing is still in flight, so the fields pulse does not carry hold
+  // neutral defaults rather than facts. The views that would otherwise print
+  // one of those defaults as a number read this and draw a placeholder.
+  provisional?: true;
 }
 
 // The global sidebar needs task state, not the Tasks page's paths, descriptions
@@ -2973,6 +2979,8 @@ export type TaskPulseTask = Pick<
   | "title"
   | "target"
   | "session_id"
+  | "next_run"
+  | "next_run_entry"
 >;
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {

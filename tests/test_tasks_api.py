@@ -362,10 +362,13 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     # anyway; the alternative was a second /api/tasks poll from the status bar.
     # `happened_at` (2026-09-07) is the Projects section's change detector: the
     # desk refetches when a task actually ran, which `last_active` cannot say
-    # (it keeps a scheduled due time for sorting).
+    # (it keeps a scheduled due time for sorting). `next_run` (2026-09-09) is
+    # for the Tasks page's own first paint: it builds rows from these before its
+    # listing answers, and the Board's Upcoming lane sorts by the next run.
     pulse_fields = (
         "key", "status", "unread", "last_active", "project",
-        "task_id", "title", "target", "session_id", "happened_at",
+        "task_id", "title", "target", "session_id", "happened_at", "next_run",
+        "next_run_entry",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
