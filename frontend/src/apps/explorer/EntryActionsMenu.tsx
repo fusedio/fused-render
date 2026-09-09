@@ -1,4 +1,5 @@
-// THE CRUMB BAR'S KEBAB over a file preview: every app-level action that used to
+// THE BAR'S KEBAB — the file preview's crumb bar, and the folder listing's
+// search row (which IS the bar over a folder): every app-level action that used to
 // stand in that bar as its own bordered button — App Doctor, Export App, Open in
 // project — plus the fullscreen glyph and the MCP companion, in one `⋮`
 // (BarMenu's OverflowMenu). Four labelled buttons and two glyphs in a 28px strip
@@ -60,19 +61,30 @@ const LUCIDE = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
 const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
 
 export interface EntryActionsMenuProps {
+  // The app's ENTRY PAGE, or the page that might be one. Over a file preview
+  // this is the previewed file and the component asks the server whether it is
+  // the entry; over a folder listing the caller has already asked (Listing's
+  // `appEntryPath`) and passes the answer as `isEntry`, with `fsPath` the entry
+  // page it found — or `<folder>/index.html` as a stand-in when there is none,
+  // so the folder is still what `dir` resolves to.
   fsPath: string;
+  // Skip the probe: the caller knows. Undefined means "ask /api/apps/entry".
+  isEntry?: boolean;
   // The pane's own `_snapshot` resolution (`usePreviewSnapshot`, hoisted in the
   // parent so the picker and Export agree on what "the previewed version" means)
   // — mirrors AppPage.tsx's `snapshot` and its Export control's use of it: export
   // the snapshot's OWN extracted tree, never the live folder, while one is
-  // previewed.
-  snapshotSha: string | null;
-  snapshotResolved: ResolvedSnapshot | null;
-  snapshotPending: boolean;
-  snapshotError: boolean;
+  // previewed. Absent on a surface with no snapshot machinery (the folder
+  // listing, whose snapshot view never renders this menu — `paneEnabled`), where
+  // the export is the live folder.
+  snapshotSha?: string | null;
+  snapshotResolved?: ResolvedSnapshot | null;
+  snapshotPending?: boolean;
+  snapshotError?: boolean;
   // Opens this page under the chrome-free embed prefix in a new tab. The URL
-  // (and its `_mode` stamp) is Preview.tsx's rule, so it builds it.
-  onOpenEmbed: () => void;
+  // (and its `_mode` stamp) is Preview.tsx's rule, so it builds it. Omitted by
+  // a surface with no embed of its own (the folder listing), and the row with it.
+  onOpenEmbed?: () => void;
   // The MCP row. `available: false` when the parent folder offers no MCP
   // companion (not an app, a mount) — the row is then listed disabled with the
   // reason, since a menu that changes shape per file reads as broken; `pending`
@@ -86,23 +98,26 @@ export interface EntryActionsMenuProps {
 
 export function EntryActionsMenu({
   fsPath,
-  snapshotSha,
-  snapshotResolved,
-  snapshotPending,
-  snapshotError,
+  isEntry: isEntryKnown,
+  snapshotSha = null,
+  snapshotResolved = null,
+  snapshotPending = false,
+  snapshotError = false,
   onOpenEmbed,
   mcp,
   onOpenMcp,
 }: EntryActionsMenuProps) {
   const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
   const name = basename(dir);
-  const [isEntry, setIsEntry] = useState(false);
+  const [isEntryProbed, setIsEntry] = useState(false);
+  const isEntry = isEntryKnown ?? isEntryProbed;
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   useEffect(() => {
     let alive = true;
     setIsEntry(false);
     setDoctorOpen(false);
+    if (isEntryKnown !== undefined) return; // the caller answered; nothing to ask
     getAppEntry(dir)
       .then((r) => {
         if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
@@ -113,7 +128,7 @@ export function EntryActionsMenu({
     return () => {
       alive = false;
     };
-  }, [fsPath, dir]);
+  }, [fsPath, dir, isEntryKnown]);
   // Fetched after first paint, never blocking it — see useAppDoctorChecks.
   // Opening the modal re-fetches its own copy; this one is only for the dot and
   // is never reused to seed the dialog.
@@ -220,12 +235,16 @@ export function EntryActionsMenu({
 
   const items: OverflowEntry[] = [
     ...entryRows,
-    {
-      label: "Open in embed",
-      icon: MenuIcons.newTab,
-      title: "Open this page in a new tab, without the sidebar and toolbar",
-      onClick: onOpenEmbed,
-    },
+    ...(onOpenEmbed
+      ? [
+          {
+            label: "Open in embed",
+            icon: MenuIcons.newTab,
+            title: "Open this page in a new tab, without the sidebar and toolbar",
+            onClick: onOpenEmbed,
+          } satisfies OverflowEntry,
+        ]
+      : []),
     ...(mcp
       ? [
           {
@@ -243,6 +262,13 @@ export function EntryActionsMenu({
       : []),
   ];
 
+  // A trailing separator with nothing after it (an entry page over a surface
+  // with neither embed nor MCP) would draw a rule under the last row.
+  while (items.length && items[items.length - 1] === "separator") items.pop();
+
+  // NOTHING QUALIFIES, NO KEBAB: OverflowMenu already renders nothing for an
+  // empty list, so a plain folder that is not an app and publishes no MCP gets
+  // no `⋮` at all rather than a menu that opens on nothing.
   return (
     <>
       <OverflowMenu

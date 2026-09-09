@@ -39,17 +39,14 @@ import { createPortal } from "react-dom";
 import {
   IS_PANEL_PANE,
   IS_SNAPSHOT,
-  encodeFsPathSegments,
   navigate,
-  navigateUrl,
   replaceSearch,
 } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { useUrlVersion } from "@platform/lib/hooks";
-import { addCurrentApp, getAppEntry } from "@platform/lib/api";
+import { getAppEntry } from "@platform/lib/api";
 import { shortSha, snapshotListing } from "@platform/lib/snapshot-param";
 import { useSnapshotForFolder } from "@apps/explorer/listing/useSnapshotForFolder";
-import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
 import { basename, formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
@@ -102,6 +99,10 @@ import {
   takePendingClaudeAsk,
 } from "@apps/explorer/lib/pending-claude-ask";
 import { SideToggleButton } from "@apps/explorer/SideChrome";
+import { EntryActionsMenu } from "@apps/explorer/EntryActionsMenu";
+import { McpDialog } from "@apps/explorer/McpDialog";
+import { withNoFocus } from "@platform/lib/frame-focus";
+import { unavailableReason } from "@platform/lib/mode-visibility";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
@@ -397,17 +398,39 @@ export default function Listing({
   // mode's REAL icon — lib/dir-mode keeps a denied entry for exactly that, so the
   // Git row is the Git glyph dimmed instead of a boxed "G". Nothing else reads
   // either; what the pane may BE is still `claude`/`git` alone.
+  //
+  // MCP IS NOT A PANE MODE ANY MORE: the pane's switcher is a two-tab strip over
+  // Claude and Git (SideChrome's SideTabs), and the MCP companion opens as a
+  // dialog off the search row's kebab (EntryActionsMenu → McpDialog, the same
+  // arrangement the file preview has). So `mcp` is handed to the pane machinery
+  // as "never offered, never pending" — `paneSideList` then cannot put the pane
+  // on it, and a `?_side=mcp` deep link lands on the leading companion like any
+  // other unknown value — while the `folderMcp` probe itself feeds `mcpSrc` below.
   const sideEntries = {
     claude: folderClaude.pending ? null : folderClaude.entry,
     git: folderGit.pending ? null : folderGit.entry,
-    mcp: folderMcp.pending ? null : folderMcp.entry,
+    mcp: null,
     claudePending: folderClaude.pending,
     gitPending: folderGit.pending,
-    mcpPending: folderMcp.pending,
+    mcpPending: false,
     claudeBound: folderClaude.bound,
     gitBound: folderGit.bound,
-    mcpBound: folderMcp.bound,
+    mcpBound: null,
   };
+  // The MCP dialog's document — the URL ListingPreviewPane built for the mcp
+  // pane (`_file` is the folder, `_noopen=1` so the render is not recorded as an
+  // app open), or null while the probe is out or where the folder is not an app.
+  const mcpSrc =
+    !folderMcp.pending && folderMcp.entry && folderMcp.entry.path !== null
+      ? withNoFocus(
+          `/render?path=${encodeURIComponent(folderMcp.entry.path)}` +
+            `&_file=${encodeURIComponent(fsPath)}&_noopen=1`
+        )
+      : null;
+  const [mcpOpen, setMcpOpen] = useState(false);
+  useEffect(() => {
+    setMcpOpen(false);
+  }, [fsPath]);
   const paneOpen = pane.on && sideState.open;
   // One writer for both halves of the state, and it writes the URL only where the
   // listing owns one: a frozen-tree snapshot and a panel pane are each a whole
@@ -938,27 +961,8 @@ export default function Listing({
     };
   }, [base]);
 
-  // The ONE "Open in project" click, shared by the pane strip's button and its
-  // shut-pane fallback in the bar so they can't drift. Gated on the folder
-  // having an entry page (it IS an app), it puts the folder on the sidebar's
-  // desk (POST /api/current-apps/add — a no-op when the row is already there,
-  // which then simply reads as the active row) and hops to the folder's app
-  // page, `/apps/<folder>` — spelled here rather than imported from
-  // shell/current-apps-lib's appPageUrl because an app may not import the
-  // shell (Preview.tsx's Migrate button does the same). The add is awaited
-  // and announced before the hop so the row is on top the moment the page
-  // paints; a failed add still opens the page — the desk is a convenience,
-  // the page is the point.
-  const openAppEntry = async () => {
-    if (!appEntryPath) return;
-    try {
-      await addCurrentApp(base);
-      announceCurrentAppsChanged();
-    } catch {
-      /* the page still opens; the row shows up on the next task under it */
-    }
-    navigateUrl("/apps/" + encodeFsPathSegments(base));
-  };
+  // "Open in project" itself — desk add, then `/apps/<folder>` — is
+  // EntryActionsMenu's row now, on the search row's kebab, gated on this answer.
 
   const paneSides = paneSideList(sideEntries);
   // UNDECIDED — this folder's companion probes have not answered yet (pane-side's
@@ -1954,31 +1958,33 @@ export default function Listing({
                   Here rather than in the crumb bar because over a folder THIS ROW
                   is the bar (it portals into it — search-slot.ts), and this is the
                   folder's own chrome, beside the folder's own search box. */}
-              {/* OPEN IN PROJECT, the SHUT-PANE FALLBACK. Its home is the pane's own
-                  strip, beside the chevron and the pill (ListingPreviewPane) — the
-                  button is about the pane's SUBJECT, so it belongs to the pane. With
-                  the pane shut there is no strip to live in, and this row is the
-                  folder's own chrome, so it lands here instead of vanishing with the
-                  column.
+              {/* THE KEBAB (EntryActionsMenu), the folder's app-level one-shots:
+                  App Doctor, Download app, Open as project — gated on the folder
+                  having an entry page (`appEntryPath`: it IS an app) — and MCP
+                  config, gated on the folder publishing a manifest. Whether or not
+                  the pane is open: this row is the folder's own chrome, and the
+                  pane's strip is the tab strip alone. "Open in project" used to
+                  stand here as a bordered button while the pane was shut and in the
+                  pane's strip while it was open; one kebab in one place replaces
+                  both copies. A folder that qualifies for none of the rows gets no
+                  `⋮` at all (the menu renders nothing on an empty list). Not on a
+                  snapshot or a panel pane (`paneEnabled`), where the companions are
+                  off too.
 
-                  `!paneOpen` and not `!pane.on`: a pane the user has closed
-                  (`_side=off`) is the case this exists for. When the pane is open the
-                  strip has it and a second copy here would be two buttons for one
-                  action a few pixels apart, which reads as a rendering fault.
-
-                  It hops to the folder's app page (`/apps/<folder>`) and puts the
-                  folder on the sidebar's desk on the way — `openAppEntry`, above.
-                  It used to open the entry page itself ("Open app"); the app page's
-                  Overview tab frames that page, so nothing is lost. */}
-              {!paneOpen && appEntryPath && (
-                <button
-                  type="button"
-                  className="bar-ctl bar-ctl-bordered"
-                  title={"Open " + basename(base) + " as a project"}
-                  onClick={openAppEntry}
-                >
-                  Open in project
-                </button>
+                  The entry page is what the rows act on (export's `entry_html`),
+                  with `<folder>/index.html` as a stand-in when there is none so
+                  the folder is still what the menu resolves. */}
+              {paneEnabled && (
+                <EntryActionsMenu
+                  fsPath={appEntryPath ?? fsPath + "/index.html"}
+                  isEntry={appEntryPath !== null}
+                  mcp={{
+                    available: mcpSrc !== null,
+                    pending: folderMcp.pending,
+                    reason: unavailableReason("mcp"),
+                  }}
+                  onOpenMcp={() => setMcpOpen(true)}
+                />
               )}
               {pane.on && !sideState.open && (
                 <SideToggleButton what={modeTitle(paneSide)} onClick={openSide} />
@@ -2125,8 +2131,6 @@ export default function Listing({
                   ? `${paneKey(paneSide, fsPath)}:${claudeAskInstance}`
                   : paneKey(paneSide, fsPath)}
                 undecided={paneUndecided}
-                appEntry={appEntryPath}
-                onOpenApp={openAppEntry}
                 folder={fsPath}
                 side={paneSide}
                 sideEntries={sideEntries}
@@ -2138,6 +2142,11 @@ export default function Listing({
         )}
       </div>
 
+      {/* The MCP companion's dialog, off the kebab (McpDialog). `mcpSrc` is
+          re-read here rather than trusted from the click. */}
+      {mcpOpen && mcpSrc && (
+        <McpDialog src={mcpSrc} folderName={basename(base)} onClose={() => setMcpOpen(false)} />
+      )}
       {menu && (
         <ContextMenu
           x={menu.x}
