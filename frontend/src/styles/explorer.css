@@ -1708,21 +1708,41 @@ table.listing-table tr.skel-row:hover {
    ancestor picking up `position` (and its own stacking context) for
    unrelated reasons, kept well under the 200/9000 tier this file reserves
    for modal-grade overlays since a path dropdown is not one. */
+/* Surface treatment matches the app's other floating menus (`.context-menu`,
+   context-menu.css:15-17): `--bg-alt` background, a neutral `--border`, and a
+   soft 8px/28px shadow, so the dropdown reads as a card floating above the
+   listing rather than a box drawn on top of it. The border stays neutral on
+   purpose — accent on this file means "this control is live" (the focused
+   input above gets an accent border plus a 3px glow), and a menu is not a
+   control; an accent border here would put two equally-loud accent
+   rectangles on screen and pull the eye to a border instead of to the
+   results. `top` clears the input's 3px focus ring (`box-shadow: 0 0 0 3px`
+   above) with 4px of air on top of that ring, not just 4px off the field's
+   own edge — 7px total, so the ring's outer edge doesn't visually touch the
+   panel. */
 .listing-completion {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 7px);
   left: 0;
   right: 0;
   z-index: 5;
   overflow: hidden;
-  background: var(--bg-panel);
-  border: 1px solid var(--accent);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 4px 16px var(--shadow-md);
+  box-shadow: 0 8px 28px var(--shadow-lg);
 }
 
+/* Left padding matches `.listing-completion-row` below at 28px, not this
+   block's own 11px right padding — both share that value with
+   `.listing-search .listing-search-input`'s `padding-left` (the input's own
+   text gutter, clearing the magnifier glyph), so a suggestion name sits
+   directly under the query text it completes instead of drifting from it.
+   The two rules move together: a change to the magnifier gutter must be
+   mirrored here and on the row rule below, or the alignment silently
+   breaks. */
 .listing-completion-header {
-  padding: 7px 11px 4px;
+  padding: 7px 11px 4px 28px;
   font-size: 10.5px;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -1761,11 +1781,16 @@ table.listing-table tr.skel-row:hover {
   display: none;
 }
 
+/* Left padding is 28px, same as `.listing-completion-header` above and for
+   the same reason: it matches `.listing-search .listing-search-input`'s own
+   `padding-left`, the input's text gutter past the magnifier glyph, so a
+   suggestion name lands directly under the query text it completes rather
+   than sitting 17px left of it. Right padding stays at 11px. */
 .listing-completion-row {
   display: flex;
   align-items: baseline;
   gap: 9px;
-  padding: 4px 11px;
+  padding: 4px 11px 4px 28px;
   font-size: 12.5px;
   cursor: default;
 }

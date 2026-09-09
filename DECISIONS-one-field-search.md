@@ -583,3 +583,38 @@ the wrapper, forcing text mode) works correctly. A chained pipe
 was also observed to silently drop matches that a direct grep on the same
 dump found. Anyone re-sweeping this branch's comments should prefer
 `command grep -a` or the Read tool over piped greps on diff dumps.
+
+## Completion dropdown surface treatment
+
+The user reported the completion dropdown "looks bad and out of place."
+DOM measurements showed the panel's geometry already tracked the input
+field's edges exactly, so every fix here is surface treatment, not layout,
+in `frontend/src/styles/explorer.css`.
+
+- **Neutral border, not accent.** `.listing-completion` used
+  `border: 1px solid var(--accent)`, but this file reserves accent for a
+  control's live state (the focused search input gets an accent border plus
+  a 3px glow). A passive suggestion list repeating that treatment put two
+  equally-loud accent rectangles on screen and drew the eye to a border
+  instead of the results. Changed to `var(--border)`, matching every other
+  menu surface in the app (`context-menu.css:15-17`).
+- **Row/header left padding matches the input's text gutter.** The dropdown
+  rows padded 11px on the left while the input they complete pads 28px
+  (`padding-left: 28px` on `.listing-search .listing-search-input`, clearing
+  the magnifier glyph), so suggestion text sat 17px left of the query text
+  it completes. Both `.listing-completion-row` and
+  `.listing-completion-header` now pad 28px on the left (right padding
+  unchanged at 11px) so a suggestion name lines up directly under the query.
+  The two rules are commented as needing to move together with the input's
+  gutter if that gutter ever changes.
+- **Float treatment.** Swapped `background: var(--bg-panel)` for
+  `var(--bg-alt)` and `box-shadow: 0 4px 16px var(--shadow-md)` for
+  `0 8px 28px var(--shadow-lg)`, matching the app's other floating menus
+  (again `context-menu.css`) so the dropdown reads as a card above the
+  listing rather than a flat box drawn on it. `top` moved from
+  `calc(100% + 4px)` to `calc(100% + 7px)`: the input's focus ring is a 3px
+  `box-shadow`, so 4px of gap left only 1px of clearance past the ring's
+  outer edge; 7px clears the ring with 4px of air.
+
+Scope was CSS-only in `explorer.css`; no `.tsx`, test, or layout geometry
+changed.
