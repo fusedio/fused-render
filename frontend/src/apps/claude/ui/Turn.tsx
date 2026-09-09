@@ -7,7 +7,9 @@ import { memo } from "react";
 import { cn } from "@platform/lib/utils";
 
 import type { Turn as TurnRow, UserTurn } from "../protocol/controller-api";
+import { isMarkerOnly } from "../protocol/wire";
 import type { Viewable } from "./attachApi";
+import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
 import { ClaudeMark } from "./ClaudeMark";
 import { MarkdownView } from "./MarkdownView";
@@ -102,7 +104,14 @@ export const Turn = memo(function Turn({
         // anchor is looked for right after the append (T:13459-13463).
         {...(turn.uuid ? { "data-msg": turn.uuid } : {})}
       >
-        <div className="bubble">{turn.text}</div>
+        {/* A WORDLESS SEND'S BUBBLE says what the message carried instead —
+            "pane screenshot", "files", "annotations" — and each of those gets
+            the same lucide glyph the chip and the receipt wear (P2-7). Anything
+            the reader actually typed is their own words and gets none. The
+            bubble's TEXT is identical either way. */}
+        <div className="bubble">
+          {isMarkerOnly(turn.text) ? <MarkerText text={turn.text} /> : turn.text}
+        </div>
         {/* SIBLINGS of the bubble, not wrappers around it: the re-attach probe
             matches on `.user .bubble`'s text, and folding a receipt inside
             would make every such turn stop matching (T:16584-16588). Legacy's

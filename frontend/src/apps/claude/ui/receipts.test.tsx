@@ -170,7 +170,7 @@ test("comments ride the message, so every row opens the popup instead (T:11068)"
 
 test("a picture-only send keeps the plain viewer on its thumb (T:11075)", () => {
   const pics = composeOutgoing("", [paneShotBlock([{ kind: "pane", view: "/shots/a.png" }], "preview")]);
-  const only: UserTurn = { role: "user", key: "u:3", text: "🖼 pane screenshot", raw: pics };
+  const only: UserTurn = { role: "user", key: "u:3", text: "pane screenshot", raw: pics };
   const shots: Viewable[] = [];
   const r = mount(
     <Receipts

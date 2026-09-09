@@ -10,6 +10,8 @@
 // `<pane-shot>` block its `raw` still holds.
 import { useEffect, useMemo, useState } from "react";
 
+import { Pin } from "lucide-react";
+
 import "../styles/transcript.css";
 
 import type { UserTurn } from "../protocol/controller-api";
@@ -17,12 +19,12 @@ import { parseInbound, type AnnotationWire } from "../protocol/wire";
 import { probePruned, receiptsFromWire } from "../shots";
 import type { Receipt } from "../shots/types";
 import { ShotThumb } from "./AttachTray";
+import { AttachIcon } from "./AttachIcon";
 import {
   glyphDoor,
   prunedLabel,
   receiptViewable,
   shotAlt,
-  shotGlyph,
   SHOT_GONE,
   type Viewable,
 } from "./attachApi";
@@ -68,8 +70,12 @@ function NoteRow({ note, onOpen }: { note: AnnotationWire; onOpen?: () => void }
         : {})}
     >
       {/* The stored label — the same letter burned into the overview and sent on
-          the wire, so the receipt, the picture and the JSON can never drift. */}
-      <span className="annsum-lbl">{"📌 " + (note.label || "•")}</span>
+          the wire, so the receipt, the picture and the JSON can never drift.
+          The pin beside it is a lucide glyph, not 📌 (P2-7). */}
+      <span className="annsum-lbl">
+        <Pin width="1em" height="1em" strokeWidth={1.5} aria-hidden="true" focusable="false" />
+        {note.label || "•"}
+      </span>
       <span className="annsum-txt">{note.content || ""}</span>
       {meta ? <span className="annsum-el">{meta}</span> : null}
     </div>
@@ -133,10 +139,12 @@ function ShotRow({
             aria-label={alt + " — open details"}
             onClick={() => onOpenShot(shot)}
           >
-            {shotGlyph(shot)}
+            <AttachIcon kind={shot.kind} />
           </button>
         ) : (
-          <span className="annsum-lbl">{shotGlyph(shot)}</span>
+          <span className="annsum-lbl">
+            <AttachIcon kind={shot.kind} />
+          </span>
         )}
         <span className="annsum-txt" title={receipt.viewNote || receipt.view || ""}>
           {receipt.label}

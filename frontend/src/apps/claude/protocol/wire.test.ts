@@ -110,7 +110,7 @@ describe("markers name what a wordless send carried (T:10552)", () => {
     expect(isMarkerOnly(MARKER_ANN + MARKER_JOIN + MARKER_VIEW)).toBe(true);
     expect(isMarkerOnly(MARKER_FILE)).toBe(true);
     expect(isMarkerOnly("")).toBe(false);
-    expect(isMarkerOnly("📌 annotations and a word")).toBe(false);
+    expect(isMarkerOnly("annotations and a word")).toBe(false);
   });
 });
 

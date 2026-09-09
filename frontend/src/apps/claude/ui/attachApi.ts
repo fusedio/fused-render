@@ -120,11 +120,8 @@ export function glyphDoor(shot: Viewable): boolean {
   return !shot.src && !shot.thumb && !!shot.view && (shot.kind === "file" || shot.kind === "image");
 }
 
-/** T:7141 — the glyph itself. Where there is a thumbnail the picture IS the
- *  icon, and putting 🖼 in front of it captions a photo with a drawing of one. */
-export function shotGlyph(shot: Pick<Viewable, "kind">): string {
-  return shot.kind === "file" ? "📄" : "🖼";
-}
+/** T:7141's glyph is `ui/AttachIcon` now — a lucide icon rather than 📄/🖼
+ *  (P2-7), so it cannot be a string and does not belong in this module. */
 
 /** T:10722-10726 `shotViewOpen`'s admission test: something to show, or a file /
  *  undecodable image — a real path, a real size and no pixels, which is a file

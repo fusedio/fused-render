@@ -276,7 +276,7 @@ describe("start → poll → done", () => {
     });
     const block = `<pane-shot>\ncaption\n[{"kind":"pane","view":"/p.png"}]\n</pane-shot>`;
     await controller.sendMessage("", { blocks: [block], readDirs: ["/tmp/shots"] });
-    expect(users(controller)[0].text).toBe("🖼 pane screenshot");
+    expect(users(controller)[0].text).toBe("pane screenshot");
     expect(users(controller)[0].raw).toBe(block);
     expect(agent.of("start")[0].fields.read_dirs).toBe('["/tmp/shots"]');
   });

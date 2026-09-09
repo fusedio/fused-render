@@ -1833,6 +1833,18 @@
   font-weight: 600;
   flex-shrink: 0;
 }
+/* THE GLYPH IS A LUCIDE ICON (P2-7), not 📄/🖼/📌. The row is baseline-aligned,
+   so the icon stays INLINE and is nudged onto the text's optical centre rather
+   than being wrapped in a flex box whose own baseline would move the whole row.
+   `1em` comes from the component, so it tracks this row's 11.5px. */
+.chat-root .annsum .annsum-lbl svg {
+  vertical-align: -0.15em;
+}
+/* A comment row's pin sits BEFORE its letter, so it needs the gap a glyph on its
+   own does not. */
+.chat-root .annsum .annsum-note .annsum-lbl svg {
+  margin-right: 4px;
+}
 /* A file's receipt glyph is the DOOR into the viewer (D616), so it is a real
    <button> — which arrives wearing the UA's border, background and font. Reset
    to exactly the span it replaces, and nothing more: the row must not shift by a
@@ -1851,6 +1863,21 @@
 .chat-root .annsum button.annsum-lbl:focus-visible {
   color: var(--c-fg);
   outline: none;
+}
+/* ---- a wordless send's bubble (P2-7, T:10525-10545) --------------------
+   "pane screenshot", "files", "annotations" — the words the bubble carries when
+   the reader typed none, each behind the same lucide glyph its chip and its
+   receipt wear. Inline-flex per part so the icon and its word can never break
+   apart at a wrap; the " + " between them is a part of its own so it wraps
+   where a join belongs. */
+.chat-root .bubble .c-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.chat-root .bubble .c-marker-join {
+  margin-right: 4px;
+  opacity: 0.7;
 }
 .chat-root .annsum .annsum-el {
   color: var(--c-faint);

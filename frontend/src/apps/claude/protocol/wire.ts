@@ -33,10 +33,15 @@ export const PANE_SHOT_TAG = "pane-shot";
 // ONE definition, read by both the strip that produces them and the re-attach
 // probe, which must never match a prior turn on one.
 
-export const MARKER_ANN = "📌 annotations";
-export const MARKER_VIEW = "🖼 pane screenshot";
-export const MARKER_IMG = "🖼 images";
-export const MARKER_FILE = "📄 files";
+// NO EMOJI (Akshil, 2026-09-09, P2-7). T wrote these with 📌/🖼/📄 in front of
+// the word; the icon beside a wordless send's bubble is a lucide glyph now
+// (`ui/Turn`'s marker row), and the marker itself is the WORD alone — which is
+// also what it has to be, because this string is the bubble's own text and the
+// re-attach probe matches turns on it.
+export const MARKER_ANN = "annotations";
+export const MARKER_VIEW = "pane screenshot";
+export const MARKER_IMG = "images";
+export const MARKER_FILE = "files";
 export const MARKERS: string[] = [MARKER_ANN, MARKER_VIEW, MARKER_IMG, MARKER_FILE];
 export const MARKER_JOIN = " + ";
 

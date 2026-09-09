@@ -159,6 +159,8 @@ export type { ShotViewerProps } from "./ShotViewer";
 export { Receipts } from "./Receipts";
 export type { ReceiptsProps } from "./Receipts";
 export { AnnStrip } from "./AnnStrip";
+export { AttachIcon, MarkerText } from "./AttachIcon";
+export type { AttachIconProps } from "./AttachIcon";
 export type { AnnStripProps } from "./AnnStrip";
 export { useAttachments } from "./useAttachments";
 export { fitStrip, useFitStrip } from "./useFitStrip";
@@ -179,7 +181,6 @@ export {
   receiptViewable,
   settleReceipts,
   shotAlt,
-  shotGlyph,
   shotNoun,
   shownSize,
   sizeLabel,

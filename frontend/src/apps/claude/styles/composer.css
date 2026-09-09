@@ -632,6 +632,62 @@ select.c-pill {
   padding: 3px 6px 3px 10px;
   font-size: 12px;
   color: var(--c-fg);
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+/* THE PILL'S BODY IS ONE BUTTON (P2-4): thumb-or-glyph and the words together,
+   with the ✕ as its only sibling. A door made of the 22px thumbnail alone left
+   most of the pill — the part a pointer actually lands on — dead. `display:
+   contents` is deliberately NOT used: the button has to BE the hit area, so it
+   is a flex row of its own that inherits the pill's type and colour and adds no
+   box of its own. */
+.chat-root .c-annchip .c-chip-door {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* A refusal (and a seat still uploading) has no room behind the door, so it is
+   not one: the plain pill, and the words say why (T:10722-10726). */
+.chat-root .c-annchip .c-chip-door.is-inert {
+  cursor: default;
+}
+/* The chip answers the pointer as ONE shape — the pill lifts, and the thumb's
+   own accent ring rides along with it, which is the only thing 22px can say
+   about being a door (T:956, T:971). */
+.chat-root .c-annchip:has(.c-chip-door:hover),
+.chat-root .c-annchip:has(.c-chip-door:focus-visible) {
+  background: var(--c-surface);
+  border-color: var(--c-border-strong);
+}
+.chat-root .c-annchip:has(.c-chip-door.is-inert:hover) {
+  background: var(--c-surface-2);
+  border-color: var(--c-border);
+}
+.chat-root .c-annchip .c-chip-door:hover .c-shotthumb,
+.chat-root .c-annchip .c-chip-door:focus-visible .c-shotthumb {
+  border-color: var(--c-accent);
+}
+.chat-root .c-annchip .c-chip-door:hover .c-pinlbl,
+.chat-root .c-annchip .c-chip-door:focus-visible .c-pinlbl {
+  color: var(--c-fg);
+}
+/* The focus ring belongs to the whole pill, not to the inner row. */
+.chat-root .c-annchip .c-chip-door:focus-visible {
+  outline: none;
+}
+.chat-root .c-annchip:has(.c-chip-door:focus-visible) {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 1px;
 }
 .chat-root .c-annchip .c-txt {
   overflow: hidden;
@@ -644,7 +700,7 @@ select.c-pill {
   font-weight: 600;
   flex-shrink: 0;
 }
-.chat-root .c-annchip button {
+.chat-root .c-annchip .c-chip-x {
   border: 0;
   background: transparent;
   color: var(--c-dim);
@@ -652,11 +708,12 @@ select.c-pill {
   font-size: 12px;
   padding: 0 3px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
-.chat-root .c-annchip button:hover {
+.chat-root .c-annchip .c-chip-x:hover {
   color: var(--c-fg);
 }
-.chat-root .c-annchip button:disabled {
+.chat-root .c-annchip .c-chip-x:disabled {
   cursor: default;
   opacity: 0.55;
 }
@@ -674,7 +731,7 @@ select.c-pill {
   border-radius: 3px;
   overflow: hidden;
   line-height: 0;
-  cursor: zoom-in;
+  transition: border-color 0.12s;
 }
 .chat-root .c-annchip .c-shotthumb img {
   display: block;
@@ -682,28 +739,19 @@ select.c-pill {
   max-width: 64px;
   object-fit: cover;
 }
-.chat-root .c-annchip .c-shotthumb:hover,
-.chat-root .c-annchip .c-shotthumb:focus-visible {
-  border-color: var(--c-accent);
-  outline: none;
-}
 /* A NON-picture attachment's door into the viewer. A file has no thumbnail —
    nothing 22px wide can say about a .csv what its name already says better — so
    the GLYPH is the button, which keeps the chip one shape (glyph, words, ✕)
    across both kinds instead of giving files a second control images lack. */
-.chat-root .c-annchip .c-shotdoc {
-  flex-shrink: 0;
+/* THE GLYPH IS A LUCIDE ICON (P2-7), sized off the chip's own 12px through the
+   `1em` the component sets, so it lines up with the words beside it rather than
+   sitting a font's worth of leading above them. Its accent is T's `.shotdoc`
+   colour; the door's hover takes it to `--c-fg`, above. */
+.chat-root .c-annchip .c-pinlbl {
+  display: inline-flex;
+  align-items: center;
   font-size: 13px;
-  color: var(--c-accent);
-  padding: 0 1px;
-  cursor: pointer;
-  border: 0;
-  background: transparent;
-}
-.chat-root .c-annchip .c-shotdoc:hover,
-.chat-root .c-annchip .c-shotdoc:focus-visible {
-  color: var(--c-fg);
-  outline: none;
+  transition: color 0.12s;
 }
 /* A seat whose bytes are still on their way. Quieter, and not a spinner: the
    row already says "attaching…", and one more moving thing beside a capture

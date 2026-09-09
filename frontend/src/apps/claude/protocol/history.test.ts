@@ -108,7 +108,7 @@ describe("sessionTitle (T:18088)", () => {
 
   test("the annotation preamble is tag-less by construction and still cut", () => {
     expect(sessionTitle({ id: "s1", preview: "The user annotated 1 element in the l" })).toBe(
-      "📌 annotations",
+      "annotations",
     );
   });
 

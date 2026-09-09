@@ -269,24 +269,39 @@ function chipsOf(items: Attachment[]) {
   return renderer!.root;
 }
 
-test("a picture is a thumbnail button, a file is a glyph door, a refusal is neither", () => {
+test("the WHOLE chip is the door for a picture and for a file, and a refusal has none", () => {
   const root = chipsOf([
     att({ kind: "pane", thumb: "blob:x" }),
     att({ kind: "file", name: "rows.csv", size: 2048 }),
     att({ kind: "image", view: null, why: "could not be saved" }),
   ]);
-  // The picture: one <img> inside a button that opens the viewer.
-  expect(root.findAllByProps({ className: "c-shotthumb" }).length).toBeGreaterThan(0);
-  // The file: the glyph IS the button (T:7143 `isDoor`).
+  // P2-4: one button per openable chip, holding the thumb-or-glyph AND the
+  // words — not a 22px hit area with dead text beside it.
   const doors = root.findAll(
-    (n) => n.type === "button" && n.props.className === "c-pinlbl c-shotdoc",
+    (n) => n.type === "button" && String(n.props.className) === "c-chip-door",
   );
-  expect(doors.length).toBe(1);
-  expect(doors[0]!.props.children).toBe("📄");
-  // A refused attachment has nothing to open, so its glyph is a plain span —
-  // one "failed" chip shape, whatever kind failed.
-  const plain = root.findAll((n) => n.type === "span" && n.props.className === "c-pinlbl");
-  expect(plain.length).toBe(1);
+  expect(doors.length).toBe(2);
+  // The picture's door holds the thumbnail; the file's holds the lucide glyph.
+  expect(doors[0]!.findAllByProps({ className: "c-shotthumb" }).length).toBe(1);
+  expect(doors[1]!.findAllByProps({ className: "c-pinlbl" }).length).toBe(1);
+  // Both doors hold their own words, which is the point of the change.
+  for (const door of doors) {
+    expect(door.findAllByProps({ className: "c-txt" }).length).toBe(1);
+  }
+  // A refused attachment has nothing to open, so its body is not a button —
+  // one "failed" chip shape, whatever kind failed (T:10722-10726).
+  const inert = root.findAll(
+    (n) => n.type === "span" && String(n.props.className) === "c-chip-door is-inert",
+  );
+  expect(inert.length).toBe(1);
+});
+
+test("NO EMOJI on a chip — the glyph is a lucide icon (P2-7)", () => {
+  const root = chipsOf([att({ kind: "file", name: "rows.csv", size: 2048 })]);
+  const glyph = root.findByProps({ className: "c-pinlbl" });
+  // An svg element, not a text node: `findAllByType("svg")` is what a lucide
+  // icon renders down to under react-test-renderer.
+  expect(glyph.findAllByType("svg").length).toBe(1);
 });
 
 test("a file says how big it is and a refusal says why, on the row (T:7112, 7172)", () => {
