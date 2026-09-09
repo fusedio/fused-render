@@ -842,6 +842,15 @@ select.c-pill {
 .c-shotview-img {
   min-height: 0;
   max-width: 100%;
+  /* FITTED MEANS FITTED, and inside a scrolling body that has to be said as a
+     number. T got it for free: its `#shotview-box` had a definite
+     `max-height: calc(100vh - 24px)` and the image was a flex child that SHRANK
+     into it. Here the body is what scrolls (P2-5), so an unbounded image simply
+     hands it a scrollbar — a 1600×1860 capture opened 1860px tall in a 712px
+     body, which is the zoomed view arriving uninvited. The bound is the card's
+     own: 85vh less the head, the footer, the body's padding and room for a
+     caveat line under the picture. `object-fit: contain` keeps the aspect. */
+  max-height: calc(85vh - 160px);
   object-fit: contain;
   border-radius: 4px;
   background: var(--c-surface-2);
