@@ -65,6 +65,7 @@ import {
 } from "@apps/explorer/listing/folder-chrome";
 import { publishTopbarSlot, retractTopbarSlot } from "@apps/explorer/topbar-slot";
 import { publishSearchSlot, retractSearchSlot } from "@apps/explorer/search-slot";
+import { requestSearchFocus } from "@apps/explorer/listing/search-focus";
 import {
   refreshDropTarget,
   registerSpring,
@@ -600,6 +601,15 @@ export function Breadcrumb({
   // click that follows it — the two always-on listeners below share it.
   const closedByClickAwayRef = useRef(false);
   const { springProps, dropProps, armedTarget } = useSpringLoadedCrumbs();
+  // Decision 1: a folder's claimed crumb bar has one path affordance, the
+  // merged search field (Listing.tsx) — this strip and its own path editor
+  // stand down, and the gestures that open the editor below ask that field
+  // to focus instead.
+  const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
+  // Read by the two always-on document listeners below, which must not rebind
+  // on every claim/unclaim (same reasoning as editingRef).
+  const claimedRef = useRef(false);
+  claimedRef.current = claimed;
 
   // Keep the tail of a long path in view on every path change (same as the
   // panel path bar, Panel.tsx). The strip hides its scrollbar (shell.css), so
@@ -676,6 +686,10 @@ export function Breadcrumb({
       if (closedByClickAwayRef.current) return;
       if (editingRef.current) return;
       if (!barClickEntersEdit(e.target as HTMLElement | null)) return;
+      if (claimedRef.current) {
+        requestSearchFocus();
+        return;
+      }
       setEditing(true);
     };
     document.addEventListener("click", onClick);
@@ -731,6 +745,10 @@ export function Breadcrumb({
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       e.preventDefault();
+      if (claimedRef.current) {
+        requestSearchFocus();
+        return;
+      }
       setEditing(true);
     };
     document.addEventListener("keydown", onKeyDown);
@@ -862,7 +880,7 @@ export function Breadcrumb({
   return (
     <>
       <CrumbNav />
-      {editing ? (
+      {claimed ? null : editing ? (
         <input
           className="crumb-edit"
           defaultValue={displayPath}
@@ -895,6 +913,12 @@ export function Breadcrumb({
           {pieces}
         </div>
       )}
+      {/* Decision 1: a claimed folder's merged field IS the path, so it sits
+          where the path strip did — right after the crumbs/edit zone above,
+          ahead of the star — rather than at the bar's far end. Over an
+          unclaimed (file) bar this renders an empty, layout-inert slot
+          (FolderSearchSlot), so this placement costs that case nothing. */}
+      <FolderSearchSlot />
       {/* After the path, not before it: the star's subject is the path, and the
           bar's opening slot belongs to the history arrows (see the header). It
           rides OUTSIDE `.crumbs` deliberately — that strip is a scroll container
@@ -915,7 +939,6 @@ export function Breadcrumb({
           from the path. The path field's own affordance is the same bet. */}
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
-      <FolderSearchSlot />
     </>
   );
 }

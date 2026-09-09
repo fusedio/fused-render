@@ -1,7 +1,7 @@
 // Whether index-backed search orders hits by relevance score — the
 // `ranked_search_enabled` preference (D720, shell/prefs.py), read by the
 // explorer's two search boxes (FilesHome.tsx's home search, listing/
-// useWalkSearch.ts's in-folder search) rather than by the Preferences page:
+// useListingSearch.ts's in-folder search) rather than by the Preferences page:
 // neither of those components otherwise touches `Prefs` at all, so this
 // follows the same module-level cache + subscribe pattern
 // apps/canvases/feature-flag.ts already established for the identical shape

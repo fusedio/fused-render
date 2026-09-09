@@ -90,18 +90,18 @@ test("no amount of accumulated churn ever reconciles itself", () => {
 test("focus is not a boundary — the hook must not reconcile on it", () => {
   // Source guard, because this cannot be seen from the pure rule: focus is
   // ambient (the pane focus guard, a split remount at a width threshold, and
-  // WebKit restoring focus after a repaint all fire it), so prefetchWalk
-  // adopting the pending generation swapped results out from under the reader.
-  // It must also request `pinned`, never `refresh`, or it smuggles a newer
-  // generation past the deferral.
-  const hook = readFileSync(join(import.meta.dir, "useWalkSearch.ts"), "utf8");
+  // WebKit restoring focus after a repaint all fire it), so prefetchIndex
+  // adopting the pending generation would swap results out from under the
+  // reader. It must also key its probe on `pinned`, never `refresh`, or it
+  // smuggles a newer generation past the deferral.
+  const hook = readFileSync(join(import.meta.dir, "useListingSearch.ts"), "utf8");
   const body = hook.slice(
-    hook.indexOf("const prefetchWalk = () =>"),
+    hook.indexOf("const prefetchIndex = () =>"),
     hook.indexOf("// Debounced URL mirror"),
   );
   expect(body).not.toContain("reconcile()");
-  expect(body).not.toContain("setWalkReq(refresh)");
-  expect(body).toContain("setWalkReq(pinned)");
+  expect(body).not.toContain("refresh");
+  expect(body).toContain("pinned");
 });
 
 // -- the mutation signal itself ------------------------------------------------

@@ -171,10 +171,9 @@ export function nextSearchSelection(
   // Rows that answer an OLDER query are display-only.
   //
   // The ranked box never blanks the list, so the previous query's hits stay on
-  // screen while the next answer is in flight. That is deliberate — and it is
-  // a hazard the walk never had, because a query change emptied its rows for a
-  // commit (lib/search-hold is query-tagged), which is what used to stop
-  // auto-select and Enter from reaching them.
+  // screen while the next answer is in flight. That is deliberate, and it is
+  // a hazard: those rows exist, and without the guard below they would arm
+  // Enter and every default action same as any other row on screen.
   //
   // Selecting such a row arms every default action on a file the user is no
   // longer looking for: Enter opens it, and Cmd+Backspace trashes it. So

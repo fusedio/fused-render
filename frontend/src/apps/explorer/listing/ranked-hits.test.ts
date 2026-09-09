@@ -41,26 +41,34 @@ describe("hitsFromRank", () => {
     expect(row.positions).toEqual([]);
   });
 
-  test("the entry is the walk's shape, so the rows downstream are one type", () => {
+  test("the entry is the WalkEntry shape, so the rows downstream are one type", () => {
     const [row] = hitsFromRank([hit({ rel: "d", is_dir: true, size: null })], "d");
     expect(row.entry).toEqual({ rel: "d", is_dir: true, size: null, mtime: 100 });
   });
 
-  test("the ranking fields are placeholders, not read off the wire", () => {
-    // `score`/`tier`/`depth`/`longest_run` are no longer on `IndexRankHit` —
-    // nothing re-sorts a server-answered row, so the server stops returning
-    // them (see api.ts, ranked-hits.ts module comments). `SearchHit` still
-    // declares the fields for the live-walk path's `rankCompare`, so this
-    // pins the placeholders `hitsFromRank` fills them with, and that they
-    // don't vary per hit.
-    const [row] = hitsFromRank([hit({ rel: "readable.md" })], "read");
-    expect(row.longestRun).toBe("read".length);
-    expect(row.tier).toBe(1);
-    expect(row.depth).toBe(0);
-    expect(row.score).toBe(0);
-  });
-
   test("an empty query has no hits to convert", () => {
     expect(hitsFromRank([hit()], "")).toEqual([]);
+  });
+
+  test("a substring-mode hit still highlights, unchanged", () => {
+    const [row] = hitsFromRank([hit({ rel: "readme.md" })], "eadm", "substring");
+    expect(row.positions).toEqual([1, 2, 3, 4]);
+  });
+
+  test("a glob-mode hit is never re-tested with substringMatch, and always kept", () => {
+    // A glob hit is not necessarily a substring of the query text at all —
+    // `*.csv` matching `report.csv` has no literal `"*.csv"` anywhere in the
+    // path. Re-running substringMatch over it would either mislabel a
+    // coincidental substring as the match or, for a hit with none, produce
+    // the same `[]` as a hit that should have been highlighted — both
+    // indistinguishable from a bug without consulting the server's own mode.
+    const [row] = hitsFromRank([hit({ rel: "report.csv" })], "*.csv", "glob");
+    expect(row.entry.rel).toBe("report.csv");
+    expect(row.positions).toEqual([]);
+  });
+
+  test("mode defaults to substring, so existing callers keep today's behavior", () => {
+    const [row] = hitsFromRank([hit({ rel: "readme.md" })], "eadm");
+    expect(row.positions).toEqual([1, 2, 3, 4]);
   });
 });

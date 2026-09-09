@@ -559,87 +559,23 @@ export function walkDir(fsPath: string, opts?: { hidden?: boolean }): Promise<Wa
   return getJson<WalkResult>(url);
 }
 
-// Terminal record of a streamed walk (the server's final NDJSON line).
-export interface WalkStreamEnd {
-  truncated: boolean;
-  total: number;
-}
-
-// Streaming walk: GET /api/fs/walk?stream=1 returns NDJSON — `{"entries":
-// [...]}` batch lines then one `{"done": true, truncated, total}` line.
-// `onBatch` fires once per network chunk (all complete lines in it, merged)
-// with the new entries and the running total, so the caller can score/render
-// progressively while the server is still walking. Resolves with the terminal
-// record; rejects on HTTP errors, malformed/absent terminal line, or abort
-// (an AbortError, which also cancels the server-side walk — Starlette closes
-// the generator when the client goes away).
-export async function walkDirStream(
-  fsPath: string,
-  opts: {
-    hidden?: boolean;
-    signal?: AbortSignal;
-    onBatch: (entries: WalkEntry[], total: number) => void;
-  }
-): Promise<WalkStreamEnd> {
-  let url = "/api/fs/walk?stream=1&path=" + encodeURIComponent(fsPath);
-  if (opts.hidden) url += "&hidden=1";
-  const res = await fetch(url, { signal: opts.signal });
-  if (!res.ok) {
-    // Error responses are plain JSON (the _error shape), not NDJSON.
-    const data = await res.json().catch(() => null);
-    throw new Error((data && data.error) || `HTTP ${res.status}`);
-  }
-  if (!res.body) throw new Error("streaming not supported by this browser");
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let total = 0;
-  let end: WalkStreamEnd | null = null;
-  const consume = (raw: string) => {
-    const chunkEntries: WalkEntry[] = [];
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      const msg = JSON.parse(line);
-      if (msg.done) end = { truncated: !!msg.truncated, total: msg.total ?? total };
-      else if (Array.isArray(msg.entries)) chunkEntries.push(...msg.entries);
-    }
-    if (chunkEntries.length) {
-      total += chunkEntries.length;
-      opts.onBatch(chunkEntries, total);
-    }
-  };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const cut = buffer.lastIndexOf("\n");
-    if (cut === -1) continue; // no complete line yet
-    consume(buffer.slice(0, cut + 1));
-    buffer = buffer.slice(cut + 1);
-  }
-  buffer += decoder.decode(); // flush any trailing bytes
-  if (buffer.trim()) consume(buffer);
-  if (!end) throw new Error("walk stream ended without a terminal record");
-  return end;
-}
-
 // GET /api/index/search (`fmt=columns`) has no client here any more.
 //
 // It served the in-folder search's whole-folder corpus, which the browser then
-// ranked; the box asks `/api/index/rank` per query now, and the only corpus
-// left in the app is the live walk's, for the folders no scan can cover. The
-// SERVER route stays regardless: it is the `fused.fileIndex.search` bridge
-// contract that user pages are written against.
+// ranked; both the home box and the in-folder box ask `/api/index/rank` per
+// query now, and there is no browser-side ranker left to feed a corpus to.
+// The SERVER route stays regardless: it is the `fused.fileIndex.search`
+// bridge contract that user pages are written against.
 
-// GET /api/index/rank — the home search: the server filters AND ranks, and
-// answers with the top ~200 rows.
+// GET /api/index/rank — filters AND ranks server-side, and answers with the
+// top rows. Both search boxes in the app call this, and only this: the home
+// box, and the in-folder box (listing/useListingSearch).
 //
 // The corpus route above is the other shape of the same index, and the
 // difference is the whole point: `indexSearch` hands the browser every entry
 // under the root (19.8 MB on a 164k-entry home, capped so most of a big home
 // was unfindable) and ranks locally; this is a few KB per query and can see
-// the whole index. The in-folder search keeps the corpus, because it also has
-// a live walk to rank and only a browser-side ranker can rank a stream.
+// the whole index.
 //
 // `positions` are NOT on the wire: the caller re-runs `fuzzyMatch(q, rel)`
 // over the rows it got back, so platform/lib/fuzzy.ts stays the single source
@@ -661,13 +597,14 @@ export interface IndexRankHit {
 // five ways the index cannot give one, and they are NOT interchangeable —
 // `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
 // other three never. Two places switch on this: listing/index-source picks the
-// in-folder box's SOURCE from it, and explorer/lib/home-search's `indexGap`
-// turns it into what the home box tells the user. `disabled` is the one of
-// those three that can become
-// fixable again — turning the indexing preference back on — but the client
-// does not wait around for that: it walks, exactly as it does for `mount` /
-// `package` / `ignored`, because there is no server signal to poll for "the
-// user flipped a switch in Preferences".
+// in-folder box's next STEP from it, and explorer/lib/home-search's
+// `indexGap` turns it into what either box tells the user. `mount` /
+// `package` / `ignored` / `disabled` / `fda` are all permanently uncoverable
+// from here — none of them is fixed by scanning, so both boxes just report
+// the gap and wait for a real boundary rather than polling for one. `disabled`
+// is nominally fixable (turning the indexing preference back on), but there is
+// no server signal to poll for "the user flipped a switch in Preferences", so
+// it is treated the same as the rest.
 // `fda` is `disabled`'s sibling: the packaged mac app has no Full Disk Access,
 // so no scan may start (shell/index_gate.py — a home walk would prompt per
 // protected folder). Fixable by the user, but only through a grant plus a
@@ -692,11 +629,25 @@ export interface IndexRankResult {
   reason: RankReason;
   hits: IndexRankHit[];
   // More matched than were returned: more than `limit` survived ranking.
-  // (Was ALSO true when the server's candidate cap bit before D708 — that
-  // cap, and `RANK_CANDIDATE_CAP`, are gone; index-backed search scores every
-  // matched row in one SQL statement with no candidate cap to hit.)
+  // Index-backed search scores every matched row in one SQL statement with
+  // no candidate cap to hit — this is the only way `truncated` can be true.
   truncated: boolean;
   total: number;
+  // The directory `hits` are relative to — the box's own root for a plain
+  // query, or wherever `resolve_query` (fused_render/index/query.py) walked a
+  // `~`/`/`-leading query out to. Not the box's root in general: a caller
+  // that joins `rel` onto a path (`answerFrom`, home-search.ts) must join it
+  // onto THIS, not onto whatever it asked with.
+  base: string;
+  // Which matcher actually ran: "substring" (today's `LIKE`-style pass,
+  // scored and ordered by `_rank_sql`) or "glob" (a `*`/`**` pattern,
+  // full-matched with no scoring at all — `_glob_sql`). Callers that
+  // recompute highlight positions client-side (`answerFrom`/`narrowAnswer`,
+  // `listing/ranked-hits.ts`) need this: a glob hit is not necessarily a
+  // substring of the query text at all (`*.csv` matching `report.csv` has no
+  // literal `"*.csv"` anywhere in the path), so re-running a substring test
+  // over it and dropping what fails would silently discard real hits.
+  mode: "substring" | "glob";
   // No `fresh`/`age_s`/`updated`/`root`: those are `search_under`'s wire
   // fields (`IndexCorpus`/the walk-search path), load-bearing there for the
   // in-folder corpus box's "indexing…" caveat. `search_ranked` used to

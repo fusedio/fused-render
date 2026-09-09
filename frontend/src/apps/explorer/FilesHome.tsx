@@ -391,11 +391,9 @@ export function FilesSearch({
   // -- a query that is really an address --------------------------------------
   //
   // `pathShortcut` (lib/home-search) detects the SHAPE — `/…`, `~/…`, `C:\…` —
-  // on every render, not just at submit: consulting it only on Enter left the
-  // whole screen while typing lying about what Enter would do. A pasted
-  // `/tmp/report.csv` used to rank nothing, render "No file name matched…",
-  // and pre-arm the AI row — a paid model call offered on a filesystem path —
-  // while Enter would in fact have navigated straight there.
+  // on every render, not just at submit: a pasted `/tmp/report.csv` has to
+  // read as a path candidate on the very first render, before Enter, since
+  // `showOpenRow` and the AI row below both key off it.
   //
   // `address` is pure and cheap (a regex), computed fresh every render. What
   // it resolves TO takes a stat, so that part is debounced/abortable exactly
@@ -404,21 +402,11 @@ export function FilesSearch({
   // character at a time same as any other.
   const address = pathShortcut(q, home);
   // One discriminated union instead of a `{status}` object plus a separate
-  // `statPending` boolean (code review, D706/D709): the pair used to be able
-  // to drift out of lockstep, and both review bugs those D-entries fixed sat
-  // exactly on that seam — a deadline that armed from the keystroke instead
-  // of from issuance (D706), and one that never re-armed once the stat
-  // resolved (D709). A single value makes "debounce still pending" ("idle")
-  // and "request actually in flight" ("checking") two states of the SAME
-  // variable, so nothing downstream can read one flag while the other lags.
-  //
-  // "unknown" (the old status the object carried on its own) is exactly
-  // "idle" or "checking" — both mean "no resolution yet, don't trust `addr`
-  // for `showOpenRow`/`suppressRank`'s `!== "missing"`/`!== "exists"` checks
-  // beyond that". Nothing needs to keep telling those two apart on those
-  // paths, and the two call sites that used to check `addr.status ===
-  // "unknown"` (submit's paste-and-go wait, and the commit-effect below) now
-  // check `addr.status === "idle" || addr.status === "checking"`.
+  // `statPending` boolean: "debounce still pending" (`idle`) and "request
+  // actually in flight" (`checking`) are two states of the SAME variable, so
+  // nothing downstream can read one flag while the other lags — `showOpenRow`
+  // and the paste-and-go wait below both need "no resolution yet, don't
+  // trust `addr`" to mean exactly one thing, not two flags that can disagree.
   const [addr, setAddr] = useState<
     | { status: "idle" }
     | { status: "checking" }
@@ -440,9 +428,9 @@ export function FilesSearch({
       addrCtl.current = ctl;
       // Set only once the debounce below has actually elapsed and the
       // request went out — deliberately NOT synchronous with the keystroke
-      // that made `address` non-null (review finding / D706): the staleness
-      // deadline below needs to know when the REQUEST started, not when the
-      // query started looking like a path.
+      // that made `address` non-null: the staleness deadline below needs to
+      // know when the REQUEST started, not when the query started looking
+      // like a path.
       setAddr({ status: "checking" });
       statPath(address, ctl.signal).then(
         (st) => {
@@ -467,12 +455,11 @@ export function FilesSearch({
   useEffect(() => () => addrCtl.current?.abort(), []);
 
   // Enter pressed WHILE the stat above is still in flight ("idle" or
-  // "checking") used to be a silent no-op: `suppressRank` holds the rank
-  // request back, `showOpenRow` is false (nothing has resolved yet), and the
-  // AI row is suppressed too (`address !== null`) — so `submitRow` has
-  // nothing to commit. That drops exactly the paste-and-go gesture the
-  // address feature exists for: paste a path, hit Enter immediately, expect
-  // it to open the moment the stat lands.
+  // "checking") has nothing to commit yet: `showOpenRow` is false (nothing
+  // has resolved) and the AI row is suppressed too (`address !== null`), so
+  // `submitRow` alone would be a silent no-op and drop exactly the
+  // paste-and-go gesture the address feature exists for — paste a path, hit
+  // Enter immediately, expect it to open the moment the stat lands.
   //
   // `awaitingCommit` remembers the SPECIFIC address Enter was pressed for.
   // The effect below fires once `addr` settles (either resolution) and
@@ -498,14 +485,6 @@ export function FilesSearch({
   // There is no "Open" row until the stat is back and says the address is
   // real.
   const showOpenRow = address !== null && addr.status === "exists";
-  // The rank request itself is suppressed more broadly than the open row: a
-  // query shaped like a path is held back from ranking THE MOMENT it looks
-  // like one, not only once it is confirmed to exist — firing a rank request
-  // for something that is very likely about to resolve is a wasted round
-  // trip, and a half-typed path is not yet a case anyone can rank sensibly.
-  // Only once the stat comes back "missing" does 7d's fallback apply: this IS
-  // a legitimate search query after all.
-  const suppressRank = address !== null && addr.status !== "missing";
 
   // -- the ranked answer -----------------------------------------------------
   //
@@ -544,7 +523,7 @@ export function FilesSearch({
   // wholesale rather than reasoned about per entry, and the current query is
   // re-asked. Neither DISABLES search: this page has no live walk to fall back
   // on, so switching search off is the worst available outcome — an answer one
-  // rename stale beats no answer at all. (useWalkSearch keeps its gate; it has
+  // rename stale beats no answer at all. (useListingSearch keeps its gate; it has
   // a walk that can answer the renamed folder correctly.)
   const [lifecycle, setLifecycle] = useState(indexLifecycleCount);
   useEffect(() => subscribeIndexLifecycle(() => setLifecycle(indexLifecycleCount())), []);
@@ -580,12 +559,11 @@ export function FilesSearch({
     // `!searchable` is the same early-out as `!active`: nothing is asked, and
     // anything already in flight (from a longer query since backspaced away)
     // is abandoned rather than left to land over a query too short to have
-    // earned an answer. `suppressRank` is a THIRD early-out (7c/7d): a query
-    // shaped like a path is held back from ranking the moment it looks like
-    // one — the noise that used to produce "No file name matched" over a
-    // path that Enter would have navigated to — until the stat says it is
-    // NOT one, at which point it is a legitimate search query again.
-    if (!active || !searchable || suppressRank) {
+    // earned an answer. A query shaped like a path is NOT held back here —
+    // search always runs, alongside the "Open" row rather than instead of
+    // it, so a `/tmp/report.csv` that resolves still gets ranked results
+    // underneath the resolved address.
+    if (!active || !searchable) {
       inflight.current?.abort();
       setPending(false);
       return;
@@ -616,7 +594,7 @@ export function FilesSearch({
       indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT, ranked }).then(
         (res) => {
           if (ctl.signal.aborted) return;
-          const next = answerFrom(res, q, home, Date.now() - issuedAt.current);
+          const next = answerFrom(res, q, Date.now() - issuedAt.current);
           memo.current.put(q, next);
           setAnswer(next);
           setFailure("");
@@ -637,7 +615,7 @@ export function FilesSearch({
     // request.
     const timer = window.setTimeout(run, INSTANT_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [home, q, active, searchable, suppressRank, lifecycle, mutations, retryNonce, ranked]);
+  }, [home, q, active, searchable, lifecycle, mutations, retryNonce, ranked]);
 
   useEffect(() => {
     if (!pending) {
@@ -682,55 +660,11 @@ export function FilesSearch({
   // note — no rows and an honest label beats rows for a query the user has
   // visibly moved past.
   //
-  // `pending` was the only qualifying condition before the address stat
-  // existed — there was always a real request "outliving" the query to time
-  // out on. An address-shaped query holds ranking back entirely (`addr.status
-  // === "checking"` is a THIRD reason `behind` can be true, alongside
-  // `pending` and, briefly, neither): `pending` is never true on that path
-  // (the rank effect early-returns before setting it), so a guard reading
-  // only `pending` never fires here at all — the held answer, and its
-  // `is-stale` dimming, stayed behind indefinitely regardless of how long the
-  // stat took. `addr.status === "checking"` is included in the gate for
-  // exactly the same reason `pending` is: it is the other case where nothing
-  // is going to replace `answer` for THIS query on its own — this one because
-  // the stat, not the ranking round trip, is what has to resolve first (and
-  // if it resolves to "missing", 7d's fallback fires a real rank request,
-  // which unsticks this the normal way, but until then the deadline is what
-  // stops a slow stat from pinning a stale answer in place).
-  //
-  // `addr.status === "checking"`, deliberately, NOT `suppressRank` (D706
-  // correction — review finding): `suppressRank` flips true the instant the
-  // keystroke makes `q` look like a path, but the stat itself does not fire
-  // until `INSTANT_DEBOUNCE_MS` later (the address effect above debounces
-  // exactly like the rank effect does). Gating this deadline on bare
-  // `suppressRank` meant the clock started at the KEYSTROKE, so the stat's
-  // real budget to answer before its held rows were thrown away was
-  // `STALE_CLEAR_MS` minus the debounce, not the full `STALE_CLEAR_MS` every
-  // other request gets. `addr.status` flips to `"checking"` only once `run()`
-  // inside that effect actually fires, so this effect's own dependency change
-  // lands at the same moment — the deadline timer below starts counting from
-  // ISSUANCE, matching how `pending` already behaves for the rank path. This
-  // is exactly the distinction `addr`'s discriminated union exists to keep
-  // from drifting: "idle" (debounce still pending) and "checking" (request
-  // actually in flight) are two states of the ONE variable this effect reads,
-  // not two flags that could disagree.
-  //
-  // Reading only `pending || addr.status === "checking"` left a second gap,
-  // found in code review: once the stat RESOLVES, `addr.status` moves to
-  // `"exists"`/`"missing"` — but `suppressRank` (`addr.status !== "missing"`)
-  // stays true forever once it lands on `"exists"`, so the rank effect keeps
-  // early-returning and nothing is ever going to touch `answer` for this
-  // query again. A gate reading only `pending || addr.status === "checking"`
-  // never re-arms once that happens, so the deadline never fires and
-  // `is-stale` dimming sticks around for as long as the box stays open.
-  // `suppressRank && addr.status === "exists"` covers exactly that window —
-  // the query resolved to a real address and ranking is permanently
-  // suppressed for it — without touching the `"idle"`/`"checking"` window
-  // above, which `addr.status === "checking"` already owns.
+  // Gated on `pending` alone: search always runs for every searchable query,
+  // address-shaped or not, so `pending` is the one true signal that a
+  // request is out that could still replace `answer` for `q`.
   useEffect(() => {
-    const checking = addr.status === "checking";
-    const addressSettled = suppressRank && addr.status === "exists";
-    if (!behind || (!pending && !checking && !addressSettled)) return;
+    if (!behind || !pending) return;
     const timer = window.setTimeout(() => {
       setAnswer((prev) => {
         if (prev === null || prev.query === q) return prev;
@@ -738,7 +672,7 @@ export function FilesSearch({
       });
     }, STALE_CLEAR_MS);
     return () => window.clearTimeout(timer);
-  }, [pending, suppressRank, addr.status, behind, q]);
+  }, [pending, behind, q]);
 
   // -- the box is where typing goes ------------------------------------------
   //
@@ -823,9 +757,9 @@ export function FilesSearch({
     setQuery(value);
     setHighlight(null);
     // Typing is a user gesture, so it is also the retry for a failed request —
-    // the same way useWalkSearch re-arms its stream from setQuery. (Editing to
-    // a query that was never asked re-runs anyway; this covers editing BACK to
-    // the one that failed.)
+    // the same way useListingSearch bumps its retry nonce from setQuery.
+    // (Editing to a query that was never asked re-runs anyway; this covers
+    // editing BACK to the one that failed.)
     if (failure !== "") setRetryNonce((n) => n + 1);
     // Editing the query is how the user gets back from AI results to instant
     // ones, so it drops the AI phase — and the ?q= that a committed search set.
@@ -898,18 +832,11 @@ export function FilesSearch({
   // `.fh-index-cta` callout — so the guards deciding whether this screen is
   // reporting on an uncovered answer AT ALL belong in the value, not repeated
   // at each reader where they would drift apart. They are the cascade's own
-  // earlier branches: `showOpenRow`, `!searchable` and `suppressRank` each
-  // short-circuit it before any `gap === …` case, because a held answer must
-  // not describe a search that was never sent (see `hits` and `suppressRank`).
-  // Without them here, a stale uncovered `displayAnswer` puts "Index my files"
-  // on screen underneath "Keep typing…" or an "Open this path" row — two
-  // claims about what the screen means, only one of them true.
+  // earlier branches: `showOpenRow` and `!searchable` short-circuit it before
+  // any `gap === …` case — the "Open" note (below) already owns that row's
+  // real estate, and a query under MIN_QUERY_CHARS never asked anything.
   const gap =
-    displayAnswer !== null &&
-    !displayAnswer.covered &&
-    !showOpenRow &&
-    searchable &&
-    !suppressRank
+    displayAnswer !== null && !displayAnswer.covered && !showOpenRow && searchable
       ? indexGap(displayAnswer.reason, liveScanning)
       : null;
   // The `buildable` and `fda` branches yield nothing — the `.fh-index-cta`
@@ -975,15 +902,17 @@ export function FilesSearch({
   }, [liveScanning]);
 
   // The row-model descriptor (lib/home-search): at most one leading "Open"
-  // row, then files, then at most one AI row. `showOpenRow` forces the other
-  // two off — the request that would have produced file hits was never sent
-  // (7c), and a paid model call is never the intent for something shaped like
-  // a path (7e, independent of whether it actually resolved). `aiUsable`
-  // gates it too: offering a paid model call that will fail on the same
+  // row, then files, then at most one AI row. Search always runs alongside
+  // the open row rather than instead of it, so `fileCount` is the real hit
+  // count regardless of `showOpenRow` — a resolving `/tmp/report.csv` gets
+  // both the "Open" action AND whatever the index ranked for it. `aiRow`
+  // still stays off while `showOpenRow`: a paid model call is never the
+  // intent for something shaped like a path that already resolved.
+  // `aiUsable` gates it too: offering a call that will fail on the same
   // missing index is a dead end, not an offer.
   const rowModel: RowModel = {
     openRow: showOpenRow,
-    fileCount: showOpenRow ? 0 : hits.length,
+    fileCount: hits.length,
     aiRow: searchable && !showOpenRow && address === null && aiUsable,
   };
   const current = activeRow(highlight, rowModel, settled);
@@ -1122,27 +1051,19 @@ export function FilesSearch({
                 MIN_QUERY_CHARS no request went out, so `answer` (if any) is
                 whatever an earlier, longer query left behind, and reporting
                 on it here would describe a search that didn't happen. */}
-            {/* `showOpenRow` comes ahead of everything below it too: once an
-                address resolves, the row IS the content, and reporting on
-                `answer` (whatever a previous, non-address query left behind,
-                or nothing at all) would describe a search that was never
-                sent (7c skips it entirely). `suppressRank`, right below it,
-                is the SAME protection one beat earlier in the address's
-                lifecycle: the stat hasn't resolved yet (addr.status is
-                "idle" or "checking", neither "exists" nor "missing"), so no
-                rank request went out for this query either — `answer` is still
-                whatever the PREVIOUS, non-address query left behind. This
-                used to fall all the way through to the count-note branch
-                below, reporting that stale answer's total over rows that
-                (see `hits`, above) have likely narrowed to nothing. */}
-            {showOpenRow ? (
+            {/* `showOpenRow` comes ahead of everything below it too: the open
+                row is the one action worth naming first, even though — since
+                search runs alongside it, not instead of it — file rows for
+                the same query are rendered right underneath (see the list
+                below). The count note itself stays owned by the branches
+                below it: once ranking settles it is free to take over, same
+                as it would with no open row at all. */}
+            {showOpenRow && hits.length === 0 ? (
               <>
                 <kbd>↵</kbd> to open · <kbd>esc</kbd> to clear
               </>
             ) : !searchable ? (
               "Keep typing…"
-            ) : suppressRank ? (
-              "Checking…"
             ) : displayAnswer === null && failure !== "" ? (
               `The file index could not be searched: ${failure}`
             ) : displayAnswer === null ? (
@@ -1280,17 +1201,23 @@ export function FilesSearch({
                   onOpen={() => navigate(addr.path, { isDir: addr.is_dir })}
                 />
               )}
-              {!showOpenRow &&
-                hits.map((hit, i) => (
+              {hits.map((hit, i) => {
+                // Search runs alongside the open row rather than instead of
+                // it, so a file row's position in the list — and the index
+                // `activeRow`/`activateRow` compare against — is offset by
+                // one when an open row occupies row 0.
+                const row = (rowModel.openRow ? 1 : 0) + i;
+                return (
                   <FileRow
                     key={hit.path}
                     hit={hit}
                     home={home}
-                    active={current === i}
-                    id={"fh-row-" + i}
-                    onHover={() => setHighlight(i)}
+                    active={current === row}
+                    id={"fh-row-" + row}
+                    onHover={() => setHighlight(row)}
                   />
-                ))}
+                );
+              })}
               {rowModel.aiRow && (
                 <AiActionRow
                   query={q}

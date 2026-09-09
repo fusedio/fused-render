@@ -59,17 +59,19 @@ function ruleFor(fragment: string): { selector: string; decls: string } | undefi
 
 test("the searching state is expressed in CSS at all", () => {
   // If this fails the rest of the file is asserting nothing.
-  expect(rules.length).toBeGreaterThanOrEqual(4);
+  expect(rules.length).toBeGreaterThanOrEqual(3);
 });
 
 test("the bar stands down everything to the left of the search box", () => {
-  // The crumbs were already given up; the ★ and the ‹ › history arrows
-  // (`.crumb-nav`, which took the bar's opening slot from the star) are what is
-  // still holding the box off the left edge. The path `···` used to be a fourth
-  // entry here and needs none: it is not in the bar's markup at all any more —
-  // its items are the bar's right-click menu now (Breadcrumb's
-  // onBarContextMenu) — so there is no box left to stand down.
-  for (const target of [".crumbs", ".bookmark-star-btn", ".crumb-nav"]) {
+  // The ★ and the ‹ › history arrows (`.crumb-nav`, which took the bar's
+  // opening slot from the star) are what is still holding the box off the
+  // left edge. There is no `.crumbs` entry here any more: a claimed folder
+  // never renders a `.crumbs` element at all (Breadcrumb.tsx: `claimed ?
+  // null : <div className="crumbs">`), so there is nothing under that class
+  // for a searching rule to stand down. The path `···` needs no rule either,
+  // for the same reason it never did — it is the bar's right-click menu now
+  // (Breadcrumb's onBarContextMenu), not markup in the bar.
+  for (const target of [".bookmark-star-btn", ".crumb-nav"]) {
     const rule = ruleFor(target);
     expect(rule, `no searching rule for ${target}`).toBeDefined();
     expect(rule!.decls).toMatch(/display:\s*none/);

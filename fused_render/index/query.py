@@ -15,7 +15,6 @@ See specs/query.md.
 import logging
 import os
 import re
-import time
 
 from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig
@@ -39,6 +38,15 @@ logger = logging.getLogger(__name__)
 # stored dirs.parquet row is actually keyed under — resolves the identical
 # input to "C:/", and the two would never compare equal.
 _BARE_DRIVE = re.compile(r"^[A-Za-z]:$")
+
+# A typed string starting "C:\" or "C:/" is unambiguously a Windows absolute
+# path — there is no POSIX-style "leading slash means depth-1 anchor at the
+# box root" reading for it to be confused with (that ambiguity is specific to
+# a bare "/", which a drive letter never looks like). `resolve_query` below
+# treats a match the same way it treats "~": always walked as an escape from
+# the box's own root, never falling back to `root` the way the bare-"/" branch
+# can.
+_DRIVE_ABS = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def _root_or_bare(stripped: str) -> str:
@@ -434,6 +442,12 @@ RANK_LIMIT = 200
 # corpus endpoint — `search_under` is, and it has its own MAX_CORPUS.
 MAX_RANK_LIMIT = 2_000
 
+# A glob's own ceiling, wider than a ranked substring answer's: every glob hit
+# is an equal match with no tail to trim, so the client renders and select-alls
+# the whole fetched set (never a top-N of it) — the only limit left is how many
+# rows a scrollable list and a select-all should ever hold at once.
+MAX_GLOB_RANK_LIMIT = 5_000
+
 # Chars that open a new "segment" in a path/name; a match right after one of
 # these reads as the start of a word and scores higher. Mirrors
 # frontend/src/platform/lib/fuzzy.ts's SEPARATORS exactly — change one, change
@@ -446,6 +460,131 @@ _SEGMENT_SEPARATORS = ["/", ".", "-", "_", " "]
 # / SHALLOW_FREE. See the ORDER BY comment on `_rank_sql` for how these fold in.
 _DEPTH_PENALTY = 4
 _SHALLOW_FREE = 3
+
+
+def _walk_from(start: str, rest: str) -> tuple:
+    """Consume `rest`'s "/"-joined segments onto `start`, one directory at a
+    time, stopping at the first segment that contains a `*` or the first one
+    that does not exist as a directory. Returns `(base, pattern, advanced)`:
+    `base` is how far the walk got, `pattern` is whatever segments were left
+    over (rejoined with "/"), and `advanced` says whether even the FIRST
+    segment was consumed — the leading-slash disambiguation below is exactly
+    that question, asked once.
+
+    A folder that hasn't been created yet therefore widens the search instead
+    of failing it: the walk simply stops one segment early and folds the
+    missing name into the pattern, which the caller matches at whatever base
+    it did reach."""
+    base = norm(start).rstrip("/") or "/"
+    if not rest:
+        return base, "", False
+    segs = rest.split("/")
+    i = 0
+    while i < len(segs) and "*" not in segs[i]:
+        candidate = base + "/" + segs[i] if base != "/" else "/" + segs[i]
+        if not os.path.isdir(candidate):
+            break
+        base = candidate
+        i += 1
+    return base, "/".join(segs[i:]), i > 0
+
+
+def resolve_query(root: str, raw: str) -> dict:
+    """The one place a search box's typed string becomes a `(base, pattern,
+    mode)` triple. `root` is the box's own root (home sends the home dir, the
+    explorer sends the open folder); `raw` is the string exactly as typed,
+    unstripped of anything meaningful.
+
+    `mode` is "glob" the moment `raw` contains a `*` anywhere, else
+    "substring" — `?` and `[`/`]` are left as literal characters on purpose
+    (spec: people put them in filenames far more often than they mean them as
+    patterns), so their presence never flips the mode.
+
+    Base resolution: a query starting with `~` or `/` can escape the box's
+    own root entirely; anything else inherits it unchanged. `~` expands to
+    the home directory and then walks forward (`_walk_from`); a leading `/`
+    is genuinely ambiguous and gets its own rule:
+
+    `/*.csv` has to mean "depth 1 under the box root", and `/etc/*/x.conf`
+    has to mean the absolute path — both start with `/`. The fix mirrors git,
+    where a leading slash is relative to the level the pattern is written at:
+    strip the slash and try walking it as an absolute path (`_walk_from("/",
+    ...)`); if that walk could not even consume its first segment (no
+    filesystem directory backs it, or the first segment is itself a glob),
+    it was never an absolute path to begin with, and the leading `/` is read
+    instead as the depth-1 anchor it looks like — base stays the box root,
+    pattern is `raw` with only the leading slash stripped.
+
+    A Windows drive-letter path (`C:\\` or `C:/`) has no such ambiguity to
+    resolve — nothing else starts that way — so it always walks as an escape,
+    the same as `~`: `_walk_from` runs from the drive root (`"C:/"`) over the
+    rest of the string with backslashes folded to `/` first (the drive
+    letter's own separator is native; the walk only ever splits on `/`), and
+    whatever it reaches is the base regardless of `_walk_from`'s `advanced`
+    flag — there is no bare-root fallback to `root` for this branch the way
+    there is for a bare leading `/`.
+
+    The implicit `**/` prefix — a glob with no `/` anywhere searches any
+    depth — is decided from `raw` BEFORE any of the base-splitting above, not
+    from the leftover pattern. Deciding it after would silently anchor every
+    query that escapes to a base: `~/a/b/*.c` types no slash into ITS pattern
+    either (`*.c`, once `~/a/b` is peeled off as the base), but `raw` itself
+    has three, so no prefix is added and the match stays anchored at
+    `~/a/b`'s own depth 1 — exactly the point of the original request this
+    rule exists for. Deciding it from the post-split pattern instead would
+    have widened that one, and every query like it, to any depth."""
+    raw = raw or ""
+    is_glob = "*" in raw
+    if raw == "~" or raw.startswith("~/"):
+        home = norm(os.path.expanduser("~"))
+        rest = raw[2:] if raw.startswith("~/") else ""
+        base, pattern, _ = _walk_from(home, rest)
+    elif _DRIVE_ABS.match(raw):
+        drive_root = raw[:2] + "/"
+        rest = raw[3:].replace("\\", "/")
+        base, pattern, _ = _walk_from(drive_root, rest)
+    elif raw.startswith("/"):
+        rest = raw[1:]
+        abs_base, abs_pattern, advanced = _walk_from("/", rest)
+        if advanced:
+            base, pattern = abs_base, abs_pattern
+        else:
+            base, pattern = root, rest
+    else:
+        base, pattern = root, raw
+    if is_glob and "/" not in raw:
+        pattern = "**/" + pattern
+    return {"base": base, "pattern": pattern,
+            "mode": "glob" if is_glob else "substring"}
+
+
+# Turns a glob pattern into a regex full-matched against `lrel` (both already
+# lowercased by the caller) — never DuckDB's own `GLOB` operator, whose `*`
+# crosses `/`, which is the one thing this translation depends on not
+# happening. `**/ ` collapses to zero-or-more whole segments so it can match
+# nothing (`**/*.csv` reaching a root-level file), `**` alone spans
+# separators unrestricted (mid-pattern, not just as a whole segment), and a
+# lone `*` is confined to one segment. `?` and `[`/`]` are NOT wildcards here
+# (spec: people put them in filenames far more often than they mean them as
+# patterns) — like every other character, they fall through to the literal
+# branch and get regex-escaped.
+def _glob_to_regex(pattern: str) -> str:
+    out = []
+    i, n = 0, len(pattern)
+    while i < n:
+        if pattern.startswith("**/", i):
+            out.append(r"(?:[^/]*/)*")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(r".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append(r"[^/]*")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return "^" + "".join(out) + "$"
 
 
 def query_wants_hidden(raw_query: str) -> bool:
@@ -617,9 +756,33 @@ def _rank_sql(inner: str, hidden: str, ql: str, qq: str, n: int, limit: int,
         f"LIMIT {limit}")
 
 
+def _glob_sql(inner: str, regex: str, limit: int) -> str:
+    """Glob mode's whole query: a full-match regex filter, no scoring at all
+    — not `_rank_sql`'s apparatus with the scoring columns dropped, `p0`/
+    `strpos`/`segment_starts`/`name_bonus` are never computed in the first
+    place, because a glob hit has no "substring position" for them to score.
+    Ordered `depth ASC, lower(rel) ASC, rel ASC` — the same total order
+    `_rank_sql`'s own unranked branch uses and for the same reason: `rel`
+    alone (after `lower(rel)`) is what makes a case-only-differing pair
+    (`notes/Alpha.txt` vs `notes/alpha.txt`) resolve the same way on every
+    run instead of however DuckDB's multi-threaded top-N happens to land.
+
+    `regex` is the already-lowercased, already-SQL-escaped pattern from
+    `_glob_to_regex`; it is matched against `lrel`, never `rel` — glob mode
+    is case-insensitive like every other mode here. Hidden entries are NOT
+    filtered: `query_wants_hidden` governs substring mode only, and an
+    explicit pattern here matches whatever the regex matches, dotfiles
+    included."""
+    return (
+        f"SELECT rel, size, mtime, is_dir, depth FROM ({inner}) "
+        f"WHERE regexp_matches(lrel, '{regex}') "
+        f"ORDER BY depth ASC, lower(rel) ASC, rel ASC "
+        f"LIMIT {limit}")
+
+
 def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                   limit: int = RANK_LIMIT, include_dirs: bool = True,
-                  token=None, ranked: bool = True) -> dict:
+                  token=None, ranked: bool = True, glob: bool = False) -> dict:
     """Search `root` for `q` — filtered, scored and ordered ENTIRELY in SQL,
     top `limit` returned. No candidate rows cross into Python.
 
@@ -684,6 +847,14 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     guarantee and why it's total. Threaded straight into `_rank_sql`; every
     other piece of this function (coverage, root/prefix resolution, LIMIT,
     truncation, cancellation) is unchanged by it.
+
+    `glob=True` is a different filter altogether, not a variant of `ranked`:
+    `q` is taken as a glob pattern (already resolved to a `(base, pattern)`
+    pair by `resolve_query` — this function never re-derives one), translated
+    by `_glob_to_regex` and full-matched against `lrel` in `_glob_sql`. No
+    scoring, no hidden-entry filter (an explicit pattern matches whatever it
+    matches), `depth ASC, lower(rel) ASC, rel ASC` order. `ranked` is ignored
+    when `glob` is set.
 
     `token` (index/cancel.CancelToken), when given, is bound to the duckdb
     connection the moment it exists and checked immediately before and after
@@ -752,7 +923,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # any bare root (POSIX or a Windows drive), not only "/" itself.
         prefix = root if root.endswith("/") else root + "/"
         prefix_like = like_literal(prefix)
-        limit = max(0, min(int(limit), MAX_RANK_LIMIT))
+        limit = max(0, min(int(limit), MAX_GLOB_RANK_LIMIT if glob else MAX_RANK_LIMIT))
         hit = prune(m["partitions"], prefix)
         base = {"covered": True, "reason": "", "scanned_partitions": len(hit),
                 "of_partitions": len(m["partitions"])}
@@ -801,19 +972,6 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         if not branches:
             return {**base, "hits": [], "truncated": False, "total": 0}
 
-        # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself, with
-        # the same `lower()` call that produces `lrel`, so the query and the
-        # rel it's compared against always fold through one implementation
-        # (see `_rank_sql`'s docstring on why that used to diverge).
-        ql = like_literal(qs)
-        qq = _q(qs)
-        n = len(qs)
-        # Hidden entries are dropped HERE, in the same query that filters and
-        # scores — `query_wants_hidden`/`is_hidden_rel` (this module, moved
-        # from the now-deleted index/rank.py) are the definitions; this
-        # mirrors them.
-        hidden = ("" if _wants_hidden(qs)
-                  else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
         # `nm` comes from each branch (the files branch reuses the stored
         # `name` column instead of a regex — see `_name_col`), so this adds
         # `lrel` and the root-RELATIVE `depth` (see `rel_depth` above; this is
@@ -824,16 +982,50 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         if token is not None:
             token.check()
         t0 = time.monotonic()
+        n = len(qs)
+        if glob:
+            # `qs` is already the resolved pattern (`resolve_query`'s
+            # `pattern`, base already peeled off) — lowered here, the same
+            # side the corpus is lowered on (`lrel`), so the two always fold
+            # through the same `lower()`.
+            regex = _q(_glob_to_regex(qs.lower()))
+            sql = _glob_sql(inner, regex, limit + 1)
+        else:
+            # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself,
+            # with the same `lower()` call that produces `lrel`, so the query
+            # and the rel it's compared against always fold through one
+            # implementation (see `_rank_sql`'s docstring on why lowering both
+            # sides separately can disagree).
+            ql = like_literal(qs)
+            qq = _q(qs)
+            # Hidden entries are dropped HERE, in the same query that filters
+            # and scores — `query_wants_hidden`/`is_hidden_rel` (this module,
+            # moved from the now-deleted index/rank.py) are the definitions;
+            # this mirrors them.
+            hidden = ("" if _wants_hidden(qs)
+                      else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
+            sql = _rank_sql(inner, hidden, ql, qq, n, limit + 1, ranked=ranked)
         # One row past `limit` so "there was more" is known without a count —
         # same trick `search_under` uses for its own LIMIT.
-        rows = con.execute(
-            _rank_sql(inner, hidden, ql, qq, n, limit + 1, ranked=ranked)).fetchall()
+        rows = con.execute(sql).fetchall()
         if token is not None:
             token.check()
         logger.debug("index rank: %r under %s: %d row(s) in %.1fms",
                     qs, root, len(rows), (time.monotonic() - t0) * 1000)
         truncated = len(rows) > limit
-        if ranked:
+        if glob:
+            # No score/tier at all — a glob hit has no substring position to
+            # score. Every hit still carries the same keys as the other two
+            # branches (0-valued) so nothing downstream has to special-case
+            # a missing key; the HTTP layer strips all four before the wire
+            # regardless of which branch produced them.
+            hits = [{"rel": rel, "is_dir": bool(is_dir),
+                     "size": int(size) if size is not None else None,
+                     "mtime": float(mtime) if mtime is not None else None,
+                     "score": 0, "longest_run": 0, "tier": 0,
+                     "depth": int(depth)}
+                    for rel, size, mtime, is_dir, depth in rows[:limit]]
+        elif ranked:
             # `score`/`tier`/`depth`/`longest_run` stay on EVERY hit dict this
             # function returns, even though nothing on the client's index-
             # answered path reads them any more (see this docstring above, and

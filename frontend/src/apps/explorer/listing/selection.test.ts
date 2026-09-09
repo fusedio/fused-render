@@ -571,12 +571,11 @@ describe("nextSearchSelection", () => {
 // -- rows that do not answer the current query --------------------------------
 //
 // The ranked box never blanks the list: while the next answer is in flight the
-// PREVIOUS query's rows stay on screen, dimmed. That is deliberate, and it
-// creates a hazard the walk never had — on the walk path a query change
-// emptied the rows for a commit (lib/search-hold is query-tagged), so
-// auto-select had nothing to place and Enter fell out at `if (!rows.length)`.
-// Rows that outlive their query must therefore be DISPLAY-ONLY: visible, but
-// never the thing a default action acts on.
+// PREVIOUS query's rows stay on screen, dimmed. That is deliberate, and it is
+// a hazard — those rows exist, so without a guard they would arm auto-select
+// and Enter same as any other row on screen. Rows that outlive their query
+// must therefore be DISPLAY-ONLY: visible, but never the thing a default
+// action acts on.
 
 describe("nextSearchSelection over rows that answer an older query", () => {
   const rowset = (...names: string[]) => rows(names.map((n) => [n, false] as [string, boolean]));
