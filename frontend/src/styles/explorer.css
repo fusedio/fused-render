@@ -1737,13 +1737,23 @@ table.listing-table tr.skel-row:hover {
    are more than fit at rest. `max-height` is set inline from Listing.tsx,
    computed off a rendered row's own `offsetHeight` rather than duplicated
    here as a second, driftable guess at this rule's own padding/font-size —
-   see the comment on `rowsMaxHeight` there. Undefined (no inline
-   max-height) when 5 or fewer rows exist, so a short list still sizes to
-   its own content instead of padding out to a fixed height.
+   see the comment on `rowsMaxHeight` there. 5.5 rows, not an even 5: half a
+   sixth row peeking past the bottom edge is what tells a 6+-item list apart
+   from one that simply ended at 5 — the "there is more, scroll" cue. The
+   inline style is cleared (no max-height) when 5 or fewer rows exist, so a
+   short list still sizes to its own content instead of padding out to a
+   fixed height.
+
+   This rule's own `max-height` is the fallback for a render where the
+   inline one hasn't landed yet (row 0 not measurable, or a browser dropping
+   an inline style JS set): 5.5 rows at this row's own padding/font-size,
+   rounded up. Precise on a fully rendered dropdown, since the inline style
+   overrides it; only load-bearing on that one gap.
    `scrollbar-width`/`::-webkit-scrollbar` hide the bar a real scroll
    container would otherwise render, same pattern `.listing-search-crumbs`
    above uses. */
 .listing-completion-rows {
+  max-height: 132px;
   overflow-y: auto;
   scrollbar-width: none;
 }

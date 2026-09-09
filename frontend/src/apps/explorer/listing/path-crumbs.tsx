@@ -22,10 +22,12 @@ export function PathCrumbs({
   // rather than the root, so overflow is handled by scrolling the strip to
   // its own end (the same tail-pin `#breadcrumb .crumbs` uses) instead of by
   // packing the content against the right edge, which pulled the whole
-  // strip away from the glyph even when it was not overflowing at all. Runs
-  // after every render (fsPath, home, or just the field's own width can
-  // change what overflows) and on resize, since nothing else here observes
-  // the field's width.
+  // strip away from the glyph even when it was not overflowing at all.
+  // Re-pins on `fsPath`/`home` (a new path can overflow where the old one
+  // didn't) and on resize (the field's own width can change what overflows
+  // with no path change at all) — deliberately NOT on every render: a
+  // manual scroll-back to see the root would otherwise get snapped back to
+  // the tail by the next unrelated re-render.
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -37,7 +39,7 @@ export function PathCrumbs({
     const ro = new ResizeObserver(pin);
     ro.observe(el);
     return () => ro.disconnect();
-  });
+  }, [fsPath, home]);
 
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice((home as string).length) : fsPath;

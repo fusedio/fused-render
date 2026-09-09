@@ -352,25 +352,36 @@ export default function Listing({
     setQuery(item.path);
     searchInputRef.current?.focus();
   };
-  // Decision 4 (this pass): the dropdown shows at most 5 rows at rest and
+  // Decision 4 (this pass): the dropdown shows 5 full rows at rest and
   // scrolls for the rest — `MAX_ITEMS` in useCompletion.ts stays 50, this
-  // only bounds visible HEIGHT. Measured off the first row's own rendered
-  // height rather than a hardcoded pixel guess, so it tracks
-  // `.listing-completion-row`'s padding/font-size in explorer.css without
-  // drifting out of sync. Row index 0 specifically: `:last-child` adds
-  // extra bottom padding in CSS, and index 0 is only ever last-child when
-  // there is exactly one row — a case with nothing to cap anyway (see the
-  // `> 5` guard below, which never applies then).
+  // only bounds visible HEIGHT. Capped at 5.5 rows, not an even 5: an exact
+  // 5-row cut leaves the panel's bottom edge indistinguishable from a
+  // 5-item list that simply ended there, so a sixth row waiting below reads
+  // as nothing more to see. Half a row of the sixth peeking through past
+  // the edge is the "there is more, scroll for it" cue. Measured off the
+  // first row's own rendered height rather than a hardcoded pixel guess, so
+  // it tracks `.listing-completion-row`'s padding/font-size in explorer.css
+  // without drifting out of sync. Row index 0 specifically: `:last-child`
+  // adds extra bottom padding in CSS, and index 0 is only ever last-child
+  // when there is exactly one row — a case with nothing to cap anyway (see
+  // the `> 5` guard below, which never applies then).
   const firstRowRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<HTMLDivElement>(null);
   const [rowsMaxHeight, setRowsMaxHeight] = useState<number | undefined>(undefined);
+  // `fieldActive` is in the deps (not just the item count / target dir)
+  // because the dropdown itself unmounts on blur and remounts on refocus
+  // (`showCompletion` below) — clicking back into a field whose query and
+  // directory never changed would otherwise skip this effect entirely,
+  // leaving `firstRowRef.current` from the last mount (now null, or a stale
+  // element) and `rowsMaxHeight` wrong for however long the count and dir
+  // keep matching.
   useLayoutEffect(() => {
     if (completion.items.length > 5 && firstRowRef.current) {
-      setRowsMaxHeight(firstRowRef.current.offsetHeight * 5);
+      setRowsMaxHeight(firstRowRef.current.offsetHeight * 5.5);
     } else {
       setRowsMaxHeight(undefined);
     }
-  }, [completion.items.length, completion.target?.dir]);
+  }, [completion.items.length, completion.target?.dir, fieldActive]);
   // Keeps the highlighted row in view as Down/Up move past the visible
   // window — "nearest" so a row already fully visible causes no jump.
   useLayoutEffect(() => {
@@ -565,6 +576,10 @@ export default function Listing({
   const HINT_LONG = "Search, or type a path or pattern like ~/work/*/*.csv";
   const HINT_SHORT = "Search, or type a path or pattern";
   const HINT_WIDE_PX = 340; // roughly what HINT_LONG needs at 13px not to clip
+  // `[]` deps: the ResizeObserver below is what tracks the box's width from
+  // here on, so this only has to attach it once — re-running per render
+  // would tear down and recreate the observer on every unrelated re-render
+  // for no behavior change.
   useLayoutEffect(() => {
     const el = searchBoxRef.current;
     if (!el) return;
@@ -573,17 +588,22 @@ export default function Listing({
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  });
+  }, []);
 
   // Decision 1: Breadcrumb.tsx's click-to-edit and Ctrl/Cmd+L, once this
   // folder's bar is claimed, ask this field to focus instead of opening a
-  // second path editor over it.
+  // second path editor over it. `requestSearchFocus` has no per-folder
+  // target — it notifies every subscriber — so a second `<Listing>` mounted
+  // in the preview pane (`barChrome` false there) must not act on it, or a
+  // click on the CLAIMED bar's crumb would steal focus into the preview
+  // pane's own field instead.
   useEffect(() => {
+    if (!barChrome) return;
     return subscribeSearchFocusRequest(() => {
       setPinnedOpen(true);
       searchInputRef.current?.focus();
     });
-  }, []);
+  }, [barChrome]);
   // `pinnedOpen` is the user asking for the full-strip box (clicked the
   // magnifier, or focused it — it stays until it blurs empty), rendering
   // `.expanded`. A non-empty query outranks it the same way: `.searching`
