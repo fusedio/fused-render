@@ -749,6 +749,13 @@ export function taskUnread(
   // never applied, a message that arrived since — falls through to the
   // arithmetic below and the server's number is what the row draws.
   if (isAllRead(read, task)) return 0;
+  // A PROVISIONAL row (provisionalTasks) holds no messages and a `message_count`
+  // of 0 — a default, not a count — so the "we hold the whole thread" arm below
+  // would read it as an empty, fully read thread and hollow the ring on a task
+  // pulse says has unread, for exactly the wait the seed exists to cover
+  // (Bugbot, #1079). Pulse's `unread` IS the server's number, and there is
+  // nothing held here to discount it by.
+  if (task.provisional) return task.unread;
   const known = held ?? task.messages ?? [];
   // Once Show more has run we hold the WHOLE thread, and then the count is not
   // arithmetic at all — it is the dots, counted. Same predicate (isUnread), same

@@ -8280,6 +8280,17 @@ describe("provisionalTasks", () => {
     expect(isExpandable(t)).toBe(false);
   });
 
+  it("keeps pulse's unread on the ring: taskUnread does not read the empty window as read", () => {
+    // `message_count` 0 with no messages is how a fully read empty thread ALSO
+    // looks, and the exact-thread arm of taskUnread would answer 0 — a hollow
+    // ring on a task the server says has two unread, for the whole wait the seed
+    // covers (Bugbot on #1079). A provisional row hands back the pulse number.
+    const [t] = provisionalTasks([row({ unread: 2 })]);
+    expect(taskUnread(t, new Set())).toBe(2);
+    const [none] = provisionalTasks([row({ unread: 0 })]);
+    expect(taskUnread(none, new Set())).toBe(0);
+  });
+
   it("the List blanks the count AND the time cell of a provisional row", () => {
     // Both cells would otherwise print a default as a fact: `message_count` is
     // 0 by construction, and taskWhen, with no message window to read, falls
