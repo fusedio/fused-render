@@ -2289,6 +2289,27 @@ export function createChatController(deps: ControllerDeps): ChatController {
        * (T:17765-17766).
        */
       const onScreen = (msg: string) => !!msg && users.some((u) => u.text === msg);
+      /**
+       * IS THIS RUN'S TURN NEWS TO THIS TRANSCRIPT? (Bugbot PR #1075, second
+       * pass.)
+       *
+       * `neverShown` is the CALLER'S BELIEF, not a fact about the log: the
+       * schedule poller sets it for any id missing from `shownRuns`, and the
+       * standing watch's own `refreshHistory` can have pulled that very turn in
+       * from the transcript without ever touching `shownRuns` — `history` rows
+       * carry no run id (`HistoryUserTurn` is text + uuid), so there is nothing
+       * for a refresh to record. A short scheduled run therefore lands on
+       * screen at the 5 s refresh and is attached again at the 15 s tick.
+       *
+       * So `neverShown` takes the SAME `onScreen` test the `quiet` follower
+       * takes: append only what the transcript is not already showing. The two
+       * flags differ in what they claim (a turn this frame never rendered vs. a
+       * turn made in another tab), never in that question.
+       */
+      const unseen = (neverShown || quiet) && !!probeMsg && !onScreen(probeMsg);
+      /** Already on screen and the caller is one of the two that must not
+       *  double it up: print nothing at all. */
+      const shownAlready = (neverShown || quiet) && onScreen(probeMsg);
       /** Drop the partial assistant rows under a matched user line: `pollLoop`
        *  re-streams the whole turn, and the done branch re-renders it from the
        *  probe payload (T:17831 / 17857). */
@@ -2341,7 +2362,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (poll.error) {
           if (matches || !users.length) {
             addError(poll.error);
-          } else if (neverShown || (quiet && !!probeMsg && !onScreen(probeMsg))) {
+          } else if (unseen) {
             // The turn is not on screen and never was, so the failure needs its
             // own user line to hang under — otherwise the error reads as
             // belonging to whatever the reader last said.
@@ -2352,11 +2373,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // that one and was discarded outright — while its succeeding twin
             // was appended. A failed turn is news in exactly the same way.
             //
-            // Gated on `probeMsg` for the `quiet` half only, mirroring the
-            // success branch: the message is the whole of the evidence about
-            // what this transcript is already showing, so with none there is no
-            // turn to append and `quiet` has nothing to be quiet about.
-            if (probeMsg) addUser(probeMsg);
+            // Gated on `probeMsg` (inside `unseen`), mirroring the success
+            // branch: the message is the whole of the evidence about what this
+            // transcript is already showing, so with none there is no turn to
+            // append and neither flag has anything to be quiet about.
+            addUser(probeMsg);
             addError(poll.error);
           }
           return;
@@ -2364,13 +2385,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (matches) {
           stripAfterLastUser();
           addAssistantFromProbe();
-        } else if ((!users.length || neverShown || (quiet && !onScreen(probeMsg))) && probeMsg) {
-          // Appended, never matched: the log is empty, or the caller has told us
-          // this run's turn was never on screen (a scheduled send that fired and
-          // finished between polls), or the watch found a turn made in another
-          // tab that this transcript has never shown — a SHORT turn is over
-          // before the watch's first look, and dropping it silently was the whole
-          // of the second tab's remaining complaint (D415).
+        } else if ((!users.length && probeMsg) || unseen) {
+          // Appended, never matched: the log is empty, or the turn is genuinely
+          // `unseen` — a scheduled send that fired and finished between polls,
+          // or a turn made in another tab this transcript has never shown. A
+          // SHORT turn is over before the watch's first look, and dropping it
+          // silently was the whole of the second tab's remaining complaint
+          // (D415); appending one the refresh had already pulled in was the
+          // duplicate on the other side of it (Bugbot PR #1075).
           addUser(probeMsg);
           addAssistantFromProbe();
         }
@@ -2385,7 +2407,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // In flight and this turn's user line is on screen: keep it, drop the
         // partial assistant rows.
         stripAfterLastUser();
-      } else if (probeMsg && !(quiet && onScreen(probeMsg))) {
+      } else if (probeMsg && !shownAlready) {
         addUser(probeMsg);
       }
       sending = false; // pollLoop is not gated on it, and follow-ups need it free
@@ -2431,6 +2453,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // fresher than this answer.
       if (activeRun || sending) return;
       if (res.error) throw new Error(res.error);
+      // NOTHING IS RECORDED IN `shownRuns` HERE: a `history` row is text plus a
+      // transcript `uuid` (`HistoryUserTurn`) and carries no run id, so a
+      // refresh cannot say WHICH runs it just rendered. The duplicate-attach
+      // guard therefore lives on the other side, in `resumeAttach`'s `unseen`
+      // test, which asks the rendered transcript itself (Bugbot PR #1075).
+      //
       // THE WATERMARK IS WRITTEN ONLY WHEN THE ANSWER CARRIES ONE
       // (T:17663-17665 `noteTranscript`): a history answer with no stat leaves
       // the mark exactly as it rendered. Publish `null` instead and

@@ -168,19 +168,75 @@ describe("resumeRun reconciles against what is already on screen", () => {
     expect(assistants(controller).map((t) => t.text)).toEqual(["4 rows"]);
   });
 
-  test("NEVERSHOWN: identical text is a coincidence, not this run's own line", async () => {
-    // A scheduled send fired AFTER this frame rendered, so its turn cannot be on
-    // screen — and the same prompt sent twice must not be repaired over.
+  test("NEVERSHOWN: identical text never REPAIRS a turn, and never appends one", async () => {
+    // Two rules meet here. The same prompt sent twice is a COINCIDENCE, so it
+    // cannot identify this run's own line: no `matches`, and the restored
+    // partial rows stay put rather than being stripped as if they belonged to
+    // the run being attached.
+    //
+    // And the text IS on screen, so nothing is appended either (Bugbot PR
+    // #1075): `neverShown` is the caller's belief about what it rendered, not a
+    // fact about the log, and the printing question is settled by the log.
     const { controller } = await withHistory({
       poll: () =>
         poll({ done: true, message: "count the rows", segments: [text("4 rows")] }),
     });
     await controller.resumeRun("r1", { neverShown: true });
+    expect(users(controller).map((t) => t.text)).toEqual(["count the rows"]);
+    expect(assistants(controller).map((t) => t.text)).toEqual(["partial…"]);
+  });
+
+  test("NEVERSHOWN: a turn nobody has shown is still appended in full", async () => {
+    // The other side of the same test: a scheduled run whose turn really is
+    // absent from the transcript keeps arriving, question and answer both.
+    const { controller } = await withHistory({
+      poll: () =>
+        poll({ done: true, message: "and the columns?", segments: [text("7")] }),
+    });
+    await controller.resumeRun("r1", { neverShown: true });
     expect(users(controller).map((t) => t.text)).toEqual([
       "count the rows",
-      "count the rows",
+      "and the columns?",
     ]);
-    expect(assistants(controller).map((t) => t.text)).toEqual(["partial…", "4 rows"]);
+    expect(assistants(controller).map((t) => t.text)).toEqual(["partial…", "7"]);
+  });
+
+  test("THE TWO CLOCKS: a refresh at 5 s then a schedule tick at 15 s is ONE turn", async () => {
+    // The bug this pair of watchers had (Bugbot PR #1075): the standing watch's
+    // `refreshHistory` pulls a short scheduled turn in from the transcript, and
+    // `history` rows carry no run id, so nothing lands in `shownRuns`. The
+    // schedule poll then still believes the id is unattached and resumes it
+    // with `neverShown` — which used to append the very turn now on screen.
+    const rig = makeController({
+      history: (_f, n) => ({
+        turns:
+          n === 0
+            ? [{ role: "user", text: "count the rows", uuid: "u1" }]
+            : [
+                { role: "user", text: "count the rows", uuid: "u1" },
+                // The 5 s refresh finds the scheduled turn already written.
+                { role: "user", text: "nightly report", uuid: "u2" },
+                { role: "assistant", text: "12 rows", uuid: "a2" },
+              ],
+        transcript: { path: "/p/s1.jsonl", mtime: n + 1, size: (n + 1) * 10 },
+      }),
+      live_run: () => ({ run_id: "" }),
+      poll: () => poll({ done: true, message: "nightly report", segments: [text("12 rows")] }),
+    });
+    await rig.controller.openSession("s1");
+    await rig.controller.refreshHistory("s1");
+    expect(users(rig.controller).map((t) => t.text)).toEqual([
+      "count the rows",
+      "nightly report",
+    ]);
+    // 15 s: the poller's tick, on an id `shownRuns` has never heard of.
+    expect(rig.controller.hasShownRun("r-sched")).toBe(false);
+    await rig.controller.resumeRun("r-sched", { neverShown: true });
+    expect(users(rig.controller).map((t) => t.text)).toEqual([
+      "count the rows",
+      "nightly report",
+    ]);
+    expect(assistants(rig.controller).map((t) => t.text)).toEqual(["12 rows"]);
   });
 
   test("QUIET: a turn already on screen prints nothing", async () => {
