@@ -2600,9 +2600,22 @@ function TaskNode({
             {soon.text}
           </span>
         )}
-        <span className="tasks-row-time" data-hint={when.title}>
-          {when.text}
-        </span>
+        {/* A PROVISIONAL row's time is not this row's time. taskWhen reads the
+            run off the three-message window, and pulse carries no window, so it
+            falls through to `last_active` — the session's clock, which on a live
+            session says "just now" while the listing a beat later says "56m
+            ago" for the last run (cmux-ux-tester, 2026-09-09). Two different
+            answers to one cell reads as a bug. Same treatment as the count cell
+            above: drawn, ink hidden, width held. */}
+        {task.provisional ? (
+          <span className="tasks-row-time tasks-row-time--blank" aria-hidden>
+            {when.text}
+          </span>
+        ) : (
+          <span className="tasks-row-time" data-hint={when.title}>
+            {when.text}
+          </span>
+        )}
       </div>
 
       {/* Why the refusal is quiet: see runNow. The class is the board's own

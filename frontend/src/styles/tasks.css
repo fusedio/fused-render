@@ -626,7 +626,8 @@ button.tasks-caret,
    print — and `visibility` rather than `display: none` is the point, because the
    cell has to hold its width until the real number arrives or the title beside
    it would widen and then snap back on the swap. */
-.tasks-row-msgs--blank {
+.tasks-row-msgs--blank,
+.tasks-row-time--blank {
   visibility: hidden;
 }
 

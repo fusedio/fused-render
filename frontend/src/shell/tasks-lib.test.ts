@@ -8280,6 +8280,17 @@ describe("provisionalTasks", () => {
     expect(isExpandable(t)).toBe(false);
   });
 
+  it("the List blanks the count AND the time cell of a provisional row", () => {
+    // Both cells would otherwise print a default as a fact: `message_count` is
+    // 0 by construction, and taskWhen, with no message window to read, falls
+    // through to `last_active` — which on a live session is "just now" while
+    // the listing's last run is an hour ago. Ink hidden, box kept, so the swap
+    // to the real row moves nothing.
+    expect(VIEWS).toContain('className="tasks-row-msgs tasks-row-msgs--blank"');
+    expect(VIEWS).toContain('className="tasks-row-time tasks-row-time--blank"');
+    expect(TASKS_CSS).toMatch(/\.tasks-row-msgs--blank,\s*\.tasks-row-time--blank \{\s*visibility: hidden;/);
+  });
+
   it("is empty for an empty store, and keeps the store's order", () => {
     // A fresh reload straight to /tasks has nothing in the pulse store yet, and
     // the seed is then exactly the `[]` the page used to start from.
