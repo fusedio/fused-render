@@ -3125,7 +3125,16 @@ export function TaskBoard({
   // the hook order. The List's element and class, for the List's reason: one
   // page, one way of saying there is nothing here.
   if (tasks.length === 0) {
-    return <p className="schedule-tv-empty">{emptyLabel}</p>;
+    return (
+      <>
+        {/* The note rides along: an unarchive or a refused drop that removed
+            the LAST matching card is exactly when "where did it go" needs
+            answering, and the empty sentence alone read as a disappearance
+            (Bugbot, #1079). */}
+        {note && <p className="schedule-tv-note">{note}</p>}
+        <p className="schedule-tv-empty">{emptyLabel}</p>
+      </>
+    );
   }
 
   return (

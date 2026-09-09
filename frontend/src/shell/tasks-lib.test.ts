@@ -8313,9 +8313,17 @@ describe("provisionalTasks", () => {
     // The Board used to show five bare rails and the Calendar a bare grid.
     const SCHED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
     expect((SCHED.match(/emptyLabel=\{emptyLabel\}/g) ?? []).length).toBe(4);
-    expect(VIEWS).toContain("if (tasks.length === 0) {\n    return <p className=\"schedule-tv-empty\">{emptyLabel}</p>;");
+    // The Board keeps its `note` beside the sentence: a move that emptied the
+    // board is when "where did it go" matters most (Bugbot).
+    const boardEmpty = VIEWS.slice(VIEWS.indexOf("if (tasks.length === 0) {"));
+    expect(boardEmpty.slice(0, boardEmpty.indexOf("return (\n    <>"))).toContain(
+      '{note && <p className="schedule-tv-note">{note}</p>}\n        <p className="schedule-tv-empty">{emptyLabel}</p>',
+    );
     const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
     expect(CAL).toContain('return <p className="schedule-tv-empty">{emptyLabel}</p>;');
+    // ...and the Calendar forgets its aim while the grid is gone, so a remount
+    // scrolls to the now-line again instead of opening at midnight (Bugbot).
+    expect(CAL).toContain('if (tasks.length === 0) aimed.current = { key: "", withChips: false };');
     const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
     expect(CARDS_SRC).toContain('<p className="schedule-tv-empty">{emptyLabel}</p>');
     expect(block(SCHEDULE_CSS, ".schedule-tv-empty")).toContain("width: 100%");

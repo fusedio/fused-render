@@ -1096,6 +1096,14 @@ export default function ScheduleCalendar({
 
   const cols = { ["--cal-days" as string]: days.length } as React.CSSProperties;
 
+  // The grid below unmounts while the set is empty, and with it the scroll box
+  // the placement effect aims. Forget the aim with it, or the effect on remount
+  // sees the same range and the same "had chips" answer, skips, and the grid
+  // opens at midnight instead of on the now-line (Bugbot, #1079).
+  useEffect(() => {
+    if (tasks.length === 0) aimed.current = { key: "", withChips: false };
+  }, [tasks.length]);
+
   // Nothing to place on ANY week. Tasks alone decide: every chip on this grid
   // hangs off a task (calendarThreads), and a scheduled entry with no session
   // is already a task in the listing (routers/tasks `_collect`), so `entries`,
