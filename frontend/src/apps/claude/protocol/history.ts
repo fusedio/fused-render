@@ -26,6 +26,7 @@ import {
   MARKER_JOIN,
   MARKER_VIEW,
   PANE_SHOT_TAG,
+  markerWords,
   stripBlocks,
 } from "./wire";
 
@@ -94,7 +95,12 @@ const BLOCK_OPENERS: [string, string][] = [
 
 /** T:18088 `sessionTitle` — what a session row (and a snapshot heading) is
  *  LABELLED with. Never blank: a row with no title is a row nobody can pick out
- *  of a list, so the markers, then the id, stand in. */
+ *  of a list, so the markers, then the id, stand in.
+ *
+ *  A LABEL, so the markers arrive as their words: the sigil that tells a marker
+ *  apart from a typed "files" belongs to the bubble's own detector, and a row
+ *  title carrying an invisible format character is a title nothing else — a
+ *  filter, a document title — can match (`markerWords`, wire.ts). */
 export function sessionTitle(s: Pick<SessionRow, "id" | "preview"> | null | undefined): string {
   const raw = (s && s.preview) || "";
   let text = stripBlocks(raw);
@@ -105,7 +111,7 @@ export function sessionTitle(s: Pick<SessionRow, "id" | "preview"> | null | unde
     text = text.slice(0, i).trim();
     if (marker) carried.push(marker);
   }
-  return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
+  return markerWords(text || carried.join(MARKER_JOIN)) || (s && s.id) || "";
 }
 
 /** T:17945 `ago` — epoch SECONDS in, a relative phrase out. `now` is injectable

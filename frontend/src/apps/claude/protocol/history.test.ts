@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import { ago, historyToTurns, paneSlashes, rowPane, sessionTitle } from "./history";
 import type { HistoryResponse } from "./types";
-import { composeOutgoing, formatAnnotations, MARKER_VIEW, paneShotBlock } from "./wire";
+import {
+  composeOutgoing,
+  formatAnnotations,
+  MARKER_VIEW,
+  markerWord,
+  paneShotBlock,
+} from "./wire";
 
 const stat = { path: "/t.jsonl", mtime: 1, size: 2 };
 
@@ -103,12 +109,17 @@ describe("sessionTitle (T:18088)", () => {
     // What the store actually holds: the head of the wire, 80 chars, so the
     // `</pane-shot>` the strip matches on is not in the string at all.
     const preview = "<pane-shot>\nThe user attached a pi";
-    expect(sessionTitle({ id: "s1", preview })).toBe(MARKER_VIEW);
+    // A LABEL, so the marker arrives as its WORDS: the sigil that tells a
+    // marker apart from a typed "pane screenshot" is the bubble's detector, and
+    // a row title carrying an invisible format character is a title nothing
+    // else can match (Bugbot, PR #1064).
+    expect(sessionTitle({ id: "s1", preview })).toBe(markerWord(MARKER_VIEW));
+    expect(sessionTitle({ id: "s1", preview })).toBe("pane screenshot");
   });
 
   test("the annotation preamble is tag-less by construction and still cut", () => {
     expect(sessionTitle({ id: "s1", preview: "The user annotated 1 element in the l" })).toBe(
-      "📌 annotations",
+      "annotations",
     );
   });
 

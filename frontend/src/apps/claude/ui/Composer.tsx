@@ -200,6 +200,17 @@ export interface ComposerCardProps {
   onStop(): void;
   /** Notes or pictures alone are sendable, with no words at all (T:17903). */
   hasAttachments?: boolean;
+  /**
+   * A CHIP IS STILL ATTACHING, so nothing leaves this box yet — the camera's
+   * own `shotBusy` gate (T:11203), one level up.
+   *
+   * `hasAttachments` counts in-flight placeholders (they are chips the user can
+   * see), but `take()` deliberately leaves a `pending` item in the tray for the
+   * NEXT message. Sendable-because-of-chips plus taken-without-them is a
+   * wordless Enter dispatching an EMPTY send, and a worded one going out
+   * without the files it was written about (Bugbot, PR #1064).
+   */
+  attachPending?: boolean;
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
@@ -221,6 +232,30 @@ export interface ComposerCardProps {
   columnRef?: React.RefObject<HTMLElement | null>;
   /** Chips above the box: attachments (PR2), annotations (PR3). */
   chips?: ReactNode;
+  /**
+   * ⌘V of a picture or a file (T:11719 `shotPasteHandler`). The handler decides
+   * whether the paste was an attachment — a paste of WORDS must reach the box,
+   * and stealing an ordinary paste in a composer the user types in all day would
+   * be a far worse bug than never having had the feature.
+   */
+  onPaste?: React.ClipboardEventHandler<HTMLTextAreaElement>;
+  /**
+   * THE CAMERA'S OLD SEAT, immediately left of Schedule (T:4166-4171). The
+   * screenshot button lived here as a pill and moved into the `#anncta` strip on
+   * 2026-08-27 because it acts on the PREVIEW rather than on this draft — so
+   * `ClaudeChat` passes nothing and the seat stands empty. It stays a seat
+   * because the row's fit is MEASURED: a control appearing here changes what
+   * fits, and the revision below is what re-prices the row when it does.
+   */
+  camera?: ReactNode;
+  /**
+   * Anything OUTSIDE this row whose arrival changes the row's geometry — the
+   * chip row growing, the camera seat filling. T watches for those with a
+   * MutationObserver on the rows' subtree `hidden` and on the body/chat classes
+   * (T:12455-12474); in React they arrive as a re-render, so the caller bumps
+   * this instead (inventory 03 §G, and `useRowFit`'s `revision`).
+   */
+  fitRevision?: unknown;
   back: string;
   onNavigate?(url: string): void;
 }
@@ -236,6 +271,7 @@ export function ComposerCard({
   onFollowUp,
   onStop,
   hasAttachments,
+  attachPending,
   blocked,
   blockedPlaceholder,
   autoFocus,
@@ -244,6 +280,9 @@ export function ComposerCard({
   boxRef: hostBoxRef,
   columnRef,
   chips,
+  onPaste,
+  camera,
+  fitRevision,
   back,
   onNavigate,
 }: ComposerCardProps) {
@@ -263,7 +302,13 @@ export function ComposerCard({
   const fit = useRowFit(
     rowRef,
     columnRef,
-    `${controls.model}|${controls.effort}|${controls.permission}|${blocked ? 1 : 0}`,
+    // The camera seat is IN the key and not merely a dependency of it: a seat
+    // appearing or leaving changes `composerRowNeed` by a whole control plus a
+    // gap, which is exactly the kind of change T's MutationObserver existed to
+    // catch (T:12455-12474).
+    `${controls.model}|${controls.effort}|${controls.permission}|${blocked ? 1 : 0}|${
+      camera ? 1 : 0
+    }|${String(fitRevision ?? "")}`,
   );
 
   // THIS IS THE NATIVE `initialFocus`, and it has to be, because a modal's
@@ -294,12 +339,19 @@ export function ComposerCard({
     grow();
   }, [restore, boxRef, grow]);
 
-  const canSend = text.trim().length > 0 || !!hasAttachments;
+  // A tray still uploading holds the send back rather than sending half of it.
+  const attaching = !!attachPending;
+  const canSend = !attaching && (text.trim().length > 0 || !!hasAttachments);
 
   const submit = useCallback(() => {
     // Nothing leaves this composer while a scheduled message is pending — not a
     // typed line, not a follow-up (T:17871).
     if (blocked) return;
+    // ... nor while a chip is still attaching, on EITHER road: both of them
+    // empty the tray, and both would leave the pending files behind. The box
+    // KEEPS its words (the `setText("")` below is past this door), so the same
+    // Enter a moment later sends the message the user actually wrote.
+    if (attaching) return;
     const message = text.trim();
     if (!message && !hasAttachments) return;
     setText("");
@@ -313,7 +365,7 @@ export function ComposerCard({
         permission: controls.permission,
       });
     }
-  }, [blocked, text, hasAttachments, running, onFollowUp, onSend, controls]);
+  }, [blocked, attaching, text, hasAttachments, running, onFollowUp, onSend, controls]);
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -374,6 +426,7 @@ export function ComposerCard({
           grow();
         }}
         onKeyDown={onKeyDown}
+        {...(onPaste ? { onPaste } : {})}
       />
       {count > 0 ? (
         <div className="c-queued">
@@ -391,6 +444,7 @@ export function ComposerCard({
           compact={fit !== "full"}
         />
         <span className="c-spacer" />
+        {camera}
         {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two
             are the ways this draft leaves the box — now, or as a task
             (T:4174-4183). The landing card's copy is never blocked. */}
@@ -407,7 +461,7 @@ export function ComposerCard({
           className="c-send"
           type="submit"
           aria-label={running ? "Stop" : "Send"}
-          title={running ? "Stop" : "Send"}
+          title={running ? "Stop" : attaching ? "Attaching…" : "Send"}
           disabled={blocked || (!running && !canSend)}
         >
           {running ? (

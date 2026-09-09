@@ -33,17 +33,50 @@ export const PANE_SHOT_TAG = "pane-shot";
 // ONE definition, read by both the strip that produces them and the re-attach
 // probe, which must never match a prior turn on one.
 
-export const MARKER_ANN = "📌 annotations";
-export const MARKER_VIEW = "🖼 pane screenshot";
-export const MARKER_IMG = "🖼 images";
-export const MARKER_FILE = "📄 files";
+// NO EMOJI (Akshil, 2026-09-09, P2-7). T wrote these with 📌/🖼/📄 in front of
+// the word; the icon beside a wordless send's bubble is a lucide glyph now
+// (`ui/Turn`'s marker row).
+//
+// THE EMOJI CARRIED MORE THAN A PICTURE. It also made the marker a string no
+// reader could plausibly type, and once it went, "files" — an ordinary thing to
+// say to an agent — was indistinguishable from the substitute text a wordless
+// send gets, so `isMarkerOnly` drew an attachment icon in front of the reader's
+// own word (Bugbot, PR #1064).
+//
+// So the marker is SIGILLED: every one of these strings opens with U+2063
+// INVISIBLE SEPARATOR, and marker-ness is THE SIGIL, never the visible word. It
+// is a private token of this page's display layer — stamped only on text
+// `stripBlocks` synthesises for a bubble that had no words, never composed onto
+// the wire (nothing `composeOutgoing` writes is built out of these), and peeled
+// back off by `markerWord` for everything a human reads.
+export const MARKER_SIGIL = "\u2063";
+export const MARKER_ANN = MARKER_SIGIL + "annotations";
+export const MARKER_VIEW = MARKER_SIGIL + "pane screenshot";
+export const MARKER_IMG = MARKER_SIGIL + "images";
+export const MARKER_FILE = MARKER_SIGIL + "files";
 export const MARKERS: string[] = [MARKER_ANN, MARKER_VIEW, MARKER_IMG, MARKER_FILE];
 export const MARKER_JOIN = " + ";
 
-/** T:10539 — every `" + "`-split part is one of MARKERS (and there is text). */
+/** One marker's visible word — what a bubble, a session row and every other
+ *  human-facing label show. A string with no sigil is already its own word. */
+export function markerWord(part: string): string {
+  return part.startsWith(MARKER_SIGIL) ? part.slice(MARKER_SIGIL.length) : part;
+}
+
+/** The same for a whole `" + "`-joined run of them — and for any other string,
+ *  which comes back untouched. What a label that is not drawn part-by-part (a
+ *  session row, a heading) shows. */
+export function markerWords(text: string): string {
+  return text.split(MARKER_SIGIL).join("");
+}
+
+/** T:10539 — every `" + "`-split part is one of MARKERS (and there is text).
+ *  A sigil-free string is the reader's own words, whatever they happen to say;
+ *  U+2063 is a format character and not whitespace, so `trim` cannot eat it. */
 export function isMarkerOnly(text: string | null | undefined): boolean {
   const t = (text || "").trim();
-  return !!t && t.split(MARKER_JOIN).every((part) => MARKERS.indexOf(part) !== -1);
+  if (!t || t.indexOf(MARKER_SIGIL) === -1) return false;
+  return t.split(MARKER_JOIN).every((part) => MARKERS.indexOf(part) !== -1);
 }
 
 // ---- the pictures block ----------------------------------------------------
@@ -306,6 +339,48 @@ export function annotationsIn(text: string | null | undefined): AnnotationWire[]
 }
 
 // ---- compose / strip -------------------------------------------------------
+
+/**
+ * §D'S WIRE ORDER, IN ONE PLACE. `composeOutgoing` joins whatever list it is
+ * handed, so until now the order was whatever the caller's spread happened to
+ * produce — and `{ ...opts, ...takeAttachments() }` did not produce an order at
+ * all, it REPLACED `opts.blocks` wholesale. Latent while only one owner supplied
+ * blocks; the moment PR3's `<annotations>` and PR4's `<live-app-state>` arrive in
+ * `opts.blocks` they would have been silently dropped.
+ *
+ * So every owner's blocks come through here instead: state, pane-shot,
+ * annotations — the reading order T composes them in (T:10449) — and anything
+ * unrecognised keeps its arrival order at the END rather than being dropped or
+ * pushed in front of the three that have a stated place. The sort is STABLE, so
+ * two blocks of the same kind stay in the order their owner emitted them.
+ */
+export const BLOCK_ORDER: readonly string[] = [APP_STATE_TAG, PANE_SHOT_TAG, ANN_TAG];
+
+/** Which of `BLOCK_ORDER` a composed block opens with; `BLOCK_ORDER.length` for
+ *  anything else, which is what puts it last.
+ *
+ *  ATTRIBUTES ARE ALLOWED on the opening tag. Matching a bare `<tag>` meant the
+ *  first block to carry one — `<live-app-state v="2">`, which is PR4's tag to
+ *  write — would quietly stop recognising its own name and drop to the unranked
+ *  tail, with nothing to say so: the message still goes out, just with the state
+ *  after the pictures. `[^>]*` and not `.*`, so the sniff cannot run past the end
+ *  of the tag it is reading. */
+export function blockRank(block: string): number {
+  const tag = /^<([a-z][a-z0-9-]*)(?:\s[^>]*)?>/i.exec(block.trimStart());
+  const i = tag ? BLOCK_ORDER.indexOf(tag[1].toLowerCase()) : -1;
+  return i === -1 ? BLOCK_ORDER.length : i;
+}
+
+export function composeBlocks(
+  ...groups: (readonly (string | null | undefined)[] | null | undefined)[]
+): string[] {
+  const flat: string[] = [];
+  for (const g of groups) for (const b of g ?? []) if (b) flat.push(b);
+  return flat
+    .map((block, i) => ({ block, i, rank: blockRank(block) }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
+    .map((e) => e.block);
+}
 
 /** T:10449 `composeOutgoing`. The blocks are pre-composed by their owners
  *  (app-state, pictures, annotations — in that order) and joined `"\n\n"` with
