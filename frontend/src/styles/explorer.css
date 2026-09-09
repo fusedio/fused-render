@@ -1563,6 +1563,37 @@ table.listing-table tr.skel-row:hover {
   pointer-events: none;
 }
 
+/* Decision 1: the breadcrumbs shown behind the merged field while it is
+   empty (query === "", Listing.tsx). Same click-through trick as the
+   magnifier above — the strip itself lets a press fall through to the input
+   underneath (which is what focuses and expands the box), while an actual
+   crumb link claims its own click to navigate instead. Left-aligned at the
+   same offset the glyph reserves so the path reads where the placeholder
+   otherwise would; clipped rather than wrapped, since the box beneath it is
+   one line tall. */
+.listing-search-crumbs {
+  position: absolute;
+  inset: 0;
+  left: 28px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.listing-search-crumbs .path-crumb {
+  pointer-events: auto;
+  flex: 0 0 auto;
+}
+
+.listing-search-crumbs .path-crumb-sep {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
 /* Room for whichever chip is pinned inside the right edge, sized for the
    longest count text ("showing 250 of 7734 matches"). Only while one is
    actually pinned (Listing.tsx `hasPin`): reserving it unconditionally cost

@@ -64,6 +64,9 @@ import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import { AccessDenied, isAccessDenied } from "@apps/explorer/AccessDenied";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
+import { PathCrumbs } from "@apps/explorer/listing/path-crumbs";
+import { subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";
+import { getConfig } from "@platform/lib/api";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import {
   FLIP_MAX_ROWS,
@@ -440,6 +443,31 @@ export default function Listing({
 
   // Search input, so a keystroke anywhere in the listing can focus it.
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Decision 1: the crumbs shown inside the merged search field while it is
+  // empty need home, the same way Breadcrumb.tsx's own strip does, to
+  // contract a path under it to "~". Fetched once; unresolved (undefined)
+  // just means every crumb shows the full path until it lands.
+  const [home, setHome] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    getConfig().then((c) => {
+      if (live) setHome(c.home.replace(/\\/g, "/"));
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // Decision 1: Breadcrumb.tsx's click-to-edit and Ctrl/Cmd+L, once this
+  // folder's bar is claimed, ask this field to focus instead of opening a
+  // second path editor over it.
+  useEffect(() => {
+    return subscribeSearchFocusRequest(() => {
+      setPinnedOpen(true);
+      searchInputRef.current?.focus();
+    });
+  }, []);
   // --- resting search box folds to a magnifier on a tight bar ---------------
   // The bar's yield order (crumbs shrink → box shrinks, explorer.css) bottoms
   // out with the PATH still ellipsized on a narrow middle column, while the
@@ -1855,6 +1883,15 @@ export default function Listing({
                     <line x1="16.5" y1="16.5" x2="21" y2="21" />
                   </svg>
                 </span>
+                {/* Decision 1: one field, carrying either a path or a pattern.
+                    Breadcrumbs sit behind the input, shown while it is empty,
+                    click-through to it everywhere but the crumb links
+                    themselves (explorer.css) — the same trick the magnifier
+                    above uses, so the field reads as a path bar until the
+                    first keystroke turns it into a search box. */}
+                {query === "" && (
+                  <PathCrumbs fsPath={fsPath} home={home} />
+                )}
                 <input
                   ref={searchInputRef}
                   type="search"
