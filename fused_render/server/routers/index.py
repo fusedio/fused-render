@@ -41,7 +41,7 @@ from fused_render.index.ignore import (
     ignored_for_index,
     norm,
 )
-from fused_render.index.query import MAX_CORPUS, RANK_LIMIT
+from fused_render.index.query import MAX_CORPUS, RANK_LIMIT, resolve_query
 from fused_render.index.query import search_ranked as index_rank
 from fused_render.index.query import search_under as index_search
 from fused_render.index.query import stats as index_stats
@@ -332,11 +332,32 @@ WARM_RANK_QUERY = "zqxjv"
 
 def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
                token: CancelToken | None = None, ranked: bool = True) -> dict:
-    """`search_ranked`, unchanged, under the name the rest of this module and
-    the startup warm call it by. `token`, when given, is forwarded unchanged.
-    `ranked`, likewise (D720) — default True, so the startup warm call and
-    every caller that doesn't pass it keeps the scored behavior."""
-    return index_rank(cfg, root, q=q, limit=limit, token=token, ranked=ranked)
+    """`resolve_query` (index/query.py) is run first, on THIS thread — it's
+    the one this call already runs on via `asyncio.to_thread`, and the base
+    resolution it does is blocking filesystem I/O (`os.path.isdir`), so
+    there's no separate thread hop to add. `root` is the box's own root; `q`
+    is the raw typed string, exactly as the client sent it, not yet split
+    into a base and a pattern.
+
+    The resolved `base`/`mode` travel through to the caller on the returned
+    dict (`out["base"]`/`out["mode"]`) — the client captions the search and
+    decides whether hits carry highlight positions off `mode`, and coverage
+    checks downstream (`_rank_reason`) run against `base`, not the box's own
+    `root`, since a `~`/`/`-escaping query can leave the box's root far
+    behind.
+
+    `token`, when given, is forwarded unchanged. `ranked`, likewise (D720) —
+    default True, so the startup warm call and every caller that doesn't
+    pass it keeps the scored behavior. `ranked` has no effect once `mode` is
+    "glob": glob hits are never scored (see `search_ranked`'s own
+    docstring)."""
+    resolved = resolve_query(root, q)
+    base, pattern, mode = resolved["base"], resolved["pattern"], resolved["mode"]
+    out = index_rank(cfg, base, q=pattern, limit=limit, token=token,
+                     ranked=ranked, glob=(mode == "glob"))
+    out["base"] = base
+    out["mode"] = mode
+    return out
 
 
 def _covers(a: str, b: str) -> bool:
@@ -1360,6 +1381,16 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     few KB — no columnar format and no gzip special-casing, because that
     machinery exists for the 20 MB corpus and this is not that.
 
+    `root` is the box's own root; `q` is the raw string exactly as typed,
+    unsplit. `_rank_body` resolves the two into a `(base, pattern, mode)`
+    triple (`resolve_query`, index/query.py) before ever touching the index —
+    `~` and a leading `/` can walk `base` away from `root` entirely, and
+    `mode` ("substring" or "glob") picks which SQL runs. Both `base` and
+    `mode` come back on the response: `base` is what the client captions the
+    search with, and `mode` says whether a hit carries a highlight-worthy
+    substring position (`positions`, dropped below either way — see the
+    `positions` paragraph) or is an unhighlighted glob match.
+
     A miss is `{covered: false, hits: []}` with a 200, exactly as for the
     corpus: "no index yet", "not covered" and "a scan is running" are one
     condition to a search box.
@@ -1440,7 +1471,12 @@ async def api_index_rank(request: Request, root: str = Query(default=""),
     _WIRE_DROP = ("positions", "score", "tier", "depth", "longest_run")
     out["hits"] = [{k: v for k, v in h.items() if k not in _WIRE_DROP}
                    for h in out["hits"]]
-    out["reason"] = _rank_reason(cfg, root, out)
+    # `out["base"]` — not the box's own `root` — is what coverage is actually
+    # decided against: a `~`/`/`-escaping query resolves to a base that can
+    # be far outside `root` (see `_rank_body`), and mount/ignore/scanning all
+    # have to be asked about the place the search actually ran, not the box
+    # it was typed into.
+    out["reason"] = _rank_reason(cfg, out["base"], out)
     # DEBUG: the request total, to set against the per-phase DEBUG lines
     # logged underneath (stage A per pass) — this fires on every keystroke of
     # the home search, so it stays DEBUG (see query.py's pass_over for the
