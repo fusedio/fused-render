@@ -171,7 +171,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // empty state for the whole cold listing — up to seconds after a server
   // start — then filled in, which reads as the page having lost the tasks and
   // found them again (Akshil, 2026-09-09). A skeleton is the honest state.
-  const [tasksLoaded, setTasksLoaded] = useState(() => tasks.length > 0);
+  //
+  // A remembered listing counts even when it is EMPTY: a machine with no tasks
+  // asked once and got `[]`, and a remount must show the empty state it earned,
+  // not a skeleton over it (Bugbot, #1079). Provisional rows count only when
+  // there are some — an empty pulse store is exactly "not asked yet".
+  const [tasksLoaded, setTasksLoaded] = useState(
+    () => readListing() !== null || tasks.length > 0,
+  );
   // The rows as the changes loop below last saw them, and the server
   // generation they answer to. Refs, not state: the loop is one long-lived
   // effect and must read the newest value without re-subscribing on every
