@@ -372,6 +372,30 @@ describe("the guards and the layers a torn-down instance leaves behind", () => {
     expect(w.rig.opened).toHaveLength(1);
   });
 
+  test("a SECOND instance over one live document replaces the seven, never stacks them", () => {
+    // Two chat trees alive over one host frame — "the most recently mounted
+    // chat owns it". The first instance is still holding its own teardown, so
+    // clearing the expando here and wiring again (what this module used to do)
+    // left the first set of capture-phase click swallowers and mark writers
+    // bound underneath the second: fourteen listeners, every click swallowed
+    // twice and two composers opened for one click (Bugbot, PR #1074).
+    const w = world();
+    w.make().start(); // …and then dropped without a teardown
+    expect(w.docs.names()).toEqual(SEVEN);
+    // The DOCUMENT is what the two instances share; the frame's own guard is
+    // the watch, and a re-stamped frame is what lets the second instance reach
+    // the wiring at all (a live `__fusedAnnWatched` makes it a no-op — the case
+    // `release` clears).
+    (w.frame as unknown as { __fusedAnnWatched?: boolean }).__fusedAnnWatched = false;
+    const stopSecond = w.make().start();
+    expect(w.docs.names()).toEqual(SEVEN);
+    clickIn(w);
+    expect(w.rig.opened).toHaveLength(1);
+    // And the newest owner's teardown leaves the document clean.
+    stopSecond();
+    expect(w.docs.names()).toEqual([]);
+  });
+
   test("removeInjectedLayer takes the XO overlay too — the parent's document", () => {
     // XO IS the hosted layout, so the only teardown that runs for it is the
     // hosted one, and it calls exactly this. Both of the documents it removes

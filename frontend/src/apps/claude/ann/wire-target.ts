@@ -14,9 +14,18 @@ import { contentBox, intrinsicOf, iuivAt, pageXY, pathOf } from "./geometry";
 import { hideHl, placeHl } from "./layer";
 import { ANN_LAYER_MARK, type AnnAnchor, type AnnTool } from "./types";
 
-/** Our own expando on the host's document (T:8524). */
+/** Our own expandos on the host's document (T:8524).
+ *
+ *  `__fusedAnnWired` is the public boolean `isWired` reads; `__fusedAnnOff` is
+ *  THE RECORD of the one listener set currently on this document — the teardown
+ *  that takes it back off. It lives on the document and not only in the caller's
+ *  map because the set can outlive the instance that attached it (a crash, a host
+ *  that dropped the tree without a `pagehide`, or two chat trees alive over one
+ *  host frame), and the next wiring has to be able to REMOVE it rather than
+ *  stack on top of it. */
 interface WiredDoc {
   __fusedAnnWired?: boolean;
+  __fusedAnnOff?: () => void;
 }
 
 export interface WireTargetDeps {
@@ -61,12 +70,29 @@ export interface WireTargetDeps {
  * React unmount leaves the document as it found it rather than as "already
  * wired" with handlers that no longer run (T:8802's release, generalised).
  *
- * Idempotent: a second call for the same document is a no-op that returns a
- * no-op, which is what makes the poll's re-adoption free.
+ * IDEMPOTENT PER DOCUMENT, by REMOVE BEFORE ADD (Bugbot, PR #1074). N calls
+ * leave SEVEN listeners and one live teardown, whoever made them: the set
+ * already on the document comes off first. It cannot be a bare
+ * "already wired, do nothing" — the guard lives on a document the HOST owns and
+ * an instance that never got to tear down leaves it set, so the no-op return
+ * this used to take handed the next mount an armed-but-dead switch with nothing
+ * attached and no console error. Nor can the caller just CLEAR the guard and
+ * wire again (`target.ts` did): the previous instance's capture-phase click
+ * swallowers and mark writers stay bound, and every event fires twice — once
+ * into a torn-down tree.
  */
 export function wireTarget(doc: Document, deps: WireTargetDeps): () => void {
   const guard = doc as Document & WiredDoc;
-  if (guard.__fusedAnnWired) return () => {};
+  // REMOVE BEFORE ADD. Its own teardown clears both expandos, so what follows
+  // starts from a document with no wiring of ours on it at all.
+  const prev = guard.__fusedAnnOff;
+  if (prev) {
+    try {
+      prev();
+    } catch {
+      /* the previous instance's document surface went first: nothing to remove */
+    }
+  }
   guard.__fusedAnnWired = true;
 
   const elementOf = (t: EventTarget | null): Element | null => {
@@ -308,7 +334,7 @@ export function wireTarget(doc: Document, deps: WireTargetDeps): () => void {
   doc.addEventListener("click", onClick, true);
   doc.addEventListener("scroll", onScroll, { capture: true, passive: true });
 
-  return () => {
+  const off = () => {
     doc.removeEventListener("keydown", onKeyDown);
     doc.removeEventListener("pointerdown", onPointerDown, true);
     doc.removeEventListener("mousedown", onMouseDown, true);
@@ -317,8 +343,16 @@ export function wireTarget(doc: Document, deps: WireTargetDeps): () => void {
     doc.removeEventListener("click", onClick, true);
     doc.removeEventListener("scroll", onScroll, { capture: true });
     aimCursor(false);
-    guard.__fusedAnnWired = false;
+    // ONLY OURS TO CLEAR. A later wiring replaced the record with its own, and a
+    // stale teardown arriving after it (a React unmount that lost the race)
+    // must not tell the document it is unwired while those seven are live.
+    if (guard.__fusedAnnOff === off) {
+      guard.__fusedAnnWired = false;
+      delete guard.__fusedAnnOff;
+    }
   };
+  guard.__fusedAnnOff = off;
+  return off;
 }
 
 /** T:8496 — is this document already wired? Exposed for the poll, which asks

@@ -417,6 +417,44 @@ describe("end() (T:8132)", () => {
     expect(w.delivered).toEqual([{ intro: "the whole thing", spoke: false }]);
   });
 
+  test("every mark DELETED is the no-click case — the walkthrough is not dropped", async () => {
+    // The chip's ✕ (and any other `store.remove`) never calls back into the
+    // recorder, so `ids` still names two marks the store no longer has.
+    // Branching on THAT list asked the matcher to spread the words over an
+    // empty set, which is a blank intro by contract: nothing delivered, and the
+    // spoken walkthrough silently gone (Bugbot, PR #1074).
+    const w = makeWorld({}, transcriptOf([[1.2, "make"], [3.4, "these"]], "make these blue"));
+    await record(w);
+    w.advance(1000);
+    w.rec.mark({ kind: "element" });
+    w.advance(2000);
+    w.rec.mark({ kind: "element" });
+    w.notes.length = 0; // both chips ✕'d while the mic was still live
+    await w.rec.end();
+    expect(w.delivered).toEqual([{ intro: "make these blue", spoke: false }]);
+  });
+
+  test("a PARTIAL deletion matches against the marks that are still there", async () => {
+    const w = makeWorld({}, transcriptOf([
+      [0.5, "okay"],
+      [1.2, "first"],
+      [3.2, "second"],
+    ]));
+    await record(w);
+    w.advance(1000);
+    w.rec.mark({ kind: "element" }); // id1, t = 1
+    w.advance(2000);
+    w.rec.mark({ kind: "element" }); // id2, t = 3
+    w.notes.splice(0, 1); // the FIRST mark is ✕'d
+    await w.rec.end();
+    // The survivor takes what was said nearest IT, and the intro boundary is
+    // re-read off the surviving first click instead of the deleted one.
+    expect(w.notes).toHaveLength(1);
+    expect(w.notes[0].id).toBe("id2");
+    expect(w.notes[0].spoken).toBe("second");
+    expect(w.delivered).toEqual([{ intro: "okay first", spoke: true }]);
+  });
+
   test("a transcription that assigned NOTHING sends nothing (T:8272-8290)", async () => {
     const w = makeWorld({}, { text: "", words: [], segments: [] });
     await record(w);

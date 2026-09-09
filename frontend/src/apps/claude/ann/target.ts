@@ -307,12 +307,14 @@ export function createAnnTarget(opts: AnnTargetOptions): AnnTarget {
       // document the HOST owns and its only clearer is our own teardown, so an
       // instance that never got to tear down (a crash, a host that dropped the
       // tree without a `pagehide`, or two chat trees alive over one host frame —
-      // "the most recently mounted chat owns it") leaves it set, and this call
-      // would return the no-op at `wire-target.ts:57` with nothing attached:
-      // the armed-but-dead switch, again, with no console error. The expando's
-      // job is to stop a SECOND wiring of a document THIS instance already
-      // wired, which `wired.has` has just answered — so clear it and wire.
-      (d as Document & AnnGuards).__fusedAnnWired = false;
+      // "the most recently mounted chat owns it") leaves it set. This used to
+      // CLEAR it here so `wireTarget` would not return its no-op — which cured
+      // the armed-but-dead switch by STACKING a second set of capture-phase
+      // click swallowers and mark writers on a live document, the dead
+      // instance's still bound and every event firing twice (Bugbot, PR #1074).
+      // Nothing to clear now: `wireTarget` is idempotent per document by
+      // remove-before-add, so it takes whatever set is there off and hands back
+      // the one live teardown. Never write the guard here.
       const off = opts.wireDoc(d, frame);
       if (off) wired.set(d, off);
     }

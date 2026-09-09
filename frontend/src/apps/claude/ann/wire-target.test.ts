@@ -152,15 +152,48 @@ describe("the seven listeners, and the guard (T:8524, 8534-8705)", () => {
     ]);
   });
 
-  test("a second wiring of the same document stacks nothing", () => {
+  test("a second wiring of the same document stacks nothing — REMOVE BEFORE ADD", () => {
     const r = rig();
     expect(isWired(r.doc)).toBe(true);
     const again = wireTarget(r.doc, r.api);
+    // Still seven: the first set came OFF before the second went on. Clearing
+    // the guard and wiring again (what `target.ts` used to do for a document a
+    // dead instance left marked) stacked fourteen — the previous instance's
+    // capture-phase click swallowers still bound, every event firing twice
+    // (Bugbot, PR #1074).
     expect(r.listeners).toHaveLength(7);
-    // …and the second call's teardown is a no-op that cannot unwire the first.
+    // The LIVE teardown is the second call's, and it takes the live set off.
     again();
+    expect(r.listeners).toHaveLength(0);
+    expect(isWired(r.doc)).toBe(false);
+  });
+
+  test("the SUPERSEDED teardown cannot unwire the set that replaced it", () => {
+    // A React unmount that loses the race to the next mount's wiring: the stale
+    // `off()` arrives after the document already belongs to somebody else, and
+    // must neither strip those seven nor call the document unwired.
+    const r = rig();
+    const again = wireTarget(r.doc, r.api);
+    r.off();
     expect(r.listeners).toHaveLength(7);
     expect(isWired(r.doc)).toBe(true);
+    again();
+    expect(r.listeners).toHaveLength(0);
+    expect(isWired(r.doc)).toBe(false);
+  });
+
+  test("a wiring left by a DEAD instance is replaced, not stacked on", () => {
+    // Two chat trees over one host frame: the first instance's teardown is gone
+    // with its tree, and only the document knows the listeners are there.
+    const first = rig();
+    expect(first.listeners).toHaveLength(7);
+    const second = wireTarget(first.doc, first.api);
+    expect(first.listeners).toHaveLength(7);
+    // The live handlers are the SECOND instance's: one escape per keydown.
+    first.fire("keydown", { key: "Escape" });
+    expect(first.state.escapes).toBe(1);
+    second();
+    expect(first.listeners).toHaveLength(0);
   });
 
   test("the teardown removes all seven and CLEARS the guard, so the next instance re-wires", () => {

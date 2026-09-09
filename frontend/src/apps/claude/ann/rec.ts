@@ -640,11 +640,26 @@ export function createRecorder(deps: RecorderDeps): Recorder {
       // that swallowed the framing. A walkthrough with NO clicks is the
       // degenerate case of the same rule — everything came before the first
       // click, so the whole transcript is the prompt (T:8263-8271).
+      //
+      // THE SURVIVORS DECIDE, not the ids this session minted (Bugbot,
+      // PR #1074). A mark can be gone by the time its words land — the chip's ✕
+      // while the transcription is out, a `remove` from anywhere — and `ids` is
+      // never told: it is the RECORDER's list, and nothing outside calls back
+      // into it. Branching on `marks.length` then asked `assignWords` to spread
+      // the transcript over an EMPTY set, which returns a blank intro by
+      // contract, so the whole spoken walkthrough was silently dropped: no
+      // notes to fill, no prompt to send, nothing delivered. Resolving the
+      // marks FIRST makes "every mark deleted" the no-click case it actually is
+      // — the whole transcript becomes the prompt — and a PARTIAL deletion
+      // matches against the marks that are still there, which is also what
+      // re-reads the intro boundary off the surviving first click instead of a
+      // deleted one. (T:8270 has the same hole: `annRecAssign` returns "" for a
+      // wiped `ids` and the caller's `ids.length` never notices.)
+      const found = marks
+        .map((id) => deps.notes.get(id))
+        .filter((a): a is RecAnnotation => !!a);
       let intro: string;
-      if (marks.length) {
-        const found = marks
-          .map((id) => deps.notes.get(id))
-          .filter((a): a is RecAnnotation => !!a);
+      if (found.length) {
         const assigned = assignWords(found, transcript.words);
         deps.notes.assign(assigned.texts);
         intro = assigned.intro;
