@@ -101,6 +101,17 @@ export interface HomeHit {
 export interface HomeAnswer {
   /** The (trimmed) query these hits answer. */
   query: string;
+  /**
+   * The directory `hits`' `rel`s are relative to — `res.base` from the
+   * server, not necessarily the box's own root: a `~`/`/`-leading query
+   * walks `resolve_query` (fused_render/index/query.py) out to wherever it
+   * escapes to, and every absolute `path` a hit renders has to be rebuilt
+   * from THIS, not from the root the box was opened on.
+   */
+  base: string;
+  /** Which matcher produced `hits` — see `IndexRankResult.mode` (api.ts).
+   * Substring hits highlight against `positions`; glob hits carry none. */
+  mode: "substring" | "glob";
   hits: HomeHit[];
   /** More matched than were returned; the count note owns up to it. */
   truncated: boolean;
@@ -132,7 +143,17 @@ export interface HomeAnswer {
   elapsedMs: number;
 }
 
-/** A ranked response as an answer: absolutized, capped, and highlighted. */
+/**
+ * A ranked response as an answer: absolutized, capped, and highlighted.
+ *
+ * `home` is what a hit's PATH is displayed relative to (`~/`-prefixing in
+ * `FileRow`) — the box's own root, unrelated to what its rel is joined onto.
+ * A hit's `path` is built from `res.base` instead, which is the directory
+ * the server actually searched: a plain query never moves it off `home`, but
+ * a `~`/`/`-leading one can walk it anywhere `resolve_query`
+ * (fused_render/index/query.py) resolves to, and joining `h.rel` onto the
+ * wrong directory there would point every hit at a path that does not exist.
+ */
 export function answerFrom(
   res: IndexRankResult,
   query: string,
@@ -141,20 +162,26 @@ export function answerFrom(
 ): HomeAnswer {
   return {
     query,
+    base: res.base,
+    mode: res.mode,
     hits: res.hits.slice(0, HOME_RESULT_CAP).map((h) => ({
-      path: home + "/" + h.rel,
+      path: res.base + "/" + h.rel,
       rel: h.rel,
       is_dir: h.is_dir,
       size: h.size,
       mtime: h.mtime,
-      // Re-matched HERE rather than sent: fuzzy.ts decides what highlights,
-      // full stop. `substringMatch`, not `fuzzyMatch`'s looser subsequence
-      // pass: every row in `res` already passed the server's substring
-      // filter, so the guarantee that this always finds something is made
-      // EXPLICIT (the same test the server used, not merely a weaker one
-      // that happens to agree here) rather than incidental to which function
-      // got called.
-      positions: substringMatch(query, h.rel)?.positions ?? [],
+      // Substring hits are re-matched HERE rather than sent: fuzzy.ts
+      // decides what highlights, full stop, and `substringMatch` is the
+      // exact test the server's substring mode filtered on (D708), so the
+      // guarantee that this finds something is EXPLICIT rather than
+      // incidental. Glob hits carry no positions: a glob match is not
+      // necessarily a substring of the query text at all (`*.csv` matching
+      // `report.csv` has no literal `"*.csv"` anywhere in `report.csv`), so
+      // re-running `substringMatch` on one would either find nothing (no
+      // highlight — fine) or, worse, find an accidental unrelated substring
+      // and mark the wrong characters. Rendering unhighlighted is honest;
+      // marking a coincidence is not.
+      positions: res.mode === "substring" ? (substringMatch(query, h.rel)?.positions ?? []) : [],
     })),
     truncated: res.truncated,
     total: res.total,
@@ -195,8 +222,22 @@ export function answerFrom(
  * usually few or none; that emptiness is exactly the signal the staleness
  * deadline (`STALE_CLEAR_MS`, platform/lib/instant-search) uses to decide
  * there is nothing worth holding onto.
+ *
+ * A GLOB-mode held answer (`answer.mode === "glob"`) is never narrowed —
+ * it returns no rows, which is the same "nothing worth holding onto" signal
+ * a paste produces, and lets the real round trip already in flight for `q`
+ * supply the answer instead. `substringMatch` is not a weaker version of
+ * glob matching whose survivors are safely a subset of it: extending a glob
+ * pattern by a keystroke can match an entirely different set of paths (one
+ * more `*` character does not narrow the same way one more literal
+ * character does), so there is no local test here that could reproduce the
+ * server's `regexp_matches` semantics without literally re-implementing
+ * them — and reusing `substringMatch` instead would silently DROP hits
+ * that a fresh glob query would still return, the exact defect this
+ * function exists to avoid on the substring path.
  */
 export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
+  if (answer.mode === "glob") return [];
   const out: HomeHit[] = [];
   for (const hit of answer.hits) {
     const m = substringMatch(q, hit.rel);

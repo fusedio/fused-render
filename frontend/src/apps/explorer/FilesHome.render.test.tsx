@@ -305,6 +305,8 @@ function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
     hits: [],
     truncated: false,
     total: 0,
+    base: HOME,
+    mode: "substring",
     ...over,
   };
 }
@@ -515,17 +517,19 @@ describe("the latency readout", () => {
 });
 
 describe("a query that is really an address (section 7)", () => {
-  test("a resolving absolute path issues no indexRank and offers no AI row", async () => {
+  test("a resolving absolute path issues an indexRank alongside the stat, and offers no AI row", async () => {
     const box = mount();
     await type(box, "/tmp/report.csv");
-    // No rank request for a literal address — 7c skips it entirely.
-    expect(rankCalls).toHaveLength(0);
+    // Search runs ALONGSIDE the open row rather than instead of it — one
+    // rank request goes out for the address-shaped query same as any other.
+    expect(rankCalls.map((c) => c.q)).toEqual(["/tmp/report.csv"]);
     expect(statCalls.map((c) => c.path)).toEqual(["/tmp/report.csv"]);
 
+    await flush(() => rankCalls[0].resolve(answer({ hits: [], total: 0 })));
     await flush(() => statCalls[0].resolve({
       path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
     }));
-    // The Open row renders in place of any AI row.
+    // The Open row renders; there is still no AI row for a resolved address.
     expect(findByClass(box, "fh-ai-glyph")).toHaveLength(0);
     expect(box.renderer.root.findAllByProps({ id: "fh-row-0" }).length).toBeGreaterThan(0);
     box.unmount();
@@ -538,113 +542,29 @@ describe("a query that is really an address (section 7)", () => {
     box.unmount();
   });
 
-  test("the note does not describe a search that was never sent while the stat is in flight", async () => {
+  test("the note holds the previous settled count, dimmed, while a rank request for an address-shaped query is in flight", async () => {
     const box = mount();
     // A normal query first, so a stale answer with a real count exists to
-    // wrongly fall back to.
+    // fall back to.
     await type(box, "readme");
     await flush(() => rankCalls[0].resolve(
       answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
     expect(noteText(box)).toContain("137");
 
-    // Paste a path over it: suppressRank holds the rank request back
-    // entirely (no request goes out for "/tmp/report.csv"), and the stat
-    // hasn't answered yet (showOpenRow is false) — so the note must not fall
-    // through to describing the OLD answer.
+    // Paste a path over it: search still runs for it (alongside the open
+    // row, once the stat resolves), so this is exactly the same in-flight
+    // staleness every other query goes through — the held count stays on
+    // screen, dimmed, until the new answer lands.
     await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
-    // Past the address stat's own trailing debounce — it schedules its own
-    // timer the same way the rank request does.
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(statCalls).toHaveLength(1);
-    expect(rankCalls).toHaveLength(1); // no second rank request
-    expect(noteText(box)).not.toContain("137");
-    box.unmount();
-  });
-
-  test("the stale-clear deadline still fires while suppressRank holds the rank request back", async () => {
-    // `pending` is false on the suppressed-rank path (the rank effect
-    // early-returns before ever setting it) — the deadline effect used to
-    // gate on `pending`, which never fires here, so the held answer (and its
-    // `is-stale` dimming) stayed behind indefinitely instead of clearing once
-    // narrowing empties it out, same as the pending-request path does.
-    const box = mount();
-    await type(box, "readme");
-    await flush(() => rankCalls[0].resolve(
-      answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
-
-    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
-    // Past the address stat's own trailing debounce.
-    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
-    expect(statCalls).toHaveLength(1); // the stat is issued but left hanging
+    expect(rankCalls).toHaveLength(2);
+    expect(noteText(box)).toContain("137");
     expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
       .toContain("is-stale");
 
-    await flush(() => clock.advance(STALE_CLEAR_MS + 50));
-    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
-      .not.toContain("is-stale");
-    box.unmount();
-  });
-
-  test("the stale-clear deadline gets its full budget from ISSUANCE, not the keystroke (D706)", async () => {
-    // Review finding, fixed in D706: `suppressRank` flips true on the
-    // keystroke itself, but the stat does not fire until
-    // `INSTANT_DEBOUNCE_MS` later — gating the deadline effect on
-    // `suppressRank` (rather than `addr.status === "checking"`, which flips
-    // only once the stat actually goes out) started the STALE_CLEAR_MS clock
-    // at the keystroke, shrinking the stat's real budget to
-    // `STALE_CLEAR_MS - INSTANT_DEBOUNCE_MS`.
-    const box = mount();
-    await type(box, "readme");
-    await flush(() => rankCalls[0].resolve(
-      answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
-
-    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
-    // Past the address stat's own trailing debounce: the stat is issued HERE
-    // (addr.status moves to "checking"), which is when the deadline should
-    // start counting.
-    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
-    expect(statCalls).toHaveLength(1);
-
-    // Just short of a FULL STALE_CLEAR_MS measured from issuance. Before
-    // D706, the deadline was already counting from the keystroke — i.e. from
-    // INSTANT_DEBOUNCE_MS earlier — so by this point in total elapsed time it
-    // had already fired and cleared the stale rows.
-    await flush(() => clock.advance(STALE_CLEAR_MS - 50));
-    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
-      .toContain("is-stale");
-
-    // Cross the real deadline (measured from issuance) and confirm it does
-    // still fire eventually.
-    await flush(() => clock.advance(100));
-    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
-      .not.toContain("is-stale");
-    box.unmount();
-  });
-
-  test("the stale-clear deadline still fires once the address RESOLVES (code review finding)", async () => {
-    // The D706 swap (gate on `addr.status === "checking"`) fixed the
-    // hanging-stat case above, but it lost the case where the stat actually
-    // settles to a real path: `suppressRank` stays true forever once
-    // `addr.status` is "exists" (it only excludes "missing"), so the rank
-    // effect keeps early-returning (`pending` never fires) and `addr.status`
-    // moves off "checking" the moment the stat resolves — a gate reading only
-    // `pending || addr.status === "checking"` never arms again, and the held
-    // answer's `is-stale` dimming never clears.
-    const box = mount();
-    await type(box, "readme");
-    await flush(() => rankCalls[0].resolve(
-      answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
-
-    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
-    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS)); // the stat is issued
-    await flush(() =>
-      statCalls[0].resolve({
-        path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
-      }),
-    );
-    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
-      .toContain("is-stale");
-
+    // The staleness deadline is the same `pending`-gated one every query
+    // uses now — nothing address-specific holds it open or shortens it.
     await flush(() => clock.advance(STALE_CLEAR_MS + 50));
     expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
       .not.toContain("is-stale");
@@ -654,13 +574,11 @@ describe("a query that is really an address (section 7)", () => {
   test("suppresses the AI row even when the address does not resolve", async () => {
     const box = mount();
     await type(box, "/tmp/does-not-exist");
+    expect(rankCalls.map((c) => c.q)).toEqual(["/tmp/does-not-exist"]);
     await flush(() => statCalls[0].reject());
-    // The rank effect was suppressed the whole time up to here (address !==
-    // null), so this is the FIRST time it has ever scheduled a timer for this
-    // mount — it still has to wait out its own trailing debounce before
-    // firing, same as any other query change.
-    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
-    // Falls through to a normal search (7d) — but still no AI row (7e).
+    // Falls back to being a normal search once the stat says "missing" (7d)
+    // — but still no AI row (7e), and no SECOND rank request: the query text
+    // itself never changed, only what it means.
     expect(rankCalls.map((c) => c.q)).toEqual(["/tmp/does-not-exist"]);
     expect(findByClass(box, "fh-ai-glyph")).toHaveLength(0);
     box.unmount();

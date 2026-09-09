@@ -690,6 +690,21 @@ export interface IndexRankResult {
   // matched row in one SQL statement with no candidate cap to hit.)
   truncated: boolean;
   total: number;
+  // The directory `hits` are relative to — the box's own root for a plain
+  // query, or wherever `resolve_query` (fused_render/index/query.py) walked a
+  // `~`/`/`-leading query out to. Not the box's root in general: a caller
+  // that joins `rel` onto a path (`answerFrom`, home-search.ts) must join it
+  // onto THIS, not onto whatever it asked with.
+  base: string;
+  // Which matcher actually ran: "substring" (today's `LIKE`-style pass,
+  // scored and ordered by `_rank_sql`) or "glob" (a `*`/`**` pattern,
+  // full-matched with no scoring at all — `_glob_sql`). Callers that
+  // recompute highlight positions client-side (`answerFrom`/`narrowAnswer`,
+  // `listing/ranked-hits.ts`) need this: a glob hit is not necessarily a
+  // substring of the query text at all (`*.csv` matching `report.csv` has no
+  // literal `"*.csv"` anywhere in the path), so re-running a substring test
+  // over it and dropping what fails would silently discard real hits.
+  mode: "substring" | "glob";
   // No `fresh`/`age_s`/`updated`/`root`: those are `search_under`'s wire
   // fields (`IndexCorpus`/the walk-search path), load-bearing there for the
   // in-folder corpus box's "indexing…" caveat. `search_ranked` used to

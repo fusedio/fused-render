@@ -45,6 +45,8 @@ function rankResult(over: Partial<IndexRankResult> = {}): IndexRankResult {
     hits: [rankHit("Downloads/a.csv")],
     truncated: false,
     total: 1,
+    base: HOME,
+    mode: "substring",
     ...over,
   };
 }
@@ -52,6 +54,8 @@ function rankResult(over: Partial<IndexRankResult> = {}): IndexRankResult {
 function answer(over: Partial<HomeAnswer> = {}): HomeAnswer {
   return {
     query: "a",
+    base: HOME,
+    mode: "substring",
     hits: [],
     truncated: false,
     total: 0,
@@ -177,6 +181,49 @@ describe("answerFrom", () => {
 
   it("carries the measured elapsed time through", () => {
     expect(answerFrom(rankResult(), "down", HOME, 123).elapsedMs).toBe(123);
+  });
+
+  it("builds a hit's path from the server's resolved base, not the box's own root", () => {
+    // A `~`/`/`-leading query can walk the server's resolved base out past
+    // the box's own root (resolve_query, fused_render/index/query.py) — a
+    // hit's rel is relative to THAT, not to `home`.
+    const out = answerFrom(
+      rankResult({ base: "/Users/me/a/b", hits: [rankHit("c.csv")] }),
+      "~/a/b/*.c",
+      HOME,
+      0,
+    );
+    expect(out.hits[0]!.path).toBe("/Users/me/a/b/c.csv");
+    expect(out.base).toBe("/Users/me/a/b");
+  });
+
+  it("does not re-run substringMatch on a glob hit, and never drops it", () => {
+    // A glob hit is not necessarily a substring of the typed query at all —
+    // "*.csv" matching "report.csv" has no literal "*.csv" anywhere in
+    // "report.csv" — so re-running substringMatch and dropping what fails
+    // would silently discard a real server hit.
+    const out = answerFrom(
+      rankResult({ mode: "glob", hits: [rankHit("report.csv")] }),
+      "*.csv",
+      HOME,
+      0,
+    );
+    expect(out.hits).toEqual([
+      {
+        path: `${HOME}/report.csv`,
+        rel: "report.csv",
+        is_dir: false,
+        size: 10,
+        mtime: 1_800_000_000,
+        positions: [],
+      },
+    ]);
+    expect(out.mode).toBe("glob");
+  });
+
+  it("still highlights a substring-mode hit exactly as before", () => {
+    const out = answerFrom(rankResult({ mode: "substring", hits: [rankHit("a.csv")] }), "a.csv", HOME, 0);
+    expect(out.hits[0]!.positions).toEqual([0, 1, 2, 3, 4]);
   });
 });
 
@@ -532,6 +579,20 @@ describe("narrowAnswer", () => {
     // what a fresh /api/index/rank request for "rdme" would answer.
     const held = answer({ query: "readme", hits: [homeHit("readme.md")] });
     expect(narrowAnswer(held, "rdme")).toEqual([]);
+  });
+
+  it("never narrows a glob-mode held answer locally — no local test can reproduce regexp_matches", () => {
+    // Extending a glob pattern by a keystroke does not narrow the same way
+    // extending a substring does (one more "*" can match an entirely
+    // different set of paths), so substringMatch is not a safe stand-in and
+    // this bails to an empty result rather than risk dropping a hit a fresh
+    // server round trip would still return.
+    const held = answer({
+      query: "*.csv",
+      mode: "glob",
+      hits: [homeHit("report.csv"), homeHit("draft.csv")],
+    });
+    expect(narrowAnswer(held, "*.csv?")).toEqual([]);
   });
 });
 
