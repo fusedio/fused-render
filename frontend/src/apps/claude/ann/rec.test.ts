@@ -30,6 +30,9 @@ interface FakeCapture {
   holdStart?: boolean;
   /** How that held start ends, when it ends in a refusal rather than a mic. */
   startFail?: Error;
+  /** The dismissed start's own `cancel()` held open, so a test can press the
+   *  mic INSIDE the teardown (`state === "cancelling"`). */
+  holdCancel?: boolean;
 }
 
 function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Error) {
@@ -41,6 +44,7 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
   let armed = false;
   let releaseStop: (() => void) | null = null;
   let releaseStart: (() => void) | null = null;
+  let releaseCancel: (() => void) | null = null;
   const timers = new Set<{ fn: () => void; ms: number }>();
   const delivered: Array<{ intro: string; spoke: boolean }> = [];
 
@@ -73,7 +77,7 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
     },
     cancel: () => {
       log.push("cancel");
-      return Promise.resolve({
+      const done = {
         id: "c1",
         mode: "audio",
         state: "cancelled",
@@ -82,6 +86,10 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
         seconds: plan.seconds,
         maxSeconds: 1800,
         jobId: "j1",
+      };
+      if (!plan.holdCancel) return Promise.resolve(done);
+      return new Promise<typeof done>((res) => {
+        releaseCancel = () => res(done);
       });
     },
   };
@@ -125,8 +133,13 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
     mode: {
       isArmed: () => armed,
       capable: () => true,
+      // AN ARM BUMPS THE EPOCH, as the real machine's does (`mode.ts`): the
+      // recorder now arms BEFORE the mic prompt and reads its own epoch back
+      // from that arm, so a fake that kept the number still would hand every
+      // start the epoch of the round before it.
       arm: () => {
         armed = true;
+        epoch += 1;
         log.push("arm");
       },
       disarm: () => {
@@ -165,10 +178,16 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
     },
     releaseStop: () => releaseStop && releaseStop(),
     releaseStart: () => releaseStart && releaseStart(),
+    releaseCancel: () => releaseCancel && releaseCancel(),
     setEpoch: (n: number) => {
       epoch = n;
     },
     isArmed: () => armed,
+    /** The reader was in Comment mode BEFORE the mic — the one case where the
+     *  start does not own the arming it finds. */
+    setArmed: (v: boolean) => {
+      armed = v;
+    },
   };
 }
 
@@ -481,7 +500,7 @@ describe("end() (T:8132)", () => {
     const w = makeWorld({ hold: true }, transcriptOf([[1, "hi"]]));
     await record(w);
     const settling = w.rec.end();
-    w.setEpoch(2); // the reader re-armed meanwhile
+    w.setEpoch(99); // the reader re-armed meanwhile
     w.releaseStop();
     await settling;
     expect(w.isArmed()).toBe(true);
@@ -542,7 +561,9 @@ describe("begin() (T:7858)", () => {
   test("warms the transcriber, arms the mode, starts the clock, syncs the URL", async () => {
     const w = makeWorld();
     await w.rec.begin();
-    expect(w.log).toEqual(["warm", "audio", "arm", "sync"]);
+    // ARMED FIRST, before the prompt: the start window is a mode like any
+    // other (Bugbot, PR #1074).
+    expect(w.log).toEqual(["arm", "warm", "audio", "sync"]);
     expect(w.rec.snapshot().state).toBe("recording");
     expect(w.isArmed()).toBe(true);
   });
@@ -635,14 +656,15 @@ describe("the START window (T:7898-7960)", () => {
     await begun;
     // STOPPED AND DELETED, not stopped and kept: the only thing in that file is
     // the time the prompt was up.
-    expect(w.log).toEqual(["warm", "audio", "cancel", "disarm"]);
+    // The mode was taken by the START and handed back BEFORE the teardown, so
+    // the strip never wears an armed face while the mic is put down.
+    expect(w.log).toEqual(["arm", "warm", "audio", "disarm", "cancel"]);
     expect(w.rec.snapshot().state).toBe("off");
     expect(w.rec.snapshot().busy).toBe(false);
     expect(w.isArmed()).toBe(false);
     // No session was ever opened: no clock, no marks, and the URL never said 2.
     expect(w.timers.size).toBe(0);
     expect(w.log).not.toContain("sync");
-    expect(w.log).not.toContain("arm");
   });
 
   test("the bar's trash inside `starting` is the same dismissal", async () => {
@@ -651,7 +673,7 @@ describe("the START window (T:7898-7960)", () => {
     await w.rec.discard();
     w.releaseStart();
     await begun;
-    expect(w.log).toEqual(["warm", "audio", "cancel", "disarm"]);
+    expect(w.log).toEqual(["arm", "warm", "audio", "disarm", "cancel"]);
     expect(w.rec.snapshot().state).toBe("off");
   });
 
@@ -670,11 +692,105 @@ describe("the START window (T:7898-7960)", () => {
     const w = makeWorld({ holdStart: true });
     const begun = w.rec.begin();
     await w.rec.end();
-    w.setEpoch(2); // the reader re-armed while the prompt was up
+    w.setEpoch(99); // the reader re-armed while the prompt was up
     w.releaseStart();
     await begun;
-    expect(w.log).toEqual(["warm", "audio", "cancel"]);
+    expect(w.log).toEqual(["arm", "warm", "audio", "cancel"]);
     expect(w.rec.snapshot().state).toBe("off");
+  });
+
+  // ARMED AT THE PRESS, not at the mic's arrival. Everything the mode hangs off
+  // `annOn` — Esc, the nav lock (← Chats, the recent rows), the narrow view's
+  // disarm — was OFF for the whole width of the prompt, because the arm used to
+  // wait for the capture to come back (Bugbot, PR #1074).
+  test("the mode is armed BEFORE the prompt, and the arm is this start's own epoch", async () => {
+    const w = makeWorld({ holdStart: true });
+    const begun = w.rec.begin();
+    expect(w.rec.snapshot().state).toBe("starting");
+    expect(w.isArmed()).toBe(true);
+    // Before the capture is even asked for: the order in the log is the order
+    // the reader's rules come alive in.
+    expect(w.log).toEqual(["arm", "warm", "audio"]);
+    w.releaseStart();
+    await begun;
+    // And the live recording does not arm a SECOND time on top of its own.
+    expect(w.log.filter((l) => l === "arm")).toHaveLength(1);
+    expect(w.rec.snapshot().state).toBe("recording");
+  });
+
+  test("a reader ALREADY in Comment mode keeps their round when the mic refuses", async () => {
+    // Comment mode first, then the mic: the arming the start finds is the
+    // READER's, so the refusal below is not this start's to undo.
+    const theirs = makeWorld({ holdStart: true, startFail: new Error("Permission denied") });
+    theirs.setArmed(true);
+    const refused = theirs.rec.begin();
+    theirs.releaseStart();
+    await refused;
+    expect(theirs.log).not.toContain("arm");
+    expect(theirs.log).not.toContain("disarm");
+    expect(theirs.isArmed()).toBe(true);
+    expect(theirs.log.some((l) => l.startsWith("alert:"))).toBe(true);
+
+    // …while a refusal on a mode the START took hands it straight back, rather
+    // than leaving the reader in a Comment round they never asked for.
+    const ours = makeWorld({ holdStart: true, startFail: new Error("Permission denied") });
+    const begun = ours.rec.begin();
+    ours.releaseStart();
+    await begun;
+    expect(ours.log).toEqual(["arm", "warm", "audio", "disarm", "alert:Cannot record — Permission denied"]);
+    expect(ours.isArmed()).toBe(false);
+  });
+
+  // A DISARM THE RECORDER NEVER HEARD ABOUT — a host `annSetMode`, a mode
+  // cycled while the request was out. Nobody raised the dismissal, so the reply
+  // arrives believing it owns the mode; the epoch it was started under says
+  // otherwise, and the capture is torn down rather than armed on a round that
+  // is not its own (Bugbot, PR #1074).
+  test("a capture landing after a disarm it never heard about is torn down, never armed", async () => {
+    const w = makeWorld({ holdStart: true });
+    const begun = w.rec.begin();
+    w.setEpoch(99); // a NEW arming owns the mode now
+    w.releaseStart();
+    await begun;
+    expect(w.log).toEqual(["arm", "warm", "audio", "cancel"]);
+    expect(w.rec.snapshot().state).toBe("off");
+    // No clock, no session, no "2" — and the round that owns the mode now is
+    // left exactly as it was.
+    expect(w.timers.size).toBe(0);
+    expect(w.log).not.toContain("sync");
+    expect(w.log).not.toContain("disarm");
+  });
+
+  // THE TEARDOWN IS NOT `off`. The dismissed start painted `off` and only THEN
+  // awaited its `cancel()`, and `begin()` refuses nothing but `off`: a second
+  // press inside that window opened a second capture while the first was still
+  // being deleted — two live mics, one known handle (Bugbot, PR #1074).
+  test("no second walkthrough can begin while a dismissed start is torn down", async () => {
+    const w = makeWorld({ holdStart: true, holdCancel: true });
+    const begun = w.rec.begin();
+    await w.rec.end(); // the dismissal
+    w.releaseStart();
+    await Promise.resolve();
+    await Promise.resolve();
+    // The teardown is in flight, and it says so.
+    expect(w.rec.snapshot().state).toBe("cancelling");
+    // The mic is not a status seat here: nothing to say, nothing to hold.
+    expect(w.rec.snapshot().status).toBe("");
+    expect(w.rec.snapshot().busy).toBe(false);
+
+    await w.rec.begin(); // the second press
+    expect(w.log.filter((l) => l === "audio")).toHaveLength(1);
+
+    w.releaseCancel();
+    await begun;
+    expect(w.rec.snapshot().state).toBe("off");
+    // …and the seat works again once the mic is actually down.
+    const again = w.rec.begin();
+    await Promise.resolve();
+    expect(w.log.filter((l) => l === "audio")).toHaveLength(2);
+    w.releaseStart();
+    await again;
+    expect(w.rec.snapshot().state).toBe("recording");
   });
 
   test("a click inside the window mints nothing — there is no clock to stamp it against", async () => {

@@ -250,6 +250,15 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
       set(deps.store.modeParam() === "1");
     },
     async done() {
+      // NOT THE WALKTHROUGH'S TO FINISH (Bugbot, PR #1074). Done is Comment
+      // mode's exit: through the recording, the start window and the settle the
+      // marks belong to the RECORDING and are waiting on its words, and a Done
+      // landing there auto-submitted them WORDLESS and disarmed the mode
+      // mid-transcription. The same refusal `notesDiscard` already makes, for
+      // the same reason — stated here and not only in the seats, because the
+      // injected bar and a stale render both reach this door directly.
+      const r0 = rec();
+      if ((r0 && r0.recording()) || phase !== null) return;
       // ONE AT A TIME (Bugbot, PR #664): the commit's await could span a second
       // Done click, which would see no open composer, read the just-saved note as
       // merely pending, and send it twice.

@@ -194,8 +194,10 @@ describe("§D — the recording rows", () => {
   // could cancel the capture still on its way (Bugbot, PR #1074).
   test("the START window is recording: the recording face, and a dismissal reaches end()", () => {
     const r = rig();
-    // Straight for the mic, nothing armed underneath: the recorder arms the
-    // mode only once the request comes back.
+    // Straight for the mic, with nothing armed underneath YET: the recorder
+    // arms the mode itself at the press (`rec.ts`, Bugbot PR #1074), and this
+    // rig stands in for the window between the two — the state the machine has
+    // to read as a recording whichever order the two land in.
     r.rec.on = true;
     expect(modeOf(r)).toBe("recording");
     r.machine.set(false);
@@ -330,6 +332,31 @@ describe("§D — comment → off", () => {
     r.releaseCommit();
     await Promise.all([first, second]);
     expect(r.log.filter((l) => l === "submit")).toHaveLength(1);
+  });
+
+  test("Done is NOT the walkthrough's exit: refused while it records and while it settles", async () => {
+    // The marks a walkthrough's clicks leave are stamped and WORDLESS until the
+    // transcript lands, and `isSendable` counts them as messages — so a Done
+    // reaching this door mid-settle auto-submitted them empty and disarmed the
+    // mode while the transcription was still on its way (Bugbot, PR #1074).
+    const r = rig();
+    r.machine.set(true);
+    r.store.add({ content: "", t: 4.5 });
+    r.rec.on = true; // the recording, and the mic prompt's own window with it
+    await r.machine.done();
+    expect(r.log).not.toContain("submit");
+    expect(modeOf(r)).toBe("recording");
+
+    // Through Stopping…/Transcribing… the recorder's own flag is already down —
+    // the phase is what says the marks are still the recording's.
+    r.beginSettle();
+    await r.machine.done();
+    expect(r.log).not.toContain("submit");
+    expect(modeOf(r)).toBe("settling");
+    r.finishSettle("transcribing");
+    await r.machine.done();
+    expect(r.log).not.toContain("submit");
+    expect(modeOf(r)).toBe("transcribing");
   });
 
   test("Esc in Comment mode DISCARDS the round (PR #1028) and leaves the mode", () => {

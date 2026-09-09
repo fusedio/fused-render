@@ -165,3 +165,18 @@ test("the start window keeps the RESTING mic face — nothing to stop, nothing t
   expect(seats[0]["aria-pressed"]).toBe("false");
   expect(words).toBe("Annotate");
 });
+
+test("a dismissed start being put back down is inert too — `begin()` refuses for its width", () => {
+  // `cancelling`: the mic came up behind a reader who had already left and its
+  // `cancel()` is in flight. The mode is handed back by then, so nothing else
+  // marks the seat unavailable — and the recorder refuses a second `begin()`
+  // until the teardown resolves, so a live-looking seat here is a dead click
+  // (Bugbot, PR #1074).
+  const { seats, words } = draw(snap("cancelling"));
+  expect(seats).toHaveLength(1);
+  expect(seats[0].disabled).toBe(true);
+  expect(seats[0]["aria-disabled"]).toBe("true");
+  // No status of its own: the walkthrough did not happen.
+  expect(words).toBe("Annotate");
+  expect(commentSeatName(snap("cancelling"))).toBeNull();
+});

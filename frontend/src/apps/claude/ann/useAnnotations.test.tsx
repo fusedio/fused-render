@@ -19,7 +19,7 @@ installDomShim();
 import { beforeEach, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
-const { useAnnotations } = await import("./useAnnotations");
+const { useAnnotations, seatsAria } = await import("./useAnnotations");
 const { createMemoryParamsStore } = await import("../params/store");
 import type { AnnotationsApi } from "./useAnnotations";
 
@@ -571,4 +571,52 @@ test("the nav lock is HANDED BACK when the target goes away while armed", () => 
   // on and ← Chats disabled with no way back.
   expect(locks[locks.length - 1]).toBe(false);
   expect(api!.locked).toBe(false);
+});
+
+// ── the strip's seats through a walkthrough (Bugbot, PR #1074) ──────────────
+
+// THE COMMENT SEAT IS THE WALKTHROUGH'S UNTIL ITS WORDS LAND. `seatsAria` asked
+// only whether a recording was LIVE, so through Stopping…/Transcribing… the
+// seat came back with the armed `.on` ✓ Done face on it — enabled, spoken as
+// available, and named "unavailable while the recording settles" by the very
+// same strip.
+test("`seatsAria` keeps the Comment seat inert for every state the recorder owns", () => {
+  expect(seatsAria("off")).toEqual({ comment: false, annotate: false, screenshot: false });
+  // A typed round: Done is exactly what the seat is for.
+  expect(seatsAria("comment")).toEqual({ comment: false, annotate: true, screenshot: true });
+  // The recording AND the mic prompt's own window (`mode()` calls both
+  // "recording"), then both tenses of the settle.
+  expect(seatsAria("recording")).toEqual({ comment: true, annotate: false, screenshot: true });
+  expect(seatsAria("settling").comment).toBe(true);
+  expect(seatsAria("transcribing").comment).toBe(true);
+});
+
+test("a Done reaching the seat mid-transcription sends nothing and leaves the mode alone", async () => {
+  const w = mount();
+  arm();
+  // The wordless stamped marks a walkthrough's clicks leave behind: sendable
+  // (`isSendable`), and waiting on the transcript for their words.
+  act(() => {
+    api!.store.add({ content: "", t: 1.2 });
+  });
+  act(() => api!.machine.setPhase("transcribing"));
+  expect(api!.mode).toBe("transcribing");
+
+  // The seat, and the door behind it: both refuse. Before this, the click ran
+  // `done()` — the marks were auto-submitted WORDLESS and the mode disarmed
+  // while the transcription was still on its way.
+  act(() => api!.onCommentSeat());
+  await act(async () => {
+    await api!.done();
+  });
+  expect(w.autoSubmits.n).toBe(0);
+  expect(api!.annotations[0]!.sent).toBeFalsy();
+  expect(api!.mode).toBe("transcribing");
+
+  // …and once the words have landed the seat is a Done again.
+  act(() => api!.machine.setPhase(null));
+  act(() => api!.onCommentSeat());
+  await act(async () => {});
+  expect(w.autoSubmits.n).toBe(1);
+  expect(api!.mode).toBe("off");
 });

@@ -94,7 +94,15 @@ export function RecControls({
   // recording runs — otherwise a second click before the app answers the first
   // one opens two recordings (T:7868-7871). Through the settle the seat is a
   // status, and while a typed comment mode is armed it is inert.
-  const inert = rec.state === "starting" || rec.busy || (!live && commentArmed);
+  // `cancelling` counts as well — a dismissed start being put back down. The
+  // mode is already handed back by then, so nothing else marks the seat
+  // unavailable, and `begin()` refuses for the width of that teardown: a press
+  // inside it would be a dead click (Bugbot, PR #1074).
+  const inert =
+    rec.state === "starting" ||
+    rec.state === "cancelling" ||
+    rec.busy ||
+    (!live && commentArmed);
   return (
     <>
       <button

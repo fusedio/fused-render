@@ -788,10 +788,15 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     chips,
 
     onCommentSeat() {
-      const r = liveOpts.current.recorder?.();
-      // While a walkthrough records the seat is INERT (2026-09-06): the stop is
-      // the bar's ■, not a neighbouring seat.
-      if (r && r.recording()) return;
+      // WHILE A WALKTHROUGH OWNS THE MODE THE SEAT DOES NOTHING (2026-09-06):
+      // the stop is the bar's ■, not a neighbouring seat. Through the START
+      // window and the settle as well as the recording itself — the same set
+      // `seatsAria` draws inert, so what the seat SAYS and what it DOES cannot
+      // disagree, and a click reaching this from a stale render mid-settle
+      // cannot send the marks the transcript is still on its way to fill
+      // (Bugbot, PR #1074).
+      const m = machine.mode();
+      if (m !== "off" && m !== "comment") return;
       if (machine.armed()) void machine.done();
       else machine.set(true);
     },
@@ -899,5 +904,15 @@ export function seatsAria(mode: AnnMode): {
 } {
   const recording = mode === "recording";
   const armed = mode !== "off";
-  return { comment: recording, annotate: armed && !recording, screenshot: armed };
+  // THE WALKTHROUGH OWNS THE SEAT UNTIL ITS WORDS LAND (Bugbot, PR #1074).
+  // `recording` alone was the whole test, so through Stopping…/Transcribing…
+  // the seat came back to life wearing the `.on` ✓ Done face — and a click
+  // there ran `done()`: it auto-submitted the walkthrough's wordless stamped
+  // marks and disarmed the mode mid-transcription, so the transcript landed on
+  // notes that had already been sent empty. Every state but `off` and `comment`
+  // is the recorder's, start window and settle alike, and the seat is inert for
+  // all of them (`COMMENT_SEAT_WHILE_SETTLING` already NAMES it that way — this
+  // is the other half of the same fact).
+  const owned = armed && mode !== "comment";
+  return { comment: owned, annotate: armed && !recording, screenshot: armed };
 }

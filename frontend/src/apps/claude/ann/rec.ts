@@ -91,6 +91,14 @@ export interface RecModePort {
 export type RecState =
   | "off"
   | "starting"
+  /** A DISMISSED START being put back down: the mic came up behind a reader who
+   *  had already left, and `cancel()` is in flight. Its own state and not `off`
+   *  because `begin()` refuses anything but `off` — with the teardown painted as
+   *  `off` before its await, a second press inside that window opened a SECOND
+   *  capture while the first was still being deleted (Bugbot, PR #1074). Not
+   *  `busy` either: the mode is handed back before the await, so there is no
+   *  status to show and no nav lock to hold — the walkthrough did not happen. */
+  | "cancelling"
   | "recording"
   | "stopping"
   | "transcribing"
@@ -406,14 +414,25 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     // is not a guard a function call sees.
     if (state !== "off") return;
     if (!deps.mode.capable()) return;
-    // WHICH arming this start belongs to, read before the window opens: the
-    // dismissal below hands the mode back, and a round the reader armed while
-    // the request was out is not this start's to close (the epoch rule
-    // `end()`/`discard()` already follow).
-    const armedAtStart = deps.mode.epoch();
     startCancelled = false;
     state = "starting";
     paint();
+    // ARMED AT THE START, BEFORE THE PROMPT (Bugbot, PR #1074). Everyone else
+    // already reads the start window as a recording (`AnnRecorder.recording()`
+    // counts "starting"), but the mode itself was only armed once the capture
+    // came BACK — so through the whole mic prompt `annOn` was false and every
+    // rule hung off it was off with it: Esc did nothing (`escapeAction` asks
+    // `armed()`), the nav lock was not taken so ← Chats and the recent rows
+    // stayed live, and `arriveNarrowChat` left the window running. Arming here
+    // makes the window a mode like any other; the dismissal paths below hand it
+    // back.
+    const weArmed = !deps.mode.isArmed();
+    if (weArmed) deps.mode.arm();
+    // WHICH arming this start belongs to, read AFTER the arm above (an arm is
+    // what bumps the epoch): the dismissal paths hand the mode back, and a
+    // round the reader armed while the request was out is not this start's to
+    // close (the epoch rule `end()`/`discard()` already follow).
+    const armedAtStart = deps.mode.epoch();
     deps.warm();
     let rec: AudioRecording;
     try {
@@ -438,6 +457,12 @@ export function createRecorder(deps: RecorderDeps): Recorder {
         if (deps.mode.epoch() === armedAtStart) deps.mode.disarm();
         return;
       }
+      // REFUSED, AND THE MODE WAS OURS TO TAKE: hand it back, or the mic's own
+      // refusal would leave the reader in a Comment round they never asked for
+      // (the arm above is this start's, not theirs). A reader who WAS in Comment
+      // mode keeps it — `weArmed` is false there — and a re-arm inside the
+      // window owns a new epoch this start must not close.
+      if (weArmed && deps.mode.epoch() === armedAtStart) deps.mode.disarm();
       // Nothing appended: the sentence carries the MACHINE's own answer (System
       // Settings, or a browser that can), and the fixed "allow microphone
       // access" line this used to add was wrong for half of them (T:7888-7893).
@@ -450,22 +475,40 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     // leave the prompt's own seconds on disk as a download row. Nothing is
     // armed, no session is opened and the URL never says "2" — the walkthrough
     // did not happen.
-    if (startCancelled) {
+    // …OR THE ARMING IT BELONGED TO IS GONE. A disarm the recorder never heard
+    // about (a re-arm on top of it, a mode cycled while the request was out)
+    // leaves this reply owning nothing: the epoch it was started under is not
+    // the epoch on screen, so the capture is TORN DOWN rather than armed on
+    // somebody else's round (Bugbot, PR #1074).
+    if (startCancelled || deps.mode.epoch() !== armedAtStart) {
       startCancelled = false;
-      state = "off";
+      // NOT `off` UNTIL THE TEARDOWN RESOLVES. `begin()` refuses anything but
+      // `off`, and painting `off` here — before the `cancel()` below — let a
+      // second press start a second capture while this one was still being
+      // deleted; both mics would then be live and only one handle known
+      // (Bugbot, PR #1074).
+      state = "cancelling";
       paint();
+      // THE MODE GOES FIRST, before the await rather than after it: the same
+      // epoch-guarded hand-back the two enders do (it is also what rewrites the
+      // "2" the disarm wrote), and doing it here means the strip never wears an
+      // armed ✓ Done face for the width of a teardown nobody is watching.
+      if (deps.mode.epoch() === armedAtStart) deps.mode.disarm();
       await rec.cancel().catch((err: unknown) => {
         warn("walkthrough start cancel failed:", errText(err));
         return null;
       });
-      // AND THE MODE GOES WITH IT — the same epoch-guarded hand-back the two
-      // enders do, which is also what rewrites the "2" the disarm wrote.
-      if (deps.mode.epoch() === armedAtStart) deps.mode.disarm();
+      // Only ours to clear: nothing else can have moved the state (`begin()`
+      // refuses `cancelling`), and the guard says so rather than assuming it.
+      if (state === "cancelling") {
+        state = "off";
+        paint();
+      }
       return;
     }
     // Recording needs the same click handler the typed mode uses, just pointed
-    // the other way — arm it if the reader went straight for the mic without
-    // sliding Comment on first (T:7895-7897).
+    // the other way — armed at the start above, and re-asserted here for the
+    // caller that armed nothing (T:7895-7897).
     if (!deps.mode.isArmed()) deps.mode.arm();
     ids = [];
     handle = rec;

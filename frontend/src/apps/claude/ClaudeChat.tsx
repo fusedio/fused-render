@@ -962,7 +962,13 @@ function ChatBody(props: ChatBodyProps) {
       // `set(false)` skipped `end()`, so a dismissal could not cancel the
       // in-flight capture and the mic came up after the reader had left
       // (Bugbot, PR #1074). `commentSeatName` already read it this way; this is
-      // the other half of the same fact.
+      // the other half of the same fact — and `rec.ts` arms the MODE at the
+      // press for the same reason, so `armed()` (Esc, the nav lock, the narrow
+      // view's disarm) is true for that window too.
+      //
+      // `cancelling` is NOT here: a dismissed start being put back down has
+      // already handed the mode back, and calling it a recording would send
+      // `set(false)` looking for something to stop.
       recording: () => {
         const s = recorder.snapshot().state;
         return s === "starting" || s === "recording";
