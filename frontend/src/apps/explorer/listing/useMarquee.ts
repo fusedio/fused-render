@@ -264,7 +264,14 @@ export function useMarquee({
       // A pre-slop press abandoned outside the scroller (see the pointerleave
       // handler below) can leave nothing behind — but mouse pointer ids are
       // reused, so any state that DID survive here would match this new
-      // press's moves and resurrect a dead sweep under the drag.
+      // press's moves and resurrect a dead sweep under the drag. `removeBand`
+      // first: a live sweep whose `pointerup` never arrived (the browser owes
+      // none once capture is lost some other way, and `setPointerCapture`
+      // itself is wrapped in try/catch above precisely because it can fail)
+      // would otherwise leave its `.marquee-band` div orphaned in the DOM —
+      // nulling `drag.current` without removing it first drops the only
+      // reference the element had.
+      removeBand();
       drag.current = null;
       dragRef.current({
         path,
