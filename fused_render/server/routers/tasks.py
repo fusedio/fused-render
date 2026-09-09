@@ -176,6 +176,11 @@ _SCAN: dict[str, dict] = {}
 _SCAN_DIRTY = False
 _SCAN_SAVED_AT = 0.0
 _SCAN_MAX = 20000
+# Has this process read the cache file yet? A save before that would replace a
+# populated file with the empty caches of a process that never got going — a
+# shutdown that beats the warm thread to it (Bugbot, #1081). Until the load
+# has happened there is nothing here worth writing over what is on disk.
+_SCAN_LOADED = False
 # path -> (size, [every prompt]). The expensive parse, kept only for the handful
 # of threads a user actually opens.
 _FULL: dict[str, tuple[int, list[dict]]] = {}
@@ -191,12 +196,13 @@ _WINDOW_MAX = 16
 def reset_cache() -> None:
     """Forget every cached transcript read. For tests, and for any caller that
     wants the next listing to re-read from disk unconditionally."""
-    global _SCAN_DIRTY, _SCAN_SAVED_AT, _BUILD_SEQ, _OBSERVED_SEQ
+    global _SCAN_DIRTY, _SCAN_SAVED_AT, _BUILD_SEQ, _OBSERVED_SEQ, _SCAN_LOADED
     _SCAN.clear()
     _FULL.clear()
     _WINDOW.clear()
     _SCAN_DIRTY = False
     _SCAN_SAVED_AT = 0.0
+    _SCAN_LOADED = False
     _BUILD_SEQ = 0
     _OBSERVED_SEQ = 0
     tasks_store.reset_cache()
@@ -1948,6 +1954,8 @@ def load_scan_cache() -> int:
     still matches is a hit, one that grew is read from `offset`, one that
     shrank or vanished is re-read from zero or skipped. Returns how many scan
     records were taken. Never raises."""
+    global _SCAN_LOADED
+    _SCAN_LOADED = True  # even a missing or bad file: saving is fair from here
     try:
         data = storage.read_json(_scan_cache_path())
     except Exception:  # noqa: BLE001 — a cache that cannot be read is no cache
@@ -1974,6 +1982,8 @@ def save_scan_cache(prune: bool = True) -> None:
     nobody is waiting. Never raises: a store that cannot be written costs the
     next launch a full read, not the listing."""
     global _SCAN_DIRTY, _SCAN_SAVED_AT
+    if not _SCAN_LOADED:
+        return  # nothing read yet: the file on disk knows more than we do
     try:
         if prune:
             scan = {p: rec for p, rec in _SCAN.items() if os.path.exists(p)}

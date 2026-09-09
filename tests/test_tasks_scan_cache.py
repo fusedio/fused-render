@@ -218,6 +218,7 @@ def test_listings_write_at_most_once_per_window(projects_dir, state_dir, monkeyp
     monkeypatch.setattr(tasks_mod.storage, "write_json",
                         lambda p, d: (p == str(cache) and writes.append(p), real(p, d)))
 
+    tasks_mod.load_scan_cache()  # a process that has looked at the file may write it
     tasks_mod._task_rows()  # cold: read bytes → dirty → first write
     assert len(writes) == 1
     tasks_mod._task_rows()  # nothing read: not dirty → no write
@@ -294,3 +295,22 @@ def test_an_older_listing_never_overwrites_the_desk_after_a_newer_one(projects_d
     monkeypatch.setattr(tasks_mod, "_OBSERVED_SEQ", tasks_mod._BUILD_SEQ + 5)
     tasks_mod._task_rows()
     assert seen == [1], "the stale ticket did not reach the desk"
+
+
+def test_a_save_before_the_load_leaves_the_file_alone(projects_dir, state_dir):
+    """Shutdown can beat the warm thread. A process that never read the file
+    has empty caches, and writing them would throw away every offset the last
+    process saved (Bugbot, #1081)."""
+    _transcript(projects_dir)
+    tasks_mod.warm()
+    cache = state_dir / tasks_mod.SCAN_CACHE_FILE
+    before = cache.read_text()
+    assert json.loads(before)["scan"]
+
+    _new_process()
+    tasks_mod.save_scan_cache()  # the shutdown handler, before any load
+    assert cache.read_text() == before
+
+    tasks_mod.load_scan_cache()
+    tasks_mod.save_scan_cache()  # after a load, saving is fair again
+    assert json.loads(cache.read_text())["scan"]
