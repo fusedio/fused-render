@@ -752,22 +752,16 @@ function TemplatePreview({
   // is nothing to borrow — offering both would draw the same mode twice.
   const parentDir = dirname(fsPath);
   const ownGit = parts.sidebar.some((e) => e.mode === "git");
-  const ownMcp = parts.sidebar.some((e) => e.mode === "mcp");
   const parentGit = useDirMode(splitCapable && !ownGit ? parentDir : null, "git");
-  const parentMcp = useDirMode(splitCapable && !ownMcp ? parentDir : null, "mcp");
-  // MCP IS NOT A SIDEBAR COMPANION ANY MORE — the column holds Claude and Git as
-  // two tabs (SideChrome's SideTabs), and MCP opens as a dialog off the crumb
-  // bar's kebab (EntryActionsMenu → McpDialog; the argument is on McpDialog).
-  // So the `mcp` entry — the parent's, or the file's own if a registry bound it
-  // there — is kept OUT of everything `sideSplit` sees (`own`, `borrowed`,
-  // `bound`) and out of the switcher's rows, and is read only by `mcpSrc` below.
-  // The parent probe stays: it is what tells the kebab's row whether there is an
-  // MCP manifest to show. A `?_side=mcp` deep link now resolves to the default
-  // companion, which is the same thing an unknown `_side` always did.
-  //
-  // One list still, because `sideSplit` ranks the assembled set; the pending
-  // half names MODES rather than being a flag for the same reason it did when
-  // two probes fed it.
+  // The parent's MCP manifest, probed the same way — but never a sidebar entry
+  // (mode-visibility's SIDEBAR_MODES is Claude and Git): it feeds the kebab's
+  // "MCP config" row and the dialog behind it (`mcpSrc`, below).
+  const parentMcp = useDirMode(splitCapable ? parentDir : null, "mcp");
+  // One list, though `git` is the only borrowed companion (`mcp` was the second
+  // and is a dialog now — McpDialog), because `sideSplit` ranks the assembled
+  // set; the pending half names MODES rather than being a flag for the same
+  // reason. A `?_side=mcp` deep link resolves to the default companion, as any
+  // unknown `_side` does.
   const borrowedEntries = [!ownGit ? parentGit.entry : null].filter(
     (e): e is TemplateEntry => !!e
   );
@@ -777,8 +771,7 @@ function TemplatePreview({
   // and a predicate rather than three `m === "git" && !ownGit` because a file that
   // binds the mode itself must answer no at every one of them or the sidebar aims
   // a file-scoped view at the parent directory.
-  const isBorrowedMode = (m: string): boolean =>
-    (m === "git" && !ownGit) || (m === "mcp" && !ownMcp);
+  const isBorrowedMode = (m: string): boolean => m === "git" && !ownGit;
   // Registry order for the file's own companions, then SIDEBAR_MODES order over
   // the assembled list — Claude / Git, whatever the registry ranked
   // (see orderSidebarModes). `on` vs `offered` is the pending placeholder's whole
@@ -799,7 +792,7 @@ function TemplatePreview({
   const split = sideSplit({
     splitCapable,
     content: parts.content,
-    own: parts.sidebar.filter((e) => e.mode !== "mcp"),
+    own: parts.sidebar,
     borrowed: borrowedEntries,
     borrowedPending: borrowedPendingModes,
     // This file's own gates, for `defaultSide` alone: an absent `_side` must not
@@ -808,7 +801,7 @@ function TemplatePreview({
     // mount-backed file the answer is no (lib/preview-side's `defaultSide`).
     conditionsPending: conditions === null,
     bound: [
-      ...partitionModes(stat.templates).sidebar.filter((e) => e.mode !== "mcp"),
+      ...partitionModes(stat.templates).sidebar,
       ...(parentGit.bound ? [parentGit.bound] : []),
     ],
   });
@@ -827,11 +820,7 @@ function TemplatePreview({
   // every decision below (`sideEntry`, `activeSide`, the toggle, the reconcile)
   // reads the short list, so a disabled row can be rendered without becoming
   // something the URL or the split can land on.
-  // Minus the `mcp` row `sidebarMenu` (lib/preview-side) still lays for every
-  // SIDEBAR_MODES member: that constant is shared with the folder pane, where MCP
-  // is still a pane mode, so the file sidebar drops the row here rather than
-  // there.
-  const sidebarMenu = split.offered ? split.menu.filter((e) => e.mode !== "mcp") : [];
+  const sidebarMenu = split.offered ? split.menu : [];
   // Pending, for a SIDEBAR entry. A borrowed entry is gated on the PARENT's
   // verdicts, resolved by lib/dir-mode — not on any of this file's, so it cannot
   // go through `isPending` (which reads `conditions`, this file's map, and would
@@ -1616,18 +1605,15 @@ function TemplatePreview({
       `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`
     );
   };
-  // The MCP dialog's document: the same URL shape `sideSrcFor` builds, for the
-  // one companion that is no longer in `sidebarModes` (see the borrowed-entries
-  // comment). The file's own `mcp` binding wins over the parent's, as it did in
-  // the sidebar; `null` while the parent's probe is out or when nothing offers
-  // the mode, which is what the kebab's row reads to disable itself.
-  const mcpEntry =
-    parts.sidebar.find((e) => e.mode === "mcp") ?? (parentMcp.pending ? null : parentMcp.entry);
+  // The MCP dialog's document: the same URL shape `sideSrcFor` builds for a
+  // borrowed companion, aimed at the PARENT folder (the manifest is the app's).
+  // `null` while the parent's probe is out or when the folder is not an app,
+  // which is what the kebab's row reads to disable itself.
+  const mcpEntry = parentMcp.pending ? null : parentMcp.entry;
   const mcpSrc =
     mcpEntry && mcpEntry.path !== null
       ? `/render?path=${encodeURIComponent(mcpEntry.path)}` +
-        `&_file=${encodeURIComponent(isBorrowedMode("mcp") ? parentDir : fsPath)}` +
-        `${isBorrowedMode("mcp") ? "" : remote}${thumbFlags}`
+        `&_file=${encodeURIComponent(parentDir)}${thumbFlags}`
       : null;
   // The claude iframe's REMOUNT key, distinct from the mode name `active`
   // everything else keys off of (the switcher's highlighted row, the title).
@@ -1880,7 +1866,7 @@ function TemplatePreview({
             splitCapable
               ? {
                   available: mcpSrc !== null,
-                  pending: !parts.sidebar.some((e) => e.mode === "mcp") && parentMcp.pending,
+                  pending: parentMcp.pending,
                   reason: unavailableReason("mcp"),
                 }
               : undefined

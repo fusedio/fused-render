@@ -1,6 +1,7 @@
 // Right-hand preview pane for the directory listing (views/Listing.tsx): the
-// OPEN FOLDER's companions — `claude` (chat about the folder), `git` (its
-// working tree) and `mcp` (its MCP tools) — never the selection.
+// OPEN FOLDER's companions — `claude` (chat about the folder) and `git` (its
+// working tree) — never the selection. (`mcp`, its MCP tools, is a dialog off the
+// search row's kebab rather than a pane mode.)
 // listing/pane-side.ts owns the list and the `_side` param that records which.
 //
 // **THE PANE NO LONGER FOLLOWS THE SELECTION AT ALL** (D460, superseding
@@ -86,18 +87,17 @@ export default function ListingPreviewPane({
   // spinning while its probe is out (paneSideMenu), rather than dropped, so a
   // mount-backed folder's pane header still says what it cannot show.
   //
-  // `mcp` is filtered out of the rows paneSideMenu lays: it is no longer a pane
-  // mode (Listing hands it in as never offered) but a dialog off the search
-  // row's kebab (EntryActionsMenu → McpDialog). The row stays in
-  // PANE_SIDE_COMPANIONS because the parser and the tests speak that list.
+  // (`mcp` is not a pane mode — PANE_SIDE_COMPANIONS is the pair — but a dialog
+  // off the search row's kebab, EntryActionsMenu → McpDialog.)
   //
   // Unlike before D460 this list HOLDS STILL as the selection moves, because
   // nothing here ever read the selection.
   const sideTabs = (
     <SideTabs
-      tabs={paneSideMenu(sideEntries)
-        .filter((e) => e.mode !== "mcp")
-        .map((e) => ({ ...e, icon: paneSideIcon(e.mode, sideEntries) }))}
+      tabs={paneSideMenu(sideEntries).map((e) => ({
+        ...e,
+        icon: paneSideIcon(e.mode, sideEntries),
+      }))}
       active={side}
       onSelect={(m) => onSelectSide(m as PaneSideChoice)}
     />

@@ -381,8 +381,8 @@ export default function Listing({
   const folderClaude = useDirMode(paneEnabled ? fsPath : null, "claude");
   const folderGit = useDirMode(paneEnabled ? fsPath : null, "git");
   // `mcp` for the same reason as `git`: the manifest it curates covers the FOLDER
-  // (templates/mcp/condition.py), so a folder that is not an app shows the pill
-  // disabled rather than not at all.
+  // (templates/mcp/condition.py). Not a pane mode — it gates the kebab's "MCP
+  // config" row (below) and the dialog behind it.
   const folderMcp = useDirMode(paneEnabled ? fsPath : null, "mcp");
   // While the probe is in flight the entries are PLACEHOLDERS with no template
   // path (lib/dir-mode), which would build a `path=null` iframe URL — so a
@@ -399,23 +399,18 @@ export default function Listing({
   // Git row is the Git glyph dimmed instead of a boxed "G". Nothing else reads
   // either; what the pane may BE is still `claude`/`git` alone.
   //
-  // MCP IS NOT A PANE MODE ANY MORE: the pane's switcher is a two-tab strip over
-  // Claude and Git (SideChrome's SideTabs), and the MCP companion opens as a
-  // dialog off the search row's kebab (EntryActionsMenu → McpDialog, the same
-  // arrangement the file preview has). So `mcp` is handed to the pane machinery
-  // as "never offered, never pending" — `paneSideList` then cannot put the pane
-  // on it, and a `?_side=mcp` deep link lands on the leading companion like any
-  // other unknown value — while the `folderMcp` probe itself feeds `mcpSrc` below.
+  // MCP IS NOT A PANE MODE (listing/pane-side's PANE_SIDE_COMPANIONS): the
+  // pane's switcher is a two-tab strip over Claude and Git (SideChrome's
+  // SideTabs), and the MCP companion opens as a dialog off the search row's
+  // kebab (EntryActionsMenu → McpDialog, the same arrangement the file preview
+  // has). The `folderMcp` probe above feeds that row alone, through `mcpSrc`.
   const sideEntries = {
     claude: folderClaude.pending ? null : folderClaude.entry,
     git: folderGit.pending ? null : folderGit.entry,
-    mcp: null,
     claudePending: folderClaude.pending,
     gitPending: folderGit.pending,
-    mcpPending: false,
     claudeBound: folderClaude.bound,
     gitBound: folderGit.bound,
-    mcpBound: null,
   };
   // The MCP dialog's document — the URL ListingPreviewPane built for the mcp
   // pane (`_file` is the folder, `_noopen=1` so the render is not recorded as an
