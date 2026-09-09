@@ -2167,6 +2167,14 @@ table.listing-table td.name {
  * to end, and a long enough name could claim the whole row for the drag
  * source, leaving nowhere in it to start a sweep from.
  *
+ * The `calc(100% - 48px)` clamp is computed against `td.name`'s CONTENT box,
+ * which at the documented minimum list-column width (LIST_MIN_W, pane-math.ts)
+ * is itself only a few dozen pixels once the cell's own padding comes out —
+ * so the bare calc alone can go negative and clamp to 0, erasing the icon and
+ * name entirely with the preview pane dragged wide. `max(52px, ...)` keeps a
+ * floor under that: the row always renders its handle, at the cost of the
+ * dead-space guarantee only in a column already too narrow to spare any.
+ *
  * inline-flex so it hugs its contents rather than filling the cell, and
  * min-width:0 so a long name still ellipsizes inside it (the .search-path
  * child's overflow rule needs a shrinkable parent). */
@@ -2175,7 +2183,7 @@ table.listing-table td.name .row-handle {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  max-width: calc(100% - 48px);
+  max-width: max(52px, calc(100% - 48px));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
