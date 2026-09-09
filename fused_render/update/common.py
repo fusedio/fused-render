@@ -41,7 +41,15 @@ DOWNLOAD_TIMEOUT_S = 300.0
 # competes with a whole app launch at this moment; the mac manager wants the
 # check sooner and uses MAC_STARTUP_DELAY_S instead.
 STARTUP_DELAY_S = 10.0
-CHECK_INTERVAL_S = 6 * 60 * 60
+# Every hour, not the 6 h it used to be (Akshil, 2026-09-09): a release should
+# be noticed within minutes of the user coming back to the app, not up to six
+# hours later. A check is one ~300-byte signed GET on CloudFront, so the cost
+# of the 6x-tighter cadence is nothing next to a release sitting unnoticed for
+# most of a working day. The mac client additionally checks when the app comes
+# back to the front after being idle (update-status.ts), which is what actually
+# closes the gap; this interval is the floor under a session left open.
+# Shared with the Windows tray updater (supervisor/_win32/update.py).
+CHECK_INTERVAL_S = 60 * 60
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_BYTES = 600 * 1024 * 1024
 DOWNLOAD_CHUNK = 1024 * 1024

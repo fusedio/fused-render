@@ -109,7 +109,7 @@ def test_check_failure_keeps_available(monkeypatch):
         raise OSError("offline")
 
     monkeypatch.setattr(common, "fetch_manifest", boom)
-    status = manager.check()
+    status = manager.check(force=True)
     assert status["state"] == "available"
     assert status["latest_version"] == "9.9.9"
 
@@ -196,7 +196,7 @@ def test_brew_install_takes_the_dmg_path(monkeypatch, tmp_path):
     path for every install type (D767) — and carries no command with it."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     manager._method = "brew"
-    manager.check()
+    manager.check(force=True)
     assert manager.status()["manual_command"] is None
 
     # Recorded, not real: `_install_dmg` would otherwise download the manifest's
@@ -221,7 +221,7 @@ def test_a_failed_brew_install_has_no_terminal_command(monkeypatch, tmp_path):
     itself (the cask's `uninstall quit:` would quit the app mid-upgrade)."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     manager._method = "brew"
-    manager.check()
+    manager.check(force=True)
     monkeypatch.setattr(manager, "_install_dmg",
                         lambda manifest: (_ for _ in ()).throw(RuntimeError("boom")))
     manager.install()
@@ -246,7 +246,7 @@ def test_a_failed_dmg_install_has_no_terminal_command(monkeypatch, tmp_path):
 
 def test_status_notices_external_upgrade_without_a_check(monkeypatch):
     """The badge polls status() every minute; a terminal `brew upgrade` must
-    flip it to "installed" then, not after the next multi-hour check tick."""
+    flip it to "installed" then, not after the next hourly check tick."""
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     assert manager.check()["state"] == "available"
     monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
@@ -261,7 +261,7 @@ def test_brew_external_upgrade_flips_check_to_installed(monkeypatch):
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     assert manager.check()["state"] == "available"
     monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
-    status = manager.check()
+    status = manager.check(force=True)
     assert status["state"] == "installed"
     assert status["manual_command"] is None
 
@@ -277,7 +277,7 @@ def test_failed_check_keeps_installed_when_disk_is_current(monkeypatch):
         raise OSError("offline")
 
     monkeypatch.setattr(common, "fetch_manifest", boom)
-    assert manager.check()["state"] == "installed"
+    assert manager.check(force=True)["state"] == "installed"
 
 
 def test_check_reports_installed_once_disk_has_the_update(monkeypatch):
@@ -289,6 +289,91 @@ def test_check_reports_installed_once_disk_has_the_update(monkeypatch):
     status = manager.check()
     assert status["state"] == "installed"
     assert status["latest_version"] == "9.9.9"
+
+
+# ---- the check throttle ------------------------------------------------------
+#
+# The client checks when the app comes back to the front (update-status.ts), so
+# POST /api/update/check is now driven by a window event rather than only by a
+# button. MIN_CHECK_GAP_S is the server-side backstop under that: the client's
+# own 30-minute gap lives in one tab's module state and any reload resets it.
+
+
+def _counting_manager(monkeypatch, *, available="9.9.9", current="0.4.10"):
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", current)
+    manifest = {"schema": 1, "version": available, "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+    calls = []
+
+    def fetch(url, **kwargs):
+        calls.append(url)
+        return dict(manifest)
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    return manager, calls
+
+
+def test_a_second_check_inside_the_gap_does_not_touch_the_network(monkeypatch):
+    manager, calls = _counting_manager(monkeypatch)
+    assert manager.check()["state"] == "available"
+    assert len(calls) == 1
+    # Same state back, but nothing fetched: the answer is the last check's.
+    assert manager.check()["state"] == "available"
+    assert len(calls) == 1
+
+
+def test_force_always_fetches_however_recent_the_last_check(monkeypatch):
+    manager, calls = _counting_manager(monkeypatch)
+    manager.check()
+    manager.check(force=True)
+    manager.check(force=True)
+    assert len(calls) == 3
+
+
+def test_a_check_past_the_gap_fetches_again(monkeypatch):
+    manager, calls = _counting_manager(monkeypatch)
+    manager.check()
+    assert len(calls) == 1
+    # Age the recorded timestamp rather than the clock: MIN_CHECK_GAP_S is
+    # read against real time.monotonic(), which nothing here should redefine.
+    manager._last_check_at -= mac.MIN_CHECK_GAP_S + 1
+    manager.check()
+    assert len(calls) == 2
+
+
+def test_a_throttled_check_still_notices_an_external_upgrade(monkeypatch):
+    """The throttle returns status(), which re-reads the bundle on disk — so a
+    `brew upgrade` in a terminal is still noticed by a throttled call."""
+    manager, calls = _counting_manager(monkeypatch)
+    assert manager.check()["state"] == "available"
+    monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
+    assert manager.check()["state"] == "installed"
+    assert len(calls) == 1
+
+
+def test_the_auto_loop_forces_its_tick(monkeypatch):
+    """The hourly tick is the cadence itself: it must not be swallowed because
+    a focus flip fetched a minute earlier."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.delenv("FUSED_RENDER_NO_AUTO_UPDATE", raising=False)
+    monkeypatch.setattr(mac, "MAC_STARTUP_DELAY_S", 0.0)
+    monkeypatch.setattr(manager, "_sweep_stale_downloads", lambda: None)
+    forced = []
+
+    def check(force=False):
+        forced.append(force)
+        # The loop sleeps out common.CHECK_INTERVAL_S after this; the thread is
+        # a daemon, so one tick is all this test ever sees.
+        return manager.status()
+
+    monkeypatch.setattr(manager, "check", check)
+    manager.start_auto_checks()
+    for _ in range(200):
+        if forced:
+            break
+        time.sleep(0.01)
+    assert forced == [True]
 
 
 # ---- dmg helpers ---------------------------------------------------------------
