@@ -8234,6 +8234,7 @@ describe("provisionalTasks", () => {
     target: "/Users/me/proj/news.py",
     session_id: "sess-1",
     next_run: 0,
+    next_run_entry: "",
     ...over,
   });
 
@@ -8268,6 +8269,7 @@ describe("provisionalTasks", () => {
     expect(t.title_source).toBe("message");
     expect(t.blocked_reason).toBe("");
     expect(t.next_run_entry).toBe("");
+    expect(nextRunAt(t)).toBeNull();
     expect(t.started).toBe(0);
   });
 
@@ -8275,8 +8277,11 @@ describe("provisionalTasks", () => {
     // The Board's Upcoming lane orders by next run (LANE_SORTS); a default of
     // 0 sent every provisional card to the bottom and then moved it when the
     // listing landed — the one reorder the seed was meant to avoid.
-    const [t] = provisionalTasks([row({ next_run: 1_700_100_000 })]);
+    // Time AND entry: nextRunAt names the run only when both are there.
+    const [t] = provisionalTasks([row({ next_run: 1_700_100_000, next_run_entry: "e-9" })]);
     expect(t.next_run).toBe(1_700_100_000);
+    expect(t.next_run_entry).toBe("e-9");
+    expect(nextRunAt(t)).toBe(1_700_100_000);
   });
 
   it("marks the row provisional, and is not expandable", () => {

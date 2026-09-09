@@ -2046,8 +2046,12 @@ _PULSE_FIELDS = (
     # The Tasks page paints these rows before its own listing answers
     # (shell/tasks-lib provisionalTasks), and the Board's Upcoming lane sorts by
     # the next run: without it a provisional card sat at the bottom of the lane
-    # and jumped into place when the listing landed. One float per row.
+    # and jumped into place when the listing landed. One float per row — and
+    # the entry it belongs to, because the client reads the time only when it
+    # can also name the entry (shell/tasks-lib namedNextRun): a time with no
+    # entry is one nobody can fire, and is not sorted by.
     "next_run",
+    "next_run_entry",
 )
 
 

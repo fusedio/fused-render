@@ -368,6 +368,7 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     pulse_fields = (
         "key", "status", "unread", "last_active", "project",
         "task_id", "title", "target", "session_id", "happened_at", "next_run",
+        "next_run_entry",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
