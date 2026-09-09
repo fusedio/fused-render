@@ -647,7 +647,7 @@ export default function Listing({
   }, [ownsBarChrome]);
 
   // …and the search row goes UP into that same bar, into the middle column
-  // the path used to hold — one header strip in this column, matching the
+  // the path bar holds — one header strip in this column, matching the
   // pane's one across the divider (search-slot.ts). Non-null only once the
   // bar has rendered its target, which is only ever over a folder that
   // claimed the chrome; a host with no crumb bar (the app builder) keeps the
@@ -1905,9 +1905,9 @@ export default function Listing({
                   ref={searchInputRef}
                   type="search"
                   className="listing-search-input"
-                  // A placeholder ONLY while focused-and-empty (the crumbs
+                  // A placeholder ONLY while focused-and-empty — the crumbs
                   // above own the same empty state at rest, and painting
-                  // both at once is the overlap this field used to have).
+                  // both at once would overlap.
                   // The two variants are `boxWide`-picked above: the long
                   // one teaches the pattern syntax with a real example, and
                   // the short one exists so a narrow field never clips it
@@ -2003,16 +2003,16 @@ export default function Listing({
                     // than firing unconditionally the moment a key turns out
                     // to be Enter. A plain search word is neither a real
                     // address nor path-shaped, so both branches decline —
-                    // and an unconditional preventDefault here used to eat
-                    // that Enter anyway, before `useListingSelection.ts`'s
-                    // own document-level Enter handler (registered to run
-                    // for `inSearch` too, specifically so Enter can open the
-                    // top search hit without leaving the field) ever saw it:
-                    // that handler's first line is `if (e.defaultPrevented)
-                    // return`. Leaving the event un-prevented when nothing
-                    // here acts is what lets that handler open the
-                    // highlighted (or top, per its own `rowsAnswerQuery`
-                    // guard) result instead.
+                    // firing it unconditionally would eat that Enter before
+                    // `useListingSelection.ts`'s own document-level Enter
+                    // handler (registered to run for `inSearch` too,
+                    // specifically so Enter can open the top search hit
+                    // without leaving the field) ever saw it: that handler's
+                    // first line is `if (e.defaultPrevented) return`.
+                    // Leaving the event un-prevented when nothing here acts
+                    // is what lets that handler open the highlighted (or
+                    // top, per its own `rowsAnswerQuery` guard) result
+                    // instead.
                     if (typedAddress.status === "exists") {
                       e.preventDefault();
                       navigate(typedAddress.path, { isDir: typedAddress.is_dir });

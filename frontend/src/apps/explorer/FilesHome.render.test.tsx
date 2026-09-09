@@ -602,8 +602,9 @@ describe("Enter while a pasted path's stat is still resolving (section 7 paste-a
   // `submitRow` has nothing to commit here: `suppressRank` holds ranking
   // back (no rank request, no file rows), `showOpenRow` is false (the stat
   // hasn't answered yet) and the AI row is suppressed too (`address !==
-  // null`). Enter used to be a silent no-op in this exact window — which is
-  // precisely the paste-and-go gesture the address feature exists for.
+  // null`). `awaitingCommit` is what makes Enter in this exact window commit
+  // once the stat resolves instead of being a silent no-op — precisely the
+  // paste-and-go gesture the address feature exists for.
   test("commits the address once the in-flight stat resolves", async () => {
     const box = mount();
     await type(box, "/tmp/report.csv");

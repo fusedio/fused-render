@@ -622,9 +622,8 @@ export interface IndexRankResult {
   reason: RankReason;
   hits: IndexRankHit[];
   // More matched than were returned: more than `limit` survived ranking.
-  // (Was ALSO true when the server's candidate cap bit before D708 — that
-  // cap, and `RANK_CANDIDATE_CAP`, are gone; index-backed search scores every
-  // matched row in one SQL statement with no candidate cap to hit.)
+  // Index-backed search scores every matched row in one SQL statement with
+  // no candidate cap to hit — this is the only way `truncated` can be true.
   truncated: boolean;
   total: number;
   // The directory `hits` are relative to — the box's own root for a plain

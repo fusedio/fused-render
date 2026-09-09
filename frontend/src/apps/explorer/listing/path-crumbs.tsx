@@ -97,14 +97,14 @@ export function PathCrumbs({
     }
   });
 
-  // This strip does NOT carry the plain-file bar's own `crumbs` class. It
-  // used to, and every `.crumbs` rule in explorer.css — including ones
-  // written for the sibling strip that no longer exists once a folder is
-  // claimed — matched this element too, by accident and at a specificity
-  // this class alone could not out-rank. `.listing-search-crumbs` below is
-  // now self-sufficient: whatever it needs from the plain strip's look
-  // (the monospace font, the hidden scroll container) is declared on it
-  // directly instead of inherited through a shared class name.
+  // This strip does NOT carry the plain-file bar's own `crumbs` class: every
+  // `.crumbs` rule in explorer.css — including ones written for the sibling
+  // strip that does not exist once a folder is claimed — would match this
+  // element too, at a specificity this class alone could not out-rank.
+  // `.listing-search-crumbs` below is self-sufficient: whatever it needs
+  // from the plain strip's look (the monospace font, the hidden scroll
+  // container) is declared on it directly instead of inherited through a
+  // shared class name.
   return (
     <div className="listing-search-crumbs" ref={ref}>
       {pieces}

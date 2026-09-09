@@ -603,8 +603,8 @@ export function Breadcrumb({
   const { springProps, dropProps, armedTarget } = useSpringLoadedCrumbs();
   // Decision 1: a folder's claimed crumb bar has one path affordance, the
   // merged search field (Listing.tsx) — this strip and its own path editor
-  // stand down, and the gestures that used to open the editor (below) ask
-  // that field to focus instead.
+  // stand down, and the gestures that open the editor below ask that field
+  // to focus instead.
   const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
   // Read by the two always-on document listeners below, which must not rebind
   // on every claim/unclaim (same reasoning as editingRef).
@@ -913,12 +913,11 @@ export function Breadcrumb({
           {pieces}
         </div>
       )}
-      {/* Decision 1: a claimed folder's merged field IS the path now, so it
-          sits where the path strip did — right after the crumbs/edit zone
-          above, ahead of the star — rather than at the bar's far end where a
-          bare search box used to hide behind everything else. Over an
+      {/* Decision 1: a claimed folder's merged field IS the path, so it sits
+          where the path strip did — right after the crumbs/edit zone above,
+          ahead of the star — rather than at the bar's far end. Over an
           unclaimed (file) bar this renders an empty, layout-inert slot
-          (FolderSearchSlot), so moving it here costs that case nothing. */}
+          (FolderSearchSlot), so this placement costs that case nothing. */}
       <FolderSearchSlot />
       {/* After the path, not before it: the star's subject is the path, and the
           bar's opening slot belongs to the history arrows (see the header). It

@@ -391,11 +391,9 @@ export function FilesSearch({
   // -- a query that is really an address --------------------------------------
   //
   // `pathShortcut` (lib/home-search) detects the SHAPE — `/…`, `~/…`, `C:\…` —
-  // on every render, not just at submit: consulting it only on Enter left the
-  // whole screen while typing lying about what Enter would do. A pasted
-  // `/tmp/report.csv` used to rank nothing, render "No file name matched…",
-  // and pre-arm the AI row — a paid model call offered on a filesystem path —
-  // while Enter would in fact have navigated straight there.
+  // on every render, not just at submit: a pasted `/tmp/report.csv` has to
+  // read as a path candidate on the very first render, before Enter, since
+  // `showOpenRow` and the AI row below both key off it.
   //
   // `address` is pure and cheap (a regex), computed fresh every render. What
   // it resolves TO takes a stat, so that part is debounced/abortable exactly
@@ -404,21 +402,11 @@ export function FilesSearch({
   // character at a time same as any other.
   const address = pathShortcut(q, home);
   // One discriminated union instead of a `{status}` object plus a separate
-  // `statPending` boolean (code review, D706/D709): the pair used to be able
-  // to drift out of lockstep, and both review bugs those D-entries fixed sat
-  // exactly on that seam — a deadline that armed from the keystroke instead
-  // of from issuance (D706), and one that never re-armed once the stat
-  // resolved (D709). A single value makes "debounce still pending" ("idle")
-  // and "request actually in flight" ("checking") two states of the SAME
-  // variable, so nothing downstream can read one flag while the other lags.
-  //
-  // "unknown" (the old status the object carried on its own) is exactly
-  // "idle" or "checking" — both mean "no resolution yet, don't trust `addr`
-  // for `showOpenRow`'s `=== "exists"` check beyond that". Nothing needs to
-  // keep telling those two apart on that path, and the two call sites that
-  // used to check `addr.status === "unknown"` (submit's paste-and-go wait,
-  // and the commit-effect below) now check `addr.status === "idle" ||
-  // addr.status === "checking"`.
+  // `statPending` boolean: "debounce still pending" (`idle`) and "request
+  // actually in flight" (`checking`) are two states of the SAME variable, so
+  // nothing downstream can read one flag while the other lags — `showOpenRow`
+  // and the paste-and-go wait below both need "no resolution yet, don't
+  // trust `addr`" to mean exactly one thing, not two flags that can disagree.
   const [addr, setAddr] = useState<
     | { status: "idle" }
     | { status: "checking" }
@@ -440,9 +428,9 @@ export function FilesSearch({
       addrCtl.current = ctl;
       // Set only once the debounce below has actually elapsed and the
       // request went out — deliberately NOT synchronous with the keystroke
-      // that made `address` non-null (review finding / D706): the staleness
-      // deadline below needs to know when the REQUEST started, not when the
-      // query started looking like a path.
+      // that made `address` non-null: the staleness deadline below needs to
+      // know when the REQUEST started, not when the query started looking
+      // like a path.
       setAddr({ status: "checking" });
       statPath(address, ctl.signal).then(
         (st) => {
@@ -467,12 +455,11 @@ export function FilesSearch({
   useEffect(() => () => addrCtl.current?.abort(), []);
 
   // Enter pressed WHILE the stat above is still in flight ("idle" or
-  // "checking") used to be a silent no-op: `showOpenRow` is false (nothing
-  // has resolved yet) and the AI row is suppressed too (`address !== null`)
-  // — so `submitRow` has nothing to commit even though search itself is
-  // already running. That drops exactly the paste-and-go gesture the address
-  // feature exists for: paste a path, hit Enter immediately, expect it to
-  // open the moment the stat lands.
+  // "checking") has nothing to commit yet: `showOpenRow` is false (nothing
+  // has resolved) and the AI row is suppressed too (`address !== null`), so
+  // `submitRow` alone would be a silent no-op and drop exactly the
+  // paste-and-go gesture the address feature exists for — paste a path, hit
+  // Enter immediately, expect it to open the moment the stat lands.
   //
   // `awaitingCommit` remembers the SPECIFIC address Enter was pressed for.
   // The effect below fires once `addr` settles (either resolution) and
