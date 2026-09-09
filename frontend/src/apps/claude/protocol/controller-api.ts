@@ -410,6 +410,19 @@ export interface ChatController {
    *  flight. PR4's transcript follower needs the narrow one for the external
    *  working line's OFF edge (T:17709 gates on `!activeRun`). */
   hasActiveRun(): boolean;
+  /**
+   * HAS THIS PAGE ALREADY TAKEN THIS RUN? True for a run this controller sent,
+   * re-attached to from the URL, or adopted through the standing watch.
+   *
+   * ADDED for the schedule poller, which reads a listing rather than the
+   * transcript and so cannot otherwise tell a run that fired from one it has
+   * already shown. The two watchers poll at different rates (5 s vs 15 s), so
+   * the watch normally adopts a fired scheduled run first; without this the
+   * poller re-attached to it after the turn ended and appended the turn twice
+   * (Bugbot PR #1075). Same SCHEDULE_ATTACHED semantics as the poller's own
+   * baseline (T:16746-16765) — an attached run is never resumable.
+   */
+  hasShownRun(runId: string): boolean;
   /** Back to home: clear transcript, drop session_id/run params (T:13031 enterChat/back). */
   newChat(): void;
 

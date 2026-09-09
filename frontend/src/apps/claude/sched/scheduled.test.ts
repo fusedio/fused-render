@@ -203,6 +203,9 @@ function harness(
     inChat?: boolean;
     busy?: () => boolean;
     fail?: boolean;
+    /** Run ids the CONTROLLER has already taken (its own send, a `run` param,
+     *  a turn the 5 s standing watch adopted). */
+    shown?: Set<string>;
   } = {},
 ) {
   const notes: string[] = [];
@@ -228,6 +231,7 @@ function harness(
       resumed.push(id);
       return Promise.resolve();
     },
+    shownRun: (id) => !!over.shown && over.shown.has(id),
   });
   return { watcher, notes, resumed, runParams, blockers };
 }
@@ -295,6 +299,41 @@ describe("pollScheduledRuns", () => {
     busy = false;
     await h.watcher.tick();
     expect(h.resumed).toEqual(["r-new"]);
+  });
+
+  test("A RUN THE CONTROLLER HAS SHOWN IS ATTACHED, NOT RESUMED", async () => {
+    // The standing watch looks every 5 s and this poll every 15, so the watch
+    // adopts a fired scheduled run first and streams the turn itself. This
+    // poller must write the entry off rather than re-attaching once the turn
+    // ends — that second attach is the duplicate turn (Bugbot PR #1075).
+    const rows = [fired({ id: "new", session_id: "s1" })];
+    const shown = new Set<string>();
+    let busy = false;
+    const h = harness({ entries: [[], rows, rows], busy: () => busy, shown });
+    await h.watcher.tick();
+    // The watch gets there first: it owns the id and the turn is in flight.
+    shown.add("r-new");
+    busy = true;
+    await h.watcher.tick();
+    expect(h.resumed).toEqual([]);
+    // Marked on the spot, so the tick AFTER the turn ends does not attach to it.
+    expect(h.watcher.attached.has("r-new")).toBe(true);
+    busy = false;
+    await h.watcher.tick();
+    expect(h.resumed).toEqual([]);
+    // And no note: the turn is on screen, and "running now" would describe a
+    // turn that has already finished.
+    expect(h.notes).toEqual([]);
+    expect(h.runParams).toEqual([]);
+  });
+
+  test("a run the controller has NOT shown is still this poller's to attach", async () => {
+    const rows = [fired({ id: "new", session_id: "s1" })];
+    const h = harness({ entries: [[], rows], shown: new Set(["r-other"]) });
+    await h.watcher.tick();
+    await h.watcher.tick();
+    expect(h.resumed).toEqual(["r-new"]);
+    expect(h.notes).toEqual([NOTE_OURS]);
   });
 
   test("only runs for THIS target, and only those with a run id", async () => {

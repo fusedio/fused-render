@@ -243,6 +243,69 @@ describe("resumeRun reconciles against what is already on screen", () => {
     ]);
     expect(controller.getState().trouble?.message).toContain("the CLI died");
   });
+
+  test("QUIET: a FAILED turn made in another tab is appended, not discarded", async () => {
+    // The standing watch adopts `quiet: true`, and the done-error branch used to
+    // handle only `matches` / an empty log / `neverShown` — so a finished FAILED
+    // run from another tab was dropped outright while its succeeding twin was
+    // appended (Bugbot PR #1075).
+    const { controller } = await withHistory({
+      poll: () => poll({ done: true, error: "the CLI died", message: "and the columns?" }),
+    });
+    await controller.resumeRun("r1", { quiet: true });
+    expect(users(controller).map((t) => t.text)).toEqual([
+      "count the rows",
+      "and the columns?",
+    ]);
+    expect(controller.getState().trouble?.message).toContain("the CLI died");
+  });
+
+  test("QUIET: a failed run with NO message repairs nothing", async () => {
+    // The message is the whole of the evidence about what this transcript is
+    // already showing, so with none there is no turn to append — the same
+    // answer the success branch gives.
+    const { controller } = await withHistory({
+      poll: () => poll({ done: true, error: "the CLI died" }),
+    });
+    await controller.resumeRun("r1", { quiet: true });
+    expect(users(controller).map((t) => t.text)).toEqual(["count the rows"]);
+    expect(controller.getState().trouble).toBe(null);
+  });
+});
+
+// ---- what the page has already shown ---------------------------------------
+
+describe("hasShownRun", () => {
+  test("a run this frame re-attached to is never the schedule poller's to resume", async () => {
+    const { controller } = makeController({
+      live_run: () => ({ run_id: "" }),
+      poll: () => poll({ done: true, message: "scheduled thing", segments: [text("ok")] }),
+    });
+    expect(controller.hasShownRun("r1")).toBe(false);
+    await controller.resumeRun("r1", { quiet: true });
+    expect(controller.hasShownRun("r1")).toBe(true);
+    // And it says nothing about a run nobody here has touched.
+    expect(controller.hasShownRun("r2")).toBe(false);
+  });
+
+  test("a run the standing watch adopted counts as shown", async () => {
+    const { controller } = makeController({
+      live_run: () => ({ run_id: "r9" }),
+      poll: () => poll({ done: true, message: "another tab", segments: [text("ok")] }),
+    });
+    await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(controller.hasShownRun("r9")).toBe(true);
+  });
+
+  test("a run this frame SENT counts as shown", async () => {
+    const { controller } = makeController({
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r5" }),
+      poll: () => poll({ done: true, text: "done", segments: [text("done")] }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.hasShownRun("r5")).toBe(true);
+  });
 });
 
 // ---- the follower's two half-methods ---------------------------------------

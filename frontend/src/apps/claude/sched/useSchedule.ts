@@ -200,6 +200,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
         setRunParam: (runId) => hooks.current.setRunParam(runId),
         resumeRun: (runId) =>
           hooks.current.controller.resumeRun(runId, { neverShown: true }),
+        shownRun: (runId) => hooks.current.controller.hasShownRun(runId),
         ...(timers.current
           ? {
               setInterval: timers.current.setInterval,

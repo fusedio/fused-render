@@ -321,6 +321,9 @@ export interface ScheduleWatcherDeps {
   setRunParam(runId: string): void;
   /** `resumeRun(id, {neverShown:true})`. */
   resumeRun(runId: string): Promise<void>;
+  /** `controller.hasShownRun(id)` — has the CONTROLLER already taken this run
+   *  (its own send, a `run` param, a turn the 5 s standing watch adopted)? */
+  shownRun(runId: string): boolean;
   /** Injectable for tests. */
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
@@ -381,6 +384,22 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     for (const entry of fired) {
       const runId = String(entry.run_id);
       if (attached.has(runId)) continue;
+      // THE CONTROLLER MAY ALREADY OWN THIS RUN. The standing watch looks every
+      // 5 s and this poll every 15, so a fired scheduled run is normally
+      // ADOPTED FIRST — and `busy()` then holds this loop at the guard below
+      // with the entry left unmarked, exactly as intended. Once the turn ends
+      // `busy()` is false and the entry is still in the listing, so the next
+      // tick used to `resumeRun` it with `neverShown` and append the very turn
+      // the watch had just streamed a second time (Bugbot PR #1075).
+      //
+      // A run the controller has shown is ATTACHED, not resumable — the same
+      // SCHEDULE_ATTACHED semantics as the baseline (T:16746-16765) — and it
+      // gets no note: the turn is on screen, and "running now" would be a
+      // sentence about a turn that has already finished.
+      if (deps.shownRun(runId)) {
+        attached.add(runId);
+        continue;
+      }
       if (!scheduledRunIsOurs(entry, mine)) {
         if (!noted.has(runId)) {
           noted.add(runId);

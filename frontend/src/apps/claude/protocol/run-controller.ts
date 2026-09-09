@@ -277,6 +277,25 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  one-watch-at-a-time latch and stays set for as long as the adopted run
    *  does, while the published flag clears at its first poll. */
   let adopting = false;
+  /**
+   * EVERY RUN ID THIS CONTROLLER HAS TAKEN RESPONSIBILITY FOR — a send of its
+   * own, a `run` param it re-attached to, a turn the standing watch adopted.
+   * It is the SCHEDULE_ATTACHED question (T:16746-16765) asked of the party
+   * that actually renders turns, rather than of a poller's private bookkeeping.
+   *
+   * It exists because PR4's two watchers read different clocks: the standing
+   * watch looks every 5 s, the schedule poll every 15. A fired scheduled run is
+   * therefore usually ADOPTED FIRST, and `busy()` then holds the poller at its
+   * live-turn guard with the entry left deliberately unmarked — so once the
+   * turn ended, the next tick `resumeRun`'d that same id with `neverShown` and
+   * appended the very turn the watch had just streamed a SECOND TIME (Bugbot
+   * PR #1075).
+   *
+   * Never cleared: an id belongs to one turn, and "this page has shown that
+   * run" cannot stop being true. A transcript replacement re-baselines the
+   * poller anyway, which writes off everything already in the listing.
+   */
+  const shownRuns = new Set<string>();
   /** Publish the renderer's gate, and only on a real change: it is read in a
    *  layout effect, so a no-op emit is a wasted frame on every poll. */
   const setAdopting = (value: boolean) => {
@@ -765,6 +784,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // This run is now the one the stop button aims at. Set here, the one place a
     // run is ever in flight, which covers a re-attached run for free.
     activeRun = runId;
+    // And it is a run this page has SHOWN — the schedule poller must never
+    // re-attach to it once it ends (Bugbot PR #1075).
+    if (runId) shownRuns.add(runId);
     activeSeat = seat;
     workingStartedAt = now();
     setRunningUi(true);
@@ -2141,6 +2163,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       }
       if (sending) continue;
       setRunParam(id);
+      // MARKED AT THE MOMENT OF ADOPTION, not inside the reconciliation: the
+      // watch owns this id from here on, and a `resumeRun` that bails on the
+      // send gate is a lap of this loop away from trying again — never an
+      // invitation for the schedule poller to attach to the same run behind it
+      // (Bugbot PR #1075).
+      shownRuns.add(id);
       // `quiet` rides through to the reconciliation: the watch may be adopting a
       // turn whose user line this transcript is already showing (the woken run
       // whose first turn this frame streamed) or one it has never shown (a send
@@ -2189,6 +2217,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   async function resumeAttach(runId: string, opts: ResumeOptions): Promise<void> {
     if (sending) return;
+    // Past the gate this run is ours to reconcile, whether it ends up streaming
+    // or being repaired from the probe payload — either way its turn is this
+    // transcript's, and nothing else may attach to it again (Bugbot PR #1075).
+    if (runId) shownRuns.add(runId);
     const neverShown = !!opts.neverShown;
     const quiet = !!opts.quiet;
     // Defaults TRUE: PR1 retried unconditionally, and the embedder race it
@@ -2309,10 +2341,21 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (poll.error) {
           if (matches || !users.length) {
             addError(poll.error);
-          } else if (neverShown) {
+          } else if (neverShown || (quiet && !!probeMsg && !onScreen(probeMsg))) {
             // The turn is not on screen and never was, so the failure needs its
             // own user line to hang under — otherwise the error reads as
             // belonging to whatever the reader last said.
+            //
+            // `quiet && !onScreen` IS THE SAME CASE AS THE SUCCESS PATH BELOW
+            // (Bugbot PR #1075): the standing watch adopts `quiet: true`, so a
+            // turn made in another tab that FAILED took neither this branch nor
+            // that one and was discarded outright — while its succeeding twin
+            // was appended. A failed turn is news in exactly the same way.
+            //
+            // Gated on `probeMsg` for the `quiet` half only, mirroring the
+            // success branch: the message is the whole of the evidence about
+            // what this transcript is already showing, so with none there is no
+            // turn to append and `quiet` has nothing to be quiet about.
             if (probeMsg) addUser(probeMsg);
             addError(poll.error);
           }
@@ -2484,6 +2527,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     },
     isBusy: () => !!activeRun || sending,
     hasActiveRun: () => !!activeRun,
+    hasShownRun: (runId: string) => shownRuns.has(runId),
     newChat,
     settleAttachments,
     dispose() {
