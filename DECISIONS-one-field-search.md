@@ -653,3 +653,42 @@ render tests near it, `Listing.test.tsx` and `empty-result.test.tsx`, cover
 Per scope, no new test harness was built for it; `result-cap.test.ts`
 (`resultCountLabel`) and `index-caveat.test.ts` were re-run untouched and
 still pass, since neither was changed.
+
+## Flake: `test_the_run_listing_is_not_re_read_on_every_keystroke`
+
+The test's own widened `RUNS_CACHE_S` (3600s) rules out wall-clock expiry as
+the source of the `assert 2 == 1` failure on `test-python (3.11)`, which
+leaves a second caller of the monkeypatched `runner.list_runs` as the only
+remaining explanation among the candidates worth checking.
+
+Confirmed by direct reproduction (a script that drives the test body in a
+tight loop in-process, after starting the Activity job bridge the way an
+earlier test file does): `mirror_index_jobs_once` — the tick function behind
+`_index_job_loop` — reads `runner.list_runs` directly, deliberately bypassing
+`_live_runs`'s cache (see that function's own docstring). Its thread is
+started by `start_index_job_bridge`, which any test whose app runs a full
+ASGI lifespan (`with TestClient(...) as client:`, e.g. `test_capture_stream.py`,
+`test_tasks_watch.py`) triggers; the thread is idempotent-start but never
+stopped, so once live it keeps ticking — every `INDEX_JOB_ACTIVE_S` (1.5s)
+or `INDEX_JOB_IDLE_S` (10s) — for the rest of the worker process. A bare
+`TestClient(create_app(...))` without `with` (what this test and most of
+`test_index_search.py` use) never runs lifespan itself and never starts this
+thread, so the thread has to be left running by an earlier test in the same
+pytest worker — order- and timing-dependent, which fits both "passed on the
+previous CI run" and the single-interpreter-version reproduction: thread
+wake-up latency differs enough between 3.11 and 3.12/3.13 to change whether a
+tick lands inside the five-request window.
+
+Reproduction: with the bridge thread live, driving the test body for 90s
+(≈850 iterations) hit `calls == 2` seven times. With the fix below applied,
+the same 90s/847-iteration run had zero failures. Isolated pytest runs of
+just this test (no `with TestClient` predecessor in-process) never failed in
+either state — the bridge thread has to already be running, which a scoped
+`pytest -k` invocation alone won't produce.
+
+Fix: `monkeypatch.setattr(index_routes, "mirror_index_jobs_once", lambda
+cfg=None: False)` for the duration of the test, silencing the one other
+caller of `runner.list_runs` rather than weakening `assert len(calls) == 1`.
+The `RUNS_CACHE_S` widening stays (a real defense against a slow round trip
+aging the cache mid-loop), and the comment above it was rewritten to drop the
+now-wrong wall-clock explanation and the CI-run references.
