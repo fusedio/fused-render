@@ -13,6 +13,7 @@ import { describe, expect, test } from "bun:test";
 import {
   MARQUEE_DRAG_SLOP,
   autoScrollStep,
+  bandRect,
   marqueeBox,
   marqueeHits,
   passedDragSlop,
@@ -141,6 +142,40 @@ describe("marqueeHits", () => {
       "/w/gone",
       "/w/a",
     ]);
+  });
+});
+
+describe("bandRect", () => {
+  test("the region becomes a CSS rect with the same left/top", () => {
+    const region = marqueeBox({ x: 10, y: 20 }, { x: 110, y: 80 });
+    expect(bandRect(region, { width: 400 })).toEqual({
+      left: 10,
+      top: 20,
+      width: 100,
+      height: 60,
+    });
+  });
+
+  test("a sweep that travels into the gutter clamps at the scroller's width", () => {
+    // Started over a narrow table's dead space and dragged past its right
+    // edge: the band stops at the table rather than bleeding into the gutter.
+    const region = marqueeBox({ x: 10, y: 0 }, { x: 500, y: 40 });
+    expect(bandRect(region, { width: 400 })).toEqual({
+      left: 10,
+      top: 0,
+      width: 390,
+      height: 40,
+    });
+  });
+
+  test("entirely past the scroller's edge draws nothing wide", () => {
+    const region = marqueeBox({ x: 500, y: 0 }, { x: 600, y: 10 });
+    expect(bandRect(region, { width: 400 })).toEqual({
+      left: 400,
+      top: 0,
+      width: 0,
+      height: 10,
+    });
   });
 });
 

@@ -1489,11 +1489,13 @@ export default function Listing({
                 }
               >
                 <td className="name">
-                  {/* Layout only — the span hugs the icon+name so a long name
-                      ellipsizes inside it. It is NOT a drag source: a drag
-                      starts on an already-selected row and nowhere else
-                      (drag-drop's pressStartsDrag). */}
-                  <span className="row-handle">
+                  {/* The span hugs the icon+name so a long name ellipsizes
+                      inside it, AND it is the row's drag SOURCE: the item is
+                      its own name cell, so a press here starts a move-drag
+                      whether or not the row was already selected, and a press
+                      anywhere else in the row is marquee ground instead
+                      (useMarquee's pressedRow, drag-drop's pressStartsDrag). */}
+                  <span className="row-handle" data-fs-drag-handle="1">
                     <span className="icon">
                       {iconForEntry(
                         entry.rel.split("/").pop() ?? entry.rel,
@@ -1635,8 +1637,8 @@ export default function Listing({
           }
         >
           <td className="name">
-            {/* Layout only — see the search-hit row above. Not a drag source. */}
-            <span className="row-handle">
+            {/* The item's drag source — see the search-hit row above. */}
+            <span className="row-handle" data-fs-drag-handle="1">
               <span className="icon">
                 {iconForEntry(entry.name, entry.is_dir)}
               </span>

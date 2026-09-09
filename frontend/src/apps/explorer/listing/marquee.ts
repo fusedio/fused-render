@@ -2,12 +2,13 @@
 // drag, and every row the swept region crosses becomes selected. Pure geometry
 // — the pointer wiring is useMarquee.ts.
 //
-// The region is a HIT TEST, not a picture. Nothing is drawn: the rows light up
-// as the pointer crosses them, and that is the whole of the feedback the
-// gesture gets (a rubber band over the top of them was tried and removed as
-// saying the same thing twice). So `marqueeBox` exists to be intersected with,
-// never to be positioned — which is why nothing here knows about pixels on
-// screen, only about the scroller's content space.
+// The region is a HIT TEST first: `marqueeBox` is what `marqueeHits` intersects
+// against, and neither of those knows about pixels on screen, only about the
+// scroller's content space. `bandRect` is the one function here that DOES know
+// about a picture — it turns that same region into the CSS rect the rubber
+// band is drawn from (useMarquee, imperatively, so the drag costs no
+// re-render). One region, one hit test, one rectangle: what is drawn and what
+// is selected can never disagree, because both come from the same box.
 //
 // The gesture is split from the row drag by WHERE THE PRESS LANDS — decided
 // once, at pointerdown, from the selection as it stood BEFORE the press
@@ -57,6 +58,27 @@ export function marqueeBox(a: Point, b: Point): Box {
     top: Math.min(a.y, b.y),
     right: Math.max(a.x, b.x),
     bottom: Math.max(a.y, b.y),
+  };
+}
+
+// The rubber band's CSS rect, in the scroller's own coordinate space: `left`
+// and `top` are exactly the region's, so an absolutely-positioned element
+// placed at them (inside a `position: relative` scroller) sits over the swept
+// rows AND scrolls with them, with no separate scroll-sync code anywhere.
+// `right` is clamped to the scroller's content width so a sweep that started
+// over a narrow table's dead space and travelled into the gutter beside it
+// draws a band that stops at the table's edge rather than bleeding into it.
+export function bandRect(
+  region: Box,
+  scroller: { width: number },
+): { left: number; top: number; width: number; height: number } {
+  const left = Math.min(Math.max(0, region.left), scroller.width);
+  const right = Math.min(scroller.width, region.right);
+  return {
+    left,
+    top: region.top,
+    width: Math.max(0, right - left),
+    height: region.bottom - region.top,
   };
 }
 
