@@ -22,13 +22,13 @@ export function capHits(hits: SearchHit[]): SearchHit[] {
 /**
  * The match-count chip's text.
  *
- * `walkTruncated` is the server's own entry cap on the walk — a separate,
- * pre-existing "there was more than this" that the number carries as a `+`.
- * It has to survive the display cap: the two truncations are independent and
- * both are true at once on a big tree.
+ * `truncated` is the server's own rank-limit cap (SEARCH_RANK_LIMIT) — a
+ * separate, pre-existing "there was more than this" that the number carries
+ * as a `+`. It has to survive the display cap: the two truncations are
+ * independent and both are true at once on a large tree.
  */
-export function resultCountLabel(total: number, walkTruncated: boolean): string {
-  const suffix = walkTruncated ? "+" : "";
+export function resultCountLabel(total: number, truncated: boolean): string {
+  const suffix = truncated ? "+" : "";
   const n = total.toLocaleString();
   if (total <= SEARCH_RESULT_CAP) {
     return `${n}${suffix} match${total === 1 ? "" : "es"}`;

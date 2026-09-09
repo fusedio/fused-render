@@ -2,8 +2,8 @@
 // Sort state lives in the URL (?sort=name|size|mtime&order=asc|desc) so a
 // sorted listing is refresh-proof and bookmarkable like any other view state;
 // the search query rides the URL the same way (?q=…). A non-empty query swaps
-// the listing for flat, rank-ordered results over a recursive walk of the
-// folder — see listing/useWalkSearch for the streaming/scoring pipeline.
+// the listing for flat, rank-ordered results served by the file index — see
+// listing/useListingSearch for the fetch/memo/scan-on-demand pipeline.
 //
 // This file is the orchestrator: it wires the hooks together and renders the
 // table. The pieces live in listing/:
@@ -16,7 +16,7 @@
 //   row-utils.ts           RowCtx batch helpers
 //   bits.tsx               skeleton rows, ClipMark, GitMark, highlight, anchor
 //   useDirListing.ts       /api/fs/list fetch, Load more, dir watch, new-row cue
-//   useWalkSearch.ts       streamed walk + scoring + throttles + result paging
+//   useListingSearch.ts    index-backed search: fetch, memo, on-demand scan
 //   useListingSelection.ts selection state + keyboard nav + reconcile
 //   useFileOps.ts          file operations + context menus + dialogs
 //   drag-drop.ts           what a drag carries + which drops are legal (pure)
@@ -113,7 +113,7 @@ import {
 import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
-import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
+import { useListingSearch } from "@apps/explorer/listing/useListingSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
@@ -255,16 +255,14 @@ export default function Listing({
     scanPending,
     spinner,
     rescanPending,
-    source,
-    validWalk,
-    prefetchWalk,
+    searchState,
+    prefetchIndex,
     hits,
     displayHits,
     visibleHits,
-    showingHeld,
     rowsAnswerQuery,
     cappedAway,
-  } = useWalkSearch(fsPath, refresh);
+  } = useListingSearch(fsPath, refresh);
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
   // so an idle listing never polls.
@@ -1444,17 +1442,17 @@ export default function Listing({
   // (listing/types columnCount): three columns normally, one while searching.
   const cols = columnCount(searching);
   if (searching) {
-    if (validWalk.status === "error") {
+    if (searchState.status === "error") {
       body = (
         <tr>
           <td colSpan={cols} className="status-message error">
-            Search failed: {validWalk.message}
+            Search failed: {searchState.message}
           </td>
         </tr>
       );
     } else if (displayHits.length) {
-      // Rows exist: either the fresh ranking, or the held one from the same
-      // query while a refresh-invalidated walk re-runs (showingHeld).
+      // Rows exist: the settled ranking for this query, or (never-blank) the
+      // previous query's rows standing in while the next answer is in flight.
       body = (
         <>
           {visibleHits.map(({ entry, positions }) => {
@@ -1528,50 +1526,25 @@ export default function Listing({
           )}
         </>
       );
-    } else if (scanPending) {
-      // The corpus is in hand but this query has not been scored yet (the
-      // scan is debounced and sliced — listing/scan-job). An index-backed
-      // corpus makes the walk read "ok" instantly, so without this the empty
-      // result would render as a confident "No matches" for a moment on
-      // every keystroke.
+    } else if (scanPending || searchState.status === "pending") {
+      // Nothing to show yet: either the folder is being scanned on demand
+      // (listing/index-source) or the request is simply in flight. Without
+      // this, an empty answer would render as a confident "No matches" for a
+      // moment on every keystroke.
       body = (
         <tr>
           <td colSpan={cols} className="status-message">
             Searching…
-          </td>
-        </tr>
-      );
-    } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
-      // No matches. Say so honestly: distinguish "still looking" (stream
-      // running) and "the walk didn't even cover everything" (truncated) —
-      // the old UI showed a bare "No matches" even when the file existed
-      // in a region the capped walk never reached.
-      // The entries-scanned count belongs to the live fallback WALK, and only
-      // that walk moves it. When the index serves the corpus there is no walk
-      // at all — the fetch is one request — so the number sat at 0 for the
-      // whole (sub-second) window and the row read "still searching (0 entries
-      // scanned)" every time. Show the progress only once there is progress to
-      // show; before that all we can honestly say is that we are looking.
-      const message =
-        validWalk.status === "streaming"
-          ? validWalk.count > 0
-            ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
-            : "Searching…"
-          : validWalk.truncated
-            ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
-            : "No matches";
-      body = (
-        <tr>
-          <td colSpan={cols} className="status-message">
-            {message}
           </td>
         </tr>
       );
     } else {
+      // A settled, empty answer: honestly "No matches" — the index covers the
+      // whole folder, so there is no truncated-walk nuance left to report.
       body = (
         <tr>
           <td colSpan={cols} className="status-message">
-            Searching…
+            No matches
           </td>
         </tr>
       );
@@ -1710,34 +1683,21 @@ export default function Listing({
   // The chip's reserved width covers a match count; the scan caveat makes it
   // longer, so the input reserves more while one is running.
   let widePin = false;
-  if (searching && validWalk.status === "streaming" && validWalk.count > 0) {
-    // Live progress while the walk streams: match count so far + how much of
-    // the tree has been scanned. Updates in place, no layout shift. The scan
-    // total is the digit-hungry half and the one nobody reads precisely, so it
-    // is the half that goes compact ("45.1K").
-    searchCount = `${compact(hits.length)} · ${compact(validWalk.count)}…`;
-    searchCountFull = `${hits.length.toLocaleString()} match${hits.length === 1 ? "" : "es"} · ${validWalk.count.toLocaleString()} entries scanned so far`;
-  } else if (searching && validWalk.status === "ok" && hits.length > 0) {
-    // A truncated walk (server safety cap) means `hits` undercounts the real
-    // tree. Signal that without new UI: a "+" on the number plus a tooltip.
-    // Terse form for the chip, full sentence for title/aria. Past the display
-    // cap the chip has to own up to it — "top 100 of 4.9K+" — because the
-    // rendered list stops at the cap while the count keeps reporting the whole
-    // ranking. The cap itself stays out of this file (result-cap.ts owns it):
-    // `cappedAway` says whether it bit, `visibleHits` says how many rows show.
-    const suffix = validWalk.truncated ? "+" : "";
+  if (searching && searchState.status === "ok" && hits.length > 0) {
+    // A truncated rank (server per-query cap) means `hits` undercounts the
+    // real tree. Signal that without new UI: a "+" on the number plus a
+    // tooltip. Terse form for the chip, full sentence for title/aria. Past the
+    // display cap the chip has to own up to it — "top 100 of 4.9K+" — because
+    // the rendered list stops at the cap while the count keeps reporting the
+    // whole ranking. The cap itself stays out of this file (result-cap.ts
+    // owns it): `cappedAway` says whether it bit, `visibleHits` says how many
+    // rows show.
+    const suffix = searchState.truncated ? "+" : "";
     searchCount =
       cappedAway > 0
         ? `top ${visibleHits.length} of ${compact(hits.length)}${suffix}`
         : `${compact(hits.length)}${suffix}`;
-    searchCountFull = resultCountLabel(hits.length, validWalk.truncated);
-    // The entry cap is the WALK's — it stops after so many entries of the
-    // tree. A truncated ranked answer means something else entirely (more
-    // matched than the server returns per query), and `total` there is the
-    // number of hits, not of entries scanned, so this sentence would be a
-    // confident lie about a number that means something else.
-    if (validWalk.truncated && source === "walk")
-      searchCountFull += ` — search covers the first ${validWalk.total.toLocaleString()} entries of this folder tree`;
+    searchCountFull = resultCountLabel(hits.length, searchState.truncated);
   }
 
   // --- index scan caveat ----------------------------------------------------
@@ -1887,7 +1847,7 @@ export default function Listing({
                   // away under the caret.
                   onFocus={() => {
                     setPinnedOpen(true);
-                    prefetchWalk();
+                    prefetchIndex();
                   }}
                   // A pinned-open box that blurs still empty folds back to the
                   // magnifier (the pin exists only to be typed into); with a
@@ -1910,7 +1870,7 @@ export default function Listing({
                   }}
                 />
                 {/* Only once being busy is information rather than a flicker
-                    (listing/useWalkSearch's `spinner`): the common ranked
+                    (listing/useListingSearch's `spinner`): the common ranked
                     answer lands well inside the threshold, and a spinner that
                     appears and vanishes per keystroke reads as slower than
                     one that never appears at all. */}
@@ -1997,15 +1957,15 @@ export default function Listing({
             ref={scrollRef}
             /* Two different dims, two different claims. `listing-stale` means
                an answer is on its way (the deferred render lags a keystroke,
-               the scan is mid-flight, or held results stand in for a walk that
-               is re-running). `listing-behind` means the opposite: no answer is
-               coming, these results are a generation old and staying that way
-               until a boundary (listing/revalidate). The second can last the
-               whole session, so it is deliberately the lighter of the two —
-               it has to be legible to read under, not merely noticeable. */
+               or the fetch/scan is mid-flight). `listing-behind` means the
+               opposite: no answer is coming, these results are a generation
+               old and staying that way until a boundary (listing/revalidate).
+               The second can last the whole session, so it is deliberately
+               the lighter of the two — it has to be legible to read under,
+               not merely noticeable. */
             className={
               "listing-scroll" +
-              (isStale || showingHeld ? " listing-stale" : "") +
+              (isStale ? " listing-stale" : "") +
               (behind ? " listing-behind" : "")
             }
             /* The background means THIS FOLDER: "move these here". It lights up

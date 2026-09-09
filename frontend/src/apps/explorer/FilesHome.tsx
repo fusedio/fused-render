@@ -536,7 +536,7 @@ export function FilesSearch({
   // wholesale rather than reasoned about per entry, and the current query is
   // re-asked. Neither DISABLES search: this page has no live walk to fall back
   // on, so switching search off is the worst available outcome — an answer one
-  // rename stale beats no answer at all. (useWalkSearch keeps its gate; it has
+  // rename stale beats no answer at all. (useListingSearch keeps its gate; it has
   // a walk that can answer the renamed folder correctly.)
   const [lifecycle, setLifecycle] = useState(indexLifecycleCount);
   useEffect(() => subscribeIndexLifecycle(() => setLifecycle(indexLifecycleCount())), []);
@@ -770,9 +770,9 @@ export function FilesSearch({
     setQuery(value);
     setHighlight(null);
     // Typing is a user gesture, so it is also the retry for a failed request —
-    // the same way useWalkSearch re-arms its stream from setQuery. (Editing to
-    // a query that was never asked re-runs anyway; this covers editing BACK to
-    // the one that failed.)
+    // the same way useListingSearch bumps its retry nonce from setQuery.
+    // (Editing to a query that was never asked re-runs anyway; this covers
+    // editing BACK to the one that failed.)
     if (failure !== "") setRetryNonce((n) => n + 1);
     // Editing the query is how the user gets back from AI results to instant
     // ones, so it drops the AI phase — and the ?q= that a committed search set.

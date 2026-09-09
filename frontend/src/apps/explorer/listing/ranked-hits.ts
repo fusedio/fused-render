@@ -1,19 +1,13 @@
 // A ranked answer from the server, as the rows the listing already renders.
 //
-// `/api/index/rank` returns the ORDER, not the scoring fields: `score`/
-// `tier`/`depth`/`longest_run` drove `_rank_sql`'s ORDER BY server-side, but
-// nothing downstream re-sorts a server-answered row — this file hands back
-// hits "in the order it returned them", full stop — so the server stops at
-// computing them and the wire (`IndexRankHit`) never carried them. `SearchHit`
-// still declares those fields (the live-walk path's `rankCompare` genuinely
-// needs them), so this function fills them with placeholders rather than
-// dropping them from the shared type; nothing reads a placeholder because
-// nothing re-sorts this path. Match positions are the same story: the client
-// re-runs `substringMatch` (platform/lib/fuzzy.ts) over the ~200 rows it got
-// back — not the looser `fuzzyMatch`, because every row here already passed
-// `/api/index/rank`'s own substring filter, so this is the exact test that
-// guarantee is stated in terms of, not merely a weaker test that happens to
-// agree with it.
+// `/api/index/rank` returns the ORDER, not scoring fields: `_rank_sql` ranks
+// server-side and nothing downstream re-sorts a server-answered row, so this
+// file hands back hits "in the order it returned them", full stop. Match
+// positions are a separate story: the client re-runs `substringMatch`
+// (platform/lib/fuzzy.ts) over the ~200 rows it got back — not the looser
+// `fuzzyMatch`, because every row here already passed `/api/index/rank`'s own
+// substring filter, so this is the exact test that guarantee is stated in
+// terms of, not merely a weaker test that happens to agree with it.
 //
 // The two rankers agree on substring hits (index-backed search is substring-
 // only; tests/fixtures/rank-parity.json, restricted to substring rows, pins
@@ -36,8 +30,6 @@ import type { IndexRankHit } from "@platform/lib/api";
 import type { SearchHit } from "@apps/explorer/listing/types";
 
 /** The server's ranked hits as `SearchHit`s, in the order it returned them.
- * `score`/`longestRun`/`tier`/`depth` are placeholders — not on the wire, and
- * not read on this path (see module comment).
  *
  * `mode` is which matcher the server actually ran (`IndexRankResult.mode`),
  * and it decides how a hit's highlight is recomputed: a substring-mode hit
@@ -48,8 +40,7 @@ import type { SearchHit } from "@apps/explorer/listing/types";
  * something the match was never promised to satisfy — it renders unhighlighted
  * instead, same as any other hit the browser's matcher does not confirm, but
  * without ever risking a false "no highlight, real hit" verdict standing in
- * for a mislabeled coincidental one. Defaults to `"substring"` so the walk
- * path (which has no glob mode) is unaffected. */
+ * for a mislabeled coincidental one. Defaults to `"substring"`. */
 export function hitsFromRank(
   hits: IndexRankHit[],
   q: string,
@@ -59,9 +50,5 @@ export function hitsFromRank(
   return hits.map((h) => ({
     entry: { rel: h.rel, is_dir: h.is_dir, size: h.size, mtime: h.mtime },
     positions: mode === "substring" ? (substringMatch(q, h.rel)?.positions ?? []) : [],
-    score: 0,
-    longestRun: q.length,
-    tier: 1,
-    depth: 0,
   }));
 }

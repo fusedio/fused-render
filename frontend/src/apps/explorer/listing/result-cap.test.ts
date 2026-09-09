@@ -18,11 +18,6 @@ function hits(n: number): SearchHit[] {
     out.push({
       entry: { rel: `f${i}.ts`, is_dir: false, size: 1, mtime: 1 } as WalkEntry,
       positions: [],
-      // descending score, so index order IS rank order
-      score: n - i,
-      longestRun: 1,
-      tier: 1,
-      depth: 1,
     });
   }
   return out;
@@ -60,9 +55,9 @@ test("an uncapped result set keeps the plain count", () => {
   expect(resultCountLabel(SEARCH_RESULT_CAP, false)).toBe("100 matches");
 });
 
-test("the walk-truncated marker survives the cap", () => {
-  // A capped walk means the count itself undercounts the tree; that "+" has
-  // to stay visible whether or not the LIST is also capped.
+test("the rank-limit marker survives the cap", () => {
+  // A server rank truncation means the count itself undercounts the tree;
+  // that "+" has to stay visible whether or not the LIST is also capped.
   expect(resultCountLabel(42, true)).toBe("42+ matches");
   expect(resultCountLabel(4880, true)).toBe("Showing top 100 of 4,880+");
 });
@@ -73,7 +68,7 @@ test("the cap is confined to the SEARCH path", () => {
   // The cap reaches the UI only through `visibleHits`, which Listing.tsx uses
   // exclusively while `searching`; the non-search branch reads sortedEntries.
   const listing = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
-  const hook = readFileSync(join(import.meta.dir, "useWalkSearch.ts"), "utf8");
+  const hook = readFileSync(join(import.meta.dir, "useListingSearch.ts"), "utf8");
   expect(listing).not.toContain("SEARCH_RESULT_CAP");
   expect(listing).not.toContain("capHits");
   const capLines = hook.split("\n").filter((l) => l.includes("capHits("));
