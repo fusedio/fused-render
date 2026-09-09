@@ -171,15 +171,19 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         // that in threw away a screenshot the reader already had and could still
         // send: one flaky retry, and the evidence was gone with no way back.
         //
-        // So the picture stays and the refusal's reason rides ONTO it as the
-        // caveat. The attempt is still reported, which is the whole point of a
-        // failed capture becoming a chip at all (T:11305) — it just no longer
-        // costs the picture to say it.
+        // THE HELD PICTURE IS RETURNED UNTOUCHED, its own `viewNote` included.
+        // The refusal's sentence is NOT copied onto it (Bugbot, PR #1064, second
+        // pass): `viewNote` says what THIS picture does not show, and it rides
+        // the wire (`toWire`) as the caveat under the receipt — so borrowing it
+        // for the retry told the agent not to trust a screenshot that is
+        // perfectly good, and overwrote whatever the original capture had
+        // genuinely caveated. A refusal becoming a chip (T:11305) is the rule
+        // for a seat with NOTHING in it, where the chip is the only news there
+        // is; here the tray still shows exactly what the send will carry, which
+        // is the thing that had to stay true.
         if (!shot.view && held.view) {
           api.revoke(shot); // nothing of its own to hold, but symmetrical
-          const next = prev.slice();
-          next[seat] = shot.viewNote ? { ...held, viewNote: shot.viewNote } : held;
-          return next;
+          return prev.slice();
         }
         // The replaced picture's blob URL is the only handle to it.
         api.revoke(held);

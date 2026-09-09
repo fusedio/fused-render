@@ -138,7 +138,7 @@ test("a REFUSED recapture keeps the picture already in the seat (Bugbot #1064)",
     attachPane: async () => {
       shots += 1;
       return shots === 1
-        ? att({ kind: "pane", seat: "pane", thumb: "blob:pane" })
+        ? att({ kind: "pane", seat: "pane", thumb: "blob:pane", viewNote: "the map tiles were still loading" })
         : att({ kind: "pane", seat: "pane", view: null, viewNote: "the pane did not answer" });
     },
   });
@@ -158,8 +158,11 @@ test("a REFUSED recapture keeps the picture already in the seat (Bugbot #1064)",
   expect(panes[0]!.view).toBe(good.view);
   // …and it never had its only handle pulled.
   expect(spy.revoked.map((a) => a.id)).not.toContain(good.id);
-  // …while the attempt is still reported.
-  expect(panes[0]!.viewNote).toBe("the pane did not answer");
+  // THE REFUSAL DOES NOT SPEAK THROUGH THE PICTURE'S CAVEAT. `viewNote` says
+  // what THIS picture does not show and rides the wire under the receipt, so
+  // the retry's sentence must not land on a screenshot that is perfectly good —
+  // and the original capture's own caveat must survive (Bugbot #1064).
+  expect(panes[0]!.viewNote).toBe("the map tiles were still loading");
 });
 
 test("the camera is inert while a capture is in flight (T:11203 shotBusy)", async () => {
