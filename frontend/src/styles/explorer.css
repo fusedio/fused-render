@@ -1365,9 +1365,8 @@ table.listing-table tr.skel-row:hover {
    (`.listing-search-crumbs`, path-crumbs.tsx) is a different class on
    purpose, and its own visibility is Listing.tsx's `query === ""` React
    conditional, not CSS. A `:has(.listing-search.searching) .crumbs` rule
-   used to sit here on the belief it was that hide; it never matched
-   anything, since the two conditions it names (claimed field, `.crumbs`
-   present) are mutually exclusive.
+   would not match anything here: the two conditions it would name (claimed
+   field, `.crumbs` present) are mutually exclusive.
 
    The ★ and the history arrows still get out of the way below, for the
    reason the path would have: */

@@ -994,8 +994,8 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             # NOT `.lower()`'d here — `_rank_sql` lowers `ql`/`qq` itself,
             # with the same `lower()` call that produces `lrel`, so the query
             # and the rel it's compared against always fold through one
-            # implementation (see `_rank_sql`'s docstring on why that used to
-            # diverge).
+            # implementation (see `_rank_sql`'s docstring on why lowering both
+            # sides separately can disagree).
             ql = like_literal(qs)
             qq = _q(qs)
             # Hidden entries are dropped HERE, in the same query that filters

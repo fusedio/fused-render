@@ -11,13 +11,12 @@
 // unchanged; the caller renders it as the same index gap the home page's box
 // already shows for the same reasons (lib/home-search's `indexGap`).
 //
-// This used to race the index against a live streamed walk of the folder,
-// scored in the browser, for exactly the folders the index could not cover.
-// That fallback is gone: an uncovered folder now asks for an on-demand scan
-// and polls while it runs (listing/index-source), and a folder that stays
-// uncovered — or that no scan will ever cover in the first place — settles
-// for the index's own answer about itself instead of walking the filesystem
-// a second way. Every rule phase 1 established for the home page's box
+// An uncovered folder — a remote mount, a package, one the ignore list
+// excludes — asks for an on-demand scan and polls while it runs
+// (listing/index-source), and a folder that stays uncovered, or that no scan
+// will ever cover in the first place, settles for the index's own answer
+// about itself: there is no second, browser-scored path that walks the
+// filesystem directly. Every rule phase 1 established for the home page's box
 // applies here for the same reason it always did (platform/lib/instant-
 // search): a trailing debounce, abort rather than queue, answer a backspace
 // from memory — and NEVER blank the list. The previous query's rows stay on
@@ -464,14 +463,12 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
 
   const setQuery = (value: string) => {
     setQueryState(value);
-    // A query change is deliberately NOT a revalidation boundary.
-    //
-    // It used to be, on the reasoning that the rows are being replaced anyway
-    // so a deferred generation lands for free. It is not free: adopting the
-    // generation invalidates everything in hand, which re-runs the fetch,
-    // which means every keystroke that arrives after any background churn
-    // pays for a generation nobody asked to move to. Being a generation behind
-    // is a state this search can simply live in (listing/revalidate).
+    // A query change is deliberately NOT a revalidation boundary: adopting
+    // the latest generation on every keystroke would invalidate everything
+    // in hand and re-run the fetch, so any keystroke that arrives after
+    // background churn would pay for a generation nobody asked to move to.
+    // Being a generation behind is a state this search can simply live in
+    // (listing/revalidate).
     //
     // Editing the query is still a user gesture, so it is still the retry for
     // a failed request: otherwise search stays dead until something else moves.
