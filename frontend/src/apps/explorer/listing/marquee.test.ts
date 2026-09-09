@@ -148,7 +148,7 @@ describe("marqueeHits", () => {
 describe("bandRect", () => {
   test("the region becomes a CSS rect with the same left/top", () => {
     const region = marqueeBox({ x: 10, y: 20 }, { x: 110, y: 80 });
-    expect(bandRect(region, { width: 400 })).toEqual({
+    expect(bandRect(region, { width: 400, height: 300 })).toEqual({
       left: 10,
       top: 20,
       width: 100,
@@ -156,11 +156,13 @@ describe("bandRect", () => {
     });
   });
 
-  test("a sweep that travels into the gutter clamps at the scroller's width", () => {
+  test("a sweep that travels into the gutter clamps at the scroller's own width", () => {
     // Started over a narrow table's dead space and dragged past its right
-    // edge: the band stops at the table rather than bleeding into the gutter.
+    // edge: the band stops at the SCROLLER's edge (scrollWidth, the caller's
+    // measurement — not the table's, which can be narrower) rather than
+    // bleeding into the gutter beyond it.
     const region = marqueeBox({ x: 10, y: 0 }, { x: 500, y: 40 });
-    expect(bandRect(region, { width: 400 })).toEqual({
+    expect(bandRect(region, { width: 400, height: 300 })).toEqual({
       left: 10,
       top: 0,
       width: 390,
@@ -170,11 +172,46 @@ describe("bandRect", () => {
 
   test("entirely past the scroller's edge draws nothing wide", () => {
     const region = marqueeBox({ x: 500, y: 0 }, { x: 600, y: 10 });
-    expect(bandRect(region, { width: 400 })).toEqual({
+    expect(bandRect(region, { width: 400, height: 300 })).toEqual({
       left: 400,
       top: 0,
       width: 0,
       height: 10,
+    });
+  });
+
+  test("a sweep held below the scroller clamps at its own height", () => {
+    // The pointer sits under the last row (or under the status strip, past
+    // the scroller entirely) while auto-scroll keeps running. Left
+    // unclamped, the band's bottom would grow past scrollHeight and, being an
+    // absolutely-positioned CHILD of the scroller, would grow scrollHeight
+    // itself — the number the auto-scroll loop's stop condition depends on.
+    const region = marqueeBox({ x: 10, y: 50 }, { x: 100, y: 900 });
+    expect(bandRect(region, { width: 400, height: 300 })).toEqual({
+      left: 10,
+      top: 50,
+      width: 90,
+      height: 250,
+    });
+  });
+
+  test("a sweep held above the scroller's top clamps there too", () => {
+    const region = marqueeBox({ x: 10, y: -200 }, { x: 100, y: 40 });
+    expect(bandRect(region, { width: 400, height: 300 })).toEqual({
+      left: 10,
+      top: 0,
+      width: 90,
+      height: 40,
+    });
+  });
+
+  test("entirely past the scroller's bottom draws nothing tall", () => {
+    const region = marqueeBox({ x: 10, y: 500 }, { x: 100, y: 600 });
+    expect(bandRect(region, { width: 400, height: 300 })).toEqual({
+      left: 10,
+      top: 300,
+      width: 90,
+      height: 0,
     });
   });
 });

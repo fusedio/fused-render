@@ -216,7 +216,10 @@ export function useMarquee({
     const region = marqueeBox(d.origin, at);
     selectRef.current(marqueeHits(region, d.bands, { additive: d.additive, base: d.base }));
     if (d.band) {
-      const rect = bandRect(region, { width: scroller.scrollWidth });
+      const rect = bandRect(region, {
+        width: scroller.scrollWidth,
+        height: scroller.scrollHeight,
+      });
       d.band.style.left = `${rect.left}px`;
       d.band.style.top = `${rect.top}px`;
       d.band.style.width = `${rect.width}px`;

@@ -62,23 +62,35 @@ export function marqueeBox(a: Point, b: Point): Box {
 }
 
 // The rubber band's CSS rect, in the scroller's own coordinate space: `left`
-// and `top` are exactly the region's, so an absolutely-positioned element
+// and `top` are the region's, clamped, so an absolutely-positioned element
 // placed at them (inside a `position: relative` scroller) sits over the swept
 // rows AND scrolls with them, with no separate scroll-sync code anywhere.
-// `right` is clamped to the scroller's content width so a sweep that started
-// over a narrow table's dead space and travelled into the gutter beside it
-// draws a band that stops at the table's edge rather than bleeding into it.
+//
+// Both `width` and `height` are clamped to the SCROLLER'S OWN `scrollWidth`/
+// `scrollHeight` — not the table's, which can be narrower — so a sweep that
+// travels past the content on any side draws a band that stops at the
+// scroller's own edge rather than bleeding into the gutter beyond it. The
+// vertical clamp is load-bearing in a way the horizontal one is not: this
+// element is an absolutely-positioned CHILD of the scroller, so its own box
+// counts toward what the scroller considers scrollable. An unclamped bottom
+// grows `scrollHeight` by the overshoot, which is exactly the number the edge
+// auto-scroll loop (useMarquee's scrollLoop) reads to decide whether it moved
+// — so a sweep held below the scroller would grow the very ceiling the loop
+// checks against, never trip its "did scrollTop change" stop condition, and
+// scroll into blank space forever.
 export function bandRect(
   region: Box,
-  scroller: { width: number },
+  scroller: { width: number; height: number },
 ): { left: number; top: number; width: number; height: number } {
   const left = Math.min(Math.max(0, region.left), scroller.width);
   const right = Math.min(scroller.width, region.right);
+  const top = Math.min(Math.max(0, region.top), scroller.height);
+  const bottom = Math.min(scroller.height, region.bottom);
   return {
     left,
-    top: region.top,
+    top,
     width: Math.max(0, right - left),
-    height: region.bottom - region.top,
+    height: Math.max(0, bottom - top),
   };
 }
 
