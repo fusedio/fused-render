@@ -2240,11 +2240,25 @@ function ChatBody(props: ChatBodyProps) {
 
   // ── PR4: scheduled runs, the standing watch, the artifact strip ───────────
 
-  /** T:17198-17213 — a bottom-pinned transcript is put back at the bottom when
-   *  the banner appears, because the banner SHRINKS the scrollport. */
+  /**
+   * T:17198-17213 — a bottom-pinned transcript is put back at the bottom when
+   * the banner appears, because the banner SHRINKS the scrollport.
+   *
+   * ONLY A PINNED ONE. This used to write `scrollTop = scrollHeight` off a raw
+   * `.chat-logwrap` lookup, which jumped a reader who had scrolled up to the
+   * latest turn the moment a pending message landed (Bugbot, PR #1075). T
+   * calls `followBottom()` here, not `scrollBottom()`, and that function is
+   * the follow FLAG's — so the port asks the flag too, through the handle the
+   * scrollport lends out (`Transcript`'s `followRef`).
+   *
+   * The flag, not a geometry read taken here: this banner shrinks the
+   * scrollport as it appears, so by the time an effect could measure, the gap
+   * to the tail has crossed any threshold because the VIEWPORT moved and not
+   * because the reader did (T:17211-17213). A flag survives a resize.
+   */
+  const transcriptFollow = useRef<(() => void) | null>(null);
   const followBottom = useCallback(() => {
-    const log = rootRef.current?.querySelector(".chat-logwrap");
-    if (log) log.scrollTop = log.scrollHeight;
+    transcriptFollow.current?.();
   }, []);
 
   const sched = useSchedule({
@@ -2709,6 +2723,7 @@ function ChatBody(props: ChatBodyProps) {
               />
             ) : null}
             <Transcript
+              followRef={transcriptFollow}
               state={state}
               actions={actions}
               liveMode={state.permissionMode}

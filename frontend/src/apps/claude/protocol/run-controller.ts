@@ -788,6 +788,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // re-attach to it once it ends (Bugbot PR #1075).
     if (runId) shownRuns.add(runId);
     activeSeat = seat;
+    // WHICH TRANSCRIPT THIS LOOP IS WRITING INTO, for the `ownRunEndedAt` stamp
+    // in the `finally`. `logGen` alone cannot answer it: `openSession` replaces
+    // the visible conversation WITHOUT bumping the generation (it holds the
+    // `sending` gate instead), so this counter is the only thing that moves.
+    const tGen = state.transcriptGen;
     workingStartedAt = now();
     setRunningUi(true);
     setStats(0, "thinking", null, null);
@@ -1248,7 +1253,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // superseded loop still wrote rows into this transcript, and a stamp
       // older than those rows lets `followDecision`'s own-echo guard read this
       // page's own turn back as somebody else's.
-      emit({ ownRunEndedAt: now() });
+      //
+      // GUARDED ON THE TRANSCRIPT, not on the seat. The stamp is a fact about
+      // ROWS — "this frame wrote the tail of the conversation on screen" — so
+      // a loop whose conversation is GONE has nothing to say about the one that
+      // replaced it, and saying it anyway made the next session inherit the
+      // previous turn's stamp: `newChat` cleared it and the abandoned loop's
+      // late `finally` wrote "now" back over the fresh state, while
+      // `openSession` never cleared it at all (Bugbot, PR #1075). Then
+      // `followDecision`'s own-echo rule reads somebody else's rows in the NEW
+      // chat as this page's own and suppresses the refresh they should trigger.
+      if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
       // Nothing is "queued for this turn" once the turn is over: the CLI drains
       // its queue as part of the run, so whatever is still listed here has
       // either been answered above or died with the process. Guarded on
@@ -2038,6 +2053,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // A restored conversation has no live run, so the picker's param is the
       // only honest answer until the next poll reports one.
       permissionMode: curPermissionMode(),
+      // AND NO RUN OF OURS HAS ENDED IN IT. The stamp belongs to the
+      // conversation that is leaving; carried across, it tells the live-watch
+      // follower that this page wrote the tail of a transcript it has never
+      // written a row into, and the own-echo guard then swallows the first
+      // outside turn to arrive (Bugbot, PR #1075). `newChat` clears it through
+      // `emptyState`; this is the other way a transcript is replaced.
+      ownRunEndedAt: 0,
     });
     try {
       const res = (await run(

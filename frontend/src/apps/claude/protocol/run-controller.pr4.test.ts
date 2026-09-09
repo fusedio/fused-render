@@ -549,6 +549,62 @@ describe("transcriptGen", () => {
   });
 });
 
+describe("ownRunEndedAt", () => {
+  // The stamp is a fact about ROWS — "this frame wrote the tail of the
+  // conversation on screen" — and `followDecision`'s own-echo rule reads it to
+  // tell rows this page just wrote from somebody else's turn landing over the
+  // top of them (D415). Carried into the NEXT conversation it is a lie about a
+  // transcript this page has never written a row into, and the guard then
+  // swallows the first outside turn to arrive (Bugbot, PR #1075).
+
+  test("a finished own run stamps the clock", async () => {
+    const { controller } = makeController({
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "hi", segments: [text("hi")] }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().ownRunEndedAt).toBe(1_000);
+  });
+
+  test("LEAVING CLEARS IT: an abandoned loop's late finally cannot stamp the fresh chat", async () => {
+    // `newChat` bumps `logGen`, so the loop it left mid-turn bails — but its
+    // `finally` still runs, and the stamp used to be written there
+    // unconditionally, straight onto the state `newChat` had just emptied.
+    let ctl: ChatController | null = null;
+    const { controller } = makeController({
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        // The reader presses Back mid-turn; the run keeps going server-side.
+        if (n === 0) ctl!.newChat();
+        return poll({ done: true, text: "hi", segments: [text("hi")] });
+      },
+    });
+    ctl = controller;
+    await controller.sendMessage("go");
+    expect(controller.getState().turns.length).toBe(0);
+    expect(controller.getState().ownRunEndedAt).toBe(0);
+  });
+
+  test("SWITCHING CLEARS IT: openSession does not inherit the last chat's stamp", async () => {
+    // `openSession` is the OTHER way the visible transcript is replaced, and
+    // the one `logGen` cannot see — it holds the `sending` gate instead of
+    // bumping the generation, so the stamp has to be cleared by hand.
+    const { controller } = makeController({
+      live_host: () => ({ run_id: "" }),
+      live_run: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, text: "hi", segments: [text("hi")] }),
+      history: () => ({ turns: [], transcript: { path: "/p/s2.jsonl", mtime: 1, size: 2 } }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().ownRunEndedAt).toBe(1_000);
+    await controller.openSession("s2");
+    expect(controller.getState().ownRunEndedAt).toBe(0);
+  });
+});
+
 describe("setExternalWorking", () => {
   test("a line with no stop button and no token count", () => {
     const { controller } = makeController({});
