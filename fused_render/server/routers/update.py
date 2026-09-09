@@ -22,6 +22,9 @@ def _manager():
 def api_update_check(x_fused: str | None = Header(default=None)):
     if (error := _require_fused(x_fused)) is not None:
         return error
+    # Throttled (mac_update.MIN_CHECK_GAP_S): the client fires this when the
+    # app comes back to the front, and a run of focus flips must not become a
+    # run of CDN fetches. The auto loop's own tick passes force=True.
     return _manager().check()
 
 

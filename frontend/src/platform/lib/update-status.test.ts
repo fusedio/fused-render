@@ -3,7 +3,12 @@
 // themselves on, so a bug here would be wrong in three places at once.
 import { describe, expect, it } from "bun:test";
 import type { UpdateStatus } from "@platform/lib/api";
-import { pollDelay, updateLabel, updateRelevant } from "./update-status";
+import {
+  pollDelay,
+  shouldCheckOnReturn,
+  updateLabel,
+  updateRelevant,
+} from "./update-status";
 
 function status(overrides: Partial<UpdateStatus>): UpdateStatus {
   return {
@@ -69,7 +74,10 @@ describe("pollDelay", () => {
   const st = (state: UpdateStatus["state"]) => ({ state } as UpdateStatus);
   it("is quick while an install runs, warm only while the first check is still plausibly coming", () => {
     expect(pollDelay(st("installing"), 0)).toBe(2_000);
-    expect(pollDelay(st("checking"), 0)).toBe(15_000);
+    // Hot for the first twenty seconds — the server's first check lands ~1s in.
+    expect(pollDelay(st("checking"), 0)).toBe(2_000);
+    expect(pollDelay(st("idle"), 10_000)).toBe(2_000);
+    expect(pollDelay(st("checking"), 20_000)).toBe(15_000);
     expect(pollDelay(st("idle"), 30_000)).toBe(15_000);
     // …and settles: idle is also the resting state after a check found nothing.
     expect(pollDelay(st("idle"), 120_000)).toBe(60_000);
@@ -77,5 +85,42 @@ describe("pollDelay", () => {
     expect(pollDelay(st("available"), 0)).toBe(60_000);
     // No updater at all (dev run): nothing to be quick about.
     expect(pollDelay(null, 0)).toBe(60_000);
+  });
+});
+
+// Check-on-return: the app coming back to the front is what closes the gap
+// between a release and the badge, so the three ways this could be wrong get
+// pinned here — too eager, a dev run with no updater, and a `focus` that fired
+// on a document nobody is looking at.
+describe("shouldCheckOnReturn", () => {
+  const GAP = 30 * 60_000;
+  const idle = { state: "idle" } as UpdateStatus;
+
+  it("checks once the gap has passed", () => {
+    expect(shouldCheckOnReturn(0, GAP, idle, true)).toBe(true);
+    expect(shouldCheckOnReturn(0, GAP + 1, idle, true)).toBe(true);
+  });
+
+  it("stays quiet inside the gap, so cmd-tabbing is not a run of requests", () => {
+    expect(shouldCheckOnReturn(0, 0, idle, true)).toBe(false);
+    expect(shouldCheckOnReturn(0, GAP - 1, idle, true)).toBe(false);
+  });
+
+  it("never checks without an updater — a dev run has none and the POST 404s", () => {
+    expect(shouldCheckOnReturn(0, GAP * 10, null, true)).toBe(false);
+  });
+
+  it("never checks for a hidden document, however long it has been", () => {
+    expect(shouldCheckOnReturn(0, GAP * 10, idle, false)).toBe(false);
+  });
+
+});
+
+describe("shouldCheckOnReturn only re-asks from idle", () => {
+  it("is false once an update is available, running, installed or failed", () => {
+    for (const state of ["available", "installing", "installed", "error", "checking"] as const) {
+      expect(shouldCheckOnReturn(0, 3_600_000, status({ state }), true)).toBe(false);
+    }
+    expect(shouldCheckOnReturn(0, 3_600_000, status({ state: "idle" }), true)).toBe(true);
   });
 });
