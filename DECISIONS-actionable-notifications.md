@@ -334,6 +334,108 @@ is configured, so the row is never left with nowhere to go.
 `test_api_ai_threads_X_Fused_Page_into__ai_relay`
 (`tests/test_ai_runtime.py`))
 
+## Second fix-review round
+
+Three more gaps found in the finished build. Fixed here, in order.
+
+### Fix A — a Playground render with no `X-Fused-Page` opens its own output
+
+The AI Models Playground raises image/video renders from the shell, not from
+inside a page iframe, so it never sends `X-Fused-Page` — by design, the shell
+is not a page and gets no fake one manufactured on its behalf. That left
+every Playground render with `page == ""` and, per the Finding 1 table above,
+no destination at all.
+
+`_start_render` (`fused_render/ai/supervisor.py`, shared by `start_image` and
+`start_video`) now gives a render with no caller-supplied page a destination
+on its TERMINAL report, once the output path is actually known: the rendered
+file itself on success (`result["path"]`), the folder that would have held it
+on failure or cancellation (`os.path.dirname(request["out"])`) — the file
+never got written in that case, but the route already created its parent
+directory before starting the render, so the folder is a real destination
+where the file itself would not be. A caller-supplied page (an app that DID
+send `X-Fused-Page`) still wins outright; it is set once, at open, and
+`upsert` keeps a truthy `page` already on a row through every later tick that
+does not repeat it, so the two writes never race.
+
+`navigateToJobPage`'s own `isDir` paint hint was wrong for this new case: it
+called anything not ending in `.htm(l)` a directory, which made a `.png` or
+`.mp4` output paint as a folder. It now tests the basename's own trailing
+extension (`/\.[^./]+$/`) instead — any file-shaped basename paints as a
+file, `.html`/`.htm` included, since those already match; a folder whose name
+happens to contain a dot elsewhere still paints as a folder.
+
+(`frontend/src/platform/lib/router.ts`, `router.test.ts`;
+`fused_render/ai/supervisor.py`, `tests/test_ai_runtime.py`:
+`test_an_image_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done`,
+`test_a_caller_supplied_page_still_wins_once_the_image_is_done`,
+`test_a_failed_image_render_with_no_caller_page_points_at_its_output_folder`,
+`test_a_video_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done`,
+`test_a_failed_video_render_with_no_caller_page_points_at_its_output_folder`)
+
+### Fix B — a successful model load stays out of Notifications, without leaving the store
+
+The literal ask was to have `supervisor.py`'s `_report(job, state="done",
+detail="Model loaded")` remove the job from the store on a successful load,
+so the terminal `sys:ai-model:*` row never persists as a notification.
+Doing that in `supervisor.py` itself turns out to break a real consumer:
+`fused.ai.models.load(wait=True)` (`_wait_job` in
+`fused_render/templates/shared/fused_ai.py`) polls `GET /api/jobs` for this
+exact job id and only stops polling once it observes the row itself go
+`done` — a regression test already pins this exact ordering
+(`test_a_successful_load_reports_a_visible_done_state`: reporting `done` and
+dismissing the row back-to-back breaks this same caller, since a dismissed
+row's next poll never shows `done` at all). `_wait_ready`'s row-merge (D628,
+`NOTES-merge-model-load-row.md`)
+does not have the same problem — its merge only reads the load's row while
+the load is RUNNING, and clears in a `finally` on every exit path before the
+row ever needs to be read again — but the `_wait_job` conflict alone rules
+out a store-side removal on the success path the brief asked for.
+
+Grepped for every other consumer of a terminal `sys:ai-model:*` row: the AI
+Models Local page filters to `owner === "server" && !isTerminal(j)`
+(`activeJobByModel` in `jobs.ts`) and so never depended on the terminal row
+surviving either way.
+
+Built instead as a FRONTEND-ONLY filter, the same shape the codebase already
+uses for `sys:schedule:*` (`isScheduleJob`/`jobRows`, a row a backend
+reporter/poller still needs but that must never surface as a notification):
+`jobRows` (`frontend/src/platform/lib/jobs.ts`) now also drops a
+`sys:ai-model:*` row once it has gone `done` (`isQuietModelLoad`). The
+backend store, `_report`, and `_wait_ready` are untouched — a failed or
+cancelled load still surfaces as a notification, and the row is still
+observably present and `done` to any live watcher for as long as the
+process's own aging (`_sweep`/`FINISHED_TTL_S`) would otherwise keep it. The
+`Downloaded` terminal report for a model download is a separate,
+long-running row and was left alone, as scoped.
+
+This is a deviation from the literal instruction ("remove the job from the
+store") — flagging it here because the store-side approach could not be made
+to work without breaking `_wait_job`'s poll.
+
+(`frontend/src/platform/lib/jobs.ts`, `jobs.test.ts`: `AI_MODEL_JOB_PREFIX`,
+`isQuietModelLoad`, and three new tests around it)
+
+### Fix C — dismiss-on-open no longer races a page's own re-attachment
+
+`JobRow`'s open handler (`DownloadManager.tsx`) navigated to `job.page` and
+then dismissed the row whenever `state === "done"`, with no regard for what
+kind of destination `page` was. For a job a PAGE raised, `job.page` is that
+same page, and the page re-attaches to its job by id on mount — the row
+could be deleted server-side in the gap between the navigation firing and
+the page's own mount effect running.
+
+The open handler now dismisses on a `done` row only when the destination is
+a shell route (`isJobPageRoute(job.page)`); an fs-path destination (a
+rendered image/video with nothing else watching it, per Fix A) still opens
+on click but the row stays. Failed and cancelled rows are unaffected — they
+never dismissed on open before this fix and still don't, only their explicit
+✕ clears them.
+
+(`frontend/src/platform/ui/DownloadManager.tsx`;
+`frontend/src/platform/ui/JobRow.test.tsx`: new test "a done job whose page
+is an fs path navigates but does NOT dismiss itself")
+
 ## Explicitly out of scope (per spec, unchanged)
 
 Toasts, `fused.trackJob` API/no new `Job` field, native OS notifications,
