@@ -534,6 +534,35 @@ function ChatBody(props: ChatBodyProps) {
     answerAppState: controller.answerAppState,
   });
 
+  // ── the ask, LATCHED PER MOUNT ─────────────────────────────────────────────
+  //
+  // THE ASK IS THIS MOUNT'S IDENTITY, NOT A LIVE PROP. The host keys the mount
+  // per DELIVERY (`Preview.tsx`'s `claudeMountKey` → `claude:<seq>`, and
+  // `Listing.tsx`'s pane key), so a new ask is a NEW MOUNT — which means the
+  // prop only ever has to be read once, at boot, and re-reading it later can
+  // only go wrong.
+  //
+  // AND IT DID. The host derives `nativeAsk` at RENDER time from a ref written
+  // in a committed effect (`deliveredAsk`), so the prop is non-null for exactly
+  // ONE render of the host and `undefined` on the very next one, whatever
+  // caused it. With `props.initialAsk` in the boot effect's deps, that flip
+  // tore the boot down 32 ms into the ≤1.5 s model/effort detection wait — the
+  // cleanup set `cancelled` and re-armed the latch, so the awaited send was
+  // skipped, and the re-run read `undefined` and took the "nothing to restore"
+  // branch. `entered` stayed true from the first pass, so the user got exactly
+  // what QA reported: the chat opens, the composer is live, and the prompt is
+  // gone (R4-4). Legacy is immune because its template PULLS the ask at its own
+  // boot, where no React prop can vanish underneath it.
+  //
+  // Sticky and never un-set, so a host re-render inside the wait cannot cancel
+  // a send already on its way. Still exactly one send: `bootDispatched` (per
+  // boot) and `bootedFor` (per controller) are what enforce that, not the
+  // prop's lifetime. And a replay is still impossible — a remount at the SAME
+  // key arrives with `initialAsk: undefined` (the host's `deliveredAsk` guard
+  // is untouched) and a fresh, empty latch.
+  const askRef = useRef(props.initialAsk);
+  if (props.initialAsk) askRef.current = props.initialAsk;
+
   // ── home vs chat (T:1277-1282 `#chat.home`) ────────────────────────────────
   // The host's ids count here as well as the store's: they are seeded into the
   // store by the boot effect below (a COMMITTED effect — a `params.set` in a
@@ -544,7 +573,7 @@ function ChatBody(props: ChatBodyProps) {
       !!(
         params.get("session_id") ||
         params.get("run") ||
-        props.initialAsk ||
+        askRef.current ||
         props.initialSessionId ||
         props.initialRunId
       ),
@@ -617,7 +646,9 @@ function ChatBody(props: ChatBodyProps) {
     if (Object.keys(seed).length) params.set(seed);
     const sessionId = params.get("session_id") || "";
     const runId = params.get("run") || "";
-    const ask = props.initialAsk;
+    // The LATCH, not the prop — see `askRef`. This is what survives the host's
+    // one-shot `nativeAsk` flipping to null inside the detection wait below.
+    const ask = askRef.current;
     void (async () => {
       if (ask) {
         // A genuinely NEW conversation, and that has to be MADE true rather than
@@ -689,7 +720,13 @@ function ChatBody(props: ChatBodyProps) {
       // the latch stays: whatever it started is the one thing this mount does.
       if (!bootDispatched.current) bootedFor.current = null;
     };
-  }, [controller, params, props.initialAsk, markReady, cardPolicy]);
+    // `props.initialAsk` IS DELIBERATELY NOT A DEP. The ask is read through
+    // `askRef`, which is stable for the mount, and a new ask is a new mount by
+    // the host's key — so listing the prop bought nothing and cost the boot a
+    // teardown whenever the host's one-shot derivation flipped it back to
+    // `undefined` mid-wait (R4-4, `askRef`'s note). A real UNMOUNT still
+    // cancels: `cancelled` is set by the same cleanup either way.
+  }, [controller, params, markReady, cardPolicy]);
 
   // ── the typewriter (T:15063-15142, drained at T:16336) ─────────────────────
   //

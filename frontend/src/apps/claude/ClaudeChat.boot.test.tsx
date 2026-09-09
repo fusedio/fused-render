@@ -294,3 +294,35 @@ test("the ask is spent ONCE — a host's own re-render cannot send it twice", as
   await settle(1700);
   expect(started().length).toBe(1);
 });
+
+test("a host that DROPS initialAsk mid-wait still sends the ask once (Fix with AI, R4-4)", async () => {
+  // THE BUG THIS PINS. The explorer hosts derive `nativeAsk` at RENDER time
+  // from a ref written in a committed effect, so `initialAsk` is non-null for
+  // exactly ONE of the host's renders and `undefined` on the next — measured
+  // at 32 ms after the delivery remount, well inside the 1.5 s detection wait
+  // the ask boot parks in. With the prop in the boot effect's deps that flip
+  // cancelled the boot, re-armed the latch, and the re-run read `undefined`
+  // and took the "nothing to restore" branch: chat entered, composer live,
+  // prompt never sent.
+  //
+  // The test above re-renders WITH the ask still set, which is why this slipped
+  // through — the drop is the whole defect.
+  holdPrefs = true; // park inside ASK_DETECTION_TIMEOUT_MS
+  const params = createMemoryParamsStore();
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<ClaudeChat {...baseProps} params={params} initialAsk="fix it" />);
+  });
+  mounted.push(r);
+  expect(started()).toEqual([]); // still waiting on detection
+
+  // The host's one-shot `nativeAsk` flipping to null on its very next render.
+  await act(async () => {
+    r.update(<ClaudeChat {...baseProps} params={params} />);
+  });
+
+  holdPrefs = false; // detection lands
+  await settle(1700);
+  expect(started().length).toBe(1);
+  expect(started()[0].params.message).toContain("fix it");
+});
