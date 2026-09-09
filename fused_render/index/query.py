@@ -442,6 +442,12 @@ RANK_LIMIT = 200
 # corpus endpoint — `search_under` is, and it has its own MAX_CORPUS.
 MAX_RANK_LIMIT = 2_000
 
+# A glob's own ceiling, wider than a ranked substring answer's: every glob hit
+# is an equal match with no tail to trim, so the client renders and select-alls
+# the whole fetched set (never a top-N of it) — the only limit left is how many
+# rows a scrollable list and a select-all should ever hold at once.
+MAX_GLOB_RANK_LIMIT = 5_000
+
 # Chars that open a new "segment" in a path/name; a match right after one of
 # these reads as the start of a word and scores higher. Mirrors
 # frontend/src/platform/lib/fuzzy.ts's SEPARATORS exactly — change one, change
@@ -917,7 +923,7 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         # any bare root (POSIX or a Windows drive), not only "/" itself.
         prefix = root if root.endswith("/") else root + "/"
         prefix_like = like_literal(prefix)
-        limit = max(0, min(int(limit), MAX_RANK_LIMIT))
+        limit = max(0, min(int(limit), MAX_GLOB_RANK_LIMIT if glob else MAX_RANK_LIMIT))
         hit = prune(m["partitions"], prefix)
         base = {"covered": True, "reason": "", "scanned_partitions": len(hit),
                 "of_partitions": len(m["partitions"])}
