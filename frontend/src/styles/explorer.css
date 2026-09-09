@@ -1302,13 +1302,11 @@ table.listing-table tr.skel-row:hover {
 }
 
 .crumb-search-slot > .listing-search {
-  /* Decision 1: this field IS the path bar for a claimed folder now — no
-     sibling `.crumbs` strip is left competing for the row (Breadcrumb.tsx
-     renders none while claimed), so the field grows to hold the space that
-     strip used to, right where it sat (Breadcrumb.tsx now portals this slot
-     immediately after the crumb-nav arrows, ahead of the star). It used to
-     sit pinned to the bar's right end at a fixed resting width, back when it
-     was a small search-only control beside a full path strip. */
+  /* Decision 1: this field IS the path bar for a claimed folder — no
+     sibling `.crumbs` strip competes for the row (Breadcrumb.tsx renders
+     none while claimed), so the field grows to fill the space a crumb strip
+     would otherwise hold, right where one would sit (Breadcrumb.tsx portals
+     this slot immediately after the crumb-nav arrows, ahead of the star). */
   flex: 1 1 auto;
   min-width: 0;
   justify-content: flex-start;
@@ -1417,7 +1415,8 @@ table.listing-table tr.skel-row:hover {
      opening animates and closing snaps back.
      `flex-grow` is the animated property because grow, not `width`, is what
      spans the strip; the row's own grow above is instant, so the field opens
-     leftward from the bar's right edge (`justify-content: flex-end`). */
+     rightward, eating the space between it and whatever else sits in the bar
+     (`#breadcrumb`'s `justify-content: space-between`). */
   transition: flex-grow 130ms ease-out;
 }
 
@@ -1438,20 +1437,11 @@ table.listing-table tr.skel-row:hover {
   --pin-right: 10px;
 }
 
-/* A pin costs 96px of the input, and the resting box is only 150px — which
-   would leave a few dozen pixels of field, clipping the placeholder and
-   anything typed. So a box with something pinned in it grows to keep its text
-   area: the reservation comes out of the bar's free width instead of out of
-   the query.
-
-   This is the MULTI-SELECTION readout in practice ("12 selected"). The other
-   pins ride a non-empty query, and that already takes the whole strip. Capped,
-   so a wide window does not turn a selection into a full-width search box; the
-   crumbs are scrollable and give up the difference. */
-.crumb-search-slot .listing-search-box.has-pin {
-  flex: 0 1 auto;
-  width: 260px;
-}
+/* A pin (the multi-selection readout, "12 selected", or the streaming
+   spinner) reserves 96px of the input as padding-right (above) — the box
+   itself keeps the plain grow-with-the-row sizing every merged field gets
+   (`flex: 1 1 auto; width: auto;`), so a pin never squeezes the path down to
+   a fixed width; the crumbs are scrollable and give up room first. */
 
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
    toggle can sit beside them without disturbing the inside-the-input pin. */
@@ -1510,18 +1500,14 @@ table.listing-table tr.skel-row:hover {
    sitting where a caret is about to type reads as editable text the first
    keystroke is about to destroy, and it says nothing about the field taking
    more than a filename. That is a React condition in Listing.tsx
-   (`!pinnedOpen`), not a CSS one — a `:has(.listing-search.expanded) .crumbs`
-   rule used to do this from here, back when this strip doubled as `.crumbs`
-   itself, but it went with that class (below). Doing it in JSX instead of
-   re-deriving a `:has()` equivalent means there is no selector for a future
-   rename to quietly stop matching again.
+   (`!pinnedOpen`), not a CSS one — there is no `.listing-search-crumbs`
+   selector here to gate visibility with, so the JSX above is the only thing
+   that decides whether this element renders at all.
 
-   This class does NOT double as `.crumbs` (PathCrumbs.tsx no longer renders
-   that class at all). It used to, purely so this strip could borrow the
-   plain-file bar's look, but every `#breadcrumb .crumbs`/`.crumbs`-keyed
-   rule in this file — several written for a sibling strip that does not
-   exist once a folder is claimed — matched this element too by the same
-   accident, at a specificity this class could not out-rank. So this rule
+   This class does not double as `.crumbs`: PathCrumbs.tsx renders only this
+   class here, so no `#breadcrumb .crumbs`/`.crumbs`-keyed rule elsewhere in
+   this file — several exist for a sibling strip that does not exist once a
+   folder is claimed — can match this element by accident. This rule
    declares everything it needs on its own name instead: the monospace face
    the plain strip wears, left-aligned with no packing, visible for exactly
    as long as the JSX above renders it and no longer. */
@@ -1564,6 +1550,10 @@ table.listing-table tr.skel-row:hover {
 
 .listing-search-crumbs span.path-crumb {
   flex: 0 0 auto;
+  /* Overrides the shared `.path-crumb` rule's `cursor: pointer` — this span
+     (the current folder, the only `.path-crumb` that renders as a span here)
+     is `pointer-events: none`, so a pointer cursor over it can never fire. */
+  cursor: default;
 }
 
 .listing-search-crumbs .path-crumb-sep {
