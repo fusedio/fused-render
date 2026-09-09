@@ -274,9 +274,10 @@ class Job:
     total_estimated: bool = False
     unit: str = ""
     message: str = ""
-    # The .html that raised it, from the X-Fused-Page header. Attribution only
-    # — the manager shows which page a row belongs to, and clicking it goes
-    # back there.
+    # Where clicking this row goes, once it lands in Notifications — an
+    # absolute fs path (from the X-Fused-Page header, or a server producer's
+    # own repo root/output folder) or one of a handful of shell routes a few
+    # server producers name directly. "" when no destination applies.
     page: str = ""
     # OWNER_PAGE or OWNER_SERVER — see SERVER_ID_PREFIX. Not settable from a
     # report body: it follows from the id, so a page cannot claim to be the
@@ -333,6 +334,22 @@ def _text(value: object, cap: int, *, one_line: bool = True) -> str:
     if one_line:
         text = " ".join(text.split())
     return text[:cap]
+
+
+def _page_text(value: object) -> str:
+    """A navigation target, bounded but otherwise byte-for-byte.
+
+    `page` is a filesystem path or a shell route, not prose — `_text`'s
+    one-line collapse (`" ".join(text.split())`) is right for a label
+    headed for `textContent`, but wrong here: it folds a genuine double
+    space or a leading/trailing space in a real path into something that no
+    longer resolves, which `navigate()` would then silently 404 on. Only
+    accidental surrounding whitespace (a header value with stray padding) is
+    trimmed; anything internal is left exactly as the reporter sent it.
+    """
+    if value is None:
+        return ""
+    return str(value).strip()[:PAGE_MAX]
 
 
 def _number(value: object, name: str) -> float | None:
@@ -472,7 +489,7 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
             value = body.get("waiting_for")
             job.waiting_for = clean_id(value) if value else ""
         if page:
-            job.page = _text(page, PAGE_MAX)
+            job.page = _page_text(page)
 
         if "state" in body:
             state = _one_of(body.get("state"), STATES, "state", job.state)

@@ -45,9 +45,9 @@ def api_capture_start(body: dict = Body(...),
     """Begin a recording. `mode` is "screen" or "audio".
 
     `X-Fused-Page` names the page that started the capture — the same header
-    and `unquote` channel `routers/jobs.py` already uses for a page-owned
-    job's own `page` field — so the row this creates knows where a click
-    on it in Notifications should go (SPEC-actionable-notifications.md).
+    and `unquote` channel `routers/jobs.py` uses for a page-owned job's own
+    `page` field — so the row this creates knows where a click on it in
+    Notifications should go.
     """
     guard = _require_fused(x_fused)
     if guard is not None:

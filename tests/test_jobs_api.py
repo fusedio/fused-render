@@ -198,6 +198,20 @@ def test_a_page_attributes_its_own_rows_through_the_header(client):
     assert listing(client)[0]["page"] == "/tmp/my app/index.html"
 
 
+def test_the_page_header_keeps_internal_whitespace_verbatim(client):
+    """A double space or a trailing space inside a real path is part of the
+    path — collapsing it the way a label is collapsed would point the row at
+    a path that does not exist. Only accidental padding around the whole
+    header value is trimmed."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1",
+                 "X-Fused-Page": "%20/tmp/My%20%20App/index.html%20"},
+    )
+    assert listing(client)[0]["page"] == "/tmp/My  App/index.html"
+
+
 def test_a_non_finite_number_is_refused_not_painted(client):
     """`n / total` with total 0 gives inf; drawing it would be a confident bar
     built from the reporter's bug."""

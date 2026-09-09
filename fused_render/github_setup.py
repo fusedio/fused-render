@@ -591,9 +591,9 @@ def _report_install(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
-        # SPEC-actionable-notifications.md: no repo root applies to an
-        # install (there is nothing to publish yet), and there is no
-        # dedicated GitHub-settings tab to send this to — /preferences is
+        # No repo root applies to an install (there is nothing to publish
+        # yet), and there is no dedicated GitHub-settings tab to send this
+        # to — /preferences is
         # already where the legacy `_account` sentinel in router.ts lands,
         # and it is the most defensible destination available, not one
         # validated against any live caller: an exhaustive grep of the
@@ -890,10 +890,10 @@ def _report_publish(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
-        # SPEC-actionable-notifications.md: this row's destination is the
-        # repository it publishes, not a page — `_resolve_repo_root`'s own
-        # containment-checked, realpath'd root, set once at claim time
-        # (below), never the raw string a page happened to send.
+        # This row's destination is the repository it publishes, not a page
+        # — `_resolve_repo_root`'s own containment-checked, realpath'd root,
+        # set once at claim time (below), never the raw string a page
+        # happened to send.
         }, page=snapshot.get("root") or "", server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the publish
         logger.debug("could not report the gh publish job")
