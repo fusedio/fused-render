@@ -143,3 +143,80 @@ export function troubleInstructionsText(t: Trouble, ctx: TroubleContext): string
 export function troubleLink(t: Trouble): string {
   return troubleHelpUrl(platformKindOf(t.kind));
 }
+
+// ── the rewrite, taken back apart ────────────────────────────────────────────
+//
+// agent.py's `_account_error` turns the CLI's own login/limit line into one
+// sentence that says what to DO about it, and then rides the help link and the
+// original text along in the same string:
+//
+//   "Claude Code isn't logged in. Open a terminal, run `claude`, type /login
+//    and finish the sign-in, then start a new chat here.
+//    Help: https://render.fused.io/#troubleshooting-login (Invalid API key …)"
+//
+// As ONE run-on line — which is how both surfaces drew it — the instruction is
+// the part that disappears: it sits mid-sentence between a diagnosis and a URL
+// that is not even clickable. The string is not the problem; drawing it as a
+// paragraph is. So it is split back into the parts it was assembled from, and
+// each gets its own line.
+//
+// THE SERVER TEXT IS NOT TOUCHED (the legacy template shares it, and it is what
+// a bug report is matched on). This reads it, and reads nothing it did not
+// write: the split only fires on the `Help: <url>` tail that `_account_error`
+// and nothing else appends, so any other failure stays exactly one line.
+
+/** One trouble message, in the parts `_account_error` built it from. */
+export interface TroubleLines {
+  /** What happened — the first sentence, and short by construction. */
+  lead: string;
+  /** The imperative rest: the thing the reader is supposed to go and do.
+   *  Absent when the message is not one of our rewrites. */
+  action?: string;
+  /** The `Help:` deep link, as a URL rather than as prose. */
+  help?: string;
+  /** The CLI's own words, from the trailing parenthetical. Kept because it is
+   *  the half a bug report is matched on — just not at full size. */
+  raw?: string;
+}
+
+/** The tail `_account_error` (and only it) appends: a help URL, optionally
+ *  followed by the original error in parentheses. Anchored at the end, so a
+ *  message that merely mentions a URL is left alone. */
+const HELP_TAIL = /\s*Help:\s*(https?:\/\/\S+?)\s*(?:\(([\s\S]*)\))?\s*$/;
+
+/** First sentence boundary: a period followed by whitespace. Deliberately not
+ *  a sentence tokenizer — the input is two of our own strings. */
+const SENTENCE = /\.\s+/;
+
+/**
+ * Split a trouble message into `lead` / `action` / `help` / `raw`.
+ *
+ * A message with no `Help:` tail comes back as `{ lead: message }` — one line,
+ * unchanged — because anything else would be this layer guessing at bytes the
+ * CLI or a traceback wrote.
+ */
+export function splitTroubleMessage(message: string): TroubleLines {
+  const text = String(message || "").trim();
+  const tail = HELP_TAIL.exec(text);
+  if (!tail) return { lead: text };
+  const head = text.slice(0, tail.index).trim();
+  const raw = (tail[2] ?? "").trim();
+  const cut = head.search(SENTENCE);
+  const lead = cut < 0 ? head : head.slice(0, cut + 1);
+  const action = cut < 0 ? "" : head.slice(cut + 1).trim();
+  return {
+    lead,
+    ...(action ? { action } : {}),
+    ...(tail[1] ? { help: tail[1] } : {}),
+    ...(raw ? { raw } : {}),
+  };
+}
+
+/** The card's `explain` — a plain STRING, since `platform/ui/TroubleCard` takes
+ *  words and not nodes. The action sentence is the whole of it: the card's title
+ *  already says what happened, and the generic "signing in happens in a
+ *  terminal, once" is the sentence this one replaces with the actual steps.
+ *  Backticks come out — unrendered they read as markdown that leaked. */
+export function troubleExplain(lines: TroubleLines): string | undefined {
+  return lines.action ? lines.action.replace(/`/g, "") : undefined;
+}

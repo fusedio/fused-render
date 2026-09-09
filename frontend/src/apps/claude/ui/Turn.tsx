@@ -11,6 +11,7 @@ import { Caret } from "./Caret";
 import { ClaudeMark } from "./ClaudeMark";
 import { MarkdownView } from "./MarkdownView";
 import { SegmentView } from "./SegmentView";
+import { TroubleMessage } from "./TroubleView";
 
 /** THE CLI'S OWN INTERRUPT MARKER (R2-2). When a turn is cut short the Claude
  *  Code CLI writes this exact string into the transcript as a USER-ROLE record —
@@ -103,9 +104,15 @@ export const Turn = memo(function Turn({
   }
   if (turn.role === "error") {
     // T:13698 `addError`'s plain red row: a failure that landed HERE, kept in
-    // the log where it happened. A text node, never markdown — the message is
-    // agent.py's or the CLI's bytes.
-    return <div className="turn error">{turn.text}</div>;
+    // the log where it happened. Never markdown — the message is agent.py's or
+    // the CLI's bytes — but not one run-on paragraph either: `TroubleMessage`
+    // puts the instruction on its own line and makes the help URL a link, and
+    // leaves anything it does not recognise as the single text node it was.
+    return (
+      <div className="turn error">
+        <TroubleMessage text={turn.text} />
+      </div>
+    );
   }
   if (turn.role === "note") {
     // A one-liner for something that happened BESIDE the conversation: the
