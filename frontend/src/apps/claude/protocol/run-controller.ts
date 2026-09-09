@@ -409,6 +409,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   const dropTurn = (key: string) => emit({ turns: state.turns.filter((t) => t.key !== key) });
 
+  /**
+   * PR2 — THE SENT BUBBLE LETS GO OF ITS BLOB URLS.
+   *
+   * `ClaudeChat.beginSend` parks a send's attachments under the very
+   * `Receipt[]` it hands down here, and on the road that LANDED it re-points
+   * those receipts at the copy the server now holds (`settleReceipts`) so the
+   * object URLs can be released. The rows are memoized on identity, so the
+   * replacement has to come through the store or the `<img>` would keep the URL
+   * that is about to be revoked (Bugbot, PR #1064).
+   *
+   * THE ARRAY IS THE ADDRESS, exactly as it is for the hand-back: a send whose
+   * bubble was dropped (a rollback, a `newChat`) finds no turn and settles
+   * nothing, rather than rewriting another send's receipts.
+   */
+  const settleAttachments = (receipts: Receipt[], next: Receipt[]): void => {
+    if (disposed) return;
+    let found = false;
+    const turns = state.turns.map((t) => {
+      if (t.role !== "user" || t.attachments !== receipts) return t;
+      found = true;
+      return { ...t, attachments: next };
+    });
+    if (found) emit({ turns });
+  };
+
   /** T:13446 `addUser` — the bubble goes up BEFORE anything slow on the send
    *  path: the user's words appearing instantly is worth more than a receipt and
    *  a bubble arriving together (T:16490). */
@@ -2144,6 +2169,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     resumeRun,
     adoptLiveRun,
     newChat,
+    settleAttachments,
     dispose() {
       disposed = true;
       logGen++;

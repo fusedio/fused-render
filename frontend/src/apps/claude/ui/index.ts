@@ -177,6 +177,7 @@ export {
   receiptFor,
   receiptsFromWire,
   receiptViewable,
+  settleReceipts,
   shotAlt,
   shotGlyph,
   shotNoun,

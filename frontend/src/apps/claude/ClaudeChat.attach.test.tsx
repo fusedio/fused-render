@@ -222,6 +222,15 @@ function chips(r: Chat) {
   );
 }
 
+/** Every `<img>` a thumbnail button is showing — the chips' while a message is
+ *  being composed, the receipt rows' once it has been sent (ShotThumb). */
+function thumbSrcs(r: Chat): string[] {
+  return r.root
+    .findAllByType("img")
+    .map((n) => String((n.props as { src?: string }).src ?? ""))
+    .filter(Boolean);
+}
+
 /** What one chip says it is (`.c-txt`). */
 function chipText(chip: ReturnType<typeof chips>[number]): string {
   const txt = chip.findAll(
@@ -546,6 +555,105 @@ test("a send fired DURING the camera's window waits for the picture", async () =
 });
 
 // ---- Bugbot: the blobs a send is still carrying ---------------------------
+
+test("a send that LANDED re-points its receipts at the copy on disk and drops the blobs", async () => {
+  // The half of the same leak with no symptom at all. `done()` used to just
+  // DELETE the entry, and the receipts under the sent bubble were drawn with the
+  // attachment's own object URL — so the bubble held the only handle to a
+  // full-pane Blob, and `newChat`, a file change or a later unmount threw those
+  // turns away with the blobs still pinned for the life of the document.
+  //
+  // The bytes are on disk at `view` by then, so the rows move to `rawUrl(view)`
+  // — the very URL a RESTORED turn is drawn with — and only then is the handle
+  // released. Both halves are asserted: a revoke with the row left on `blob:`
+  // would be a broken picture, and a rewrite with no revoke would be the leak.
+  const revoked: string[] = [];
+  patchApi({
+    revoke: (att: Attachment | null | undefined) => {
+      if (att) revoked.push(att.id);
+    },
+    // A PASTED PICTURE WITH PIXELS: `attachFile`'s drawable road mints an object
+    // URL for the thumbnail and saves the bytes under `view` (shots/attach.ts).
+    attachFiles: async function* (_dir, files) {
+      for (const f of files) {
+        yield {
+          id: "f" + ++pathIds,
+          kind: "image",
+          view: "/shots/" + (f.name || "x"),
+          name: f.name,
+          thumb: "blob:fused/shot-" + pathIds,
+        } satisfies Attachment;
+      }
+    },
+  });
+  const r = await mountChat();
+  const box = r.root.findByType("textarea");
+  await act(async () => {
+    box.props.onPaste({ clipboardData: {}, preventDefault: () => {} });
+  });
+  await settle();
+  expect(chips(r)).toHaveLength(1);
+  // The chip is showing the blob, which is what makes the handle worth keeping
+  // until the send is over.
+  expect(thumbSrcs(r)).toEqual(["blob:fused/shot-1"]);
+
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(20);
+
+  expect(started()).toHaveLength(1);
+  expect(chips(r)).toHaveLength(0);
+  expect(inFlightSizeForTests()).toBe(0);
+  // THE RECEIPT ROW under the sent bubble, on the restored turn's own road.
+  expect(thumbSrcs(r)).toEqual(["/api/fs/raw?path=" + encodeURIComponent("/shots/shot.png")]);
+  expect(revoked).toEqual(["f1"]);
+  // …and nothing is left to revoke twice when the chat closes.
+  revoked.length = 0;
+  await act(() => {
+    r.unmount();
+  });
+  expect(revoked).toEqual([]);
+});
+
+test("a send that never launched keeps its blob thumbnails alive", async () => {
+  // The settle is gated on the entry STILL BEING THERE, because that is what
+  // says the send went out. `onSendReturned` removed it first on this road and
+  // the chips the user is looking at are those very thumbnails, so a settle here
+  // would revoke the picture out from under the tray.
+  startError = "no session";
+  const revoked: string[] = [];
+  patchApi({
+    revoke: (att: Attachment | null | undefined) => {
+      if (att) revoked.push(att.id);
+    },
+    attachFiles: async function* (_dir, files) {
+      for (const f of files) {
+        yield {
+          id: "f" + ++pathIds,
+          kind: "image",
+          view: "/shots/" + (f.name || "x"),
+          name: f.name,
+          thumb: "blob:fused/shot-" + pathIds,
+        } satisfies Attachment;
+      }
+    },
+  });
+  const r = await mountChat();
+  const box = r.root.findByType("textarea");
+  await act(async () => {
+    box.props.onPaste({ clipboardData: {}, preventDefault: () => {} });
+  });
+  await settle();
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(20);
+
+  expect(chips(r)).toHaveLength(1);
+  expect(thumbSrcs(r)).toEqual(["blob:fused/shot-1"]);
+  expect(revoked).toEqual([]);
+});
 
 test("closing a chat mid-send revokes the pictures that send is carrying", async () => {
   // `take()` moves them OUT of the tray and into `inFlight`, so the tray's own

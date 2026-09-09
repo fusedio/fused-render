@@ -37,6 +37,7 @@ export {
   prunedLabel,
   receiptFor,
   receiptsFromWire,
+  settleReceipts,
   shotAlt,
   shotNoun,
   sizeLabel,

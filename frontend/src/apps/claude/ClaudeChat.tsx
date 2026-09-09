@@ -68,6 +68,7 @@ import {
   openCardIds,
   resetCardPolicy,
   SentPop,
+  settleReceipts,
   ShotViewer,
   Topbar,
   Transcript,
@@ -1077,14 +1078,32 @@ function ChatBody(props: ChatBodyProps) {
       // gone (the pictures went back to the tray) or is a send that LANDED — and
       // a map that only ever grows pins every attachment and blob URL the page
       // has ever sent for as long as it is open.
+      //
+      // STILL BEING THERE IS WHAT SAYS IT LANDED, which is why this reads before
+      // it deletes: a send handed back to the tray was already removed by
+      // `onSendReturned`, and its thumbnails are the chips the user is looking
+      // at. A send that went out owns nothing on screen any more — the receipts
+      // under its bubble are re-pointed at the copy on disk and the blob URLs go
+      // (`settleReceipts`), so `newChat` or a file change can drop those turns
+      // without pinning a full-pane Blob per picture for the life of the
+      // document (Bugbot, PR #1064).
       return {
         merged,
         done: () => {
-          if (key) inFlight.current.delete(key);
+          if (!key) return;
+          const landed = inFlight.current.get(key);
+          if (!landed) return;
+          inFlight.current.delete(key);
+          const settled = settleReceipts(key, landed);
+          if (!settled.spent.length) return;
+          // THE STORE FIRST, the revoke second: the rows have to be showing the
+          // copy on disk before the handles they were showing stop resolving.
+          controller.settleAttachments(key, settled.receipts);
+          for (const att of settled.spent) ATTACH_API.revoke(att);
         },
       };
     },
-    [takeAttachments],
+    [controller, takeAttachments],
   );
 
   const onSend = useCallback(

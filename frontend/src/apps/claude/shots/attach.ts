@@ -513,6 +513,56 @@ export function revoke(att: Attachment | null | undefined): void {
   att.thumb = "";
 }
 
+/**
+ * A SEND THAT LANDED, as far as the blob URLs are concerned.
+ *
+ * The receipts under a sent bubble are drawn with the ATTACHMENT'S OWN `thumb`
+ * (`receiptFor`), which for a capture or a pasted picture is an object URL — so
+ * the BUBBLE, not the tray, is what keeps a full-pane Blob reachable. Nothing
+ * came looking for those once the send launched: the unmount revoke only walks
+ * sends still in flight, and `newChat`, a file change or a later unmount simply
+ * DROPS the turns, blobs and all (Bugbot, PR #1064).
+ *
+ * The bytes are on disk at `view` by then, so the receipts are re-pointed at the
+ * server copy — `rawUrl(view)`, which is EXACTLY what `receiptsFromWire` draws a
+ * restored turn with, so the thumbnail, the viewer and the popup all keep
+ * working on the road they already knew — and the object URLs become
+ * unreferenced.
+ *
+ * PURE, and it hands back BOTH halves: a fresh `Receipt[]` for the turn (the
+ * rows are memoized on identity, so a mutation in place would leave the `<img>`
+ * pointed at a URL that is about to be revoked) and the attachments whose thumbs
+ * are now nobody's, for the caller to `revoke` through its own seam.
+ *
+ * A blob with NO `view` behind it (an upload that failed) is left exactly as it
+ * is: the object URL is then the only copy of those pixels there is, and
+ * revoking it would trade a leak for a broken picture.
+ */
+export function settleReceipts(
+  receipts: Receipt[] | null | undefined,
+  items: Attachment[] | null | undefined,
+): { receipts: Receipt[]; spent: Attachment[] } {
+  // BY ID and not by kind+view: every refusal has `view: null`, so kind+view
+  // cannot tell two of them apart (PR2 review) — and a merged array may hold
+  // another owner's rows, which are not this send's to rewrite.
+  const server = new Map<string, string>();
+  const spent: Attachment[] = [];
+  for (const att of items || []) {
+    if (!att || !att.thumb || !att.thumb.startsWith("blob:")) continue;
+    if (!att.view) continue;
+    server.set(att.id, rawUrl(att.view));
+    spent.push(att);
+  }
+  const rows = (receipts || []).map((r) => {
+    const url = r && r.id ? server.get(r.id) : undefined;
+    // Only where there was one: a FILE receipt carries neither, and handing it a
+    // `src` would point an <img> at a .csv (T:10820).
+    if (!url || (!r.thumb && !r.src)) return r;
+    return { ...r, ...(r.thumb ? { thumb: url } : {}), ...(r.src ? { src: url } : {}) };
+  });
+  return { receipts: rows, spent };
+}
+
 // ── the wire (T:16519) ──────────────────────────────────────────────────────
 
 /** Each picture goes on the wire as its path, its note, its kind, its name and

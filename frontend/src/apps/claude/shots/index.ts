@@ -141,6 +141,7 @@ export {
   receiptsFromWire,
   revoke,
   saveExt,
+  settleReceipts,
   shotAlt,
   shotNoun,
   sizeLabel,

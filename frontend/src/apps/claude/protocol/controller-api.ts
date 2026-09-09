@@ -287,6 +287,15 @@ export interface ChatController {
   /** Back to home: clear transcript, drop session_id/run params (T:13031 enterChat/back). */
   newChat(): void;
 
+  /**
+   * ADDED (PR2): swap the receipts under the user turn that was sent with
+   * `receipts` for `next` — the rows re-pointed at the copy on disk once the
+   * send landed, so the blob URLs they were drawn with can be revoked
+   * (`shots/attach.settleReceipts`). The ARRAY IS THE ADDRESS, like the
+   * hand-back's; a send whose bubble is gone settles nothing.
+   */
+  settleAttachments(receipts: Receipt[], next: Receipt[]): void;
+
   /** Release timers/aborts. */
   dispose(): void;
 }
