@@ -549,12 +549,29 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // The ranked answer is rendered whatever query it answers (see the header),
   // so `staleRows` is how the caller learns to dim it.
   const hits = searching ? (answer?.hits ?? []) : [];
-  // The directory `hits`' `rel`s are relative to — the caller's own `fsPath`
-  // whenever nothing is searching (or no answer has landed yet), else
-  // whatever `res.base` the server actually resolved the query against (see
-  // `RankAnswer.base`). A row path built from `entry.rel` must join onto
-  // THIS, never onto `fsPath` directly, once searching.
-  const searchBase = searching && answer !== null ? answer.base : fsPath.replace(/\/$/, "");
+  // The directory `hits`' `rel`s are relative to — `fsPath` whenever nothing
+  // is searching, else whatever `res.base` the server actually resolved the
+  // query against (see `RankAnswer.base`). A row path built from `entry.rel`
+  // must join onto THIS, never onto `fsPath` directly, once searching.
+  //
+  // The gap is the box's very first request: `answer` is still `null`
+  // (nothing has ever landed for this box) while a request for a query like
+  // `~/Work/*/*.json` is already out. `fsPath` — the folder already open —
+  // is not that request's base; it is exactly what a leading `~`/`/` is
+  // written to escape. Reporting it here would be the header asserting a
+  // base this search does not have yet, so this falls back to the empty
+  // string instead, which the header's own rendering already treats as
+  // "nothing known yet" (a bare "Path", no base named). Once ANY answer has
+  // landed — including a stale one still answering an EARLIER query while a
+  // newer request is out, which `staleRows` below flags separately — its
+  // `base` is real and gets named again; a query that never leaves `fsPath`
+  // resolves to `fsPath` itself once it lands, so it is never stuck showing
+  // nothing.
+  const searchBase = !searching
+    ? fsPath.replace(/\/$/, "")
+    : answer !== null
+      ? answer.base
+      : "";
   const staleRows = answer !== null && answer.query !== q;
   const displayHits = hits;
 

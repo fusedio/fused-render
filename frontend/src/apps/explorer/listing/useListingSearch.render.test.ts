@@ -592,4 +592,28 @@ describe("searchBase: the directory hits are relative to", () => {
     expect(box.current().searchBase).toBe("/home/u/other");
     box.unmount();
   });
+
+  test("names nothing while the very first request for an escaping query is still out", async () => {
+    // Before ANY answer has landed, `/proj` (the folder already open) is not
+    // this request's base — a leading `~` is written specifically to escape
+    // it — so naming `/proj` here would be the header claiming a base this
+    // search does not have. Empty is what the header renders as a bare
+    // "Path", not a wrong or stale answer.
+    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/proj", 0);
+    await flush(() => box.current().setQuery("~/other/rep"));
+    await flush(() => box.current().commitSearch());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(box.current().searchBase).toBe("");
+
+    await flush(() =>
+      rankCalls[0].reply.resolve(
+        answer({ base: "/home/u/other", hits: [hit("report.csv")], total: 1 }),
+      ),
+    );
+    // One transition, straight to the real base — never a detour through
+    // `/proj` first.
+    expect(box.current().searchBase).toBe("/home/u/other");
+    box.unmount();
+  });
 });

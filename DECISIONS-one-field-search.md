@@ -2728,3 +2728,50 @@ relies on), and one hook-level test in
 `foo`, resolves a real hit, extends to `foobar`, rejects that request, and
 asserts the old row is still the one on screen while `requestFailed` and
 `behind` both flip true.
+
+## D21 — the header says nothing about a base it does not have yet
+
+`searchBase` (`useListingSearch.ts`), the value the header's "Path in …"
+label and every row-path join key off, fell back to `fsPath` — the folder
+already open — whenever `answer` was `null`. That is right while idle (no
+search: `showsSearchHits` never renders the header at all, so the value is
+inert), but it is also what ran for the box's very FIRST request, before
+any answer has landed: a query like `~/Work/*/*.json` is written
+specifically to walk out of `fsPath`, so naming `fsPath` as its base was
+the header asserting a base this search does not have — visibly, "PATH IN
+~/Downloads" printed over a search that, once it lands, answers for
+`~/Work`.
+
+Two shapes were on the table: carry a client-side guess of the resolved
+base (the same syntactic split `enter-prompt.ts`'s banner already makes),
+or say nothing until the real answer lands. The guess was rejected —
+`enter-prompt.ts`'s own known limitation (a named folder may not exist) is
+tolerable for a banner that reads "Press Enter to open X", a suggestion the
+user can decline, but the header is not phrased as a suggestion; printing
+a second, client-computed base next to the one the server will actually
+report risks the exact failure this item exists to fix, just moved one
+banner over. Saying nothing costs a moment of a bare "Path" heading (the
+existing fallback for `searchBase === ""`, already exercised by the idle
+case) and then the real base the instant it lands — one transition, from
+blank to correct, never through a wrong intermediate value.
+
+Fixed by narrowing the fallback: `fsPath` is still reported while nothing
+is searching (unchanged — the box's resting value, and the one existing
+test pinning it), but a search with no answer yet — `searching && answer
+=== null` — now reports `""` instead. Every other caller of `searchBase`
+(`navRows`, `rowCtxByPath`, the row-path joins in `Listing.tsx`) is already
+guarded by `searching`, and `hits` is `[]` whenever `answer` is `null`, so
+no row is ever built by joining onto the empty string — it only ever
+reaches the header's own "nothing known yet" branch, which already renders
+a bare "Path" for exactly this input. Once ANY answer lands — including a
+stale one still answering an earlier query while a newer request is
+out, a case this change does not touch — `answer.base` is real again and
+gets named, same as before.
+
+Two tests: one in `useListingSearch.render.test.ts` driving the box's
+first-ever request for an escaping query (`~/other/rep` from `/proj`) and
+asserting `searchBase` reads `""` while it is out, then `/home/u/other`
+the instant the answer resolves — confirmed failing against the unpatched
+code (it reported `/proj`, not `""`, while pending). The existing
+`"is the box's own root when nothing is searching"` case needed no change
+and still passes unmodified, pinning the untouched idle fallback.
