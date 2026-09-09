@@ -548,9 +548,9 @@
    the layout half of that sharing.
 
    NO RULE FOR THE BUTTONS THEMSELVES (.side-close, .side-toggle): both ride the
-   plain .bar-ctl-icon recipe above, and their glyphs are the 16px right-hand
-   panel icon (platform/ui/PanelIcon) / the companion's own mode icon, in
-   currentColor like everything else in these rows.
+   plain .bar-ctl-icon recipe above, and both wear the same 16px right-hand
+   panel icon (platform/ui/PanelIcon), in currentColor like everything else in
+   these rows.
    A `.side-toggle.active` pressed look lived here for one round, while the opener
    stayed on screen with the panel open and the column carried a close button of
    its own. Exactly one of the two buttons is ever rendered now (SideChrome
@@ -576,6 +576,63 @@
    expand button to put here.) */
 .side-header-tail:empty {
   display: none;
+}
+
+/* ---- The file sidebar's tab strip (SideChrome's SideTabs) -----------------
+   Two .bar-ctl tabs side by side; the ACTIVE one wears the mode control's
+   bordered plate, so "which panel am I on" is answered by the same chrome that
+   answers "which mode is this" one bar over. The inactive tab is a plain ghost
+   control, and a disabled one dims exactly as any .bar-ctl does. */
+.side-tabs {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.side-tab.active {
+  border: 1px solid var(--border);
+  background: var(--ctl-plate-bg);
+  color: var(--fg);
+  cursor: default;
+}
+
+.side-tab-label {
+  font-weight: 500;
+}
+
+/* The kebab trigger's corner badge — the App Doctor's status dot, visible
+   with the menu shut (BarMenu's OverflowMenu `badge`). Positioned off the
+   28px square; the dot's own size and hue are app-doctor.css's. */
+.bar-overflow .bar-ctl {
+  position: relative;
+}
+
+.bar-overflow-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: inline-flex;
+  pointer-events: none;
+}
+
+.bar-menu-item-trailing {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The MCP dialog's document (McpDialog.tsx): fills the dialog's second grid
+   row, which the dialog sizes explicitly — a replaced element has no height
+   of its own to give. */
+.mcp-dialog-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
 }
 
 /* ---- The mode control ---------------------------------------------------

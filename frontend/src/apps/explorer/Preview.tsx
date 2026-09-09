@@ -6,7 +6,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  addCurrentApp,
   getAppEntry,
   setAppPreview,
   getAppFileCloneTarget,
@@ -24,12 +23,8 @@ import {
   getGitSnapshot,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
-import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
-import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
-import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
-import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
-import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
-import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, encodeFsPathSegments, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { captureAppPreview, cropRect } from "@platform/lib/appShot";
+import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -57,6 +52,7 @@ import {
   isModePending,
   isSidebarMode,
   partitionModes,
+  unavailableReason,
   visibleModes,
   defaultMode,
   effectiveActive,
@@ -85,13 +81,13 @@ import {
   setResolvedSnapshot,
   shortSha,
   snapshotFrameSrc,
-  type ResolvedSnapshot,
 } from "@platform/lib/snapshot-param";
 import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
-import { useAppVersionLabel } from "@platform/lib/appVersionLabel";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
+import { EntryActionsMenu } from "@apps/explorer/EntryActionsMenu";
+import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
@@ -187,7 +183,7 @@ function usePreviewSideSlot(): HTMLElement | null {
 // which is why this probes on mount and re-probes per file rather than trusting
 // anything cached.
 //
-// Lives in the header, like ExportAppButton beside it — which embed mode
+// Lives in the header, like the kebab (EntryActionsMenu) beside it — which embed mode
 // hides, so a `.fused` opened by double-click used to show no Clone at all
 // (D390's chrome-free posture, accepted in D397). The top-level embed's
 // EmbedStrip now renders this same button (one control, one label rule) with
@@ -264,235 +260,6 @@ export function CloneAppFileButton({ fsPath, toView }: { fsPath: string; toView?
         MenuIcons.duplicate
       )}
       {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
-    </button>
-  );
-}
-
-// The App Doctor button, on the explorer topbar: shown whenever the previewed
-// page IS its folder's app entry (the server's own entry rule, asked of
-// /api/apps/entry — same gate as ExportAppButton beside it, same reason: the
-// filename says nothing). One click opens the checklist dialog, which runs the
-// deterministic checks and offers the one task that explains and fixes them
-// (platform/ui/AppDoctorModal).
-//
-// It REPLACES the "Migrate to new version" button that stood here: a stale
-// `fused-api-version` tag is one row of that checklist now, alongside the
-// things it never covered — a leaked key, a device path, stray generated
-// files, an uncommitted tree. That is also why the gate widened: migrate had
-// nothing to say about an app that was already current, and the doctor does.
-function AppDoctorButton({ fsPath }: { fsPath: string }) {
-  const [isEntry, setIsEntry] = useState(false);
-  const [open, setOpen] = useState(false);
-  const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
-  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
-  useEffect(() => {
-    let alive = true;
-    setIsEntry(false);
-    setOpen(false);
-    getAppEntry(dir)
-      .then((r) => {
-        if (!alive) return;
-        setIsEntry(r.entry != null && canon(r.entry) === fsPath);
-      })
-      .catch(() => {
-        /* indeterminate reads as "not an entry" — no button for nothing */
-      });
-    return () => {
-      alive = false;
-    };
-  }, [fsPath, dir]);
-  // Fetched after first paint, never blocking it — see useAppDoctorChecks.
-  // Opening the modal re-fetches its own copy; this one is only for the
-  // header dot and is never reused to seed the dialog.
-  const doctorChecks = useAppDoctorChecks(isEntry ? dir : null);
-  if (!isEntry) return null;
-  return (
-    <>
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-bordered"
-        title={
-          "Check " + basename(dir) +
-          " before you share it: leaked credentials, paths tied to this machine, " +
-          "stray generated files, uncommitted work, a stale fused API version"
-        }
-        onClick={() => setOpen(true)}
-      >
-        App Doctor
-        <AppDoctorStatusDot checks={doctorChecks} />
-      </button>
-      {open && <AppDoctorModal dir={dir} onClose={() => setOpen(false)} />}
-    </>
-  );
-}
-
-// The explorer folder view's "Open in project" (Listing.tsx openAppEntry),
-// here on the ENTRY PAGE's own header: viewing an app's index.html is the
-// other place one is standing in an app, so the same hop is offered — put the
-// folder on the sidebar's desk (POST /api/current-apps/add, a no-op when the
-// row is there already, which then reads as the active row) and open the
-// folder's app page, `/apps/<folder>`, spelled as the Migrate button spells it
-// since an app may not import shell/current-apps-lib. Same gate as
-// ExportAppButton beside it: the server's entry rule, never the filename.
-function OpenInProjectButton({ fsPath }: { fsPath: string }) {
-  const [isEntry, setIsEntry] = useState(false);
-  const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
-  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
-  useEffect(() => {
-    let alive = true;
-    setIsEntry(false);
-    getAppEntry(dir)
-      .then((r) => {
-        if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
-      })
-      .catch(() => {
-        /* indeterminate reads as "not an entry" — no button for nothing */
-      });
-    return () => {
-      alive = false;
-    };
-  }, [fsPath, dir]);
-  if (!isEntry) return null;
-  const open = async () => {
-    try {
-      await addCurrentApp(dir);
-      announceCurrentAppsChanged();
-    } catch {
-      /* the page still opens; the row shows up on the next task under it */
-    }
-    navigateUrl("/apps/" + encodeFsPathSegments(dir));
-  };
-  return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
-      title={"Open " + basename(dir) + " as a project"}
-      onClick={open}
-    >
-      Open in project
-    </button>
-  );
-}
-
-// Export the containing app as a .fused file (SPEC §43 AF-4), shown only when
-// the previewed page IS its folder's app entry — asked of the server (the one
-// shared entry rule, /api/apps/entry) rather than guessed from the filename.
-// You export from the app you're looking at; a plain html file gets nothing.
-function ExportAppButton({
-  fsPath,
-  snapshotSha,
-  snapshotResolved,
-  snapshotPending,
-  snapshotError,
-}: {
-  fsPath: string;
-  // The pane's own `_snapshot` resolution (`usePreviewSnapshot`, hoisted in
-  // the parent so the picker and this button agree on what "the previewed
-  // version" means) — mirrors AppPage.tsx's `snapshot` (`useAppPageSnapshot`)
-  // and its Export control's use of it, point for point: export the
-  // snapshot's OWN extracted tree, never the live folder, while one is
-  // previewed.
-  snapshotSha: string | null;
-  snapshotResolved: ResolvedSnapshot | null;
-  snapshotPending: boolean;
-  snapshotError: boolean;
-}) {
-  const [isEntry, setIsEntry] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
-  const name = basename(dir);
-  // Rules-of-hooks: called on every render, before the `!isEntry` early
-  // return below, exactly like every other hook in this component.
-  const versionLabel = useAppVersionLabel(dir, snapshotSha);
-  // The server answers os.path.abspath (backslashes on Windows) while fsPath
-  // is the shell's canonical forward-slash form — same drive-letter-only
-  // normalization rule as the URL codec (a backslash in a POSIX filename must
-  // not be rewritten).
-  const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
-  useEffect(() => {
-    let alive = true;
-    setIsEntry(false);
-    getAppEntry(dir)
-      .then((r) => {
-        if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
-      })
-      .catch(() => {
-        /* indeterminate reads as "not an entry" — no button for nothing */
-      });
-    return () => {
-      alive = false;
-    };
-  }, [fsPath]);
-  if (!isEntry) return null;
-  // Mirrors AppPage.tsx's `exportDisabled`: a click landing mid-resolve, before
-  // `snapshotResolved.dir` exists, must not fall through to exporting the LIVE
-  // folder while the pane still shows the version being resolved.
-  const exportDisabled = busy || snapshotPending || snapshotError;
-  const doExport = async () => {
-    if (exportDisabled) return;
-    setBusy(true);
-    try {
-      const isLive = snapshotSha === null;
-      // The snapshot's OWN extracted tree (`snap.dir`), never `snap.app_dir`
-      // (the LIVE folder the sha resolved from) — exporting that would
-      // silently ship the live app labelled as the picked commit. See
-      // AppPage.tsx's Export control, which this mirrors.
-      const exportPath = snapshotResolved ? snapshotResolved.dir : dir;
-      // The filename carries the version so a v7 export sitting beside a
-      // live export in Downloads is never ambiguous about which is which.
-      const exportName = isLive ? name : `${name}-${versionLabel}`;
-      // Same capture-on-export as the /apps card (appShot, D396): the shown
-      // preview frame IS the app rendering, so it is the crop source — no
-      // navigation, no flash. exportAppFile itself skips capture when the
-      // folder carries an authored preview.png; the probe below is only so a
-      // pointless native shot (and, on a Mac that has not granted Screen
-      // Recording, its permission dialog) isn't taken for a capture the
-      // server would discard anyway (stat failure reads as "no authored
-      // still" — worst case is that redundant shot, never a lost export).
-      //
-      // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
-      // the app, not a box it may fill): the class rides `shown`, which the
-      // frame swap only sets once that frame paints — the same guarantee
-      // `data-fused-annotate-target` below relies on. Only checked for a LIVE
-      // export: a snapshot's preview.png (if any) lives under the extracted
-      // tree, and `entry_html` is omitted below for a snapshot anyway, so
-      // there is no on-screen capture source for it to matter.
-      const authored = isLive
-        ? await statPath(dir + "/preview.png").then(
-            (s) => !s.is_dir,
-            () => false,
-          )
-        : false;
-      await exportAppFile(
-        {
-          path: exportPath,
-          name: exportName,
-          // Omitted for a snapshot export: with no on-screen capture element
-          // threaded to this button's target folder, `exportAppFile`'s stage
-          // fallback would reload the ENTRY PAGE'S LIVE copy to shoot it — a
-          // present-day screenshot baked into a file labelled as the old
-          // commit. See AppPage.tsx's Export control for the same rule.
-          entry_html: isLive ? fsPath : undefined,
-          preview_image: isLive && authored ? dir + "/preview.png" : null,
-        },
-        isLive ? document.querySelector(".preview-frame.is-shown") : null,
-      );
-    } catch (e) {
-      pushToast({ msg: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
-      title={"Export " + name + " as a single .fused app file"}
-      onClick={doExport}
-      disabled={exportDisabled}
-    >
-      {busy && <span className="mode-icon-spinner" />}
-      {busy ? "Exporting…" : "Export App"}
     </button>
   );
 }
@@ -687,7 +454,7 @@ function usePreviewFileMenu(
   };
 
   // IS THIS FILE AN APP'S FACE? The one shared entry rule, asked of the server
-  // (/api/apps/entry) exactly as ExportAppButton asks it — under the marker
+  // (/api/apps/entry) exactly as EntryActionsMenu asks it — under the marker
   // rule a filename says nothing. Only an entry gets "Set Current View as
   // Preview": a preview.png beside a plain html file has no card to show it.
   const [isAppEntry, setIsAppEntry] = useState(false);
@@ -986,17 +753,23 @@ function TemplatePreview({
   const ownMcp = parts.sidebar.some((e) => e.mode === "mcp");
   const parentGit = useDirMode(splitCapable && !ownGit ? parentDir : null, "git");
   const parentMcp = useDirMode(splitCapable && !ownMcp ? parentDir : null, "mcp");
-  // One list, because `sideSplit` ranks the assembled set and the probes are
-  // independent — which is also why the pending half names MODES rather than
-  // being a flag: `git` answering before `mcp` is ordinary.
-  const borrowedEntries = [
-    !ownGit ? parentGit.entry : null,
-    !ownMcp ? parentMcp.entry : null,
-  ].filter((e): e is TemplateEntry => !!e);
-  const borrowedPendingModes = [
-    ...(!ownGit && parentGit.pending ? ["git"] : []),
-    ...(!ownMcp && parentMcp.pending ? ["mcp"] : []),
-  ];
+  // MCP IS NOT A SIDEBAR COMPANION ANY MORE — the column holds Claude and Git as
+  // two tabs (SideChrome's SideTabs), and MCP opens as a dialog off the crumb
+  // bar's kebab (EntryActionsMenu → McpDialog; the argument is on McpDialog).
+  // So the `mcp` entry — the parent's, or the file's own if a registry bound it
+  // there — is kept OUT of everything `sideSplit` sees (`own`, `borrowed`,
+  // `bound`) and out of the switcher's rows, and is read only by `mcpSrc` below.
+  // The parent probe stays: it is what tells the kebab's row whether there is an
+  // MCP manifest to show. A `?_side=mcp` deep link now resolves to the default
+  // companion, which is the same thing an unknown `_side` always did.
+  //
+  // One list still, because `sideSplit` ranks the assembled set; the pending
+  // half names MODES rather than being a flag for the same reason it did when
+  // two probes fed it.
+  const borrowedEntries = [!ownGit ? parentGit.entry : null].filter(
+    (e): e is TemplateEntry => !!e
+  );
+  const borrowedPendingModes = [...(!ownGit && parentGit.pending ? ["git"] : [])];
   // Is THIS mode one the sidebar took from the parent? Asked in three places
   // downstream (the pending predicate, the iframe's target, the `_remote` flag),
   // and a predicate rather than three `m === "git" && !ownGit` because a file that
@@ -1024,7 +797,7 @@ function TemplatePreview({
   const split = sideSplit({
     splitCapable,
     content: parts.content,
-    own: parts.sidebar,
+    own: parts.sidebar.filter((e) => e.mode !== "mcp"),
     borrowed: borrowedEntries,
     borrowedPending: borrowedPendingModes,
     // This file's own gates, for `defaultSide` alone: an absent `_side` must not
@@ -1033,9 +806,8 @@ function TemplatePreview({
     // mount-backed file the answer is no (lib/preview-side's `defaultSide`).
     conditionsPending: conditions === null,
     bound: [
-      ...partitionModes(stat.templates).sidebar,
+      ...partitionModes(stat.templates).sidebar.filter((e) => e.mode !== "mcp"),
       ...(parentGit.bound ? [parentGit.bound] : []),
-      ...(parentMcp.bound ? [parentMcp.bound] : []),
     ],
   });
   const sideOn = split.on;
@@ -1053,7 +825,11 @@ function TemplatePreview({
   // every decision below (`sideEntry`, `activeSide`, the toggle, the reconcile)
   // reads the short list, so a disabled row can be rendered without becoming
   // something the URL or the split can land on.
-  const sidebarMenu = split.offered ? split.menu : [];
+  // Minus the `mcp` row `sidebarMenu` (lib/preview-side) still lays for every
+  // SIDEBAR_MODES member: that constant is shared with the folder pane, where MCP
+  // is still a pane mode, so the file sidebar drops the row here rather than
+  // there.
+  const sidebarMenu = split.offered ? split.menu.filter((e) => e.mode !== "mcp") : [];
   // Pending, for a SIDEBAR entry. A borrowed entry is gated on the PARENT's
   // verdicts, resolved by lib/dir-mode — not on any of this file's, so it cannot
   // go through `isPending` (which reads `conditions`, this file's map, and would
@@ -1151,6 +927,14 @@ function TemplatePreview({
   useEffect(() => {
     if (activeSide) setLastSide(activeSide);
   }, [activeSide]);
+  // The MCP dialog (McpDialog), opened from the kebab's row or from Open With →
+  // MCP. State here rather than in the kebab because Open With (`openMode`) has
+  // to reach it. Shut on every file hop: the dialog is about ONE folder's
+  // manifest, and a hop may leave the folder.
+  const [mcpOpen, setMcpOpen] = useState(false);
+  useEffect(() => {
+    setMcpOpen(false);
+  }, [fsPath]);
   // What the toggle acts on, and so what it looks like (lib/preview-side). Over
   // the SETTLED companions only: a placeholder whose probe may yet say "no
   // repository here" must not put a button in the bar for the length of that
@@ -1830,6 +1614,19 @@ function TemplatePreview({
       `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`
     );
   };
+  // The MCP dialog's document: the same URL shape `sideSrcFor` builds, for the
+  // one companion that is no longer in `sidebarModes` (see the borrowed-entries
+  // comment). The file's own `mcp` binding wins over the parent's, as it did in
+  // the sidebar; `null` while the parent's probe is out or when nothing offers
+  // the mode, which is what the kebab's row reads to disable itself.
+  const mcpEntry =
+    parts.sidebar.find((e) => e.mode === "mcp") ?? (parentMcp.pending ? null : parentMcp.entry);
+  const mcpSrc =
+    mcpEntry && mcpEntry.path !== null
+      ? `/render?path=${encodeURIComponent(mcpEntry.path)}` +
+        `&_file=${encodeURIComponent(isBorrowedMode("mcp") ? parentDir : fsPath)}` +
+        `${isBorrowedMode("mcp") ? "" : remote}${thumbFlags}`
+      : null;
   // The claude iframe's REMOUNT key, distinct from the mode name `active`
   // everything else keys off of (the switcher's highlighted row, the title).
   // Ordinarily the mode alone is the right key — switching to a DIFFERENT
@@ -1958,8 +1755,14 @@ function TemplatePreview({
   // the menu's. On a splitting surface that request opens the sidebar instead of
   // replacing the content pane, which is the same answer the mode partition
   // gives everywhere else.
+  //
+  // MCP is the one companion with a third home: "Open With → MCP" opens the
+  // dialog (McpDialog) the kebab's row opens, since the sidebar no longer lists
+  // it. Only when there is a manifest to show; otherwise the request falls
+  // through to the content pane as any unsplit surface would take it.
   const openMode = (m: string) => {
-    if (sideOn && isSidebarMode(m)) setSide(m);
+    if (m === "mcp" && mcpSrc) setMcpOpen(true);
+    else if (sideOn && isSidebarMode(m)) setSide(m);
     else void setMode(m);
   };
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
@@ -1980,28 +1783,11 @@ function TemplatePreview({
       {!stat.is_dir && fsPath.toLowerCase().endsWith(".fused") && (
         <CloneAppFileButton fsPath={fsPath} />
       )}
-      {/* The containing app as one .fused file (SPEC §43 AF-4) — rendered only
-          when this page is its folder's app entry (the component asks the
-          server). Embed mode hides the whole header/topbar, so an opened
-          .fused app never shows it. */}
-      {!stat.is_dir && <AppDoctorButton fsPath={fsPath} />}
-      {!stat.is_dir && (
-        <ExportAppButton
-          fsPath={fsPath}
-          snapshotSha={snapshotSha}
-          snapshotResolved={snapshotResolved}
-          snapshotPending={snapshotPending}
-          snapshotError={snapshotError}
-        />
-      )}
-      {/* The folder view's "Open in project", offered on the app's entry page
-          too (same server-side entry gate), wearing the same bordered look as
-          Export App. Its HOME is the sidebar's header, right before the mode
-          pill — exactly where the folder pane's strip puts it — so the two
-          views agree on where the hop lives. This copy is the SHUT-SIDEBAR
-          fallback (`!activeSide`, Listing's `!paneOpen` rule): with the column
-          down there is no strip, and the button must not vanish with it. */}
-      {!stat.is_dir && !activeSide && <OpenInProjectButton fsPath={fsPath} />}
+      {/* The app-level actions — App Doctor, Download app (the .fused export,
+          SPEC §43 AF-4), Open as project, Open in embed, MCP config — are the
+          kebab AFTER the mode control (EntryActionsMenu, below). They stood here
+          as bordered buttons of their own for a while; the argument for the
+          menu is on that component. */}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder
@@ -2057,54 +1843,58 @@ function TemplatePreview({
           onSelect={setMode}
         />
       )}
-      {/* The sidebar's OPENER, immediately right of the mode control it
-          partitions with — the shared control (SideChrome), which is where the
-          "one affordance, two places, chosen by state" split between this button
-          and the column's own close chevron is written down. It renders only
-          while the column is SHUT, and it wears the COMPANION'S OWN ICON, so a
-          closed sidebar that last showed Git shows the Git glyph.
+      {/* THE KEBAB (EntryActionsMenu): the app-level one-shots, and the
+          fullscreen glyph that stood here as its "Open in embed" row. That row
+          opens this same page under the chrome-free embed prefix — no sidebar,
+          no crumb, no header — with the current query carried over and `_mode`
+          stamped explicitly even when the view is on its default (the URL omits
+          it then). In a NEW TAB: the view/embed prefix is read once at module
+          init (router.ts), so it is a new document either way, and the old
+          button's `location.assign` left this tab with no way back but
+          EmbedStrip's "Open in explorer". The explorer stays put now; the
+          embed's strip still carries the query back for anyone who wants it. */}
+      {!stat.is_dir && (
+        <EntryActionsMenu
+          fsPath={fsPath}
+          snapshotSha={snapshotSha}
+          snapshotResolved={snapshotResolved}
+          snapshotPending={snapshotPending}
+          snapshotError={snapshotError}
+          onOpenEmbed={() => {
+            // The existing query goes across BYTE FOR BYTE — no URLSearchParams
+            // round trip, which would re-encode every value on the way. Only the
+            // `_mode` stamp is appended, and only when the URL omits it (the
+            // default mode; setMode deletes the param for clean URLs).
+            const search = location.search;
+            const stamped = new URLSearchParams(search).has("_mode")
+              ? search
+              : (search ? search + "&" : "?") + "_mode=" + encodeURIComponent(entry.mode);
+            window.open(embedUrlForFsPath(fsPath, stamped), "_blank", "noopener");
+          }}
+          mcp={{
+            available: mcpSrc !== null,
+            pending: !parts.sidebar.some((e) => e.mode === "mcp") && parentMcp.pending,
+            reason: unavailableReason("mcp"),
+          }}
+          onOpenMcp={() => setMcpOpen(true)}
+        />
+      )}
+      {/* The sidebar's OPENER, LAST in the bar — the shared control (SideChrome),
+          which is where the "one affordance, two places, chosen by state" split
+          between this button and the column's own close button is written down,
+          and why the two wear one panel glyph. It renders only while the column
+          is SHUT; the tooltip names the companion it would reopen (the last one
+          open on this file).
+
+          Rightmost on purpose: it is the control for the right-hand column, so it
+          sits on the window's right edge, where that column appears.
 
           Absent entirely when this file has no companion at all (no `claude`, no
           `git` in the parent, or a gate denied them): a control for
           nothing is worse than no control. */}
       {sideTargetEntry && !activeSide && (
-        <SideToggleButton
-          what={modeTitle(sideTargetEntry.mode)}
-          icon={templateModeIcon(sideTargetEntry)}
-          onClick={toggleSide}
-        />
+        <SideToggleButton what={modeTitle(sideTargetEntry.mode)} onClick={toggleSide} />
       )}
-      {/* Fullscreen: this same page under the chrome-free embed prefix — no
-          sidebar, no crumb, no header — with the current query carried over,
-          and `_mode` stamped explicitly even when the view is on its default
-          (the URL omits it then). A FULL page load rather than `navigate`:
-          the view/embed prefix is read once at module init (router.ts), so
-          switching it is a new document. The way back is EmbedStrip's "Open
-          in explorer", which the top-level embed shows: it carries the query
-          back, and reads the `_mode` stamp as "return to THIS page" rather
-          than hopping a folder to its app entry. */}
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-icon"
-        title="Open fullscreen, without the sidebar and toolbar"
-        aria-label="Open fullscreen, without the sidebar and toolbar"
-        onClick={() => {
-          // The existing query goes across BYTE FOR BYTE — no URLSearchParams
-          // round trip, which would re-encode every value on the way. Only the
-          // `_mode` stamp is appended, and only when the URL omits it (the
-          // default mode; setMode deletes the param for clean URLs).
-          const search = location.search;
-          const stamped = new URLSearchParams(search).has("_mode")
-            ? search
-            : (search ? search + "&" : "?") + "_mode=" + encodeURIComponent(entry.mode);
-          location.assign(embedUrlForFsPath(fsPath, stamped));
-        }}
-      >
-        <span className="mode-menu-icon">{MenuIcons.fullscreen}</span>
-      </button>
-      {/* The app view's overflow lived here — one "Open in explorer" entry,
-          jumping from the app's own route back to the folder. The route went
-          with D262 and the app view itself with D264. */}
     </>
   );
 
@@ -2371,10 +2161,15 @@ function TemplatePreview({
             src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
             onSelect={setSide}
             onClose={() => setSide(null)}
-            lead={<OpenInProjectButton fsPath={fsPath} />}
           />,
           sideSlot
         )}
+      {/* The MCP companion's dialog — the kebab's row and Open With → MCP both
+          open it (McpDialog). `mcpSrc` is re-checked here rather than trusted
+          from the click: the parent's verdict can change under an open dialog. */}
+      {mcpOpen && mcpSrc && (
+        <McpDialog src={mcpSrc} folderName={basename(parentDir)} onClose={() => setMcpOpen(false)} />
+      )}
       {/* And when it is SHUT, the seam it left behind, into the same slot: drag
           the split's right edge to pull the column back (SideChrome's
           SideReopenEdge, which argues why a gesture is allowed here when a second

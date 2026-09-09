@@ -26,6 +26,7 @@
 // any moment, and each sits where its own action makes sense.
 import { useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import PanelIcon from "@platform/ui/PanelIcon";
+import { modeTitle } from "@platform/lib/mode-name";
 import { reopenWidth } from "@platform/lib/panel-drag";
 import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { CONTENT_MIN_W, MIN_W } from "@apps/explorer/lib/side-width";
@@ -58,20 +59,16 @@ export function SideCloseButton({ what, onClick }: { what: string; onClick: () =
   );
 }
 
-// The opener, and it wears the COMPANION'S OWN ICON rather than a chevron: a
-// chevron only ever said "a panel goes here", while the icon says WHICH panel, so
-// the button announces what the click will get you with no hover needed. Which
-// icon that is, is the caller's business — the mode it would reopen is the one
-// last open on that surface.
-export function SideToggleButton({
-  what,
-  icon,
-  onClick,
-}: {
-  what: string;
-  icon: ReactNode;
-  onClick: () => void;
-}) {
+// The opener, and it wears the SAME PANEL GLYPH the close button does. It wore
+// the companion's own icon for a while (a Claude glyph for "reopen Claude"),
+// which said WHICH panel but not that it was a panel at all — in the crumb bar it
+// read as a fourth mode button beside the mode switcher rather than as the other
+// half of the column's close control. PanelIcon's own argument applies: the
+// collapse and expand controls of one panel share one picture, and the user reads
+// the SCREEN for the state. `what` still names the companion in the tooltip. It is
+// the LAST control in its bar (Preview.tsx's headerActions, Listing's search row):
+// the thing on the window's right edge is the button for the right-hand column.
+export function SideToggleButton({ what, onClick }: { what: string; onClick: () => void }) {
   const label = "Show the " + what + " panel";
   return (
     <button
@@ -82,8 +79,68 @@ export function SideToggleButton({
       aria-expanded={false}
       onClick={onClick}
     >
-      <span className="mode-menu-icon">{icon}</span>
+      <PanelIcon side="right" />
     </button>
+  );
+}
+
+// One tab of the file sidebar's header (SideTabs below): the companion, its
+// icon, and why it cannot be picked if it cannot.
+export interface SideTab {
+  mode: string;
+  icon: ReactNode;
+  pending?: boolean;
+  disabledReason?: string;
+}
+
+// THE FILE SIDEBAR'S SWITCHER IS A TAB STRIP, not a dropdown. With the column
+// down to two companions (Claude, Git — MCP left it for the crumb bar's kebab,
+// EntryActionsMenu) a menu that opens to show two rows costs a click to reveal
+// what a strip shows standing still. Same recipe as every control in these bars
+// (.bar-ctl, 28px, 16px glyph); the active tab wears the bordered plate the mode
+// control wears (.side-tab.active, explorer.css), which is the one piece of
+// chrome these rows allow and here says "this is the one you are on".
+//
+// Unlike ModeMenu it NEVER hides itself at one selectable row: an unavailable
+// companion is drawn disabled with its reason in the tooltip, a pending one
+// spins, so the strip always shows the whole closed set (lib/preview-side's
+// `menu` is where that policy is argued). The folder listing's pane keeps the
+// dropdown — it still carries three modes.
+export function SideTabs({
+  tabs,
+  active,
+  onSelect,
+}: {
+  tabs: SideTab[];
+  active: string;
+  onSelect: (mode: string) => void;
+}) {
+  return (
+    <div className="side-tabs" role="tablist" aria-label="Sidebar panel">
+      {tabs.map((t) => {
+        const title = modeTitle(t.mode);
+        const on = t.mode === active;
+        return (
+          <button
+            key={t.mode}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            className={"bar-ctl side-tab" + (on ? " active" : "")}
+            disabled={t.pending || !!t.disabledReason}
+            title={t.pending ? "Checking if this view applies…" : t.disabledReason ?? title}
+            onClick={() => {
+              if (!on) onSelect(t.mode);
+            }}
+          >
+            <span className="mode-menu-icon">
+              {t.pending ? <span className="mode-icon-spinner" /> : t.icon}
+            </span>
+            <span className="side-tab-label">{title}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

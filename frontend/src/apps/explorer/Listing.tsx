@@ -101,7 +101,7 @@ import {
   subscribePendingClaudeAsk,
   takePendingClaudeAsk,
 } from "@apps/explorer/lib/pending-claude-ask";
-import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
+import { SideToggleButton } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
@@ -1981,11 +1981,7 @@ export default function Listing({
                 </button>
               )}
               {pane.on && !sideState.open && (
-                <SideToggleButton
-                  what={modeTitle(paneSide)}
-                  icon={paneSideIcon(paneSide, sideEntries)}
-                  onClick={openSide}
-                />
+                <SideToggleButton what={modeTitle(paneSide)} onClick={openSide} />
               )}
               {/* The path `···` is not here any more: it rides the crumb strip
                   now (Breadcrumb.tsx), immediately right of the folder name it
