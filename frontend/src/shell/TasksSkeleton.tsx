@@ -18,20 +18,20 @@
 // One `role="status"` wrapper carries the label; the bars inside are decoration
 // and are hidden from the accessibility tree.
 import type React from "react";
-import { BOARD_COLUMNS, initialRange } from "./schedule-lib";
+import { BOARD_LANES, initialRange } from "./schedule-lib";
 import type { TaskView } from "./tasks-lib";
 
 /** Title bar widths, as a percentage of the row, cycled. Ragged on purpose: a
  *  column of equal bars reads as a table header, not as titles. */
 const TITLE_WIDTHS = [34, 52, 41, 60, 38, 47, 55, 30];
 const LIST_ROWS = 8;
-/** Cards per board lane, in `BOARD_COLUMNS` order — a board that is never
- *  evenly full, like a real one. A count of 0 draws the lane ROLLED UP into
- *  its 52px rail, which is what the real board does with an empty column
- *  (TaskBoard `laneRolledUp`): Needs attention and Blocked are empty on most
- *  days, and a ghost with six open lanes was wider than the board it stood
- *  in for. */
-const LANE_CARDS = [2, 3, 0, 0, 3, 2];
+/** Cards per board lane, in `BOARD_LANES` order — the five the board DRAWS
+ *  (Needs attention shares Blocked's lane, schedule-lib.laneOf), not the six
+ *  statuses; a sixth ghost column was a layout shift on the swap (Bugbot,
+ *  #1079). Never evenly full, like a real board. A count of 0 draws the lane
+ *  ROLLED UP into its 52px rail, which is what the real board does with an
+ *  empty column (TaskBoard `laneRolledUp`): Blocked is empty on most days. */
+const LANE_CARDS = [2, 3, 0, 3, 2];
 const CARD_TILES = 6;
 const CAL_ROWS = 8;
 /** The calendar's own memory of its range (ScheduleCalendar RANGE_KEY), read
@@ -110,7 +110,7 @@ function ListGhost() {
 function BoardGhost() {
   return (
     <div {...ghost("board", "schedule-tv-board")}>
-      {BOARD_COLUMNS.map((col, laneIx) => {
+      {BOARD_LANES.map((col, laneIx) => {
         const cards = LANE_CARDS[laneIx % LANE_CARDS.length];
         if (cards === 0) {
           return (

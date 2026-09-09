@@ -1936,10 +1936,15 @@ button.tasks-caret,
   align-items: center;
   gap: 8px;
 }
-.tasks-skel-tile-body {
+/* Compound with `.tasks-skel`, or the `.tasks-skel .skel-bar { flex: 0 0 auto }`
+   rule above outranks this one and the body cannot grow — the tile drew as an
+   empty framed box (Bugbot, #1079). A floor, so a tile short of room still
+   shows a body rather than a hairline. */
+.tasks-skel .tasks-skel-tile-body {
   flex: 1 1 auto;
   width: 100%;
   height: auto;
+  min-height: 96px;
   border-radius: 6px;
 }
 
