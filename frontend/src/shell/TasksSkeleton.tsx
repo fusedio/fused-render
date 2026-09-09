@@ -110,18 +110,19 @@ function ListGhost() {
 function BoardGhost() {
   return (
     <div {...ghost("board", "schedule-tv-board")}>
+      {/* Every lane and rail is decoration; the root's label says it all. */}
       {BOARD_LANES.map((col, laneIx) => {
         const cards = LANE_CARDS[laneIx % LANE_CARDS.length];
         if (cards === 0) {
           return (
-            <div key={col.key} className="schedule-tv-rail tasks-skel-rail">
+            <div key={col.key} className="schedule-tv-rail tasks-skel-rail" aria-hidden="true">
               <Ring />
               <span className="skel-bar tasks-skel-rail-label" />
             </div>
           );
         }
         return (
-        <div key={col.key} className="schedule-tv-lane">
+        <div key={col.key} className="schedule-tv-lane" aria-hidden="true">
           <div className="schedule-tv-lane-head tasks-skel-lane-head">
             <Ring />
             <Bar w={72} />
@@ -180,14 +181,14 @@ function CalendarGhost() {
     >
       {/* The calendar's own bar — range nav on the left, view range on the
           right — so the head below sits where the real head will. */}
-      <div className="schedule-cal-bar tasks-skel-cal-bar">
+      <div className="schedule-cal-bar tasks-skel-cal-bar" aria-hidden="true">
         <Bar w={24} className="tasks-skel-cal-btn" />
         <Bar w={24} className="tasks-skel-cal-btn" />
         <Bar w={140} />
         <span className="tasks-grow" />
         <Bar w={92} className="tasks-skel-cal-btn" />
       </div>
-      <div className="schedule-cal-head">
+      <div className="schedule-cal-head" aria-hidden="true">
         <div className="schedule-cal-gutter" />
         {Array.from({ length: days }, (_, d) => (
           <div key={d} className="schedule-cal-day-head">
@@ -196,7 +197,7 @@ function CalendarGhost() {
           </div>
         ))}
       </div>
-      <div className="schedule-cal-scroll">
+      <div className="schedule-cal-scroll" aria-hidden="true">
         <div className="schedule-cal-grid tasks-skel-cal-grid">
           <div className="tasks-skel-cal-gutter">
             {Array.from({ length: CAL_ROWS }, (_, r) => (
