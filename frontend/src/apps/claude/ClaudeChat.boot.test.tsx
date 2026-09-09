@@ -220,6 +220,11 @@ test("a host frame we cannot READ is not a pane (Bugbot #1061)", async () => {
   const crossOrigin = () =>
     ({
       isConnected: true,
+      // PR3's annotation target `watch`es whatever frame it is handed, so the
+      // stub carries a listener surface like the readable one above — the point
+      // of this case is the UNREADABLE document, not a missing element API.
+      addEventListener() {},
+      removeEventListener() {},
       get contentWindow(): never {
         throw new Error("Blocked a frame with origin … from accessing a cross-origin frame.");
       },
