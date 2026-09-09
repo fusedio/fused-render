@@ -469,3 +469,81 @@ own build, in addition to `bunx tsc --noEmit` and the scoped test run.
   to be slow in practice (e.g. across filesystems where rename is not O(1)),
   that would need its own decision; nothing here assumes rename is always
   instant, only that it usually is.
+
+## What landed — review-round fixups
+
+A round of code review turned up 14 items; all are fixed on this branch.
+
+- Windows drive-letter paths (`C:/Users/me`, backslashes folded to `/`, a
+  bare drive root keeping its own slash) are now a recognized candidate in
+  both `listing-address.ts` and `completion-target.ts`, mirroring the
+  server's `_DRIVE_ABS` — covered by new tests in both files' `.test.ts`.
+- The `.has-pin` search box no longer collapses to a fixed 260px: that rule
+  is gone, so a pin (the multi-selection readout or the streaming spinner)
+  reserves space as padding instead of shrinking the box, and the crumbs —
+  not the box — give up room first.
+- `requestSearchFocus()` is now gated on `barChrome`: a `<Listing>` mounted
+  without bar chrome (the preview pane) no longer steals focus into its own
+  field when a click on the claimed bar's crumb asks some `Listing` to focus.
+- The dropdown's `rowsMaxHeight` effect now has `fieldActive` in its
+  dependency array, so refocusing a field whose query and target directory
+  never changed (the dropdown itself unmounts on blur) recomputes the cap
+  instead of reusing a stale or absent one.
+- The five-row completion dropdown now caps at 5.5 rows (was 5), a
+  deliberate half-row "there is more, scroll" cue; the CSS fallback
+  `max-height` was recomputed to match (132px, up from 120px).
+- The tail-pin layout effect in `path-crumbs.tsx` and the `boxWide`
+  measurement effect in `Listing.tsx` both had no dependency array; the
+  first now re-pins on `[fsPath, home]` (the ResizeObserver still handles
+  resize-driven re-pinning on its own), the second is `[]` since the
+  ResizeObserver it attaches is what tracks width from then on.
+- The stranded `cursor: pointer` on the search field's last (non-clickable)
+  crumb is overridden back to `default` on the one selector that targets it.
+- The Enter gate in `useListingSearch.ts` committed against the
+  `useDeferredValue`d query, not the live one — under load, a commit
+  recorded against a still-trailing deferred value stopped matching once
+  the deferred value caught up a moment later, requiring a second Enter to
+  actually open the gate. It now commits the live, trimmed `query`, so the
+  gate opens as soon as the deferred value reaches it.
+- A comment-hygiene pass removed "used to" / "before D***" history
+  narration from comments this branch's diff actually added, across
+  `explorer.css`, `Breadcrumb.tsx`, `FilesHome.tsx`, `Listing.tsx`,
+  `path-crumbs.tsx`, `enter-prompt.ts`, `useListingSearch.ts`,
+  `platform/lib/api.ts`, and `fused_render/index/query.py`. The sweep was
+  scoped to added diff lines (`git diff main...HEAD`), not whole-file
+  content: the wider codebase already narrates history in comments as
+  house style outside this PR's own additions, and rewriting those would
+  have been well outside this review round's scope.
+
+Two deviations from a strict TDD loop, both because the tooling does not
+support the test:
+
+- The focus-gating fix (`requestSearchFocus`/`barChrome`) and the dropdown
+  `rowsMaxHeight`/`boxWide` effect-dependency fixes are React component
+  wiring inside `Listing.tsx`, which this codebase has no render-test
+  harness for (no `@testing-library/react`, `jsdom`, or `happy-dom` — only
+  extracted pure functions/hooks are unit-tested here, via `bun:test` and
+  `hook-harness.ts`). Verified instead by `tsc --noEmit` and by the
+  existing `Listing.test.tsx` / `FilesHome.render.test.tsx` /
+  `useListingSearch.render.test.ts` suites passing unchanged.
+- The Enter-gate fix could not get a new automated test either, for a more
+  specific reason: `hook-harness.ts`'s `act()` (from `react-test-renderer`)
+  flushes `useDeferredValue`'s low-priority re-render synchronously within
+  the same `act()` call — confirmed by a throwaway probe test before
+  writing the fix. That means `q` (deferred) and `query.trim()` (live) can
+  never actually differ at any point this harness lets a test observe, so
+  the exact race the bug depended on is not reproducible in this test
+  environment at all. The fix was verified by reasoning about the
+  closure-capture bug directly, plus the existing commit/gate tests in
+  `useListingSearch.render.test.ts` passing unchanged.
+
+One incidental finding while sweeping comments: the sandboxed shell's
+`grep` (a wrapper invoking `ugrep -I`, which skips files its heuristics
+classify as binary) silently returns no matches on
+`useListingSearch.ts`, which contains one legitimate embedded NUL byte
+(a cache-key join separator, `.join("\x00")`). `command grep -a` (bypassing
+the wrapper, forcing text mode) works correctly. A chained pipe
+(`grep ... | grep ...`) over a diff dump containing this file's content
+was also observed to silently drop matches that a direct grep on the same
+dump found. Anyone re-sweeping this branch's comments should prefer
+`command grep -a` or the Read tool over piped greps on diff dumps.
