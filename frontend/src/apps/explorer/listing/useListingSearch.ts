@@ -109,6 +109,24 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // known: the input can have settled while the answer for it is in flight.
   const deferredStale = query.trim() !== q;
 
+  // A query containing "/" or "*" is a path or a pattern, not a filter word —
+  // asking the server on every keystroke is exactly the "thousands of folders
+  // searched per keystroke" case a half-typed glob would otherwise produce.
+  // Plain text keeps live-filtering exactly as before; only path/pattern-
+  // shaped queries wait for an explicit commit (Enter, via `commitSearch`).
+  const pathLike = q.includes("/") || q.includes("*");
+  // The specific query text Enter was last pressed for. A ref, not state: it
+  // must not itself cause a render, only unlock the fetch effect below (which
+  // re-runs on `gateNonce`).
+  const committedGate = useRef<string | null>(null);
+  const [gateNonce, setGateNonce] = useState(0);
+  const gateOpen = !pathLike || committedGate.current === q;
+  const commitSearch = () => {
+    if (committedGate.current === q) return;
+    committedGate.current = q;
+    setGateNonce((n) => n + 1);
+  };
+
   // The index being deleted or a scan completing dates the answer the same way
   // a dir-watch bump does, and needs its own signal: the filesystem didn't
   // change, so no watch refresh will ever re-key anything
@@ -210,6 +228,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   useEffect(() => {
     setAnswer(null);
     setFailure("");
+    committedGate.current = null;
   }, [fsPath, pinned]);
   useEffect(() => () => inflight.current?.abort(), []);
 
@@ -272,6 +291,17 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
       // have nothing to do with. The memo keeps the round trip cheap if the
       // same query comes back.
       setAnswer(null);
+      return;
+    }
+    if (!gateOpen) {
+      // Decision 4: waiting for Enter. Nothing is asked, and whatever answer
+      // is already on screen (for the last COMMITTED query) simply stays —
+      // it is already flagged stale by the existing query-mismatch check
+      // below (`staleRows`), which is the same dimming a keystroke under
+      // debounce gets.
+      inflight.current?.abort();
+      inflightKey.current = null;
+      setPending(false);
       return;
     }
     // While a scan is running the remembered answer is exactly the one that is
@@ -348,7 +378,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- applyStep is
     // recreated each render; everything it reads is a ref or listed here.
-  }, [fsPath, q, searching, pinned, lifecycle, retryNonce, pollTick, polling, rankedPref]);
+  }, [fsPath, q, searching, pinned, lifecycle, retryNonce, pollTick, polling, rankedPref, gateNonce]);
 
   // The poll itself: while a scan covering this folder is running, ask again
   // on a modest cadence and repaint. The ordering WILL shift as rows land;
@@ -485,7 +515,12 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // the truncation the count chip owns up to.
   const searchState: SearchState = !searching
     ? IDLE_SEARCH
-    : failure !== "" && displayHits.length === 0
+    : !gateOpen && answer === null
+      // Decision 4: nothing has ever been asked for this query yet, and
+      // nothing is coming until Enter — the same "no request, no verdict"
+      // shape as the empty box, not a settled empty answer.
+      ? IDLE_SEARCH
+      : failure !== "" && displayHits.length === 0
       ? { status: "error", message: failure, forRefresh: pinned }
       : answer === null
         ? { status: "pending", forRefresh: pinned }
@@ -530,6 +565,10 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     q,
     searching,
     isStale,
+    // Decision 4: a path/pattern query waits for this before it fetches.
+    pathLike,
+    gateOpen,
+    commitSearch,
     // "These results are computed from an older generation of the tree, or for
     // a query that has moved on, and nothing is on its way to fix that" — see
     // above. Drives the caveat chip and its own, lighter dim.

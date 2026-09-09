@@ -316,6 +316,51 @@ describe("the ranked-search preference (D720)", () => {
   });
 });
 
+describe("decision 4: a path/pattern query waits for Enter", () => {
+  test("typing a glob fires no request until commitSearch is called", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("a/*.py"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+    expect(box.current().searching).toBe(true);
+    expect(box.current().searchState.status).toBe("idle");
+
+    await flush(() => box.current().commitSearch());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].q).toBe("a/*.py");
+    box.unmount();
+  });
+
+  test("plain text never gates — it still fires on every debounced keystroke", async () => {
+    const box = await search("widget");
+    expect(rankCalls).toHaveLength(1);
+    box.unmount();
+  });
+
+  test("editing a committed glob further re-gates until the next commit", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("a/*.py"));
+    await flush(() => box.current().commitSearch());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("a/x.py")], total: 1 })));
+
+    await flush(() => box.current().setQuery("a/*.pyc"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    // No new request yet — the previous answer stays on screen, stale.
+    expect(rankCalls).toHaveLength(1);
+    expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["a/x.py"]);
+    expect(box.current().rowsAnswerQuery).toBe(false);
+
+    await flush(() => box.current().commitSearch());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(2);
+    expect(rankCalls[1].q).toBe("a/*.pyc");
+    box.unmount();
+  });
+});
+
 describe("closing the box mid-scan", () => {
   test("does not carry spent patience into the next search", async () => {
     const box = await search("widget");
