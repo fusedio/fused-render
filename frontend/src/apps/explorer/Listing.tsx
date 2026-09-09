@@ -65,10 +65,9 @@ import { queryNamesOpenFolder } from "@apps/explorer/listing/query-current-folde
 import { useCompletion } from "@apps/explorer/listing/useCompletion";
 import { enterPrompt } from "@apps/explorer/listing/enter-prompt";
 import { showingSearchHits } from "@apps/explorer/listing/search-body-mode";
-import { contractHome } from "@apps/explorer/listing/home-path";
+import { contractHome, useHome } from "@apps/explorer/listing/home-path";
 import { formatElapsed } from "@apps/explorer/lib/home-search";
 import { SearchField } from "@apps/explorer/SearchField";
-import { getConfig } from "@platform/lib/api";
 import { searchSlot, subscribeSearchSlot, inSearchSlot } from "@apps/explorer/search-slot";
 import {
   FLIP_MAX_ROWS,
@@ -251,19 +250,12 @@ export default function Listing({
   // Decision 1: the crumbs shown inside the merged search field while it is
   // empty need home, the same way Breadcrumb.tsx's own strip does, to
   // contract a path under it to "~". Decision 5's typed-address resolution
-  // (below) also resolves a leading "~" against it. Fetched once; unresolved
-  // (undefined) just means every crumb shows the full path until it lands,
-  // and a "~"-led query is never treated as an address until it does.
-  const [home, setHome] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    getConfig().then((c) => {
-      if (live) setHome(c.home.replace(/\\/g, "/"));
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
+  // (below) also resolves a leading "~" against it. `useHome` (home-path.ts)
+  // is the one `/api/config` lookup shared with FileSearchField.tsx's own
+  // box; unresolved (undefined) just means every crumb shows the full path
+  // until it lands, and a "~"-led query is never treated as an address
+  // until it does.
+  const home = useHome();
 
   const {
     query,

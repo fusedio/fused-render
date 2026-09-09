@@ -20,8 +20,7 @@
 // fetch ever would (a `useLayoutEffect`, ahead of the hook's passive-effect
 // request), so no rank request goes out against the parent while this file's
 // page is still the one on screen.
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { getConfig } from "@platform/lib/api";
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { navigate } from "@platform/lib/router";
 import { dirname } from "@apps/explorer/lib/fs-actions";
 import { useListingSearch } from "@apps/explorer/listing/useListingSearch";
@@ -30,6 +29,7 @@ import { useCompletion } from "@apps/explorer/listing/useCompletion";
 import { queryNamesOpenFolder } from "@apps/explorer/listing/query-current-folder";
 import { showingSearchHits } from "@apps/explorer/listing/search-body-mode";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
+import { useHome } from "@apps/explorer/listing/home-path";
 import { searchSlot, subscribeSearchSlot, inSearchSlot } from "@apps/explorer/search-slot";
 import { SearchField } from "@apps/explorer/SearchField";
 
@@ -45,19 +45,11 @@ export interface FileSearchFieldProps {
 export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
   const parentPath = dirname(fsPath);
 
-  // Same fetch, same shape as Listing.tsx's own — a config lookup this view
-  // has no other reason to make, kept local rather than threaded through
-  // Preview's own props for a value only this box needs.
-  const [home, setHome] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    getConfig().then((c) => {
-      if (live) setHome(c.home.replace(/\\/g, "/"));
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
+  // The same `home` Listing.tsx's folder box resolves — `useHome`
+  // (home-path.ts) caches the one `/api/config` lookup across both, so a
+  // file opened after its own folder has already been browsed gets the
+  // answer on this box's very first render instead of a second round trip.
+  const home = useHome();
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
