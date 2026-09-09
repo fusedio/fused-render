@@ -504,6 +504,22 @@ def create_app(start_dir: str) -> FastAPI:
         # before they count listings of their own.
         app.state.tasks_warm = thread
 
+    # ...and put the caches to sleep on the way out, so the next launch reads
+    # only what the transcripts grew by (routers/tasks.py `save_scan_cache`).
+    # Under the listing's own lock inside, so a listing in flight finishes
+    # first; the write itself is a few hundred KB.
+    @on_shutdown
+    async def _shutdown_tasks_scan_cache():
+        from fused_render.server.routers import tasks as tasks_router_mod
+
+        def _save():
+            with tasks_router_mod._ROWS_LOCK:
+                tasks_router_mod.save_scan_cache()
+        # On a thread: a listing mid-scan holds the lock for seconds on a big
+        # ~/.claude, and waiting for it here would stall the event loop — every
+        # other request in flight — not just this coroutine.
+        await asyncio.to_thread(_save)
+
     @on_shutdown
     async def _startup_shutdown_ai():
         await shutdown_ai_session(app)

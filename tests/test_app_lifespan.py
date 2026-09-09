@@ -132,6 +132,7 @@ EXPECTED_STARTUP = [
 EXPECTED_SHUTDOWN = [
     "_shutdown_pooled_client",
     "_shutdown_background_apps_resurrection",
+    "_shutdown_tasks_scan_cache",
     "_startup_shutdown_ai",
     "_shutdown_server_json",
     "_shutdown_captures",
