@@ -501,7 +501,9 @@ def resolve_query(root: str, raw: str) -> dict:
     patterns), so their presence never flips the mode.
 
     Base resolution: a query starting with `~` or `/` can escape the box's
-    own root entirely; anything else inherits it unchanged. `~` expands to
+    own root entirely; a bare relative query with a `..` segment anywhere in
+    it escapes upward from the box's root the same way, walked with the same
+    `_walk_from`; anything else inherits the root unchanged. `~` expands to
     the home directory and then walks forward (`_walk_from`); a leading `/`
     is genuinely ambiguous and gets its own rule:
 
@@ -557,6 +559,20 @@ def resolve_query(root: str, raw: str) -> dict:
             base, pattern = abs_base, abs_pattern
         else:
             base, pattern = root, rest
+    elif any(seg == ".." for seg in raw.split("/")):
+        # A bare query with a `..` segment walks out of `root` the same way
+        # `~` and a leading `/` already do: `_walk_from` advances one
+        # directory at a time via `os.path.isdir`, which resolves a literal
+        # `..` component exactly as the filesystem would, so it already
+        # climbs correctly without any extra case for it — the walk simply
+        # never manufactures a segment that isn't real. `os.path.normpath`
+        # afterward is cosmetic (it turns "root/.." into the clean parent
+        # path instead of leaving the literal ".." embedded in `base`); it
+        # is also what keeps a run of `..` past the filesystem root pinned
+        # at that root instead of growing an ever-longer trail of ".." that
+        # still, harmlessly, means the same directory.
+        walked_base, pattern, _ = _walk_from(root, raw)
+        base = norm(os.path.normpath(walked_base)).rstrip("/") or "/"
     else:
         base, pattern = root, raw
     if is_glob and "/" not in raw:

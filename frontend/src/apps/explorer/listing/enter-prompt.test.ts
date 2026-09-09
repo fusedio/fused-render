@@ -32,7 +32,7 @@ describe("enterPrompt", () => {
     );
   });
 
-  test("a relative .. prefix survives into the named folder", () => {
+  test("a relative .. prefix names the folder the search will actually walk to", () => {
     expect(enterPrompt({ status: "idle" }, "../x/*.json")).toBe(
       "Press Enter to open ../x and search",
     );

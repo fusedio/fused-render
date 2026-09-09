@@ -2610,3 +2610,68 @@ Verification: `bunx tsc --noEmit` clean. `bun test --run` — 3967 pass, 0
 fail. `node scripts/check-boundaries.mjs` — `boundaries OK (632 files)`, up
 by two (`FileSearchField.tsx`, `SearchField.tsx`). `bun run build` succeeds;
 only the pre-existing manual-chunking warnings, unrelated to this change.
+
+## D19 — a relative `..` query walks out of the box it was typed in
+
+`resolve_query` (`fused_render/index/query.py`) had three escape shapes —
+`~`, a leading `/`, a Windows drive letter — and one catch-all: anything
+else, including a query with a `..` segment in it, fell to `base, pattern =
+root, raw`. `_walk_from`, the walker every escape shape already used,
+resolves a literal `..` segment for free: `os.path.isdir(base + "/" +
+"..")` asks the filesystem, and the filesystem answers a `..` component the
+same way `cd` would, so the walk climbs correctly the moment it is given
+the chance to try. The catch-all branch never gave it that chance.
+
+Fixed by adding one more branch ahead of the catch-all: a bare relative
+query with a `..` segment anywhere in it (`any(seg == ".." for seg in
+raw.split("/"))`) walks from `root` through `_walk_from`, exactly the
+mechanism `~` and the drive-letter branches already call. The one thing
+`_walk_from` does not do on its own is clean up the string it returns —
+each consumed `..` segment is appended literally (`base` ends up something
+like `/home/iamsdas/Downloads/..`), so the resolved base is passed through
+`os.path.normpath` before it is returned. That normalization is also what
+keeps a `..` run longer than the tree is deep from growing an ever-longer
+trail of dot-segments: `/..` normalizes to `/` the same way `cd ..` at the
+filesystem root stays at the root, so the walk cannot climb past it — there
+is no separate clamp to write, `_walk_from`'s own directory-existence check
+already stops it there and `normpath` keeps the string clean.
+
+A `..` that resolves through a folder that does not exist behaves exactly
+like every other escape shape's version of the same case: `_walk_from`
+stops one segment early and folds the missing name into the pattern
+(`../nope/x.csv` from `~/a/b` resolves to base `~/a`, pattern
+`nope/x.csv`), the same "widen instead of fail" rule `~/nope/x.csv` already
+followed. Nothing new needed writing for that case — it was already the
+walker's behavior for every other branch, and routing `..` through the same
+walker inherits it.
+
+`~`, the leading-slash branch, and the drive-letter branch are untouched:
+the new branch is an `elif` that only fires when none of the earlier three
+matched, so a query that already escapes one of those ways keeps resolving
+exactly as it did. The implicit `**/` prefix decision (`is_glob and "/" not
+in raw`) runs after all branches, unchanged, and reads `raw`, not the
+resolved pattern — a `..` query almost always contains a `/` (that's what
+makes it a `..` *segment*), so it does not get the any-depth widening a
+slash-free query does, same as every other multi-segment query.
+
+`tests/test_index_query.py` gained four cases: a `..` that walks up one
+level to a real sibling, a `..` pair that walks back to where it started
+(round-trips through `_home/a/b` -> `_home/a` -> `_home` -> `_home/a` ->
+`_home/a/b`), a `..` into a name that does not exist (widens, does not
+fail), and a `..` run longer than the tree is deep against a monkeypatched
+`/`/`/etc` filesystem (clamps at `/etc`, does not manufacture a path with
+dot-segments still in it). All four fail against the unpatched code — the
+`..`-into-a-sibling and round-trip cases return `pattern` still carrying
+the raw `..` segments and `base` unmoved; the clamp case returns `base:
+"/"`, `pattern: "../../../etc/*.conf"` instead of walking anywhere.
+
+`enter-prompt.test.ts`'s `..` case (`folderToOpen("../x/*.json")` ->
+`"../x"`) needed no change to its asserted string: `folderToOpen` is a pure
+syntactic split of the query text, with no server round trip, and it
+already named the folder correctly before this fix — the resolver bug was
+that pressing Enter on that banner did not actually search there. Renamed
+from "a relative .. prefix survives into the named folder" to "a relative
+.. prefix names the folder the search will actually walk to": the old name
+described `..` as inert text passing through untouched, which was true of
+the search that ran (the bug) but not of what the banner said; the new name
+says what is true now that `resolve_query` walks it for real.

@@ -233,6 +233,42 @@ def test_resolve_bare_windows_drive_root_forward_slash_normalizes_to_slash_form(
     assert out == {"base": "C:/", "pattern": "", "mode": "substring"}
 
 
+def test_resolve_relative_dotdot_walks_up_the_filesystem(_home):
+    """A bare relative query with a `..` segment escapes the box's own root
+    the same way `~` and a leading `/` already do — it does not stay
+    anchored at `root` matching the literal string `..` against an index
+    that never stores that segment."""
+    box = _home + "/a/b"
+    out = resolve_query(box, "../*.c")
+    assert out == {"base": _home + "/a", "pattern": "*.c", "mode": "glob"}
+
+
+def test_resolve_relative_dotdot_can_walk_back_to_where_it_started(_home):
+    box = _home + "/a/b"
+    out = resolve_query(box, "../../a/b/*.c")
+    assert out == {"base": box, "pattern": "*.c", "mode": "glob"}
+
+
+def test_resolve_relative_dotdot_to_a_missing_folder_widens_instead_of_failing(_home):
+    box = _home + "/a/b"
+    out = resolve_query(box, "../nope/x.csv")
+    assert out == {"base": _home + "/a", "pattern": "nope/x.csv",
+                   "mode": "substring"}
+
+
+def test_resolve_relative_dotdot_clamps_at_the_filesystem_root(monkeypatch):
+    """A run of `..` longer than the tree is deep keeps landing on real
+    directories the whole way (`/..` is `/`, same as `cd`), so the walk
+    never manufactures a fictitious base — it just stops climbing once it
+    is at the root, same as every other consumed segment."""
+    real_dirs = {"/", "/etc"}
+    monkeypatch.setattr(
+        os.path, "isdir",
+        lambda p: os.path.normpath(p) in real_dirs)
+    out = resolve_query("/", "../../../etc/*.conf")
+    assert out == {"base": "/etc", "pattern": "*.conf", "mode": "glob"}
+
+
 def test_resolve_leading_slash_with_no_real_directory_stays_anchored():
     """The disambiguation's other branch: a leading `/` whose first segment
     is not a real directory (here, none of `/nonexistent-xyz` exists) is read
