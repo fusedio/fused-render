@@ -358,7 +358,7 @@ export function viewUrlForFsPath(fsPath: string, search?: string): string {
 
 export function navigate(
   fsPath: string,
-  opts?: { isDir?: boolean; mode?: string; sel?: string | null },
+  opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string },
 ): void {
   // Navigating between files/dirs drops old view params (fresh query string) —
   // EXCEPT the preview pane's own state (`_side`: which of its three modes it is
@@ -446,6 +446,13 @@ export function navigate(
   // concept (D264).
   if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
   if (opts?.sel) parts.push("sel=" + encodeURIComponent(opts.sel));
+  // `opts.q` carries a query straight onto the destination folder's own box —
+  // the file view's merged field pushes here once its query is already
+  // committed (typed, or gate-open by itself for a non-escaping pattern), and
+  // the destination is meant to show results immediately rather than making
+  // the user press Enter a second time. See `qCommitted` below for the half
+  // of this that rides in history.state instead of the URL.
+  if (opts?.q) parts.push("q=" + encodeURIComponent(opts.q));
   const search = parts.length ? "?" + parts.join("&") : "";
   // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
   // knows whether the target is a directory): it rides in history.state so the
@@ -454,7 +461,21 @@ export function navigate(
   // blank screen. Restored on back/forward (popstate carries the state), and
   // simply absent (null) for callers that don't know, which falls back to a
   // plain header scaffold. See navHintIsDir below.
-  const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
+  //
+  // `qCommitted` rides beside it for the same reason: `?q=` alone is just
+  // text, the same mirror a live-typed, uncommitted query writes into the
+  // address bar (useListingSearch's own URL sync). Only a caller that already
+  // resolved its own commit question — here, always, since `opts.q` is only
+  // ever handed a query that already cleared that gate — may say so, and only
+  // that says the destination's own gate opens immediately instead of asking
+  // for a second Enter.
+  const state: { fsDir?: boolean; qCommitted?: boolean } | null =
+    typeof opts?.isDir === "boolean" || typeof opts?.q === "string"
+      ? {
+          ...(typeof opts?.isDir === "boolean" ? { fsDir: opts.isDir } : null),
+          ...(typeof opts?.q === "string" ? { qCommitted: true } : null),
+        }
+      : null;
   history.pushState(state, "", urlForFsPath(fsPath, search));
   notifyNavigate();
 }
@@ -468,6 +489,18 @@ export function navigate(
 export function navHintIsDir(): boolean | null {
   const s = history.state as { fsDir?: boolean } | null;
   return s && typeof s.fsDir === "boolean" ? s.fsDir : null;
+}
+
+// Companion to navHintIsDir, for `?q=`: was the query this URL carries ALREADY
+// committed by the navigation that landed here (navigate's `opts.q`), so
+// useListingSearch's own commit gate should open immediately instead of
+// showing "Press Enter to search" for a query nobody has pressed Enter for on
+// THIS page? Read once, the same way and for the same reason — Back/Forward
+// restores it because it rides history.state, and an in-place URL sync must
+// go through replaceSearch to avoid dropping it.
+export function navHintQCommitted(): boolean {
+  const s = history.state as { qCommitted?: boolean } | null;
+  return !!s?.qCommitted;
 }
 
 // In-place view-param sync (sort/search/_mode/session replay) on the CURRENT

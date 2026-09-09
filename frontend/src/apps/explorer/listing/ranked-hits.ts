@@ -47,8 +47,23 @@ export function hitsFromRank(
   mode: "substring" | "glob" = "substring",
 ): SearchHit[] {
   if (!q) return [];
-  return hits.map((h) => ({
-    entry: { rel: h.rel, is_dir: h.is_dir, size: h.size, mtime: h.mtime },
-    positions: mode === "substring" ? (substringMatch(q, h.rel)?.positions ?? []) : [],
-  }));
+  // A query that escapes the box root (query-base.ts's `escapesBase`) carries
+  // a base prefix `resolve_query` (fused_render/index/query.py) has already
+  // consumed into `res.base` — `h.rel` is relative to THAT, not to the query
+  // as typed, so the consumed prefix can never appear as a literal substring
+  // of `rel`. The segment after the query's last "/" is what the server's own
+  // walk actually matched against, so it is retried against `rel` whenever
+  // the full query refuses — for a query with no "/" this is the same string,
+  // so the fallback is a no-op there rather than a second, different test.
+  const leaf = q.slice(q.lastIndexOf("/") + 1);
+  return hits.map((h) => {
+    let positions: number[] = [];
+    if (mode === "substring") {
+      positions =
+        substringMatch(q, h.rel)?.positions ??
+        (leaf !== q ? substringMatch(leaf, h.rel)?.positions : undefined) ??
+        [];
+    }
+    return { entry: { rel: h.rel, is_dir: h.is_dir, size: h.size, mtime: h.mtime }, positions };
+  });
 }

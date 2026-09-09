@@ -5,8 +5,9 @@
 //   mode    the `#topbar-mode-slot` portal target — Preview renders the view's
 //           conditional primary action, the shared mode control and the preview
 //           sidebar's toggle into it
-//   search  over a FOLDER only: the listing's search row portals in here, so
-//           its column has one header strip instead of two (search-slot.ts)
+//   search  wherever the merged field has claimed the bar — a folder's
+//           listing or a plain file's own field — it portals in here, so its
+//           column has one header strip instead of two (search-slot.ts)
 //
 // THE PATH ZONE'S TWO ENDS CHANGED PLACES, and the arrows are why. The ★ opened
 // the bar for a long time, which put the one control that acts on the WHOLE view
@@ -274,14 +275,17 @@ function StarIcon({ filled }: { filled: boolean }) {
   );
 }
 
-// Portal target for the FOLDER view's search row, at the bar's right end.
+// Portal target for the merged field, at the bar's right end — a folder's
+// (Listing.tsx) or a plain file's (FileSearchField.tsx), whichever currently
+// holds the chrome claim.
 //
-// Rendered only while a folder holds the chrome claim: a file view's bar has
-// no search box, and an empty div would still eat the bar's `gap`. The listing
-// portals its own `.listing-search` in here — box, sort chip and the path
-// `···` — so the left column has ONE strip, matching the preview pane's one
-// strip across the divider (search-slot.ts).
-function FolderSearchSlot() {
+// Rendered only while something holds the claim: an unclaimed bar (a panel
+// pane's own preview, which never claims) has no search box, and an empty div
+// would still eat the bar's `gap`. The claimant portals its own SearchField in
+// here — box, and over a folder the sort chip and the path `···` besides — so
+// the left column has ONE strip, matching the preview pane's one strip across
+// the divider (search-slot.ts).
+function BarSearchSlot() {
   const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
   const ref = useRef<HTMLDivElement>(null);
   // A layout effect, and the cleanup is identity-checked (node-slot.ts): the
@@ -601,10 +605,10 @@ export function Breadcrumb({
   // click that follows it — the two always-on listeners below share it.
   const closedByClickAwayRef = useRef(false);
   const { springProps, dropProps, armedTarget } = useSpringLoadedCrumbs();
-  // Decision 1: a folder's claimed crumb bar has one path affordance, the
-  // merged search field (Listing.tsx) — this strip and its own path editor
-  // stand down, and the gestures that open the editor below ask that field
-  // to focus instead.
+  // Decision 1: a claimed crumb bar has one path affordance, the merged
+  // search field (Listing.tsx over a folder, FileSearchField.tsx over a
+  // plain file) — this strip and its own path editor stand down, and the
+  // gestures that open the editor below ask that field to focus instead.
   const claimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
   // Read by the two always-on document listeners below, which must not rebind
   // on every claim/unclaim (same reasoning as editingRef).
@@ -687,7 +691,7 @@ export function Breadcrumb({
       if (editingRef.current) return;
       if (!barClickEntersEdit(e.target as HTMLElement | null)) return;
       if (claimedRef.current) {
-        requestSearchFocus();
+        requestSearchFocus(displayPathRef.current);
         return;
       }
       setEditing(true);
@@ -739,6 +743,12 @@ export function Breadcrumb({
   // NOTE: Chrome/Firefox route Ctrl/Cmd+L to their own address bar before the
   // page sees it, so this only lands in app-mode/standalone windows (D: see
   // plan). Registered document-level, cleaned up on unmount (Listing.tsx).
+  //
+  // Over a claimed bar this seeds the merged field with the same
+  // "~"-contracted current path edit mode seeds below (displayPathRef, read
+  // fresh at keydown time — the effect's own deps are `[]`, so a ref is what
+  // keeps this from closing over the path that was current when the
+  // listener was first attached).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!isMod(e) || e.key.toLowerCase() !== "l") return;
@@ -746,7 +756,7 @@ export function Breadcrumb({
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       e.preventDefault();
       if (claimedRef.current) {
-        requestSearchFocus();
+        requestSearchFocus(displayPathRef.current);
         return;
       }
       setEditing(true);
@@ -769,8 +779,16 @@ export function Breadcrumb({
   const parts = rest.split("/").filter((s) => s.length > 0);
 
   // Edit mode seeds the same "~"-contracted path the crumbs display; Enter
-  // expands a leading "~" back to the real home before navigating.
+  // expands a leading "~" back to the real home before navigating. Ctrl/Cmd+L
+  // over a claimed bar reuses the same value through displayPathRef below
+  // rather than computing a second contraction.
   const displayPath = underHome ? "~" + rest : fsPath;
+  // Kept fresh every render (same pattern as claimedRef above) so the
+  // always-on Ctrl/Cmd+L listener, bound once with `[]` deps, reads the
+  // current folder's contraction instead of the one in place when it first
+  // attached.
+  const displayPathRef = useRef(displayPath);
+  displayPathRef.current = displayPath;
   const submitEdit = (raw: string) => {
     let path = raw.trim();
     // A pasted URL, not a path. Handled before any path munging — "~"
@@ -913,18 +931,28 @@ export function Breadcrumb({
           {pieces}
         </div>
       )}
-      {/* Decision 1: a claimed folder's merged field IS the path, so it sits
+      {/* Decision 1: a claimed bar's merged field IS the path, so it sits
           where the path strip did — right after the crumbs/edit zone above,
-          ahead of the star — rather than at the bar's far end. Over an
-          unclaimed (file) bar this renders an empty, layout-inert slot
-          (FolderSearchSlot), so this placement costs that case nothing. */}
-      <FolderSearchSlot />
+          ahead of the star — rather than at the bar's far end. This is true
+          whether the claimant is a folder's Listing or a plain file's
+          FileSearchField; over an UNCLAIMED bar (a panel pane's own preview)
+          this renders an empty, layout-inert slot (BarSearchSlot), so this
+          placement costs that case nothing. */}
+      <BarSearchSlot />
       {/* After the path, not before it: the star's subject is the path, and the
           bar's opening slot belongs to the history arrows (see the header). It
           rides OUTSIDE `.crumbs` deliberately — that strip is a scroll container
           for the path alone, and a star inside it would scroll away with the
-          crumbs on a long path, which is the one place it is most wanted. */}
-      <BookmarkStar id="bookmark-btn" name={renderedTitle || basename(fsPath)} />
+          crumbs on a long path, which is the one place it is most wanted.
+
+          Only over an UNCLAIMED bar, though — a claimed bar's merged field
+          (BarSearchSlot above) carries its own copy inside the field's own
+          border, trailing the match chip where there is one (Listing.tsx;
+          FileSearchField.tsx has none), so this one stands down rather than
+          rendering a second star beside it. */}
+      {claimed ? null : (
+        <BookmarkStar id="bookmark-btn" name={renderedTitle || basename(fsPath)} />
+      )}
       {/* THE PATH `⋮` IS GONE, both of them. Over a FOLDER the listing took its
           actions into the right end of its own column header (Listing.tsx), where
           they sit with the folder's other operations instead of being split

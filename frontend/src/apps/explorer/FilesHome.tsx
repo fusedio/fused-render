@@ -69,7 +69,7 @@ import {
   type PendingScan,
   type RowModel,
 } from "@apps/explorer/lib/home-search";
-import { renderHighlight } from "@apps/explorer/listing/bits";
+import { renderHighlight, renderHighlightPath } from "@apps/explorer/listing/bits";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 // How many cards a tab shows before "Show more" — flat count, not a row
@@ -188,7 +188,7 @@ function FileRow({
           {iconForEntry(name, hit.is_dir)}
         </span>
         <span className="fh-result-name">{renderHighlight(name, namePos)}</span>
-        <span className="fh-result-path">{renderHighlight(display, pathPos)}</span>
+        <span className="fh-result-path">{renderHighlightPath(display, pathPos)}</span>
         <span className="fh-result-meta">
           {hit.is_dir ? "" : formatSize(hit.size)}
           {hit.mtime !== null && (

@@ -7,6 +7,7 @@ one lives in `guarded_query.py` (tests/test_index_guarded_query.py), which is
 why the assertion below is about `query.py` specifically.
 """
 import os
+import posixpath
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -215,6 +216,62 @@ def test_resolve_windows_drive_letter_path_with_forward_slashes(monkeypatch):
     out = resolve_query("/box", "C:/Users/example/*.conf")
     assert out == {"base": "C:/Users/example", "pattern": "*.conf",
                    "mode": "glob"}
+
+
+def test_resolve_bare_windows_drive_root_backslash_normalizes_to_slash_form():
+    """A drive letter with nothing after the separator (`C:\\`, the whole
+    drive) walks no segments at all — `_walk_from`'s own bare-root collapse
+    (`rest` empty) leaves `base` as the bare `"C:"` `_BARE_DRIVE` matches,
+    which has to come back out as `"C:/"`: canonical_root() (index/runner.py)
+    stores this drive under `"C:/"`, never the bare `"C:"` spelling."""
+    out = resolve_query("/box", "C:\\")
+    assert out == {"base": "C:/", "pattern": "", "mode": "substring"}
+
+
+def test_resolve_bare_windows_drive_root_forward_slash_normalizes_to_slash_form():
+    """The forward-slash spelling of the same bare drive root."""
+    out = resolve_query("/box", "C:/")
+    assert out == {"base": "C:/", "pattern": "", "mode": "substring"}
+
+
+def test_resolve_relative_dotdot_walks_up_the_filesystem(_home):
+    """A bare relative query with a `..` segment escapes the box's own root
+    the same way `~` and a leading `/` already do — it does not stay
+    anchored at `root` matching the literal string `..` against an index
+    that never stores that segment."""
+    box = _home + "/a/b"
+    out = resolve_query(box, "../*.c")
+    assert out == {"base": _home + "/a", "pattern": "*.c", "mode": "glob"}
+
+
+def test_resolve_relative_dotdot_can_walk_back_to_where_it_started(_home):
+    box = _home + "/a/b"
+    out = resolve_query(box, "../../a/b/*.c")
+    assert out == {"base": box, "pattern": "*.c", "mode": "glob"}
+
+
+def test_resolve_relative_dotdot_to_a_missing_folder_widens_instead_of_failing(_home):
+    box = _home + "/a/b"
+    out = resolve_query(box, "../nope/x.csv")
+    assert out == {"base": _home + "/a", "pattern": "nope/x.csv",
+                   "mode": "substring"}
+
+
+def test_resolve_relative_dotdot_clamps_at_the_filesystem_root(monkeypatch):
+    """A run of `..` longer than the tree is deep keeps landing on real
+    directories the whole way (`/..` is `/`, same as `cd`), so the walk
+    never manufactures a fictitious base — it just stops climbing once it
+    is at the root, same as every other consumed segment."""
+    real_dirs = {"/", "/etc"}
+    monkeypatch.setattr(
+        os.path, "isdir",
+        # The fake filesystem is described in POSIX terms, so it has to be
+        # collapsed with POSIX rules too — `os.path.normpath` follows the
+        # host platform's separator conventions and would fold "/.." into
+        # "\\etc"-shaped strings on Windows, matching nothing in `real_dirs`.
+        lambda p: posixpath.normpath(p) in real_dirs)
+    out = resolve_query("/", "../../../etc/*.conf")
+    assert out == {"base": "/etc", "pattern": "*.conf", "mode": "glob"}
 
 
 def test_resolve_leading_slash_with_no_real_directory_stays_anchored():

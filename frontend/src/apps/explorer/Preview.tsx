@@ -101,6 +101,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import Listing from "@apps/explorer/Listing";
+import { FileSearchField } from "@apps/explorer/FileSearchField";
 
 // The window global the injected runtime calls to hand this shell the commit the
 // git sidebar just selected (static/runtime.js `noteSnapshotSelected`, reached
@@ -2582,6 +2583,15 @@ interface PreviewProps {
 }
 
 export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload }: PreviewProps) {
+  // The merged field, for a plain FILE — same condition as `usePreviewFileMenu`'s
+  // own `ownsBar`, and as `Header`'s own `actionsInTopbar` check just below:
+  // this IS the explorer's own file view, so its bar is the one the field
+  // takes over. Hoisted above every branch below (the resolving spinner, the
+  // dispatch to TemplatePreview, the FallbackPreview card) so it renders the
+  // same way regardless of which of those a file lands in — the field is a
+  // property of the FILE, not of how its body happens to render.
+  const ownsBar = !!actionsInTopbar && !stat.is_dir;
+  const fileSearchField = <FileSearchField active={ownsBar} fsPath={fsPath} />;
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -2651,6 +2661,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
     return (
       <>
+        {fileSearchField}
         {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} />}
         <div className="preview-body">
           <div className="preview-resolving">
@@ -2663,14 +2674,22 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   }
   if (visible.length > 0)
     return (
-      <TemplatePreview
-        fsPath={fsPath}
-        stat={stat}
-        templates={visible}
-        conditions={conditions}
-        onRenderedTitle={onRenderedTitle}
-        actionsInTopbar={actionsInTopbar}
-      />
+      <>
+        {fileSearchField}
+        <TemplatePreview
+          fsPath={fsPath}
+          stat={stat}
+          templates={visible}
+          conditions={conditions}
+          onRenderedTitle={onRenderedTitle}
+          actionsInTopbar={actionsInTopbar}
+        />
+      </>
     );
-  return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} onReload={onReload} />;
+  return (
+    <>
+      {fileSearchField}
+      <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} onReload={onReload} />
+    </>
+  );
 }

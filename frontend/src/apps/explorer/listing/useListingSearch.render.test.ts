@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { IndexRankResult, Prefs } from "@platform/lib/api";
 import { Clock, Deferred, flush, renderHook } from "@apps/explorer/listing/hook-harness";
 import { INSTANT_DEBOUNCE_MS } from "@platform/lib/instant-search";
+import { searchCaveat } from "@apps/explorer/listing/index-caveat";
 
 // --- the module boundary ------------------------------------------------------
 const rankCalls: {
@@ -159,6 +160,32 @@ describe("never-blank / stale-while-revalidate", () => {
   });
 });
 
+describe("a request that fails with rows already on screen", () => {
+  test("the old rows stay, but the hook stops calling them a healthy answer", async () => {
+    const box = await search("foo");
+    await flush(() =>
+      rankCalls[0].reply.resolve(answer({ hits: [hit("foo.txt")], total: 1, base: "/d" })),
+    );
+    expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["foo.txt"]);
+    expect(box.current().behind).toBe(false);
+    expect(box.current().requestFailed).toBe(false);
+
+    await flush(() => box.current().setQuery("foobar"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[1].reply.reject(new Error("network error")));
+
+    // The rows from "foo" are still the ones on screen — never blanked —
+    // but a failed request for "foobar" must not read as a settled, healthy
+    // answer to it: `behind` (and the new `requestFailed`) flip true so the
+    // caveat chip can say the search itself failed, not merely "not
+    // refreshed".
+    expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["foo.txt"]);
+    expect(box.current().requestFailed).toBe(true);
+    expect(box.current().behind).toBe(true);
+    box.unmount();
+  });
+});
+
 describe("an uncovered folder: scan, poll, answer", () => {
   test("asks for a scan once, keeps saying an answer is coming, then answers", async () => {
     const box = await search("widget");
@@ -192,6 +219,20 @@ describe("an uncovered folder: scan, poll, answer", () => {
     await flush(() => rankCalls[0].reply.resolve(answer({ covered: false, reason: "uncovered" })));
     await flush(() => {});
     expect(box.current().scanPending).toBe(false);
+    box.unmount();
+  });
+
+  test("an escaping query asks for a scan of the resolved base, not the open folder", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("~/other/widget"));
+    await flush(() => box.current().commitSearch());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() =>
+      rankCalls[0].reply.resolve(
+        answer({ covered: false, reason: "uncovered", base: "/home/u/other" }),
+      ),
+    );
+    expect(scanCalls).toEqual(["/home/u/other"]);
     box.unmount();
   });
 });
@@ -284,6 +325,52 @@ describe("an answer served from the memo", () => {
   });
 });
 
+describe("behind requires an actual answer, not just a generation mismatch", () => {
+  test("a first-ever query in a bumped generation reports behind === false", async () => {
+    const box = await search("widget");
+    // No answer has ever landed for this search — the request is still
+    // outstanding — so a generation bump here must not read as "not
+    // refreshed": there is nothing on screen for that caption to describe.
+    box.rerender("/d", 2);
+    await flush(() => {});
+    expect(box.current().behind).toBe(false);
+
+    // Once an answer for THIS generation actually lands, behind stays false.
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("widget.md")], total: 1 })));
+    expect(box.current().behind).toBe(false);
+    box.unmount();
+  });
+});
+
+describe("a dir-watch bump while searching: the deferral itself is the caveat", () => {
+  test("no re-ask is scheduled, so the caveat still has to show on its own", async () => {
+    const box = await search("widget");
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("widget.md")], total: 1 })));
+    expect(box.current().behind).toBe(false);
+
+    // A dir-watch refresh (listing/revalidate's `shouldReconcile`) is
+    // deliberately NOT a reason to re-ask while a search is active — the
+    // fetch effect keys on `pinned`, not `gen`, so this alone never
+    // reschedules anything.
+    box.rerender("/d", 1);
+    await flush(() => {});
+    expect(box.current().behind).toBe(true);
+    expect(rankCalls).toHaveLength(1);
+    expect(box.current().requestComing).toBe(false);
+    // Nothing is coming, so the caveat has to carry the whole claim on its
+    // own — this is the genuine "not refreshed" case, not the round-trip gap
+    // the fix above closes.
+    expect(
+      searchCaveat(null, {
+        behind: box.current().behind,
+        pending: box.current().requestComing,
+        rescanPending: false,
+      }),
+    ).not.toBeNull();
+    box.unmount();
+  });
+});
+
 describe("a completed scan", () => {
   test("re-asks, so the answer on screen is never captioned stale", async () => {
     const box = await search("widget");
@@ -291,6 +378,41 @@ describe("a completed scan", () => {
     expect(box.current().behind).toBe(false);
 
     await flush(() => freshness.noteIndexLifecycle());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(2);
+    await flush(() => rankCalls[1].reply.resolve(answer({ hits: [hit("a/widget.md")], total: 1 })));
+    expect(box.current().behind).toBe(false);
+    box.unmount();
+  });
+});
+
+describe("a URL-restored search racing the app's own startup scan", () => {
+  test("a lifecycle bump reschedules the debounce without ever letting the caveat show", async () => {
+    // `searching` true on the very first render, the way a `?q=` mount seeds
+    // it — no explicit `setQuery` after the harness has settled.
+    (globalThis as Record<string, unknown>).location = { search: "?q=widget", pathname: "/x" };
+    const box = renderHook((p: string, r: number) => useListingSearch(p, r, true), "/d", 0);
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("a/widget.md")], total: 1 })));
+    expect(box.current().behind).toBe(false);
+
+    // The generation moves — the same event `describe("a completed scan")`
+    // above drives — which reschedules the debounced re-ask.
+    await flush(() => freshness.noteIndexLifecycle());
+    // The gap: `behind` already reads true (the answer on screen was fetched
+    // under the old generation), and the debounce this bump just rescheduled
+    // has not fired yet. The caveat must not show here — nothing is stuck,
+    // an answer is already coming.
+    expect(box.current().behind).toBe(true);
+    expect(
+      searchCaveat(null, {
+        behind: box.current().behind,
+        pending: box.current().requestComing,
+        rescanPending: false,
+      }),
+    ).toBeNull();
+
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
     await flush(() => rankCalls[1].reply.resolve(answer({ hits: [hit("a/widget.md")], total: 1 })));
@@ -361,6 +483,11 @@ describe("decision 4: a query that escapes the box root waits for Enter", () => 
     expect(rankCalls).toHaveLength(1);
     expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["a/x.py"]);
     expect(box.current().rowsAnswerQuery).toBe(false);
+    // The rows on screen answer the last COMMITTED query, not this edit —
+    // that is `awaitingCommit`, not `behind`. Nothing failed to refresh;
+    // nothing has been asked for the query now in the box.
+    expect(box.current().awaitingCommit).toBe(true);
+    expect(box.current().behind).toBe(false);
 
     await flush(() => box.current().commitSearch());
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
@@ -462,6 +589,30 @@ describe("searchBase: the directory hits are relative to", () => {
         answer({ base: "/home/u/other", hits: [hit("report.csv")], total: 1 }),
       ),
     );
+    expect(box.current().searchBase).toBe("/home/u/other");
+    box.unmount();
+  });
+
+  test("names nothing while the very first request for an escaping query is still out", async () => {
+    // Before ANY answer has landed, `/proj` (the folder already open) is not
+    // this request's base — a leading `~` is written specifically to escape
+    // it — so naming `/proj` here would be the header claiming a base this
+    // search does not have. Empty is what the header renders as a bare
+    // "Path", not a wrong or stale answer.
+    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/proj", 0);
+    await flush(() => box.current().setQuery("~/other/rep"));
+    await flush(() => box.current().commitSearch());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(box.current().searchBase).toBe("");
+
+    await flush(() =>
+      rankCalls[0].reply.resolve(
+        answer({ base: "/home/u/other", hits: [hit("report.csv")], total: 1 }),
+      ),
+    );
+    // One transition, straight to the real base — never a detour through
+    // `/proj` first.
     expect(box.current().searchBase).toBe("/home/u/other");
     box.unmount();
   });

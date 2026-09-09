@@ -856,6 +856,12 @@ def _index_job_loop() -> None:
 _index_job_thread: "threading.Thread | None" = None
 _index_job_started = threading.Lock()
 
+# Named so a test that needs to tell a bridge tick's own call apart from a
+# request's (e.g. one attributing calls to a mocked function by thread, since
+# re-patching `mirror_index_jobs_once` cannot reach a tick already inside its
+# real body) has one spelling to import instead of a copy of this literal.
+INDEX_JOB_BRIDGE_THREAD_NAME = "index-job-bridge"
+
 
 def start_index_job_bridge() -> None:
     """Start the background tick loop. Idempotent, same pattern as
@@ -866,7 +872,7 @@ def start_index_job_bridge() -> None:
         if _index_job_thread is not None and _index_job_thread.is_alive():
             return
         _index_job_thread = threading.Thread(
-            target=_index_job_loop, daemon=True, name="index-job-bridge")
+            target=_index_job_loop, daemon=True, name=INDEX_JOB_BRIDGE_THREAD_NAME)
         _index_job_thread.start()
 
 
@@ -991,9 +997,13 @@ def _freshness_wait(seconds: float) -> None:
     time.sleep(seconds)
 
 
-def _run_freshness_check(path: str) -> None:
+def _run_freshness_check(path: str, now: float | None = None) -> None:
     """The check itself, off the request thread. Never raises: a listing must
-    not fail, or slow down, because index housekeeping did."""
+    not fail, or slow down, because index housekeeping did.
+
+    `now` is a seam for tests, threaded straight through to
+    `freshness.note_folder_opened` — production callers never pass it, and get
+    the real clock."""
     try:
         import time
 
@@ -1002,7 +1012,7 @@ def _run_freshness_check(path: str) -> None:
         # The debounce is keyed on the enclosing ROOT, not the folder: a scan
         # is per root, so two folders under one root are the same question. A
         # folder under no root has no question to ask at all, and
-        # note_folder_opened would answer None anyway.
+        # note_folder_opened would answer nothing to start anyway.
         root = enclosing_root(roots, path)
         if root is None:
             return
@@ -1022,16 +1032,94 @@ def _run_freshness_check(path: str) -> None:
         # now, so the recorded check time is when the check actually ran.
         if not _freshness_due(root, time.time()):
             return
-        started = freshness.note_folder_opened(cfg, path, roots)
-        if started:
+        result = freshness.note_folder_opened(cfg, path, roots, now=now)
+        if result.started:
             _wake_index_job_bridge()
             logger.info("index: %s changed since the last scan; rescanning %s",
-                        path, started)
+                        path, result.started)
+        elif result.retry_after is not None:
+            # The one refusal worth a second look: the folder was still
+            # churning, not permanently out of the question. Nothing else is
+            # going to ask again on its own once the user stops touching it,
+            # so this check leaves one behind.
+            _schedule_freshness_retry(path, root, result.retry_after)
     except Exception:  # noqa: BLE001 - housekeeping must never surface
         logger.exception("could not check index freshness for %s", path)
     finally:
         if _freshness_slot.locked():
             _freshness_slot.release()
+
+
+# root -> the pending retry timer asking again once that root's changed
+# folder has actually gone quiet. Coalesced: a folder touched fifty times
+# while one is pending replaces it with a timer for the new deadline instead
+# of piling up a second one, and there is at most one entry per root at any
+# moment. Bounded the same way `_freshness_checked` is (a handful of
+# configured roots), so it needs no eviction beyond what firing/cancelling
+# already does.
+_freshness_retries: dict = {}
+_freshness_retries_lock = threading.Lock()
+
+
+def _schedule_freshness_retry(path: str, root: str, delay: float) -> None:
+    """Ask again about `path` once it has been quiet for `delay` more seconds.
+
+    Deliberately not `index_touch._real_schedule`: importing it here would be
+    circular (`index_touch` already imports this module, from inside its own
+    functions, to reach `runner` and `_wake_index_job_bridge`), and a local
+    import per retry buys nothing over the three lines that pattern actually
+    is. Same shape regardless — a daemon `threading.Timer`, so a pending retry
+    can never hold the process open."""
+    with _freshness_retries_lock:
+        pending = _freshness_retries.get(root)
+        if pending is not None:
+            pending.cancel()
+        timer = threading.Timer(delay, _run_freshness_retry, args=(path, root))
+        timer.daemon = True
+        timer.name = "index-freshness-retry"
+        _freshness_retries[root] = timer
+        timer.start()
+
+
+def _run_freshness_retry(path: str, root: str, now: float | None = None) -> None:
+    """The retry `_run_freshness_check` left behind, firing on its own timer
+    thread rather than from a listing.
+
+    Bypasses `_freshness_due`/`FRESHNESS_CHECK_S` on purpose: this is not a
+    new demand for a check arriving from browsing — the very thing that
+    throttle exists to pace — it is the ONE check that already earned its
+    slot, continued at the moment it was told it could give a different
+    answer. Coalescing above already guarantees there is at most one of these
+    in flight per root, so bypassing the throttle here cannot be used to
+    hammer a root the way raising or removing the throttle generally would.
+
+    Never chains a second retry: if `note_folder_opened` is still churning
+    when this fires, it is left there. One honest retry, not an unbounded
+    chain that a directory which never truly settles could ride forever — the
+    next real listing starts the decision over from scratch.
+
+    Never raises: a background timer failing must not take the process down."""
+    try:
+        with _freshness_retries_lock:
+            _freshness_retries.pop(root, None)
+        cfg = load_config()
+        roots = scan_roots(cfg)
+        if not _freshness_slot.acquire(blocking=False):
+            # A regular check is already in flight for some root; this was
+            # this folder's one retry, so it is dropped rather than requeued.
+            logger.info("index: dropping the freshness retry for %s "
+                        "(a check is already running)", root)
+            return
+        try:
+            result = freshness.note_folder_opened(cfg, path, roots, now=now)
+        finally:
+            _freshness_slot.release()
+        if result.started:
+            _wake_index_job_bridge()
+            logger.info("index: %s changed since the last scan; rescanning "
+                        "%s (retry)", path, result.started)
+    except Exception:  # noqa: BLE001 - a background timer must never surface
+        logger.exception("could not run the freshness retry for %s", path)
 
 
 def note_folder_opened(path: str) -> bool:

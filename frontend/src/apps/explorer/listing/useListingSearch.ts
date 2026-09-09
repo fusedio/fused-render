@@ -38,7 +38,7 @@ import {
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
 import { escapesBase } from "@apps/explorer/listing/query-base";
-import { replaceSearch } from "@platform/lib/router";
+import { navHintQCommitted, replaceSearch } from "@platform/lib/router";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
 import { MIN_QUERY_CHARS } from "@apps/explorer/lib/home-search";
 import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
@@ -143,7 +143,16 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // text instead means `committedGate.current === q` starts true the instant
   // the deferred value reaches what was actually committed, with no second
   // press needed.
-  const committedGate = useRef<string | null>(null);
+  // Seeded already-open, once, for a query the navigation that landed on this
+  // URL already committed (navHintQCommitted, router.ts) — the file view's
+  // merged field pushes here with a query it had already cleared its own
+  // commit gate for, and asking this page's box to clear it again would be
+  // the second Enter that navigation exists to avoid. Any other mount
+  // (a fresh load, a typed URL, a plain in-folder navigation) has no such
+  // hint and starts closed exactly as before.
+  const committedGate = useRef<string | null>(
+    urlSync && navHintQCommitted() ? currentQuery().trim() : null,
+  );
   const [gateNonce, setGateNonce] = useState(0);
   const gateOpen = !escapes || committedGate.current === q;
   const commitSearch = () => {
@@ -219,6 +228,14 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   const [answer, setAnswer] = useState<RankAnswer | null>(null);
   const [failure, setFailure] = useState("");
   const [pending, setPending] = useState(false);
+  // Armed the moment the fetch effect below commits to a debounced request —
+  // gate open, nothing served from the memo — rather than when that request
+  // actually goes out. `pending` above answers "is a round trip in flight",
+  // which is also what drives the spinner and the heavy dim, and those are
+  // rightly quiet during the debounce wait itself. This answers the narrower
+  // question the caveat's guard actually needs: "is an answer coming at all,
+  // including the wait before the round trip starts."
+  const [requestComing, setRequestComing] = useState(false);
   const memo = useRef(new QueryMemo<RankAnswer>());
   const inflight = useRef<AbortController | null>(null);
   // Identity of the request in flight (folder, generation, attempt, query), or
@@ -234,6 +251,15 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // caption is about THIS answer rather than about a counter that has since
   // moved.
   const answerGen = useRef(gen);
+  // Whether an answer has EVER been recorded for the current search episode —
+  // set at the same two places `answerGen.current` is (a memo hit, a fetch
+  // landing), cleared wherever the answer itself is cleared. `generationBehind`
+  // below needs this: `answerGen.current` starts equal to `gen` at mount, but
+  // a later bump (of `gen`, for reasons that have nothing to do with this
+  // search) makes them differ even when no answer was ever fetched — and "not
+  // refreshed" is a claim about an EXISTING answer, meaningless with none on
+  // screen.
+  const answered = useRef(false);
   // ...read from a ref, never from the effect's closure: making `gen` a
   // dependency of the fetch would re-issue the request on every dir-watch
   // bump and every completed scan, which is the churn listing/revalidate
@@ -253,6 +279,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // outright: those rows are about something else.
   useEffect(() => {
     setAnswer(null);
+    answered.current = false;
     setFailure("");
     committedGate.current = null;
   }, [fsPath, pinned]);
@@ -277,7 +304,14 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
       // polling and settle for whatever the next answer says. Tagged with the
       // epoch, because this reply can land on a folder the box has since
       // navigated away from.
-      void requestFolderScan(fsPath).then(
+      // `res.base` is the folder the answer is actually about — the base a
+      // `~`/`/`-leading query resolved to (RankAnswer.base's own doc), which
+      // can differ from `fsPath` (the folder currently open). Scanning
+      // `fsPath` for an answer that came from elsewhere scans a folder
+      // nothing asked about and leaves the real target unindexed. Falling
+      // back to `fsPath` when `res.base` is empty keeps the request pointed
+      // at a real folder rather than sending an empty root to the server.
+      void requestFolderScan(res.base || fsPath).then(
         (r) => {
           if (sourceEpoch.current !== epoch) return;
           if (!r.started) setPolling(false);
@@ -306,6 +340,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
       inflight.current?.abort();
       inflightKey.current = null;
       setPending(false);
+      setRequestComing(false);
       // Closing the box ENDS the episode, like every other exit from one.
       // Without this, escaping out of a search thirty ticks into a scan and
       // reopening it while that scan still runs handed the next search the
@@ -317,6 +352,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
       // have nothing to do with. The memo keeps the round trip cheap if the
       // same query comes back.
       setAnswer(null);
+      answered.current = false;
       return;
     }
     if (!gateOpen) {
@@ -328,6 +364,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
       inflight.current?.abort();
       inflightKey.current = null;
       setPending(false);
+      setRequestComing(false);
       return;
     }
     // While a scan is running the remembered answer is exactly the one that is
@@ -339,9 +376,11 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
       // The rows come back with their own generation, so the caption is about
       // THESE rows rather than about the last request that happened to run.
       answerGen.current = remembered.gen;
+      answered.current = true;
       setAnswer(remembered);
       setFailure("");
       setPending(false);
+      setRequestComing(false);
       return;
     }
     // The request this run would issue. Compared against the one already out,
@@ -349,6 +388,11 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     // that outlasts SCAN_POLL_MS would otherwise never be allowed to finish.
     const key = [fsPath, pinned, lifecycle, retryNonce, q, rankedPref].join(" ");
     if (inflightKey.current === key) return;
+    // Past every early return above: this effect run WILL issue a
+    // request, once the debounce below elapses. Armed here, at
+    // scheduling, not inside `run` where the round trip actually starts
+    // — the caveat's guard needs to cover the wait too, not just the flight.
+    setRequestComing(true);
     const run = () => {
       inflight.current?.abort();
       inflightKey.current = key;
@@ -374,6 +418,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
           const step = applyStep(res, epoch);
           answerSeq.current += 1;
           answerGen.current = genRef.current;
+          answered.current = true;
           const next: RankAnswer = {
             query: q,
             gen: genRef.current,
@@ -391,6 +436,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
           setAnswer(next);
           setFailure("");
           setPending(false);
+          setRequestComing(false);
         },
         (err: Error) => {
           if (ctl.signal.aborted || err.name === "AbortError") return;
@@ -400,6 +446,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
           // screen when there is nothing else to show.
           setFailure(err.message);
           setPending(false);
+          setRequestComing(false);
         },
       );
     };
@@ -502,12 +549,29 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // The ranked answer is rendered whatever query it answers (see the header),
   // so `staleRows` is how the caller learns to dim it.
   const hits = searching ? (answer?.hits ?? []) : [];
-  // The directory `hits`' `rel`s are relative to — the caller's own `fsPath`
-  // whenever nothing is searching (or no answer has landed yet), else
-  // whatever `res.base` the server actually resolved the query against (see
-  // `RankAnswer.base`). A row path built from `entry.rel` must join onto
-  // THIS, never onto `fsPath` directly, once searching.
-  const searchBase = searching && answer !== null ? answer.base : fsPath.replace(/\/$/, "");
+  // The directory `hits`' `rel`s are relative to — `fsPath` whenever nothing
+  // is searching, else whatever `res.base` the server actually resolved the
+  // query against (see `RankAnswer.base`). A row path built from `entry.rel`
+  // must join onto THIS, never onto `fsPath` directly, once searching.
+  //
+  // The gap is the box's very first request: `answer` is still `null`
+  // (nothing has ever landed for this box) while a request for a query like
+  // `~/Work/*/*.json` is already out. `fsPath` — the folder already open —
+  // is not that request's base; it is exactly what a leading `~`/`/` is
+  // written to escape. Reporting it here would be the header asserting a
+  // base this search does not have yet, so this falls back to the empty
+  // string instead, which the header's own rendering already treats as
+  // "nothing known yet" (a bare "Path", no base named). Once ANY answer has
+  // landed — including a stale one still answering an EARLIER query while a
+  // newer request is out, which `staleRows` below flags separately — its
+  // `base` is real and gets named again; a query that never leaves `fsPath`
+  // resolves to `fsPath` itself once it lands, so it is never stuck showing
+  // nothing.
+  const searchBase = !searching
+    ? fsPath.replace(/\/$/, "")
+    : answer !== null
+      ? answer.base
+      : "";
   const staleRows = answer !== null && answer.query !== q;
   const displayHits = hits;
 
@@ -580,12 +644,33 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   const isStale = deferredStale || progress.inFlight;
   // Being a generation behind is NOT momentary: the folder or the index moved
   // and this search deliberately did not follow, and it will stay that way
-  // until a real boundary (listing/revalidate). Rows answering a query the
-  // user has already edited past, with nothing in flight to replace them, are
-  // the same kind of claim — "no answer is coming, this is it" — so they join
-  // it rather than the dim above.
-  const generationBehind =
-    searching && (answerGen.current !== gen || (staleRows && !pending));
+  // until a real boundary (listing/revalidate). Requires `answered.current`:
+  // with no answer ever recorded for this search, `answerGen.current` and
+  // `gen` differing says nothing about staleness — there is no existing
+  // answer for "not refreshed" to describe.
+  const generationBehind = searching && answered.current && answerGen.current !== gen;
+
+  // A settled failure with rows still on screen: the last request for the
+  // CURRENT query errored, so `hits` is whatever an earlier query answered,
+  // not this one. `displayHits.length > 0` is what keeps this out of the
+  // zero-hit case — a failure with nothing on screen already reports
+  // `status: "error"` above and needs no caveat, since there is nothing to
+  // caption as an answer to something else. `failure` is cleared the
+  // instant a new request goes out (this file's `run`), so this can never
+  // be true at the same time as `pending`/`requestComing`.
+  const requestFailed = failure !== "" && displayHits.length > 0;
+
+  // The rows on screen answer the last COMMITTED query, not the one now in
+  // the box: the query names a different base (`escapesBase`,
+  // listing/query-base.ts) and Enter has not been pressed for it yet. This
+  // is NOT staleness — nothing failed to refresh, nothing was asked for this
+  // query — so it gets its own name rather than folding into
+  // `generationBehind` above, which is what "not refreshed" actually
+  // describes. Gated on `!gateOpen` explicitly (rather than left to fall out
+  // of `staleRows` alone) so this stays true by inspection rather than by
+  // re-deriving the gate's reachability argument, and survives a future
+  // change to the gate.
+  const awaitingCommit = searching && !gateOpen && staleRows && !pending;
 
   // No spinner flash: a pending indicator appears only once being pending is
   // information rather than a flicker. The common answer lands well inside
@@ -614,9 +699,29 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     commitSearch,
     // "These results are computed from an older generation of the tree, or for
     // a query that has moved on, and nothing is on its way to fix that" — see
-    // above. Drives the caveat chip and its own, lighter dim.
-    behind: generationBehind,
+    // above. Drives the caveat chip and its own, lighter dim. A settled
+    // failure with rows on screen (`requestFailed`) folds in here too: it is
+    // the same shape ("no answer is coming for the current query, these rows
+    // are from an earlier one, and it is staying that way until a boundary")
+    // even though the reason is a rejected request rather than a generation
+    // bump — the caveat text itself is what tells the two apart.
+    behind: generationBehind || requestFailed,
+    // Whether the failed request is what makes `behind` true above, as
+    // opposed to a generation bump — the caveat (listing/index-caveat.ts)
+    // needs this distinction because "not refreshed" is the wrong claim for
+    // rows sitting behind a request that already tried and errored.
+    requestFailed,
+    // "The query in the box names a different base than these rows answer,
+    // and Enter has not been pressed for it" — see above. Tells the caller
+    // to replace the rows with the Enter prompt rather than caption them.
+    awaitingCommit,
     scanPending,
+    // Armed from the moment a request is scheduled, not from when it goes
+    // out — the caveat's own `pending` guard (index-caveat.ts's
+    // `searchCaveat`) needs this rather than `scanPending`, which only turns
+    // true once the round trip is actually in flight and would leave the
+    // debounce wait itself uncovered.
+    requestComing,
     /** Whether an answer is still coming AND has taken long enough to say so. */
     spinner: unsettled && slow,
     // This app changed a file and the rescan it triggered has not landed yet

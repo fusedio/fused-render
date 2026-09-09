@@ -25,6 +25,7 @@ See specs/scan-incremental.md §5.
 """
 import os
 import time
+from typing import NamedTuple
 
 from fused_render.index import runner
 from fused_render.index.config import IndexConfig
@@ -33,8 +34,12 @@ from fused_render.index.ignore import MountGuard, norm
 # How long a directory must have been settled before its staleness is acted on.
 # A churny directory (a build tree, a cache) has a mtime that moves
 # continuously, so it is never quiet and never triggers — which is what stops
-# it queueing scan after scan. It costs nothing: the next open after the churn
-# stops still fires.
+# it queueing scan after scan. There is no guarantee a LATER open ever asks
+# again once the churn stops — a user who sits still after the last change
+# never fires another listing — so a refusal here is not the end of the
+# question: it comes back as `FreshnessCheck.retry_after`, which tells the
+# caller exactly when the folder will have been quiet for this long, so it can
+# ask again itself instead of depending on one to arrive by luck.
 QUIET_S = 30.0
 
 # Floor between scans of one root STARTED by this path. Read off `scans.json`
@@ -124,41 +129,65 @@ def indexed_mtime_ns(cfg: IndexConfig, path: str):
     return int(row[0])
 
 
-def note_folder_opened(cfg: IndexConfig, path: str, roots, now: float | None = None):
+class FreshnessCheck(NamedTuple):
+    """What `note_folder_opened` decided.
+
+    `started` is the enclosing root a scan was kicked off for, or None.
+
+    `retry_after` distinguishes the one refusal that is worth asking about
+    again from the five that are not. It is None for "never ask again about
+    this open" — outside every configured root, mount-guarded, scanned within
+    MIN_INTERVAL_S already, the path vanished, a live run already covers it,
+    or the folder simply isn't stale. It is a number of seconds — how long
+    until the folder will have been quiet for QUIET_S — exactly when churning
+    is the ONE reason nothing happened: everything cheaper already passed, and
+    the only thing standing between this folder and a scan is time."""
+    started: str | None = None
+    retry_after: float | None = None
+
+
+def note_folder_opened(cfg: IndexConfig, path: str, roots,
+                       now: float | None = None) -> FreshnessCheck:
     """The explorer opened `path`; start a rescan if the index is behind.
 
-    Returns the root a scan was started for, or None. Every gate is ordered
-    cheapest-first, so the duckdb lookup is unreachable for the common cases:
-    outside the roots, mount-backed, recently scanned, still churning.
+    Returns a `FreshnessCheck`. Every gate is ordered cheapest-first, so the
+    duckdb lookup is unreachable for the common cases: outside the roots,
+    mount-backed, recently scanned, still churning. That ordering means a
+    change that turns out not to be stale can still come back with
+    `retry_after` set if it is also within the quiet window — the staleness
+    lookup that would have ruled it out for good has not run yet — so a
+    caller may schedule one retry that comes back and finds nothing to do.
+    That is a wasted timer, not a wrong answer, and it is bounded to one.
 
     Never raises — a listing must not fail because index housekeeping did."""
     now = time.time() if now is None else now
     root = enclosing_root(roots, path)
     if root is None:
-        return None
+        return FreshnessCheck()
     # BEFORE any kernel syscall on the caller's path, and pure string work
     # against the mount records: os.stat under a wedged rclone mount blocks the
     # calling thread indefinitely (this repo's documented mount-wedge class),
     # and this runs on the thread serving a listing request.
     if MountGuard(mounts_dir=runner._mounts_dir()).blocks(path):
-        return None
+        return FreshnessCheck()
     last = runner.last_scan(cfg, root)
     if last is not None and (now - last) < MIN_INTERVAL_S:
-        return None
+        return FreshnessCheck()
     try:
         disk_ns = os.stat(path).st_mtime_ns
     except OSError:
-        return None  # deleted between the open and this check
-    if (now - disk_ns / 1e9) < QUIET_S:
-        return None
+        return FreshnessCheck()  # deleted between the open and this check
+    quiet_at = disk_ns / 1e9 + QUIET_S
+    if now < quiet_at:
+        return FreshnessCheck(retry_after=quiet_at - now)
     indexed = indexed_mtime_ns(cfg, path)
     if indexed is None or disk_ns <= indexed:
-        return None
+        return FreshnessCheck()
     # runner.start would JOIN a live run of this root — but only on an EXACT
     # root-string match, and a triggered scan must not be the thing that
     # discovers a mismatch. Refuse outright: the run in flight is already going
     # to pick this folder up.
     if runner.active_run(cfg, root) is not None:
-        return None
+        return FreshnessCheck()
     runner.start(cfg, root)
-    return root
+    return FreshnessCheck(started=root)

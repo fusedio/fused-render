@@ -55,6 +55,20 @@ test("an uncapped result set keeps the plain count", () => {
   expect(resultCountLabel(SEARCH_RESULT_CAP, false)).toBe("100 matches");
 });
 
+test("a settled search with no hits still reports a count, pluralised as a plural", () => {
+  // Zero is not one, so it takes the "es" branch same as any other count that
+  // isn't 1 — no zero-specific case needed here or in the chip that reuses
+  // this shape.
+  expect(resultCountLabel(0, false)).toBe("0 matches");
+});
+
+test("an empty hit list is not reported as capped", () => {
+  // cappedAway (useListingSearch.ts) is displayHits.length - visibleHits.length;
+  // an empty list caps away nothing, so the "top N of M" branch never fires
+  // at zero hits.
+  expect(capHits(hits(0))).toHaveLength(0);
+});
+
 test("the rank-limit marker survives the cap", () => {
   // A server rank truncation means the count itself undercounts the tree;
   // that "+" has to stay visible whether or not the LIST is also capped.

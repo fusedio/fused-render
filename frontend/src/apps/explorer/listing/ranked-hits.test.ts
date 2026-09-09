@@ -67,6 +67,18 @@ describe("hitsFromRank", () => {
     expect(row.positions).toEqual([]);
   });
 
+  test("a query carrying a base prefix the server already consumed still highlights the leaf", () => {
+    // `q` is the query exactly as typed — useListingSearch.ts never strips a
+    // base prefix client-side — but `h.rel` is relative to the server's
+    // resolved base, not to the query. "~/other/rep" can never be a literal
+    // substring of "report.csv"; the segment after the last "/" ("rep") is
+    // what the server actually matched, and that's what the highlight has
+    // to land on.
+    const [row] = hitsFromRank([hit({ rel: "report.csv" })], "~/other/rep");
+    expect(row.entry.rel).toBe("report.csv");
+    expect(row.positions).toEqual([0, 1, 2]);
+  });
+
   test("mode defaults to substring, so existing callers keep today's behavior", () => {
     const [row] = hitsFromRank([hit({ rel: "readme.md" })], "eadm");
     expect(row.positions).toEqual([1, 2, 3, 4]);

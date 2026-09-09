@@ -33,9 +33,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 import {
   IS_PANEL_PANE,
   IS_SNAPSHOT,
@@ -62,16 +60,15 @@ import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import { AccessDenied, isAccessDenied } from "@apps/explorer/AccessDenied";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
-import { PathCrumbs } from "@apps/explorer/listing/path-crumbs";
-import { subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";
 import { useTypedPathAddress } from "@apps/explorer/listing/useTypedPathAddress";
-import { useCompletion, type CompletionItem } from "@apps/explorer/listing/useCompletion";
-import { completionKeyAction, moveHighlight } from "@apps/explorer/listing/completion-keys";
-import { displayDir, isExactSingleMatch } from "@apps/explorer/listing/completion-target";
+import { queryNamesOpenFolder } from "@apps/explorer/listing/query-current-folder";
+import { useCompletion } from "@apps/explorer/listing/useCompletion";
 import { enterPrompt } from "@apps/explorer/listing/enter-prompt";
+import { showingSearchHits } from "@apps/explorer/listing/search-body-mode";
+import { contractHome, useHome } from "@apps/explorer/listing/home-path";
 import { formatElapsed } from "@apps/explorer/lib/home-search";
-import { getConfig } from "@platform/lib/api";
-import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
+import { SearchField } from "@apps/explorer/SearchField";
+import { searchSlot, subscribeSearchSlot, inSearchSlot } from "@apps/explorer/search-slot";
 import {
   FLIP_MAX_ROWS,
   SORT_KEYS,
@@ -85,7 +82,7 @@ import {
   skeletonRows,
   ClipMark,
   GitMark,
-  renderHighlight,
+  renderHighlightPath,
   measureScrollAnchor,
 } from "@apps/explorer/listing/bits";
 import { gitRowClass } from "@apps/explorer/listing/git-mark";
@@ -136,15 +133,6 @@ import { useListingSelection } from "@apps/explorer/listing/useListingSelection"
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
 import { EmptyResultMessage } from "@apps/explorer/listing/empty-result";
-
-// The search row hangs in the crumb bar when there is one to hang in, and
-// stays put otherwise. Either way it is the SAME React element — the query,
-// the walk's live counts and `searchInputRef` are Listing's state, and a
-// portal moves the DOM without touching any of that (a keystroke that focuses
-// the box from the listing below still reaches it).
-function inSearchSlot(slot: HTMLElement | null, row: ReactNode): ReactNode {
-  return slot ? createPortal(row, slot) : row;
-}
 
 // (The folder-entry rule is the SERVER's — `app_listing.app_entry`, D301: the
 // first top-level page carrying `<meta name="fused-app">`. A filename tells
@@ -262,19 +250,12 @@ export default function Listing({
   // Decision 1: the crumbs shown inside the merged search field while it is
   // empty need home, the same way Breadcrumb.tsx's own strip does, to
   // contract a path under it to "~". Decision 5's typed-address resolution
-  // (below) also resolves a leading "~" against it. Fetched once; unresolved
-  // (undefined) just means every crumb shows the full path until it lands,
-  // and a "~"-led query is never treated as an address until it does.
-  const [home, setHome] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    getConfig().then((c) => {
-      if (live) setHome(c.home.replace(/\\/g, "/"));
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
+  // (below) also resolves a leading "~" against it. `useHome` (home-path.ts)
+  // is the one `/api/config` lookup shared with FileSearchField.tsx's own
+  // box; unresolved (undefined) just means every crumb shows the full path
+  // until it lands, and a "~"-led query is never treated as an address
+  // until it does.
+  const home = useHome();
 
   const {
     query,
@@ -282,7 +263,10 @@ export default function Listing({
     searching,
     isStale,
     behind,
+    requestFailed,
+    awaitingCommit,
     scanPending,
+    requestComing,
     spinner,
     rescanPending,
     searchState,
@@ -303,99 +287,22 @@ export default function Listing({
   // independently of the ranked search above — Enter checks this first.
   const typedAddress = useTypedPathAddress(query, fsPath, home);
 
+  // A query that names exactly the folder already open, in either spelling —
+  // this is the resting state written out as text, never a pending search
+  // (query-current-folder.ts). Kept out of `escapesBase` itself, which stays
+  // a pure syntactic predicate that answers a query starting with `~` or `/`
+  // the same way regardless of which folder happens to be open; this needs
+  // `fsPath` and `home`, which only this render has in hand.
+  const isOpenFolderQuery = queryNamesOpenFolder(query, fsPath, home);
+
   // Decision 2: the completion dropdown. `completion.target` is null for a
   // query that isn't path-shaped at all (a plain filter word, a glob) —
-  // that's when there is no dropdown, not merely an empty one.
+  // that's when there is no dropdown, not merely an empty one. The dropdown
+  // ITSELF — the highlight, the dropdown-open predicate, accepting a row —
+  // is SearchField's own local UI state (a chip of interaction chrome, not
+  // search-result state); this call stays here, alongside the other search
+  // hooks, and its result is simply handed down as a prop.
   const completion = useCompletion(query, fsPath, home);
-  const [highlight, setHighlight] = useState(-1);
-  // The highlight tracks the CURRENT list by position, not by identity — a
-  // stale index pointing past a page that just narrowed would either select
-  // nothing (out of range) or silently pick a different row than what was
-  // lit a keystroke ago. Resetting on every list change keeps "the
-  // highlighted row" meaning the same thing the eye is looking at.
-  //
-  // Resets to -1 (nothing highlighted), NOT 0. A dropdown opening with its
-  // first row pre-lit made Enter's `highlight >= 0` gate true the instant
-  // the dropdown rendered — before the user had arrowed to anything — so
-  // Enter on a fully-typed real path silently accepted a completion row
-  // instead of navigating, and whether Enter committed the search or took a
-  // row depended on typing speed relative to the debounce that opens the
-  // dropdown. Starting unselected makes Enter's meaning depend only on
-  // whether the user actually arrowed to a row: ArrowDown's wraparound
-  // ((-1 + 1) % length) already lands on 0 from here, so the dropdown is
-  // still one keystroke from the first row. Do not change this back to 0.
-  useEffect(() => {
-    setHighlight(-1);
-  }, [completion.target?.dir, completion.items.length]);
-  // Whether the field itself is the thing focused right now — distinct from
-  // `pinnedOpen` below, which deliberately OUTLIVES a blur once there is a
-  // query (`.searching` keeps the strip expanded and the border lit after
-  // focus moves on). The dropdown needs the opposite: it must close the
-  // moment focus leaves, so a click elsewhere in the app does not sit under
-  // a stale dropdown still naming the last-typed path. Set unconditionally
-  // on focus and blur (the field's own onFocus/onBlur below), so dismissal
-  // and re-opening are just "did focus come back", with nothing extra to
-  // suppress on the next keystroke or resurrect on the next click in.
-  const [fieldActive, setFieldActive] = useState(false);
-  const showCompletion =
-    fieldActive &&
-    completion.target !== null &&
-    completion.items.length > 0 &&
-    // Decision 9: a single row that already spells exactly what was typed
-    // has nothing left to offer — the user finished typing that segment —
-    // and it was sitting over the "Press Enter to..." prompt that names the
-    // same thing once the query resolves.
-    !isExactSingleMatch(completion.items, completion.target);
-  // Tab and a row's own mousedown both COMPLETE TEXT: write the row's path
-  // into the field so the dropdown re-keys on the new directory, without
-  // navigating. This is what makes walking several segments by Tab cheap —
-  // `navigate()` takes no "replace" option, so navigating per accepted
-  // segment would push one history entry per Tab and make Back unwind the
-  // typed path one segment at a time instead of returning to where the
-  // user started. Factored out so the two text-completion paths cannot
-  // drift from each other; navigating (Enter — see `navigateToCompletion`
-  // near `pinnedOpen` below) is deliberately a separate function.
-  const acceptCompletion = (item: CompletionItem) => {
-    setQuery(item.path);
-    searchInputRef.current?.focus();
-  };
-  // Decision 4 (this pass): the dropdown shows 5 full rows at rest and
-  // scrolls for the rest — `MAX_ITEMS` in useCompletion.ts stays 50, this
-  // only bounds visible HEIGHT. Capped at 5.5 rows, not an even 5: an exact
-  // 5-row cut leaves the panel's bottom edge indistinguishable from a
-  // 5-item list that simply ended there, so a sixth row waiting below reads
-  // as nothing more to see. Half a row of the sixth peeking through past
-  // the edge is the "there is more, scroll for it" cue. Measured off the
-  // first row's own rendered height rather than a hardcoded pixel guess, so
-  // it tracks `.listing-completion-row`'s padding/font-size in explorer.css
-  // without drifting out of sync. Row index 0 specifically: `:last-child`
-  // adds extra bottom padding in CSS, and index 0 is only ever last-child
-  // when there is exactly one row — a case with nothing to cap anyway (see
-  // the `> 5` guard below, which never applies then).
-  const firstRowRef = useRef<HTMLDivElement>(null);
-  const rowsRef = useRef<HTMLDivElement>(null);
-  const [rowsMaxHeight, setRowsMaxHeight] = useState<number | undefined>(undefined);
-  // `fieldActive` is in the deps (not just the item count / target dir)
-  // because the dropdown itself unmounts on blur and remounts on refocus
-  // (`showCompletion` below) — clicking back into a field whose query and
-  // directory never changed would otherwise skip this effect entirely,
-  // leaving `firstRowRef.current` from the last mount (now null, or a stale
-  // element) and `rowsMaxHeight` wrong for however long the count and dir
-  // keep matching.
-  useLayoutEffect(() => {
-    if (completion.items.length > 5 && firstRowRef.current) {
-      setRowsMaxHeight(firstRowRef.current.offsetHeight * 5.5);
-    } else {
-      setRowsMaxHeight(undefined);
-    }
-  }, [completion.items.length, completion.target?.dir, fieldActive]);
-  // Keeps the highlighted row in view as Down/Up move past the visible
-  // window — "nearest" so a row already fully visible causes no jump.
-  useLayoutEffect(() => {
-    if (highlight < 0) return;
-    const row = rowsRef.current?.querySelector<HTMLElement>(`[data-idx="${highlight}"]`);
-    row?.scrollIntoView({ block: "nearest" });
-  }, [highlight]);
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
   // so an idle listing never polls.
@@ -585,72 +492,15 @@ export default function Listing({
 
   const clipboard = useClipboard();
 
-  // Search input, so a keystroke anywhere in the listing can focus it.
+  // Search input, so a keystroke anywhere in the listing can focus it — and
+  // so useListingSelection/useListingShortcuts below can focus it directly
+  // for type-to-search and their own shortcuts. Owned here rather than
+  // inside SearchField (which the box's own JSX now lives in) because those
+  // two hooks need the same node SearchField's own subscribeSearchFocusRequest
+  // effect focuses — one ref, so every path to "the search input" agrees on
+  // which element that is.
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Decision 1: the focused-and-empty hint's two variants — the full example
-  // teaches the pattern syntax in the space it takes to read it, but a narrow
-  // field would clip it mid-example, teaching the wrong thing. `boxWide`
-  // tracks whether the field currently has room for the long form; measured
-  // rather than a CSS breakpoint because the threshold is about THIS box's
-  // width, not the window's (a preview pane narrows it independent of the
-  // window, and a split pane too).
-  const searchBoxRef = useRef<HTMLDivElement>(null);
-  const [boxWide, setBoxWide] = useState(false);
-  const HINT_LONG = "Search, or type a path or pattern like ~/work/*/*.csv";
-  const HINT_SHORT = "Search, or type a path or pattern";
-  const HINT_WIDE_PX = 340; // roughly what HINT_LONG needs at 13px not to clip
-  // `[]` deps: the ResizeObserver below is what tracks the box's width from
-  // here on, so this only has to attach it once — re-running per render
-  // would tear down and recreate the observer on every unrelated re-render
-  // for no behavior change.
-  useLayoutEffect(() => {
-    const el = searchBoxRef.current;
-    if (!el) return;
-    const measure = () => setBoxWide(el.clientWidth >= HINT_WIDE_PX);
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // Decision 1: Breadcrumb.tsx's click-to-edit and Ctrl/Cmd+L, once this
-  // folder's bar is claimed, ask this field to focus instead of opening a
-  // second path editor over it. `requestSearchFocus` has no per-folder
-  // target — it notifies every subscriber — so a second `<Listing>` mounted
-  // in the preview pane (`barChrome` false there) must not act on it, or a
-  // click on the CLAIMED bar's crumb would steal focus into the preview
-  // pane's own field instead.
-  useEffect(() => {
-    if (!barChrome) return;
-    return subscribeSearchFocusRequest(() => {
-      setPinnedOpen(true);
-      searchInputRef.current?.focus();
-    });
-  }, [barChrome]);
-  // `pinnedOpen` is the user asking for the full-strip box (clicked the
-  // magnifier, or focused it — it stays until it blurs empty), rendering
-  // `.expanded`. A non-empty query outranks it the same way: `.searching`
-  // stands the crumbs down and takes the whole strip too.
-  const [pinnedOpen, setPinnedOpen] = useState(false);
-  // Enter on an explicitly highlighted completion row NAVIGATES into it —
-  // a completed folder path is a destination, not just more text (unlike
-  // Tab's `acceptCompletion` above). Sets query/pin state the same explicit
-  // way Escape's own handler does rather than trusting onBlur to catch up:
-  // onBlur reads `e.currentTarget.value`, which still holds the pre-clear
-  // text at the moment blur fires (React hasn't flushed the DOM write yet),
-  // so leaving it to onBlur would keep the box pinned open. Clearing the
-  // query and blurring afterward is what returns the field to showing
-  // crumbs for the folder just entered, instead of leaving the old path
-  // text sitting in the field next to (and duplicating) those crumbs, with
-  // a dropdown still open over the folder the user just arrived in.
-  const navigateToCompletion = (item: CompletionItem) => {
-    navigate(item.absPath, { isDir: item.is_dir });
-    setQuery("");
-    setPinnedOpen(false);
-    setFieldActive(false);
-    searchInputRef.current?.blur();
-  };
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (assigned each
   // render from the rowCtxByPath memo below).
@@ -697,11 +547,6 @@ export default function Listing({
   // claimed the chrome; a host with no crumb bar (the app builder) keeps the
   // row in place as its own first strip.
   const barSearchSlot = useSyncExternalStore(subscribeSearchSlot, searchSlot, () => null);
-
-  // The pin is a request to type: focus follows it in the same interaction.
-  useEffect(() => {
-    if (pinnedOpen) searchInputRef.current?.focus();
-  }, [pinnedOpen]);
 
   // No "Up" BUTTON beside the search box any more: the crumb strip above is
   // the same hop with a target the user can name, and the keyboard keeps its
@@ -1472,10 +1317,16 @@ export default function Listing({
   // the preview pane, where NAME/SIZE/MODIFIED sat above one line of text).
   // Set by the empty branch below, read by the <thead> render.
   let emptyDir = false;
+  // Search hits vs. the folder's own rows (listing/search-body-mode) — the
+  // one place this choice is made, read by the column count below, the
+  // <thead>, the body branch, and the match-count chip together so the four
+  // can never disagree.
+  const showsSearchHits = showingSearchHits(searchState, awaitingCommit);
   // Every row that spans the table, in the mode it is being rendered for
-  // (listing/types columnCount): three columns normally, one while searching.
-  const cols = columnCount(searching);
-  if (searching) {
+  // (listing/types columnCount): three columns normally, one while showing
+  // search hits.
+  const cols = columnCount(showsSearchHits);
+  if (showsSearchHits) {
     if (searchState.status === "error") {
       body = (
         <tr>
@@ -1535,7 +1386,7 @@ export default function Listing({
                       )}
                     </span>
                     <span className="search-path">
-                      {renderHighlight(entry.rel, positions)}
+                      {renderHighlightPath(entry.rel, positions)}
                     </span>
                   </span>
                   <ClipMark
@@ -1561,22 +1412,6 @@ export default function Listing({
             </tr>
           )}
         </>
-      );
-    } else if (searchState.status === "idle") {
-      // Decision 4: a path/pattern query that has not been committed yet
-      // (Enter). Only reachable here with no rows already on screen — an
-      // edit to an already-committed query keeps its stale answer via
-      // `displayHits.length` above instead of falling through to this.
-      body = (
-        <tr>
-          <td colSpan={cols} className="status-message">
-            {/* Decision 9: what Enter actually does is `typedAddress`'s
-                verdict, not this gate's own idea of it — a resolved real
-                path names itself instead of promising a search Enter will
-                not run. */}
-            {enterPrompt(typedAddress)}
-          </td>
-        </tr>
       );
     } else if (scanPending || searchState.status === "pending") {
       // Nothing to show yet: either the folder is being scanned on demand
@@ -1727,6 +1562,32 @@ export default function Listing({
     );
   }
 
+  // A query is typed but not yet committed (decision 4's gate) while the
+  // FOLDER's own rows render above: not a stale search answer to caption —
+  // see `showsSearchHits` — but Enter still needs saying what it will do.
+  // One banner row above the real rows, not a caveat folded into a count
+  // (the user rejected that shape — see DECISIONS-one-field-search.md).
+  //
+  // `!isOpenFolderQuery` excludes the one uncommitted query that names
+  // nothing Enter would need to do anything about: the folder already open.
+  // Enter there is a no-op, so there is nothing for this row to promise.
+  if (searching && !showsSearchHits && !isOpenFolderQuery) {
+    body = (
+      <>
+        <tr>
+          <td colSpan={cols} className="status-message listing-enter-row">
+            {/* Decision 9: what Enter actually does is `typedAddress`'s
+                verdict, not this gate's own idea of it — a resolved real
+                path names itself instead of promising a search Enter will
+                not run. */}
+            {enterPrompt(typedAddress, query)}
+          </td>
+        </tr>
+        {body}
+      </>
+    );
+  }
+
   // --- search match count (inline in the search row) ------------------------
   //
   // Two strings per state: a TERSE one to show and the full sentence to say.
@@ -1748,7 +1609,7 @@ export default function Listing({
   // The chip's reserved width covers a match count; the scan caveat makes it
   // longer, so the input reserves more while one is running.
   let widePin = false;
-  if (searching && searchState.status === "ok" && hits.length > 0) {
+  if (showsSearchHits && searchState.status === "ok") {
     // A truncated rank (server per-query cap) means `hits` undercounts the
     // real tree. Signal that without new UI: a "+" on the number plus a
     // tooltip. Terse form for the chip, full sentence for title/aria. Past the
@@ -1772,10 +1633,11 @@ export default function Listing({
   // facts are about the same search, and one line says both. Which message
   // appears is a claim about how far the results can be trusted, so it lives
   // in a pure, tested helper (listing/index-caveat).
-  // `pending` is the listing's `scanPending`: an answer is on its way, which
-  // is not the same claim as the rows being stuck (listing/index-caveat).
-  const caveat = searching
-    ? searchCaveat(indexScan, { behind, pending: scanPending, rescanPending })
+  // `pending` is the listing's `requestComing`: an answer is on its way —
+  // scheduled, or already in flight — which is not the same claim as the
+  // rows being stuck (listing/index-caveat).
+  const caveat = showsSearchHits
+    ? searchCaveat(indexScan, { behind, pending: requestComing, rescanPending, failed: requestFailed })
     : null;
   if (caveat) {
     searchCount = withCaveat(searchCount, caveat);
@@ -1796,37 +1658,27 @@ export default function Listing({
     widePin = true;
   }
 
-  // Select-all covers every FETCHED row (navRows === visibleHits while
-  // searching), which is everything the ceiling (SEARCH_RANK_LIMIT /
-  // SEARCH_GLOB_RANK_LIMIT) let through — not necessarily everything that
-  // matched. `searchState.truncated` is that ceiling having bitten; selecting
-  // exactly the fetched set while it's true is the one moment the plain count
-  // would understate what got left out, so the chip owns up to it instead of
-  // implying a hundred-percent select-all.
-  const selectionShortfall =
-    searching &&
-    searchState.status === "ok" &&
-    searchState.truncated &&
-    sel.paths.length > 1 &&
-    sel.paths.length === visibleHits.length;
-  const selectionLabel = selectionShortfall
-    ? `${sel.paths.length} selected of ${compact(hits.length)}+`
-    : `${sel.paths.length} selected`;
-
-  // Is anything pinned inside the search input right now? Mirrors the three
+  // Is anything pinned inside the search input right now? Mirrors the two
   // chip conditions in the render below; drives the input's right padding, so
   // an idle box gives its whole width to the placeholder.
   const hasPin =
     (searching && spinner) ||
-    searchCount !== null ||
-    sel.paths.length > 1;
+    searchCount !== null;
+
+  // Whether the status strip should read as a search's own line ("N
+  // matches") rather than the folder's own item count. An open-folder query
+  // is uncommitted the same way any other escaping query is (decision 4's
+  // gate never opened, so `hits` is empty) — reporting "0 matches" under a
+  // folder that plainly has rows would blame the search for something it was
+  // never asked to answer.
+  const showsSearchFooter = searching && !isOpenFolderQuery;
 
   // The status strip's inputs. A search hit carries no size (the comment on
   // its row explains why), so the byte sum is only ever taken over the plain
   // listing — statusLine's own "searching" branch never reads either number.
   let selectedBytes = 0;
   let selectedFolders = 0;
-  if (!searching) {
+  if (!showsSearchFooter) {
     for (const entry of sortedEntries) {
       if (!selectedSet.has(base + "/" + entry.name)) continue;
       if (entry.is_dir) selectedFolders++;
@@ -1839,7 +1691,7 @@ export default function Listing({
     selectedBytes,
     folderCount: selectedFolders,
     truncated: state.status === "ok" && state.truncated,
-    searching,
+    searching: showsSearchFooter,
     hits: hits.length,
   });
 
@@ -1875,267 +1727,39 @@ export default function Listing({
               </button>
             </div>
           )}
-          {inSearchSlot(barSearchSlot,
+          {inSearchSlot(
+            barSearchSlot,
             /* `searching` (a non-empty query) is what tells the crumb bar to
                stand the crumbs down and give the row its whole width — see
                #breadcrumb:has(.listing-search.searching) in explorer.css.
                Nothing to hand upward: the row is portaled INTO the bar, so a
-               class on the row is already inside the bar's subtree. */
-            <div
-              className={
-                "listing-search" +
-                (searching ? " searching" : "") +
-                // `expanded` is the FOCUS half of the same geometry `.searching`
-                // owns: a box being typed into gets the whole strip, and it
-                // should not have to wait for the first keystroke to get it.
-                // Two classes rather than one because neither implies the other
-                // — a query can outlive the focus that entered it, and a pinned
-                // box is usually still empty — and the strip-wide rules in
-                // explorer.css name both.
-                (pinnedOpen ? " expanded" : "")
-              }
+               class on the row is already inside the bar's subtree.
+               SearchField owns the box's own markup; this Listing supplies
+               its OWN search state (this is the folder host — it answers
+               the rows below with the same query) and the row's trailing
+               chrome (the pane reopener, the kebab) as children, which a
+               file host's own SearchField call has none of. */
+            <SearchField
+              active={ownsBarChrome}
+              searchInputRef={searchInputRef}
+              fsPath={fsPath}
+              home={home}
+              query={query}
+              setQuery={setQuery}
+              searching={searching}
+              isOpenFolderQuery={isOpenFolderQuery}
+              committed={showsSearchHits}
+              escapes={escapes}
+              commitSearch={commitSearch}
+              prefetchIndex={prefetchIndex}
+              typedAddress={typedAddress}
+              completion={completion}
+              spinner={spinner}
+              searchCount={searchCount}
+              searchCountFull={searchCountFull}
+              hasPin={hasPin}
+              widePin={widePin}
             >
-              {/* The box wraps input + pinned chips so the pane toggle can sit to
-            their right without disturbing the chips' inside-the-input pin.
-            `has-pin` says a chip is actually pinned right now, so the input
-            reserves room for one only then — the reservation is wide, and
-            idle it was dead space that clipped the placeholder in a narrow
-            window. */}
-              <div
-                ref={searchBoxRef}
-                className={
-                  "listing-search-box" +
-                  (hasPin ? " has-pin" : "") +
-                  (widePin ? " wide-pin" : "")
-                }
-              >
-                {/* The same magnifier the fold stands in with, now inside the
-                    field's left edge — so folding and unfolding is one glyph
-                    moving rather than two different marks, and an expanded box
-                    still says what it is once the placeholder is typed over.
-                    Absolutely positioned and click-through (explorer.css): it
-                    costs the box no layout, leaves the chips pinned at the
-                    right edge alone, and a press on it lands on the input
-                    underneath, which is the focus that expands the box. */}
-                <span className="listing-search-glyph" aria-hidden="true">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="11" cy="11" r="7" />
-                    <line x1="16.5" y1="16.5" x2="21" y2="21" />
-                  </svg>
-                </span>
-                {/* Decision 1: one field, carrying either a path or a pattern.
-                    Breadcrumbs sit behind the input, shown at rest while it
-                    is empty, click-through to it everywhere but the crumb
-                    links themselves (explorer.css) — the same trick the
-                    magnifier above uses, so the field reads as a path bar
-                    until it is used.
-
-                    NOT shown while focused (`pinnedOpen`), even though the
-                    query is still empty at that point: the crumbs are a row
-                    of links, not text, and sitting where the caret is about
-                    to type read as editable content the first keystroke
-                    would destroy. Focusing is its own state — the field goes
-                    live and shows the hint below instead — not a wait for
-                    the first character. */}
-                {query === "" && !pinnedOpen && (
-                  <PathCrumbs fsPath={fsPath} home={home} />
-                )}
-                <input
-                  ref={searchInputRef}
-                  type="search"
-                  className="listing-search-input"
-                  // A placeholder ONLY while focused-and-empty — the crumbs
-                  // above own the same empty state at rest, and painting
-                  // both at once would overlap.
-                  // The two variants are `boxWide`-picked above: the long
-                  // one teaches the pattern syntax with a real example, and
-                  // the short one exists so a narrow field never clips it
-                  // mid-example, which would teach the wrong syntax.
-                  placeholder={pinnedOpen ? (boxWide ? HINT_LONG : HINT_SHORT) : ""}
-                  value={query}
-                  // Focus pins the box open — and open means the whole strip
-                  // (`.expanded` above), because a box being typed into is what
-                  // the bar is for. Whatever routed the focus here — a click in
-                  // the field, or type-to-search landing on it directly
-                  // (useListingSelection's printable-key branch). The pin also
-                  // holds while a focused user deletes their query — the box
-                  // must not fold away under the caret.
-                  onFocus={() => {
-                    setPinnedOpen(true);
-                    setFieldActive(true);
-                    prefetchIndex();
-                  }}
-                  // A pinned-open box that blurs still empty folds back to the
-                  // magnifier (the pin exists only to be typed into); with a
-                  // query it stays — .searching owns the strip from there.
-                  // `fieldActive` unconditionally goes false, unlike the pin
-                  // above: the dropdown has to close the moment focus leaves
-                  // regardless of whether text is left behind, so a click
-                  // elsewhere doesn't land under a dropdown still naming the
-                  // last-typed path. A row's own mousedown calls
-                  // `preventDefault`, so clicking a row never fires this in
-                  // the first place — focus stays on the input throughout.
-                  onBlur={(e) => {
-                    if (!e.currentTarget.value) setPinnedOpen(false);
-                    setFieldActive(false);
-                  }}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      setQuery("");
-                      // Explicit, not left to onBlur: the blur below fires
-                      // before React writes the cleared value into the DOM,
-                      // so the handler would read the pre-Esc query and keep
-                      // the pin.
-                      setPinnedOpen(false);
-                      e.currentTarget.blur();
-                      return;
-                    }
-                    // completion-keys.ts's `completionKeyAction` is the pure
-                    // decision (key + highlight + row count -> what this key
-                    // means); everything below is just carrying out its
-                    // answer. See that file for why `highlight` starting at
-                    // -1 (the reset effect above) is what keeps Enter's
-                    // meaning independent of whether the dropdown has
-                    // rendered yet.
-                    const action = completionKeyAction(
-                      e.key,
-                      showCompletion,
-                      highlight,
-                      completion.items.length,
-                    );
-                    if (action.type === "move") {
-                      e.preventDefault();
-                      setHighlight((h) => moveHighlight(h, action.delta, completion.items.length));
-                      return;
-                    }
-                    if (action.type === "tab-accept") {
-                      // Tab COMPLETES TEXT ONLY — see `acceptCompletion`'s
-                      // own comment for why navigating per Tab would be the
-                      // wrong call for History.
-                      e.preventDefault();
-                      acceptCompletion(completion.items[action.index]);
-                      return;
-                    }
-                    if (action.type === "enter-accept") {
-                      // Enter on an EXPLICITLY highlighted row NAVIGATES —
-                      // see `navigateToCompletion`'s own comment.
-                      e.preventDefault();
-                      navigateToCompletion(completion.items[action.index]);
-                      return;
-                    }
-                    if (e.key !== "Enter") return;
-                    // Decision 5: Enter resolves the field three ways. A real
-                    // folder navigates; a real file navigates too (the
-                    // destination view's own stat handles opening it — see
-                    // DECISIONS-one-field-search.md for why this pass skips
-                    // a separate "Open" row above the results). Anything
-                    // else — including "still checking" — falls through to
-                    // committing the search (decision 4's gate). Reached
-                    // whenever nothing was explicitly highlighted
-                    // (`action.type === "enter-passthrough"`), including
-                    // while no dropdown is showing at all — so what Enter
-                    // does here never depends on the dropdown's own timing.
-                    //
-                    // `preventDefault` moves INTO each branch below rather
-                    // than firing unconditionally the moment a key turns out
-                    // to be Enter. A plain search word is neither a real
-                    // address nor path-shaped, so both branches decline —
-                    // firing it unconditionally would eat that Enter before
-                    // `useListingSelection.ts`'s own document-level Enter
-                    // handler (registered to run for `inSearch` too,
-                    // specifically so Enter can open the top search hit
-                    // without leaving the field) ever saw it: that handler's
-                    // first line is `if (e.defaultPrevented) return`.
-                    // Leaving the event un-prevented when nothing here acts
-                    // is what lets that handler open the highlighted (or
-                    // top, per its own `rowsAnswerQuery` guard) result
-                    // instead.
-                    if (typedAddress.status === "exists") {
-                      e.preventDefault();
-                      navigate(typedAddress.path, { isDir: typedAddress.is_dir });
-                      return;
-                    }
-                    if (escapes) {
-                      e.preventDefault();
-                      commitSearch();
-                    }
-                  }}
-                />
-                {showCompletion && (
-                  <div className="listing-completion" role="listbox">
-                    {/* Stays put while the rows below scroll — it labels the
-                        whole dropdown, not a list item, so it must not
-                        scroll away and leave the rows unlabelled. */}
-                    <div className="listing-completion-header">
-                      In {displayDir(completion.target!.dir, home)}
-                    </div>
-                    <div
-                      className="listing-completion-rows"
-                      ref={rowsRef}
-                      style={rowsMaxHeight !== undefined ? { maxHeight: rowsMaxHeight } : undefined}
-                    >
-                      {completion.items.map((item, i) => (
-                        <div
-                          key={item.path}
-                          ref={i === 0 ? firstRowRef : undefined}
-                          data-idx={i}
-                          role="option"
-                          aria-selected={i === highlight}
-                          className={
-                            "listing-completion-row" +
-                            (i === highlight ? " highlight" : "")
-                          }
-                          // mousedown, not click: click fires after the input's
-                          // own blur, which by then has already folded a query-
-                          // less box back to the magnifier and unmounted this
-                          // row underneath the pointer.
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            acceptCompletion(item);
-                          }}
-                          onMouseEnter={() => setHighlight(i)}
-                        >
-                          <span className="listing-completion-name">{item.name}</span>
-                          <span className="listing-completion-hint">
-                            {item.is_dir ? "folder" : formatSize(item.size)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {/* Only once being busy is information rather than a flicker
-                    (listing/useListingSearch's `spinner`): the common ranked
-                    answer lands well inside the threshold, and a spinner that
-                    appears and vanishes per keystroke reads as slower than
-                    one that never appears at all. */}
-                {searching && spinner && (
-                  <span className="listing-search-spinner" aria-hidden="true" />
-                )}
-                {searchCount !== null && (
-                  <span
-                    className="listing-search-count"
-                    title={searchCountFull}
-                    aria-label={searchCountFull}
-                  >
-                    {searchCount}
-                  </span>
-                )}
-                {/* Multi-selection readout — a single selected row needs no count.
-                    States the ceiling's shortfall (selectionShortfall above)
-                    rather than a plain count once select-all has picked up
-                    every fetched row and the server says there was more. */}
-                {sel.paths.length > 1 && (
-                  <span
-                    className="listing-search-count"
-                    title={selectionShortfall ? "More matches exist than were fetched" : undefined}
-                  >
-                    {selectionLabel}
-                  </span>
-                )}
-              </div>
               {/* THE PANE'S OPENER, and the second half of one affordance: the
                   closing chevron is a control ON the pane's own header, at the
                   seam it collapses toward (SideChrome, where the split is written
@@ -2238,7 +1862,7 @@ export default function Listing({
                   now (Breadcrumb.tsx), immediately right of the folder name it
                   acts on, which is one home instead of this row's and the
                   file view's. */}
-            </div>
+            </SearchField>,
           )}
           <div
             ref={scrollRef}
@@ -2280,14 +1904,42 @@ export default function Listing({
                   keeps its shape under the "Empty directory" message. */}
               <thead className={emptyDir ? "listing-head-empty" : undefined}>
                 <tr>
-                  {searching ? (
+                  {showsSearchHits ? (
                     // One column, and NOT a sort control. Results are in
                     // relevance (fuzzy-rank) order, full stop: the hit set is
                     // capped and, while the walk streams, partial — ordering
                     // that by name or date presents it as an answer it isn't,
                     // and the search box already says the coverage is
                     // approximate (listing/index-caveat).
-                    <th className="col-name">Path</th>
+                    //
+                    // The header names the base the shown relative paths are
+                    // rooted at — the search field portaled into the crumb
+                    // bar replaced the crumbs that used to answer that —
+                    // falling back to the bare label if the base isn't known.
+                    (() => {
+                      // The base is a path, not a label: NAME and MODIFIED read as
+                      // chrome in caps, but a Linux path is case-sensitive, so
+                      // uppercasing it would show a path ("/HOME/IAMSDAS") that
+                      // doesn't exist. Only "Path in " inherits the header's
+                      // uppercase transform; the path itself is exempted below.
+                      // Home contracts to a lone "~" here even though the three
+                      // crumb-strip sites keep showing home's full path for a
+                      // resting bar (contractHome's own contract) — in this
+                      // header, home is the base most in need of shortening.
+                      const baseText = searchBase === home ? "~" : contractHome(searchBase, home);
+                      const baseLabel = searchBase ? `Path in ${baseText}` : "";
+                      return (
+                        <th className="col-name col-search-base" title={baseLabel || undefined}>
+                          {searchBase ? (
+                            <>
+                              Path in <span className="col-search-base-path">{baseText}</span>
+                            </>
+                          ) : (
+                            "Path"
+                          )}
+                        </th>
+                      );
+                    })()
                   ) : (
                     (Object.entries(SORT_KEYS) as [SortKey, string][]).map(
                       ([key, label]) => (

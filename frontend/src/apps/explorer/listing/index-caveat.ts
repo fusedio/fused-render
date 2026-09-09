@@ -32,10 +32,18 @@ export interface IndexCaveat {
 // reads as the same "indexing…" because it is the same claim — results come
 // from an index that is being put right — and it outranks `behind`, which says
 // nothing is coming.
+//
+// `failed` is the fourth input: the request FOR THE QUERY NOW IN THE BOX
+// errored, so the rows on screen answer whatever the last request that
+// succeeded was asked. It outranks `behind`'s generic "not refreshed" —
+// that phrasing promises a plain re-run will catch up, which is not what
+// just happened here — but a running scan is still the more urgent claim
+// when both are true, so it is checked first.
 export function indexCaveat(
   status: IndexStatus | null | undefined,
   behind = false,
   rescanPending = false,
+  failed = false,
 ): IndexCaveat | null {
   if (rescanPending && !(status && status.scanning)) {
     return {
@@ -56,6 +64,13 @@ export function indexCaveat(
       note: `building index… ${(status.files || 0).toLocaleString()} files`,
       title:
         "Building the file index for the first time. This folder is being searched live meanwhile.",
+    };
+  }
+  if (failed) {
+    return {
+      note: "search failed",
+      title:
+        "The last search request failed, so these results still answer an earlier query. Edit the search or press Enter again to retry.",
     };
   }
   if (behind) {
@@ -86,14 +101,26 @@ export function withCaveat(count: string | null, caveat: IndexCaveat | null): st
  *
  * `behind` — "these rows answer a different query, or an older generation of
  * the tree" — is two situations wearing one name. While a request is in
- * flight the next answer is ~40 ms away, and captioning that "not refreshed…
- * clear the search and run it again" is corpus-staleness language for a round
- * trip, printed exactly where the 200 ms rule withholds a spinner. Only rows
- * that are STUCK are stale.
+ * flight, or is merely scheduled and still sitting out the debounce before it
+ * goes out, the next answer is at most a couple hundred ms away, and
+ * captioning that "not refreshed… clear the search and run it again" is
+ * corpus-staleness language for a round trip that has not even started yet.
+ * `pending` covers both — armed the moment a request is scheduled, not only
+ * once it is in flight — so this guard's window matches the whole wait, not
+ * just its back half. Only rows that are STUCK are stale.
+ *
+ * `failed` — the request for the query now in the box errored, and the rows
+ * on screen answer whatever the last request that succeeded was asked —
+ * folds into the same `behind` question (`useListingSearch.ts`'s `behind`
+ * is already true whenever `failed` is) but carries its own caption rather
+ * than `indexCaveat`'s generic "not refreshed" one, which promises a plain
+ * re-run will catch up. Optional: `FilesHome.tsx`'s own search can fail the
+ * same way, but it already says so through its own `ErrorBanner` row rather
+ * than this chip, so it never passes `failed` here.
  */
 export function searchCaveat(
   status: IndexStatus | null | undefined,
-  state: { behind: boolean; pending: boolean; rescanPending: boolean },
+  state: { behind: boolean; pending: boolean; rescanPending: boolean; failed?: boolean },
 ): IndexCaveat | null {
-  return indexCaveat(status, state.behind && !state.pending, state.rescanPending);
+  return indexCaveat(status, state.behind && !state.pending, state.rescanPending, state.failed);
 }
