@@ -3709,7 +3709,11 @@ export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
     last_active: row.last_active,
     happened_at: row.happened_at,
     message_count: 0,
-    next_run: 0,
+    // From pulse since 2026-09-09: the Board's Upcoming lane sorts by it, and a
+    // default of 0 put every provisional card at the bottom of that lane until
+    // the listing landed and moved it (review, #1079). The entry id it belongs
+    // to is still unknown, and nothing on a row needs it before the swap.
+    next_run: row.next_run,
     next_run_entry: "",
     messages: [],
     provisional: true,

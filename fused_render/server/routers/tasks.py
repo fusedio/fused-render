@@ -2043,6 +2043,11 @@ _PULSE_FIELDS = (
     # row's unread. `last_active` cannot stand in — a recurring task whose run
     # finished early keeps its due time there and the digest would not move.
     "happened_at",
+    # The Tasks page paints these rows before its own listing answers
+    # (shell/tasks-lib provisionalTasks), and the Board's Upcoming lane sorts by
+    # the next run: without it a provisional card sat at the bottom of the lane
+    # and jumped into place when the listing landed. One float per row.
+    "next_run",
 )
 
 

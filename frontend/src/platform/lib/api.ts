@@ -2979,6 +2979,7 @@ export type TaskPulseTask = Pick<
   | "title"
   | "target"
   | "session_id"
+  | "next_run"
 >;
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
