@@ -13,6 +13,7 @@ import {
   nameStart,
   narrowAnswer,
   noteAnswer,
+  patternTail,
   pathShortcut,
   positionsWithin,
   rankingSettled,
@@ -130,7 +131,7 @@ describe("pathShortcut", () => {
 describe("answerFrom", () => {
   it("absolutizes rel paths against home and carries the row's facts", () => {
     const res = rankResult({ hits: [rankHit("Downloads/a.csv", { size: 42 })] });
-    expect(answerFrom(res, "a.csv", HOME, 0).hits).toEqual([
+    expect(answerFrom(res, "a.csv", 0).hits).toEqual([
       {
         path: `${HOME}/Downloads/a.csv`,
         rel: "Downloads/a.csv",
@@ -146,25 +147,25 @@ describe("answerFrom", () => {
     // fuzzy.ts is the single source of truth for what highlights; the server
     // deliberately does not send positions (index/query.py's `search_ranked`
     // docstring).
-    const [row] = answerFrom(rankResult({ hits: [rankHit("docs/README.md")] }), "readme", HOME, 0).hits;
+    const [row] = answerFrom(rankResult({ hits: [rankHit("docs/README.md")] }), "readme", 0).hits;
     expect(row.positions!.map((i) => "docs/README.md"[i]).join("")).toBe("README");
   });
 
   it("caps the rendered rows but keeps the server's true total", () => {
     const many = Array.from({ length: HOME_RESULT_CAP + 25 }, (_, i) => rankHit(`f${i}.txt`));
-    const out = answerFrom(rankResult({ hits: many, total: many.length }), "f", HOME, 0);
+    const out = answerFrom(rankResult({ hits: many, total: many.length }), "f", 0);
     expect(out.hits).toHaveLength(HOME_RESULT_CAP);
     expect(out.total).toBe(HOME_RESULT_CAP + 25);
   });
 
   it("carries the query it answers, which is what stops the list blanking", () => {
-    expect(answerFrom(rankResult(), "down", HOME, 0).query).toBe("down");
+    expect(answerFrom(rankResult(), "down", 0).query).toBe("down");
   });
 
   it("reports an uncovered root as such, never as zero matches", () => {
     // The honest answer is "still building": the home page has no live walk to
     // fall back on, so a miss here is the app's state, not the user's files.
-    const out = answerFrom(rankResult({ covered: false, hits: [], total: 0 }), "x", HOME, 0);
+    const out = answerFrom(rankResult({ covered: false, hits: [], total: 0 }), "x", 0);
     expect(out.covered).toBe(false);
     expect(out.hits).toEqual([]);
   });
@@ -173,24 +174,22 @@ describe("answerFrom", () => {
     const out = answerFrom(
       rankResult({ covered: false, reason: "disabled", hits: [], total: 0 }),
       "x",
-      HOME,
       0,
     );
     expect(out.reason).toBe("disabled");
   });
 
   it("carries the measured elapsed time through", () => {
-    expect(answerFrom(rankResult(), "down", HOME, 123).elapsedMs).toBe(123);
+    expect(answerFrom(rankResult(), "down", 123).elapsedMs).toBe(123);
   });
 
   it("builds a hit's path from the server's resolved base, not the box's own root", () => {
     // A `~`/`/`-leading query can walk the server's resolved base out past
     // the box's own root (resolve_query, fused_render/index/query.py) — a
-    // hit's rel is relative to THAT, not to `home`.
+    // hit's rel is relative to THAT, not to the box's own root.
     const out = answerFrom(
       rankResult({ base: "/Users/me/a/b", hits: [rankHit("c.csv")] }),
       "~/a/b/*.c",
-      HOME,
       0,
     );
     expect(out.hits[0]!.path).toBe("/Users/me/a/b/c.csv");
@@ -205,7 +204,6 @@ describe("answerFrom", () => {
     const out = answerFrom(
       rankResult({ mode: "glob", hits: [rankHit("report.csv")] }),
       "*.csv",
-      HOME,
       0,
     );
     expect(out.hits).toEqual([
@@ -222,8 +220,31 @@ describe("answerFrom", () => {
   });
 
   it("still highlights a substring-mode hit exactly as before", () => {
-    const out = answerFrom(rankResult({ mode: "substring", hits: [rankHit("a.csv")] }), "a.csv", HOME, 0);
+    const out = answerFrom(rankResult({ mode: "substring", hits: [rankHit("a.csv")] }), "a.csv", 0);
     expect(out.hits[0]!.positions).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("highlights against the trailing segment for a query that walked past the box root", () => {
+    // "/tmp/rep" resolves to base "/tmp", pattern "rep" — hits come back
+    // rel to "/tmp", so matching the raw "/tmp/rep" against "report.csv"
+    // would never find it.
+    const out = answerFrom(
+      rankResult({ base: "/tmp", hits: [rankHit("report.csv")] }),
+      "/tmp/rep",
+      0,
+    );
+    expect(out.hits[0]!.positions).toEqual([0, 1, 2]);
+  });
+});
+
+describe("patternTail", () => {
+  it("is the query itself when there is no \"/\" to walk past", () => {
+    expect(patternTail("readme")).toBe("readme");
+  });
+
+  it("is the segment after the last \"/\" for a path-shaped query", () => {
+    expect(patternTail("/tmp/rep")).toBe("rep");
+    expect(patternTail("~/a/b/rep")).toBe("rep");
   });
 });
 
@@ -593,6 +614,16 @@ describe("narrowAnswer", () => {
       hits: [homeHit("report.csv"), homeHit("draft.csv")],
     });
     expect(narrowAnswer(held, "*.csv?")).toEqual([]);
+  });
+
+  it("narrows against the trailing segment for a query that walked past the box root", () => {
+    const held = answer({
+      query: "/tmp/rep",
+      base: "/tmp",
+      hits: [homeHit("report.csv", { path: "/tmp/report.csv" }), homeHit("other.txt", { path: "/tmp/other.txt" })],
+    });
+    const narrowed = narrowAnswer(held, "/tmp/repo");
+    expect(narrowed.map((h) => h.rel)).toEqual(["report.csv"]);
   });
 });
 

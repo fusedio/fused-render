@@ -77,6 +77,12 @@ interface RankAnswer {
   truncated: boolean;
   total: number;
   reason: RankReason;
+  // The directory `hits` are relative to — `res.base` from the server, not
+  // necessarily `fsPath`: a `~`/`/`-leading query can walk `resolve_query`
+  // (fused_render/index/query.py) out past the folder being searched. A
+  // caller building an absolute row path from `entry.rel` has to join it
+  // onto THIS, not onto `fsPath` (api.ts's `IndexRankResult.base` doc).
+  base: string;
   // Which mode the server actually ran (resolve_query's own call — see
   // SPEC-one-search-language.md), never re-derived client-side: it is what
   // decides which cap applies below (listing/result-cap).
@@ -363,6 +369,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
             truncated: res.truncated,
             total: res.total,
             reason: res.reason ?? "",
+            base: res.base,
             mode: res.mode,
             elapsedMs: Date.now() - issuedAt,
           };
@@ -485,6 +492,12 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // The ranked answer is rendered whatever query it answers (see the header),
   // so `staleRows` is how the caller learns to dim it.
   const hits = searching ? (answer?.hits ?? []) : [];
+  // The directory `hits`' `rel`s are relative to — the caller's own `fsPath`
+  // whenever nothing is searching (or no answer has landed yet), else
+  // whatever `res.base` the server actually resolved the query against (see
+  // `RankAnswer.base`). A row path built from `entry.rel` must join onto
+  // THIS, never onto `fsPath` directly, once searching.
+  const searchBase = searching && answer !== null ? answer.base : fsPath.replace(/\/$/, "");
   const staleRows = answer !== null && answer.query !== q;
   const displayHits = hits;
 
@@ -607,6 +620,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     reason: answer?.reason ?? ("" as RankReason),
     prefetchIndex,
     hits,
+    searchBase,
     displayHits,
     visibleHits,
     rowsAnswerQuery,

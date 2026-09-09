@@ -144,22 +144,38 @@ export interface HomeAnswer {
 }
 
 /**
+ * The part of a query the server actually filtered `rel`s against, for
+ * re-highlighting/re-narrowing hits client-side.
+ *
+ * A `~`/`/`-leading query can walk `resolve_query`'s `base`
+ * (fused_render/index/query.py) out past the box's own root — `res.base`
+ * says where it landed, but a hit's `rel` is relative to THAT, not to the
+ * raw query text. Everything up to the last "/" in a query like that named a
+ * real directory the server already walked past on its way to `base`; only
+ * the trailing segment is what it actually tested each `rel` against. A
+ * query with no "/" is already exactly its own pattern — the common case,
+ * unchanged from before.
+ */
+export function patternTail(query: string): string {
+  const slash = query.lastIndexOf("/");
+  return slash === -1 ? query : query.slice(slash + 1);
+}
+
+/**
  * A ranked response as an answer: absolutized, capped, and highlighted.
  *
- * `home` is what a hit's PATH is displayed relative to (`~/`-prefixing in
- * `FileRow`) — the box's own root, unrelated to what its rel is joined onto.
- * A hit's `path` is built from `res.base` instead, which is the directory
- * the server actually searched: a plain query never moves it off `home`, but
- * a `~`/`/`-leading one can walk it anywhere `resolve_query`
- * (fused_render/index/query.py) resolves to, and joining `h.rel` onto the
- * wrong directory there would point every hit at a path that does not exist.
+ * A hit's `path` is built from `res.base`, the directory the server actually
+ * searched: a plain query never moves it off the box's own root, but a
+ * `~`/`/`-leading one can walk it anywhere `resolve_query`
+ * (fused_render/index/query.py) resolves to, and joining `h.rel` onto any
+ * other directory would point every hit at a path that does not exist.
  */
 export function answerFrom(
   res: IndexRankResult,
   query: string,
-  home: string,
   elapsedMs: number,
 ): HomeAnswer {
+  const pattern = patternTail(query);
   return {
     query,
     base: res.base,
@@ -172,16 +188,19 @@ export function answerFrom(
       mtime: h.mtime,
       // Substring hits are re-matched HERE rather than sent: fuzzy.ts
       // decides what highlights, full stop, and `substringMatch` is the
-      // exact test the server's substring mode filtered on (D708), so the
+      // exact test the server's substring mode filtered on, so the
       // guarantee that this finds something is EXPLICIT rather than
-      // incidental. Glob hits carry no positions: a glob match is not
-      // necessarily a substring of the query text at all (`*.csv` matching
-      // `report.csv` has no literal `"*.csv"` anywhere in `report.csv`), so
-      // re-running `substringMatch` on one would either find nothing (no
-      // highlight — fine) or, worse, find an accidental unrelated substring
-      // and mark the wrong characters. Rendering unhighlighted is honest;
-      // marking a coincidence is not.
-      positions: res.mode === "substring" ? (substringMatch(query, h.rel)?.positions ?? []) : [],
+      // incidental — against `pattern`, not the raw query text, since a
+      // `~`/`/`-leading query's `rel`s are relative to `res.base`, not to
+      // whatever came before the last "/" in what was typed. Glob hits
+      // carry no positions: a glob match is not necessarily a substring of
+      // the query text at all (`*.csv` matching `report.csv` has no literal
+      // `"*.csv"` anywhere in `report.csv`), so re-running `substringMatch`
+      // on one would either find nothing (no highlight — fine) or, worse,
+      // find an accidental unrelated substring and mark the wrong
+      // characters. Rendering unhighlighted is honest; marking a
+      // coincidence is not.
+      positions: res.mode === "substring" ? (substringMatch(pattern, h.rel)?.positions ?? []) : [],
     })),
     truncated: res.truncated,
     total: res.total,
@@ -238,9 +257,15 @@ export function answerFrom(
  */
 export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
   if (answer.mode === "glob") return [];
+  // Same reasoning as `answerFrom`: `hit.rel` is relative to `answer.base`,
+  // which a `~`/`/`-leading query can have walked past the box's own root —
+  // matching the raw `q` against a base-relative `rel` fails on every row
+  // for a query shaped like that. `patternTail` is the same trailing-segment
+  // stand-in `answerFrom` re-highlights with.
+  const pattern = patternTail(q);
   const out: HomeHit[] = [];
   for (const hit of answer.hits) {
-    const m = substringMatch(q, hit.rel);
+    const m = substringMatch(pattern, hit.rel);
     if (!m) continue;
     out.push({ ...hit, positions: m.positions });
   }

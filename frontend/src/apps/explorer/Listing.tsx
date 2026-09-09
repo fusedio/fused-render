@@ -281,6 +281,7 @@ export default function Listing({
     searchState,
     prefetchIndex,
     hits,
+    searchBase,
     displayHits,
     visibleHits,
     rowsAnswerQuery,
@@ -668,9 +669,9 @@ export default function Listing({
   const navRows = useMemo(
     () =>
       searching
-        ? visibleHits.map(({ entry }) => base + "/" + entry.rel)
+        ? visibleHits.map(({ entry }) => searchBase + "/" + entry.rel)
         : sortedEntries.map((entry) => base + "/" + entry.name),
-    [searching, visibleHits, sortedEntries, base],
+    [searching, visibleHits, sortedEntries, base, searchBase],
   );
 
   // Whether navRows reflects a LOADED listing (not a transient empty while the
@@ -815,7 +816,7 @@ export default function Listing({
     const m = new Map<string, RowCtx>();
     if (searching) {
       for (const { entry } of visibleHits) {
-        const path = base + "/" + entry.rel;
+        const path = searchBase + "/" + entry.rel;
         m.set(path, {
           path,
           name: entry.rel.split("/").pop() ?? entry.rel,
@@ -834,7 +835,7 @@ export default function Listing({
       }
     }
     return m;
-  }, [searching, visibleHits, sortedEntries, base]);
+  }, [searching, visibleHits, sortedEntries, base, searchBase]);
   rowCtxByPathRef.current = rowCtxByPath;
 
   // OPENING A FOLDER SELECTS NOTHING (FS-16, D278). There is no folder
@@ -1477,7 +1478,7 @@ export default function Listing({
       body = (
         <>
           {visibleHits.map(({ entry, positions }) => {
-            const childPath = base + "/" + entry.rel;
+            const childPath = searchBase + "/" + entry.rel;
             return (
               <tr
                 key={entry.rel}

@@ -607,7 +607,7 @@ export function FilesSearch({
       indexRank(home, q, { signal: ctl.signal, limit: RANK_FETCH_LIMIT, ranked }).then(
         (res) => {
           if (ctl.signal.aborted) return;
-          const next = answerFrom(res, q, home, Date.now() - issuedAt.current);
+          const next = answerFrom(res, q, Date.now() - issuedAt.current);
           memo.current.put(q, next);
           setAnswer(next);
           setFailure("");

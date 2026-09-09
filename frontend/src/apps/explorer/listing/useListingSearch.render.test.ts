@@ -430,3 +430,30 @@ describe("decision 10: elapsedMs is the true round-trip, and a held answer keeps
     box.unmount();
   });
 });
+
+describe("searchBase: the directory hits are relative to", () => {
+  test("is the box's own root when nothing is searching", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/proj", 0);
+    expect(box.current().searchBase).toBe("/proj");
+    box.unmount();
+  });
+
+  test("follows the server's resolved base once an answer lands, not fsPath", async () => {
+    // A `~`/`/`-leading query can walk the resolved base out past the
+    // folder being searched (fused_render/index/query.py's resolve_query) —
+    // callers building a row path from `entry.rel` must join onto the
+    // server's `base`, not onto `/proj`. Path-shaped, so it waits for an
+    // explicit commit (decision 4).
+    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/proj", 0);
+    await flush(() => box.current().setQuery("~/other/rep"));
+    await flush(() => box.current().commitSearch());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() =>
+      rankCalls[0].reply.resolve(
+        answer({ base: "/home/u/other", hits: [hit("report.csv")], total: 1 }),
+      ),
+    );
+    expect(box.current().searchBase).toBe("/home/u/other");
+    box.unmount();
+  });
+});
