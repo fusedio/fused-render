@@ -95,8 +95,18 @@ INSTALL_HEARTBEAT_S = 10.0
 # updater also drives and wants to keep clear of a whole app launch; here the
 # check loop is a background thread, so it is off the startup path anyway and
 # the delay only keeps the manifest fetch out of a booting process's first
-# tick. Every check after it is CHECK_INTERVAL_S apart as before.
+# tick. Every check after it is common.CHECK_INTERVAL_S (1 h) apart.
 MAC_STARTUP_DELAY_S = 1.0
+# Floor between two checks that actually hit the network. The client checks
+# on its own when the app comes back to the front (update-status.ts), and
+# that trigger is a window event: a user cmd-tabbing in and out, or a
+# second window taking focus, could otherwise turn one return into a
+# string of manifest fetches. The client already keeps a 30-minute gap of
+# its own; this one is the server-side backstop, because the client's gap
+# lives in one tab's module state and any reload resets it. Only the
+# throttled path (POST /api/update/check) is affected — the auto loop
+# passes force=True so its own hourly tick is never swallowed.
+MIN_CHECK_GAP_S = 60.0
 DONE_MESSAGE = "Installed — restart to finish"
 CANCELLED_MESSAGE = "Cancelled"
 _DOWNLOAD_PREFIX = "FusedRender-"
@@ -193,6 +203,10 @@ class UpdateManager:
         self._progress_total: float | None = None
         self._phase: str | None = None
         self._install_thread: threading.Thread | None = None
+        # time.monotonic() of the last check that actually fetched the
+        # manifest — the MIN_CHECK_GAP_S throttle's only state. monotonic,
+        # not wall time, so a clock change cannot open or close the gap.
+        self._last_check_at: float | None = None
         # The Activity row for the install currently in flight, and whether
         # its ✕ has been pressed. Both are only ever touched under the lock:
         # the download runs on the install thread while the cancel arrives on
@@ -212,7 +226,7 @@ class UpdateManager:
             # `brew upgrade` or a manual DMG drag in the user's own hands — so
             # "available" re-checks the bundle on disk on every read (the UI
             # polls this every minute) rather than waiting out the next
-            # CHECK_INTERVAL_S tick to notice it.
+            # common.CHECK_INTERVAL_S tick to notice it.
             if self._state == "available" and self._latest:
                 disk = self._disk_version()
                 if disk is not None and not common.is_newer(
@@ -244,13 +258,21 @@ class UpdateManager:
     # -- checking -------------------------------------------------------------
 
     def start_auto_checks(self) -> None:
-        """Background check loop (startup delay, then every CHECK_INTERVAL_S).
+        """Background check loop (startup delay, then every hour —
+        common.CHECK_INTERVAL_S).
         Silent: a newer version only flips state to "available"; set
         FUSED_RENDER_NO_AUTO_UPDATE to a non-empty value to disable."""
         if os.environ.get("FUSED_RENDER_NO_AUTO_UPDATE"):
             return
 
         def loop():
+            # Resolve the install method HERE, off the request path: the first
+            # `brew list --cask` can take seconds, and `status()` used to pay
+            # it on the first /api/config the shell asked for after boot.
+            try:
+                self.method()
+            except Exception:  # noqa: BLE001 - detection is best-effort
+                logger.exception("update method detection failed")
             time.sleep(MAC_STARTUP_DELAY_S)
             swept = False
             while True:
@@ -263,7 +285,10 @@ class UpdateManager:
                     if not swept:
                         self._sweep_stale_downloads()
                         swept = True
-                    self.check()
+                    # force: this tick IS the cadence, so it must never be
+                    # swallowed by MIN_CHECK_GAP_S because a focus flip
+                    # happened to fetch a minute ago.
+                    self.check(force=True)
                 except Exception:  # noqa: BLE001 - a tick must never kill the loop
                     logger.exception("auto update tick failed")
                 time.sleep(common.CHECK_INTERVAL_S)
@@ -271,12 +296,25 @@ class UpdateManager:
         threading.Thread(target=loop, daemon=True,
                          name="fused-render-update-auto").start()
 
-    def check(self) -> dict:
+    def check(self, force: bool = False) -> dict:
         """Fetch + verify the manifest and update state. Never touches state
-        while an install is running. Returns status()."""
+        while an install is running. Returns status().
+
+        Throttled by default: a check that would land within MIN_CHECK_GAP_S
+        of the last one that actually fetched returns the current status
+        untouched, so the client's check-on-return cannot turn a run of focus
+        flips into a run of CDN requests. `force=True` (the auto loop) always
+        fetches."""
         with self._lock:
             if self._state == "installing":
                 return self.status()
+            if not force and self._last_check_at is not None and (
+                    time.monotonic() - self._last_check_at < MIN_CHECK_GAP_S):
+                # Not an error and not "checking": nothing was asked of the
+                # network, so the caller gets the answer the last check left —
+                # which status() still re-derives from the bundle on disk.
+                return self.status()
+            self._last_check_at = time.monotonic()
             self._state = "checking"
             self._error = None
         try:
