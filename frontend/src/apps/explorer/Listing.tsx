@@ -99,7 +99,7 @@ import {
   takePendingClaudeAsk,
 } from "@apps/explorer/lib/pending-claude-ask";
 import { SideToggleButton } from "@apps/explorer/SideChrome";
-import { EntryActionsMenu } from "@apps/explorer/EntryActionsMenu";
+import { EntryActionsMenu, canonEntryPath } from "@apps/explorer/EntryActionsMenu";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { unavailableReason } from "@platform/lib/mode-visibility";
@@ -1971,7 +1971,11 @@ export default function Listing({
                   the folder is still what the menu resolves. */}
               {paneEnabled && (
                 <EntryActionsMenu
-                  fsPath={appEntryPath ?? fsPath + "/index.html"}
+                  /* The server's answer is os.path.abspath — backslashes on
+                     Windows — and the menu derives the folder with a "/" split,
+                     so it goes through the same drive-letter-only normalisation
+                     the file surface applies before comparing. */
+                  fsPath={appEntryPath ? canonEntryPath(appEntryPath) : fsPath + "/index.html"}
                   isEntry={appEntryPath !== null}
                   mcp={{
                     available: mcpSrc !== null,

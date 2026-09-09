@@ -58,7 +58,11 @@ const LUCIDE = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
 // the shell's canonical forward-slash form — same drive-letter-only
 // normalization rule as the URL codec (a backslash in a POSIX filename must not
 // be rewritten).
-const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
+// Exported for the folder listing, which hands this component the server's own
+// entry answer as `fsPath` and has to canonicalise it the same way first.
+export const canonEntryPath = (p: string) =>
+  /^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p;
+const canon = canonEntryPath;
 
 export interface EntryActionsMenuProps {
   // The app's ENTRY PAGE, or the page that might be one. Over a file preview
@@ -245,7 +249,12 @@ export function EntryActionsMenu({
           } satisfies OverflowEntry,
         ]
       : []),
-    ...(mcp
+    // The MCP row is worth listing DISABLED only where its absence is news: on
+    // an app (an entry page exists, so "this app publishes no tools" says
+    // something) or while the probe is still out. A plain folder that is not an
+    // app would otherwise get a kebab that opens on one dead row — and the
+    // empty-list collapse below could never run for it.
+    ...(mcp && (mcp.available || mcp.pending || isEntry)
       ? [
           {
             label: "MCP config",

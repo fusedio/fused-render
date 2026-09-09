@@ -578,23 +578,54 @@
   display: none;
 }
 
-/* ---- The file sidebar's tab strip (SideChrome's SideTabs) -----------------
-   Two .bar-ctl tabs side by side; the ACTIVE one wears the mode control's
-   bordered plate, so "which panel am I on" is answered by the same chrome that
-   answers "which mode is this" one bar over. The inactive tab is a plain ghost
-   control, and a disabled one dims exactly as any .bar-ctl does. */
+/* ---- The side column's tab strip (SideChrome's SideTabs) ------------------
+   UNDERLINE TABS, the app page's idiom (.app-page-tabs, shadcn's line
+   variant): icon + label, the active one in full ink with a 2px bar sitting ON
+   the header's bottom rule, the rest muted. Not the bordered plate — a plate
+   says "this is a menu" everywhere else in these bars (.bar-ctl-bordered), and
+   a tab is not one. The strip stretches to the header's height so the bar
+   lands exactly on the rule: the tail wrapper stretches too (its own
+   align-items still centres the rest of what it holds), and the bar hangs the
+   header's vertical padding plus its 1px border below the tab's box. */
+.side-header-tail:has(.side-tabs) {
+  align-self: stretch;
+}
+
 .side-tabs {
   flex: 0 0 auto;
+  align-self: stretch;
   display: inline-flex;
-  align-items: center;
-  gap: 2px;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.side-tab {
+  position: relative;
+  height: auto;
+  padding: 0 6px;
+  border-radius: 0;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.side-tab:hover:not(:disabled) {
+  background: none;
+  color: var(--fg);
 }
 
 .side-tab.active {
-  border: 1px solid var(--border);
-  background: var(--ctl-plate-bg);
   color: var(--fg);
   cursor: default;
+}
+
+.side-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(-1 * var(--topbar-pad-y) - 1px);
+  height: 2px;
+  background: var(--fg);
 }
 
 .side-tab-label {

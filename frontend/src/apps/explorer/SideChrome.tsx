@@ -96,10 +96,10 @@ export interface SideTab {
 // THE FILE SIDEBAR'S SWITCHER IS A TAB STRIP, not a dropdown. With the column
 // down to two companions (Claude, Git — MCP left it for the crumb bar's kebab,
 // EntryActionsMenu) a menu that opens to show two rows costs a click to reveal
-// what a strip shows standing still. Same recipe as every control in these bars
-// (.bar-ctl, 28px, 16px glyph); the active tab wears the bordered plate the mode
-// control wears (.side-tab.active, explorer.css), which is the one piece of
-// chrome these rows allow and here says "this is the one you are on".
+// what a strip shows standing still. UNDERLINE tabs, the app page's own idiom
+// (.app-page-tabs): icon + label, the active one in full ink with a bar on the
+// header's bottom rule, the rest muted (.side-tab, explorer.css). Not the mode
+// control's bordered plate — in these bars a plate means "menu".
 //
 // Unlike ModeMenu it NEVER hides itself at one selectable row: an unavailable
 // companion is drawn disabled with its reason in the tooltip, a pending one
