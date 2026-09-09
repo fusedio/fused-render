@@ -119,13 +119,13 @@ export function setClipboard(next: Clipboard | null, mirrorToOs = true): void {
   if (mirrorToOs && next && next.op === "copy" && next.paths.length > 0) {
     // Ticketed against the reconcile as well as against other writes — see
     // `beginOsObservation`. Deliberately NOT gated on `clipboardEpoch`: gating
-    // on the epoch (as this briefly did) inverted the mechanism, because a cut,
-    // an Escape clear and a bookkeeping repair all bump the epoch while
-    // publishing NOTHING, so an in-flight copy write dropped its token and the
-    // next reconcile adopted the OS copy straight over the newer cut. The token
-    // describes the SYSTEM clipboard, not the app's, so it survives every
-    // in-app gesture that never touches the system one; only a newer
-    // OBSERVATION of the system clipboard can supersede it.
+    // on the epoch (as this briefly did) inverted the mechanism, because a cut
+    // and a bookkeeping repair both bump the epoch while publishing NOTHING, so
+    // an in-flight copy write dropped its token and the next reconcile adopted
+    // the OS copy straight over the newer cut. The token describes the SYSTEM
+    // clipboard, not the app's, so it survives every in-app gesture that never
+    // touches the system one; only a newer OBSERVATION of the system clipboard
+    // can supersede it.
     const seq = beginOsObservation();
     writeOsClipboard(next.paths)
       .then((res) => {

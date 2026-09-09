@@ -23,12 +23,13 @@ const entry = (mode: string): TemplateEntry => ({
   conditional: true,
 });
 
-const NONE = { claude: null, git: null, mcp: null };
-// Every companion offered. Named ALL rather than BOTH since `mcp` joined the pair.
-const ALL = { claude: entry("claude"), git: entry("git"), mcp: entry("mcp") };
-// The two folder-bound companions with nothing to offer — the ordinary shape for a
-// folder that is neither a repository nor an app.
-const CLAUDE_ONLY = { claude: entry("claude"), git: null, mcp: null };
+const NONE = { claude: null, git: null };
+// Every companion offered. (`mcp` was a third for a while; it is a dialog off
+// the search row's kebab now — EntryActionsMenu → McpDialog — so ALL is the pair.)
+const ALL = { claude: entry("claude"), git: entry("git") };
+// The folder-bound companion with nothing to offer — the ordinary shape for a
+// folder outside a repository.
+const CLAUDE_ONLY = { claude: entry("claude"), git: null };
 
 test("the companions in switcher order, and a fallback that is not one of them", () => {
   // D285: the pane is a companion column. `PANE_SIDE_MODES` still carries `preview`
@@ -36,8 +37,8 @@ test("the companions in switcher order, and a fallback that is not one of them",
   // fallback — `PANE_SIDE_COMPANIONS` is what a user can choose and what the URL can
   // carry, and the old `DEFAULT_PANE_SIDE` is gone with the idea that `preview` was
   // anything's default.
-  expect(PANE_SIDE_MODES).toEqual(["preview", "claude", "git", "mcp"]);
-  expect(PANE_SIDE_COMPANIONS).toEqual(["claude", "git", "mcp"]);
+  expect(PANE_SIDE_MODES).toEqual(["preview", "claude", "git"]);
+  expect(PANE_SIDE_COMPANIONS).toEqual(["claude", "git"]);
   expect(PANE_SIDE_FALLBACK).toBe("preview");
 });
 
@@ -167,7 +168,7 @@ describe("paneSideParam", () => {
 // full-screen file sidebar has had all along.
 describe("paneSideList", () => {
   test("the companions alone, whatever the subject, and Claude is what it lands on", () => {
-    expect(paneSideList(ALL)).toEqual(["claude", "git", "mcp"]);
+    expect(paneSideList(ALL)).toEqual(["claude", "git"]);
     // An absent `_side` parses as no choice (`null`), and the resolve lands on the
     // first offered side.
     expect(activePaneSide(paneSideList(ALL), null)).toBe("claude");
@@ -176,7 +177,6 @@ describe("paneSideList", () => {
   test("an explicit Git choice still wins", () => {
     // The user's own `?_side=git` is a choice, not a default.
     expect(activePaneSide(paneSideList(ALL), "git")).toBe("git");
-    expect(activePaneSide(paneSideList(ALL), "mcp")).toBe("mcp");
   });
 
   test("a folder outside a repository lands on Claude with Git gone", () => {
@@ -184,12 +184,9 @@ describe("paneSideList", () => {
     expect(activePaneSide(paneSideList(CLAUDE_ONLY), "git")).toBe("claude");
   });
 
-  test("an app folder outside a repository offers MCP without Git", () => {
-    // The two folder-bound companions are independent gates: being an app says
-    // nothing about being a work tree, and the pane must not treat them as a pair.
-    const app = { claude: entry("claude"), git: null, mcp: entry("mcp") };
-    expect(paneSideList(app)).toEqual(["claude", "mcp"]);
-    expect(activePaneSide(paneSideList(app), "git")).toBe("claude");
+  test("`_side=mcp` is an unknown value now — it parses as no choice", () => {
+    // MCP left the pane for a dialog; a stale deep link lands on the leader.
+    expect(parsePaneSide("mcp")).toEqual({ open: true, mode: null });
   });
 
   // A PROBE STILL OUT IS NOT A DENIAL, and conflating the two put the reported bug
@@ -203,10 +200,8 @@ describe("paneSideList", () => {
   const PENDING = {
     claude: null,
     git: null,
-    mcp: null,
     claudePending: true,
     gitPending: true,
-    mcpPending: true,
   };
 
   test("probes still out offers nothing yet — for every row type now", () => {
@@ -227,7 +222,6 @@ describe("paneSideList", () => {
       git: entry("git"),
       gitPending: false,
       claudePending: false,
-      mcpPending: false,
     })).toEqual(["git"]);
   });
 
@@ -238,7 +232,7 @@ describe("paneSideList", () => {
   // file sidebar's (lib/preview-side's `defaultSide`) and fixed by the same rule —
   // the LEADER decides, and while the leader is undecided so is the pane.
   test("Git landing first does not open a pane that Claude would then displace", () => {
-    const gitFirst = { ...PENDING, git: entry("git"), gitPending: false, mcpPending: false };
+    const gitFirst = { ...PENDING, git: entry("git"), gitPending: false };
     expect(paneSideList(gitFirst)).toEqual([]);
     // ...so there is nothing on screen to move: the caller holds its skeleton on an
     // empty list, and `activePaneSide`'s answer is only the pill's placeholder.
@@ -257,7 +251,7 @@ describe("paneSideList", () => {
     // The undecided list is about what an ABSENT `_side` resolves to; a `?_side=git`
     // deep link is the user's own choice and `activePaneSide` keeps it (the param is
     // deliberately never reconciled away here).
-    const gitFirst = { ...PENDING, git: entry("git"), gitPending: false, mcpPending: false };
+    const gitFirst = { ...PENDING, git: entry("git"), gitPending: false };
     expect(activePaneSide(paneSideList(gitFirst), "git")).toBe(PANE_SIDE_FALLBACK);
     expect(activePaneSide(paneSideList({ ...gitFirst, claudePending: false }), "git")).toBe("git");
   });
@@ -273,10 +267,9 @@ describe("paneSideList", () => {
   });
 
   test("a follower still out is undecided too, not the fallback", () => {
-    // Claude denied, Git denied, MCP's probe still in flight: falling through to
-    // `preview` here would put the pane on the fallback and then move it the moment
-    // the verdict landed. Every follower has to be waited on, not just the first.
-    expect(paneSideList({ ...NONE, mcpPending: true })).toEqual([]);
+    // Claude denied, Git's probe still in flight: falling through to `preview`
+    // here would put the pane on the fallback and then move it the moment the
+    // verdict landed. The follower has to be waited on, not just the leader.
     expect(paneSideList({ ...NONE, gitPending: true })).toEqual([]);
   });
 
@@ -292,7 +285,7 @@ describe("paneSideList", () => {
   });
 });
 
-// WHAT THE SWITCHER DRAWS, which is all three whatever the folder offers — the
+// WHAT THE SWITCHER DRAWS, which is both companions whatever the folder offers — the
 // folder half of the file sidebar's rule. An unofferable mode is a disabled row
 // carrying its reason, so the header holds still as the user walks from a
 // repository into a folder outside one instead of shedding pills (and, at one
@@ -303,13 +296,11 @@ describe("paneSideMenu", () => {
     ...NONE,
     claudePending: true,
     gitPending: true,
-    mcpPending: true,
   };
   // Copy the user reads, so it is written out here rather than re-derived from
   // the constant it is testing.
   const NO_REPO = "Not inside a git repository";
   const NO_CLAUDE = "Claude is not available for this file";
-  const NO_APP = "Not a fused app folder (needs index.html and a main())";
   const rows = (e: Parameters<typeof paneSideMenu>[0]) =>
     paneSideMenu(e).map((r) => [r.mode, r.disabledReason ?? (r.pending ? "…" : null)]);
 
@@ -317,7 +308,6 @@ describe("paneSideMenu", () => {
     expect(rows(ALL)).toEqual([
       ["claude", null],
       ["git", null],
-      ["mcp", null],
     ]);
   });
 
@@ -325,7 +315,6 @@ describe("paneSideMenu", () => {
     expect(rows(CLAUDE_ONLY)).toEqual([
       ["claude", null],
       ["git", NO_REPO],
-      ["mcp", NO_APP],
     ]);
   });
 
@@ -338,7 +327,6 @@ describe("paneSideMenu", () => {
     expect(rows(NONE)).toEqual([
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
-      ["mcp", NO_APP],
     ]);
   });
 
@@ -348,7 +336,6 @@ describe("paneSideMenu", () => {
     expect(paneSideMenu(PENDING_MENU)).toEqual([
       { mode: "claude", pending: true },
       { mode: "git", pending: true },
-      { mode: "mcp", pending: true },
     ]);
   });
 
@@ -357,18 +344,17 @@ describe("paneSideMenu", () => {
     // everywhere: it is a state the pane falls into, so a row for it would be a
     // control that cannot be honoured, and it carries no `disabledReason` either
     // (it is not unavailable for a reason — it is not a mode).
-    expect(paneSideMenu(ALL).map((r) => r.mode)).toEqual(["claude", "git", "mcp"]);
+    expect(paneSideMenu(ALL).map((r) => r.mode)).toEqual(["claude", "git"]);
     // Unavailable COMPANIONS are still drawn and still explained — that rule is
     // untouched, and it is why the pill never shrinks to one row and hides.
     expect(paneSideMenu(CLAUDE_ONLY)).toEqual([
       { mode: "claude" },
       { mode: "git", disabledReason: NO_REPO },
-      { mode: "mcp", disabledReason: NO_APP },
     ]);
     // Even where the pane IS on `preview` — neither companion offered — the menu
     // shows the two companions and nothing else. This case used to assert the row
     // came back here.
-    expect(paneSideMenu(NONE).map((r) => r.mode)).toEqual(["claude", "git", "mcp"]);
+    expect(paneSideMenu(NONE).map((r) => r.mode)).toEqual(["claude", "git"]);
   });
 
   test("an undecided probe spins rather than claiming a reason", () => {
@@ -377,14 +363,12 @@ describe("paneSideMenu", () => {
     expect(rows(PENDING_MENU)).toEqual([
       ["claude", "…"],
       ["git", "…"],
-      ["mcp", "…"],
     ]);
     // The probes land independently: a settled denial beside an open probe is the
     // usual frame, and each row says only what is known of IT.
     expect(rows({ ...NONE, gitPending: true })).toEqual([
       ["claude", NO_CLAUDE],
       ["git", "…"],
-      ["mcp", NO_APP],
     ]);
   });
 
@@ -394,14 +378,14 @@ describe("paneSideMenu", () => {
     // now, so the menu never mentions it; what it cannot do is carry a reason, since
     // the reasons belong to companions that are unavailable.
     for (const e of [NONE, ALL, { ...NONE, gitPending: true }]) {
-      expect(paneSideMenu(e).map((r) => r.mode)).toEqual(["claude", "git", "mcp"]);
+      expect(paneSideMenu(e).map((r) => r.mode)).toEqual(["claude", "git"]);
     }
   });
 
   test("the rows decide nothing", () => {
     // What the pane may BE is still paneSideList's answer: a disabled row must
     // not become a mode the pane can land on.
-    expect(paneSideMenu(CLAUDE_ONLY).length).toBe(3);
+    expect(paneSideMenu(CLAUDE_ONLY).length).toBe(2);
     expect(paneSideList(CLAUDE_ONLY)).toEqual(["claude"]);
     // A denied request lands on the first mode ON OFFER — which is a companion now,
     // not the fallback. This asserted `"preview"` while `preview` led every list.
@@ -418,22 +402,18 @@ describe("paneSideIconEntry", () => {
   test("an offered mode uses its own entry", () => {
     expect(paneSideIconEntry("git", ALL)).toBe(ALL.git);
     expect(paneSideIconEntry("claude", ALL)).toBe(ALL.claude);
-    expect(paneSideIconEntry("mcp", ALL)).toBe(ALL.mcp);
   });
 
   test("a disabled mode falls back to the binding the gate refused", () => {
     // A folder outside a repository: nothing to frame, but `git` is bound and its
     // icon exists — dir-mode keeps the entry through the denial for this.
     expect(paneSideIconEntry("git", { ...NONE, gitBound: git })).toBe(git);
-    const mcp = entry("mcp");
-    expect(paneSideIconEntry("mcp", { ...NONE, mcpBound: mcp })).toBe(mcp);
   });
 
   test("a mode bound nowhere has no icon to offer", () => {
     // The caller's last resort, and only here.
     expect(paneSideIconEntry("git", NONE)).toBe(null);
     expect(paneSideIconEntry("claude", NONE)).toBe(null);
-    expect(paneSideIconEntry("mcp", NONE)).toBe(null);
   });
 
   test("the offered entry always outranks the binding", () => {
@@ -448,7 +428,6 @@ describe("activePaneSide", () => {
   test("an offered request wins", () => {
     expect(activePaneSide(paneSideList(ALL), "git")).toBe("git");
     expect(activePaneSide(paneSideList(ALL), "claude")).toBe("claude");
-    expect(activePaneSide(paneSideList(ALL), "mcp")).toBe("mcp");
   });
 
   test("an unavailable request lands on the first mode ON OFFER", () => {
@@ -457,7 +436,6 @@ describe("activePaneSide", () => {
     // folder that offers the chat lands on Claude, and only a folder offering neither
     // lands on `preview`.
     expect(activePaneSide(paneSideList(CLAUDE_ONLY), "git")).toBe("claude");
-    expect(activePaneSide(paneSideList(CLAUDE_ONLY), "mcp")).toBe("claude");
     expect(activePaneSide(paneSideList(NONE), "git")).toBe("preview");
   });
 });

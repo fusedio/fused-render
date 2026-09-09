@@ -69,17 +69,22 @@ export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts)
 // must keep offering them as ordinary modes, which is only safe while "is this a
 // sidebar mode?" has one definition.
 //
-// `git` AND `mcp` ARE ON THIS LIST AND ARE IN NO FILE'S TEMPLATE LIST, and both
-// halves of that are deliberate. The registry binds each to the universal "/"
-// DIRECTORY key alone and both gates refuse anything that is not a directory
+// `git` IS ON THIS LIST AND IS IN NO FILE'S TEMPLATE LIST, and both halves of
+// that are deliberate. The registry binds it to the universal "/" DIRECTORY key
+// alone and its gate refuses anything that is not a directory
 // (templates/git/condition.py: a working tree belongs to the folder, since you
-// stash a tree and not a file; templates/mcp/condition.py: the tool manifest
-// belongs to the app folder it sits in), so `partitionModes` will never pull
-// either entry out of a file's own modes. The file sidebar BORROWS them from the
-// file's parent folder instead (apps/explorer/lib/dir-mode.ts) and inserts them
-// here — which is why the ordering below is a rule of its own rather than the
-// registry's.
-export const SIDEBAR_MODES = ["claude", "git", "mcp"] as const;
+// stash a tree and not a file), so `partitionModes` will never pull the entry
+// out of a file's own modes. The file sidebar BORROWS it from the file's parent
+// folder instead (apps/explorer/lib/dir-mode.ts) and inserts it here — which is
+// why the ordering below is a rule of its own rather than the registry's.
+//
+// `mcp` IS NOT A COMPANION. It was the third row here for a while; it is a
+// DIALOG now (apps/explorer/McpDialog, off the bar's kebab), on both the file
+// preview and the folder listing, because a manifest is something you configure
+// and leave rather than work beside. Its `unavailableReason` below survives for
+// that kebab row's tooltip; `isSidebarMode("mcp")` is false, so a registry that
+// bound the template to a file would list it as an ordinary content mode.
+export const SIDEBAR_MODES = ["claude", "git"] as const;
 
 const SIDEBAR_MODE_SET: ReadonlySet<string> = new Set(SIDEBAR_MODES);
 

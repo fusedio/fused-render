@@ -50,11 +50,14 @@ def test_defaults_to_the_working_directory(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
-def test_a_fake_key_reddens_the_run(tmp_path):
+def test_a_fake_key_alone_does_not_redden_the_run(tmp_path):
+    """A secret is a CANDIDATE: the pattern that flagged it does not decide
+    whether it's real (see the module docstring's measurement), so it prints
+    but does not fail the run on its own."""
     _clean_app(tmp_path)
     _write(tmp_path, "app.py", 'AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
     r = _run(str(tmp_path), cwd=tmp_path)
-    assert r.returncode != 0
+    assert r.returncode == 0
     assert "secrets:aws-access-key" in r.stdout
     assert "app.py" in r.stdout
     assert "AKIAABCDEFGHIJKLMNOP" not in r.stdout
@@ -62,14 +65,15 @@ def test_a_fake_key_reddens_the_run(tmp_path):
 
 def test_findings_across_files_and_families_print_one_pinned_line_each_in_sorted_order(tmp_path):
     """Two files, two families: a leaked key in `app.py` and a hardcoded
-    device path in `config.py`. Pins the exact `path:line: rule: excerpt`
-    shape and the path-then-line-then-rule sort, so the same app always
-    prints the same bytes in the same order."""
+    device path in `config.py`. Both are candidates, so this pins the exact
+    `path:line: rule: excerpt` shape and the path-then-line-then-rule sort
+    without also asserting an exit code — that is a separate test below,
+    since a candidate-only run is 0 now (see the module docstring)."""
     _clean_app(tmp_path)
     _write(tmp_path, "app.py", '#\nAWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
     _write(tmp_path, "config.py", 'PATH = "/home/user/project/secret.txt"\n')
     r = _run(str(tmp_path), cwd=tmp_path)
-    assert r.returncode != 0
+    assert r.returncode == 0
     lines = r.stdout.splitlines()
     assert lines == [
         "app.py:2: secrets:aws-access-key: AK****************OP",
@@ -78,15 +82,41 @@ def test_findings_across_files_and_families_print_one_pinned_line_each_in_sorted
     ]
 
 
-def test_a_missing_thumbnail_exits_nonzero(tmp_path):
-    """A missing preview.png is a structure finding, and every finding this
-    script reports is HIGH severity — it fails the run the same way a leaked
-    key does."""
+def test_a_missing_thumbnail_prints_but_does_not_redden_the_run(tmp_path):
+    """A missing preview.png is a structure finding — a FACT, not a pattern
+    match — but its severity is `suggested` (`_STRUCTURE_META`): the share
+    still opens and works without a thumbnail, it just looks worse in a
+    listing. `kind == "fact"` alone used to be enough to fail the build over
+    this cosmetic gap while a `critical` candidate (see the test above) exited
+    0 — inverted urgency. The finding still prints; it must not block."""
     _clean_app(tmp_path)
     (tmp_path / "preview.png").unlink()
     r = _run(str(tmp_path), cwd=tmp_path)
-    assert r.returncode != 0
+    assert r.returncode == 0
     assert "preview.png" in r.stdout
+
+
+def test_a_missing_index_exits_nonzero(tmp_path):
+    """A missing index.html is a structure finding whose severity is
+    `critical` (`_STRUCTURE_META`) — the app cannot even open — so unlike the
+    missing-thumbnail case above, this fact finding does fail the run."""
+    _clean_app(tmp_path)
+    (tmp_path / "index.html").unlink()
+    r = _run(str(tmp_path), cwd=tmp_path)
+    assert r.returncode != 0
+    assert "structure:missing-index" in r.stdout
+
+
+def test_a_candidate_and_a_blocking_fact_together_still_redden_the_run(tmp_path):
+    """One fact finding of severity critical/warning is enough to fail the
+    run even alongside candidates that, alone, would not."""
+    _clean_app(tmp_path)
+    _write(tmp_path, "app.py", 'AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
+    (tmp_path / "index.html").unlink()
+    r = _run(str(tmp_path), cwd=tmp_path)
+    assert r.returncode != 0
+    assert "secrets:aws-access-key" in r.stdout
+    assert "structure:missing-index" in r.stdout
 
 
 def test_a_path_that_does_not_exist_fails_loudly(tmp_path):

@@ -105,7 +105,8 @@ export interface SideSplitInput {
   // The file's own modes, already partitioned (lib/mode-visibility).
   content: TemplateEntry[];
   own: TemplateEntry[];
-  // The parent folder's FOLDER-BOUND companion entries (`git`, `mcp`) — the ones
+  // The parent folder's FOLDER-BOUND companion entries (`git`; `mcp` was one
+  // until it became a dialog off the kebab) — the ones
   // no file's own template list can contain, so a file sidebar has them only by
   // borrowing (see the header and lib/dir-mode). Empty when the parent offers
   // none, and a mode is absent here when the file has one of its own.

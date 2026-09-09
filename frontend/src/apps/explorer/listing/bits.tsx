@@ -30,13 +30,14 @@ export function skeletonRows(n: number): React.ReactNode {
 // The pending-clipboard mark on a row: a small "Cut" / "Copied" pill in the name
 // cell, alongside the row-level styling (dim for cut, accent edge + wash for
 // copy). This IS the whole pending-clipboard UI — there is no chrome-level chip
-// (see Breadcrumb.tsx) — so the pill carries the Esc affordance in its tooltip.
-// `cut` and `copied` are never both true: the clipboard holds a single op.
+// (see Breadcrumb.tsx). `cut` and `copied` are never both true: the clipboard
+// holds a single op.
 export function ClipMark({ cut, copied }: { cut: boolean; copied: boolean }) {
   if (!cut && !copied) return null;
+  const label = cut ? "Cut" : "Copied";
   return (
-    <span className={"clip-mark" + (cut ? " cut" : " copied")} title="Press Esc to cancel">
-      {cut ? "Cut" : "Copied"}
+    <span className={"clip-mark" + (cut ? " cut" : " copied")} title={label}>
+      {label}
     </span>
   );
 }

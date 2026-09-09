@@ -170,7 +170,11 @@ export function TaskCards({
   onPickProject,
   pinnedProjects = [],
   missing,
+  emptyLabel = CARDS_EMPTY,
 }: {
+  /** The page's sentence for an empty set (Scheduled `emptyLabel`) — the same
+   * one the List, Board and Calendar print, so the four views agree. */
+  emptyLabel?: string;
   /** Already filtered, in the SERVER's order — `cardsForTasks` orders it by
    * lane (every lane, Archive last), which is the one thing this view does to
    * the set it is handed and the one place it is decided. */
@@ -307,7 +311,7 @@ export function TaskCards({
     // there is nothing here.
     return (
       <>
-        <p className="schedule-tv-empty">{CARDS_EMPTY}</p>
+        <p className="schedule-tv-empty">{emptyLabel}</p>
         {popup}
       </>
     );

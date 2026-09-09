@@ -331,13 +331,6 @@ export function useListingSelection({
         // Clear the selection. The search input owns Escape while focused (it
         // clears the query — see its onKeyDown), and the overlay/dialog guards
         // above already stopped us if anything modal is up.
-        //
-        // A pending copy/cut outranks the selection: App's capture-phase Escape
-        // handler cancels the clipboard and calls preventDefault(), so one press
-        // never does both. Reading defaultPrevented keeps that precedence here
-        // without a second copy of the clipboard logic (which would also be
-        // wrong — the cancel has to work from Preview, where no Listing exists).
-        if (e.defaultPrevented) return;
         if (!navActive || inSearch) return;
         if (!selRef.current.paths.length) return;
         e.preventDefault();

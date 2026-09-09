@@ -1,10 +1,23 @@
-// The pure half of the App Doctor dialog (AppDoctorModal.tsx): what the
-// summary line says, how many findings a row draws, and the address of the
-// app's Tasks tab. Split out for the same reason modal/dirty-guard.ts is —
+// The pure half of the App Doctor dialog (AppDoctorModal.tsx) and its two
+// header entry points (shell/AppPage.tsx, apps/explorer/Preview.tsx): what the
+// summary line says, how a checklist groups into sections and orders within
+// them, which severity a row's failure counts as once a candidate's
+// unreviewed status discounts it, how many findings a row draws, the address
+// of the app's Tasks tab, and — since a section that is all green ticks is
+// mostly noise — a section's one-line disclosure summary and whether it
+// starts open. Split out for the same reason modal/dirty-guard.ts is —
 // the chassis renders through a portal, which react-test-renderer cannot
 // mount, so the decisions worth pinning live where a test can call them.
+//
+// There is no visible severity chip in the dialog — colour, the row's
+// ground/rail and the state mark's shape already carry severity for a
+// sighted reader. `rowStateAccessibleLabel` and `rowStateDetailText` below
+// are two separate names for two separate callers (the state mark's
+// `aria-label`/`title` vs. the row's visible detail line) precisely so
+// severity, which only the accessible label says in words, cannot fold back
+// into the visible sentence a sighted reader sees.
 import { encodeFsPathSegments } from "@platform/lib/router";
-import type { AppCheck, AppCheckFinding, AppCheckState } from "@platform/lib/api";
+import type { AppCheck, AppCheckFinding, AppCheckState, Severity } from "@platform/lib/api";
 
 // A long finding list is a report, not a UI: past this many the rest are
 // counted rather than drawn, and the fix task sees all of them regardless.
@@ -14,7 +27,187 @@ export const STATE_LABEL: Record<AppCheckState, string> = {
   pass: "Passed",
   fail: "Failed",
   skip: "Not checked",
+  unrun: "Not run yet",
 };
+
+// Worst first — every ranking below (the header dot, the summary line, a
+// chip's own ordering) reads off this single list rather than a second
+// hardcoded ordering. The server sends the same order in `report.severities`;
+// this copy is the one the two header entry points and the modal actually
+// call against, so it exists regardless of whether a report has loaded yet.
+export const SEVERITY_ORDER: readonly Severity[] = ["critical", "warning"];
+
+export const SEVERITY_LABEL: Record<Severity, string> = {
+  critical: "Critical",
+  warning: "Warning",
+};
+
+/** A row's severity for the purposes of ANY reduction across rows (the
+ *  header dot, is-this-worse-than-that) — a CANDIDATE row's severity capped
+ *  at "warning" even when the checklist lists it as "critical" (`secrets`).
+ *  A candidate is unreviewed by definition (see app_doctor.py's module
+ *  docstring and its measurement against a real workspace), so it must never
+ *  read as urgently as a settled failure. This is the one place that
+ *  discount happens — everything that ranks severities calls this rather
+ *  than reading `check.severity` directly. */
+export function effectiveSeverity(check: AppCheck): Severity {
+  return check.kind === "candidate" && check.severity === "critical"
+    ? "warning"
+    : check.severity;
+}
+
+/** The worst FAILING severity across `checks` (via `effectiveSeverity`), or
+ *  null when nothing failed — a clean report, or a report with only
+ *  skip/unrun rows. The one reduction the header dot on BOTH surfaces and the
+ *  modal read; do not re-derive it in a component. */
+export function worstSeverity(checks: AppCheck[]): Severity | null {
+  let worst: Severity | null = null;
+  for (const c of checks) {
+    if (c.state !== "fail") continue;
+    const sev = effectiveSeverity(c);
+    if (worst === null || SEVERITY_ORDER.indexOf(sev) < SEVERITY_ORDER.indexOf(worst)) {
+      worst = sev;
+    }
+  }
+  return worst;
+}
+
+/** The header dot's `title`/`aria-label` — colour is never the only carrier,
+ *  so every state this can be in has words. `checks === null` is "the report
+ *  has not landed yet" (the fetch-after-paint window, or a fetch that failed
+ *  or is still running): the dot reads as unknown, not as clean. */
+export function severityDotLabel(checks: AppCheck[] | null): string {
+  if (checks === null) return "App Doctor: not checked yet";
+  const failing = checks.filter((c) => c.state === "fail");
+  if (failing.length === 0) return "App Doctor: nothing to fix";
+  const counts = SEVERITY_ORDER.map((sev) => ({
+    sev,
+    n: failing.filter((c) => effectiveSeverity(c) === sev).length,
+  })).filter((x) => x.n > 0);
+  return (
+    "App Doctor: " + counts.map((x) => `${x.n} ${severityNoun(x.sev, x.n)}`).join(", ")
+  );
+}
+
+/** `SEVERITY_LABEL[sev]` lowercased and pluralized for `n` — "1 critical",
+ *  "3 warnings". Both severity nouns take a plain trailing "s", so this is
+ *  the one place that "s" gets added rather than each caller re-deciding it. */
+function severityNoun(sev: Severity, n: number): string {
+  const noun = SEVERITY_LABEL[sev].toLowerCase();
+  return n === 1 ? noun : noun + "s";
+}
+
+/** Rows grouped into their sections, server order preserved (the server
+ *  already emits `checks` in section order — essentials, then sharing — so
+ *  this only has to notice where one section's run ends and the next
+ *  begins, never sort). */
+export function groupBySection(
+  checks: AppCheck[],
+): { section: string; checks: AppCheck[] }[] {
+  const out: { section: string; checks: AppCheck[] }[] = [];
+  for (const c of checks) {
+    const last = out[out.length - 1];
+    if (last && last.section === c.section) last.checks.push(c);
+    else out.push({ section: c.section, checks: [c] });
+  }
+  return out;
+}
+
+/** A tier for `sortByAttention` — lower sorts first. Failures split by
+ *  `effectiveSeverity` (the same candidate discount `worstSeverity` applies,
+ *  since this is also a cross-row comparison), then the rows nothing is
+ *  known about yet, then the rows the doctor gave up on, then passes. */
+function attentionTier(check: AppCheck): number {
+  if (check.state === "fail") return effectiveSeverity(check) === "critical" ? 0 : 1;
+  if (check.state === "unrun") return 2;
+  if (check.state === "skip") return 3;
+  return 4;
+}
+
+/** Worst-first within a group of rows: failing (critical before warning),
+ *  then unrun, then skip, then pass. Returns a NEW array — `Array#sort` is
+ *  stable in every engine this runs on, so rows within one tier keep the
+ *  server's own order, which is what makes ties deterministic rather than
+ *  re-shuffled on every call. Sorts WITHIN a group only — compose with
+ *  `groupBySection` at the call site (AppDoctorModal.tsx) rather than
+ *  sorting across sections, which stay in their fixed server order. */
+export function sortByAttention(checks: AppCheck[]): AppCheck[] {
+  return [...checks].sort((a, b) => attentionTier(a) - attentionTier(b));
+}
+
+export const SECTION_LABEL: Record<string, string> = {
+  essentials: "Essentials",
+  sharing: "Sharing",
+};
+
+/** The per-row action button's label: a CANDIDATE row asks the session to
+ *  judge each finding first (Review), a FACT row asks it to fix outright
+ *  (Fix) — see app_doctor.doctor_prompt's own triage-vs-fix split. */
+export function rowActionLabel(check: AppCheck): "Fix" | "Review" {
+  return check.kind === "candidate" ? "Review" : "Fix";
+}
+
+/** A failing row's own state word — feeds both `rowStateAccessibleLabel`
+ *  below and, through it, `rowVisibleDetailText`'s prefix for the VISIBLE
+ *  detail line (`.appdoc-detail`, AppDoctorModal.tsx) — never the severity. A
+ *  candidate never reads as a settled failure ("Failed") — it reads as "N to
+ *  review", because the pattern that flagged it has not been judged yet.
+ *  Every other state reads as `STATE_LABEL` already does. Note that a
+ *  settled fact failure's word here IS still "Failed", even though
+ *  `rowVisibleDetailText` chooses not to print it on screen any more — this
+ *  function's job is naming the state, not deciding what is worth showing.
+ *
+ *  This does NOT say the row's severity, on purpose: colour, the rail and the
+ *  state mark's SHAPE already carry severity for a sighted reader, so folding
+ *  the severity word into this same string would put it right back on the
+ *  screen inside the detail line ("Critical — Failed — <detail>"), a
+ *  regression this split exists to prevent. Severity belongs only in
+ *  `rowStateAccessibleLabel` below, which feeds the state mark's
+ *  `aria-label`/`title`, not this one. */
+export function rowStateDetailText(check: AppCheck): string {
+  if (check.state !== "fail") return STATE_LABEL[check.state];
+  return check.kind === "candidate" ? `${check.findings.length} to review` : STATE_LABEL.fail;
+}
+
+/** A failing row's ACCESSIBLE name — feeds `.appdoc-state`'s `aria-label`/
+ *  `title` (AppDoctorModal.tsx) only, never the visible detail line. This is
+ *  the one place that names severity in words at all — the only place a
+ *  screen reader hears "critical"/"warning". Built on `rowStateDetailText` so the two
+ *  strings never drift apart on the state half — they differ by exactly the
+ *  severity prefix. Uses `check.severity` (the checklist's own severity), not
+ *  `effectiveSeverity` — that discount only applies to cross-row reductions
+ *  (the header dot, worstSeverity); a row naming itself always says what the
+ *  checklist actually found. */
+export function rowStateAccessibleLabel(check: AppCheck): string {
+  if (check.state !== "fail") return STATE_LABEL[check.state];
+  return `${SEVERITY_LABEL[check.severity]} — ${rowStateDetailText(check)}`;
+}
+
+/** The visible `.appdoc-detail` line's full text (AppDoctorModal.tsx), or ""
+ *  for a passing row — every checklist label is already a complete statement
+ *  ("pyproject.toml is valid TOML"), so a passing row needs no second
+ *  sentence under it, and AppDoctorModal.tsx skips the `.appdoc-detail`
+ *  element entirely when this returns "". A skip's or an unrun row's detail
+ *  is the only place its reason appears, so those keep it.
+ *
+ *  A failing row is prefixed with `rowStateDetailText` only when that prefix
+ *  carries information the sentence does not already: a candidate's "N to
+ *  review" count. A settled fact failure's prefix is just `STATE_LABEL.fail`
+ *  ("Failed"), and printing that adds nothing the row is not already saying
+ *  three other ways — the left rail and ground tint (app-doctor.css's
+ *  `.appdoc-row-sev-*`) and the state mark's shape (StateIcon) — while
+ *  stacking a third em dash onto an already dash-heavy sentence.
+ *  `rowStateDetailText` itself still returns "Failed" for that row,
+ *  unchanged — `rowStateAccessibleLabel` above needs it there to build a
+ *  screen reader's "Critical — Failed"; only this visible-line function
+ *  chooses not to print it. */
+export function rowVisibleDetailText(check: AppCheck): string {
+  if (check.state === "pass") return "";
+  if (check.state === "fail" && check.kind === "candidate") {
+    return `${rowStateDetailText(check)} — ${check.detail}`;
+  }
+  return check.detail;
+}
 
 /** The app's Tasks tab. Spelled here, not imported from the shell's
  *  current-apps-lib: this dialog renders inside the explorer too, and an app
@@ -37,19 +230,47 @@ export function findingWhere(f: AppCheckFinding): string {
   return f.line ? `${f.path}:${f.line}` : f.path;
 }
 
-/** The sentence above the checklist.
+/** The header's reading, split in two so the dialog can set the count apart
+ *  from the sentence around it — the number is the part worth finding again
+ *  on a second look, and it is the only thing in the line drawn at full
+ *  foreground.
  *
- *  "Every check this app can answer passed" rather than "all checks passed":
- *  a skipped row is not a pass, and a summary that counted it as one would
- *  claim the doctor looked at something it could not see. */
-export function summaryLine(checks: AppCheck[]): string {
-  const failed = checks.filter((c) => c.state === "fail").length;
-  const skipped = checks.filter((c) => c.state === "skip").length;
-  const head =
-    failed === 0
-      ? "Every check this app can answer passed."
-      : `${failed} of ${checks.length} checks failed.`;
-  return skipped > 0
-    ? `${head} ${skipped} could not be checked.`
-    : head;
+ *  `readinessCount` counts what wants an answer when anything does, and what
+ *  came back clean when nothing does. It never claims "All N" while a row
+ *  went unanswered: a skipped or unrun row is neither a pass nor a failure,
+ *  so the count says how many of the N actually passed. */
+export function readinessCount(checks: AppCheck[]): string {
+  const failing = checks.filter((c) => c.state === "fail").length;
+  if (failing > 0) return `${failing} of ${checks.length}`;
+  const passed = checks.filter((c) => c.state === "pass").length;
+  if (passed < checks.length) return `${passed} of ${checks.length}`;
+  return `All ${checks.length}`;
+}
+
+export function readinessSentence(checks: AppCheck[]): string {
+  const failing = checks.filter((c) => c.state === "fail").length;
+  const notChecked = checks.filter((c) => c.state === "skip" || c.state === "unrun").length;
+  if (failing > 0) {
+    return notChecked > 0
+      ? `checks need attention before this app is worth sharing, and ${notChecked} could not be answered here.`
+      : "checks need attention before this app is worth sharing.";
+  }
+  return notChecked > 0
+    ? "checks passed and the rest could not be answered here — nothing to fix."
+    : "checks passed. This app is ready to share.";
+}
+
+/** The footer's own note, for the one thing its button cannot promise: a
+ *  candidate row is a pattern match, so the task it creates reads those
+ *  findings and decides, rather than rewriting them outright. Empty when no
+ *  candidate is failing — a footer with nothing to qualify says nothing. */
+export function reviewNote(checks: AppCheck[]): string {
+  const n = checks.filter((c) => c.state === "fail" && c.kind === "candidate").length;
+  if (n === 0) return "";
+  return n === 1 ? "1 of these is a match to read, not a fix." : `${n} of these are matches to read, not fixes.`;
+}
+
+/** How many rows the footer's one task would cover. */
+export function failingCount(checks: AppCheck[]): number {
+  return checks.filter((c) => c.state === "fail").length;
 }

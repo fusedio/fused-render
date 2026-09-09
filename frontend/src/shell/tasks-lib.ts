@@ -749,6 +749,13 @@ export function taskUnread(
   // never applied, a message that arrived since — falls through to the
   // arithmetic below and the server's number is what the row draws.
   if (isAllRead(read, task)) return 0;
+  // A PROVISIONAL row (provisionalTasks) holds no messages and a `message_count`
+  // of 0 — a default, not a count — so the "we hold the whole thread" arm below
+  // would read it as an empty, fully read thread and hollow the ring on a task
+  // pulse says has unread, for exactly the wait the seed exists to cover
+  // (Bugbot, #1079). Pulse's `unread` IS the server's number, and there is
+  // nothing held here to discount it by.
+  if (task.provisional) return task.unread;
   const known = held ?? task.messages ?? [];
   // Once Show more has run we hold the WHOLE thread, and then the count is not
   // arithmetic at all — it is the dots, counted. Same predicate (isUnread), same
@@ -3659,4 +3666,57 @@ export function mergeTaskChanges(tasks: Task[], upserts: Task[], gone: string[])
   for (const t of tasks) if (!drop.has(t.key)) byKey.set(t.key, t);
   for (const t of upserts) if (!drop.has(t.key)) byKey.set(t.key, t);
   return [...byKey.values()].sort((a, b) => b.last_active - a.last_active);
+}
+
+/**
+ * PAINT BEFORE /api/tasks ANSWERS: the sidebar's compact rows, upcast into the
+ * listing's own shape.
+ *
+ * `_task_rows()` reads every transcript from byte 0 on the first call of a
+ * server process — 2.9s on this machine — and the page spent all of it behind a
+ * skeleton while `/api/tasks/pulse` had already told the sidebar the key,
+ * status, project, title, target, session and times of every task. Those are
+ * most of what a row draws, so a row can be drawn from them.
+ *
+ * Everything pulse does not carry gets a NEUTRAL default, never a guess: no
+ * message window, no count, nothing live, nothing failed, nothing blocked and
+ * no next run. `provisional: true` is how the views tell the two apart — the
+ * message count and the expand caret are the two cells that would otherwise
+ * print one of these defaults as a fact, and they draw placeholders instead
+ * (ScheduleTaskViews). Every row is replaced whole the moment the listing
+ * lands, and the keys are the same, so nothing reorders on the swap.
+ */
+export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
+  return rows.map((row) => ({
+    key: row.key,
+    task_id: row.task_id,
+    project: row.project,
+    target: row.target,
+    session_id: row.session_id,
+    title: row.title,
+    // `message` and not `entry`: the difference between those two only decides
+    // whether a title may be a message being composed right now, and a row
+    // this page did not fetch is not one of those.
+    title_source: "message",
+    description: "",
+    status: row.status,
+    failed: false,
+    blocked_reason: "",
+    attention: null,
+    live: false,
+    unread: row.unread,
+    started: 0,
+    last_active: row.last_active,
+    happened_at: row.happened_at,
+    message_count: 0,
+    // From pulse since 2026-09-09: the Board's Upcoming lane sorts by it, and a
+    // default of 0 put every provisional card at the bottom of that lane until
+    // the listing landed and moved it (review, #1079). BOTH fields: namedNextRun
+    // reads the time only when the entry is named too — a time nobody can fire
+    // is not sorted by — so the time alone changed nothing (Bugbot).
+    next_run: row.next_run,
+    next_run_entry: row.next_run_entry,
+    messages: [],
+    provisional: true,
+  }));
 }

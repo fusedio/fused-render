@@ -620,6 +620,17 @@ button.tasks-caret,
   gap: 3px;
 }
 
+/* A PROVISIONAL row's count cell (ScheduleTaskViews, tasks-lib.provisionalTasks):
+   the box a one-message row would occupy, with nothing visible in it. Painted
+   from /api/tasks/pulse before the full listing lands, this row has no count to
+   print — and `visibility` rather than `display: none` is the point, because the
+   cell has to hold its width until the real number arrives or the title beside
+   it would widen and then snap back on the swap. */
+.tasks-row-msgs--blank,
+.tasks-row-time--blank {
+  visibility: hidden;
+}
+
 /* Optically centred with the digits rather than sitting on their baseline: the
    glyph's box is taller than the numerals it stands beside. */
 .tasks-row-msgs-icon {
@@ -1832,4 +1843,156 @@ button.tasks-caret,
 .schedule-tv-filter-x:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
+}
+
+/* ------------------------------------------------------------- the ghosts
+   TasksSkeleton: the loading state, shaped like the view it stands in for. Each
+   ghost reuses the real container classes for its geometry (`.tasks-row`,
+   `.schedule-tv-lane`, `.task-cards`, `.schedule-cal-grid`); what follows is
+   only what a ghost needs on TOP of them — no hover, no pointer, bars where
+   the text would be — and the few boxes that have no real class to borrow
+   (a card tile's body, the calendar's row grid). Every bar is `.skel-bar`
+   (explorer.css): same shimmer, same colour, nothing new to the eye. */
+/* No wrapper of its own: each ghost's ROOT is the view's real container (see
+   TasksSkeleton `ghost`), so the page's flex chain and every selector keyed on
+   `.schedule-main > …` treat it as the view. Only the bars differ. */
+.tasks-skel {
+  min-width: 0;
+}
+.tasks-skel .skel-bar {
+  display: block;
+  flex: 0 0 auto;
+}
+.tasks-skel-ring {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+/* List: the real row's padding and gap; hover and pointer off. */
+.tasks-skel-row,
+.tasks-skel-row:hover {
+  cursor: default;
+  background: transparent;
+  align-items: center;
+}
+.tasks-skel-caret {
+  width: var(--tasks-caret-w);
+  flex: 0 0 var(--tasks-caret-w);
+}
+.tasks-skel-rowmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tasks-skel-title {
+  max-width: 60%;
+}
+
+/* Board: a lane head that is a div, not a button; cards with no hover. */
+.tasks-skel-lane-head {
+  display: flex;
+  align-items: center;
+}
+.schedule-tv-board .tasks-skel-card,
+.schedule-tv-board .tasks-skel-card:hover {
+  border-color: var(--border);
+  background: var(--tasks-card-bg);
+  cursor: default;
+}
+.tasks-skel-card .schedule-tv-card-head,
+.tasks-skel-card .schedule-tv-card-foot {
+  align-items: center;
+}
+
+/* A rolled-up lane: the real rail's 52px column with a ring and, where the
+   vertical label reads, one upright bar. Not a button: nothing to press yet. */
+.tasks-skel-rail {
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+}
+.tasks-skel-rail-label {
+  width: 10px;
+  height: 64px;
+}
+
+/* Cards: the tile is `.task-card`'s box (1px border, 8px radius) with a head
+   row and a body that shimmers as one block where the frame will be. */
+.tasks-skel-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--tasks-card-bg, var(--bg));
+}
+.tasks-skel-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Compound with `.tasks-skel`, or the `.tasks-skel .skel-bar { flex: 0 0 auto }`
+   rule above outranks this one and the body cannot grow — the tile drew as an
+   empty framed box (Bugbot, #1079). A floor, so a tile short of room still
+   shows a body rather than a hairline. */
+.tasks-skel .tasks-skel-tile-body {
+  flex: 1 1 auto;
+  width: 100%;
+  height: auto;
+  min-height: 96px;
+  border-radius: 6px;
+}
+
+/* Calendar: the real head; a grid of the real columns, with rows of the real
+   hour height standing in for the hour lines, and one chip ghost per busy day. */
+.tasks-skel-cal .schedule-cal-day-head {
+  gap: 6px;
+}
+.tasks-skel-cal-bar {
+  align-items: center;
+  gap: 8px;
+}
+.tasks-skel-cal-btn {
+  height: 32px;
+  border-radius: 6px;
+}
+.tasks-skel-cal-num {
+  height: 18px;
+  border-radius: 9px;
+}
+.tasks-skel-cal-grid {
+  /* Eight hours of the real grid's 44px rows (ScheduleCalendar HOUR_H), as a
+     fixed height like the real one sets inline — the columns inside are laid
+     out by their own row template, and without a height here the grid took
+     the head's height and nothing more. */
+  grid-auto-rows: 44px;
+  height: calc(8 * 44px);
+  overflow: hidden;
+}
+.tasks-skel-cal-gutter {
+  display: grid;
+  grid-auto-rows: 44px;
+  align-items: start;
+  justify-items: end;
+  padding: 0 6px 0 0;
+  box-sizing: border-box;
+}
+.tasks-skel-cal-gutter .skel-bar {
+  margin-top: -5px;
+}
+.tasks-skel-cal-col {
+  display: grid;
+  grid-template-rows: repeat(8, 44px);
+  padding: 0 3px;
+  box-sizing: border-box;
+}
+.tasks-skel-cal-chip {
+  height: auto;
+  margin: 2px 0;
+  border-radius: 6px;
 }

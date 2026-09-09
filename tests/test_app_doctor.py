@@ -46,7 +46,8 @@ def test_an_aws_key_is_flagged_and_masked(tmp_path):
     assert "secrets:aws-access-key" in _rules(findings)
     hit = next(f for f in findings if f["rule"] == "secrets:aws-access-key")
     assert hit["path"] == "app.py"
-    assert hit["severity"] == "high"
+    assert hit["severity"] == "critical"
+    assert hit["kind"] == "candidate"
     assert "AKIAABCDEFGHIJKLMNOP" not in hit["excerpt"]
 
 
@@ -179,7 +180,8 @@ def test_a_home_folder_path_is_flagged(tmp_path):
     _write(tmp_path, "app.py", 'DATA = "/home/alice/datasets/model.bin"\n')
     findings = app_doctor.check(str(tmp_path))
     hit = next(f for f in findings if f["rule"] == "device-path:hardcoded")
-    assert hit["severity"] == "high"
+    assert hit["severity"] == "warning"
+    assert hit["kind"] == "candidate"
     assert "/home/alice" in hit["excerpt"]
 
 
@@ -300,3 +302,89 @@ def test_bookkeeping_files_are_never_scanned(tmp_path):
     _write(tmp_path, ".venv/cache.txt", 'AKIAABCDEFGHIJKLMNOP')
     findings = app_doctor.check(str(tmp_path))
     assert _leaks(findings) == []
+
+
+# --------------------------------------------------------------- precision fix A
+
+
+def test_a_backtick_no_longer_counts_as_an_opening_quote(tmp_path):
+    """A backtick opens a markdown code span, not a real assignment — it used
+    to read as an opening quote, which fired on every documented example
+    path. Written to a .py file (not a prose suffix) so this isolates the
+    backtick behaviour from the prose-file skip below."""
+    _write(tmp_path, "app.py", "# see `/home/alice/example.csv` for the shape\n")
+    findings = app_doctor.check(str(tmp_path))
+    assert _leaks(findings) == []
+
+
+def test_device_paths_are_not_scanned_in_prose_files(tmp_path):
+    """Prose has no runtime behaviour to break — the whole device-path family
+    is skipped for .md/.rst/.txt, even a quoted-looking hit."""
+    for name in ("README.md", "notes.rst", "notes.txt"):
+        _write(tmp_path, name, f'a path like "/Users/alice/data.csv" shows up in {name}\n')
+    findings = app_doctor.check(str(tmp_path))
+    assert _leaks(findings) == []
+
+
+# --------------------------------------------------------------- precision fix B
+
+
+def test_a_strong_root_fires_regardless_of_what_follows(tmp_path):
+    _write(tmp_path, "app.py", 'DATA = "/Volumes/MyDisk/data.csv"\n')
+    findings = app_doctor.check(str(tmp_path))
+    assert any(f["rule"] == "device-path:hardcoded" for f in findings)
+
+
+def test_a_weak_root_bare_system_directory_is_not_flagged(tmp_path):
+    """The measured false positive: a deliberate SKIP_DIRS constant naming
+    `/private/var/vm` — a weak root continuing into another OS-jargon name,
+    not a person's data."""
+    _write(tmp_path, "app.py", 'SKIP_DIRS = "/private/var/vm"\n')
+    findings = app_doctor.check(str(tmp_path))
+    assert _leaks(findings) == []
+
+
+def test_a_weak_root_with_only_one_segment_is_not_flagged(tmp_path):
+    """The other measured false positive: `/media/cover.png` — a weak root
+    plus a single generic filename, not a path into someone's own tree."""
+    _write(tmp_path, "app.py", 'IMG = "/media/cover.png"\n')
+    findings = app_doctor.check(str(tmp_path))
+    assert _leaks(findings) == []
+
+
+def test_a_weak_root_that_continues_into_something_specific_is_flagged(tmp_path):
+    _write(tmp_path, "app.py", 'DATA = "/opt/myproject/dataset.csv"\n')
+    findings = app_doctor.check(str(tmp_path))
+    assert any(f["rule"] == "device-path:hardcoded" for f in findings)
+
+
+# --------------------------------------------------------------- precision fix C
+
+
+def test_a_placeholder_shaped_anthropic_key_is_not_flagged(tmp_path):
+    """The SKILL itself calls `sk-ant-REDACTED` a placeholder — a value that
+    is the provider's literal prefix plus nothing but a filler word (here
+    tripled to clear the pattern's length floor) is not a live key."""
+    _write(tmp_path, "app.py",
+           'ANTHROPIC_API_KEY = "sk-ant-REDACTEDREDACTEDREDACTED"\n')
+    findings = app_doctor.check(str(tmp_path))
+    assert not any(f["rule"].startswith("secrets:") for f in findings)
+
+
+def test_a_placeholder_shaped_pem_body_is_not_flagged(tmp_path):
+    pem = (
+        "-----BEGIN PRIVATE KEY-----\n"
+        "PLACEHOLDERPLACEHOLDERPLACEHOLDER\n"
+        "-----END PRIVATE KEY-----\n"
+    )
+    _write(tmp_path, "creds/key.pem", pem)
+    findings = app_doctor.check(str(tmp_path))
+    assert not any(f["rule"] == "secrets:private-key" for f in findings)
+
+
+def test_a_real_looking_prefixed_key_still_fires(tmp_path):
+    """The precision fix must not swallow a real-looking key alongside the
+    placeholder-shaped one."""
+    _write(tmp_path, "app.py", 'AWS_KEY = "AKIAABCDEFGHIJKLMNOP"\n')
+    findings = app_doctor.check(str(tmp_path))
+    assert any(f["rule"] == "secrets:aws-access-key" for f in findings)
