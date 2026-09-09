@@ -914,6 +914,41 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  /* Positioning context for .marquee-band: its `left`/`top` are the scroller's
+     own content coordinates (useMarquee's sweepTo), so it must be positioned
+     against THIS element and not whatever ancestor happens to be relative. */
+  position: relative;
+}
+
+/* The rubber band a sweep draws over the rows it is crossing. Appended and
+   positioned imperatively by useMarquee (sweepTo) — never through React state,
+   so a sweep costs a render only when the SELECTION changes and not once per
+   pointermove. pointer-events: none so the band itself can never become the
+   target of the very pointer that is drawing it. */
+.marquee-band {
+  position: absolute;
+  background: rgba(var(--accent-rgb), 0.12);
+  border: 1px solid var(--accent);
+  pointer-events: none;
+}
+
+/* The count strip under the list (Listing.tsx, listing/status-line.ts). A
+   hairline rather than the row's own border weight, since this is chrome
+   about the list and not one more row of it. tabular-nums keeps a selection
+   count from jittering sideways as its digits change; nowrap + ellipsis
+   because the line can carry a size and a folder count on top of the counts
+   themselves, and a folder's worth of text should never wrap the strip to a
+   second line. */
+.listing-status {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The list's floor: with the pane on, flexbox must refuse to shrink the table
@@ -2117,14 +2152,28 @@ table.listing-table td.name {
   position: relative;
 }
 
-/* The icon-and-name group inside a row's name cell. LAYOUT ONLY.
+/* The icon-and-name group inside a row's name cell — the item itself, and the
+ * row's only drag SOURCE (data-fs-drag-handle, read by useMarquee's
+ * pressedRow). Everything else in the row, selected or not, is marquee
+ * ground: a press there always sweeps, never moves a file.
  *
- * It used to be the row's drag handle, and carried `cursor: grab` to say so.
- * That handle is gone: it was holding the pixels drag-to-select needs, so a
- * drag begun across rows from a name moved that one file instead of selecting
- * the rows it crossed. A drag now starts on an already-selected row and nowhere
- * else (listing/drag-drop's pressStartsDrag), which is why `grab` moved to
- * tr.row.selected below and this rule keeps only its geometry.
+ * `cursor: grab` lives here and nowhere else in the row for the same reason:
+ * it is a promise about what a press DOES, and only a press on this span
+ * moves anything.
+ *
+ * max-width is capped short of the cell's full width — not 100% — so a name
+ * long enough to fill the cell still leaves real dead space beside it. Without
+ * that, the row's only sweep-able pixels would be wherever the name happened
+ * to end, and a long enough name could claim the whole row for the drag
+ * source, leaving nowhere in it to start a sweep from.
+ *
+ * The `calc(100% - 48px)` clamp is computed against `td.name`'s CONTENT box,
+ * which at the documented minimum list-column width (LIST_MIN_W, pane-math.ts)
+ * is itself only a few dozen pixels once the cell's own padding comes out —
+ * so the bare calc alone can go negative and clamp to 0, erasing the icon and
+ * name entirely with the preview pane dragged wide. `max(52px, ...)` keeps a
+ * floor under that: the row always renders its handle, at the cost of the
+ * dead-space guarantee only in a column already too narrow to spare any.
  *
  * inline-flex so it hugs its contents rather than filling the cell, and
  * min-width:0 so a long name still ellipsizes inside it (the .search-path
@@ -2134,15 +2183,19 @@ table.listing-table td.name .row-handle {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  max-width: 100%;
+  max-width: max(52px, calc(100% - 48px));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: grab;
 }
 
-/* The only surface a move-drag can begin on, so the only one that says `grab`.
- * Unselected rows keep `pointer`: a press there selects, and a press that
- * travels sweeps. */
+/* A SELECTED row is draggable across its full width, not just the handle: a
+ * press anywhere on it moves the selection (drag-drop's pressStartsDrag reads
+ * `rowWasSelected` with no `onHandle` requirement). `grab` says so everywhere
+ * on the row, not only over the .row-handle span above. An unselected row has
+ * no such rule — only its handle says `grab` — because a press on its dead
+ * space sweeps instead. */
 table.listing-table tr.row.selected {
   cursor: grab;
 }

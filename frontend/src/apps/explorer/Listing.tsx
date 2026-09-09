@@ -114,6 +114,7 @@ import {
 } from "@apps/explorer/listing/selection";
 import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
+import { statusLine } from "@apps/explorer/listing/status-line";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
@@ -1105,6 +1106,41 @@ export default function Listing({
     if (prompt) claudeAskActionRef.current(prompt);
   }, [fsPath, claudeReady, askVersion]);
 
+  // A HABITUAL DOUBLE-CLICK NOW DOUBLE-OPENS, and this is the guard against it.
+  // Single-click-open (D460) means the first press of what a lifetime of
+  // double-clicking trained someone to do already navigates on its release —
+  // and when that navigation is INTO A FOLDER, this same `Listing` instance
+  // re-renders with the new `fsPath` rather than unmounting (shell/App.tsx
+  // renders it unkeyed), so the second press of the habitual pair lands on
+  // whatever row the NEW folder painted under a cursor that has not moved —
+  // and opens THAT, which nobody asked for and nothing about it looks like a
+  // mistake to whoever it happens to.
+  //
+  // Set only from the RELEASE that actually opened something (onRowPointerUp
+  // below), and checked at the top of both press paths — this component's own
+  // onRowPointerDown, and useMarquee's capture-phase arbiter, which runs
+  // BEFORE it and has to honour the same window itself (drag-drop's
+  // `pressIsSuppressed`) or a press this ref is about to make inert still
+  // reaches it and starts a real move-drag. Neither reads select, toggle, or
+  // extend for it, because the whole point is that this press should not be
+  // read as an action on this (freshly rendered, unrelated) row at all. A
+  // plain timestamp compared against `Date.now()` rather than a timer:
+  // nothing has to be scheduled or cleared, and a press that never comes
+  // finds the ref simply stale.
+  //
+  // The window is the same rough length a native double-click's is — long
+  // enough to catch the habitual second click, short enough that a genuinely
+  // deliberate fast click a folder-hop later is the rare cost, not the norm.
+  //
+  // THIS IS NOT A DOUBLE-CLICK TIMER RESTORED FOR ITS OWN SAKE — there is
+  // still no delay before a plain press's own release opens IT (D460's whole
+  // point stands: nothing here waits to see if a second click arrives before
+  // acting on the first). It exists purely to absorb the SECOND press of a
+  // pair that a habit built for the old model still sends, aimed at a row
+  // that just changed out from under it.
+  const OPEN_SUPPRESS_MS = 400;
+  const suppressPressUntilRef = useRef(0);
+
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.
   // Rows carry no drag handlers: they declare what they ACCEPT with the
@@ -1133,6 +1169,7 @@ export default function Listing({
     selectedPaths: sel.paths,
     selectPaths,
     startMoveDrag,
+    suppressPressUntilRef,
   });
 
   useListingShortcuts({
@@ -1175,37 +1212,6 @@ export default function Listing({
     y: number;
     action: RowPressAction;
   } | null>(null);
-
-  // A HABITUAL DOUBLE-CLICK NOW DOUBLE-OPENS, and this is the guard against it.
-  // Single-click-open (D460) means the first press of what a lifetime of
-  // double-clicking trained someone to do already navigates on its release —
-  // and when that navigation is INTO A FOLDER, this same `Listing` instance
-  // re-renders with the new `fsPath` rather than unmounting (shell/App.tsx
-  // renders it unkeyed), so the second press of the habitual pair lands on
-  // whatever row the NEW folder painted under a cursor that has not moved —
-  // and opens THAT, which nobody asked for and nothing about it looks like a
-  // mistake to whoever it happens to.
-  //
-  // Set only from the RELEASE that actually opened something (onRowPointerUp
-  // below), and checked here, at the very top of the next press, before
-  // anything else runs — no select, no toggle, no extend either, because the
-  // whole point is that this press should not be read as an action on this
-  // (freshly rendered, unrelated) row at all. A plain timestamp compared
-  // against `Date.now()` rather than a timer: nothing has to be scheduled or
-  // cleared, and a press that never comes finds the ref simply stale.
-  //
-  // The window is the same rough length a native double-click's is — long
-  // enough to catch the habitual second click, short enough that a genuinely
-  // deliberate fast click a folder-hop later is the rare cost, not the norm.
-  //
-  // THIS IS NOT A DOUBLE-CLICK TIMER RESTORED FOR ITS OWN SAKE — there is
-  // still no delay before a plain press's own release opens IT (D460's whole
-  // point stands: nothing here waits to see if a second click arrives before
-  // acting on the first). It exists purely to absorb the SECOND press of a
-  // pair that a habit built for the old model still sends, aimed at a row
-  // that just changed out from under it.
-  const OPEN_SUPPRESS_MS = 400;
-  const suppressPressUntilRef = useRef(0);
 
   const onRowPointerDown = (e: React.PointerEvent, path: string) => {
     if (e.button !== 0) return;
@@ -1437,11 +1443,13 @@ export default function Listing({
                 }
               >
                 <td className="name">
-                  {/* Layout only — the span hugs the icon+name so a long name
-                      ellipsizes inside it. It is NOT a drag source: a drag
-                      starts on an already-selected row and nowhere else
-                      (drag-drop's pressStartsDrag). */}
-                  <span className="row-handle">
+                  {/* The span hugs the icon+name so a long name ellipsizes
+                      inside it, AND it is the row's drag SOURCE: the item is
+                      its own name cell, so a press here starts a move-drag
+                      whether or not the row was already selected, and a press
+                      anywhere else in the row is marquee ground instead
+                      (useMarquee's pressedRow, drag-drop's pressStartsDrag). */}
+                  <span className="row-handle" data-fs-drag-handle="1">
                     <span className="icon">
                       {iconForEntry(
                         entry.rel.split("/").pop() ?? entry.rel,
@@ -1583,8 +1591,8 @@ export default function Listing({
           }
         >
           <td className="name">
-            {/* Layout only — see the search-hit row above. Not a drag source. */}
-            <span className="row-handle">
+            {/* The item's drag source — see the search-hit row above. */}
+            <span className="row-handle" data-fs-drag-handle="1">
               <span className="icon">
                 {iconForEntry(entry.name, entry.is_dir)}
               </span>
@@ -1713,6 +1721,28 @@ export default function Listing({
     (searching && spinner) ||
     searchCount !== null ||
     sel.paths.length > 1;
+
+  // The status strip's inputs. A search hit carries no size (the comment on
+  // its row explains why), so the byte sum is only ever taken over the plain
+  // listing — statusLine's own "searching" branch never reads either number.
+  let selectedBytes = 0;
+  let selectedFolders = 0;
+  if (!searching) {
+    for (const entry of sortedEntries) {
+      if (!selectedSet.has(base + "/" + entry.name)) continue;
+      if (entry.is_dir) selectedFolders++;
+      else selectedBytes += entry.size ?? 0;
+    }
+  }
+  const statusText = statusLine({
+    total: sortedEntries.length,
+    selected: sel.paths.length,
+    selectedBytes,
+    folderCount: selectedFolders,
+    truncated: state.status === "ok" && state.truncated,
+    searching,
+    hits: hits.length,
+  });
 
   return (
     <div className="listing">
@@ -2008,9 +2038,10 @@ export default function Listing({
             data-fs-drop-dir="1"
             /* THE PRESS ARBITER, and the CAPTURE phase is load-bearing: it runs
                before the row's own pointerdown, so the selection it snapshots is
-               the one from before this press. A press on an already-selected row
-               drags the selection; anywhere else sweeps; a press that barely
-               moves is still the click it always was. */
+               the one from before this press. A press on a row's icon+name
+               handle, or anywhere on an already-selected row, drags; everything
+               else sweeps; a press that barely moves is still the click it
+               always was. */
             onPointerDownCapture={onListingPointerDownCapture}
             /* Bubble phase, so the marquee's capture snapshot above runs
                first. Deselecting on the CLICK instead is a trap — see
@@ -2071,6 +2102,21 @@ export default function Listing({
               <tbody>{body}</tbody>
             </table>
           </div>
+          {/* Spans the list column only, never the preview pane beside it —
+              it sits INSIDE .listing-main, after the scroller, the same way
+              the crumb slot sits inside it before. statusLine decides the
+              string; this only renders it.
+
+              Gated on the folder having an actual answer — loaded
+              (`state.status === "ok"`) or a search in flight or done — because
+              `sortedEntries` is `[]` for every other state (still loading,
+              failed, access denied) and an ungated footer would read
+              "Empty folder" for a folder the app has not read yet. */}
+          {(state.status === "ok" || searching) && (
+            <footer className="listing-status" title={statusText}>
+              {statusText}
+            </footer>
+          )}
         </div>
         {paneOpen && (
           <>
