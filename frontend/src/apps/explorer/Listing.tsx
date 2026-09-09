@@ -1750,12 +1750,13 @@ export default function Listing({
                   ref={searchInputRef}
                   type="search"
                   className="listing-search-input"
-                  // Just "Search…": the row shares the crumb bar now, and the
-                  // resting box is deliberately small (focus hands it the whole
-                  // strip), so the placeholder has to fit that box rather than
-                  // set its width. "Start typing to search" was instructions
-                  // for a control that needs none.
-                  placeholder="Search…"
+                  // No placeholder text: the crumbs behind the input (below)
+                  // are its resting content whenever it is empty, painted in
+                  // the same box, and a placeholder painted underneath them
+                  // at the same time is illegible noise rather than two
+                  // states. The field always has a path to show, so it never
+                  // reaches the "nothing to say" state a placeholder is for.
+                  placeholder=""
                   value={query}
                   // Focus pins the box open — and open means the whole strip
                   // (`.expanded` above), because a box being typed into is what

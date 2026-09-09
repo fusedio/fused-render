@@ -1502,10 +1502,21 @@ table.listing-table tr.skel-row:hover {
    empty (query === "", Listing.tsx). Same click-through trick as the
    magnifier above — the strip itself lets a press fall through to the input
    underneath (which is what focuses and expands the box), while an actual
-   crumb link claims its own click to navigate instead. Left-aligned at the
-   same offset the glyph reserves so the path reads where the placeholder
-   otherwise would; clipped rather than wrapped, since the box beneath it is
-   one line tall. */
+   crumb link claims its own click to navigate instead. Left-aligned right
+   after the glyph, the same reading order the plain-file crumb strip uses —
+   the magnifier and the path have to read as one unit, not "icon here, path
+   pushed to the far edge". Clipped rather than wrapped, since the box
+   beneath it is one line tall.
+
+   A narrow field still has to keep the CURRENT folder readable rather than
+   the root, so PathCrumbs.tsx pins the strip's scrollLeft to its own end —
+   the same tail-pin `#breadcrumb .crumbs` runs — instead of this rule
+   packing the content against the right edge. Packing it right kept the
+   tail visible too, but it also right-aligned the strip when nothing
+   overflowed at all, which is the detached arrangement this pin avoids: at
+   rest the crumbs sit flush against the glyph, and only an actual overflow
+   moves the visible window. `scrollbar-width`/`::-webkit-scrollbar` hide the
+   bar a real scroll container would otherwise render. */
 .listing-search-crumbs {
   position: absolute;
   inset: 0;
@@ -1513,16 +1524,16 @@ table.listing-table tr.skel-row:hover {
   right: 10px;
   display: flex;
   align-items: center;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   white-space: nowrap;
   font-size: 13px;
   pointer-events: none;
-  /* A narrow bar clips leading segments rather than the tail: packing the
-     strip to its own end means whatever does not fit is pushed off the
-     LEFT, so the current folder — the last crumb, the one most worth
-     reading — is what survives, the same rule the plain-file crumb strip
-     uses (Breadcrumb.tsx's own tail-pin). */
-  justify-content: flex-end;
+}
+
+.listing-search-crumbs::-webkit-scrollbar {
+  display: none;
 }
 
 .listing-search-crumbs .path-crumb {

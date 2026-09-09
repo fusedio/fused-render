@@ -6,7 +6,7 @@
 // GNOME-style shrink-on-overflow. Those stay with the plain-file bar
 // (deferred, see DECISIONS-one-field-search.md) — decision 1 is the merge
 // itself, not carrying every crumb-strip behavior into the new home.
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { navigate } from "@platform/lib/router";
 
 export function PathCrumbs({
@@ -16,6 +16,29 @@ export function PathCrumbs({
   fsPath: string;
   home?: string;
 }) {
+  // Left-aligned at rest, right after the magnifier — a detached path was
+  // the exact "icon over here, path over there" arrangement rejected for
+  // this bar. A narrow field still has to keep the CURRENT folder readable
+  // rather than the root, so overflow is handled by scrolling the strip to
+  // its own end (the same tail-pin `#breadcrumb .crumbs` uses) instead of by
+  // packing the content against the right edge, which pulled the whole
+  // strip away from the glyph even when it was not overflowing at all. Runs
+  // after every render (fsPath, home, or just the field's own width can
+  // change what overflows) and on resize, since nothing else here observes
+  // the field's width.
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const pin = () => {
+      el.scrollLeft = el.scrollWidth;
+    };
+    pin();
+    const ro = new ResizeObserver(pin);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice((home as string).length) : fsPath;
   const parts = rest.split("/").filter((s) => s.length > 0);
@@ -74,5 +97,9 @@ export function PathCrumbs({
     }
   });
 
-  return <div className="crumbs listing-search-crumbs">{pieces}</div>;
+  return (
+    <div className="crumbs listing-search-crumbs" ref={ref}>
+      {pieces}
+    </div>
+  );
 }
