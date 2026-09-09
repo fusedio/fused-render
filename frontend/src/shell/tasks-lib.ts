@@ -3547,9 +3547,8 @@ export interface AttentionRow {
  * needs to reach. The folder with the Claude pane on it is where the answer can
  * be given, so it is a better answer than an inert row. And when the task names
  * no folder at all, the row still needs a door — every row in the Notifications
- * panel is now clickable (SPEC-actionable-notifications.md), so the last resort
- * is the Tasks page itself, which is always a correct place to land on "a task
- * needs you".
+ * panel is clickable, so the last resort is the Tasks page itself, which is
+ * always a correct place to land on "a task needs you".
  */
 export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
   const rows: AttentionRow[] = [];
