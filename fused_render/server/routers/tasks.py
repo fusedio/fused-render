@@ -99,8 +99,10 @@ import time
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+import fused_render
 from fused_render import current_apps, schedule, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.shell import storage
 from fused_render.server.routers import claude_sessions as sessions
 
 router = APIRouter()
@@ -170,6 +172,16 @@ _IN_TRANSCRIPT = (schedule.SENT, schedule.SENDING)
 
 # path -> incremental scan record. See `_scan`.
 _SCAN: dict[str, dict] = {}
+# Has `_scan` read bytes since the cache was last written to disk? Set by the
+# read, cleared by `save_scan_cache`. See `_maybe_save_scan_cache`.
+_SCAN_DIRTY = False
+_SCAN_SAVED_AT = 0.0
+_SCAN_MAX = 20000
+# Has this process read the cache file yet? A save before that would replace a
+# populated file with the empty caches of a process that never got going — a
+# shutdown that beats the warm thread to it (Bugbot, #1081). Until the load
+# has happened there is nothing here worth writing over what is on disk.
+_SCAN_LOADED = False
 # path -> (size, [every prompt]). The expensive parse, kept only for the handful
 # of threads a user actually opens.
 _FULL: dict[str, tuple[int, list[dict]]] = {}
@@ -185,9 +197,17 @@ _WINDOW_MAX = 16
 def reset_cache() -> None:
     """Forget every cached transcript read. For tests, and for any caller that
     wants the next listing to re-read from disk unconditionally."""
+    global _SCAN_DIRTY, _SCAN_SAVED_AT, _BUILD_SEQ, _OBSERVED_SEQ, _SCAN_LOADED
     _SCAN.clear()
     _FULL.clear()
     _WINDOW.clear()
+    _SCAN_DIRTY = False
+    _SCAN_SAVED_AT = 0.0
+    _SCAN_LOADED = False
+    for k in _SCAN_STATS:
+        _SCAN_STATS[k] = 0
+    _BUILD_SEQ = 0
+    _OBSERVED_SEQ = 0
     tasks_store.reset_cache()
     tasks_watch.reset()
 
@@ -287,12 +307,36 @@ def _absorb(rec: dict, line: str) -> None:
         rec["tail"].pop(0)
 
 
+# How many bytes just before `offset` a record remembers (hex), so a file that
+# GREW can be checked to still be the file we read: the delta is read from the
+# offset only if those bytes are still there. Transcripts are append-only, so
+# this only ever fails for a file replaced by different, longer content — a
+# restore from backup, a hand edit — which is exactly the case where reading
+# from the old offset would fold foreign bytes into the record.
+_ANCHOR_BYTES = 32
+# Where the cache file is counted as read/missed since load; the warm's log
+# line prints them so a stale row can be traced to the path that took it.
+_SCAN_STATS = {"hit": 0, "grown": 0, "zero": 0, "anchor_miss": 0}
+
+
 def _new_scan() -> dict:
     # Every reader of `command` uses `.get`, so a record built before this key
     # existed — one already in `_SCAN` when the module is hot-reloaded under the
     # dev server — degrades to "no command" instead of raising.
-    return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": ""}
+    return {"offset": 0, "size": -1, "mtime": 0.0, "ino": 0, "count": 0, "tail": [],
+            "title": "", "command": "", "anchor": ""}
+
+
+def _anchor_holds(f, rec: dict) -> bool:
+    """Are the bytes just before the record's offset still what we read? `f` is
+    open for reading; the position is left at the offset either way."""
+    anchor = rec.get("anchor") or ""
+    n = len(anchor) // 2
+    if n == 0 or rec["offset"] < n:
+        f.seek(rec["offset"])
+        return True  # nothing remembered (an older record): trust the offset
+    f.seek(rec["offset"] - n)
+    return f.read(n).hex() == anchor
 
 
 def _scan(path: str) -> dict | None:
@@ -309,28 +353,63 @@ def _scan(path: str) -> dict | None:
     is re-read whole on the next call rather than being dropped.
     """
     try:
-        size = os.path.getsize(path)
+        st = os.stat(path)
     except OSError:
         return None  # vanished mid-listing: costs this task, not the listing
+    size, mtime, ino = st.st_size, st.st_mtime, st.st_ino
     rec = _SCAN.get(path)
-    if rec is not None and rec["size"] == size:
+    # A hit is the same size AND the same mtime. Size alone let a transcript
+    # rewritten to the same length with different content (a compaction, a
+    # resume) serve its old tail for the life of the process — and now that
+    # records outlive the process (`load_scan_cache`), for good. A record from
+    # before mtime was kept (`.get`) simply misses once. Residual: a filesystem
+    # with coarse mtimes (FAT's two seconds) can hide a same-size rewrite that
+    # lands within one tick of the write before it; no content hash is kept,
+    # and that is the accepted cost.
+    # ...and the same inode: a restore or an editor writes a new file and
+    # renames it over the old one, and that shows here whatever the mtime says.
+    # Free — it is in the stat we already took.
+    if (rec is not None and rec["size"] == size and rec.get("mtime") == mtime
+            and rec.get("ino", ino) == ino):
+        _SCAN_STATS["hit"] += 1
         return rec
-    if rec is None or size < rec["offset"]:
-        rec = _new_scan()  # a shrunk file was replaced: re-read from the top
+    if (rec is None or size < rec["offset"] or rec.get("ino", ino) != ino
+            or (rec["size"] == size and rec["offset"] > 0)):
+        # New, shrunk, replaced, or same length with a different mtime: the
+        # bytes we hold may not be the bytes on disk, so read from the top.
+        rec = _new_scan()
+        _SCAN_STATS["zero"] += 1
+    else:
+        _SCAN_STATS["grown"] += 1
     try:
         with open(path, "rb") as f:
-            f.seek(rec["offset"])
+            if rec["offset"] and not _anchor_holds(f, rec):
+                # Longer, but not the file we read: the bytes before our offset
+                # are gone. Foreign content from the offset on would be folded
+                # into a record built from the old file — start over instead.
+                _SCAN_STATS["anchor_miss"] += 1
+                rec = _new_scan()
+                f.seek(0)
             chunk = f.read()
     except OSError:
         return rec if rec["size"] >= 0 else None
+    global _SCAN_DIRTY
+    _SCAN_DIRTY = True
     cut = chunk.rfind(b"\n")
     if cut >= 0:
         text = chunk[:cut + 1].decode("utf-8", "replace")
+        consumed = chunk[:cut + 1]
         rec["offset"] += cut + 1
+        # The last bytes of what we consumed, or of what we consumed before
+        # plus this, are the new anchor.
+        keep = (bytes.fromhex(rec.get("anchor") or "") + consumed)[-_ANCHOR_BYTES:]
+        rec["anchor"] = keep.hex()
         for line in text.split("\n"):
             if line.strip():
                 _absorb(rec, line)
     rec["size"] = size
+    rec["mtime"] = mtime
+    rec["ino"] = ino
     _SCAN[path] = rec
     return rec
 
@@ -1871,6 +1950,138 @@ def _row_order(row: dict) -> tuple:
 # that arrives while `warm` is still reading waits for that one scan rather
 # than starting a second.
 _ROWS_LOCK = threading.Lock()
+# The desk update runs after the lock is released (see `_task_rows`), so two
+# listings can finish out of order. `observe` prunes what it does not see, so
+# an OLDER row set landing last would undo what the newer one recorded: each
+# build takes a ticket under `_ROWS_LOCK`, and only a ticket newer than the last
+# one observed gets to speak.
+_OBSERVE_LOCK = threading.Lock()
+_BUILD_SEQ = 0
+_OBSERVED_SEQ = 0
+
+
+# ------------------------------------------------------- the scan cache file
+# Where the two transcript caches sleep between processes. The listing's cost
+# is reading every transcript from byte zero, once per PROCESS — and the app
+# restores its last URL, so a launch straight onto /tasks paid that inside its
+# first request even with `warm` running beside it. This file carries the
+# offsets across: a launch reads it, and then reads only the bytes each
+# transcript grew by since. Next to `read.json` and `task_ids.json`, so the
+# per-branch state isolation the dev server already does applies.
+SCAN_CACHE_FILE = "tasks-scan.json"
+# The file's version carries the APP version too: the records are derived by
+# this module's parsing (`_absorb`, `_prompt`, ai_title, _BODY_MAX), and a file
+# whose bytes have not changed is never re-parsed. Without this, a release that
+# changed how a title or a count is derived would keep the old answer for every
+# unchanged transcript for good. One full read per upgrade is the price, once.
+_SCAN_CACHE_VERSION = f"3/{fused_render.__version__}"
+# A listing that read bytes writes the file at most this often; the warm and
+# the shutdown write unconditionally.
+SCAN_CACHE_SAVE_EVERY_S = 30.0
+_SCAN_KEYS = ("offset", "size", "mtime", "ino", "count", "tail", "title", "command", "anchor")
+
+
+def _scan_cache_path() -> str:
+    return os.path.join(tasks_store.STATE_DIR, SCAN_CACHE_FILE)
+
+
+def _valid_scan_record(rec) -> bool:
+    return (isinstance(rec, dict)
+            and all(k in rec for k in _SCAN_KEYS)
+            and isinstance(rec["offset"], int) and rec["offset"] >= 0
+            and isinstance(rec["size"], int)
+            and isinstance(rec["mtime"], (int, float))
+            and isinstance(rec["ino"], int)
+            and isinstance(rec["count"], int)
+            and isinstance(rec["tail"], list)
+            and isinstance(rec["title"], str)
+            and isinstance(rec["command"], str)
+            and isinstance(rec["anchor"], str))
+
+
+def load_scan_cache() -> int:
+    """Seed `_SCAN` and the head cache from the file, if there is one.
+
+    Only records that look right are taken; the rest are dropped without a
+    word, because this is a cache and a dropped record costs one re-read. The
+    existing `_scan` rules do every invalidation there is: a path whose size
+    still matches is a hit, one that grew is read from `offset`, one that
+    shrank or vanished is re-read from zero or skipped. Returns how many scan
+    records were taken. Never raises."""
+    global _SCAN_LOADED, _SCAN_SAVED_AT
+    _SCAN_LOADED = True  # even a missing or bad file: saving is fair from here
+    # The debounce clock starts now, or the first listing's own save would fire
+    # (a zero clock is always "old enough") right before warm's unconditional
+    # one — the same file written twice within a second (review).
+    _SCAN_SAVED_AT = time.monotonic()
+    try:
+        data = storage.read_json(_scan_cache_path())
+    except Exception:  # noqa: BLE001 — a cache that cannot be read is no cache
+        logger.debug("tasks scan cache unreadable", exc_info=True)
+        return 0
+    if not isinstance(data, dict) or data.get("version") != _SCAN_CACHE_VERSION:
+        return 0
+    taken = 0
+    scan = data.get("scan")
+    if isinstance(scan, dict):
+        for path, rec in scan.items():
+            if isinstance(path, str) and _valid_scan_record(rec):
+                _SCAN[path] = {k: rec[k] for k in _SCAN_KEYS}
+                taken += 1
+    # Heads are keyed by size alone in `tasks_store.head` — a same-size rewrite
+    # (a compaction, a resume) kept a stale cwd and first prompt for the life of
+    # the process, and a restart was what healed it. Persisting them would end
+    # that, so a head comes back ONLY for a file whose size, mtime AND inode
+    # still match what the scan record saved beside it; anything else is left for
+    # `head` to parse afresh (Bugbot, #1081). One stat per head, once per boot.
+    heads = data.get("head")
+    if isinstance(heads, dict):
+        fresh = {}
+        for path, entry in heads.items():
+            rec = _SCAN.get(path)
+            if rec is None:
+                continue
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if (st.st_size == rec["size"] and st.st_mtime == rec["mtime"]
+                    and st.st_ino == rec["ino"]):
+                fresh[path] = entry
+        tasks_store.import_heads(fresh)
+    return taken
+
+
+def save_scan_cache(prune: bool = True) -> None:
+    """Write both caches. With `prune`, paths that no longer exist are left
+    out — a deleted session should not ride along forever. That is one stat
+    per record under the listing's lock, so the debounced save after a listing
+    passes False and leaves it to the warm and the shutdown, which run when
+    nobody is waiting. Never raises: a store that cannot be written costs the
+    next launch a full read, not the listing."""
+    global _SCAN_DIRTY, _SCAN_SAVED_AT
+    if not _SCAN_LOADED:
+        return  # nothing read yet: the file on disk knows more than we do
+    try:
+        if prune:
+            scan = {p: rec for p, rec in _SCAN.items() if os.path.exists(p)}
+        else:
+            scan = dict(_SCAN)
+        heads = {p: e for p, e in tasks_store.export_heads().items() if p in scan}
+        storage.write_json(_scan_cache_path(),
+                           {"version": _SCAN_CACHE_VERSION, "scan": scan, "head": heads})
+    except Exception:  # noqa: BLE001
+        logger.debug("tasks scan cache not written", exc_info=True)
+        return
+    _SCAN_DIRTY = False
+    _SCAN_SAVED_AT = time.monotonic()
+
+
+def _maybe_save_scan_cache() -> None:
+    """After a listing: write if a scan read bytes and the last write is old
+    enough. Called under `_ROWS_LOCK`, so it never interleaves with a scan."""
+    if _SCAN_DIRTY and time.monotonic() - _SCAN_SAVED_AT >= SCAN_CACHE_SAVE_EVERY_S:
+        save_scan_cache(prune=False)
 
 
 def warm() -> None:
@@ -1879,23 +2090,54 @@ def warm() -> None:
     The process starts with `_SCAN` and the head cache empty, and the first
     `_task_rows` reads every transcript on the machine from byte zero — close to
     a gigabyte and three seconds on a busy laptop — synchronously, inside
-    whichever request asked first. Called from the app's startup event on a
-    thread of its own (server/app.py), never from create_app: tests build apps
-    without lifespan and must not read the developer's real ~/.claude.
+    whichever request asked first. The scan cache file cuts that to the bytes
+    written since the last process saved it. Called from the app's startup
+    event on a thread of its own (server/app.py), never from create_app: tests
+    build apps without lifespan and must not read the developer's real ~/.claude.
     """
     started = time.monotonic()
+    with _ROWS_LOCK:
+        cached = load_scan_cache()
     try:
         rows = _task_rows()
     except Exception:  # noqa: BLE001 — a warm that fails costs nothing but the warmth
         logger.debug("tasks warm failed", exc_info=True)
         return
-    logger.info("tasks warm: %d rows in %.2fs", len(rows), time.monotonic() - started)
+    with _ROWS_LOCK:
+        save_scan_cache()
+    logger.info("tasks warm: %d rows in %.2fs (%d records from cache; "
+                "scan hits %d, grown %d, from zero %d, anchor misses %d)",
+                len(rows), time.monotonic() - started, cached, _SCAN_STATS["hit"],
+                _SCAN_STATS["grown"], _SCAN_STATS["zero"], _SCAN_STATS["anchor_miss"])
 
 
 def _task_rows(only: frozenset | set | None = None) -> list[dict]:
-    """`_build_task_rows`, one caller at a time. See `_ROWS_LOCK`."""
+    """`_build_task_rows`, one caller at a time. See `_ROWS_LOCK`.
+
+    The desk update runs OUTSIDE the lock: it reads the finished rows and
+    writes its own store, and a slow write there must not hold up the pulse
+    or the page (review, #1079)."""
+    global _BUILD_SEQ, _OBSERVED_SEQ
     with _ROWS_LOCK:
-        return _build_task_rows(only)
+        rows = _build_task_rows(only)
+        _maybe_save_scan_cache()
+        _BUILD_SEQ += 1
+        seq = _BUILD_SEQ
+    # The Current apps desk (current_apps.py) learns about NEW tasks here —
+    # the one place every task on the machine passes, whatever started it.
+    # Best-effort: the desk is a side table, and a store that cannot be
+    # written costs an app on the sidebar, never the listing.
+    # Not from a partial listing: `observe` reads its argument as EVERY live
+    # task and prunes what it does not see (bugbot, PR #892).
+    if only is None:
+        with _OBSERVE_LOCK:
+            if seq > _OBSERVED_SEQ:
+                _OBSERVED_SEQ = seq
+                try:
+                    current_apps.observe(rows)
+                except OSError:
+                    pass
+    return rows
 
 
 def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
@@ -1912,6 +2154,13 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     are built for the named keys alone, and the day-one read initialisation is
     left to the full listing, which is the only caller that knows every count.
     """
+    # Bounded only if the user has twenty thousand sessions — the same guard the
+    # head cache keeps, and what bounds the file on disk. Checked ONCE per
+    # listing, here, not per path inside `_scan`: there it fired on every new
+    # path for the rest of the pass and threw away records this same pass had
+    # just built (review, #1081).
+    if len(_SCAN) > _SCAN_MAX:
+        _SCAN.clear()
     triage = sessions._load_state("triage.json")
     read = tasks_store.read_state()
     now = time.time()
@@ -1956,17 +2205,6 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     if only is None and not tasks_store.initialized(read):
         tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
     rows.sort(key=_row_order)
-    # The Current apps desk (current_apps.py) learns about NEW tasks here —
-    # the one place every task on the machine passes, whatever started it.
-    # Best-effort: the desk is a side table, and a store that cannot be
-    # written costs an app on the sidebar, never the listing.
-    # Not from a partial listing: `observe` reads its argument as EVERY live
-    # task and prunes what it does not see (bugbot, PR #892).
-    if only is None:
-        try:
-            current_apps.observe(rows)
-        except OSError:
-            pass
     return rows
 
 

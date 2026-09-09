@@ -590,6 +590,43 @@ def reset_cache() -> None:
     _HEAD_CACHE.clear()
 
 
+def export_heads() -> dict[str, list]:
+    """The head cache as JSON-shaped rows, for routers/tasks `save_scan_cache`.
+    A list per entry, not the tuple: json.dump would make one anyway, and
+    `import_heads` is written against the list.
+
+    COMPLETE entries only. An incomplete head (no prompt, timestamp or cwd yet)
+    is retried in-process only once the file grows, and a restart used to be
+    its other chance — a fresh parse from scratch. Persisting it would take
+    that chance away for good, so it is left for the next process to parse."""
+    return {
+        path: list(entry) for path, entry in _HEAD_CACHE.items()
+        if entry[3] and entry[2] is not None and entry[1] is not None
+    }
+
+
+def import_heads(rows: dict) -> int:
+    """Seed the head cache from what `export_heads` wrote in an earlier process.
+    Anything not shaped like a head entry is skipped, not raised on: the file is
+    a cache, and a bad row in it costs one re-parse, never the listing. Returns
+    how many were taken."""
+    taken = 0
+    if not isinstance(rows, dict):
+        return 0
+    for path, entry in rows.items():
+        if (not isinstance(path, str) or not isinstance(entry, list)
+                or len(entry) != 5 or not isinstance(entry[0], int)):
+            continue
+        size, cwd, first_ts, prompt, pane = entry
+        if ((cwd is not None and not isinstance(cwd, str))
+                or (first_ts is not None and not isinstance(first_ts, (int, float)))
+                or not isinstance(prompt, str) or not isinstance(pane, str)):
+            continue
+        _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
+        taken += 1
+    return taken
+
+
 def epoch(value) -> float | None:
     """A transcript's ISO-8601 timestamp as an epoch float, or None. A stamp
     with no zone is read as UTC — every writer of these records emits UTC, and
