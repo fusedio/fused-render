@@ -3810,6 +3810,9 @@ def _absorbed_turn_breaks(rows: list) -> list:
     # WITH one before it is a genuinely new turn (the cursor is about to advance
     # past it), an echo WITHOUT one was folded into the reply still in flight.
     seen_result = False
+    # A main-turn `result` this scan has not turned into a seam yet — see the
+    # genuine-boundary branch below.
+    last_result = None
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
@@ -3824,19 +3827,59 @@ def _absorbed_turn_breaks(rows: list) -> list:
                 # seam — and one of the outstanding follow-ups is now the
                 # message the NEXT span answers.
                 outstanding -= 1
-                prefix = _segments_from_rows(rows[:i + 1], shape)
-                breaks.append({
-                    "segments": len(prefix),
-                    "text": sum(len(seg.get("text") or "")
-                                for seg in prefix if seg.get("kind") == "text"),
-                })
+                _seam(breaks, rows, i, shape)
+                last_result = None
+            else:
+                # Not a seam YET. It becomes one if a new user turn shows up
+                # after it inside this window — see the `elif` below.
+                last_result = i
         elif i and _starts_new_turn(row):
             # `i and` skips `rows[0]`: the window opens on its own turn's echo.
             if seen_result:
                 seen_result = False   # a genuine new turn, not a fold-in
+                # A GENUINE BOUNDARY IS A SEAM TOO, and it has to be reported
+                # for the same reason a fold-in does: the page gets ONE payload
+                # carrying two replies with nothing in `segments`/`text` to say
+                # where they divide.
+                #
+                # It used to report nothing here, on the reasoning that a
+                # genuine boundary moves the cursor and the next payload is the
+                # newer reply alone — so the client's shrink test would sort it
+                # out one lap later. That is only true when the shrink is
+                # VISIBLE: two one-segment replies (a counted list, then
+                # "ALLDONE") leave `len(segments)` at 1 across the step, so
+                # nothing shrank, no seam was ever reported, and the newer
+                # reply was never placed at all — it appeared only on reload,
+                # which reads the same file through `_history` and splits on
+                # these very rows. Reported live, the page slices it exactly as
+                # a reload does.
+                #
+                # A D415 WAKE IS NOT THIS. A wake is a `result` followed by
+                # more rows of the SAME displayed turn and no user echo at all
+                # (`_segments_from_rows` joins it with a `notice` divider), so
+                # it never reaches this branch: only an echo can, and an echo
+                # is a new message by definition.
+                if last_result is not None:
+                    _seam(breaks, rows, last_result, shape)
+                    last_result = None
             else:
                 outstanding += 1
     return breaks
+
+
+def _seam(breaks: list, rows: list, i: int, shape: tuple) -> None:
+    """Record the seam that the `result` at `rows[i]` is, as payload offsets.
+
+    The `segments` count and the `text` length of everything up to and
+    including that row, both measured through `_segments_from_rows` with the
+    WINDOW's own gates (`shape`) — so they are indices into the exact lists
+    `_poll` returns. See `_segments_from_rows`'s note on why the gates travel."""
+    prefix = _segments_from_rows(rows[:i + 1], shape)
+    breaks.append({
+        "segments": len(prefix),
+        "text": sum(len(seg.get("text") or "")
+                    for seg in prefix if seg.get("kind") == "text"),
+    })
 
 
 def _read_current_turn(run_dir: str) -> tuple:

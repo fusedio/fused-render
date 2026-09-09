@@ -772,6 +772,60 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.every((t) => !t.streaming)).toBe(true);
   });
 
+  // VERIFIED LIVE, on :2019: a mid-stream follow-up drained AFTER the first
+  // reply's `result` is a GENUINE turn boundary, not a fold-in — and agent.py
+  // used to report no seam for one, on the reasoning that the cursor moves and
+  // the shrink test would sort it out a lap later. Two one-segment replies (a
+  // counted list, then "ALLDONE") leave `segments.length` at 1 across the
+  // step, so nothing shrank, nothing was ever placed, and the answer showed up
+  // only on reload. `_absorbed_turn_breaks` reports genuine boundaries now, and
+  // this is the client half: the reported seam places it, and the cursor step
+  // that follows (a seam LOST) keeps it in the slot it was placed in.
+  test("a follow-up drained after the reply's `result` still gets its own bubble", async () => {
+    let controller!: ChatController;
+    const A = text("1 2 3 4 5");
+    const B = text("ALLDONE");
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A], text: A.text });
+        // Typed while A was still streaming, but the CLI reads it only after
+        // A's `result` — so there is a `result` between the two echoes and no
+        // fold-in anywhere.
+        if (n === 1) {
+          await controller.sendFollowUp("now say ALLDONE");
+          return poll({ segments: [A], text: A.text });
+        }
+        // The window now spans the boundary, and agent.py names it.
+        if (n === 2) {
+          return poll({
+            segments: [A, B],
+            text: A.text + B.text,
+            turn_breaks: [{ segments: 1, text: A.text.length }],
+          });
+        }
+        // The cursor stepped over it: B alone, and the SAME segment count as
+        // the payload before it — the shrink no length test can see.
+        return poll({ done: true, segments: [B], text: B.text });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("count to five");
+
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([[A.text], [B.text]]);
+    // The answer sits BELOW the message it answers, not on top of the reply
+    // before it, and the counted list is still intact.
+    expect(reply[0]!.text).toBe(A.text);
+  });
+
   test("an agent.py with no `turn_breaks` keeps one payload as one reply", async () => {
     // The compatibility floor: no seam reported, so nothing is split. One
     // bubble that grows, which is the pre-feedback-#9 rendering minus the

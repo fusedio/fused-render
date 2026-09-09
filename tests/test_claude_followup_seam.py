@@ -217,14 +217,45 @@ def test_a_reply_still_streaming_reports_nothing_yet(agent):
     assert agent._absorbed_turn_breaks(rows) == []
 
 
-def test_a_genuinely_new_turn_is_not_a_seam(agent):
+def test_a_genuinely_new_turn_IS_a_seam(agent):
     """A `result` closed the turn before this echo, so `_read_current_turn` is
-    about to advance the cursor past it: it is a new turn, not a fold-in, and
-    reporting it would make the page open a bubble for a span the very next poll
-    no longer contains."""
+    about to advance the cursor past it — and it is reported ANYWAY.
+
+    This used to report nothing, on the reasoning that the cursor moves and the
+    NEXT payload is the newer reply alone, so the page's shrink test would sort
+    it out one lap later. That is only true when the shrink is VISIBLE: two
+    one-segment replies leave `len(segments)` at 1 across the step, so nothing
+    shrank, no seam was ever reported, and the newer reply was never placed at
+    all — it showed up only on reload, which reads the same rows through
+    `_history` and splits on exactly this boundary. Verified live: a mid-stream
+    follow-up drained after the first reply's `result` had its answer missing
+    from the transcript until the page was reloaded.
+
+    A span the next poll no longer contains is not a problem for the page — it
+    drops one for every fold-in the cursor carries out of the window already
+    (`turn_breaks` shrinking is its own signal)."""
     rows = [
         _user_row("q1"), _text_row("A."), _result_row("A."),
         _user_row("q2"), _text_row("B."),
+    ]
+    breaks = agent._absorbed_turn_breaks(rows)
+    segs = agent._segments_from_rows(rows)
+    assert breaks == [{"segments": 1, "text": len("A.")}]
+    assert [seg["text"] for seg in segs] == ["A.", "B."], (
+        "and the seam falls between the segments, never inside one")
+
+
+def test_a_wake_continuation_is_not_a_seam(agent):
+    """A D415 wake is a `result` followed by more rows of the SAME displayed
+    turn and NO user echo — `_segments_from_rows` joins it with a `notice`
+    divider — so it must not be split into two bubbles. The genuine-boundary
+    rule above cannot reach it: only an echo triggers that branch, and an echo
+    is a new message by definition."""
+    rows = [
+        _user_row("q1"), _text_row("A."), _result_row("A."),
+        {"type": "system", "subtype": "task_notification",
+         "message": "a task finished"},
+        _text_row("And the task is done."),
     ]
     assert agent._absorbed_turn_breaks(rows) == []
 
