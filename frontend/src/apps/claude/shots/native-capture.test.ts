@@ -113,7 +113,7 @@ function newCanvas(): FakeCanvas {
 }
 
 /** The frame's OWNER document — a distinct object from the global `document` on
- *  purpose, because `defaultOverlays` collects both into a Set and a single
+ *  purpose, because `flashOverlays` collects both into a Set and a single
  *  shared object would silently test only one of them. */
 function ownerDoc(win: Window | null, body: Rec | null): Rec {
   return {
