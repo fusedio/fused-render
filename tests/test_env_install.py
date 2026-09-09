@@ -1033,6 +1033,25 @@ def test_start_mirrors_the_install_into_a_jobs_dock_row(
 
 
 @requires_fused
+def test_the_mirrored_row_points_at_the_app_folder(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """The row's destination is the project folder whose environment is
+    being installed — already resolved as `project_dir` for the row's title,
+    so a failed install's row in Notifications opens the app it belongs to."""
+    monkeypatch.setattr(envinstall, "_JOB_MIRROR_POLL_S", 0.01)
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    rec = envinstall.start(proj)
+    key = rec["key"]
+    job_id = f"sys:env-install:{key}"
+
+    row = _wait_until(lambda: _job(job_id))
+    assert row["page"] == str(proj)
+
+
+@requires_fused
 def test_dismissing_the_dock_row_cancels_the_real_install(
     tmp_path, monkeypatch, _fresh_script_python
 ):

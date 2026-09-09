@@ -1850,7 +1850,12 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
             jobs.upsert(
                 {"id": job_id, "title": title, "kind": "task",
                  "state": jobs.RUNNING, "cancellable": True, "message": ""},
-                server=True,
+                # The app folder whose environment this is — already resolved
+                # above as `project_dir` for the title, and the only sensible
+                # destination for a row that says an app's install failed: an
+                # app-doctor error or a stalled venv build points squarely at
+                # that folder.
+                page=project_dir, server=True,
             )
             # A flag a PREVIOUS attempt's dead mirror left set (see the
             # docstring above) belongs to that attempt, not this one — clear
