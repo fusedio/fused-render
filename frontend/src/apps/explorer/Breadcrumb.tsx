@@ -913,6 +913,13 @@ export function Breadcrumb({
           {pieces}
         </div>
       )}
+      {/* Decision 1: a claimed folder's merged field IS the path now, so it
+          sits where the path strip did — right after the crumbs/edit zone
+          above, ahead of the star — rather than at the bar's far end where a
+          bare search box used to hide behind everything else. Over an
+          unclaimed (file) bar this renders an empty, layout-inert slot
+          (FolderSearchSlot), so moving it here costs that case nothing. */}
+      <FolderSearchSlot />
       {/* After the path, not before it: the star's subject is the path, and the
           bar's opening slot belongs to the history arrows (see the header). It
           rides OUTSIDE `.crumbs` deliberately — that strip is a scroll container
@@ -933,7 +940,6 @@ export function Breadcrumb({
           from the path. The path field's own affordance is the same bet. */}
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
-      <FolderSearchSlot />
     </>
   );
 }

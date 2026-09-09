@@ -66,6 +66,7 @@ import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { PathCrumbs } from "@apps/explorer/listing/path-crumbs";
 import { subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";
+import { useTypedPathAddress } from "@apps/explorer/listing/useTypedPathAddress";
 import { getConfig } from "@platform/lib/api";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import {
@@ -132,10 +133,6 @@ import { EmptyResultMessage } from "@apps/explorer/listing/empty-result";
 function inSearchSlot(slot: HTMLElement | null, row: ReactNode): ReactNode {
   return slot ? createPortal(row, slot) : row;
 }
-
-// Flips the tight-bar measurement is allowed at one bar width before it holds.
-// The reasoning is at `tightFlipRef` and at the layout effect it guards.
-const FLIP_BUDGET = 2;
 
 // (The folder-entry rule is the SERVER's — `app_listing.app_entry`, D301: the
 // first top-level page carrying `<meta name="fused-app">`. A filename tells
@@ -250,6 +247,23 @@ export default function Listing({
     setViewState(fsPath, "?" + saved.toString());
   };
 
+  // Decision 1: the crumbs shown inside the merged search field while it is
+  // empty need home, the same way Breadcrumb.tsx's own strip does, to
+  // contract a path under it to "~". Decision 5's typed-address resolution
+  // (below) also resolves a leading "~" against it. Fetched once; unresolved
+  // (undefined) just means every crumb shows the full path until it lands,
+  // and a "~"-led query is never treated as an address until it does.
+  const [home, setHome] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    getConfig().then((c) => {
+      if (live) setHome(c.home.replace(/\\/g, "/"));
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
   const {
     query,
     setQuery,
@@ -268,7 +282,13 @@ export default function Listing({
     cappedAway,
     reason,
     mode,
+    pathLike,
+    commitSearch,
   } = useListingSearch(fsPath, refresh);
+
+  // Decision 5: is the typed query itself a filesystem address? Resolved
+  // independently of the ranked search above — Enter checks this first.
+  const typedAddress = useTypedPathAddress(query, fsPath, home);
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
   // so an idle listing never polls.
@@ -444,21 +464,6 @@ export default function Listing({
   // Search input, so a keystroke anywhere in the listing can focus it.
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Decision 1: the crumbs shown inside the merged search field while it is
-  // empty need home, the same way Breadcrumb.tsx's own strip does, to
-  // contract a path under it to "~". Fetched once; unresolved (undefined)
-  // just means every crumb shows the full path until it lands.
-  const [home, setHome] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    let live = true;
-    getConfig().then((c) => {
-      if (live) setHome(c.home.replace(/\\/g, "/"));
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
-
   // Decision 1: Breadcrumb.tsx's click-to-edit and Ctrl/Cmd+L, once this
   // folder's bar is claimed, ask this field to focus instead of opening a
   // second path editor over it.
@@ -468,29 +473,11 @@ export default function Listing({
       searchInputRef.current?.focus();
     });
   }, []);
-  // --- resting search box folds to a magnifier on a tight bar ---------------
-  // The bar's yield order (crumbs shrink → box shrinks, explorer.css) bottoms
-  // out with the PATH still ellipsized on a narrow middle column, while the
-  // idle box holds ~100px of placeholder. Past that point the box becomes a
-  // 28px icon and the path gets the strip back. `tightBar` is the measured
-  // fact; `pinnedOpen` is the user overriding it (clicked the icon, or focused
-  // the box — the box stays until it blurs empty), and it now also renders
-  // `.expanded`, so the override is the SAME full-strip box a query gets
-  // rather than a second, narrower open state. A non-empty query outranks
-  // both: `.searching` stands the crumbs down and takes the whole strip too.
-  const [tightBar, setTightBar] = useState(false);
+  // `pinnedOpen` is the user asking for the full-strip box (clicked the
+  // magnifier, or focused it — it stays until it blurs empty), rendering
+  // `.expanded`. A non-empty query outranks it the same way: `.searching`
+  // stands the crumbs down and takes the whole strip too.
   const [pinnedOpen, setPinnedOpen] = useState(false);
-  // How many times the tight-bar measurement may flip at one bar width before
-  // it stops arguing with itself — the convergence guarantee for the layout
-  // effect below, which has no dependency array and so re-enters on every
-  // commit it causes. Two is enough for every honest case: the first flip is
-  // the decision, the second absorbs a settling relayout (a scrollbar, a
-  // shed column) that legitimately reverses it. A third flip at an unchanged
-  // width is not new information, it is the bistable case, and past 50 of
-  // those React unmounts the whole tree with #185. Lives in a ref, not state,
-  // because spending budget must not itself schedule a render.
-  const tightFlipRef = useRef({ barW: -1, flips: 0 });
-  const searchRowRef = useRef<HTMLDivElement>(null);
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (assigned each
   // render from the rowCtxByPath memo below).
@@ -530,138 +517,13 @@ export default function Listing({
     return claimFolderChrome(crumbSlotRef.current);
   }, [ownsBarChrome]);
 
-  // …and the search row goes UP into that same bar, at its right end — one
-  // header strip in this column, matching the pane's one across the divider
-  // (search-slot.ts). Non-null only once the bar has rendered its target,
-  // which is only ever over a folder that claimed the chrome; a host with no
-  // crumb bar (the app builder) keeps the row in place as its own first strip.
+  // …and the search row goes UP into that same bar, into the middle column
+  // the path used to hold — one header strip in this column, matching the
+  // pane's one across the divider (search-slot.ts). Non-null only once the
+  // bar has rendered its target, which is only ever over a folder that
+  // claimed the chrome; a host with no crumb bar (the app builder) keeps the
+  // row in place as its own first strip.
   const barSearchSlot = useSyncExternalStore(subscribeSearchSlot, searchSlot, () => null);
-
-  // The tight-bar measurement. DOM-side on purpose: this row PORTALS into
-  // #breadcrumb (the slot above), so the crumbs it shares the strip with are
-  // reachable — and already coupled to this row by the bar's :has() rules.
-  // Two thresholds, meant to be far enough apart that the flip cannot
-  // oscillate:
-  //   • fold: the crumbs are ellipsized (scrollWidth past clientWidth) even
-  //     after the CSS yield order has bottomed out — the box is the only
-  //     slack left to give.
-  //   • unfold: the whole path is showing AND the bar has THE WHOLE RESTING BOX
-  //     genuinely free — room it can take without re-truncating anything (it
-  //     only has to give back the ~30px the magnifier standing in for it
-  //     occupies, so the box's own width is the threshold plus that margin).
-  //     Free space is summed from the bar's visible children, not read off the
-  //     crumbs: they are flex-grow 0 in slot mode, so their clientWidth hugs
-  //     their content and never reports the strip's slack.
-  // The resting width is read from the box (--resting-width, explorer.css)
-  // rather than hardcoded, because it is NOT one number: a box with a chip
-  // pinned in it (`.has-pin` — in practice the multi-selection readout) is
-  // 260px, not 150px. A fixed 150 was one half of the bug that blanked the
-  // whole view the moment a second row was selected: 150px of slack was enough
-  // to unfold into and nowhere near enough to hold a 260px box, so the crumbs
-  // re-ellipsized, the bar folded, the freed slack cleared 150 again — a
-  // fold/unfold flip on every commit until React gave up with "maximum update
-  // depth exceeded" (#185) and unmounted the tree, a BLANK PAGE. Reading the
-  // threshold off the element is also what keeps it and the width from
-  // drifting apart the next time either moves.
-  //
-  // WHICH STATE the measurement is about is read off the DOM (`.iconized`) and
-  // NOT out of React state, and the setState below is passed a plain boolean
-  // rather than an updater function. Both halves of that are load-bearing: every
-  // width here is measured from one layout, so "is the box folded right now" has
-  // to be answered by that same layout. An updater function is evaluated by
-  // React on ITS schedule — eagerly when the setter is called, to test whether
-  // the update can bail out, and again while rendering — so an updater that
-  // measures the DOM answers a different question each time it runs and the two
-  // answers disagree. That disagreement was the other half of the blank-screen
-  // crash: `folded` arrived describing the commit that had not painted yet while
-  // the widths described the one on screen, the fold decided on the mismatched
-  // pair, and the flip never settled.
-  //
-  // FLIP_BUDGET stays as the backstop underneath both of those. The thresholds
-  // are meant to be honest hysteresis now, but they are still two DOM
-  // measurements taken in two different layouts, and any future width whose
-  // fold delta lands between them makes the flip bistable again. Once a bar
-  // width has spent its budget the measurement holds whatever it is showing
-  // until the width actually changes: a width where the thresholds agree
-  // converges in one flip and never touches the budget; a width where they
-  // contradict settles on a legible state instead of taking the page down.
-  // Keyed on the bar's width because that is what a contradiction is a
-  // property of — a real resize is new information and earns a fresh budget.
-  //
-  // No dependency array: crumbs content changes with navigation but their
-  // clientWidth may not, so a ResizeObserver alone misses scrollWidth-only
-  // changes; re-measuring on every render is cheap. Skipped while the user is
-  // in the box — measuring a strip the crumbs have stood down from
-  // (.searching hides them) reads zeros.
-  useLayoutEffect(() => {
-    if (searching || pinnedOpen) return;
-    const row = searchRowRef.current;
-    if (!row) return;
-    const bar = row.closest("#breadcrumb");
-    const crumbs = bar?.querySelector(".crumbs");
-    if (!(bar instanceof HTMLElement) || !crumbs) return;
-    const freeInBar = () => {
-      // The bar's actual flex ITEMS, not bar.children: the search slot is
-      // `display: contents` (its rect reads 0), so its children participate
-      // in the bar's layout directly and must be counted in its place —
-      // skipping them overstates the free space by the whole search row.
-      const kids: Element[] = [];
-      const collect = (el: Element) => {
-        for (const child of Array.from(el.children)) {
-          const d = getComputedStyle(child).display;
-          if (d === "none") continue;
-          if (d === "contents") collect(child);
-          else kids.push(child);
-        }
-      };
-      collect(bar);
-      const cs = getComputedStyle(bar);
-      const gap = parseFloat(cs.columnGap) || 0;
-      const used =
-        kids.reduce((w, el) => w + el.getBoundingClientRect().width, 0) +
-        gap * Math.max(0, kids.length - 1) +
-        (parseFloat(cs.paddingLeft) || 0) +
-        (parseFloat(cs.paddingRight) || 0);
-      return bar.clientWidth - used;
-    };
-    // How much strip unfolding would ask for: whatever CSS says the resting box
-    // is right now. The fallback is the idle width, for the frame before the
-    // stylesheet is attached (a missing property parses to NaN, which would
-    // make every comparison false and unfold unconditionally).
-    const restingWidth = () => {
-      const box = row.querySelector(".listing-search-box");
-      const w = box
-        ? parseFloat(getComputedStyle(box).getPropertyValue("--resting-width"))
-        : NaN;
-      return Number.isFinite(w) ? w : 150;
-    };
-    const measure = () => {
-      // Fresh width, fresh budget (see FLIP_BUDGET above).
-      const barW = bar.clientWidth;
-      const budget = tightFlipRef.current;
-      if (budget.barW !== barW) {
-        budget.barW = barW;
-        budget.flips = 0;
-      }
-      // The layout on screen, and the state that layout IS — one pair, read
-      // together, and decided OUT HERE rather than inside a setState updater
-      // (see the comment above on why neither half may come from React: the
-      // decision reads the DOM and spends the budget, and an updater must
-      // stay pure — React is free to call it more than once for one update).
-      const folded = row.classList.contains("iconized");
-      const ellipsized = crumbs.scrollWidth > crumbs.clientWidth + 1;
-      const next = folded ? ellipsized || freeInBar() < restingWidth() : ellipsized;
-      if (next === folded) return;
-      if (budget.flips >= FLIP_BUDGET) return; // bistable at this width — hold
-      budget.flips += 1;
-      setTightBar(next);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(bar);
-    ro.observe(crumbs);
-    return () => ro.disconnect();
-  });
 
   // The pin is a request to type: focus follows it in the same interaction.
   useEffect(() => {
@@ -1557,6 +1419,18 @@ export default function Listing({
           )}
         </>
       );
+    } else if (searchState.status === "idle") {
+      // Decision 4: a path/pattern query that has not been committed yet
+      // (Enter). Only reachable here with no rows already on screen — an
+      // edit to an already-committed query keeps its stale answer via
+      // `displayHits.length` above instead of falling through to this.
+      body = (
+        <tr>
+          <td colSpan={cols} className="status-message">
+            Press Enter to search
+          </td>
+        </tr>
+      );
     } else if (scanPending || searchState.status === "pending") {
       // Nothing to show yet: either the folder is being scanned on demand
       // (listing/index-source) or the request is simply in flight. Without
@@ -1823,7 +1697,6 @@ export default function Listing({
                Nothing to hand upward: the row is portaled INTO the bar, so a
                class on the row is already inside the bar's subtree. */
             <div
-              ref={searchRowRef}
               className={
                 "listing-search" +
                 (searching ? " searching" : "") +
@@ -1834,28 +1707,9 @@ export default function Listing({
                 // — a query can outlive the focus that entered it, and a pinned
                 // box is usually still empty — and the strip-wide rules in
                 // explorer.css name both.
-                (pinnedOpen ? " expanded" : "") +
-                (tightBar && !searching && !pinnedOpen ? " iconized" : "")
+                (pinnedOpen ? " expanded" : "")
               }
             >
-              {/* Tight bar (see the measurement above): the resting box is
-                  folded away by .iconized and this magnifier stands in for it.
-                  Clicking pins the box open and focuses it; blurring it still
-                  empty hands the strip back to the path. */}
-              {tightBar && !searching && !pinnedOpen && (
-                <button
-                  type="button"
-                  className="bar-ctl listing-search-open"
-                  aria-label="Search this folder"
-                  title="Search"
-                  onClick={() => setPinnedOpen(true)}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <circle cx="11" cy="11" r="7" />
-                    <line x1="16.5" y1="16.5" x2="21" y2="21" />
-                  </svg>
-                </button>
-              )}
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin.
             `has-pin` says a chip is actually pinned right now, so the input
@@ -1906,12 +1760,10 @@ export default function Listing({
                   // Focus pins the box open — and open means the whole strip
                   // (`.expanded` above), because a box being typed into is what
                   // the bar is for. Whatever routed the focus here — a click in
-                  // the field, the magnifier click, or type-to-search landing on
-                  // the zero-width folded input (useListingSelection's
-                  // printable-key branch; the .iconized CSS keeps the input
-                  // focusable for exactly this). The pin also holds while a
-                  // focused user deletes their query — the box must not fold
-                  // away under the caret.
+                  // the field, or type-to-search landing on it directly
+                  // (useListingSelection's printable-key branch). The pin also
+                  // holds while a focused user deletes their query — the box
+                  // must not fold away under the caret.
                   onFocus={() => {
                     setPinnedOpen(true);
                     prefetchIndex();
@@ -1933,7 +1785,22 @@ export default function Listing({
                       // the pin.
                       setPinnedOpen(false);
                       e.currentTarget.blur();
+                      return;
                     }
+                    if (e.key !== "Enter") return;
+                    e.preventDefault();
+                    // Decision 5: Enter resolves the field three ways. A real
+                    // folder navigates; a real file navigates too (the
+                    // destination view's own stat handles opening it — see
+                    // DECISIONS-one-field-search.md for why this pass skips
+                    // a separate "Open" row above the results). Anything
+                    // else — including "still checking" — falls through to
+                    // committing the search (decision 4's gate).
+                    if (typedAddress.status === "exists") {
+                      navigate(typedAddress.path, { isDir: typedAddress.is_dir });
+                      return;
+                    }
+                    if (pathLike) commitSearch();
                   }}
                 />
                 {/* Only once being busy is information rather than a flicker

@@ -182,10 +182,10 @@
    without its own claim the `space-between` slack opened up INSIDE that trio
    (label floating mid-bar, star flung to the far right). What both exclude is
    edit mode, whose field is neither a crumb nor a label and eats the width
-   itself. Over a FOLDER the search row's `margin-left: auto` is the claimant
-   instead (.crumb-search-slot below) and this one stands down: two auto
-   margins in one row split the slack between them, which is the layout that
-   pair exists to prevent.
+   itself. Over a claimed FOLDER there is no `.crumbs` strip at all — the
+   merged search field (.crumb-search-slot below) grows to fill the row on its
+   own, which already eats the slack, so this rule's `:has()` guards correctly
+   find nothing to match there and stand down on their own.
 
    IT RIDES ON THE ★, NOT ON THE STRIP, since the star moved to the path's tail
    (Breadcrumb.tsx). Left where it was, the slack would open up BETWEEN the path
@@ -1302,25 +1302,16 @@ table.listing-table tr.skel-row:hover {
 }
 
 .crumb-search-slot > .listing-search {
-  flex: 0 1 auto;
+  /* Decision 1: this field IS the path bar for a claimed folder now — no
+     sibling `.crumbs` strip is left competing for the row (Breadcrumb.tsx
+     renders none while claimed), so the field grows to hold the space that
+     strip used to, right where it sat (Breadcrumb.tsx now portals this slot
+     immediately after the crumb-nav arrows, ahead of the star). It used to
+     sit pinned to the bar's right end at a fixed resting width, back when it
+     was a small search-only control beside a full path strip. */
+  flex: 1 1 auto;
   min-width: 0;
-  /* Pinned to the bar's right end, whatever else is or isn't in the row: the
-     mode slot hides itself when empty, and the split buttons are gone over a
-     folder, so "after the last thing" is not a fixed place. An auto margin is
-     — it eats the free width, so the box and the `···` sit against the right
-     edge in every state, which is where the hand goes looking for them.
-
-     It works because the crumbs stop growing here (see .crumbs below). That used
-     to cost the click-to-edit target its reach — the whitespace past the last
-     crumb was part of it, and once this margin owned those pixels only the
-     strip's own trailing padding was left. Answered since: the bar's whole dead
-     space opens the path field, these pixels included (Breadcrumb's
-     document-level click handler), so the strip's width and the target's reach
-     are no longer the same question. */
-  margin-left: auto;
-  /* And the row packs to its own right edge, so any leftover slack in it falls
-     on the crumb side rather than between the `···` and the corner. */
-  justify-content: flex-end;
+  justify-content: flex-start;
   height: auto;
   padding: 0;
   border-bottom: none;
@@ -1334,36 +1325,20 @@ table.listing-table tr.skel-row:hover {
   margin-right: 0;
 }
 
-/* Crumbs and the search box now share one row, so the box needs a size of its
-   own — and at rest it is SMALL. An idle search box is a target to click, not
-   a field to read, and the bar's real subject is the path; a wide empty input
-   sitting in the middle of it was the loudest thing in the strip and the least
-   used. 150px is a little more than "Search…" needs, and it stops there: the
-   box does not grow, so the free width stays with the crumbs (whose trailing
-   whitespace is the click-to-edit target).
-
-   It is only at rest. Focus hands the box the whole strip — see the
-   `.searching` / `.expanded` rules below — so this width has to serve the
-   unfocused empty state and nothing else. */
+/* Crumbs and the search box now share one row, and the box IS the path bar's
+   text area (decision 1: the merged field replaces the strip, it does not
+   sit beside it), so it grows into whatever width the row has to give rather
+   than resting at a small fixed size. */
 .crumb-search-slot .listing-search-box {
-  /* `width`, not a flex-basis. The row is sized by its content, and a flex
-     item's contribution to that is its MAX-content — for a bare `type=search`
-     input that is the UA's intrinsic ~166px, not the 150px basis it then lays
-     out at. The row came out 16px wider than what was in it, and the slack sat
-     at the end, holding the `···` that far off the right edge. A width is
-     intrinsic, so the row measures what it actually shows. */
-  flex: 0 1 auto;
-  width: 150px;
+  /* Grows with its row (above): the box holds the path now, so it takes
+     whatever width the bar has to give rather than sitting at a small fixed
+     resting size beside a strip of its own. */
+  flex: 1 1 auto;
+  width: auto;
   /* The squeeze floor, and it moved with the in-field magnifier: the glyph took
      28px of the input as padding, so the old 96px left ~58px of text and
      started clipping the placeholder it was chosen to hold. */
   min-width: 124px;
-  /* Same number, declared where JS can read it: the tight-bar fold
-     (Listing.tsx) must know how much strip the box will take when it UNFOLDS,
-     and while folded its own `width` reads 0 (.iconized below). A custom
-     property is not overridden by that rule, so this survives the fold and
-     the two numbers cannot drift apart. */
-  --resting-width: 150px;
 }
 
 /* Who yields when the bar runs short, and in what order.
@@ -1378,42 +1353,12 @@ table.listing-table tr.skel-row:hover {
    magnifier and the full "Search…" placeholder, just with no slack around it.
    Between the two floors the strip stays one line at any width the split
    allows, which is what keeps it the same height as the pane header across the
-   divider.
-
-   And past BOTH floors — the path still ellipsized with the box already at
-   124px — the box stops being worth its strip at all: Listing.tsx measures
-   that state and folds the resting box into a 28px magnifier (.iconized
-   below), handing the difference back to the path. The path outranks an idle
-   input; a click on the magnifier (or typing, ever) gets the box back. */
+   divider. Both floors hold at every width; the field never gives the path a
+   third state to fall back to. */
 #breadcrumb:has(.crumb-search-slot) .crumbs {
   flex-grow: 0;
   flex-shrink: 6;
   min-width: 120px;
-}
-
-/* The tight-bar fold (Listing.tsx's measurement): the resting box collapses
-   to nothing and the .listing-search-open magnifier (a .bar-ctl) stands in.
-   Collapsed by WIDTH, not display: the input must stay focusable, because
-   type-to-search (useListingSelection's printable-key branch) lands focus on
-   it from anywhere in the listing — focus pins the box back open
-   (Listing.tsx), so the keystroke falls into a visible field. A display:none
-   input silently refuses focus and the feature dies while folded. The
-   negative margin swallows the row's 8px gap, so the zero-width item leaves
-   no seam. Never coexists with .searching: a non-empty query un-folds by
-   definition.
-
-   Scoped under the slot for specificity, not for scope (the fold only exists
-   in slot mode anyway): the `.has-pin` width rule below is (0,3,0) and later
-   in the file, so at equal specificity a narrow-bar multi-selection would
-   win the cascade and reopen a 260px hole the fold had just reclaimed —
-   invisible, because this rule's opacity would still apply. */
-.crumb-search-slot .listing-search.iconized .listing-search-box {
-  flex: 0 0 0px;
-  width: 0;
-  min-width: 0;
-  margin-left: -8px;
-  overflow: hidden;
-  opacity: 0;
 }
 
 /* …and once the box is in use, the crumbs get out of the way entirely.
@@ -1424,7 +1369,7 @@ table.listing-table tr.skel-row:hover {
    is the state where a long query most needs the room.
 
    TWO CLASSES, one geometry. `.searching` is a non-empty query; `.expanded` is
-   the box pinned open (focused, or the tight-bar magnifier clicked — Listing's
+   the box pinned open (focused, or the in-field magnifier clicked — Listing's
    `pinnedOpen`). Neither implies the other: a query outlives the focus that
    typed it, and a box is pinned open long before there is anything in it. The
    full-width state is the same in both, so every rule down to the grow pair
@@ -1478,11 +1423,7 @@ table.listing-table tr.skel-row:hover {
   flex: 1 1 auto;
   /* The open sweep, and it is declared HERE rather than on the resting box on
      purpose: a transition only exists while the class that carries it does, so
-     opening animates and closing snaps back. Closing must snap — the box
-     collapsing over 130ms while the crumbs are already back is exactly the
-     window in which the tight-bar fold re-measures (Listing.tsx: its
-     ResizeObserver is live again the instant `pinnedOpen` drops), and it would
-     read the still-wide box as "no free strip" and fold for a frame.
+     opening animates and closing snaps back.
      `flex-grow` is the animated property because grow, not `width`, is what
      spans the strip; the row's own grow above is instant, so the field opens
      leftward from the bar's right edge (`justify-content: flex-end`). */
@@ -1519,11 +1460,6 @@ table.listing-table tr.skel-row:hover {
 .crumb-search-slot .listing-search-box.has-pin {
   flex: 0 1 auto;
   width: 260px;
-  /* And the fold's unfold threshold moves with it — see --resting-width above.
-     A pinned box is 110px wider than an idle one, which is more than the whole
-     margin the old fixed threshold had; leaving it behind made the fold flip
-     forever (see Listing.tsx's measurement). */
-  --resting-width: 260px;
 }
 
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
@@ -1543,10 +1479,9 @@ table.listing-table tr.skel-row:hover {
   padding-left: 28px;
 }
 
-/* The magnifier INSIDE the field's left edge — the same glyph the tight-bar
-   fold stands in with (.listing-search-open), so folding and unfolding reads as
-   one icon moving rather than two different marks, and it is the one part of
-   the box that survives the placeholder being typed over.
+/* The magnifier INSIDE the field's left edge — the one search affordance the
+   claimed folder's bar carries, and it is the one part of the box that
+   survives the placeholder being typed over.
 
    Absolutely positioned, so it costs the box no layout at either resting width
    and the chips pinned at the right edge are untouched. `pointer-events: none`
@@ -1582,6 +1517,12 @@ table.listing-table tr.skel-row:hover {
   white-space: nowrap;
   font-size: 13px;
   pointer-events: none;
+  /* A narrow bar clips leading segments rather than the tail: packing the
+     strip to its own end means whatever does not fit is pushed off the
+     LEFT, so the current folder — the last crumb, the one most worth
+     reading — is what survives, the same rule the plain-file crumb strip
+     uses (Breadcrumb.tsx's own tail-pin). */
+  justify-content: flex-end;
 }
 
 .listing-search-crumbs .path-crumb {
