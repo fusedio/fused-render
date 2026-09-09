@@ -261,6 +261,7 @@ function dragEv(withData = true) {
 
 const started = () => runs.filter((c) => c.action === "start");
 
+
 // ---- QA anomaly 4: one paste, one chip ------------------------------------
 
 test("ONE paste makes ONE chip, and only a clipboard with files is taken", async () => {
@@ -516,6 +517,9 @@ test("a send fired DURING the camera's window waits for the picture", async () =
   // chips, could not see the camera's window at all. The flash had already
   // fired, so the picture looked taken; an Enter in that window went out
   // WITHOUT it and it then landed in the tray for the NEXT message.
+  //
+  // This is also the flip D7 is about: `attachPending` reads `attach.capturing`,
+  // which moves while the tray does not, so the `card` memo has to list it.
   let release = () => {};
   const landed = new Promise<void>((done) => {
     release = done;

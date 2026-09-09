@@ -174,6 +174,7 @@ export {
   ATTACH_API,
   failLabel,
   glyphDoor,
+  liveViewable,
   prunedLabel,
   previewSrcFor,
   receiptFor,

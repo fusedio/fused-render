@@ -28,11 +28,44 @@ let stream: MediaStream | null = null;
  */
 let watchers = 0;
 
+/**
+ * CAPTURES STILL IN FLIGHT, and a release that is waiting on them (D6). A
+ * capture is a HOLDER of the stream exactly as a mount is: it hid the flash
+ * overlay, it is about to read pixels, and `getStream` will re-open a share it
+ * finds stopped. So a chat unmounting mid-capture used to stop the stream, the
+ * capture in flight re-prompted, and THAT second share had no watcher left to
+ * release it — the browser's "sharing this tab" indicator outlived the closed
+ * chat. The share now ends only once the last watcher AND the last capture are
+ * gone: a teardown that finds a capture running only ASKS for the release
+ * (`releaseWanted`), and the capture pays it on the way out.
+ *
+ * A capture with no watcher at all still leaves the stream KEPT, because that is
+ * the whole point of the singleton (the prompt is paid once per walkthrough, not
+ * once per note) — nobody asked for the release, so none is owed.
+ */
+let captures = 0;
+let releaseWanted = false;
+
+/** Release if nothing holds the stream any more and somebody asked for it. */
+function releaseIfIdle(): void {
+  if (!releaseWanted || watchers || captures) return;
+  releaseWanted = false;
+  stopStream();
+}
+
 /** Stop the kept stream. Idempotent — both `ended` and an explicit teardown
  *  reach it (T:9731 annXOStreamStop). */
 export function stopStream(): void {
   const s = stream;
   stream = null;
+  // A share the picker is STILL deciding on belongs to a generation that has
+  // just been stopped: bumping the counter is how `openStream` knows the answer
+  // it is about to get is already orphaned (D6).
+  generation += 1;
+  // The single-flight promise is dropped too, or a share asked for BEFORE the
+  // stop would be handed to callers after it as if it were still held (D6).
+  pending = null;
+  releaseWanted = false;
   if (!s) return;
   for (const t of s.getTracks()) {
     try {
@@ -79,7 +112,12 @@ export function watchStreamTeardown(win: Window | null | undefined): () => void 
     released = true;
     if (host) host.removeEventListener("pagehide", onHide);
     watchers = Math.max(0, watchers - 1);
-    if (!watchers) stopStream();
+    if (watchers) return;
+    // The last mount is out, so the share is owed back — but a capture in flight
+    // still holds it, and stopping under it would re-prompt and leak the new
+    // share (D6). Asked for here, paid by whichever holder leaves last.
+    releaseWanted = true;
+    releaseIfIdle();
   };
 }
 
@@ -87,6 +125,17 @@ export function watchStreamTeardown(win: Window | null | undefined): () => void 
  *  and the only way to observe it from outside. */
 export function streamWatchers(): number {
   return watchers;
+}
+
+/** Captures still holding the stream, and whether a release is owed — for the
+ *  tests that assert the counting, and the only way to observe it from outside
+ *  (D6). */
+export function streamCaptures(): number {
+  return captures;
+}
+
+export function streamReleasePending(): boolean {
+  return releaseWanted;
 }
 
 /** The kept stream, or a fresh share. Chromium's current-tab hints preselect
@@ -98,8 +147,30 @@ export async function getStream(): Promise<MediaStream> {
   if (stream && stream.getVideoTracks().some((t) => t.readyState === "live")) {
     return stream;
   }
+  // SINGLE-FLIGHT. `getDisplayMedia` is a whole trip through the browser's
+  // picker, and `stream` is only assigned when it comes back — so two captures
+  // started in the same tick (a walkthrough's pane shot and crop, two chats)
+  // both saw "nothing held", both prompted, and the second share overwrote the
+  // first, which nothing then held or released (D6). The first caller's promise
+  // is shared with everyone who asks while it is out.
+  if (pending) return pending;
   stopStream();
-  stream = await navigator.mediaDevices.getDisplayMedia({
+  pending = openStream();
+  try {
+    return await pending;
+  } finally {
+    pending = null;
+  }
+}
+
+let pending: Promise<MediaStream> | null = null;
+/** Bumped by every `stopStream`, so a prompt that was already out when the
+ *  stream was released does not install its answer afterwards (D6). */
+let generation = 0;
+
+async function openStream(): Promise<MediaStream> {
+  const mine = generation;
+  const opened = await navigator.mediaDevices.getDisplayMedia({
     video: { displaySurface: "browser" },
     audio: false,
     // Not in TS's `DisplayMediaStreamOptions` yet — Chromium-only hints the spec
@@ -109,9 +180,25 @@ export async function getStream(): Promise<MediaStream> {
     surfaceSwitching: "exclude",
     monitorTypeSurfaces: "exclude",
   } as DisplayMediaStreamOptions);
-  const track = stream.getVideoTracks()[0];
+  if (mine !== generation) {
+    // Stopped while the picker was up (a pagehide, the last chat closing): this
+    // share is nobody's, so it is ended right here rather than installed — an
+    // orphaned share is the "sharing this tab" indicator with no chat behind it.
+    // Handed back regardless, dead, so the caller in flight still finishes and
+    // restores its overlay instead of rejecting.
+    for (const t of opened.getTracks()) {
+      try {
+        t.stop();
+      } catch {
+        /* already ended */
+      }
+    }
+    return opened;
+  }
+  stream = opened;
+  const track = opened.getVideoTracks()[0];
   if (track) track.addEventListener("ended", stopStream, { once: true });
-  return stream;
+  return opened;
 }
 
 /** One frame of the SHARE. A video element hands over whatever frame it last
@@ -120,7 +207,16 @@ export async function getStream(): Promise<MediaStream> {
  *  bound rather than a promise the caller can hang on. */
 function nextFrame(video: HTMLVideoElement): Promise<void> {
   if (video.requestVideoFrameCallback) {
-    return new Promise<void>((res) => video.requestVideoFrameCallback(() => res()));
+    // BOUNDED exactly as `painted()` below is, and for the same reason (D5):
+    // `requestVideoFrameCallback` fires off the compositor, so a hidden document
+    // — a cmux pane, a background tab — decodes no frames and the callback never
+    // comes. Unbounded, the capture never settled: the flash overlay stayed
+    // `visibility: hidden` (the `finally` never ran) and the tab share was never
+    // released. A stale frame is a far better answer than a hung capture.
+    return Promise.race([
+      new Promise<void>((res) => video.requestVideoFrameCallback(() => res())),
+      new Promise<void>((res) => setTimeout(res, 150)),
+    ]);
   }
   return new Promise<void>((res) => setTimeout(res, 150));
 }
@@ -159,6 +255,22 @@ export async function captureXO(
     return null;
   }
   if (!host) return null;
+  // COUNTED AS A HOLDER for the whole trip, prompt included (D6): from here on
+  // this capture owns a share, so a chat unmounting under it defers its release
+  // instead of stopping the stream we are about to read. The body is its own
+  // function only so this bracket can be a plain try/finally around it.
+  captures += 1;
+  try {
+    return await captureFromShare(frame, host);
+  } finally {
+    captures = Math.max(0, captures - 1);
+    releaseIfIdle();
+  }
+}
+
+/** The grab itself, once the "cannot" roads are behind us and the capture is
+ *  counted. Throws (never returns null) — every refusal was decided above. */
+async function captureFromShare(frame: HTMLIFrameElement, host: Window): Promise<PaneBitmap> {
   const live = await getStream();
   const video = document.createElement("video");
   video.muted = true;

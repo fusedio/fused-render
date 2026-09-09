@@ -94,6 +94,7 @@ import {
   Home,
   openCardIds,
   resetCardPolicy,
+  liveViewable,
   SentPop,
   settleReceipts,
   ShotViewer,
@@ -1938,7 +1939,15 @@ function ChatBody(props: ChatBodyProps) {
       ev.preventDefault();
       void attach.addFiles(picks);
     },
-    [attach],
+    // THE ONE MEMBER IT CALLS, not the whole hook object (D7). `useAttachments`
+    // returns a fresh literal every render, so `[attach]` made this callback —
+    // and through it the `card` memo that lists it as a dep — recompute on every
+    // render, which is what MASKED the missing `attach.capturing` dep below. The
+    // dep list has to be the truth about what a memo reads, not a coincidence
+    // that happens to cover it. (`onSend`/`onFollowUp` still move every render,
+    // through `dispatchSend`, so `card` is not yet a memo that holds — which is
+    // why no test can fail on the missing dep alone. One mask at a time.)
+    [attach.addFiles],
   );
 
   /**
@@ -2010,6 +2019,22 @@ function ChatBody(props: ChatBodyProps) {
     },
     [attach],
   );
+
+  /**
+   * THE VIEWER READS THE LIVE ROW, not the snapshot it was opened from (D8).
+   *
+   * `attachApi.liveViewable` is the rule and carries the why; what is this
+   * file's own is WHERE the sent rows are: the receipts hang off the user turns
+   * in the store, which is the copy `settleAttachments` rewrites.
+   */
+  const liveViewing = useMemo<Viewable | null>(() => {
+    if (!viewing || !viewing.id) return viewing;
+    const sent: Receipt[] = [];
+    for (const turn of state.turns) {
+      if (turn.role === "user" && turn.attachments) sent.push(...turn.attachments);
+    }
+    return liveViewable(viewing, attach.items, sent);
+  }, [viewing, attach.items, state.turns]);
 
   const card = useMemo(
     () => ({
@@ -2108,6 +2133,12 @@ function ChatBody(props: ChatBodyProps) {
       urlTick,
       attach.items,
       attach.remove,
+      // THE CAMERA'S OWN WINDOW (D7). `attachPending` reads `attach.capturing`,
+      // which moves without the tray moving (a capture puts nothing in `items`
+      // until the bytes land), so without it here the send gate went stale for
+      // the whole of the in-flight shot. It was masked only by `onPaste`
+      // depending on the whole `attach` object — a coincidence, not a dep.
+      attach.capturing,
       onPaste,
       pane.paneNoun,
       ann.chips,
@@ -2340,7 +2371,7 @@ function ChatBody(props: ChatBodyProps) {
       {/* ABOVE the popup (z 90 against 80): a picture opened from inside it must
           land ON TOP or the click looks dead (T:1147-1148). */}
       <ShotViewer
-        shot={viewing}
+        shot={liveViewing}
         paneNoun={pane.paneNoun}
         onClose={() => setViewing(null)}
         onDiscard={onDiscardShot}

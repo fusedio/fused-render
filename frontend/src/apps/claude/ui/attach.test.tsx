@@ -8,6 +8,8 @@ import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const { AttachTray } = await import("./AttachTray");
+const { ShotViewerBody } = await import("./ShotViewer");
+const { liveViewable, receiptViewable, settleReceipts, toViewable } = await import("./attachApi");
 const { useAttachments } = await import("./useAttachments");
 const { ComposerCard } = await import("./Composer");
 const { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_PERMISSION } = await import("./composer-defaults");
@@ -524,4 +526,67 @@ test("A PLACEHOLDER ALWAYS BECOMES A CHIP, even when the pipeline throws", async
   expect(items[1]!.viewNote).toBe("not attached: it could not be saved (disk full)");
   // And no placeholder is left claiming a file is still on its way.
   expect(items.every((s) => !s.pending)).toBe(true);
+});
+
+// ---- D8: the picture an OPEN viewer is showing ----------------------------
+
+/** The `<img>` the viewer's body is drawing, which is the whole of what the
+ *  user is looking at (`ShotViewerBody` is the seam the chassis' portal cannot
+ *  be mounted through). */
+function picIn(el: React.ReactElement): string {
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(el);
+  });
+  const imgs = r.root.findAllByType("img");
+  return imgs.length ? String(imgs[0]!.props.src ?? "") : "";
+}
+
+test("a viewer open on a pending shot follows it onto disk (D8)", () => {
+  // `viewing` was a frozen COPY of the row it was opened from, and a pending
+  // row's copy carries a `blob:` handle. A receipt clicked before its send's
+  // `start` came back therefore held that handle while the send landed:
+  // `settleReceipts` re-points the rows at the copy on disk and the spent
+  // handles are revoked a commit later, and no store write reaches a snapshot —
+  // so the picture went blank UNDER the user in the one place they had opened it
+  // to look at it.
+  const pic = att({ kind: "pane", view: "/shots/pane.png", thumb: "blob:fused/pane" });
+  // What the chip's own door hands the viewer, and what the viewer keeps.
+  const opened = toViewable(pic);
+  expect(liveViewable(opened, [pic], [])).toEqual(opened);
+  expect(picIn(<ShotViewerBody shot={liveViewable(opened, [pic], [])} paneNoun="preview" />)).toBe(
+    "blob:fused/pane",
+  );
+
+  // THE SEND GOES OUT while it is open: the tray is emptied into `inFlight`, the
+  // receipt goes up under the bubble still drawn with the blob…
+  const receipt: Receipt = { id: pic.id, kind: pic.kind, label: "attached", view: pic.view };
+  const onBubble = { ...receipt, thumb: pic.thumb };
+  expect(picIn(<ShotViewerBody shot={liveViewable(opened, [], [onBubble])} paneNoun="preview" />))
+    .toBe("blob:fused/pane");
+
+  // …and then it LANDS, which is where the snapshot used to die.
+  const settled = settleReceipts([onBubble], [pic]).receipts;
+  const live = liveViewable(opened, [], settled);
+  expect(picIn(<ShotViewerBody shot={live} paneNoun="preview" />)).toBe(
+    "/api/fs/raw?path=" + encodeURIComponent("/shots/pane.png"),
+  );
+  // Not pending any more, so Discard goes with the send: it cannot be un-sent.
+  expect(live?.pending).toBe(false);
+  expect(live).toEqual(receiptViewable(settled[0]!));
+});
+
+test("liveViewable falls back to the snapshot in the window that has neither (D8)", () => {
+  // `take()` has emptied the tray and the bubble is not up yet — the handle is
+  // very much alive there. And a RESTORED turn's receipt never had an id at all,
+  // so there is nothing to look it up by; it is already drawn off disk.
+  const pic = att({ kind: "pane", view: "/shots/pane.png", thumb: "blob:fused/pane" });
+  const opened = toViewable(pic);
+  expect(liveViewable(opened, [], [])).toBe(opened);
+  const restored = receiptViewable({ kind: "pane", label: "attached", view: "/shots/old.png" });
+  expect(liveViewable(restored, [pic], [])).toBe(restored);
+  expect(liveViewable(null, [pic], [])).toBeNull();
+  // And another picture's rows are not this one's answer.
+  const other = att({ kind: "image", view: "/shots/other.png", thumb: "blob:fused/other" });
+  expect(liveViewable(opened, [other], [])).toBe(opened);
 });

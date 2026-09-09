@@ -89,6 +89,21 @@ export function ShotViewerBody({ shot, paneNoun }: Omit<ShotViewerProps, "onClos
 
   const pic = shot ? shot.src || shot.thumb || "" : "";
   const bare = !!shot && isBare(shot);
+  const view = shot ? shot.view : null;
+  const kind = shot ? shot.kind : null;
+  /**
+   * WHICH PICTURE, as opposed to which OBJECT (D8). The chat looks the open
+   * shot up LIVE now — the tray row while it is pending, the receipt under the
+   * bubble once it has been sent — so the same picture arrives here as a new
+   * object whenever its row moves: a settled receipt swapping a `blob:` handle
+   * for the copy on disk, a streaming turn re-rendering the transcript. Keyed on
+   * the object, the two effects below then re-ran for a picture that had not
+   * changed — throwing away a zoom the user had set and re-fetching the file
+   * preview mid-read. The id survives the whole trip (`settleReceipts` matches
+   * on it for the same reason); the path is the answer for a restored turn,
+   * which has no id.
+   */
+  const key = shot ? shot.id || shot.view || "" : "";
 
   // Every open starts FITTED. A zoom is something you do to one picture while
   // looking at it, not a preference that follows you to the next one — and a
@@ -101,13 +116,13 @@ export function ShotViewerBody({ shot, paneNoun }: Omit<ShotViewerProps, "onClos
       box.scrollTop = 0;
       box.scrollLeft = 0;
     }
-  }, [shot]);
+  }, [key]);
 
   // THE FILE'S OWN PREVIEW, and only a file's: an image already has the picture
   // viewer above (a better view of pixels than any template), and a refusal has
   // no path to frame (T:10775-10784).
   useEffect(() => {
-    if (!shot || !bare || shot.kind !== "file" || !shot.view) {
+    if (!bare || kind !== "file" || !view) {
       setFrameSrc(null);
       setLoading(false);
       return;
@@ -117,7 +132,7 @@ export function ShotViewerBody({ shot, paneNoun }: Omit<ShotViewerProps, "onClos
     // A first render can take seconds (a folder venv, a big parquet), and a
     // blank box for those seconds reads as a preview that failed (T:4384).
     setLoading(true);
-    void previewSrcFor(shot.view).then((src) => {
+    void previewSrcFor(view).then((src) => {
       // The user may have closed this, or opened another attachment, in the
       // seconds the stat took — the same identity test Discard uses.
       if (!live) return;
@@ -132,7 +147,8 @@ export function ShotViewerBody({ shot, paneNoun }: Omit<ShotViewerProps, "onClos
     return () => {
       live = false;
     };
-  }, [shot, bare]);
+    // The FACTS it reads, not the object they came in: see `key` above (D8).
+  }, [view, kind, bare]);
 
   if (!shot) return null;
 

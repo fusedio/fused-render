@@ -22,8 +22,16 @@ afterAll(() => {
   G.document = BEFORE.document;
 });
 
-const { captureXO, currentStream, getStream, stopStream, streamWatchers, watchStreamTeardown } =
-  await import("./xo-capture");
+const {
+  captureXO,
+  currentStream,
+  getStream,
+  stopStream,
+  streamCaptures,
+  streamReleasePending,
+  streamWatchers,
+  watchStreamTeardown,
+} = await import("./xo-capture");
 
 // ── the fakes ───────────────────────────────────────────────────────────────
 
@@ -557,5 +565,156 @@ describe("captureXO hides what sits ON the pane", () => {
     expect(await captureXO(makeFrame(rect(0, 0, 400, 300)))).not.toBeNull();
     doc.querySelectorAll = () => [{} as unknown as Element];
     expect(await captureXO(makeFrame(rect(0, 0, 400, 300)))).not.toBeNull();
+  });
+});
+
+// ── the bound on a frame that never arrives (D5) ────────────────────────────
+
+describe("nextFrame is BOUNDED even where rVFC exists (D5)", () => {
+  test("a video whose frame callback never fires still settles the capture", async () => {
+    // `requestVideoFrameCallback` fires off the compositor: a hidden document (a
+    // cmux pane, a background tab) decodes no frames and the callback never
+    // comes. Unbounded, the whole capture hung — so the `finally` never ran, the
+    // flash overlay stayed invisible and the tab share was never released.
+    const el = { style: { visibility: "visible" } };
+    const doc = G.document as Rec;
+    doc.querySelectorAll = (sel: string) => (sel === "[data-shot-flash]" ? [el] : []);
+    const make = doc.createElement as (tag: string) => FakeVideo | FakeCanvas;
+    doc.createElement = (tag: string) => {
+      const node = make(tag);
+      const v = node as FakeVideo;
+      if (v.requestVideoFrameCallback) v.requestVideoFrameCallback = () => {};
+      return node;
+    };
+    const started = Date.now();
+    const out = await captureXO(makeFrame(rect(0, 0, 400, 300)));
+    // A stale frame is a far better answer than a hang: the crop is drawn and
+    // the overlay is put back, inside the bound (two waits, because a hide
+    // happened) rather than never.
+    expect(out).not.toBeNull();
+    expect(drawn.length).toBe(1);
+    expect(el.style.visibility).toBe("visible");
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
+
+// ── one share, however many askers (D6) ─────────────────────────────────────
+
+describe("getStream is SINGLE-FLIGHT (D6)", () => {
+  /** A prompt the test resolves by hand — the only way to have two callers
+   *  inside `getDisplayMedia` at once, which is where the double share came
+   *  from. */
+  function parkedPrompt(): (s: FakeStream) => void {
+    let release: (s: FakeStream) => void = () => {};
+    G.navigator = {
+      mediaDevices: {
+        getDisplayMedia: (c: Rec) => {
+          prompts.push(c);
+          return new Promise<FakeStream>((res) => {
+            release = res;
+          });
+        },
+      },
+    } as Rec;
+    return (s) => release(s);
+  }
+
+  test("two callers in the same tick share ONE prompt and one stream", async () => {
+    // `stream` is only assigned when the picker comes back, so both callers saw
+    // "nothing held", both prompted, and the second share overwrote the first —
+    // which nothing then held or released.
+    const release = parkedPrompt();
+    const a = getStream();
+    const b = getStream();
+    expect(prompts.length).toBe(1);
+    const s = stream(track());
+    release(s);
+    expect(await a).toBe(await b);
+    expect(prompts.length).toBe(1);
+  });
+
+  test("two concurrent captures open one share, not two", async () => {
+    const release = parkedPrompt();
+    const first = captureXO(makeFrame(rect(0, 0, 400, 300)));
+    const second = captureXO(makeFrame(rect(0, 0, 400, 300)));
+    expect(prompts.length).toBe(1);
+    release(stream(track()));
+    expect(await first).not.toBeNull();
+    expect(await second).not.toBeNull();
+    expect(prompts.length).toBe(1);
+  });
+
+  test("a stop while the prompt is out is not handed the stale share", async () => {
+    // A share asked for BEFORE a `stopStream` must not be given to callers after
+    // it as if it were still held.
+    const release = parkedPrompt();
+    const asked = getStream();
+    stopStream();
+    const orphan = track();
+    release(stream(orphan));
+    await asked;
+    // And the orphan is ENDED rather than left running: an installed-too-late
+    // share is the "sharing this tab" indicator with no chat behind it.
+    expect(orphan.stops).toBe(1);
+    expect(currentStream()).toBeNull();
+    const fresh = parkedPrompt();
+    const again = getStream();
+    expect(prompts.length).toBe(2);
+    fresh(stream(track()));
+    await again;
+  });
+});
+
+describe("an in-flight capture HOLDS the share (D6)", () => {
+  function parkedPrompt(): (s: FakeStream) => void {
+    let release: (s: FakeStream) => void = () => {};
+    G.navigator = {
+      mediaDevices: {
+        getDisplayMedia: (c: Rec) => {
+          prompts.push(c);
+          return new Promise<FakeStream>((res) => {
+            release = res;
+          });
+        },
+      },
+    } as Rec;
+    return (s) => release(s);
+  }
+
+  test("the chat closing mid-capture defers the release; the capture pays it", async () => {
+    // Before this, the unmount stopped the stream under the capture, the capture
+    // re-prompted, and THAT share had no watcher left to release it — the
+    // browser's "sharing this tab" indicator outlived the closed chat.
+    const release = parkedPrompt();
+    const leave = watchStreamTeardown(null);
+    const shot = captureXO(makeFrame(rect(0, 0, 400, 300)));
+    expect(streamCaptures()).toBe(1);
+
+    leave();
+    expect(streamWatchers()).toBe(0);
+    expect(streamReleasePending()).toBe(true);
+
+    const t = track();
+    release(stream(t));
+    // The capture still gets its picture...
+    expect(await shot).not.toBeNull();
+    // ...and the share is handed back the moment it lands, by the last holder out.
+    expect(t.stops).toBe(1);
+    expect(currentStream()).toBeNull();
+    expect(streamCaptures()).toBe(0);
+    expect(streamReleasePending()).toBe(false);
+  });
+
+  test("with a watcher still mounted the capture ending keeps the share", async () => {
+    // Nobody asked for the release, so none is owed: the prompt stays paid once
+    // per walkthrough rather than once per note.
+    const leave = watchStreamTeardown(null);
+    const t = track();
+    nextStream = () => stream(t);
+    expect(await captureXO(makeFrame(rect(0, 0, 400, 300)))).not.toBeNull();
+    expect(currentStream()).not.toBeNull();
+    expect(t.stops).toBe(0);
+    leave();
+    expect(t.stops).toBe(1);
   });
 });
