@@ -956,7 +956,17 @@ function ChatBody(props: ChatBodyProps) {
   /** The mode machine's own view of the mic: four questions, no microphone. */
   const annRecorder = useMemo<AnnRecorder>(
     () => ({
-      recording: () => recorder.snapshot().state === "recording",
+      // "starting" TOO — the width of the getUserMedia prompt. With it excluded
+      // the machine called that window Comment mode: the bar showed ✓ Done, the
+      // Comment seat came alive beside a mic that was about to open, and
+      // `set(false)` skipped `end()`, so a dismissal could not cancel the
+      // in-flight capture and the mic came up after the reader had left
+      // (Bugbot, PR #1074). `commentSeatName` already read it this way; this is
+      // the other half of the same fact.
+      recording: () => {
+        const s = recorder.snapshot().state;
+        return s === "starting" || s === "recording";
+      },
       settling: () => recorder.snapshot().busy,
       end: () => void recorder.end(),
       discard: () => void recorder.discard(),

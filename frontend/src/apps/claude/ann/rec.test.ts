@@ -25,6 +25,11 @@ interface FakeCapture {
   /** Held open so a test can land a second click INSIDE the stop's await. */
   hold?: boolean;
   fail?: Error;
+  /** The START request held open, so a test can act inside the mic prompt's own
+   *  window (`state === "starting"`) the way a reader pressing Esc does. */
+  holdStart?: boolean;
+  /** How that held start ends, when it ends in a refusal rather than a mic. */
+  startFail?: Error;
 }
 
 function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Error) {
@@ -35,6 +40,7 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
   let epoch = 1;
   let armed = false;
   let releaseStop: (() => void) | null = null;
+  let releaseStart: (() => void) | null = null;
   const timers = new Set<{ fn: () => void; ms: number }>();
   const delivered: Array<{ intro: string; spoke: boolean }> = [];
 
@@ -84,6 +90,12 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
   const deps: RecorderDeps = {
     capture: () => {
       log.push("audio");
+      if (plan.holdStart) {
+        return new Promise<never>((res, rej) => {
+          releaseStart = () =>
+            plan.startFail ? rej(plan.startFail) : res(handle as never);
+        });
+      }
       return Promise.resolve(handle as never);
     },
     warm: () => log.push("warm"),
@@ -152,6 +164,7 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
       clock += ms;
     },
     releaseStop: () => releaseStop && releaseStop(),
+    releaseStart: () => releaseStart && releaseStart(),
     setEpoch: (n: number) => {
       epoch = n;
     },
@@ -599,6 +612,80 @@ describe("begin() (T:7858)", () => {
     await rec.begin();
     expect(asked).toBe(0);
     expect(rec.snapshot().state).toBe("off");
+  });
+});
+
+// ── the start window ───────────────────────────────────────────────────────
+
+// The mic prompt's own width. The mode machine calls it a recording
+// (`AnnRecorder.recording()` counts "starting"), so both exits reach the
+// recorder while the request is still out — and the only thing either can do is
+// make sure the mic that arrives behind the reader is put straight back down
+// (Bugbot, PR #1074).
+describe("the START window (T:7898-7960)", () => {
+  test("a dismissal inside `starting` cancels the arriving capture", async () => {
+    const w = makeWorld({ holdStart: true });
+    const begun = w.rec.begin();
+    expect(w.rec.snapshot().state).toBe("starting");
+    // Esc, or the disarm the mode machine's `set(false)` makes: `end()` while
+    // the request is out is the dismissal, not a stop.
+    await w.rec.end();
+    expect(w.rec.snapshot().state).toBe("starting"); // still nothing to stop
+    w.releaseStart();
+    await begun;
+    // STOPPED AND DELETED, not stopped and kept: the only thing in that file is
+    // the time the prompt was up.
+    expect(w.log).toEqual(["warm", "audio", "cancel", "disarm"]);
+    expect(w.rec.snapshot().state).toBe("off");
+    expect(w.rec.snapshot().busy).toBe(false);
+    expect(w.isArmed()).toBe(false);
+    // No session was ever opened: no clock, no marks, and the URL never said 2.
+    expect(w.timers.size).toBe(0);
+    expect(w.log).not.toContain("sync");
+    expect(w.log).not.toContain("arm");
+  });
+
+  test("the bar's trash inside `starting` is the same dismissal", async () => {
+    const w = makeWorld({ holdStart: true });
+    const begun = w.rec.begin();
+    await w.rec.discard();
+    w.releaseStart();
+    await begun;
+    expect(w.log).toEqual(["warm", "audio", "cancel", "disarm"]);
+    expect(w.rec.snapshot().state).toBe("off");
+  });
+
+  test("a dismissed start that then REFUSES says nothing — nobody is waiting", async () => {
+    const w = makeWorld({ holdStart: true, startFail: new Error("Permission denied") });
+    const begun = w.rec.begin();
+    await w.rec.end();
+    w.releaseStart();
+    await begun;
+    expect(w.log.some((l) => l.startsWith("alert:"))).toBe(false);
+    expect(w.rec.snapshot().state).toBe("off");
+    expect(w.log).toContain("disarm"); // the mode still goes back
+  });
+
+  test("a round armed DURING the window is not this start's to close (the epoch rule)", async () => {
+    const w = makeWorld({ holdStart: true });
+    const begun = w.rec.begin();
+    await w.rec.end();
+    w.setEpoch(2); // the reader re-armed while the prompt was up
+    w.releaseStart();
+    await begun;
+    expect(w.log).toEqual(["warm", "audio", "cancel"]);
+    expect(w.rec.snapshot().state).toBe("off");
+  });
+
+  test("a click inside the window mints nothing — there is no clock to stamp it against", async () => {
+    const w = makeWorld({ holdStart: true });
+    const begun = w.rec.begin();
+    expect(w.rec.mark({ kind: "element" })).toBeNull();
+    expect(w.rec.markPoint(3, 4, null)).toBeNull();
+    expect(w.notes).toHaveLength(0);
+    w.releaseStart();
+    await begun;
+    expect(w.rec.snapshot().marks).toBe(0);
   });
 });
 

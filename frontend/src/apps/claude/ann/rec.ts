@@ -328,6 +328,15 @@ export function createRecorder(deps: RecorderDeps): Recorder {
    *  owns the seat"; one number says it without conflating "a new recording
    *  started" with "this one is still settling" (T:8244, 8302, 8380). */
   let session = 0;
+  /** THE START WINDOW'S DISMISSAL (Bugbot, PR #1074). `begin()` is
+   *  asynchronous — the mic prompt lives inside `capture()` — and through it
+   *  the mode machine already calls the walkthrough a recording
+   *  (`AnnRecorder.recording()` counts "starting"), so Esc, the bar's trash and
+   *  a disarm all reach `end()`/`discard()` while the request is still out.
+   *  Neither can stop a recording that does not exist yet, so they raise this
+   *  and the reply is cancelled the moment it lands. Without it the mic came up
+   *  AFTER the reader had left the mode. */
+  let startCancelled = false;
   let snap: RecSnapshot = build();
   const watchers = new Set<() => void>();
 
@@ -397,6 +406,12 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     // is not a guard a function call sees.
     if (state !== "off") return;
     if (!deps.mode.capable()) return;
+    // WHICH arming this start belongs to, read before the window opens: the
+    // dismissal below hands the mode back, and a round the reader armed while
+    // the request was out is not this start's to close (the epoch rule
+    // `end()`/`discard()` already follow).
+    const armedAtStart = deps.mode.epoch();
+    startCancelled = false;
     state = "starting";
     paint();
     deps.warm();
@@ -411,12 +426,41 @@ export function createRecorder(deps: RecorderDeps): Recorder {
       // — a mic nobody turned off still turns off (T:7873-7886).
       rec = await deps.capture({ title: "Spoken walkthrough" });
     } catch (err) {
+      const dismissed = startCancelled;
+      startCancelled = false;
       state = "off";
       paint();
+      // DISMISSED AND THEN REFUSED: nobody is waiting for this answer, so it is
+      // not an alert — it is the outcome the reader already asked for. The mode
+      // still has to go, because the disarm that dismissed it left the param
+      // saying "2" while `recording()` was still true.
+      if (dismissed) {
+        if (deps.mode.epoch() === armedAtStart) deps.mode.disarm();
+        return;
+      }
       // Nothing appended: the sentence carries the MACHINE's own answer (System
       // Settings, or a browser that can), and the fixed "allow microphone
       // access" line this used to add was wrong for half of them (T:7888-7893).
       shout("Cannot record — " + errText(err));
+      return;
+    }
+    // THE DISMISSAL LANDS HERE. The mic is live by the time the handle arrives
+    // (CP-1), so a reader who left during the window has a recording running
+    // behind them: `cancel()` STOPS AND DELETES it (CP-4), where a stop would
+    // leave the prompt's own seconds on disk as a download row. Nothing is
+    // armed, no session is opened and the URL never says "2" — the walkthrough
+    // did not happen.
+    if (startCancelled) {
+      startCancelled = false;
+      state = "off";
+      paint();
+      await rec.cancel().catch((err: unknown) => {
+        warn("walkthrough start cancel failed:", errText(err));
+        return null;
+      });
+      // AND THE MODE GOES WITH IT — the same epoch-guarded hand-back the two
+      // enders do, which is also what rewrites the "2" the disarm wrote.
+      if (deps.mode.epoch() === armedAtStart) deps.mode.disarm();
       return;
     }
     // Recording needs the same click handler the typed mode uses, just pointed
@@ -486,6 +530,14 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     // its own guard, call `stop()` on an already-inactive recorder
     // (InvalidStateError) and delete nothing while this function went on to
     // send the walkthrough it tried to throw away (T:8133-8148).
+    // THE START WINDOW IS A RECORDING TOO, as far as everyone asking is
+    // concerned, and there is nothing here to stop yet: raise the dismissal and
+    // `begin()` cancels its own reply. A stop during the window CANCELS rather
+    // than keeps — the only thing in the file is the time the prompt was up.
+    if (state === "starting") {
+      startCancelled = true;
+      return;
+    }
     if (state !== "recording" || !handle) return;
     // The WHOLE SESSION is snapshotted synchronously here: the flags drop
     // before the await and Esc re-enables the seat, so a NEW recording can
@@ -587,6 +639,12 @@ export function createRecorder(deps: RecorderDeps): Recorder {
   }
 
   async function discard(): Promise<void> {
+    // Same as `end()`'s first line: through the start window the dismissal is
+    // all either exit can do, and both mean the same thing here.
+    if (state === "starting") {
+      startCancelled = true;
+      return;
+    }
     if (state !== "recording" || !handle) return;
     // Snapshotted synchronously, like `end()`'s: a new recording can begin
     // while this one's stop settles, and every read after the await would be

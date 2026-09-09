@@ -187,6 +187,27 @@ describe("§D — the recording rows", () => {
     expect(r.rec.ended).toBe(1);
   });
 
+  // THE MIC PROMPT'S WINDOW. `AnnRecorder.recording()` counts "starting", so
+  // the machine reads the whole window as a recording — before that it called
+  // it Comment mode: the bar showed ✓ Done, the Comment seat came alive beside
+  // a mic that was about to open, and `set(false)` skipped `end()`, so nothing
+  // could cancel the capture still on its way (Bugbot, PR #1074).
+  test("the START window is recording: the recording face, and a dismissal reaches end()", () => {
+    const r = rig();
+    // Straight for the mic, nothing armed underneath: the recorder arms the
+    // mode only once the request comes back.
+    r.rec.on = true;
+    expect(modeOf(r)).toBe("recording");
+    r.machine.set(false);
+    expect(r.rec.ended).toBe(1);
+    // …and Esc is the same exit while the request is still out.
+    const esc = rig();
+    esc.rec.on = true;
+    esc.machine.escape();
+    expect(esc.rec.ended).toBe(1);
+    expect(esc.rec.discarded).toBe(0); // Esc STOPS, it does not throw away
+  });
+
   test("recording + the target disappearing releases the mic (T:7615)", () => {
     const r = rig();
     r.machine.set(true);

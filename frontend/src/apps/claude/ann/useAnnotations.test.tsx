@@ -423,6 +423,56 @@ test("a click while a walkthrough RECORDS is a stamped mark, with no composer", 
   expect(p.pop.style.display).toBe("none");
 });
 
+// The mic prompt's own window: `recording()` is already true (the mode wears
+// its recording face) but the recorder has no clock yet, so its mark writer
+// declines. The click is the WALKTHROUGH's — dropped, not written as a typed
+// note under a bar that says "Voice annotation" (Bugbot, PR #1074).
+test("a click inside the START window mints nothing at all", () => {
+  const f = framed();
+  const o = ownDocument();
+  const p = popNode(o.doc);
+  function Starting() {
+    const ann = useAnnotations({
+      params: PARAMS,
+      hosted: false,
+      noPane: false,
+      annotateTarget: () => f.frame,
+      canSend: () => true,
+      autoSubmit: () => {},
+      recorder: () => ({
+        recording: () => true, // "starting" counts as recording
+        settling: () => false,
+        end: () => {},
+        discard: () => {},
+      }),
+      // What `ann/rec.ts` answers before the mic arrives: nothing to stamp.
+      recMark: () => null,
+      recMarkPoint: () => null,
+      document: o.doc,
+      raf: (cb) => cb(),
+    });
+    api = ann;
+    ann.bindPop(p.pop);
+    return null;
+  }
+  act(() => {
+    mounted.push(create(<Starting />));
+  });
+  act(() => api!.arm());
+  act(() => {
+    f.docs.fire("click", {
+      target: appButton("freq", "Frequency"),
+      clientX: 5,
+      clientY: 5,
+      altKey: false,
+      preventDefault() {},
+      stopPropagation() {},
+    });
+  });
+  expect(api!.annotations).toHaveLength(0);
+  expect(p.pop.style.display).toBe("none"); // and no composer either
+});
+
 test("Escape inside the FRAMED document closes the composer, then discards", () => {
   const w = mount();
   arm();

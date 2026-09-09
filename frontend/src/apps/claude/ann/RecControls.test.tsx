@@ -150,5 +150,18 @@ test("commentSeatName names the neighbour for whichever half owns the mode", () 
   expect(commentSeatName(snap("transcribing"))?.label).toBe(
     "Comment — unavailable while the recording settles",
   );
+  // The mic prompt's window belongs to the recording, not to Comment: the seat
+  // beside a mic that is about to open must not come alive for the width of it
+  // (Bugbot, PR #1074 — the same fact `AnnRecorder.recording()` now reports).
+  expect(commentSeatName(snap("starting"))?.label).toBe(
+    "Comment — unavailable while recording",
+  );
   expect(commentSeatName(snap("off"))).toBeNull();
+});
+
+test("the start window keeps the RESTING mic face — nothing to stop, nothing to throw", () => {
+  const { seats, words } = draw(snap("starting"));
+  expect(seats).toHaveLength(1); // no trash: there are no marks yet
+  expect(seats[0]["aria-pressed"]).toBe("false");
+  expect(words).toBe("Annotate");
 });

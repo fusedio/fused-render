@@ -559,12 +559,29 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     },
     [store],
   );
+  /** A mark writer that DECLINED while its recorder calls itself recording is
+   *  the START WINDOW (`state === "starting"` — the mic prompt): the click
+   *  belongs to a walkthrough that has no clock to stamp it against yet.
+   *  Dropped rather than written as a typed note, because a wordless typed note
+   *  under a bar that says "Voice annotation" is the one reading that is wrong
+   *  whichever way the start ends (Bugbot, PR #1074). Only where there IS a
+   *  writer: a caller with no `recMark` of its own still gets the fallback
+   *  above, which is the whole reason it exists. */
+  const startWindow = () => !!liveOpts.current.recorder?.()?.recording();
   markRef.current = (anchor) => {
-    if (liveOpts.current.recMark?.(anchor)) return;
+    const write = liveOpts.current.recMark;
+    if (write) {
+      if (write(anchor)) return;
+      if (startWindow()) return;
+    }
     mark(anchor);
   };
   markPointRef.current = (cx, cy, win, nearPath) => {
-    if (liveOpts.current.recMarkPoint?.(cx, cy, win, nearPath)) return;
+    const write = liveOpts.current.recMarkPoint;
+    if (write) {
+      if (write(cx, cy, win, nearPath)) return;
+      if (startWindow()) return;
+    }
     markPoint(cx, cy, win, nearPath);
   };
 

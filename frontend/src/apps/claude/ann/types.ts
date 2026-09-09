@@ -122,11 +122,17 @@ export interface Annotation extends AnnAnchor {
  * own progress through `onMode`.
  */
 export interface AnnRecorder {
-  /** T:6591 `annRecOn`. */
+  /** T:6591 `annRecOn` AND T:7759 `annRecStarting` — the mic prompt's window
+   *  counts as recording. Everything the machine decides from this answer has
+   *  to be true from the moment the seat was pressed: the bar's recording face,
+   *  an inert Comment seat, and above all `set(false)` reaching `end()`, so a
+   *  dismissal CANCELS the in-flight capture rather than leaving the mic to
+   *  come up behind a reader who has already left (Bugbot, PR #1074). */
   recording(): boolean;
   /** T:8114 — a stop or a discard is in flight (`#anncta.busy`). */
   settling(): boolean;
-  /** Stop and keep, then transcribe (T:8109 `annRecEnd`). */
+  /** Stop and keep, then transcribe (T:8109 `annRecEnd`). Through the START
+   *  window there is nothing to keep: it cancels the pending capture. */
   end(): void;
   /** Stop, delete, and drop this session's marks (T:8340 `annRecDiscard`). */
   discard(): void;
