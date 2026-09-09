@@ -221,6 +221,15 @@ export function readListing(): Task[] | null {
   return listing;
 }
 
+/** A poll that FAILED is news about the listing too: what is remembered may
+ *  describe a server that has since gone away, and a remount seeding from it
+ *  would paint rows over a page that then says "Tasks could not be loaded".
+ *  Forgetting makes the next mount start from the skeleton, as a first visit
+ *  does (review, #1079). */
+export function forgetListing() {
+  listing = null;
+}
+
 /** Hand over a known-fresh answer — what the Tasks page's own poll returned. */
 export function publishTasks(next: TaskPulseTask[]) {
   generation += 1;

@@ -83,6 +83,7 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import {
+  forgetListing,
   publishTasks,
   readListing,
   readTasksRows,
@@ -163,6 +164,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     () => readListing() ?? provisionalTasks(readTasksRows()),
   );
   const [tasksFailed, setTasksFailed] = useState(false);
+  // Has ANY listing been on this page yet — a seed above, a poll's answer, or a
+  // poll's failure? Until one has, `tasks` being `[]` means "not asked yet",
+  // not "none", and the view below must not say "No tasks yet" over it: a
+  // reload straight onto /tasks (or the app launching onto it) showed that
+  // empty state for the whole cold listing — up to seconds after a server
+  // start — then filled in, which reads as the page having lost the tasks and
+  // found them again (Akshil, 2026-09-09). A skeleton is the honest state.
+  const [tasksLoaded, setTasksLoaded] = useState(() => tasks.length > 0);
   // The rows as the changes loop below last saw them, and the server
   // generation they answer to. Refs, not state: the loop is one long-lived
   // effect and must read the newest value without re-subscribing on every
@@ -313,6 +322,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         if (typeof r.generation === "number" && r.generation < generationRef.current) return;
         setTasks(r.tasks ?? []);
         setTasksFailed(false);
+        setTasksLoaded(true);
         if (typeof r.generation === "number") generationRef.current = r.generation;
         // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
         // dot and the counts beside the label are this answer, not a second poll
@@ -328,6 +338,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       () => {
         setTasks([]);
         setTasksFailed(true);
+        setTasksLoaded(true);
+        forgetListing();
       },
     );
     getScheduleQueue().then(
@@ -650,7 +662,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             <p className="schedule-tv-note">Tasks could not be loaded.</p>
           )}
 
-          {view === "calendar" ? (
+          {!tasksLoaded ? (
+            // The rows' own skeleton, under the toolbar the schedule already
+            // let us draw: the page shape is settled, only the list is in the
+            // air. Eight bars — about a screen of rows at this row height.
+            <SkeletonLines rows={8} label="Loading tasks" />
+          ) : view === "calendar" ? (
             <ScheduleCalendar
               // The FILTERED set, same as the other two views get: the toolbar's
               // three controls are live here now, and a filter that is shown but
