@@ -103,7 +103,6 @@ import {
   openCardIds,
   resetCardPolicy,
   liveViewable,
-
   SchedBlock,
   SentPop,
   settleReceipts,
