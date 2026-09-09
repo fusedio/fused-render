@@ -36,6 +36,8 @@ import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { resolveAgentDir } from "./protocol/agent";
 import type { SendOptions, UserTurn } from "./protocol/controller-api";
+import { watchStreamTeardown, watchTopOrigin } from "./shots";
+import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
 import { createChatController } from "./protocol/run-controller";
 import { finishedTailText, parseTailKey, streamingTailOf } from "./protocol/segments";
@@ -57,6 +59,9 @@ import {
   type PaneSrcFlags,
 } from "./pane";
 import {
+  AnnStrip,
+  AttachTray,
+  Kebab,
   CardPolicyProvider,
   Composer,
   createCardPolicy,
@@ -64,13 +69,20 @@ import {
   openCardIds,
   resetCardPolicy,
   SentPop,
+  settleReceipts,
+  ShotViewer,
   Topbar,
   Transcript,
   TroubleView,
+  ATTACH_API,
+  mergeSendOptions,
+  useAttachments,
+  useFitStrip,
   useComposerDefaults,
   useRecentSessions,
   useTaskId,
   type TranscriptTail,
+  type Viewable,
 } from "./ui";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -185,6 +197,23 @@ function rootClass(
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+/**
+ * TEST-ONLY WINDOW ONTO THE SEND BOOKKEEPING (`inFlight` below).
+ *
+ * The delete-on-success is invisible from outside: nothing on screen changes
+ * either way, the map merely keeps every `Receipt[]` and every `Attachment` the
+ * page has ever sent — with their blob URLs — alive for as long as the chat is
+ * open. A leak with no symptom needs a seam or it has no test, so the most
+ * recently mounted chat parks its map here from an effect (`resetAgentDirCacheForTests`
+ * in protocol/agent.ts is the same idiom).
+ */
+let inFlightForTests: Map<Receipt[], Attachment[]> | null = null;
+
+/** How many sends are still holding their pictures. Tests only. */
+export function inFlightSizeForTests(): number {
+  return inFlightForTests ? inFlightForTests.size : 0;
 }
 
 /**
@@ -453,6 +482,87 @@ function ChatBody(props: ChatBodyProps) {
   // run loop.
   const liveModel = useRef("");
   const liveEffort = useRef("");
+  /**
+   * PR2's two send-time refs, declared HERE because the controller closes over
+   * them and is built before the tray below exists.
+   *
+   * `inFlight` maps the very `Receipt[]` handed to a send to the ATTACHMENTS it
+   * came from — the identity is the key, so a send whose bubble was dropped
+   * gives back its own pictures and not another send's. `attachBack` is the
+   * tray's own `giveBack`, filled once the tray is built.
+   */
+  const inFlight = useRef(new Map<Receipt[], Attachment[]>());
+  // The one seam the delete-on-success can be read through (see
+  // `inFlightSizeForTests` at the top of this file).
+  useEffect(() => {
+    inFlightForTests = inFlight.current;
+    return () => {
+      if (inFlightForTests === inFlight.current) inFlightForTests = null;
+    };
+  }, []);
+  // …AND THE PICTURES ALREADY ON THEIR WAY, which nothing else can reach.
+  //
+  // `take()` moves a send's attachments OUT of the tray and into `inFlight`, so
+  // the tray's own unmount revoke — which walks its live list (useAttachments'
+  // `alive` effect) — cannot see them, and the hand-back that would have
+  // returned them is nulled by `attachBack`'s cleanup below. A chat closed while
+  // a send was in flight therefore pinned a full-pane Blob per picture for the
+  // life of the page (Bugbot, PR #1064).
+  //
+  // REVOKED, not handed back: there is no tray left to hand them to. Declared
+  // here so it is the FIRST of these three cleanups to run — React runs them in
+  // declaration order — and the map is cleared, so a StrictMode re-mount does
+  // not walk revoked handles again.
+  useEffect(() => {
+    const sends = inFlight.current;
+    return () => {
+      for (const items of sends.values()) for (const att of items) ATTACH_API.revoke(att);
+      sends.clear();
+    };
+  }, []);
+  /**
+   * THE HANDLES A LANDED SEND HAS FINISHED WITH, held until the swap they were
+   * replaced by is actually ON SCREEN.
+   *
+   * `settleAttachments` re-points the receipts at the copy on disk, but that is
+   * a STORE WRITE: React has not rendered, let alone committed, by the time the
+   * call returns, so the `<img>` under the bubble is still showing the object
+   * URL. Revoking in that same tick pulled the picture out from under it — the
+   * img errored, `ShotRow` read the error as "the pruner deleted it" and every
+   * successful send of a pasted or captured picture ended in "screenshot no
+   * longer on disk" (Bugbot, PR #1064).
+   *
+   * So the spent handles are released from an EFFECT: a passive effect runs
+   * after React has mutated the tree, so by the time it fires every receipt is
+   * drawn with `rawUrl(view)` and nothing on screen is holding a `blob:` handle
+   * any more.
+   *
+   * ONE QUEUE, in a ref, and the state is only the TRIGGER. A second copy in
+   * state was two bookkeepers for one list, and they diverged: the effect
+   * cleared the ref wholesale while state legitimately kept a NEWER send's
+   * handles, so those lost their unmount path and were pinned for the life of
+   * the document (Bugbot, PR #1064). The effect now drains whatever the ref
+   * holds at commit time — every entry in it has had its store write already —
+   * and anything queued after that gets its own tick, its own effect run, or the
+   * unmount below.
+   */
+  const spentAlive = useRef<Attachment[]>([]);
+  const [spentTick, setSpentTick] = useState(0);
+  const dropSpent = useCallback(() => {
+    const go = spentAlive.current;
+    if (!go.length) return;
+    spentAlive.current = [];
+    for (const att of go) ATTACH_API.revoke(att);
+  }, []);
+  // `spentTick` is not read in the body: it IS the message ("a swap has been
+  // committed"), and the drain deliberately takes the whole queue rather than
+  // the one send that raised the tick.
+  useEffect(dropSpent, [dropSpent, spentTick]);
+  // AND AT UNMOUNT, when there is no screen left to keep them for: the tray gave
+  // these up and `inFlight` has already deleted the send, so nothing else has a
+  // reference to release.
+  useEffect(() => dropSpent, [dropSpent]);
+  const attachBack = useRef<((items: readonly Attachment[]) => void) | null>(null);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
 
@@ -498,6 +608,16 @@ function ChatBody(props: ChatBodyProps) {
         // (T:16229, 16321-16330); the ticks already run on T's clock.
         onArtifactsTick: () => {},
         onRunEnded: () => {},
+        // The agent saw none of it, so the pictures come back to the tray —
+        // never revoked on this road, because those very thumbnails are what the
+        // returned chips show (T:16693-16720).
+        onSendReturned: ({ attachments }) => {
+          if (!attachments) return;
+          const back = inFlight.current.get(attachments);
+          if (!back) return;
+          inFlight.current.delete(attachments);
+          attachBack.current?.(back);
+        },
       }),
     [agentDir, file, params],
   );
@@ -508,6 +628,66 @@ function ChatBody(props: ChatBodyProps) {
     controller.getState,
     controller.getState,
   );
+
+  // ── the attachments this message will carry (PR2, inventory 03) ────────────
+  //
+  // The tray lives HERE and not in the composer, for the reason T keeps
+  // `shotAttached` at module scope: the camera that fills it is in the control
+  // strip, the chips that show it are above the box, the receipts it becomes are
+  // in the transcript and the send that empties it is the controller's — four
+  // places, one list.
+  const attach = useAttachments({
+    agentDir,
+    // THE FRAME WHOSE DOCUMENT IS THE APP, read at gesture time: ours when we
+    // have a pane, the HOST's marked one when we do not (`appFrame`). A capture
+    // aimed at the element as it was when this callback was made would
+    // photograph a document that has since been replaced by a mode swap — and
+    // one aimed at `paneFrame` alone found nothing at all in the hosted
+    // `?_side=claude` layout, where the only app frame is the host's. T does not
+    // have this seam because `appWindow()` reads off `annFrame` whichever of the
+    // two it is (T:4865), and the camera reads `annFrame`.
+    frame: () => appFrame(),
+    // What the shutter flashes over: that frame's own box, which is the offset
+    // parent the pins and the highlight also live in (T:11233). The host's frame
+    // is a node in THIS document (Preview.tsx renders both columns), so its
+    // parent is a real box to flash over.
+    flashHost: () => appFrame()?.parentElement ?? null,
+    paneNoun: pane.paneNoun,
+  });
+  /** The picture the viewer is showing, pending or sent (T:10681 `shotViewing`). */
+  const [viewing, setViewing] = useState<Viewable | null>(null);
+  // The tray's hand-back, reachable from the controller's callback above. In an
+  // EFFECT and not the render body: a render React throws away (a StrictMode
+  // double-invoke, a concurrent attempt that loses) must not leave its handle
+  // installed for the controller to call.
+  useEffect(() => {
+    attachBack.current = attach.giveBack;
+    return () => {
+      attachBack.current = null;
+    };
+  }, [attach.giveBack]);
+
+  /**
+   * THE TWO CAPTURE LISTENERS THE CHAT OWNS, registered from its own mount.
+   *
+   *   * `watchTopOrigin` learns the top window's viewport origin from the click
+   *     that PRECEDES a capture (T:9812). It used to be registered at module
+   *     load, which put a document-wide listener on every bundle that so much as
+   *     imports `shots/*` — the chat flag off included.
+   *   * `watchStreamTeardown` ends the kept tab share on `pagehide` and on this
+   *     unmount, which is what the xo-capture header promises: the browser's
+   *     "sharing this tab" indicator must not outlive the chat that raised it
+   *     (T:9731).
+   */
+  useEffect(() => {
+    const win = typeof window === "undefined" ? null : window;
+    const offOrigin = watchTopOrigin(win);
+    const offStream = watchStreamTeardown(win);
+    return () => {
+      offOrigin();
+      offStream();
+    };
+  }, []);
 
   // ── the three pills ────────────────────────────────────────────────────────
   const defaults = useComposerDefaults(agentDir, file, params);
@@ -902,6 +1082,76 @@ function ChatBody(props: ChatBodyProps) {
   // behind it should not run for one that is not showing them (T:18339).
   const recent = useRecentSessions(inChat ? null : agentDir, file);
 
+  /**
+   * WHAT THE TRAY PUTS ON THE WIRE, on both send roads: the `<pane-shot>` block,
+   * the Read rules for the directories real-path attachments live in — granted
+   * for the SESSION, not the turn (T:16657-16668) — and the receipts the turn
+   * will wear. The tray is emptied by the same call that reads it, so a second
+   * Enter cannot send the same pictures twice (T:16532).
+   */
+  const takeAttachments = useCallback((): { opts: SendOptions; items: Attachment[] } => {
+    const out = attach.take();
+    if (!out.items.length) return { opts: {}, items: [] };
+    return {
+      opts: { blocks: out.blocks, readDirs: out.readDirs, attachments: out.receipts },
+      items: out.items,
+    };
+  }, [attach]);
+
+  /**
+   * BOTH SEND ROADS GO THROUGH HERE, and they MERGE rather than spread: T's wire
+   * order is state, pane-shot, annotations, text, and `{ ...opts, ...mine }`
+   * fixed no order at all — it replaced `opts.blocks` outright, which would have
+   * silently dropped PR3's `<annotations>` and PR4's `<live-app-state>`
+   * (ui/sendMerge.ts, protocol/wire.ts `composeBlocks`).
+   *
+   * The hand-back is registered under the very `Receipt[]` the controller is
+   * handed, because that ARRAY IS THE KEY — a send whose bubble was dropped must
+   * give back its own pictures and not another send's — and the merge may have
+   * built a new array out of two owners' rows.
+   */
+  const beginSend = useCallback(
+    (opts: SendOptions): { merged: SendOptions; done: () => void } => {
+      const mine = takeAttachments();
+      const merged = mergeSendOptions(opts, mine.opts);
+      const key = mine.items.length ? merged.attachments : undefined;
+      if (key) inFlight.current.set(key, mine.items);
+      // DELETED ON EVERY ROAD, not only the failed one: `onSendReturned` fires
+      // inside the send, so by the time this runs the entry is either already
+      // gone (the pictures went back to the tray) or is a send that LANDED — and
+      // a map that only ever grows pins every attachment and blob URL the page
+      // has ever sent for as long as it is open.
+      //
+      // STILL BEING THERE IS WHAT SAYS IT LANDED, which is why this reads before
+      // it deletes: a send handed back to the tray was already removed by
+      // `onSendReturned`, and its thumbnails are the chips the user is looking
+      // at. A send that went out owns nothing on screen any more — the receipts
+      // under its bubble are re-pointed at the copy on disk and the blob URLs go
+      // (`settleReceipts`), so `newChat` or a file change can drop those turns
+      // without pinning a full-pane Blob per picture for the life of the
+      // document (Bugbot, PR #1064).
+      return {
+        merged,
+        done: () => {
+          if (!key) return;
+          const landed = inFlight.current.get(key);
+          if (!landed) return;
+          inFlight.current.delete(key);
+          const settled = settleReceipts(key, landed);
+          if (!settled.spent.length) return;
+          // THE STORE FIRST, the revoke A COMMIT LATER: the rows have to be
+          // SHOWING the copy on disk — not merely told to — before the handles
+          // they were showing stop resolving, and a store write is not a render
+          // (`spentBlobs` above).
+          controller.settleAttachments(key, settled.receipts);
+          spentAlive.current = spentAlive.current.concat(settled.spent);
+          setSpentTick((n) => n + 1);
+        },
+      };
+    },
+    [controller, takeAttachments],
+  );
+
   const onSend = useCallback(
     (text: string, opts: SendOptions) => {
       // OPTIMISTIC, and synchronously BEFORE the dispatch — exactly where T puts
@@ -919,18 +1169,24 @@ function ChatBody(props: ChatBodyProps) {
       // the failure INTO the chat, where the reader stays to read it. Back is
       // the way out, the same as for a run that started and then failed.
       setEntered(true);
-      void controller.sendMessage(text, opts);
+      const { merged, done } = beginSend(opts);
+      // `then(done, done)` and not `finally`: the promise is deliberately
+      // discarded, and a `finally` chain would turn a rejected send into an
+      // unhandled rejection in the console.
+      void controller.sendMessage(text, merged).then(done, done);
     },
-    [controller],
+    [controller, beginSend],
   );
   const onFollowUp = useCallback(
-    (text: string) =>
-      void controller.sendFollowUp(text, {
+    (text: string) => {
+      const { merged, done } = beginSend({
         model: defaults.model,
         effort: defaults.effort,
         permission: defaults.permission,
-      }),
-    [controller, defaults.model, defaults.effort, defaults.permission],
+      });
+      void controller.sendFollowUp(text, merged).then(done, done);
+    },
+    [controller, defaults.model, defaults.effort, defaults.permission, beginSend],
   );
   const onStop = useCallback(() => void controller.stopRun(), [controller]);
   const onBack = useCallback(() => {
@@ -998,15 +1254,6 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
-  /** The raw wire of the newest user turn, for the kebab's "what was sent". */
-  const lastRaw = useMemo(() => {
-    for (let i = state.turns.length - 1; i >= 0; i--) {
-      const t = state.turns[i];
-      if (t.role === "user" && t.raw) return t.raw;
-    }
-    return undefined;
-  }, [state.turns]);
-
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : "Claude";
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
@@ -1014,7 +1261,44 @@ function ChatBody(props: ChatBodyProps) {
   // persistent left column to hang a bar on (`pickerHost`).
   const host = pickerHost(narrowView.narrow, pane.noPane, pane.decision?.leftModes.length ?? 0);
   const paneShown = !chatOnly && !pane.noPane;
-  const stripShown = paneShown && narrowView.narrow;
+  // IS THERE AN ANNOTATE TARGET — the one question the strip's visibility has
+  // ever asked, and it is NOT a question about our layout.
+  //
+  // T's `annPollTarget` (T:8449-8465) resolves `annFrame` to the pane iframe in
+  // the split layout OR, in CHAT_ONLY, to the host's marked frame
+  // (`annMarkedFrame`, T:6113) — polled, because the mark moves with the host's
+  // own mode switcher — and sets `hidden` on the three buttons off that one
+  // fact. `#anncta:not(:has(#annbtn:not([hidden])))` then collapses the group.
+  // So the ONLY state that hides them is "nothing to act on": a folder listing,
+  // or a standalone mount with no pane.
+  //
+  // Native read `!chatOnly` instead, which is a question about the LAYOUT, and
+  // so the hosted `?_side=claude` sidebar — where the app is on screen in the
+  // middle column and `annotateTarget` hands us its frame — lost the whole row,
+  // on the landing and in the transcript alike, while `:1777` kept all three
+  // buttons on the same URL (measured: legacy `#anncta` 312x26 with
+  // viewshot/annbtn/annrec all `hidden:false`; native rendered no `.c-anncta`
+  // at all).
+  //
+  // `hostPane` is the polled answer to the second half and already lives above
+  // (HOST_PANE_POLL_MS, T's tick), so this is the same OR that `hasPane` makes.
+  const annTarget = paneShown || hostPane;
+  // THE STRIP ITSELF IS NOT CONDITIONAL any more (P2-1): T's `#anntools` is
+  // static markup and it holds the way out and the ⋮ as well as the three
+  // preview seats, so the row stands in every layout and `annTarget` decides
+  // only whether `AnnStrip` draws anything inside it. The view toggle and the
+  // picker stay narrow-only in there (`pickerHost`).
+  // T:7566 `annFitStrip` — the strip's words collapse to icons only when they
+  // MEASURABLY do not fit (QA #2: at 1280px with a pane the chat column is
+  // ~308px and the three full labels overflowed it by 8px).
+  const stripRef = useFitStrip();
+  // Where focus goes when the erase confirm closes, whichever way it closed
+  // (T:13293, 13319-13321). It lived in the top bar with the menu; the menu is
+  // in the shared strip now, so its seat is too.
+  const kebabBtn = useRef<HTMLElement | null>(null);
+  // The page must not stay on a transcript that no longer exists
+  // (T:13348-13366); the menu has already dropped every cache keyed by it.
+  const onErased = useCallback(() => onBack(), [onBack]);
 
   // MEMOIZED, like the two callbacks below it: a fresh object per render defeats
   // every `React.memo` in the tree it is handed to, and this one is handed to
@@ -1024,6 +1308,91 @@ function ChatBody(props: ChatBodyProps) {
   // a `back` from an earlier URL.
   const [urlTick, setUrlTick] = useState(0);
   useEffect(() => params.onChange(() => setUrlTick((n) => n + 1)), [params]);
+  // ⌘V. `preventDefault` ONLY when a picture was actually found: this listener
+  // sits on a box the user types in all day, and stealing an ordinary paste
+  // would be a far worse bug than never having had the feature. A paste carrying
+  // both an image and its alt text attaches the picture and drops the words,
+  // which is the same rule (T:11719-11728).
+  const onPaste = useCallback(
+    (ev: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const picks = ATTACH_API.filesFromPaste(ev);
+      if (!picks.length) return;
+      ev.preventDefault();
+      void attach.addFiles(picks);
+    },
+    [attach],
+  );
+
+  /**
+   * DRAG AND DROP (T:11745-11790). Four listeners, and the class is driven by a
+   * COUNTER rather than toggled: dragenter/dragleave fire for every child
+   * element the pointer crosses, so a plain toggle flickers the highlight off
+   * the moment the cursor moves over a chip. The counter is RESET on drop,
+   * because a drop delivers no leave for the enters that preceded it.
+   *
+   * `dragover` MUST preventDefault or the drop event never fires — the default
+   * action is "refuse the drag" — and both it and `dragenter` answer only for a
+   * drag that actually carries an attachment, so dragging TEXT out of the log
+   * into the box keeps the browser's own insert behaviour.
+   */
+  const [dropping, setDropping] = useState(false);
+  const dragDepth = useRef(0);
+  const onDragEnter = useCallback((ev: React.DragEvent) => {
+    if (!ATTACH_API.dragHasAttachment(ev.dataTransfer)) return;
+    ev.preventDefault();
+    dragDepth.current += 1;
+    setDropping(true);
+  }, []);
+  const onDragOver = useCallback((ev: React.DragEvent) => {
+    if (!ATTACH_API.dragHasAttachment(ev.dataTransfer)) return;
+    ev.preventDefault();
+    // What makes the cursor say "copy" rather than show the forbidden sign.
+    ev.dataTransfer.dropEffect = "copy";
+  }, []);
+  // NO `dragHasAttachment` GUARD HERE, unlike its three neighbours (T:11770
+  // guards nothing either): several engines expose no `types` at all on
+  // `dragleave` — it is the one drag event whose DataTransfer is deliberately
+  // protected — so a guarded leave never fired, the depth never came back down,
+  // and the accent ring stayed on the column until the next drop. An extra
+  // decrement is free: the counter floors at zero and only an ENTER that carried
+  // an attachment ever raised it.
+  const onDragLeave = useCallback(() => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (!dragDepth.current) setDropping(false);
+  }, []);
+  const onDrop = useCallback(
+    (ev: React.DragEvent) => {
+      if (!ATTACH_API.dragHasAttachment(ev.dataTransfer)) return;
+      ev.preventDefault();
+      dragDepth.current = 0;
+      setDropping(false);
+      // REAL PATHS FIRST. Both payloads can ride one drag (a source that sets
+      // the path type may set `files` too), and when they do they describe the
+      // same file — one by where it lives, one by a copy of its bytes. The path
+      // is the better answer for every reader downstream: no upload, no 12-hour
+      // expiry, and an edit the agent makes lands on the user's own file
+      // (T:11777-11787).
+      const paths = ATTACH_API.pathsFromDrop(ev.dataTransfer);
+      if (paths.length) void attach.addPaths(paths);
+      else void attach.addFiles(Array.from(ev.dataTransfer.files || []));
+    },
+    [attach],
+  );
+
+  /** The viewer's Discard: the one place the user can judge that this is the
+   *  wrong picture (T:10961). Only ever offered for a PENDING shot, so the tray
+   *  is where it is looked up. */
+  const onDiscardShot = useCallback(
+    (shot: Viewable) => {
+      // BY ID. Every refusal has `view: null`, so the old `view === shot.view &&
+      // kind === shot.kind` match could not tell two failed pictures apart:
+      // Discard on the second one removed the first (`Viewable.id`, PR2 review).
+      const att = attach.items.find((a: Attachment) => a.id === shot.id);
+      if (att) attach.remove(att);
+    },
+    [attach],
+  );
+
   const card = useMemo(
     () => ({
       file,
@@ -1039,6 +1408,35 @@ function ChatBody(props: ChatBodyProps) {
       back: currentUrl(),
       onNavigate,
       boxRef,
+      // Pictures alone are sendable, with no words at all (T:17903).
+      hasAttachments: attach.items.length > 0,
+      // ... but not while one of them is still on its way: `take()` leaves a
+      // `pending` chip in the tray, so a send fired now would go out WITHOUT
+      // the files whose chips made it sendable (Bugbot, PR #1064).
+      //
+      // AND THE CAMERA COUNTS, even though it plants no chip. `capture()` puts
+      // nothing in the tray until the bytes are in hand — the seat swap is the
+      // whole of its commit — so its window (up to the native path's several
+      // seconds on a large pane) was invisible to this gate: the flash had
+      // already fired, so the picture LOOKED taken, an Enter in that window went
+      // out without it, and it then landed in the tray for the NEXT message. T
+      // holds the send for the in-flight shot for the same reason
+      // (`shotBusy`/`shotAttachPane`); `capturing` is that flag.
+      attachPending: attach.capturing || attach.items.some((a: Attachment) => a.pending),
+      chips: (
+        <AttachTray
+          items={attach.items}
+          paneNoun={pane.paneNoun}
+          onOpen={setViewing}
+          onRemove={attach.remove}
+        />
+      ),
+      onPaste,
+      // The chip row is ABOVE the control row and changes the composer's height,
+      // never the row's width — but T re-measures on exactly this kind of change
+      // (its MutationObserver watches the rows' subtree), and the footnote's
+      // two-line budget is measured in the same pass (T:12455-12474).
+      fitRevision: attach.items.length,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
@@ -1059,6 +1457,10 @@ function ChatBody(props: ChatBodyProps) {
       stranded,
       entered,
       urlTick,
+      attach.items,
+      attach.remove,
+      onPaste,
+      pane.paneNoun,
     ],
   );
   const onAnchorSpent = useCallback(() => params.set({ msg: null }), [params]);
@@ -1096,12 +1498,63 @@ function ChatBody(props: ChatBodyProps) {
           <SplitDivider split={split} />
         </>
       ) : null}
-      <div className="c-chat" ref={columnRef}>
-        {stripShown ? (
-          // A row ABOVE both views, never over either, and the ONE row the
-          // narrow rules never hide — it carries the way out of each view
-          // (T:3833-3843). PR3 puts the annotate switch and the recorder here.
-          <div className="c-anntools">
+      <div
+        className={"c-chat" + (dropping ? " dropping" : "")}
+        ref={columnRef}
+        // DRAG AND DROP ON THE WHOLE COLUMN rather than on the textarea: a
+        // target the size of a one-line input is a target people miss, and
+        // everything in this column is part of the same message (T:11745-11751).
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
+        {!compact && !peek ? (
+          // ONE HEADER ROW, WHICH IS WHAT T HAS (T:3934-4010, P2-1). `#anntools`
+          // is a real layout row above both views and it carries FIVE things:
+          // `← Chats` at its left end, then the picker, the three preview seats,
+          // the view toggle and `#kebab` riding the right-hand end — on the
+          // landing and in the transcript alike (`#chat.home #topbar` hides only
+          // the IDENTITY row below, T:1277). Native had split those across three
+          // rows — this strip, `.c-hdr-tools` in the top bar and
+          // `.c-home-tools` on the landing — so the seats sat on a left-aligned
+          // row of their own ABOVE the row that held the ⋮ (Akshil, 2026-09-09:
+          // "just follow the UI we had previously").
+          //
+          // THE ROW IS ALWAYS THERE, and only its CONTENTS answer to the target:
+          // T's markup is static and `annPollTarget` hides the three buttons, so
+          // a folder listing keeps the row with the way out and the menu in it
+          // (T:526 `body.nopane #kebab { margin-left: auto }` is that exact
+          // state). `AnnStrip` returns null for itself when there is nothing to
+          // photograph.
+          <div className="c-anntools" ref={stripRef}>
+            {/* The way back, at the strip's left end (T:3941). Absent on the
+                landing: there is no chat to leave. */}
+            {inChat ? (
+              <button
+                type="button"
+                className="c-back"
+                aria-label="Back to chats"
+                onClick={onBack}
+              >
+                ← Chats
+              </button>
+            ) : null}
+            {/* ONE auto margin in the row: everything before it sits left, the
+                seats and the ⋮ ride the right-hand end together (T:255-262). */}
+            <span className="c-hdr-slack" />
+            <AnnStrip
+              paneNoun={pane.paneNoun}
+              // The camera photographs whatever the annotate target is, so the
+              // seats go only when there is nothing to photograph. The narrow
+              // CHAT view parks OUR preview off screen (T:3823
+              // `body.view-chat .viewshot`) and is the one layout answer left in
+              // here; a hosted mount's target is the host's own column, which
+              // that view does not move.
+              shown={annTarget && !(paneShown && narrowView.narrow && narrowView.view === "chat")}
+              capturing={attach.capturing}
+              onScreenshot={() => void attach.capture()}
+            />
             {host === "anntools" ? (
               <LeftModePicker
                 modes={pane.decision?.leftModes ?? []}
@@ -1109,7 +1562,20 @@ function ChatBody(props: ChatBodyProps) {
                 leftMode={leftMode}
               />
             ) : null}
-            <ViewToggle narrowView={narrowView} />
+            {narrowView.narrow ? <ViewToggle narrowView={narrowView} /> : null}
+            {/* The menu rides the same seat in BOTH views (T's `#kebab` is on
+                the one strip they share), so it never appears out of nowhere on
+                entering a chat. On the landing it is the one item that can mean
+                anything without a session (T:13415). */}
+            <Kebab
+              agentDir={agentDir}
+              file={file}
+              sessionId={inChat ? (state.sessionId ?? "") : ""}
+              btnRef={kebabBtn}
+              running={running}
+              landing={!inChat}
+              onErased={onErased}
+            />
           </div>
         ) : null}
         {inChat ? (
@@ -1119,14 +1585,10 @@ function ChatBody(props: ChatBodyProps) {
                 (T:1412-1438). */}
             {!compact && !peek ? (
               <Topbar
-                agentDir={agentDir}
-                file={file}
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
                 running={running}
-                onBack={onBack}
-                {...(lastRaw ? { lastRaw } : {})}
               />
             ) : null}
             <Transcript
@@ -1138,6 +1600,8 @@ function ChatBody(props: ChatBodyProps) {
               msgAnchor={msgAnchor}
               onAnchorSpent={onAnchorSpent}
               onShowSent={setSent}
+              onOpenShot={setViewing}
+              paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
             />
             {/* A card is READ, not typed into: compact is the one cut that takes
@@ -1157,7 +1621,21 @@ function ChatBody(props: ChatBodyProps) {
           />
         )}
       </div>
-      <SentPop open={!!sent} onClose={() => setSent(null)} outgoing={sent?.raw ?? ""} />
+      <SentPop
+        open={!!sent}
+        onClose={() => setSent(null)}
+        outgoing={sent?.raw ?? ""}
+        paneNoun={pane.paneNoun}
+        onOpenShot={setViewing}
+      />
+      {/* ABOVE the popup (z 90 against 80): a picture opened from inside it must
+          land ON TOP or the click looks dead (T:1147-1148). */}
+      <ShotViewer
+        shot={viewing}
+        paneNoun={pane.paneNoun}
+        onClose={() => setViewing(null)}
+        onDiscard={onDiscardShot}
+      />
     </div>
    </CardPolicyProvider>
   );

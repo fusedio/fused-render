@@ -4,7 +4,6 @@
 import "../styles/home.css";
 import type { SessionRow } from "../protocol/types";
 import { HomeCard, type HomeCardProps } from "./HomeCard";
-import { Kebab } from "./Kebab";
 import { Lists } from "./Lists";
 import { useArtifacts } from "./useArtifacts";
 import { useSnapshots } from "./useSnapshots";
@@ -37,27 +36,15 @@ export function Home({
 
   return (
     <div className="c-home">
-      {/* THE CONTROL ROW, and it is a REAL ROW — T's `#anntools` is a layout row
-          above both views, never an overlay (T:3926-3931), and it is also what
-          puts this column where :1777 puts it: floating the ⋮ over the page took
-          the strip's ~40px out of the top of the column, so the whole landing
-          sat that much higher than the template's (Akshil, 2026-09-08, #4).
-
-          The menu is REAL here too, with the one item that can mean anything
-          without a session: "New session in terminal" (T:13415). It was drawn
-          inert, which is the one thing a control must never be. */}
-      <div className="c-home-tools">
-        <span className="c-hdr-slack" />
-        <Kebab
-          agentDir={agentDir ?? null}
-          file={cardProps.file}
-          sessionId=""
-          running={false}
-          landing
-        />
-      </div>
-      {/* The scroller is INSIDE the row above, not around it: the strip is
-          chrome and must not slide away under the lists. */}
+      {/* NO CONTROL ROW OF ITS OWN (P2-1). The landing used to draw one here
+          just to hold the ⋮; T has a single `#anntools` strip above BOTH views
+          carrying the preview seats and the menu together (T:3934-4010), and
+          `#chat.home #topbar` hides only the identity line on this view — so the
+          row is `ClaudeChat`'s and this column starts at the card. The 40px the
+          strip occupies is still above us, which is what puts this column where
+          :1777 puts it. */}
+      {/* The scroller does not swallow the strip above it: that row is chrome
+          and must not slide away under the lists. */}
       <div className="c-home-scroll">
         {/* One 32px of air at the bottom of the column, one margin per block
             inside it (T:3245-3252). */}

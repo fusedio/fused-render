@@ -27,6 +27,7 @@ import type { ChatController, ChatState, UserTurn } from "../protocol/controller
 import type { PermissionMode, Segment } from "../protocol/types";
 import { CardStack, type CardActions } from "./CardStack";
 import { TroubleView } from "./TroubleView";
+import type { Viewable } from "./attachApi";
 import { Turn } from "./Turn";
 import { WorkingLine } from "./WorkingLine";
 import "../styles/transcript.css";
@@ -67,6 +68,10 @@ export interface TranscriptProps {
    *  (`null`, not `""`) so a copied address carries no dangling `&msg=`. */
   onAnchorSpent?: () => void;
   onShowSent?: (turn: UserTurn) => void;
+  /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
+  onOpenShot?: (shot: Viewable) => void;
+  /** "preview" / "app" — the word a receipt's nouns use (`PaneState.paneNoun`). */
+  paneNoun?: string;
   /** What the app was doing, for a trouble card's report. */
   what?: string;
 }
@@ -80,6 +85,8 @@ export const Transcript = memo(function Transcript({
   msgAnchor,
   onAnchorSpent,
   onShowSent,
+  onOpenShot,
+  paneNoun,
   what,
 }: TranscriptProps) {
   const port = useRef<HTMLDivElement>(null);
@@ -358,6 +365,8 @@ export const Transcript = memo(function Transcript({
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
                   {...(after ? { cardsAfter: after } : {})}
+                  {...(onOpenShot ? { onOpenShot } : {})}
+                  {...(paneNoun ? { paneNoun } : {})}
                 >
                   {/* Parked cards belong to the turn they were answered in —
                       whichever turn that was, streaming or long finished.

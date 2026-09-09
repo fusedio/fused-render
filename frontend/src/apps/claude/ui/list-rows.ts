@@ -13,8 +13,8 @@ const MARKER_JOIN = " · ";
 /** The sentences `formatAnnotations` / the shot receipts always open with, and
  *  the marker that stands in for each once the words are cut (T:18060-18087). */
 const BLOCK_OPENERS: readonly (readonly [string, string])[] = [
-  ["The user attached ", "🖼 picture"],
-  ["The user annotated ", "💬 comments"],
+  ["The user attached ", "picture"],
+  ["The user annotated ", "comments"],
 ];
 
 /** Everything from `<live-app-state>` on is machinery, not a title. */

@@ -72,7 +72,9 @@ import type {
   StartResponse,
   SwitchableMode,
 } from "./types";
-import { composeOutgoing, stripBlocks } from "./wire";
+import { composeBlocks, composeOutgoing, stripBlocks } from "./wire";
+/** PR2: the attachment pipeline's receipt row — carried, never built here. */
+import type { Receipt } from "../shots/types";
 
 
 // ---- constants (all with their T line) -------------------------------------
@@ -314,6 +316,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * It is what `stopRun` needs to tell "the CLI never got this" from "the CLI
    * got it and, on the measured behaviour of the held-open stdin, echoed it
    * straight away" (feedback #11 — see `stopRun`).
+   *
+   * `opts` IS THE SEND'S OWN OPTIONS, kept for exactly one reason: the pictures.
+   * `ClaudeChat.beginSend` parked them under `opts.attachments` before the send
+   * began, and a strand is a send that did not go — so whoever strands the entry
+   * owes them back through `returnSend`, not just the words through `onStranded`
+   * (Bugbot, PR #1064). `handedBack` keeps that from happening twice when the
+   * still-in-flight POST later settles into `giveBack`.
    */
   const queued: {
     seq: number;
@@ -321,6 +330,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     typed: string;
     bubble: string;
     landed: boolean;
+    opts: SendOptions;
+    handedBack: boolean;
   }[] = [];
   let queuedSeq = 0;
   const publishQueued = () => emit({ queued: queued.map((q) => q.typed || q.wire) });
@@ -398,18 +409,53 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   const dropTurn = (key: string) => emit({ turns: state.turns.filter((t) => t.key !== key) });
 
+  /**
+   * PR2 — THE SENT BUBBLE LETS GO OF ITS BLOB URLS.
+   *
+   * `ClaudeChat.beginSend` parks a send's attachments under the very
+   * `Receipt[]` it hands down here, and on the road that LANDED it re-points
+   * those receipts at the copy the server now holds (`settleReceipts`) so the
+   * object URLs can be released. The rows are memoized on identity, so the
+   * replacement has to come through the store or the `<img>` would keep the URL
+   * that is about to be revoked (Bugbot, PR #1064).
+   *
+   * THE ARRAY IS THE ADDRESS, exactly as it is for the hand-back: a send whose
+   * bubble was dropped (a rollback, a `newChat`) finds no turn and settles
+   * nothing, rather than rewriting another send's receipts.
+   */
+  const settleAttachments = (receipts: Receipt[], next: Receipt[]): void => {
+    if (disposed) return;
+    let found = false;
+    const turns = state.turns.map((t) => {
+      if (t.role !== "user" || t.attachments !== receipts) return t;
+      found = true;
+      return { ...t, attachments: next };
+    });
+    if (found) emit({ turns });
+  };
+
   /** T:13446 `addUser` — the bubble goes up BEFORE anything slow on the send
    *  path: the user's words appearing instantly is worth more than a receipt and
    *  a bubble arriving together (T:16490). */
-  const addUser = (text: string, raw?: string, appState = false): UserTurn => {
+  const addUser = (
+    text: string,
+    raw?: string,
+    attachments?: Receipt[],
+    appState = false,
+  ): UserTurn => {
     const turn: UserTurn = {
       role: "user",
       key: nextKey("u"),
       text,
       ...(raw ? { raw } : {}),
-      // The receipt legacy hangs under the bubble (T:16588-16596). Set from the
-      // block actually composed into `raw`, never from "is there a pane" — a
-      // pane that has told us nothing produces no block and owes no receipt.
+      // The receipt rides the bubble the send posted, so the row is under the
+      // words from the first paint rather than appended after the start
+      // round-trip (T:16560-16583 appends it to the last `.turn.user`).
+      ...(attachments && attachments.length ? { attachments } : {}),
+      // The push channel's own receipt legacy hangs under the bubble
+      // (T:16588-16596). Set from the block actually composed into `raw`, never
+      // from "is there a pane" — a pane that has told us nothing produces no
+      // block and owes no receipt.
       ...(appState ? { appState: true as const } : {}),
     };
     pushTurn(turn);
@@ -1187,6 +1233,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
   };
 
+  /**
+   * A SEND THAT NEVER HAPPENED owes the composer back what it was carrying.
+   *
+   * `ClaudeChat.beginSend` empties the tray and parks the pictures under the
+   * very `Receipt[]` it hands down here BEFORE this function runs, so every road
+   * out of a send has to say whether it went — including the two that refuse
+   * before anything is attempted (already sending; disposed). Returning silently
+   * from those left the tray empty and the map holding the only handle to the
+   * user's pictures, which is the picture disappearing (Bugbot, PR #1064).
+   */
+  const returnSend = (text: string, opts: SendOptions): void => {
+    deps.onSendReturned?.({
+      text,
+      ...(opts.attachments ? { attachments: opts.attachments } : {}),
+    });
+  };
+
   async function sendMessage(text: string, opts: SendOptions = {}): Promise<void> {
     // DISPOSED IS A CLOSED DOOR, not a race to lose. `dispose()` is the
     // unmount, and every entry point below it emits into a store nobody reads
@@ -1194,8 +1257,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // SPAWN a run. Callers hold the controller across awaits by construction
     // (ClaudeChat's boot walks it), so refusing here is the one place that can
     // be sure (Bugbot, PR #1061).
-    if (disposed) return;
-    if (sending) return;
+    if (disposed) {
+      returnSend(text, opts);
+      return;
+    }
+    // ONE TURN AT A TIME, and the refused one is refused OUT LOUD: its pictures
+    // are already out of the tray by now.
+    if (sending) {
+      returnSend(text, opts);
+      return;
+    }
     sending = true;
     const seat = ++sendSeq;
     // Sampled BEFORE anything is awaited: a Back landing mid-start outdates this
@@ -1205,6 +1276,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const blocks = opts.blocks || [];
     if (!text && !blocks.length) {
       sending = false;
+      returnSend(text, opts);
       return;
     }
     clearTrouble();
@@ -1218,14 +1290,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // is not consulted: the watcher answers "" for a pane it has learned
     // nothing from, which is the same non-answer a missing pane gives.
     const live = await appStateBlock();
-    const outgoing = composeOutgoing(text, live ? [...blocks, live] : blocks);
+    // THROUGH `composeBlocks`, never appended: the tray's `<pane-shot>` is
+    // already in `blocks`, and `[...blocks, live]` put the state AFTER the
+    // pictures — §D's reading order is state → pane-shot → annotations → text.
+    // `composeBlocks` ranks `<live-app-state>` first wherever it arrives from
+    // (Bugbot, PR #1064).
+    const outgoing = composeOutgoing(text, composeBlocks(blocks, live ? [live] : []));
     // The bubble shows what the user TYPED (or the markers for a wordless
     // send); the raw wire rides along for the "what was sent" popover.
     //
     // `stripBlocks(outgoing)` for a wordless send is unaffected by the block
     // above — `wire.ts` strips every `<live-app-state>` — so a send that is
     // only pictures still reads as pictures.
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing, !!live);
+    const bubble = addUser(text || stripBlocks(outgoing), outgoing, opts.attachments, !!live);
     let started = false;
     try {
       let runId = "";
@@ -1315,7 +1392,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // The run never launched, so the agent never saw any of it: drop the
       // bubble so the composer's own rollback (attachments, notes) matches
       // (T:16693-16720).
-      if (!started) dropTurn(bubble.key);
+      if (!started) {
+        dropTurn(bubble.key);
+        // ... and the attachments go back to the tray with the words, because
+        // the agent never saw either (T:16693-16720).
+        returnSend(text, opts);
+      }
       reportTrouble(troubleFromError(err));
     } finally {
       if (sendSeq === seat) sending = false;
@@ -1325,22 +1407,33 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- follow-ups (T:16024-16185) ----------------------------------------
 
   async function sendFollowUp(text: string, opts: SendOptions = {}): Promise<void> {
-    if (disposed) return;
+    if (disposed) {
+      returnSend(text, opts);
+      return;
+    }
     const gen = logGen;
     const blocks = opts.blocks || [];
-    if (!text && !blocks.length) return;
+    if (!text && !blocks.length) {
+      returnSend(text, opts);
+      return;
+    }
     // Every send carries the app state, a follow-up included: T calls
     // `appStatePush()` from `sendFollowUp` too (T:16101), and a message typed
     // three tool calls into a turn is describing a pane that has moved since
     // the opening one.
     const live = await appStateBlock();
-    const outgoing = composeOutgoing(text, live ? [...blocks, live] : blocks);
+    // THROUGH `composeBlocks`, never appended: the tray's `<pane-shot>` is
+    // already in `blocks`, and `[...blocks, live]` put the state AFTER the
+    // pictures — §D's reading order is state → pane-shot → annotations → text.
+    // `composeBlocks` ranks `<live-app-state>` first wherever it arrives from
+    // (Bugbot, PR #1064).
+    const outgoing = composeOutgoing(text, composeBlocks(blocks, live ? [live] : []));
     // The follow-up's bubble goes up immediately; the `followupSeq` bump that
     // tells a streaming pollLoop to start a NEW bubble after it happens only
     // once the INBOX has taken it. Bumping here left a failed send with a
     // counter pollLoop read as a landed follow-up, and the reply split around
     // the gap where the rolled-back row had been (Bugbot, PR #996).
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing, !!live);
+    const bubble = addUser(text || stripBlocks(outgoing), outgoing, opts.attachments, !!live);
     // KEYED BY A SEQ, not by the text: two identical follow-ups ("again") used
     // to collapse into one entry, and the first ack cleared both — so the second
     // one's hint left the composer while the message was still in flight.
@@ -1352,6 +1445,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // Flipped below, when the inbox confirms — see `queued`'s own note and
       // `stopRun`'s handback rule.
       landed: false,
+      // The pictures ride here so a STOP can give them back; `giveBack` reads
+      // the same `opts` off its closure.
+      opts,
+      handedBack: false,
     };
     queued.push(entry);
     publishQueued();
@@ -1364,6 +1461,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const giveBack = () => {
       dropTurn(bubble.key);
       drop();
+      // The same road sendMessage takes for a run that never launched: the
+      // usual way a follow-up fails is the session having already ended, and
+      // the pictures the user attached deliberately are owed back (T:16080-16093).
+      //
+      // ONCE, THOUGH: a Stop landing on an unconfirmed send already handed these
+      // very pictures back, and this POST is only now settling behind it. A
+      // second hand-back would re-add the same chips (or, for a host that keys
+      // by the receipt array, be silently dropped) — either way the entry says
+      // it is done.
+      if (entry.handedBack) return;
+      entry.handedBack = true;
+      returnSend(text, opts);
     };
 
     // `activeRun` is set synchronously the moment pollLoop is entered, but
@@ -1510,6 +1619,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const back = at >= 0 || !entry.landed;
         if (!back) continue;
         stranded.push(entry.typed || entry.wire);
+        // AND ITS PICTURES, but only for a send the inbox never confirmed. The
+        // words go back through `onStranded`; the attachments are parked in
+        // `ClaudeChat`'s `inFlight` map under this send's own `Receipt[]` and
+        // come back only through `onSendReturned`, so a strand that returned
+        // text alone dropped the bubble holding the only visible trace of them
+        // and left the map holding the only handle — the picture disappearing
+        // until the POST settled, and lost outright if it answered `sent`
+        // (Bugbot, PR #1064).
+        //
+        // A LANDED follow-up the CLI named in `still_queued` is deliberately not
+        // this: its bytes are already on disk in the agent's hands and its
+        // receipts already rode a wire block, so only the words are owed back
+        // (`onSendReturned`'s own note).
+        if (!entry.landed && !entry.handedBack) {
+          entry.handedBack = true;
+          returnSend(entry.typed, entry.opts);
+        }
         // The optimistic bubble goes with it. A follow-up the interrupt
         // stranded was never answered, so leaving the row posted claims the
         // agent read it — and QA saw exactly that: the text committed as a
@@ -2043,6 +2169,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     resumeRun,
     adoptLiveRun,
     newChat,
+    settleAttachments,
     dispose() {
       disposed = true;
       logGen++;

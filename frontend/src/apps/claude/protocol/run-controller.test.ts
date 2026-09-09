@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 const { PERM_CARD_MAX, createChatController, runEnding, stopAllowed, trimPermCards } =
   await import("./run-controller");
 const { createMemoryParamsStore } = await import("../params/store");
+const { MARKER_VIEW } = await import("./wire");
 
 import type { runAgent } from "./agent";
 import type { AssistantTurn, ChatController, NoteTurn, UserTurn } from "./controller-api";
@@ -95,6 +96,9 @@ function makeController(
   const agent = fakeAgent(handlers);
   const activity: number[] = [];
   const stranded: string[][] = [];
+  /** Every send that reported itself NOT SENT — the road the composer takes its
+   *  words and its pictures back on. */
+  const returned: { text: string; attachments?: unknown[] }[] = [];
   const controller = createChatController({
     ...over,
     file: "/proj/app.py",
@@ -108,8 +112,9 @@ function makeController(
     hasPane: () => true,
     onActivity: () => activity.push(1),
     onStranded: (t) => stranded.push(t),
+    onSendReturned: (info) => returned.push(info),
   });
-  return { controller, agent, params, activity, stranded };
+  return { controller, agent, params, activity, stranded, returned };
 }
 
 const assistants = (c: ChatController) =>
@@ -272,9 +277,58 @@ describe("start → poll → done", () => {
     });
     const block = `<pane-shot>\ncaption\n[{"kind":"pane","view":"/p.png"}]\n</pane-shot>`;
     await controller.sendMessage("", { blocks: [block], readDirs: ["/tmp/shots"] });
-    expect(users(controller)[0].text).toBe("🖼 pane screenshot");
+    // The MARKER, sigil and all: the bubble's text IS the marker, and the sigil
+    // is the only thing telling it apart from a reader who typed those two
+    // words (Bugbot, PR #1064). `ui/AttachIcon` draws the word.
+    expect(users(controller)[0].text).toBe(MARKER_VIEW);
+    expect(users(controller)[0].text).not.toBe("pane screenshot");
     expect(users(controller)[0].raw).toBe(block);
     expect(agent.of("start")[0].fields.read_dirs).toBe('["/tmp/shots"]');
+  });
+
+  // ---- every road out of a send says whether it went (Bugbot, PR #1064) -----
+  //
+  // `ClaudeChat.beginSend` empties the tray and parks the pictures under the
+  // `Receipt[]` it hands down here BEFORE the controller runs, and the only way
+  // they ever come back is `onSendReturned`. A road that returns silently is a
+  // picture the user attached deliberately — a capture of a moment that has
+  // passed — gone with no chip, no error and no way to retake it.
+
+  test("a send refused because one is already in flight hands its pictures back", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((res) => (release = res));
+    const { controller, agent, returned } = makeController({
+      start: async () => {
+        await held;
+        return { run_id: "r1" };
+      },
+      poll: () => poll({ done: true }),
+    });
+    const first = controller.sendMessage("one");
+    const shots = [{ kind: "pane" as const, label: "attached", view: "/shots/v.png" }];
+    await controller.sendMessage("two", { attachments: shots });
+    // Refused, and refused OUT LOUD: the same array the caller handed down, so
+    // the map it parked the Attachments under can be unlocked by identity.
+    expect(returned).toEqual([{ text: "two", attachments: shots }]);
+    release();
+    await first;
+    expect(agent.of("start").length).toBe(1);
+    expect(users(controller).map((t) => t.text)).toEqual(["one"]);
+  });
+
+  test("a send into a DISPOSED controller hands its pictures back", async () => {
+    const { controller, agent, returned } = makeController({ start: () => ({ run_id: "r1" }) });
+    controller.dispose();
+    const shots = [{ kind: "image" as const, label: "attached", view: "/shots/a.png" }];
+    await controller.sendMessage("hi", { attachments: shots });
+    await controller.sendFollowUp("also this", { attachments: shots });
+    expect(agent.calls.length).toBe(0);
+    // Both roads, because both refuse before anything is attempted — and on an
+    // unmount the hand-back is what releases the blob URLs.
+    expect(returned).toEqual([
+      { text: "hi", attachments: shots },
+      { text: "also this", attachments: shots },
+    ]);
   });
 
   test("nothing to send at all is a no-op", async () => {
@@ -1041,6 +1095,44 @@ describe("app state rides out with every message (T:16483)", () => {
     expect(posted.map((t) => t.appState)).toEqual([true, true]);
   });
 
+  test("the state leads the tray's pictures on BOTH send roads (§D order)", async () => {
+    // The wire is state → pane-shot → annotations → text. `[...blocks, live]`
+    // appended the controller's own block AFTER the tray's `<pane-shot>`, which
+    // is §D backwards and exactly what `composeBlocks` exists to decide
+    // (Bugbot, PR #1064).
+    const SHOTS = "<pane-shot>\n[]\n</pane-shot>";
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            await controller.sendFollowUp("and this", { blocks: [SHOTS] });
+            return poll({ segments: [text("ok")] });
+          }
+          return poll({ done: true, segments: [text("ok")] });
+        },
+      },
+      createMemoryParamsStore(),
+      { appStateBlock: () => Promise.resolve(BLOCK) },
+    );
+    controller = made.controller;
+    await controller.sendMessage("look at my app", { blocks: [SHOTS] });
+
+    const roads: [string, string][] = [
+      [String(made.agent.of("start")[0]!.fields.message), "look at my app"],
+      [String(made.agent.of("send")[0]!.fields.message), "and this"],
+    ];
+    for (const [wire, typed] of roads) {
+      expect(wire).toContain(BLOCK);
+      expect(wire).toContain(SHOTS);
+      expect(wire.indexOf(BLOCK)).toBeLessThan(wire.indexOf(SHOTS));
+      // And the typed words stay LAST, after everything the page prepended.
+      expect(wire.indexOf(SHOTS)).toBeLessThan(wire.indexOf(typed));
+    }
+  });
+
   test("nothing to say ⇒ no block, no receipt, and the message is unchanged", async () => {
     // A chat with no pane, or a pane the watcher has learned nothing from:
     // `blockForSend` answers "" and this path must add neither markers nor a
@@ -1523,6 +1615,87 @@ describe("stop (T:15901)", () => {
     expect(state.trouble).toBeNull();
     // And no bubble left mid-stream.
     expect(assistants(controller).every((t) => !t.streaming)).toBe(true);
+  });
+
+  // Bugbot, PR #1064. `stopRun` handed back the WORDS and dropped the bubble —
+  // and the pictures were parked in `ClaudeChat.beginSend`'s `inFlight` map
+  // under this send's own `Receipt[]`, reachable only through
+  // `onSendReturned`. So they vanished until the POST settled, and were lost
+  // outright when it answered `{sent: true}`.
+  test("a stop on an in-flight follow-up gives its PICTURES back too", async () => {
+    const shots = [{ kind: "image" as const, label: "attached", view: "/shots/a.png" }];
+    let controller!: ChatController;
+    let releaseSend: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      releaseSend = r;
+    });
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: async () => {
+        await held;
+        // The worst case: the inbox DID take it, after the stop. The words are
+        // handed back on the honest "it did not land" reading, and the pictures
+        // ride with them rather than being lost to a map nobody reads.
+        return { sent: true as const };
+      },
+      cancel: () => ({ cancelled: "r1", still_queued: [] }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("working")] });
+        if (n === 1) {
+          void controller.sendFollowUp("look at this", {
+            blocks: ["<pane-shot>\n/shots/a.png\n</pane-shot>"],
+            attachments: shots,
+          });
+          await Promise.resolve();
+          await Promise.resolve();
+          await controller.stopRun();
+          releaseSend();
+          // Let the parked `send` settle: `giveBack` must not hand the same
+          // pictures back a second time.
+          await Promise.resolve();
+          await Promise.resolve();
+          return poll({ segments: [text("working")] });
+        }
+        return poll({ done: true, error: "claude exited", segments: [text("working")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.stranded).toEqual([["look at this"]]);
+    // EXACTLY ONE hand-back, carrying the very array `beginSend` keyed by.
+    expect(made.returned).toEqual([{ text: "look at this", attachments: shots }]);
+    expect(made.returned[0].attachments).toBe(shots);
+    // The optimistic bubble went with the strand; only the opening turn stands.
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+  });
+
+  // The other half of the rule: a follow-up the CLI CONFIRMED and then named in
+  // `still_queued` owes only its words back — its bytes are already on disk in
+  // the agent's hands (`onSendReturned`'s own note).
+  test("a LANDED follow-up stranded by a stop hands back words, not pictures", async () => {
+    const shots = [{ kind: "image" as const, label: "attached", view: "/shots/a.png" }];
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      cancel: () => ({
+        cancelled: "r1",
+        still_queued: [String(made.agent.of("send")[0]?.fields.message ?? "")],
+      }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("working")] });
+        if (n === 1) {
+          await controller.sendFollowUp("look at this", { attachments: shots });
+          await controller.stopRun();
+          return poll({ segments: [text("working")] });
+        }
+        return poll({ done: true, error: "claude exited", segments: [text("working")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(made.stranded).toEqual([["look at this"]]);
+    expect(made.returned).toEqual([]);
   });
 
   test("a still_queued the CLI DOES name hands back the typed text, not the wire form", async () => {

@@ -25,18 +25,10 @@
 }
 /* The strip, sized to `#anntools` (T:163-172) so the two views' first rows are
    the same height and nothing shifts on entering a chat. */
-.c-home-tools {
-  flex-shrink: 0;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--c-border);
-}
-/* The row's ONE auto margin: everything before it sits left, everything after
-   rides the right-hand end with it (T:255-262). PR2/PR3's seats land in
-   between. */
+/* The control row's ONE auto margin: everything before it sits left, everything
+   after rides the right-hand end with it (T:255-262). The landing's own copy of
+   that row is gone (P2-1) — it is `.c-anntools`, above both views — and this
+   stays because the strip is what reads it. */
 .c-hdr-slack {
   flex: 1 1 auto;
   min-width: 0;

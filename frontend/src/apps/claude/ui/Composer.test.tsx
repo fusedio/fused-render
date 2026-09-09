@@ -126,6 +126,44 @@ test("a bare attachment is sendable with no words at all (T:17903)", () => {
   expect(c.sent).toEqual([{ text: "", model: DEFAULT_MODEL }]);
 });
 
+test("a chip still ATTACHING holds the send back and keeps the words", () => {
+  // `hasAttachments` counts in-flight placeholders but `take()` leaves them in
+  // the tray, so a send fired now goes out without them — wordless it is an
+  // EMPTY send, worded it is the message minus its files (Bugbot, PR #1064).
+  const c = mount({ hasAttachments: true, attachPending: true });
+  const send = () => c.root.findByProps({ className: "c-send" });
+  expect(send().props.disabled).toBe(true);
+  expect(send().props.title).toBe("Attaching…");
+
+  // Wordless: nothing at all leaves.
+  c.press("Enter");
+  expect(c.sent).toEqual([]);
+
+  // Worded: refused, and THE BOX IS KEPT — the same Enter a moment later is the
+  // message the user actually wrote.
+  c.type("look at these");
+  expect(c.press("Enter")).toBe(true);
+  expect(c.sent).toEqual([]);
+  expect(c.box().props.value).toBe("look at these");
+  // The button is the same door.
+  c.submitForm();
+  expect(c.sent).toEqual([]);
+
+  // And a follow-up road is no way around it.
+  const live = mount({ status: "running", hasAttachments: true, attachPending: true });
+  live.type("and this");
+  live.press("Enter");
+  expect(live.followups).toEqual([]);
+  expect(live.stops()).toBe(0);
+});
+
+test("the bytes land ⇒ the send opens again", () => {
+  const c = mount({ hasAttachments: true, attachPending: false });
+  expect(c.root.findByProps({ className: "c-send" }).props.disabled).toBe(false);
+  c.press("Enter");
+  expect(c.sent).toEqual([{ text: "", model: DEFAULT_MODEL }]);
+});
+
 test("Enter NEVER stops a run — it hands the text to the live turn (T:17915)", () => {
   const c = mount({ status: "running" });
   c.type("also fix the tests");

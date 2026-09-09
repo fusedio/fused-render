@@ -1811,3 +1811,129 @@
   color: var(--c-fg);
   text-decoration: underline;
 }
+/* ---- the receipt under a sent user turn (T:1716-1801) ------------------
+   What this message carried, in the log where it was sent. Right-aligned with
+   the bubble it belongs to, and small on purpose: it is a receipt, not a
+   viewer — the viewer is one click behind the thumbnail. */
+.chat-root .annsum {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-root .annsum .annsum-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--c-dim);
+  justify-content: flex-end;
+}
+.chat-root .annsum .annsum-lbl {
+  color: var(--c-accent);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+/* THE GLYPH IS A LUCIDE ICON (P2-7), not 📄/🖼/📌. The row is baseline-aligned,
+   so the icon stays INLINE and is nudged onto the text's optical centre rather
+   than being wrapped in a flex box whose own baseline would move the whole row.
+   `1em` comes from the component, so it tracks this row's 11.5px. */
+.chat-root .annsum .annsum-lbl svg {
+  vertical-align: -0.15em;
+}
+/* A comment row's pin sits BEFORE its letter, so it needs the gap a glyph on its
+   own does not. */
+.chat-root .annsum .annsum-note .annsum-lbl svg {
+  margin-right: 4px;
+}
+/* A file's receipt glyph is the DOOR into the viewer (D616), so it is a real
+   <button> — which arrives wearing the UA's border, background and font. Reset
+   to exactly the span it replaces, and nothing more: the row must not shift by a
+   pixel depending on whether the attachment is openable. */
+.chat-root .annsum button.annsum-lbl {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  line-height: inherit;
+  cursor: pointer;
+}
+.chat-root .annsum button.annsum-lbl:hover,
+.chat-root .annsum button.annsum-lbl:focus-visible {
+  color: var(--c-fg);
+  outline: none;
+}
+/* ---- a wordless send's bubble (P2-7, T:10525-10545) --------------------
+   "pane screenshot", "files", "annotations" — the words the bubble carries when
+   the reader typed none, each behind the same lucide glyph its chip and its
+   receipt wear. Inline-flex per part so the icon and its word can never break
+   apart at a wrap; the " + " between them is a part of its own so it wraps
+   where a join belongs. */
+.chat-root .bubble .c-marker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.chat-root .bubble .c-marker-join {
+  margin-right: 4px;
+  opacity: 0.7;
+}
+.chat-root .annsum .annsum-el {
+  color: var(--c-faint);
+  flex-shrink: 0;
+  font-size: 11px;
+}
+.chat-root .annsum .annsum-txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* A comment row IS the door into the "what was sent" popup — no separate
+   button, the row itself is the affordance. */
+.chat-root .annsum .annsum-note {
+  cursor: pointer;
+  border-radius: 4px;
+}
+.chat-root .annsum .annsum-note:hover .annsum-txt {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+/* The whole-pane picture a SENT turn carried. Bigger than a crop's receipt and
+   on its own line, because it is a different claim: "the screen, as it was when
+   I asked" — and that is the row a user scrolls back to find. */
+.chat-root .annsum .annsum-pane {
+  display: block;
+  align-self: flex-end;
+  margin-top: 2px;
+  padding: 0;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  overflow: hidden;
+  line-height: 0;
+  cursor: zoom-in;
+}
+/* Cropped from the TOP, not centred: a screenshot of a page is read from its
+   top edge, so that is the part worth showing in 140px. */
+.chat-root .annsum .annsum-pane img {
+  display: block;
+  max-width: min(220px, 100%);
+  max-height: 140px;
+  object-fit: cover;
+  object-position: top;
+}
+.chat-root .annsum .annsum-pane:hover,
+.chat-root .annsum .annsum-pane:focus-visible {
+  border-color: var(--c-accent);
+  outline: none;
+}
+/* A restored turn whose file the shots directory has since pruned (12h/200
+   files). Said plainly rather than left as a broken-image glyph, which reads as
+   a bug in the chat rather than as a temp file that expired. */
+.chat-root .annsum .annsum-gone {
+  font-size: 11px;
+  color: var(--c-faint);
+  align-self: flex-end;
+}

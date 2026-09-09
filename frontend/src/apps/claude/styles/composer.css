@@ -43,31 +43,16 @@
   --c-scrim: rgba(0, 0, 0, 0.48);
 }
 
-/* ---- the header's two rows (T:163-172 + T:1285-1310) --------------------
-   Row one is the CONTROL strip (T's `#anntools`: the way out at its left end,
-   the menu at its right, and the seat PR2/PR3's screenshot / comment /
-   annotate buttons land in). Row two is the chat's IDENTITY (T's `#topbar`).
-   One row carrying all six things is how a 43px strip in a narrow pane ends up
-   with the file name and the id fighting for the same inch (Akshil,
-   2026-09-08, #7). */
-.c-header {
-  flex-shrink: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.c-hdr-tools {
-  flex-shrink: 0;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--c-border);
-}
-/* ONE auto margin per row: everything before it sits left, everything after
-   rides the right-hand end with it (T:255-262). Two of them would split the
-   slack and park the kebab mid-strip. */
+/* ---- the header (T:163-172 + T:1285-1310) -------------------------------
+   ONE control row and one identity row, which is T's own shape: `#anntools` (the
+   way out at its left end, the preview seats and the ⋮ at its right) is
+   `ClaudeChat`'s `.c-anntools` and is styled in `styles/chat.css`, because it is
+   the row BOTH views share; `#topbar` below it is the chat's identity and is
+   what is left in this file. A control row of our own here as well is what put
+   PR2's seats on a third row above the ⋮ (Akshil, 2026-09-09, P2-1). */
+/* ONE auto margin in the control row: everything before it sits left,
+   everything after rides the right-hand end with it (T:255-262). Two of them
+   would split the slack and park the kebab mid-strip. */
 .c-hdr-slack {
   flex: 1 1 auto;
   min-width: 0;
@@ -562,10 +547,22 @@ select.c-pill {
    focus handling all come from `platform/ui/modal/Modal` — the chassis the
    Delete task dialog uses — so nothing about the chrome is styled here any
    more (the old sentpop box/bar/body skin is gone with it).
-   What is left is the two things inside the body, and they paint with the
-   PLATFORM palette (`--bg`, `--border`, `--fg-muted`), not the chat's `--c-*`
-   aliases: the dialog is portaled to <body>, outside .chat-root's cascade, and
-   it is now a dialog of the app rather than a popup of the chat. */
+   What is left is what goes INSIDE the body: the section headings and the wire
+   block paint with the PLATFORM palette (`--bg`, `--border`, `--fg-muted`)
+   like the chrome around them, while the pictures and comment pills below keep
+   the chat's `--c-*` aliases — a comment's label pill has to match the badge
+   burnt into the screenshot above it. The body carries `.c-overlay` to
+   re-anchor those aliases, because the dialog is portaled to <body>, outside
+   .chat-root's cascade. */
+
+/* A column of sections — heading, picture, caveat, comment rows, then the
+   wire. `Modal` already owns the padding and the scroll, so all this adds is
+   the rhythm between them. */
+.c-sent-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 .c-sent-head {
   margin: 0;
   font-size: 12px;
@@ -608,4 +605,372 @@ select.c-pill {
   align-items: center;
   justify-content: center;
   padding: 24px;
+}
+
+/* ---- the attachment chips (T:896-988) ----------------------------------
+   The pending screenshot's chip is the SAME pill an annotation's is, with the
+   picture where the note's words would be. That likeness is the point: both are
+   things this message is about to carry, both sit above the composer, and both
+   come off with the same ✕ — so one row reads as "what is attached" rather than
+   as two features that happen to be neighbours. */
+.chat-root .c-annchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chat-root .c-annchips:not(:empty) {
+  padding: 0 0 8px;
+}
+.chat-root .c-annchip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  padding: 3px 6px 3px 10px;
+  font-size: 12px;
+  color: var(--c-fg);
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+/* THE PILL'S BODY IS ONE BUTTON (P2-4): thumb-or-glyph and the words together,
+   with the ✕ as its only sibling. A door made of the 22px thumbnail alone left
+   most of the pill — the part a pointer actually lands on — dead. `display:
+   contents` is deliberately NOT used: the button has to BE the hit area, so it
+   is a flex row of its own that inherits the pill's type and colour and adds no
+   box of its own. */
+.chat-root .c-annchip .c-chip-door {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* A refusal (and a seat still uploading) has no room behind the door, so it is
+   not one: the plain pill, and the words say why (T:10722-10726). */
+.chat-root .c-annchip .c-chip-door.is-inert {
+  cursor: default;
+}
+/* The chip answers the pointer as ONE shape — the pill lifts, and the thumb's
+   own accent ring rides along with it, which is the only thing 22px can say
+   about being a door (T:956, T:971). */
+.chat-root .c-annchip:has(.c-chip-door:hover),
+.chat-root .c-annchip:has(.c-chip-door:focus-visible) {
+  background: var(--c-surface);
+  border-color: var(--c-border-strong);
+}
+.chat-root .c-annchip:has(.c-chip-door.is-inert:hover) {
+  background: var(--c-surface-2);
+  border-color: var(--c-border);
+}
+.chat-root .c-annchip .c-chip-door:hover .c-shotthumb,
+.chat-root .c-annchip .c-chip-door:focus-visible .c-shotthumb {
+  border-color: var(--c-accent);
+}
+.chat-root .c-annchip .c-chip-door:hover .c-pinlbl,
+.chat-root .c-annchip .c-chip-door:focus-visible .c-pinlbl {
+  color: var(--c-fg);
+}
+/* The focus ring belongs to the whole pill, not to the inner row. */
+.chat-root .c-annchip .c-chip-door:focus-visible {
+  outline: none;
+}
+.chat-root .c-annchip:has(.c-chip-door:focus-visible) {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 1px;
+}
+.chat-root .c-annchip .c-txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+.chat-root .c-annchip .c-pinlbl {
+  color: var(--c-accent);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.chat-root .c-annchip .c-chip-x {
+  border: 0;
+  background: transparent;
+  color: var(--c-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 3px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.chat-root .c-annchip .c-chip-x:hover {
+  color: var(--c-fg);
+}
+.chat-root .c-annchip .c-chip-x:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+/* A real <button>, not decoration: it opens the full-size viewer. `cursor` and
+   the hover ring are the only things that can say so at 22px, and they have to,
+   because a thumbnail this small proves a picture EXISTS and cannot show what is
+   in it. The button is the frame (border, clip, hit area) and the <img> inside
+   it does the sizing — a button cannot `object-fit` its own content. */
+.chat-root .c-annchip .c-shotthumb {
+  display: block;
+  flex-shrink: 0;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--c-border);
+  border-radius: 3px;
+  overflow: hidden;
+  line-height: 0;
+  transition: border-color 0.12s;
+}
+.chat-root .c-annchip .c-shotthumb img {
+  display: block;
+  height: 22px;
+  max-width: 64px;
+  object-fit: cover;
+}
+/* A NON-picture attachment's door into the viewer. A file has no thumbnail —
+   nothing 22px wide can say about a .csv what its name already says better — so
+   the GLYPH is the button, which keeps the chip one shape (glyph, words, ✕)
+   across both kinds instead of giving files a second control images lack. */
+/* THE GLYPH IS A LUCIDE ICON (P2-7), sized off the chip's own 12px through the
+   `1em` the component sets, so it lines up with the words beside it rather than
+   sitting a font's worth of leading above them. Its accent is T's `.shotdoc`
+   colour; the door's hover takes it to `--c-fg`, above. */
+.chat-root .c-annchip .c-pinlbl {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  transition: color 0.12s;
+}
+/* A seat whose bytes are still on their way. Quieter, and not a spinner: the
+   row already says "attaching…", and one more moving thing beside a capture
+   flash is noise. */
+.chat-root .c-annchip.is-pending {
+  opacity: 0.7;
+}
+/* The chip arriving. HALF of the "did it even do anything?" answer — the other
+   half is the flash over the pane itself — and deliberately the loud half: the
+   pane is where the user was looking, the composer is where they look next, so
+   the chip has to still be moving when their eye gets there. One 220ms
+   scale+fade, no bounce: a receipt, not a celebration. */
+@keyframes c-shotchip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.chat-root .c-annchip.c-shotchip {
+  animation: c-shotchip-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .c-annchip.c-shotchip {
+    animation: none;
+  }
+}
+
+/* ---- the screenshot viewer (T:997-1140) --------------------------------
+   THE BOX IS THE APP'S MODAL (P2-3): overlay, card, head with the ✕, footer,
+   focus trap and Esc all come from `platform/ui/modal/Modal`, the chassis the
+   Delete task dialog and "what was sent" use. So the whole shadcn-Dialog skin
+   that used to live here — the card's own width bound, the cascade-layer
+   argument against `sm:max-w-sm`, the scrim, the sticky bottom bar — is gone
+   with the primitive it was fighting. What is left is the BODY: the picture, the
+   framed preview, the caveat, and the path in the footer.
+
+   AND ABOVE THE APP'S MODAL, which is a number this file still has to state.
+   "What was sent" is a `Modal` too and the chassis sits at `z-index: 1000`
+   (`styles/deploy.css` `.deploy-overlay`), so a picture opened from inside the
+   record would land in the same plane as it and the click would look dead — the
+   one failure the viewer exists to prevent. The overlay is selected through the
+   dialog it holds, because `dialogClassName` is the only hook a caller has. */
+.modal-overlay:has(> .c-shotview-modal) {
+  z-index: 1100;
+}
+/* WIDER THAN A FORM DIALOG's 600px, because the content is a picture of a
+   screen — but still bounded, so a wide window does not stretch a table across
+   a metre of glass. T's own number for the framed preview was 900. */
+.modal-dialog.c-shotview-modal {
+  width: min(960px, 100%);
+}
+/* THE BODY IS WHAT SCROLLS, AND THE FOOTER NEVER MOVES (P2-5). The card is
+   `max-height: 85vh` (`.deploy-dialog`) with head and footer as fixed rows, so
+   stating the body's own max-height is belt to that braces: `85vh` minus the
+   head's 45 and the footer's 57, which is the height a body may take before the
+   card would have to grow past the card's own bound and push the footer out of
+   the viewport. `overflow: auto` on both axes — a natural-size screenshot is
+   wider than the card as well as taller. */
+.modal-dialog.c-shotview-modal .modal-body {
+  max-height: calc(85vh - 102px);
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.c-shotview-box {
+  position: relative;
+  margin: 0;
+  /* `min-width: 0` for the same reason the path has it: a flex item whose
+     automatic minimum size is its min-content ignores `max-width` outright. */
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* TWO SIZES, and the second is not a nicety: fitted, a 1600px-wide capture lands
+   at ~310px in the sidebar — four times the chip, still not enough to read the
+   UI it is a picture OF. The cursor names which click you are about to make.
+
+   `min-height: 0` so the flex column may actually shrink the image rather than
+   handing the body a scrollbar for a picture that would have fitted. */
+.c-shotview-img {
+  min-height: 0;
+  max-width: 100%;
+  /* FITTED MEANS FITTED, and inside a scrolling body that has to be said as a
+     number. T got it for free: its `#shotview-box` had a definite
+     `max-height: calc(100vh - 24px)` and the image was a flex child that SHRANK
+     into it. Here the body is what scrolls (P2-5), so an unbounded image simply
+     hands it a scrollbar — a 1600×1860 capture opened 1860px tall in a 712px
+     body, which is the zoomed view arriving uninvited. The bound is the card's
+     own: 85vh less the head, the footer, the body's padding and room for a
+     caveat line under the picture. `object-fit: contain` keeps the aspect. */
+  max-height: calc(85vh - 160px);
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--c-surface-2);
+  cursor: zoom-in;
+}
+.c-shotview-box[data-zoom] .c-shotview-img {
+  max-width: none;
+  max-height: none;
+  /* `align-self` is the load-bearing one: the box is a COLUMN flex container, so
+     its default `stretch` sizes the image to the container's width on the cross
+     axis, and lifting max-width alone left the picture pinned at the box's own
+     width — visibly identical to the fitted view, with a zoom-out cursor
+     promising something that had not happened. The body above is what scrolls. */
+  align-self: flex-start;
+  width: auto;
+  cursor: zoom-out;
+}
+/* The path the AGENT was given, which is the one fact a picture cannot show
+   about itself. Truncated from the LEFT: the filename identifies it.
+
+   `margin-right: auto` is the footer grammar's far-left seat, and `flex: 1 1 0`
+   with a definite zero basis is what keeps a 90-character temp path from being
+   the thing that decides the dialog's width — the card is sized by the picture
+   and the path truncates into whatever room that leaves. */
+.c-shotview-path {
+  flex: 1 1 0;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+/* Whatever the picture does NOT show, in the one place the user is actually
+   looking at the picture. It rode the wire from the first version of this
+   feature (`viewNote`) and had nowhere on screen to be said until then. */
+.c-shotview-note {
+  max-width: 60ch;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--c-dim);
+}
+/* The file's own template, in the footprint the picture gets. It FILLS THE BODY
+   (P2-5): `width: 100%` of the body's content box rather than T's
+   `calc(100vw - 44px)`, which was written against the viewport because T's
+   overlay had no card to measure against — inside a 960px card that number was
+   wider than its container on any window over ~1000px, and the frame spilled
+   past the card and over the bar. The height is the same story: a fraction of
+   the body's own bound, so head, body and footer add up to a card that fits and
+   the footer is always the last thing on screen. */
+.c-shotview-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 240px;
+  height: calc(85vh - 150px);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 4px;
+  background: var(--c-surface-2);
+}
+.c-shotview-loading {
+  font-size: 11.5px;
+  color: var(--c-dim);
+}
+/* Nothing to show and nothing to frame (a .zip, a refusal, an extension with no
+   template): the glyph, big and quiet, so the body is not empty. */
+.c-shotview-blank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 0;
+  color: var(--c-faint);
+}
+.c-shotview-glyph {
+  font-size: 44px;
+}
+.c-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ---- "what was sent": the sections a receipt stands for (T:1157-1181) --- */
+/* `display: contents`, so a picture's heading, the picture and its caveat are
+   three children of the body's own flex column rather than one boxed group. */
+.c-sent-group {
+  display: contents;
+}
+.c-sent-body .c-sent-shot {
+  max-width: 100%;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  cursor: zoom-in;
+}
+.c-sent-body .c-sent-note-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.c-sent-body .c-sent-note-lbl {
+  flex: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
+  font-weight: 700;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.c-sent-body .c-sent-note-meta {
+  color: var(--c-dim);
+  font-size: 12px;
+}
+.c-sent-body .c-sent-caveat {
+  color: var(--c-dim);
+  font-size: 12px;
 }
