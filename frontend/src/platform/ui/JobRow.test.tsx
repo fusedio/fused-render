@@ -357,6 +357,30 @@ test("a done job's row opens its page and dismisses itself, the same way its own
   expect(patched[0]).toEqual([]); // the same onPatch filter dismiss() always applies
 });
 
+test("a done job whose page is an fs path navigates but does NOT dismiss itself — a page may still be watching it", () => {
+  // A page-raised render's destination IS that page, and the page re-attaches
+  // to its job by id on mount — clearing the row here would race that
+  // re-attachment. Only a shell-route destination (the previous test) clears
+  // on open; an fs path never does.
+  const onPatch = () => {
+    throw new Error("onPatch must not run — an fs-path destination must not clear on click");
+  };
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "done", page: "/Users/me/Desktop/render.png" }}
+      onChanged={() => {}}
+      onPatch={onPatch}
+      dismissFn={() => Promise.resolve({ dismissed: BASE.id })}
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  const url = pushedUrl(() => act(() => onClick()));
+  expect(url).toBe("/explorer/view/Users/me/Desktop/render.png");
+  expect(findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row").length).toBeGreaterThan(0);
+});
+
 test("a done job's row navigates to its page", () => {
   const tree = create(
     <JobRow

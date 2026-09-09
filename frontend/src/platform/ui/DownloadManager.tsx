@@ -576,15 +576,22 @@ export function JobRow({
   // has already reached Notifications gets a whole-row click at all.
   //
   // A SUCCESS DISMISSES ITSELF ON OPEN, reusing the exact `dismiss()` above —
-  // having gone to look IS the acknowledgement. A FAILURE OR A CANCELLATION
-  // DOES NOT: D663 already fought (and won) the argument that a failure
-  // should clear itself on anything short of an explicit dismiss, and a
-  // click that also swept the row away would quietly resurrect the old 3s-TTL
-  // problem under a new trigger. Its ✕ still works exactly as before.
+  // having gone to look IS the acknowledgement — but ONLY when `job.page` is
+  // a shell route (`isJobPageRoute`). A page-raised job's destination IS that
+  // page, and the page re-attaches to its job by id on mount; dismissing the
+  // row here would race that re-attachment out from under it. An fs-path
+  // destination (a rendered image/video with nothing else watching it) opens
+  // Explorer and simply stays put — there is no reattachment to protect, and
+  // nothing else needs the row gone. A FAILURE OR A CANCELLATION NEVER
+  // DISMISSES ON OPEN EITHER WAY: D663 already fought (and won) the argument
+  // that a failure should clear itself on anything short of an explicit
+  // dismiss, and a click that also swept the row away would quietly
+  // resurrect the old 3s-TTL problem under a new trigger. Its ✕ still works
+  // exactly as before.
   const canOpen = isTerminal(job) && !!job.page;
   const open = () => {
     navigateToJobPage(job.page);
-    if (job.state === "done") void dismiss();
+    if (job.state === "done" && isJobPageRoute(job.page)) void dismiss();
   };
 
   // NO EXEMPTION FOR "done" HERE (C1 fix): `JobRow` is reused verbatim by
