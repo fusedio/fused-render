@@ -37,6 +37,7 @@ import {
   subscribeFsMutations,
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
+import { escapesBase } from "@apps/explorer/listing/query-base";
 import { replaceSearch } from "@platform/lib/router";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
 import { MIN_QUERY_CHARS } from "@apps/explorer/lib/home-search";
@@ -122,12 +123,14 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // known: the input can have settled while the answer for it is in flight.
   const deferredStale = query.trim() !== q;
 
-  // A query containing "/" or "*" is a path or a pattern, not a filter word —
-  // asking the server on every keystroke is exactly the "thousands of folders
-  // searched per keystroke" case a half-typed glob would otherwise produce.
-  // Plain text keeps live-filtering exactly as before; only path/pattern-
-  // shaped queries wait for an explicit commit (Enter, via `commitSearch`).
-  const pathLike = q.includes("/") || q.includes("*");
+  // A query whose base can differ from the folder being searched — a leading
+  // "~", a leading "/", a drive letter, or a ".." segment — waits for an
+  // explicit commit (Enter, via `commitSearch`) rather than live-filtering:
+  // that base can walk arbitrarily far from the open folder, which is the
+  // "thousands of folders searched per keystroke" case a half-typed one would
+  // otherwise produce. A glob anchored at the box root, like "*/*.json",
+  // never leaves the folder being searched and live-filters like plain text.
+  const escapes = escapesBase(q);
   // The specific query text Enter was last pressed for. A ref, not state: it
   // must not itself cause a render, only unlock the fetch effect below (which
   // re-runs on `gateNonce`).
@@ -142,7 +145,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // press needed.
   const committedGate = useRef<string | null>(null);
   const [gateNonce, setGateNonce] = useState(0);
-  const gateOpen = !pathLike || committedGate.current === q;
+  const gateOpen = !escapes || committedGate.current === q;
   const commitSearch = () => {
     const live = query.trim();
     if (committedGate.current === live) return;
@@ -604,8 +607,9 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     q,
     searching,
     isStale,
-    // Decision 4: a path/pattern query waits for this before it fetches.
-    pathLike,
+    // Decision 4: a query whose base escapes the box root waits for this
+    // before it fetches.
+    escapes,
     gateOpen,
     commitSearch,
     // "These results are computed from an older generation of the tree, or for

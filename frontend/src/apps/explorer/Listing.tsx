@@ -288,7 +288,7 @@ export default function Listing({
     cappedAway,
     reason,
     mode,
-    pathLike,
+    escapes,
     commitSearch,
   } = useListingSearch(fsPath, refresh);
 
@@ -2038,7 +2038,7 @@ export default function Listing({
                       navigate(typedAddress.path, { isDir: typedAddress.is_dir });
                       return;
                     }
-                    if (pathLike) {
+                    if (escapes) {
                       e.preventDefault();
                       commitSearch();
                     }

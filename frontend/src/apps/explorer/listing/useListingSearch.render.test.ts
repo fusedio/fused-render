@@ -316,10 +316,10 @@ describe("the ranked-search preference (D720)", () => {
   });
 });
 
-describe("decision 4: a path/pattern query waits for Enter", () => {
-  test("typing a glob fires no request until commitSearch is called", async () => {
+describe("decision 4: a query that escapes the box root waits for Enter", () => {
+  test("typing a query with a leading ~ fires no request until commitSearch is called", async () => {
     const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
-    await flush(() => box.current().setQuery("a/*.py"));
+    await flush(() => box.current().setQuery("~/a/*.py"));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(0);
     expect(box.current().searching).toBe(true);
@@ -328,7 +328,7 @@ describe("decision 4: a path/pattern query waits for Enter", () => {
     await flush(() => box.current().commitSearch());
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(1);
-    expect(rankCalls[0].q).toBe("a/*.py");
+    expect(rankCalls[0].q).toBe("~/a/*.py");
     box.unmount();
   });
 
@@ -338,15 +338,24 @@ describe("decision 4: a path/pattern query waits for Enter", () => {
     box.unmount();
   });
 
-  test("editing a committed glob further re-gates until the next commit", async () => {
+  test("a glob anchored at the box root never gates either", async () => {
     const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
     await flush(() => box.current().setQuery("a/*.py"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].q).toBe("a/*.py");
+    box.unmount();
+  });
+
+  test("editing a committed escaping query further re-gates until the next commit", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("~/a/*.py"));
     await flush(() => box.current().commitSearch());
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(1);
     await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("a/x.py")], total: 1 })));
 
-    await flush(() => box.current().setQuery("a/*.pyc"));
+    await flush(() => box.current().setQuery("~/a/*.pyc"));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     // No new request yet — the previous answer stays on screen, stale.
     expect(rankCalls).toHaveLength(1);
@@ -356,7 +365,7 @@ describe("decision 4: a path/pattern query waits for Enter", () => {
     await flush(() => box.current().commitSearch());
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
-    expect(rankCalls[1].q).toBe("a/*.pyc");
+    expect(rankCalls[1].q).toBe("~/a/*.pyc");
     box.unmount();
   });
 });
