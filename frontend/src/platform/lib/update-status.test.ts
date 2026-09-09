@@ -114,9 +114,13 @@ describe("shouldCheckOnReturn", () => {
     expect(shouldCheckOnReturn(0, GAP * 10, idle, false)).toBe(false);
   });
 
-  it("checks from any updater state — available and error want a re-check too", () => {
-    for (const state of ["idle", "checking", "available", "installed", "error"]) {
-      expect(shouldCheckOnReturn(0, GAP, { state } as UpdateStatus, true)).toBe(true);
+});
+
+describe("shouldCheckOnReturn only re-asks from idle", () => {
+  it("is false once an update is available, running, installed or failed", () => {
+    for (const state of ["available", "installing", "installed", "error", "checking"] as const) {
+      expect(shouldCheckOnReturn(0, 3_600_000, status({ state }), true)).toBe(false);
     }
+    expect(shouldCheckOnReturn(0, 3_600_000, status({ state: "idle" }), true)).toBe(true);
   });
 });

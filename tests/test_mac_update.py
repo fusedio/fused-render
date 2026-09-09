@@ -338,6 +338,9 @@ def test_a_check_past_the_gap_fetches_again(monkeypatch):
     # Age the recorded timestamp rather than the clock: MIN_CHECK_GAP_S is
     # read against real time.monotonic(), which nothing here should redefine.
     manager._last_check_at -= mac.MIN_CHECK_GAP_S + 1
+    # …and from "idle" — a non-forced check only ever looks from there (the
+    # first check found a version, which by itself is a reason not to re-ask).
+    manager._state = "idle"
     manager.check()
     assert len(calls) == 2
 
@@ -350,6 +353,30 @@ def test_a_throttled_check_still_notices_an_external_upgrade(monkeypatch):
     monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
     assert manager.check()["state"] == "installed"
     assert len(calls) == 1
+
+
+def test_a_non_forced_check_never_re_asks_once_an_update_is_known(monkeypatch):
+    """The check-on-return must not flip an "available" (or installed, or
+    failed) manager back through "checking" — install() refuses in that state
+    and the badge hides (bugbot, PR #1078). Only "idle" is worth a fresh look."""
+    manager = _manager(monkeypatch, available="9.9.9")
+    manager.check(force=True)
+    assert manager.status()["state"] == "available"
+    fetched = []
+    monkeypatch.setattr(common, "fetch_manifest",
+                        lambda url: fetched.append(url) or {"version": "9.9.9"})
+    manager._last_check_at = None  # not the gap throttle — the state one
+    status = manager.check()
+    assert status["state"] == "available"
+    assert fetched == []
+    for state in ("installed", "error"):
+        manager._state = state
+        assert manager.check()["state"] == state
+    assert fetched == []
+    # …and from idle it does look.
+    manager._state = "idle"
+    manager.check()
+    assert len(fetched) == 1
 
 
 def test_the_auto_loop_forces_its_tick(monkeypatch):

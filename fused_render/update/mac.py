@@ -308,6 +308,14 @@ class UpdateManager:
         with self._lock:
             if self._state == "installing":
                 return self.status()
+            # A NON-FORCED CHECK ONLY EVER LOOKS FROM "IDLE" (bugbot, PR #1078):
+            # the fetch flips state to "checking" for its duration, during which
+            # install() refuses and the badge hides — so a check-on-return while
+            # an update is already offered (or installed, or failed) would take
+            # the answer away for a moment to learn it again. The hourly loop
+            # forces, and is the one that keeps a found version current.
+            if not force and self._state != "idle":
+                return self.status()
             if not force and self._last_check_at is not None and (
                     time.monotonic() - self._last_check_at < MIN_CHECK_GAP_S):
                 # Not an error and not "checking": nothing was asked of the

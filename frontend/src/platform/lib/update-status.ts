@@ -128,6 +128,12 @@ export function shouldCheckOnReturn(
   // No updater here: an unpackaged dev run has no `update` in /api/config, and
   // POST /api/update/check 404s. Nothing to ask.
   if (status === null) return false;
+  // ONLY WHEN THERE IS NOTHING TO LOSE (bugbot, PR #1078): a check flips the
+  // server to "checking" for the length of the manifest fetch, during which
+  // install() refuses and the badge hides. An update already found, running,
+  // installed or failed is an answer — re-asking can only take it away for a
+  // moment. Only "idle" (nothing found yet) is worth a fresh look.
+  if (status.state !== "idle") return false;
   return now - lastAt >= RETURN_CHECK_GAP_MS;
 }
 
