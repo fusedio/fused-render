@@ -2718,3 +2718,106 @@ describe("trimPermCards", () => {
     expect(m.size).toBe(PERM_CARD_MAX + 5);
   });
 });
+
+// ---- the deferred PR1 items, landed in PR3 --------------------------------
+
+describe("status during the start round-trip (D2, QA PR #1061 — closed as legacy parity)", () => {
+  test("the status stays 'idle' until the run id lands: T flips to Stop in pollLoop (T:16208), never before", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const seen: string[] = [];
+    const { controller } = makeController({
+      start: async () => {
+        await held;
+        return { run_id: "r1" };
+      },
+      poll: (_f, n) =>
+        n === 0 ? poll({ segments: [text("hi")] }) : poll({ done: true, segments: [text("hi")] }),
+    });
+    controller.subscribe(() => seen.push(controller.getState().status));
+    const sent = controller.sendMessage("go");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    // A Stop with no run to stop would be a lie; the composer's send door
+    // (ClaudeChat `dispatchSend`, ClaudeChat.ann.test "only STARTING") is what
+    // keeps a second Enter from vanishing inside this window.
+    expect(controller.getState().status).toBe("idle");
+    expect(seen).not.toContain("starting");
+    release();
+    await sent;
+    expect(controller.getState().status).toBe("idle");
+    expect(seen).toContain("running");
+  });
+});
+
+describe("a follow-up that fails after Back stays quiet (D3, QA PR #1061)", () => {
+  test("no run to attach to, and the reader left during the wait: no trouble card, no hand-back", async () => {
+    const { controller, returned } = makeController({ send: () => ({ sent: true as const }) });
+    const pending = controller.sendFollowUp("nowhere to go");
+    // Back lands while the follow-up is still waiting for a run.
+    controller.newChat();
+    await pending;
+    expect(controller.getState().trouble).toBeNull();
+    expect(controller.getState().turns).toEqual([]);
+    expect(returned.length).toBe(0);
+  });
+
+  test("the inbox refuses after Back: the new transcript is not repainted", async () => {
+    let controller!: ChatController;
+    let releaseSend!: () => void;
+    const held = new Promise<void>((r) => (releaseSend = r));
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: async () => {
+        await held;
+        return { error: "no such run" };
+      },
+      poll: async (_f, n) => {
+        if (n === 0) {
+          void controller.sendFollowUp("late");
+          return poll({ segments: [text("still going")] });
+        }
+        return poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    const run = controller.sendMessage("go");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    controller.newChat(); // Back, with the follow-up's `send` still held
+    releaseSend();
+    await run;
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(controller.getState().trouble).toBeNull();
+    expect(controller.getState().turns).toEqual([]);
+    expect(made.returned.length).toBe(0);
+  });
+
+  test("`send` rejects after Back: same silence", async () => {
+    let controller!: ChatController;
+    let releaseSend!: () => void;
+    const held = new Promise<void>((r) => (releaseSend = r));
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: async () => {
+        await held;
+        throw new Error("network gone");
+      },
+      poll: async (_f, n) => {
+        if (n === 0) {
+          void controller.sendFollowUp("late");
+          return poll({ segments: [text("still going")] });
+        }
+        return poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    const run = controller.sendMessage("go");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    controller.newChat();
+    releaseSend();
+    await run;
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(controller.getState().trouble).toBeNull();
+    expect(controller.getState().turns).toEqual([]);
+    expect(made.returned.length).toBe(0);
+  });
+});

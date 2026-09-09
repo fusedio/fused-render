@@ -13,7 +13,7 @@ import { act, create } from "react-test-renderer";
 
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
-const { resetAgentDirCacheForTests } = await import("./protocol/agent");
+const { resetAgentDirCacheForTests, resolveAgentDir } = await import("./protocol/agent");
 
 /** One `/api/run` call: the script and the action, plus the fields. */
 interface RunCall {
@@ -376,4 +376,46 @@ test("the seats are absent on a chat-only mount with no host getter at all", asy
   const { r } = await mountChat();
   await settle(20);
   expect(byClass(r, "c-anncta").length).toBe(0);
+});
+
+test("a CONTROLLER REBUILD does not re-send a spent ask (QA #1061)", async () => {
+  // THE PATH THE TWO TESTS ABOVE CANNOT REACH. Both re-render the HOST, which
+  // by construction cannot change the controller's identity — and the controller
+  // is what the boot latch is keyed on (`bootedFor`), deliberately, so a new
+  // target gets its own `openSession`/`resumeRun`. Swap `file` for one whose
+  // `agentDir` is ALREADY in the resolver cache and both halves fire at once:
+  // the controller memo (deps `[agentDir, file, params]`) rebuilds, the boot
+  // re-runs with `bootDispatched` re-armed, and a sticky `askRef` took the
+  // `if (ask)` branch a second time — `params.set({session_id: null, run: null})`
+  // disowning the conversation on screen, and the same "Fix with AI" prompt
+  // fired at the OTHER file.
+  //
+  // The ask is spent on the LATCH now, so the rebuild finds nothing to send.
+  resetAgentDirCacheForTests();
+  // Both targets pre-resolved, so neither swap spends a stat round-trip that
+  // would take `agentDir` back to `undefined` and remount the body.
+  await resolveAgentDir("/w/p");
+  await resolveAgentDir("/w/p/other.html");
+  const params = createMemoryParamsStore();
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<ClaudeChat {...baseProps} params={params} initialAsk="fix it" />);
+  });
+  mounted.push(r);
+  await settle(20);
+  expect(started().length).toBe(1);
+  expect(started()[0].params.message).toContain("fix it");
+  const sessionAfterAsk = params.get("session_id");
+
+  // The host swaps the target in place — and, like the real hosts, hands the
+  // one-shot ask over as `undefined` on every render after the delivery.
+  await act(async () => {
+    r.update(<ClaudeChat {...baseProps} file="/w/p/other.html" params={params} />);
+  });
+  await settle(1700);
+
+  // ONE run, still, and it is still the one the reader is looking at.
+  expect(started().length).toBe(1);
+  expect(params.get("session_id")).toBe(sessionAfterAsk);
+  expect(params.get("session_id")).toBeTruthy();
 });

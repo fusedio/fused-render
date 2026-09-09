@@ -1328,6 +1328,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
       return;
     }
     clearTrouble();
+    // NO "starting" STATUS FOR THE ROUND TRIP, deliberately (D2, QA PR #1061,
+    // closed the other way in PR3). `appStateBlock` + `live_host` + `send` /
+    // `start` is a multi-second await with no run id yet, and QA saw the button
+    // still read Send while a second Enter vanished into the `sending` gate. T
+    // behaves the same way on the first half: `setRunningUi(true)` is pollLoop's
+    // (T:16208), so the Stop face arrives only with the run id — a Stop with no
+    // run to stop is a lie. The second half — the eaten Enter — is the
+    // composer's to fix, and PR3's send door did (ClaudeChat `dispatchSend`):
+    // the seat reads Send, disabled, and the words stay in the box until the
+    // run is live. Emitting "starting" here would have flipped that seat to
+    // Stop (Composer treats it as running) and undone the door.
     // The mode this turn is SPAWNED in, before anything is awaited: it is the
     // live mode until a poll reports one, and a card can open on the very first
     // poll (T:16128 `permission_mode`).
@@ -1476,6 +1487,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // three tool calls into a turn is describing a pane that has moved since
     // the opening one.
     const live = await appStateBlock();
+    // THE READER MAY HAVE LEFT DURING THAT AWAIT. `newChat` (Back) cleared the
+    // transcript and the queue while the app-state block was being built, and a
+    // bubble posted now would land in the LANDING — a conversation this text
+    // was never typed into — with nothing downstream willing to take it back
+    // (every failure road below is guarded on `logGen === gen` for exactly
+    // this reason). Nothing to hand back either: Back strands the composer's
+    // own text by its own rule (ClaudeChat `onBack`). Same for a dispose.
+    if (logGen !== gen || disposed) return;
     // THROUGH `composeBlocks`, never appended: the tray's `<pane-shot>` is
     // already in `blocks`, and `[...blocks, live]` put the state AFTER the
     // pictures — §D's reading order is state → pane-shot → annotations → text.
@@ -1545,8 +1564,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
       runId = activeRun;
     }
     if (!runId) {
-      giveBack();
-      addError("Could not send: no run to attach this message to.");
+      // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`, :1443). This road
+      // has slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample
+      // room for a Back (or an `openOtherSession`) to land — and an unguarded
+      // handback posts the red trouble card and re-injects the text into
+      // whatever transcript is now current: the landing, or a different
+      // conversation entirely. A stale failure stays quiet; `newChat` has
+      // already cleared the queue and the bubble it would give back
+      // (QA, PR #1061).
+      if (logGen === gen) {
+        giveBack();
+        addError("Could not send: no run to attach this message to.");
+      }
       return;
     }
     try {
@@ -1600,8 +1629,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
         return;
       }
       if (!res || !("sent" in res) || !res.sent) {
-        giveBack();
-        addError("Could not send: the session ended before this reached it.");
+        // Same guard, same reason as the `!runId` road above.
+        if (logGen === gen) {
+          giveBack();
+          addError("Could not send: the session ended before this reached it.");
+        }
         return;
       }
       // A follow-up landed as its own bubble above — bump so a pollLoop
@@ -1617,8 +1649,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
       entry.landed = true;
       followupSeq++;
     } catch (err) {
-      giveBack();
-      addError("Could not send: " + (err instanceof Error ? err.message : String(err)));
+      // Same guard, same reason as the two roads above: a `send` that rejects
+      // after the reader has left must not repaint a transcript it no longer
+      // describes.
+      if (logGen === gen) {
+        giveBack();
+        addError("Could not send: " + (err instanceof Error ? err.message : String(err)));
+      }
     }
   }
 

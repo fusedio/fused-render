@@ -1165,7 +1165,14 @@ function ChatBody(props: ChatBodyProps) {
   // key arrives with `initialAsk: undefined` (the host's `deliveredAsk` guard
   // is untouched) and a fresh, empty latch.
   const askRef = useRef(props.initialAsk);
-  if (props.initialAsk) askRef.current = props.initialAsk;
+  // SPENT IS SPENT. The re-arm below runs on every render, and the host keeps
+  // `initialAsk` on its props until its own one-shot derivation flips it — so a
+  // boot that cleared the latch inside its async walk found it re-armed by the
+  // very next render, and a controller rebuild (a `file` swap with `agentDir`
+  // already cached) fired the same "Fix with AI" prompt at the new target
+  // (QA, PR #1061). Once the one dispatch has happened, the prop is history.
+  const askSpent = useRef(false);
+  if (props.initialAsk && !askSpent.current) askRef.current = props.initialAsk;
 
   // ── home vs chat (T:1277-1282 `#chat.home`) ────────────────────────────────
   // The host's ids count here as well as the store's: they are seeded into the
@@ -1274,6 +1281,20 @@ function ChatBody(props: ChatBodyProps) {
         // `initialAsk` still on the props).
         if (cancelled || bootDispatched.current) return;
         bootDispatched.current = true;
+        // SPENT ON THE LATCH, NOT ON THE BOOT. `bootDispatched` deliberately
+        // re-arms with a new controller (`bootedFor` above), and the controller
+        // memo's deps include `file` — so a host that swaps `file` in place for
+        // an `agentDir` already in the resolver cache rebuilds the controller
+        // WITHOUT remounting this tree, and a sticky `askRef` would take this
+        // `if (ask)` branch a second time: `session_id`/`run` cleared (disowning
+        // the conversation on screen) and the same "Fix with AI" prompt fired at
+        // a DIFFERENT file. Cleared here, the moment the one dispatch is
+        // committed, so a rebuilt controller has nothing to spend and falls
+        // through to the restore branch — which is all a rebuild ever needed
+        // (QA, PR #1061). The `entered` initializer reads `askRef` too, but only
+        // once, before this effect ever runs.
+        askRef.current = undefined;
+        askSpent.current = true;
         // The composer went live the moment we entered chat, so the user can
         // have sent their own message inside that bounded wait. `sendMessage`
         // opens with `if (sending) return`, which here would drop the ask on the
