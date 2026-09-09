@@ -456,7 +456,13 @@ class UpdateManager:
         if job_id is None or broken:
             return
         try:
-            result = jobs.upsert({"id": job_id, **fields}, server=True)
+            # No dedicated update page or Preferences tab exists — the
+            # update surface is sidebar chrome (UpdateBadge.tsx's badge,
+            # ServerStatusBanner.tsx's restart card) present on every route
+            # rather than a page of its own. /preferences is the same
+            # fallback the gh-CLI-install job uses for the same reason.
+            result = jobs.upsert({"id": job_id, **fields},
+                                 page="/preferences", server=True)
         except Exception:  # noqa: BLE001 - reporting is never load-bearing
             # Latched, not retried: reporting failed once and there is a tick
             # per megabyte behind this one, so retrying would fill the log with

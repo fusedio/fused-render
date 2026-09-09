@@ -283,6 +283,17 @@ The "five producers" table undercounted: `sys:env-install:*`, `sys:ai-claude:*`,
   (new test `test_the_row_points_at_the_indexing_tab`,
   `tests/test_index_jobs.py`; frontend test extended in
   `router.test.ts`'s `navigateToJobPage dispatches a Job.page value`)
+- `sys:update:*` (`fused_render/update/mac.py`) — `/preferences`, already in
+  `JOB_PAGE_ROUTES`. No dedicated update page or Preferences tab exists: the
+  update surface is sidebar chrome present on every route (`UpdateBadge.tsx`'s
+  badge, `ServerStatusBanner.tsx`'s restart card), not a page of its own —
+  the same reasoning the earlier build already used for the gh-CLI-install
+  job's identical fallback. (test extended:
+  `test_install_opens_a_cancellable_download_row_for_the_version`,
+  `tests/test_mac_update.py`)
+
+Still open from this finding: `sys:ai-claude:*` (`fused_render/server/ai.py`)
+and the four `ai/supervisor.py`-owned prefixes (Finding 1).
 
 ## Explicitly out of scope (per spec, unchanged)
 
