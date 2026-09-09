@@ -591,7 +591,14 @@ def _report_install(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
-        }, server=True)
+        # SPEC-actionable-notifications.md: no repo root applies to an
+        # install (there is nothing to publish yet), and there is no
+        # dedicated GitHub-settings tab to send this to — /preferences is
+        # already where the legacy `_account` sentinel in router.ts lands,
+        # and it is the most defensible destination available, not one
+        # validated against any live caller: an exhaustive grep of the
+        # frontend found no UI that calls any /api/github/* route at all.
+        }, page="/preferences", server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the install
         logger.debug("could not report the gh install job")
 
@@ -867,7 +874,7 @@ def _validate_repo_name(name: str) -> str:
 
 _publish_lock = threading.Lock()
 _publish_state: dict = {"state": "idle", "detail": "", "error": None,
-                        "started_at": None, "finished_at": None}
+                        "started_at": None, "finished_at": None, "root": ""}
 
 
 def _report_publish(snapshot: dict) -> None:
@@ -883,7 +890,11 @@ def _report_publish(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
-        }, server=True)
+        # SPEC-actionable-notifications.md: this row's destination is the
+        # repository it publishes, not a page — `_resolve_repo_root`'s own
+        # containment-checked, realpath'd root, set once at claim time
+        # (below), never the raw string a page happened to send.
+        }, page=snapshot.get("root") or "", server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the publish
         logger.debug("could not report the gh publish job")
 
@@ -1007,7 +1018,7 @@ def publish_start(root: str, name: str, visibility: str) -> dict:
             raise PublishError("a GitHub publish is already running")
         _publish_state.update(
             state="running", detail=f"Creating {repo_name}…", error=None,
-            started_at=time.time(), finished_at=None)
+            started_at=time.time(), finished_at=None, root=real_root)
         claimed = dict(_publish_state)
     _report_publish(claimed)  # mirrored to the job registry outside the lock
 
@@ -1030,4 +1041,5 @@ def publish_reset() -> None:
     """Test seam — the record is module state and suites share a module."""
     with _publish_lock:
         _publish_state.update({"state": "idle", "detail": "", "error": None,
-                               "started_at": None, "finished_at": None})
+                               "started_at": None, "finished_at": None,
+                               "root": ""})
