@@ -8,7 +8,7 @@ The status-bar Notifications panel aggregates four unrelated row kinds — repo-
 
 Every row in the Notifications panel becomes actionable: clicking it navigates somewhere useful and clears the row. Terminal jobs gain a destination — the app that raised them for page-raised jobs, and their own originating page (`/ai-models`, `/claude-config`, the benchmark page, and so on) for the server-raised producers that currently set no attribution at all. LAN pairings point at the Preferences LAN tab, which already lists paired devices and is URL-addressable as `/preferences?tab=lan`. A waiting task with no folder of its own points at `/tasks`.
 
-`Job.page` widens from "the `.html` that raised it, attribution only" to "where clicking this row goes" — either an absolute fs path or a shell route. The five server-side producers that call `jobs.upsert(..., server=True)` with no `page` (`ai/supervisor.py`, `ai/benchmark.py`, `capture/__init__.py`, `claude_install.py`, `github_setup.py`) begin setting one. This also delivers the behavior `jobs.py:278-279` already claims — "clicking it goes back there" — which was never built.
+`Job.page` means "where clicking this row goes" — either an absolute fs path or a shell route. Every server-side producer that calls `jobs.upsert(..., server=True)` (`ai/supervisor.py`, `server/ai.py`, `capture/__init__.py`, `claude_install.py`, `envinstall.py`, `github_setup.py`, `server/routers/index.py`, `update/mac.py`) sets one — see the full table below. This delivers the behavior `jobs.py:278-279` already claims — "clicking it goes back there".
 
 No auto-clear timer is introduced. Rows still live until dismissed; what changes is that dismissing one is now something you do *by acting on it*.
 
@@ -31,7 +31,7 @@ DESIRED
 ```
 
 - **Terminal job rows**: gain a clickable body that navigates to the widened `page` target and dismisses the row. Dismissal here is the existing permanent server-side delete.
-- **Server-side job reporting**: five producers start supplying a destination. `sys:schedule:*` rows are unaffected — `jobRows` already drops them before they reach Notifications.
+- **Server-side job reporting**: every producer supplies a destination. `sys:schedule:*` rows are unaffected — `jobRows` already drops them before they reach Notifications.
 - **LAN pairing rows**: gain a clickable body targeting the Preferences LAN tab; dismissal remains the existing server-side call.
 - **Waiting-task rows**: a null `href` stops rendering as inert text and falls back to `/tasks`. Non-null `href` behavior is unchanged.
 - **Repo-update rows**: unchanged. Their buttons already make them actionable, and the row body stays non-clickable.
@@ -56,18 +56,25 @@ DESIRED
 - **`sys:schedule:*` rows**, which never reach the panel and keep their existing read-gated `FINISHED_TTL_S` age-out.
 ## Producers and their destinations (settled)
 
-There are **five** job-producing modules, not six. `fused_render/shell/onboarding.py`
-only calls `jobs.list_jobs()`; it never calls `jobs.upsert`, so it is excluded.
-`github_setup.py` raises two jobs. Each destination below is settled:
+`fused_render/shell/onboarding.py` only calls `jobs.list_jobs()`; it never
+calls `jobs.upsert`, so it is excluded. `github_setup.py` raises two jobs.
+Every other module that calls `jobs.upsert(..., server=True)` is listed
+below, with its destination:
 
 | Producer | Job | Destination |
 |---|---|---|
 | `ai/supervisor.py` | `sys:ai-model:*` | `/ai-models/local` |
-| `ai/benchmark.py` | benchmark job | `/ai-models/benchmark` |
+| `ai/supervisor.py` | `sys:ai-benchmark-*` | `/ai-models/benchmark` |
+| `ai/supervisor.py` | `sys:ai-image:*`, `sys:ai-text:*`, `sys:ai-transcribe:*`, `sys:ai-video:*` | the calling page, threaded from the `X-Fused-Page` header on `POST /api/ai/image`, `/api/ai`, `/api/ai/transcribe`, `/api/ai/video` |
+| `server/ai.py` | `sys:ai-claude:*` | the calling page (same header, via `/api/ai`), falling back to `/claude-config` when none was given |
 | `capture/__init__.py` | `JOB_PREFIX + session.id` | the page that started the capture, threaded from the `X-Fused-Page` header on `POST /api/capture/start` into `_Session` |
 | `claude_install.py` | claude install job | `/claude-config` |
+| `envinstall.py` | `sys:env-install:*` | the app folder whose environment is being installed |
 | `github_setup.py` | `PUBLISH_JOB_ID` ("Publishing to GitHub") | the containment-checked work-tree root the publish already resolves via `_resolve_repo_root(root)` |
-| `github_setup.py` | `JOB_ID` ("Installing the GitHub CLI") | choose the most defensible target and record the reasoning in the decisions log; there is no repo root in play for a CLI install |
+| `github_setup.py` | `JOB_ID` ("Installing the GitHub CLI") | `/preferences` — no repo root is in play for a CLI install, and the install surface is Preferences chrome |
+| `server/routers/index.py` | `sys:index:*` | `/preferences?tab=indexing` |
+| `update/mac.py` | `sys:update:*` | `/preferences` — no dedicated update page exists; the update surface is sidebar chrome (`UpdateBadge.tsx`, `ServerStatusBanner.tsx`) present on every route |
 
 Routes confirmed to exist: `/ai-models/local`, `/ai-models/benchmark`,
-`/claude-config`, `/preferences?tab=lan`, `/tasks`.
+`/claude-config`, `/preferences`, `/preferences?tab=lan`,
+`/preferences?tab=indexing`, `/tasks`.
