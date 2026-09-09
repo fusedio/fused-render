@@ -63,4 +63,26 @@ describe("hitsFromRank", () => {
   test("an empty query has no hits to convert", () => {
     expect(hitsFromRank([hit()], "")).toEqual([]);
   });
+
+  test("a substring-mode hit still highlights, unchanged", () => {
+    const [row] = hitsFromRank([hit({ rel: "readme.md" })], "eadm", "substring");
+    expect(row.positions).toEqual([1, 2, 3, 4]);
+  });
+
+  test("a glob-mode hit is never re-tested with substringMatch, and always kept", () => {
+    // A glob hit is not necessarily a substring of the query text at all —
+    // `*.csv` matching `report.csv` has no literal `"*.csv"` anywhere in the
+    // path. Re-running substringMatch over it would either mislabel a
+    // coincidental substring as the match or, for a hit with none, produce
+    // the same `[]` as a hit that should have been highlighted — both
+    // indistinguishable from a bug without consulting the server's own mode.
+    const [row] = hitsFromRank([hit({ rel: "report.csv" })], "*.csv", "glob");
+    expect(row.entry.rel).toBe("report.csv");
+    expect(row.positions).toEqual([]);
+  });
+
+  test("mode defaults to substring, so existing callers keep today's behavior", () => {
+    const [row] = hitsFromRank([hit({ rel: "readme.md" })], "eadm");
+    expect(row.positions).toEqual([1, 2, 3, 4]);
+  });
 });
