@@ -67,6 +67,8 @@ import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { PathCrumbs } from "@apps/explorer/listing/path-crumbs";
 import { subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";
 import { useTypedPathAddress } from "@apps/explorer/listing/useTypedPathAddress";
+import { useCompletion } from "@apps/explorer/listing/useCompletion";
+import { displayDir } from "@apps/explorer/listing/completion-target";
 import { getConfig } from "@platform/lib/api";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import {
@@ -290,6 +292,21 @@ export default function Listing({
   // independently of the ranked search above — Enter checks this first.
   const typedAddress = useTypedPathAddress(query, fsPath, home);
 
+  // Decision 2: the completion dropdown. `completion.target` is null for a
+  // query that isn't path-shaped at all (a plain filter word, a glob) —
+  // that's when there is no dropdown, not merely an empty one.
+  const completion = useCompletion(query, fsPath, home);
+  const [highlight, setHighlight] = useState(-1);
+  // The highlight tracks the CURRENT list by position, not by identity — a
+  // stale index pointing past a page that just narrowed would either select
+  // nothing (out of range) or silently pick a different row than what was
+  // lit a keystroke ago. Resetting to the top on every list change keeps
+  // "the highlighted row" meaning the same thing the eye is looking at.
+  useEffect(() => {
+    setHighlight(completion.items.length > 0 ? 0 : -1);
+  }, [completion.target?.dir, completion.items.length]);
+  const showCompletion = completion.target !== null && completion.items.length > 0;
+
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
   // so an idle listing never polls.
   const indexScan = useIndexStatus(searching);
@@ -463,6 +480,28 @@ export default function Listing({
 
   // Search input, so a keystroke anywhere in the listing can focus it.
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Decision 1: the focused-and-empty hint's two variants — the full example
+  // teaches the pattern syntax in the space it takes to read it, but a narrow
+  // field would clip it mid-example, teaching the wrong thing. `boxWide`
+  // tracks whether the field currently has room for the long form; measured
+  // rather than a CSS breakpoint because the threshold is about THIS box's
+  // width, not the window's (a preview pane narrows it independent of the
+  // window, and a split pane too).
+  const searchBoxRef = useRef<HTMLDivElement>(null);
+  const [boxWide, setBoxWide] = useState(false);
+  const HINT_LONG = "Search, or type a path or pattern like ~/work/*/*.csv";
+  const HINT_SHORT = "Search, or type a path or pattern";
+  const HINT_WIDE_PX = 340; // roughly what HINT_LONG needs at 13px not to clip
+  useLayoutEffect(() => {
+    const el = searchBoxRef.current;
+    if (!el) return;
+    const measure = () => setBoxWide(el.clientWidth >= HINT_WIDE_PX);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
 
   // Decision 1: Breadcrumb.tsx's click-to-edit and Ctrl/Cmd+L, once this
   // folder's bar is claimed, ask this field to focus instead of opening a
@@ -1717,6 +1756,7 @@ export default function Listing({
             idle it was dead space that clipped the placeholder in a narrow
             window. */}
               <div
+                ref={searchBoxRef}
                 className={
                   "listing-search-box" +
                   (hasPin ? " has-pin" : "") +
@@ -1738,25 +1778,34 @@ export default function Listing({
                   </svg>
                 </span>
                 {/* Decision 1: one field, carrying either a path or a pattern.
-                    Breadcrumbs sit behind the input, shown while it is empty,
-                    click-through to it everywhere but the crumb links
-                    themselves (explorer.css) — the same trick the magnifier
-                    above uses, so the field reads as a path bar until the
-                    first keystroke turns it into a search box. */}
-                {query === "" && (
+                    Breadcrumbs sit behind the input, shown at rest while it
+                    is empty, click-through to it everywhere but the crumb
+                    links themselves (explorer.css) — the same trick the
+                    magnifier above uses, so the field reads as a path bar
+                    until it is used.
+
+                    NOT shown while focused (`pinnedOpen`), even though the
+                    query is still empty at that point: the crumbs are a row
+                    of links, not text, and sitting where the caret is about
+                    to type read as editable content the first keystroke
+                    would destroy. Focusing is its own state — the field goes
+                    live and shows the hint below instead — not a wait for
+                    the first character. */}
+                {query === "" && !pinnedOpen && (
                   <PathCrumbs fsPath={fsPath} home={home} />
                 )}
                 <input
                   ref={searchInputRef}
                   type="search"
                   className="listing-search-input"
-                  // No placeholder text: the crumbs behind the input (below)
-                  // are its resting content whenever it is empty, painted in
-                  // the same box, and a placeholder painted underneath them
-                  // at the same time is illegible noise rather than two
-                  // states. The field always has a path to show, so it never
-                  // reaches the "nothing to say" state a placeholder is for.
-                  placeholder=""
+                  // A placeholder ONLY while focused-and-empty (the crumbs
+                  // above own the same empty state at rest, and painting
+                  // both at once is the overlap this field used to have).
+                  // The two variants are `boxWide`-picked above: the long
+                  // one teaches the pattern syntax with a real example, and
+                  // the short one exists so a narrow field never clips it
+                  // mid-example, which would teach the wrong syntax.
+                  placeholder={pinnedOpen ? (boxWide ? HINT_LONG : HINT_SHORT) : ""}
                   value={query}
                   // Focus pins the box open — and open means the whole strip
                   // (`.expanded` above), because a box being typed into is what
@@ -1788,8 +1837,34 @@ export default function Listing({
                       e.currentTarget.blur();
                       return;
                     }
+                    // Decision 2: Down/Up move the highlight through the
+                    // dropdown without touching the query — the row under it
+                    // is a candidate, not yet something typed.
+                    if (showCompletion && e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setHighlight((h) => (h + 1) % completion.items.length);
+                      return;
+                    }
+                    if (showCompletion && e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setHighlight(
+                        (h) => (h - 1 + completion.items.length) % completion.items.length,
+                      );
+                      return;
+                    }
                     if (e.key !== "Enter") return;
                     e.preventDefault();
+                    // Decision 2: Enter with a highlighted row takes it —
+                    // writes the row's path into the field rather than
+                    // falling through to decision 5's resolve-and-navigate,
+                    // since a directory row's path ends in "/" and is not a
+                    // destination yet, only a narrower one to keep typing
+                    // (or completing) from.
+                    if (showCompletion && highlight >= 0) {
+                      const item = completion.items[highlight];
+                      setQuery(item.path);
+                      return;
+                    }
                     // Decision 5: Enter resolves the field three ways. A real
                     // folder navigates; a real file navigates too (the
                     // destination view's own stat handles opening it — see
@@ -1804,6 +1879,39 @@ export default function Listing({
                     if (pathLike) commitSearch();
                   }}
                 />
+                {showCompletion && (
+                  <div className="listing-completion" role="listbox">
+                    <div className="listing-completion-header">
+                      In {displayDir(completion.target!.dir, home)}
+                    </div>
+                    {completion.items.map((item, i) => (
+                      <div
+                        key={item.path}
+                        role="option"
+                        aria-selected={i === highlight}
+                        className={
+                          "listing-completion-row" +
+                          (i === highlight ? " highlight" : "")
+                        }
+                        // mousedown, not click: click fires after the input's
+                        // own blur, which by then has already folded a query-
+                        // less box back to the magnifier and unmounted this
+                        // row underneath the pointer.
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          setQuery(item.path);
+                          searchInputRef.current?.focus();
+                        }}
+                        onMouseEnter={() => setHighlight(i)}
+                      >
+                        <span className="listing-completion-name">{item.name}</span>
+                        <span className="listing-completion-hint">
+                          {item.is_dir ? "folder" : formatSize(item.size)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {/* Only once being busy is information rather than a flicker
                     (listing/useListingSearch's `spinner`): the common ranked
                     answer lands well inside the threshold, and a spinner that
