@@ -101,7 +101,19 @@ function ShotRow({
   // reads as a bug (T:10819).
   const src = receipt.kind === "file" ? "" : shot.src || "";
   const [pruned, setPruned] = useState(!!receipt.pruned);
-  const [gone, setGone] = useState(false);
+  // WHICH src was found missing, not merely THAT one was.
+  //
+  // A row's `src` MOVES: a live send's receipt is drawn with the attachment's
+  // own object URL and is re-pointed at `rawUrl(view)` the moment the bytes are
+  // on disk (`settleReceipts`). Two things follow, and a bare boolean got both
+  // wrong. A `blob:` handle that stops resolving is this page letting go of a
+  // picture it has already replaced — never the pruner, which deletes files on
+  // disk and cannot touch a handle — so it is not "no longer on disk" and says
+  // nothing about the copy the row is about to show. And a verdict about the
+  // URL BEFORE the swap must not outlive it: keyed on the src, the question is
+  // simply asked again of the new one (Bugbot, PR #1064).
+  const [goneSrc, setGoneSrc] = useState("");
+  const gone = !!src && goneSrc === src;
 
   // A picture's pruned copy announces itself (the <img> 404s and `onError` says
   // so in words); a row with no <img> has to ASK, or it goes on claiming a path
@@ -179,7 +191,9 @@ function ShotRow({
           alt={alt}
           title={onShowSent ? "Click to see exactly what was sent to the agent" : receipt.view || ""}
           onOpen={openThumb}
-          onError={() => setGone(true)}
+          onError={() => {
+            if (!src.startsWith("blob:")) setGoneSrc(src);
+          }}
         />
       )}
     </>

@@ -567,10 +567,21 @@ test("a send that LANDED re-points its receipts at the copy on disk and drops th
   // — the very URL a RESTORED turn is drawn with — and only then is the handle
   // released. Both halves are asserted: a revoke with the row left on `blob:`
   // would be a broken picture, and a rewrite with no revoke would be the leak.
+  //
+  // AND THE ORDER IS THE WHOLE FIX. `settleAttachments` is a store write, not a
+  // render: the first cut revoked in that same tick, so the <img> under the
+  // bubble was still showing the object URL when it stopped resolving — the img
+  // errored and `ShotRow` read that as the pruner having deleted the file, so
+  // every successful send of a pasted picture ended in "screenshot no longer on
+  // disk" (Bugbot, PR #1064). `srcsAtRevoke` is what the rows were ACTUALLY
+  // drawn with at the moment the handle went.
   const revoked: string[] = [];
+  const srcsAtRevoke: string[][] = [];
+  let chat: Chat | null = null;
   patchApi({
     revoke: (att: Attachment | null | undefined) => {
       if (att) revoked.push(att.id);
+      if (chat) srcsAtRevoke.push(thumbSrcs(chat));
     },
     // A PASTED PICTURE WITH PIXELS: `attachFile`'s drawable road mints an object
     // URL for the thumbnail and saves the bytes under `view` (shots/attach.ts).
@@ -587,6 +598,7 @@ test("a send that LANDED re-points its receipts at the copy on disk and drops th
     },
   });
   const r = await mountChat();
+  chat = r;
   const box = r.root.findByType("textarea");
   await act(async () => {
     box.props.onPaste({ clipboardData: {}, preventDefault: () => {} });
@@ -606,8 +618,13 @@ test("a send that LANDED re-points its receipts at the copy on disk and drops th
   expect(chips(r)).toHaveLength(0);
   expect(inFlightSizeForTests()).toBe(0);
   // THE RECEIPT ROW under the sent bubble, on the restored turn's own road.
-  expect(thumbSrcs(r)).toEqual(["/api/fs/raw?path=" + encodeURIComponent("/shots/shot.png")]);
+  const onDisk = "/api/fs/raw?path=" + encodeURIComponent("/shots/shot.png");
+  expect(thumbSrcs(r)).toEqual([onDisk]);
   expect(revoked).toEqual(["f1"]);
+  // …and the row was already SHOWING it when the handle was released, which is
+  // the difference between a receipt that keeps its picture and one that says
+  // the screenshot is gone.
+  expect(srcsAtRevoke).toEqual([[onDisk]]);
   // …and nothing is left to revoke twice when the chat closes.
   revoked.length = 0;
   await act(() => {

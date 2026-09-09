@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test";
 const { PERM_CARD_MAX, createChatController, runEnding, stopAllowed, trimPermCards } =
   await import("./run-controller");
 const { createMemoryParamsStore } = await import("../params/store");
+const { MARKER_VIEW } = await import("./wire");
 
 import type { runAgent } from "./agent";
 import type { AssistantTurn, ChatController, NoteTurn, UserTurn } from "./controller-api";
@@ -276,7 +277,11 @@ describe("start → poll → done", () => {
     });
     const block = `<pane-shot>\ncaption\n[{"kind":"pane","view":"/p.png"}]\n</pane-shot>`;
     await controller.sendMessage("", { blocks: [block], readDirs: ["/tmp/shots"] });
-    expect(users(controller)[0].text).toBe("pane screenshot");
+    // The MARKER, sigil and all: the bubble's text IS the marker, and the sigil
+    // is the only thing telling it apart from a reader who typed those two
+    // words (Bugbot, PR #1064). `ui/AttachIcon` draws the word.
+    expect(users(controller)[0].text).toBe(MARKER_VIEW);
+    expect(users(controller)[0].text).not.toBe("pane screenshot");
     expect(users(controller)[0].raw).toBe(block);
     expect(agent.of("start")[0].fields.read_dirs).toBe('["/tmp/shots"]');
   });

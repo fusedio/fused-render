@@ -520,6 +520,31 @@ function ChatBody(props: ChatBodyProps) {
       sends.clear();
     };
   }, []);
+  /**
+   * THE HANDLES A LANDED SEND HAS FINISHED WITH, held until the swap they were
+   * replaced by is actually ON SCREEN.
+   *
+   * `settleAttachments` re-points the receipts at the copy on disk, but that is
+   * a STORE WRITE: React has not rendered, let alone committed, by the time the
+   * call returns, so the `<img>` under the bubble is still showing the object
+   * URL. Revoking in that same tick pulled the picture out from under it — the
+   * img errored, `ShotRow` read the error as "the pruner deleted it" and every
+   * successful send of a pasted or captured picture ended in "screenshot no
+   * longer on disk" (Bugbot, PR #1064).
+   *
+   * So the spent handles go in STATE and are released from an effect: a passive
+   * effect runs after React has mutated the tree, so by the time it fires every
+   * receipt is drawn with `rawUrl(view)` and nothing on screen is holding a
+   * `blob:` handle any more.
+   */
+  const [spentBlobs, setSpentBlobs] = useState<readonly Attachment[]>([]);
+  useEffect(() => {
+    if (!spentBlobs.length) return;
+    for (const att of spentBlobs) ATTACH_API.revoke(att);
+    // Emptied, so a later swap's queue is its own; `revoke` is idempotent, so a
+    // re-run before that lands (StrictMode) costs nothing.
+    setSpentBlobs((q) => (q === spentBlobs ? [] : q));
+  }, [spentBlobs]);
   const attachBack = useRef<((items: readonly Attachment[]) => void) | null>(null);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
@@ -1097,10 +1122,12 @@ function ChatBody(props: ChatBodyProps) {
           inFlight.current.delete(key);
           const settled = settleReceipts(key, landed);
           if (!settled.spent.length) return;
-          // THE STORE FIRST, the revoke second: the rows have to be showing the
-          // copy on disk before the handles they were showing stop resolving.
+          // THE STORE FIRST, the revoke A COMMIT LATER: the rows have to be
+          // SHOWING the copy on disk — not merely told to — before the handles
+          // they were showing stop resolving, and a store write is not a render
+          // (`spentBlobs` above).
           controller.settleAttachments(key, settled.receipts);
-          for (const att of settled.spent) ATTACH_API.revoke(att);
+          setSpentBlobs((q) => (q.length ? q.concat(settled.spent) : settled.spent));
         },
       };
     },

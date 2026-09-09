@@ -88,6 +88,7 @@ export {
 export {
   SHOOTING_ATTR,
   captureNative,
+  flashOverlays,
   frameOffset,
   isNativeOff,
   learnTopOrigin,

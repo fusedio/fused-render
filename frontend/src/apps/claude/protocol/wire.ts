@@ -35,20 +35,48 @@ export const PANE_SHOT_TAG = "pane-shot";
 
 // NO EMOJI (Akshil, 2026-09-09, P2-7). T wrote these with 📌/🖼/📄 in front of
 // the word; the icon beside a wordless send's bubble is a lucide glyph now
-// (`ui/Turn`'s marker row), and the marker itself is the WORD alone — which is
-// also what it has to be, because this string is the bubble's own text and the
-// re-attach probe matches turns on it.
-export const MARKER_ANN = "annotations";
-export const MARKER_VIEW = "pane screenshot";
-export const MARKER_IMG = "images";
-export const MARKER_FILE = "files";
+// (`ui/Turn`'s marker row).
+//
+// THE EMOJI CARRIED MORE THAN A PICTURE. It also made the marker a string no
+// reader could plausibly type, and once it went, "files" — an ordinary thing to
+// say to an agent — was indistinguishable from the substitute text a wordless
+// send gets, so `isMarkerOnly` drew an attachment icon in front of the reader's
+// own word (Bugbot, PR #1064).
+//
+// So the marker is SIGILLED: every one of these strings opens with U+2063
+// INVISIBLE SEPARATOR, and marker-ness is THE SIGIL, never the visible word. It
+// is a private token of this page's display layer — stamped only on text
+// `stripBlocks` synthesises for a bubble that had no words, never composed onto
+// the wire (nothing `composeOutgoing` writes is built out of these), and peeled
+// back off by `markerWord` for everything a human reads.
+export const MARKER_SIGIL = "\u2063";
+export const MARKER_ANN = MARKER_SIGIL + "annotations";
+export const MARKER_VIEW = MARKER_SIGIL + "pane screenshot";
+export const MARKER_IMG = MARKER_SIGIL + "images";
+export const MARKER_FILE = MARKER_SIGIL + "files";
 export const MARKERS: string[] = [MARKER_ANN, MARKER_VIEW, MARKER_IMG, MARKER_FILE];
 export const MARKER_JOIN = " + ";
 
-/** T:10539 — every `" + "`-split part is one of MARKERS (and there is text). */
+/** One marker's visible word — what a bubble, a session row and every other
+ *  human-facing label show. A string with no sigil is already its own word. */
+export function markerWord(part: string): string {
+  return part.startsWith(MARKER_SIGIL) ? part.slice(MARKER_SIGIL.length) : part;
+}
+
+/** The same for a whole `" + "`-joined run of them — and for any other string,
+ *  which comes back untouched. What a label that is not drawn part-by-part (a
+ *  session row, a heading) shows. */
+export function markerWords(text: string): string {
+  return text.split(MARKER_SIGIL).join("");
+}
+
+/** T:10539 — every `" + "`-split part is one of MARKERS (and there is text).
+ *  A sigil-free string is the reader's own words, whatever they happen to say;
+ *  U+2063 is a format character and not whitespace, so `trim` cannot eat it. */
 export function isMarkerOnly(text: string | null | undefined): boolean {
   const t = (text || "").trim();
-  return !!t && t.split(MARKER_JOIN).every((part) => MARKERS.indexOf(part) !== -1);
+  if (!t || t.indexOf(MARKER_SIGIL) === -1) return false;
+  return t.split(MARKER_JOIN).every((part) => MARKERS.indexOf(part) !== -1);
 }
 
 // ---- the pictures block ----------------------------------------------------

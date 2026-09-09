@@ -12,6 +12,7 @@
 // per note — a walkthrough clicking ten spots must not raise ten pickers.
 // Released when the user ends the share (`ended`), when the target stops being
 // cross-origin, and on pagehide.
+import { flashOverlays } from "./native-capture";
 import type { PaneBitmap } from "./types";
 
 let stream: MediaStream | null = null;
@@ -113,6 +114,30 @@ export async function getStream(): Promise<MediaStream> {
   return stream;
 }
 
+/** One frame of the SHARE. A video element hands over whatever frame it last
+ *  decoded, so every wait for fresh pixels goes through here; the timeout is the
+ *  answer where `requestVideoFrameCallback` is not implemented, and it is a
+ *  bound rather than a promise the caller can hang on. */
+function nextFrame(video: HTMLVideoElement): Promise<void> {
+  if (video.requestVideoFrameCallback) {
+    return new Promise<void>((res) => video.requestVideoFrameCallback(() => res()));
+  }
+  return new Promise<void>((res) => setTimeout(res, 150));
+}
+
+/** One PAINT of this document, so a style change is composited before the tab's
+ *  pixels are read. Bounded exactly as the native path bounds it (T:9891): rAF
+ *  never fires in a hidden document (a cmux pane, a background tab) and a hang
+ *  here would eat the capture. */
+function painted(): Promise<void> {
+  const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : null;
+  if (!raf) return new Promise<void>((res) => setTimeout(res, 32));
+  return Promise.race([
+    new Promise<void>((res) => raf(() => raf(() => res()))),
+    new Promise<void>((res) => setTimeout(res, 120)),
+  ]);
+}
+
 /** One frame of the tab, cropped to `frame`'s rect and drawn at its CSS size.
  *
  *  Same answer shape as the other two paths, so every consumer runs unchanged: a
@@ -139,33 +164,53 @@ export async function captureXO(
   video.muted = true;
   video.srcObject = live;
   await video.play();
-  // One PAINTED frame — `play()` resolving does not mean pixels arrived (T:9748).
-  if (video.requestVideoFrameCallback) {
-    await new Promise<void>((res) => video.requestVideoFrameCallback(() => res()));
-  } else {
-    await new Promise<void>((res) => setTimeout(res, 150));
+  // THE SHUTTER FLASH IS ON SCREEN, and this road photographs the screen: the
+  // same white sheet the native path hides is in the tab's pixels too, and with
+  // a KEPT share there is no picker to sit through — the grab beats the flash's
+  // 340 ms home and the sheet is burned into the picture (Bugbot, PR #1064).
+  // So it is hidden here as well, through native-capture's own finder, and put
+  // back in `finally` — an early return or a throw between here and the draw
+  // must not leave the page with an invisible overlay.
+  const hidden = flashOverlays(frame).filter(
+    (el): el is HTMLElement => !!(el as HTMLElement).style,
+  );
+  const prior = hidden.map((el) => el.style.visibility);
+  try {
+    for (const el of hidden) el.style.visibility = "hidden";
+    if (hidden.length) await painted();
+    // One PAINTED frame — `play()` resolving does not mean pixels arrived
+    // (T:9748) — and TWO once something was hidden, because the frame already in
+    // flight was composited before the hide and is the one `drawImage` would
+    // otherwise read.
+    await nextFrame(video);
+    if (hidden.length) await nextFrame(video);
+    // The captured frame is the tab's viewport at the capture's own resolution;
+    // the iframe's rect in that viewport, scaled the same way, is the crop
+    // (T:9752).
+    const sx = video.videoWidth / host.innerWidth;
+    const sy = video.videoHeight / host.innerHeight;
+    const r = frame.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width));
+    const h = Math.max(1, Math.round(r.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    canvas
+      .getContext("2d")
+      ?.drawImage(video, r.left * sx, r.top * sy, r.width * sx, r.height * sy, 0, 0, w, h);
+    video.srcObject = null;
+    return {
+      canvas,
+      width: w,
+      height: h,
+      blanks: [],
+      styled: 0,
+      incomplete: false,
+      imagesMissing: 0,
+    };
+  } finally {
+    hidden.forEach((el, i) => {
+      el.style.visibility = prior[i];
+    });
   }
-  // The captured frame is the tab's viewport at the capture's own resolution; the
-  // iframe's rect in that viewport, scaled the same way, is the crop (T:9752).
-  const sx = video.videoWidth / host.innerWidth;
-  const sy = video.videoHeight / host.innerHeight;
-  const r = frame.getBoundingClientRect();
-  const w = Math.max(1, Math.round(r.width));
-  const h = Math.max(1, Math.round(r.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  canvas
-    .getContext("2d")
-    ?.drawImage(video, r.left * sx, r.top * sy, r.width * sx, r.height * sy, 0, 0, w, h);
-  video.srcObject = null;
-  return {
-    canvas,
-    width: w,
-    height: h,
-    blanks: [],
-    styled: 0,
-    incomplete: false,
-    imagesMissing: 0,
-  };
 }

@@ -142,8 +142,18 @@ export interface NativeCaptureOptions {
 }
 
 /** The default overlay set: every flash sheet in this document and in the frame's
- *  owner document. PR3 passes its own, which adds the annotation shadow host. */
-function defaultOverlays(frame: HTMLIFrameElement): Element[] {
+ *  owner document. PR3 passes its own, which adds the annotation shadow host.
+ *
+ *  EXPORTED because the native path is not the only one that photographs what
+ *  the user can see: tab capture reads the same pixels off a video track, and it
+ *  was burning the white sheet into the picture whenever the grab beat the flash
+ *  home (`xo-capture`, Bugbot PR #1064). One finder, so a second overlay this
+ *  page learns to hide is hidden on both roads at once.
+ *
+ *  Every read is guarded: a caller's `frame` may be a stub whose owner document
+ *  is not a real one, and a finder that throws would take the whole capture with
+ *  it rather than simply hiding nothing. */
+export function flashOverlays(frame: HTMLIFrameElement): Element[] {
   const els: Element[] = [];
   const docs = new Set<Document>();
   if (typeof document !== "undefined") docs.add(document);
@@ -153,7 +163,12 @@ function defaultOverlays(frame: HTMLIFrameElement): Element[] {
     /* not ours */
   }
   for (const doc of docs) {
-    for (const el of Array.from(doc.querySelectorAll("[data-shot-flash]"))) els.push(el);
+    try {
+      if (typeof doc.querySelectorAll !== "function") continue;
+      for (const el of Array.from(doc.querySelectorAll("[data-shot-flash]"))) els.push(el);
+    } catch {
+      /* not queryable */
+    }
   }
   return els;
 }
@@ -168,7 +183,7 @@ export async function captureNative(
   if (nativeOff || !frame || !frame.isConnected) return null;
   const box = screenRect(frame);
   if (!box) return null;
-  const hidden = (opts.overlays ? opts.overlays() : defaultOverlays(frame)).filter(
+  const hidden = (opts.overlays ? opts.overlays() : flashOverlays(frame)).filter(
     (el): el is HTMLElement => !!(el as HTMLElement).style,
   );
   const prior = hidden.map((el) => el.style.visibility);

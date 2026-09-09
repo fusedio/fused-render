@@ -15,6 +15,8 @@ import {
   MARKER_IMG,
   MARKER_JOIN,
   MARKER_VIEW,
+  markerWord,
+  markerWords,
   paneShotBlock,
   paneShotIn,
   parseInbound,
@@ -111,6 +113,26 @@ describe("markers name what a wordless send carried (T:10552)", () => {
     expect(isMarkerOnly(MARKER_FILE)).toBe(true);
     expect(isMarkerOnly("")).toBe(false);
     expect(isMarkerOnly("annotations and a word")).toBe(false);
+  });
+
+  test("the WORD is not the marker: a reader who types one is not a marker send", () => {
+    // The emoji T put in front of each marker also made it a string no reader
+    // could type. Without one, "files" — an ordinary thing to say to an agent —
+    // matched, and the bubble drew an attachment icon in front of the reader's
+    // own word (Bugbot, PR #1064). Marker-ness is the private sigil, never the
+    // visible word.
+    expect(isMarkerOnly("files")).toBe(false);
+    expect(isMarkerOnly("images")).toBe(false);
+    expect(isMarkerOnly("annotations")).toBe(false);
+    expect(isMarkerOnly("pane screenshot")).toBe(false);
+    expect(isMarkerOnly("files + images")).toBe(false);
+    // The sigil is invisible, so what a marker SAYS is still the word alone.
+    expect(markerWord(MARKER_FILE)).toBe("files");
+    expect(markerWords(MARKER_ANN + MARKER_JOIN + MARKER_VIEW)).toBe(
+      "annotations" + MARKER_JOIN + "pane screenshot",
+    );
+    // …and a string that never carried one comes back untouched.
+    expect(markerWords("files")).toBe("files");
   });
 });
 

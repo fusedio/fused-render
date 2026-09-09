@@ -126,6 +126,48 @@ test("a live send wears the receipts it was given, not a re-read of the wire", (
   expect(img[0]!.props.src).toBe("blob:live");
 });
 
+test("the blob → disk hand-off is not a pruned file (Bugbot, PR #1064)", () => {
+  // A live send's receipt is drawn with the attachment's own object URL and is
+  // re-pointed at the copy on disk the moment the bytes are written. The handle
+  // is released on the way past, and the <img> showing it errors — which used to
+  // be read as "the pruner deleted this", so EVERY successful send of a pasted
+  // or captured picture ended in "screenshot no longer on disk".
+  //
+  // A `blob:` handle is this page's own and the pruner cannot touch one, so its
+  // error says nothing about the file. And the verdict is keyed on the src, so
+  // one reached before the swap does not outlive it.
+  const live: UserTurn = {
+    ...turn,
+    attachments: [
+      { kind: "pane", label: "screenshot attached", view: "/shots/x.png", thumb: "blob:live" },
+    ],
+  };
+  const row = (t: UserTurn) => (
+    <Receipts turn={t} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />
+  );
+  const r = mount(row(live));
+  const img = () => r.root.findAllByType("img")[0]!;
+  act(() => img().props.onError());
+  expect(texts(r, "annsum-gone")).toEqual([]);
+  expect(img().props.src).toBe("blob:live");
+
+  // The settled turn: the same row, now pointed at the server's copy.
+  const onDisk = "/api/fs/raw?path=%2Fshots%2Fx.png";
+  const settled: UserTurn = {
+    ...live,
+    attachments: [{ ...live.attachments![0]!, thumb: onDisk }],
+  };
+  act(() => {
+    r.update(row(settled));
+  });
+  expect(img().props.src).toBe(onDisk);
+  expect(texts(r, "annsum-gone")).toEqual([]);
+
+  // …and a copy that really is gone still says so, in words.
+  act(() => img().props.onError());
+  expect(texts(r, "annsum-gone")).toEqual(["screenshot no longer on disk"]);
+});
+
 test("a turn that carried nothing draws no receipt", () => {
   const bare: UserTurn = { role: "user", key: "u:2", text: "hello", raw: "hello" };
   const r = mount(<Receipts turn={bare} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);

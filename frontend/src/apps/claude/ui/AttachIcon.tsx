@@ -21,6 +21,7 @@ import {
   MARKER_IMG,
   MARKER_JOIN,
   MARKER_VIEW,
+  markerWord,
 } from "../protocol/wire";
 import type { ShotKind } from "../shots/types";
 
@@ -74,6 +75,10 @@ export function AttachIcon({ kind, className }: AttachIconProps) {
 // The bubble's TEXT is unchanged by this — the icons are `aria-hidden` svgs and
 // the words are the same nodes — which matters because a turn's bubble text is
 // what the re-attach probe matches a prior send on.
+//
+// What IS peeled off here is the marker sigil: the U+2063 that tells a marker
+// apart from a reader who typed the word "files" is machinery, and the bubble
+// shows the word (`markerWord`, protocol/wire).
 const MARKER_KIND: Record<string, ShotKind> = {
   [MARKER_VIEW]: "pane",
   [MARKER_IMG]: "image",
@@ -101,7 +106,7 @@ export function MarkerText({ text }: { text: string }) {
           ) : (
             <AttachIcon kind={MARKER_KIND[part] ?? "file"} />
           )}
-          {part}
+          {markerWord(part)}
         </span>
       ))}
     </>

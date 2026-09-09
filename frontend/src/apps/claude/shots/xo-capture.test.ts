@@ -122,11 +122,20 @@ function newVideo(): FakeVideo {
   return v;
 }
 
+/** Called at the instant `drawImage` reads the video — the only moment at which
+ *  "was the flash on screen?" has an answer. */
+let onDraw: (() => void) | null = null;
+
 function newCanvas(): FakeCanvas {
   const c: FakeCanvas = {
     width: 0,
     height: 0,
-    getContext: () => ({ drawImage: (...args: unknown[]) => drawn.push(args) }),
+    getContext: () => ({
+      drawImage: (...args: unknown[]) => {
+        drawn.push(args);
+        if (onDraw) onDraw();
+      },
+    }),
   };
   canvases.push(c);
   return c;
@@ -155,6 +164,7 @@ beforeEach(() => {
   canvases = [];
   videos = [];
   hasVfc = true;
+  onDraw = null;
   nextStream = () => stream(track());
   G.document = {
     hidden: false,
@@ -444,5 +454,108 @@ describe("captureXO the crop arithmetic (T:9748, 9752)", () => {
     expect(prompts.length).toBe(1);
     expect(drawn.length).toBe(2);
     expect(videos[0].srcObject).toBeNull();
+  });
+});
+
+// ── the shutter flash (Bugbot, PR #1064) ────────────────────────────────────
+//
+// This road photographs the SCREEN, so it sees everything the user does — the
+// white sheet `flash()` puts over the pane included. The native path always hid
+// it; here, with a KEPT share, there is no picker to sit through and the grab
+// beat the flash's 340 ms home, so the sheet was burned into the picture.
+
+describe("captureXO hides what sits ON the pane", () => {
+  function flashSheet(visibility = ""): { style: { visibility: string } } {
+    const el = { style: { visibility } };
+    const doc = G.document as Rec;
+    doc.querySelectorAll = (sel: string) => (sel === "[data-shot-flash]" ? [el] : []);
+    return el;
+  }
+
+  test("the sheet is hidden for the grab and put back exactly as it was", async () => {
+    const el = flashSheet("visible");
+    let during = "?";
+    onDraw = () => {
+      during = el.style.visibility;
+    };
+    const out = await captureXO(makeFrame(rect(0, 0, 400, 300)));
+    expect(out).not.toBeNull();
+    expect(during).toBe("hidden");
+    // PUT BACK, and to its own prior value rather than to "": a page left with
+    // an invisible overlay is worse than a flash in one picture.
+    expect(el.style.visibility).toBe("visible");
+  });
+
+  test("a hide waits for a FRESH frame — the one in flight was composited before it", async () => {
+    // A video element hands over the last frame it decoded, and that frame was
+    // painted while the sheet was still up.
+    const el = flashSheet();
+    const frames: string[] = [];
+    const doc = G.document as Rec;
+    const make = doc.createElement as (tag: string) => FakeVideo | FakeCanvas;
+    doc.createElement = (tag: string) => {
+      const node = make(tag);
+      const v = node as FakeVideo;
+      if (v.requestVideoFrameCallback) {
+        v.requestVideoFrameCallback = (cb: () => void) => {
+          frames.push(el.style.visibility);
+          cb();
+        };
+      }
+      return node;
+    };
+    await captureXO(makeFrame(rect(0, 0, 400, 300)));
+    expect(frames).toEqual(["hidden", "hidden"]);
+  });
+
+  test("nothing to hide is one frame's wait, unchanged", async () => {
+    // The overlay is only up for a click that flashed; the common capture pays
+    // nothing for this.
+    const frames: number[] = [];
+    const doc = G.document as Rec;
+    const make = doc.createElement as (tag: string) => FakeVideo | FakeCanvas;
+    doc.createElement = (tag: string) => {
+      const node = make(tag);
+      const v = node as FakeVideo;
+      if (v.requestVideoFrameCallback) {
+        v.requestVideoFrameCallback = (cb: () => void) => {
+          frames.push(1);
+          cb();
+        };
+      }
+      return node;
+    };
+    await captureXO(makeFrame(rect(0, 0, 400, 300)));
+    expect(frames.length).toBe(1);
+  });
+
+  test("the sheet comes back even when the grab throws", async () => {
+    const el = flashSheet("visible");
+    const doc = G.document as Rec;
+    const make = doc.createElement as (tag: string) => FakeVideo | FakeCanvas;
+    doc.createElement = (tag: string) =>
+      tag === "canvas"
+        ? ({
+            width: 0,
+            height: 0,
+            getContext: () => {
+              throw new Error("context lost");
+            },
+          } as unknown as FakeCanvas)
+        : make(tag);
+    await expect(captureXO(makeFrame(rect(0, 0, 400, 300)))).rejects.toThrow("context lost");
+    expect(el.style.visibility).toBe("visible");
+  });
+
+  test("an overlay with no style, and a document that refuses to be queried", async () => {
+    // A finder that throws would take the whole capture with it rather than
+    // simply hiding nothing.
+    const doc = G.document as Rec;
+    doc.querySelectorAll = () => {
+      throw new Error("not queryable");
+    };
+    expect(await captureXO(makeFrame(rect(0, 0, 400, 300)))).not.toBeNull();
+    doc.querySelectorAll = () => [{} as unknown as Element];
+    expect(await captureXO(makeFrame(rect(0, 0, 400, 300)))).not.toBeNull();
   });
 });
