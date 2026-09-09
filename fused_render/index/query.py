@@ -39,6 +39,15 @@ logger = logging.getLogger(__name__)
 # input to "C:/", and the two would never compare equal.
 _BARE_DRIVE = re.compile(r"^[A-Za-z]:$")
 
+# A typed string starting "C:\" or "C:/" is unambiguously a Windows absolute
+# path — there is no POSIX-style "leading slash means depth-1 anchor at the
+# box root" reading for it to be confused with (that ambiguity is specific to
+# a bare "/", which a drive letter never looks like). `resolve_query` below
+# treats a match the same way it treats "~": always walked as an escape from
+# the box's own root, never falling back to `root` the way the bare-"/" branch
+# can.
+_DRIVE_ABS = re.compile(r"^[A-Za-z]:[\\/]")
+
 
 def _root_or_bare(stripped: str) -> str:
     """`stripped` (already rstripped of "/") restored to its canonical bare-
@@ -500,6 +509,15 @@ def resolve_query(root: str, raw: str) -> dict:
     instead as the depth-1 anchor it looks like — base stays the box root,
     pattern is `raw` with only the leading slash stripped.
 
+    A Windows drive-letter path (`C:\\` or `C:/`) has no such ambiguity to
+    resolve — nothing else starts that way — so it always walks as an escape,
+    the same as `~`: `_walk_from` runs from the drive root (`"C:/"`) over the
+    rest of the string with backslashes folded to `/` first (the drive
+    letter's own separator is native; the walk only ever splits on `/`), and
+    whatever it reaches is the base regardless of `_walk_from`'s `advanced`
+    flag — there is no bare-root fallback to `root` for this branch the way
+    there is for a bare leading `/`.
+
     The implicit `**/` prefix — a glob with no `/` anywhere searches any
     depth — is decided from `raw` BEFORE any of the base-splitting above, not
     from the leftover pattern. Deciding it after would silently anchor every
@@ -515,6 +533,10 @@ def resolve_query(root: str, raw: str) -> dict:
         home = norm(os.path.expanduser("~"))
         rest = raw[2:] if raw.startswith("~/") else ""
         base, pattern, _ = _walk_from(home, rest)
+    elif _DRIVE_ABS.match(raw):
+        drive_root = raw[:2] + "/"
+        rest = raw[3:].replace("\\", "/")
+        base, pattern, _ = _walk_from(drive_root, rest)
     elif raw.startswith("/"):
         rest = raw[1:]
         abs_base, abs_pattern, advanced = _walk_from("/", rest)

@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig, load_config
+from fused_render.index.ignore import norm
 from fused_render.index.query import search_ranked, search_under
 from fused_render.index.runner import canonical_root
 from fused_render.shell import prefs
@@ -1118,7 +1119,11 @@ def test_rank_route_absolute_glob_escapes_the_box_root(home, tmp_path):
     body = client.get(
         "/api/index/rank",
         params={"root": root, "q": f"{escaped}/*/y.conf"}).json()
-    assert body["base"] == str(escaped)
+    # `body["base"]` travels through `norm()` (forward slashes, the canonical
+    # form the index stores and compares every path as) — normalized here
+    # too, rather than comparing against `str(escaped)`'s own platform-native
+    # spelling.
+    assert body["base"] == norm(str(escaped))
     assert [h["rel"] for h in body["hits"]] == ["sub/y.conf"]
 
 
@@ -1131,7 +1136,7 @@ def test_rank_route_tilde_escapes_to_home(home, tmp_path, monkeypatch):
     client = _ranked_client(tmp_path, userhome, [userhome + "/note.csv"])
     body = client.get("/api/index/rank",
                       params={"root": root, "q": "~/*.csv"}).json()
-    assert body["base"] == userhome
+    assert body["base"] == norm(userhome)
     assert body["mode"] == "glob"
     assert [h["rel"] for h in body["hits"]] == ["note.csv"]
 
@@ -1148,7 +1153,7 @@ def test_rank_route_a_missing_named_folder_widens_the_substring_search(
                             [userhome + "/nope-elsewhere/x.csv"])
     body = client.get("/api/index/rank",
                       params={"root": root, "q": "~/nope/x.csv"}).json()
-    assert body["base"] == userhome
+    assert body["base"] == norm(userhome)
     assert body["mode"] == "substring"
     assert body["hits"] == []
 

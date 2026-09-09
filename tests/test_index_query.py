@@ -15,6 +15,7 @@ import pytest
 from fused_render.index import query as index_query
 from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig
+from fused_render.index.ignore import norm
 from fused_render.index.query import _glob_to_regex, prune, resolve_query, stats
 from fused_render.index.store import Sink, compact
 
@@ -121,7 +122,11 @@ def _home(tmp_path, monkeypatch):
     (home / "a" / "b").mkdir(parents=True)
     monkeypatch.setattr(os.path, "expanduser",
                         lambda p: str(home) if p in ("~", "~/") else p)
-    return str(home)
+    # `resolve_query` returns every base through `norm()` (forward slashes
+    # only, the canonical form everything in the index stores and compares
+    # paths as) — normalized here too, so the comparison isn't just re-
+    # asserting `str(home)`'s own platform-native spelling back at itself.
+    return norm(str(home))
 
 
 def test_resolve_bare_substring_query_is_any_depth_at_the_box_root():
@@ -177,7 +182,39 @@ def test_resolve_absolute_path_walks_the_filesystem(tmp_path):
     etc = tmp_path / "etc"
     etc.mkdir()
     out = resolve_query("/box", f"{etc}/*/x.conf")
-    assert out == {"base": str(etc), "pattern": "*/x.conf", "mode": "glob"}
+    assert out == {"base": norm(str(etc)), "pattern": "*/x.conf", "mode": "glob"}
+
+
+def test_resolve_windows_drive_letter_path_walks_the_filesystem(monkeypatch):
+    """A raw typed string can start with a drive letter instead of `/` (a
+    pasted or typed Windows absolute path) — unambiguously absolute, unlike a
+    bare leading `/`, so there is no depth-1-anchor fallback to consider.
+
+    Exercised against a faked directory tree (`os.path.isdir` monkeypatched)
+    rather than a real one: a Windows drive letter has no counterpart on the
+    POSIX filesystem this suite otherwise runs against, real or via tmp_path,
+    so this is the only way to run `_walk_from`'s directory-existence walk
+    over one on any platform."""
+    real_dirs = {"C:/Users", "C:/Users/example"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:\\Users\\example\\*.conf")
+    # The implicit `**/` decision reads the RAW typed string looking for `/`
+    # specifically (spec: "a slash is the only thing that limits depth") —
+    # an all-backslash Windows path has none, so it widens to any depth under
+    # the resolved base exactly like a slash-free POSIX query does.
+    assert out == {"base": "C:/Users/example", "pattern": "**/*.conf",
+                   "mode": "glob"}
+
+
+def test_resolve_windows_drive_letter_path_with_forward_slashes(monkeypatch):
+    """The same absolute-path recognition fires whichever separator the
+    drive-letter string uses past the colon — `C:/` is as legitimate a
+    Windows spelling as `C:\\`."""
+    real_dirs = {"C:/Users", "C:/Users/example"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:/Users/example/*.conf")
+    assert out == {"base": "C:/Users/example", "pattern": "*.conf",
+                   "mode": "glob"}
 
 
 def test_resolve_leading_slash_with_no_real_directory_stays_anchored():
