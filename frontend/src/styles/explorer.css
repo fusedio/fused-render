@@ -579,14 +579,15 @@
 }
 
 /* ---- The side column's tab strip (SideChrome's SideTabs) ------------------
-   UNDERLINE TABS, the app page's idiom (.app-page-tabs, shadcn's line
-   variant): icon + label, the active one in full ink with a 2px bar sitting ON
-   the header's bottom rule, the rest muted. Not the bordered plate — a plate
-   says "this is a menu" everywhere else in these bars (.bar-ctl-bordered), and
-   a tab is not one. The strip stretches to the header's height so the bar
-   lands exactly on the rule: the tail wrapper stretches too (its own
-   align-items still centres the rest of what it holds), and the bar hangs the
-   header's vertical padding plus its 1px border below the tab's box. */
+   shadcn Tabs, line variant — the app page's tab bar (.app-page-tabs) in the
+   column header. The utilities own the look (muted text, active in full ink,
+   the 2px after-bar); the two things this file adds are GEOMETRY the utilities
+   cannot know: the strip stretches to the header's height (the tail wrapper
+   stretches too — its own align-items still centres the rest of what it
+   holds), and the active bar is moved down by the header's vertical padding
+   plus its 1px border so it sits ON the header's bottom rule rather than
+   floating 5px under the label. Unlayered, so these beat the layered
+   utilities without !important. */
 .side-header-tail:has(.side-tabs) {
   align-self: stretch;
 }
@@ -594,42 +595,15 @@
 .side-tabs {
   flex: 0 0 auto;
   align-self: stretch;
-  display: inline-flex;
-  align-items: stretch;
-  gap: 4px;
+  display: flex;
 }
 
-.side-tab {
-  position: relative;
-  height: auto;
-  padding: 0 6px;
-  border-radius: 0;
-  font-size: 13px;
-  color: var(--fg-muted);
+.side-tabs [data-slot="tabs-list"] {
+  height: 100%;
 }
 
-.side-tab:hover:not(:disabled) {
-  background: none;
-  color: var(--fg);
-}
-
-.side-tab.active {
-  color: var(--fg);
-  cursor: default;
-}
-
-.side-tab.active::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
+.side-tabs [data-slot="tabs-trigger"]::after {
   bottom: calc(-1 * var(--topbar-pad-y) - 1px);
-  height: 2px;
-  background: var(--fg);
-}
-
-.side-tab-label {
-  font-weight: 500;
 }
 
 /* The kebab trigger's corner badge — the App Doctor's status dot, visible

@@ -27,6 +27,7 @@
 import { useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { modeTitle } from "@platform/lib/mode-name";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { reopenWidth } from "@platform/lib/panel-drag";
 import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { CONTENT_MIN_W, MIN_W } from "@apps/explorer/lib/side-width";
@@ -96,9 +97,9 @@ export interface SideTab {
 // THE FILE SIDEBAR'S SWITCHER IS A TAB STRIP, not a dropdown. With the column
 // down to two companions (Claude, Git — MCP left it for the crumb bar's kebab,
 // EntryActionsMenu) a menu that opens to show two rows costs a click to reveal
-// what a strip shows standing still. UNDERLINE tabs, the app page's own idiom
-// (.app-page-tabs): icon + label, the active one in full ink with a bar on the
-// header's bottom rule, the rest muted (.side-tab, explorer.css). Not the mode
+// what a strip shows standing still. shadcn Tabs in the line variant — the app
+// page's own tab bar (shell/AppPage.tsx): icon + label, the active one in full
+// ink with a bar on the header's bottom rule, the rest muted. Not the mode
 // control's bordered plate — in these bars a plate means "menu".
 //
 // Unlike ModeMenu it NEVER hides itself at one selectable row: an unavailable
@@ -116,31 +117,40 @@ export function SideTabs({
   onSelect: (mode: string) => void;
 }) {
   return (
-    <div className="side-tabs" role="tablist" aria-label="Sidebar panel">
-      {tabs.map((t) => {
-        const title = modeTitle(t.mode);
-        const on = t.mode === active;
-        return (
-          <button
+    // shadcn's Tabs, line variant — the SAME control the app page's tab bar is
+    // (shell/AppPage.tsx), so the two strips are one idiom rather than a
+    // hand-rolled lookalike. Controlled: `value` is the mode Preview/Listing
+    // resolved, and a click reports up through onSelect (the `_side` writer).
+    // The strip stretches to the header's height (.side-tabs, explorer.css) so
+    // the active bar lands on the header's own bottom rule.
+    <Tabs
+      value={active}
+      onValueChange={(v) => {
+        if (typeof v === "string" && v !== active) onSelect(v);
+      }}
+      className="side-tabs self-stretch"
+    >
+      <TabsList
+        variant="line"
+        aria-label="Sidebar panel"
+        className="h-full justify-start rounded-none border-b-0 p-0"
+      >
+        {tabs.map((t) => (
+          <TabsTrigger
             key={t.mode}
-            type="button"
-            role="tab"
-            aria-selected={on}
-            className={"bar-ctl side-tab" + (on ? " active" : "")}
+            value={t.mode}
+            className="flex-none px-2.5 text-[13px]"
             disabled={t.pending || !!t.disabledReason}
-            title={t.pending ? "Checking if this view applies…" : t.disabledReason ?? title}
-            onClick={() => {
-              if (!on) onSelect(t.mode);
-            }}
+            title={t.pending ? "Checking if this view applies…" : t.disabledReason}
           >
-            <span className="mode-menu-icon">
+            <span className="mode-menu-icon" data-icon="inline-start">
               {t.pending ? <span className="mode-icon-spinner" /> : t.icon}
             </span>
-            <span className="side-tab-label">{title}</span>
-          </button>
-        );
-      })}
-    </div>
+            {modeTitle(t.mode)}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   );
 }
 
