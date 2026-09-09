@@ -164,6 +164,26 @@ export function pressStartsDrag(press: {
   return !press.modified && (press.onHandle || press.rowWasSelected);
 }
 
+// Whether a press this soon after a navigation-opening release must be read
+// as landing on NOTHING, the same way Listing's own OPEN_SUPPRESS_MS window
+// (onRowPointerDown) reads it. That guard exists for the habitual second
+// press of a double-click into a folder: the release navigates, the listing
+// remounts with new rows underneath the same screen position, and the second
+// press lands on a row of the NEW folder that nothing has selected or
+// highlighted. `onRowPointerDown` returns early for it, doing nothing at all.
+//
+// The press arbiter (useMarquee) runs in the CAPTURE phase, before that
+// bubble-phase guard ever fires, so it has to honour the same window itself —
+// otherwise a press the row treats as inert still reaches the arbiter with
+// `onHandle: true` and starts a real move-drag of a file the row never
+// selected. `path === null` (the background) is excluded: the row-level guard
+// has nothing to say about a press that landed on no row at all, and the
+// background's own sweep is unaffected by a navigation the background did not
+// just cause.
+export function pressIsSuppressed(path: string | null, now: number, suppressUntil: number): boolean {
+  return path !== null && now < suppressUntil;
+}
+
 // What a press on `path` picks up. The standard file-manager rule: a row that
 // is part of the current selection drags the WHOLE selection, and a row outside
 // it drags only itself.

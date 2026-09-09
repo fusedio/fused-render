@@ -42,7 +42,7 @@
 // not the viewport's. That is what lets the listing scroll under a live sweep
 // without the region, the row bands, or the band's own position going stale.
 import { useEffect, useRef } from "react";
-import { pressStartsDrag } from "@apps/explorer/listing/drag-drop";
+import { pressIsSuppressed, pressStartsDrag } from "@apps/explorer/listing/drag-drop";
 import { DRAG_HANDLE_ATTR, DROP_PATH_ATTR } from "@apps/explorer/listing/row-drag";
 import {
   autoScrollStep,
@@ -103,6 +103,7 @@ export function useMarquee({
   selectedPaths,
   selectPaths,
   startMoveDrag,
+  suppressPressUntilRef,
   enabled = true,
 }: {
   scrollRef: React.RefObject<HTMLDivElement>;
@@ -122,6 +123,12 @@ export function useMarquee({
     clientX: number;
     clientY: number;
   }) => void;
+  // Listing's post-navigation double-click guard (OPEN_SUPPRESS_MS). This
+  // arbiter runs in the CAPTURE phase, before the row's own bubble-phase
+  // pointerdown (which honours the same ref) ever fires — so it has to
+  // consult it too, or a press the row treats as inert still starts a real
+  // move-drag (drag-drop's `pressIsSuppressed`).
+  suppressPressUntilRef: { current: number };
   enabled?: boolean;
 }) {
   const rowsRef = useRef<string[]>([]);
@@ -248,6 +255,13 @@ export function useMarquee({
     // answers for every pixel, read forwards for the drag and backwards for the
     // sweep.
     const path = pressed.row?.getAttribute(DROP_PATH_ATTR) ?? null;
+    // The row's own pointerdown (Listing's onRowPointerDown) does nothing at
+    // all for the habitual second press of a double-click into a folder — but
+    // that guard is bubble-phase, and this arbiter runs in capture, before it.
+    // Consult the same window here, or a press the row is about to ignore
+    // still reaches `pressStartsDrag` with `onHandle: true` and starts a real
+    // move-drag of a row nothing has selected.
+    if (pressIsSuppressed(path, Date.now(), suppressPressUntilRef.current)) return;
     // A modified press (Shift/Cmd/Ctrl) never drags, on the handle or anywhere
     // else: those modifiers mean "sweep additively", and a press that means
     // that must not be read as "move this item" just because it also happens

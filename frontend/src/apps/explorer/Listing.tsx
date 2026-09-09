@@ -1106,6 +1106,41 @@ export default function Listing({
     if (prompt) claudeAskActionRef.current(prompt);
   }, [fsPath, claudeReady, askVersion]);
 
+  // A HABITUAL DOUBLE-CLICK NOW DOUBLE-OPENS, and this is the guard against it.
+  // Single-click-open (D460) means the first press of what a lifetime of
+  // double-clicking trained someone to do already navigates on its release —
+  // and when that navigation is INTO A FOLDER, this same `Listing` instance
+  // re-renders with the new `fsPath` rather than unmounting (shell/App.tsx
+  // renders it unkeyed), so the second press of the habitual pair lands on
+  // whatever row the NEW folder painted under a cursor that has not moved —
+  // and opens THAT, which nobody asked for and nothing about it looks like a
+  // mistake to whoever it happens to.
+  //
+  // Set only from the RELEASE that actually opened something (onRowPointerUp
+  // below), and checked at the top of both press paths — this component's own
+  // onRowPointerDown, and useMarquee's capture-phase arbiter, which runs
+  // BEFORE it and has to honour the same window itself (drag-drop's
+  // `pressIsSuppressed`) or a press this ref is about to make inert still
+  // reaches it and starts a real move-drag. Neither reads select, toggle, or
+  // extend for it, because the whole point is that this press should not be
+  // read as an action on this (freshly rendered, unrelated) row at all. A
+  // plain timestamp compared against `Date.now()` rather than a timer:
+  // nothing has to be scheduled or cleared, and a press that never comes
+  // finds the ref simply stale.
+  //
+  // The window is the same rough length a native double-click's is — long
+  // enough to catch the habitual second click, short enough that a genuinely
+  // deliberate fast click a folder-hop later is the rare cost, not the norm.
+  //
+  // THIS IS NOT A DOUBLE-CLICK TIMER RESTORED FOR ITS OWN SAKE — there is
+  // still no delay before a plain press's own release opens IT (D460's whole
+  // point stands: nothing here waits to see if a second click arrives before
+  // acting on the first). It exists purely to absorb the SECOND press of a
+  // pair that a habit built for the old model still sends, aimed at a row
+  // that just changed out from under it.
+  const OPEN_SUPPRESS_MS = 400;
+  const suppressPressUntilRef = useRef(0);
+
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.
   // Rows carry no drag handlers: they declare what they ACCEPT with the
@@ -1134,6 +1169,7 @@ export default function Listing({
     selectedPaths: sel.paths,
     selectPaths,
     startMoveDrag,
+    suppressPressUntilRef,
   });
 
   useListingShortcuts({
@@ -1176,37 +1212,6 @@ export default function Listing({
     y: number;
     action: RowPressAction;
   } | null>(null);
-
-  // A HABITUAL DOUBLE-CLICK NOW DOUBLE-OPENS, and this is the guard against it.
-  // Single-click-open (D460) means the first press of what a lifetime of
-  // double-clicking trained someone to do already navigates on its release —
-  // and when that navigation is INTO A FOLDER, this same `Listing` instance
-  // re-renders with the new `fsPath` rather than unmounting (shell/App.tsx
-  // renders it unkeyed), so the second press of the habitual pair lands on
-  // whatever row the NEW folder painted under a cursor that has not moved —
-  // and opens THAT, which nobody asked for and nothing about it looks like a
-  // mistake to whoever it happens to.
-  //
-  // Set only from the RELEASE that actually opened something (onRowPointerUp
-  // below), and checked here, at the very top of the next press, before
-  // anything else runs — no select, no toggle, no extend either, because the
-  // whole point is that this press should not be read as an action on this
-  // (freshly rendered, unrelated) row at all. A plain timestamp compared
-  // against `Date.now()` rather than a timer: nothing has to be scheduled or
-  // cleared, and a press that never comes finds the ref simply stale.
-  //
-  // The window is the same rough length a native double-click's is — long
-  // enough to catch the habitual second click, short enough that a genuinely
-  // deliberate fast click a folder-hop later is the rare cost, not the norm.
-  //
-  // THIS IS NOT A DOUBLE-CLICK TIMER RESTORED FOR ITS OWN SAKE — there is
-  // still no delay before a plain press's own release opens IT (D460's whole
-  // point stands: nothing here waits to see if a second click arrives before
-  // acting on the first). It exists purely to absorb the SECOND press of a
-  // pair that a habit built for the old model still sends, aimed at a row
-  // that just changed out from under it.
-  const OPEN_SUPPRESS_MS = 400;
-  const suppressPressUntilRef = useRef(0);
 
   const onRowPointerDown = (e: React.PointerEvent, path: string) => {
     if (e.button !== 0) return;

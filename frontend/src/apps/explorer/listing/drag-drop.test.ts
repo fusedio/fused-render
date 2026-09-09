@@ -11,6 +11,7 @@ import {
   dragPathsFor,
   dropIsValid,
   fsDragInFlight,
+  pressIsSuppressed,
   pressStartsDrag,
   refusalNeedsToast,
   springDisarms,
@@ -150,6 +151,26 @@ describe("springDisarms", () => {
 
   test("nothing armed, nothing to cancel", () => {
     expect(springDisarms("/w", null)).toBe(false);
+  });
+});
+
+// The post-navigation guard, read the way the CAPTURE-phase arbiter must read
+// it: as "this press landed on nothing", not merely "don't start a drag" —
+// Listing's own onRowPointerDown does nothing at all for it, and the arbiter
+// has to agree or a habitual double-click's second press still moves a file
+// nothing selected or highlighted.
+describe("pressIsSuppressed", () => {
+  test("a row press inside the guard window is suppressed", () => {
+    expect(pressIsSuppressed("/w/notes.md", 1_000, 1_100)).toBe(true);
+  });
+
+  test("a row press once the window has closed is not suppressed", () => {
+    expect(pressIsSuppressed("/w/notes.md", 1_200, 1_100)).toBe(false);
+    expect(pressIsSuppressed("/w/notes.md", 1_100, 1_100)).toBe(false);
+  });
+
+  test("the background has no row-level guard to honour", () => {
+    expect(pressIsSuppressed(null, 1_000, 1_100)).toBe(false);
   });
 });
 
