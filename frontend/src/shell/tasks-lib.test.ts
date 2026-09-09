@@ -6476,7 +6476,9 @@ describe("the tasks toolbar", () => {
     // and the scope is applied BEFORE these filters (`tasks` unscoped = what
     // publishTasks hands the sidebar).
     expect(PAGE).toContain("filterTasks(inScope, filtersForView(filters, view))");
-    expect(PAGE).toContain("<TaskBoard tasks={shown}");
+    // Multi-line since the Board took the page's `emptyLabel` (2026-09-09).
+    const board = PAGE.slice(PAGE.indexOf("<TaskBoard"));
+    expect(board.slice(0, board.indexOf("/>"))).toContain("tasks={shown}");
   });
 
   it("hides the dead Archive option from Status only on the calendar", () => {
@@ -7189,7 +7191,8 @@ describe("the Cards view's frame", () => {
     expect(HOOK).toContain("This task's folder was deleted, so its chat can't be opened. Archive the task to remove it.");
     expect(HOOK).toContain('pushToast({ msg: MISSING_FOLDER_TOAST, tone: "error" });');
     expect(SCHEDULED).toContain("const missing = useMissingFolders(shown);");
-    expect(SCHEDULED).toContain("<TaskBoard tasks={shown} home={home} onReload={reload} missing={missing} />");
+    const board = SCHEDULED.slice(SCHEDULED.indexOf("<TaskBoard"));
+    expect(board.slice(0, board.indexOf("/>"))).toContain("missing={missing}");
     expect(SCHEDULED).toContain("home={home}\n              missing={missing}");
     expect(VIEWS).toContain("folderMissing={missing?.has(taskFolder(task)) ?? false}");
     // A TOAST, not a line under the row (Akshil, 2026-09-06, screenshot).
@@ -8302,6 +8305,21 @@ describe("provisionalTasks", () => {
     expect(taskUnread(t, new Set())).toBe(2);
     const [none] = provisionalTasks([row({ unread: 0 })]);
     expect(taskUnread(none, new Set())).toBe(0);
+  });
+
+  it("the four views print the PAGE's one empty sentence, full width, centred", () => {
+    // One `emptyLabel` computed in Scheduled and handed to List, Board, Cards
+    // and Calendar; each prints it as the same `.schedule-tv-empty` paragraph.
+    // The Board used to show five bare rails and the Calendar a bare grid.
+    const SCHED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
+    expect((SCHED.match(/emptyLabel=\{emptyLabel\}/g) ?? []).length).toBe(4);
+    expect(VIEWS).toContain("if (tasks.length === 0) {\n    return <p className=\"schedule-tv-empty\">{emptyLabel}</p>;");
+    const CAL = readFileSync(join(SHELL, "ScheduleCalendar.tsx"), "utf8");
+    expect(CAL).toContain('return <p className="schedule-tv-empty">{emptyLabel}</p>;');
+    const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
+    expect(CARDS_SRC).toContain('<p className="schedule-tv-empty">{emptyLabel}</p>');
+    expect(block(SCHEDULE_CSS, ".schedule-tv-empty")).toContain("width: 100%");
+    expect(block(SCHEDULE_CSS, ".schedule-tv-empty")).toContain("text-align: center");
   });
 
   it("the page waits behind a ghost of the CURRENT view, not eight bars", () => {

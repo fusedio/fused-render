@@ -2885,7 +2885,12 @@ export function TaskBoard({
   home = "",
   onReload,
   missing,
+  emptyLabel = "Nothing to show here.",
 }: {
+  /** The page's sentence for an empty set (Scheduled `emptyLabel`). Five bare
+   * rails said nothing about WHY the board was empty; the List's sentence does,
+   * and the four views now share it. */
+  emptyLabel?: string;
   /** Already filtered, in the SERVER's order — the LANES re-order it
    * (tasks-lib.groupByColumn), which is the one thing this view does to the
    * order it is handed and the one place it is decided. */
@@ -3115,6 +3120,13 @@ export function TaskBoard({
       return next.size === cur.size ? cur : next;
     });
   }, [byLane]);
+
+  // After every hook above, so a set that empties and refills does not change
+  // the hook order. The List's element and class, for the List's reason: one
+  // page, one way of saying there is nothing here.
+  if (tasks.length === 0) {
+    return <p className="schedule-tv-empty">{emptyLabel}</p>;
+  }
 
   return (
     <>

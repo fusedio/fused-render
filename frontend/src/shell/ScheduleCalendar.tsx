@@ -908,6 +908,7 @@ export default function ScheduleCalendar({
   entries = [],
   queued = [],
   running = [],
+  emptyLabel = "Nothing to show here.",
   onReload,
   onCreateAt,
   onEditEntry,
@@ -926,6 +927,10 @@ export default function ScheduleCalendar({
   queued?: ScheduledMessage[];
   /** getScheduleQueue().running — mid-flight, same treatment. */
   running?: ScheduledMessage[];
+  /** The page's sentence for an empty set (Scheduled `emptyLabel`), printed in
+   * place of the grid when there is nothing at all to put on it — not when a
+   * WEEK is quiet, which is a real answer the grid gives on its own. */
+  emptyLabel?: string;
   onReload: () => void;
   onCreateAt: (time: Date) => void;
   /** Opens the New task modal on an existing entry (a rule, or a one-off). */
@@ -1090,6 +1095,16 @@ export default function ScheduleCalendar({
   };
 
   const cols = { ["--cal-days" as string]: days.length } as React.CSSProperties;
+
+  // Nothing to place on ANY week. Tasks alone decide: every chip on this grid
+  // hangs off a task (calendarThreads), and a scheduled entry with no session
+  // is already a task in the listing (routers/tasks `_collect`), so `entries`,
+  // `queued` and `running` only annotate chips that exist. A bare grid here
+  // read as a calendar with nothing on this week, which is a different thing
+  // from a page with nothing on it at all. After every hook, like the Board.
+  if (tasks.length === 0) {
+    return <p className="schedule-tv-empty">{emptyLabel}</p>;
+  }
 
   return (
     <div className={"schedule-cal" + (range === "4day" ? " is-wide" : "")} style={cols}>

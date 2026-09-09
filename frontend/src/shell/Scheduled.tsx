@@ -511,6 +511,18 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // folder, so a row can say "Folder missing" instead of opening an Explorer
   // that can only answer with a stat error (useMissingFolders).
   const missing = useMissingFolders(shown);
+  // ONE sentence for "there is nothing here", handed to all four views, so a
+  // reader flipping List → Board → Cards → Calendar over the same empty set
+  // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
+  // is the page's call, not a view's: only the page knows whether the set is
+  // empty because the machine has no tasks, this app has none, or the filters
+  // matched none.
+  const emptyLabel =
+    inScope.length === 0
+      ? scope
+        ? "No tasks for this app yet."
+        : "No tasks yet. Everything Claude runs for you shows up here."
+      : "Nothing matches these filters.";
 
   // Editing is addressed by ENTRY id, not by task: a task is a thread, and a
   // thread has nothing to edit — only a message that has not gone out yet does.
@@ -677,6 +689,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             <TasksSkeleton view={view} />
           ) : view === "calendar" ? (
             <ScheduleCalendar
+              emptyLabel={emptyLabel}
               // The FILTERED set, same as the other two views get: the toolbar's
               // three controls are live here now, and a filter that is shown but
               // does nothing is worse than one that is hidden.
@@ -689,9 +702,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               onEditEntry={editEntry}
             />
           ) : view === "board" ? (
-            <TaskBoard tasks={shown} home={home} onReload={reload} missing={missing} />
+            <TaskBoard
+              tasks={shown}
+              home={home}
+              onReload={reload}
+              missing={missing}
+              emptyLabel={emptyLabel}
+            />
           ) : view === "cards" ? (
             <TaskCards
+              emptyLabel={emptyLabel}
               // The FILTERED set, like every other view: Cards only ORDERS it
               // (tasks-lib.cardsForTasks — every lane, Archive last), and a
               // Project, Status or Search the reader set on another view is a
@@ -732,13 +752,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
               onReload={reload}
-              emptyLabel={
-                inScope.length === 0
-                  ? scope
-                    ? "No tasks for this app yet."
-                    : "No tasks yet. Everything Claude runs for you shows up here."
-                  : "Nothing matches these filters."
-              }
+              emptyLabel={emptyLabel}
             />
           )}
         </section>
