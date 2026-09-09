@@ -692,3 +692,1740 @@ caller of `runner.list_runs` rather than weakening `assert len(calls) == 1`.
 The `RUNS_CACHE_S` widening stays (a real defense against a slow round trip
 aging the cache mid-loop), and the comment above it was rewritten to drop the
 now-wrong wall-clock explanation and the CI-run references.
+
+## `behind` split: an uncommitted escaping query is not "not refreshed"
+
+A user typed a leading-`~` query over an already-committed one and saw the
+old query's rows on screen, captioned "not refreshed", with no visible cue
+that Enter was needed. `index-caveat.ts`'s own comment already named the
+bug: `behind` was "two situations wearing one name" — a genuine older
+generation, and rows answering a query already edited past. Once the Enter
+gate went base-aware (`escapesBase`, decision 4 revisited above), a
+same-base query never gates at all, so the second situation is reachable
+only when the query escapes the box root and has not been committed. One
+state, one meaning, so it gets its own name.
+
+`useListingSearch.ts`'s `generationBehind` is now just `searching &&
+answerGen.current !== gen` — the actual "an older generation answered
+these rows" claim, still captioned "not refreshed" by `index-caveat.ts`
+unchanged. The other situation is a new return value, `awaitingCommit`:
+`searching && !gateOpen && staleRows && !pending`. Gated on `!gateOpen`
+explicitly rather than left to fall out of `staleRows` alone — a reader
+should not have to re-derive the gate's reachability argument to see when
+this is true, and an explicit condition survives a future change to the
+gate. Since `generationBehind` no longer folds in `staleRows && !pending`,
+the chip carries no caveat at all while `awaitingCommit` is true — verified
+by a test, not special-cased in `Listing.tsx`.
+
+`Listing.tsx`'s search body used to have two separate branches reaching the
+Enter prompt: `searchState.status === "idle"` (no answer at all yet) and,
+unreachably as far as the comment claimed, nothing for the case where a
+previous committed answer's rows were still on screen — `displayHits.length`
+caught that case first and rendered the stale rows instead. The two
+branches merged into one, `awaitingCommit || searchState.status === "idle"`,
+placed ahead of the `displayHits.length` branch so it wins either way: rows
+on screen for a query that has moved past the box's own base are not a
+stale answer to be captioned, they are an answer to a different folder, and
+get replaced by the prompt rather than dimmed and labelled. The old
+duplicate idle-only branch (identical JSX, now dead) was deleted rather than
+kept beside the merged one.
+
+`enter-prompt.ts`'s bare "Press Enter to search" became "Press Enter to
+search outside this folder" — its one call site is this same merged branch,
+which the gate guarantees only reaches for an escaping, uncommitted query,
+so no new parameter was needed to know that. It deliberately does not name
+the actual base ("search ~/Work"): a leading-slash query's base is only
+decidable by a filesystem walk on the server (`fused_render/index/query.py`'s
+`resolve_query`), which this predicate cannot do synchronously and does not
+attempt to (decision 4 revisited, above) — a named base would be wrong
+exactly when it mattered most.
+
+No render-test coverage was added for the `Listing.tsx` branch reordering,
+for the same reason the rest of this file's React wiring has none (see the
+two-deviations note above this section): there is no `@testing-library/
+react`/jsdom harness in this codebase, only extracted pure functions and
+hooks are unit-tested. Verified by `bunx tsc --noEmit`, the existing
+`Listing.test.tsx` suite passing unchanged, and by reasoning about the
+branch order directly. `useListingSearch.render.test.ts`'s existing
+"editing a committed escaping query further re-gates" case gained the two
+assertions that actually pin this fix: `awaitingCommit` true and `behind`
+false in the exact state the bug report was about.
+
+## The resting crumb strip matches the plain bar's 12px, not the input's 13px
+
+`.listing-search-crumbs` (`explorer.css`) had `font-size: 13px`, chosen to
+match `.listing-search-input`'s 13px — the wrong reference. This element is
+a PATH STRIP, and every other path strip in the app (`#breadcrumb .crumbs`/
+`.panel-crumbs`) is 12px monospace. Monospace is already the widest face in
+the row, and the rest of the bar's text sits at 12–12.5px, so the extra 1px
+made the resting path the largest thing in the bar — the "way bigger" the
+complaint was about. Changed to 12px; the rule's comment now says the strip
+wears the plain crumb strip's face AND size for that reason, not the
+input's, and why.
+
+Checked whether the strip's centring or `.path-crumb-sep` spacing inside it
+was tuned against 13px: `.listing-search-crumbs` centers with flex
+(`align-items: center` over `inset: 0`), and `.path-crumb-sep`'s `margin: 0
+4px` is a flat px value, not derived from the font size either place it's
+declared. Both are size-independent, so neither needed a nudge.
+
+`.listing-search-input`'s own 13px is untouched — pre-existing on `main`
+and outside this fix's scope.
+
+## The Enter prompt names the folder it is about to open, not just "outside this folder"
+
+The previous fix (decision 9 revisited, above) deliberately left the escaping
+prompt generic — "Press Enter to search outside this folder" — reasoning
+that pressing Enter only searches. That undersold what Enter actually does:
+it also relocates the search base to the folder the query names, and the
+vague wording hid that half. Per the user's own report ("lets have the text
+say open directory and search perhaps?"), the wording became "Press Enter to
+open ~/Work and search" — naming the folder as typed (`~` kept, never
+expanded to `/home/<user>`).
+
+Checked for an already-resolved base before deriving one: `typedAddress`
+(`useTypedPathAddress.ts`) only carries a resolved path on `status ===
+"exists"`, which is the sibling branch this one never reaches (a resolved
+real path takes the "open <name>" branch instead, decision 9's original
+case). `completion-target.ts`'s `completionTarget` resolves a dir+partial
+split, but its very first line (`if (!raw || raw.includes("*")) return
+null`) refuses any query containing `*` — exactly the shape this prompt
+exists for (`~/Work/*/*.json`) — and `Listing.tsx`'s own comment on `useCompletion` already says as much: a glob gets no dropdown at all. So neither
+resolved source is ever populated for the case this prompt handles; the
+folder is derived from the query string itself, in `enter-prompt.ts`'s new
+`folderToOpen`, no server round trip.
+
+Derivation: split the query on `/`; the folder is everything before the
+first segment containing `*` or `?` (`~/Work/*/*.json` -> `~/Work`;
+`~/*.json` -> `~`; `/tmp/data/*.csv` -> `/tmp/data`; `../x/*.json` ->
+`../x`). If no segment has a glob character, the query is a path with a
+name pattern on the end rather than a folder to search inside, so the last
+segment is dropped instead (`~/Work/notes` -> `~/Work`) — the same
+plain-filter-vs-path distinction `completion-target.ts` already draws. When
+that leaves nothing (`~` alone, `/` alone), the fallback is generic
+phrasing rather than an empty name: "Press Enter to open that folder and
+search" — chosen over reusing the old "outside this folder" wording because
+that phrase read as a location-independent warning, while "that folder"
+reads as continuing the same "open ... and search" sentence shape the named
+case uses, just without a name to slot in.
+
+`enter-prompt.ts` stays pure: it gained a second parameter, `query: string`,
+rather than reaching into anything stateful. `Listing.tsx`'s one call site
+already had `query` in scope (`useListingSearch`'s return), so the change
+there is one argument, not new plumbing.
+
+Known limitation, recorded rather than solved: the named folder may not
+exist. `resolve_query` (`fused_render/index/query.py`'s `_walk_from`) widens
+the search from a missing folder instead of failing, so "Press Enter to
+open ~/Work and search" would over-promise for a typo'd or since-deleted
+`~/Work`. Solving this needs a filesystem probe this client does not have
+synchronously and the user has said edge cases come after the UX is
+settled — left for later, not attempted here.
+
+## Flake follow-up: `863a0eaf1`'s monkeypatch was not the whole fix
+
+`863a0eaf1` silenced future bridge ticks by monkeypatching
+`index_routes.mirror_index_jobs_once`, and CI (`test-python (3.11)`, run
+34356290461) still hit `assert 2 == 1`. Two hypotheses were on the table: a
+tick already inside the real `mirror_index_jobs_once` when the patch lands,
+or some other caller of `runner.list_runs` entirely.
+
+Established which by deterministic reproduction, not by re-running the
+existing test in a loop and hoping to get lucky: a script
+(`repro_deterministic.py` in scratch, not committed) ran the real
+`mirror_index_jobs_once` on a thread named like the bridge's own, paused
+mid-body via a monkeypatched `load_config` blocking on a `threading.Event`
+— simulating a tick that had already resolved and called
+`mirror_index_jobs_once` before the test's patches land, the same way the
+real bridge thread might be paused between bytecode ops at that instant.
+While that thread sat paused inside the real function's frame, the test's
+own two monkeypatches (instrumenting `runner.list_runs`, replacing
+`index_routes.mirror_index_jobs_once`) were applied from the main thread,
+then the paused thread was released to continue. Result: `calls == 2`,
+reproduced on demand, no timing luck involved. This confirms hypothesis 1:
+`_index_job_loop` calls `mirror_index_jobs_once()` by a plain name lookup
+that re-patching intercepts for the *next* tick, but a tick already past
+that lookup — mid-execution of the real function's body — reaches its own
+`runner.list_runs(...)` call by a *separate* name lookup, on `runner`, which
+was already patched (the test patches `runner.list_runs` first) and doesn't
+care which version of `mirror_index_jobs_once` is calling it. Re-patching
+the caller can never retract a call already in flight. A probabilistic
+repro (`repro_race.py`, also scratch-only) that just started the thread and
+raced timing without synchronization did not reproduce this in 199
+iterations over 20s — the window is narrow enough that only forcing the
+interleaving makes it observable on demand, which is consistent with a race
+that shows up on one Python version's scheduling and not others.
+
+Fix: stopped trying to out-race the patch and instead made the recording
+counter attribute calls to their origin. `runner.list_runs` is now wrapped
+by a `recording` closure that only appends to `calls` when
+`threading.current_thread().name != index_routes.INDEX_JOB_BRIDGE_THREAD_NAME`
+— a new named constant (`fused_render/server/routers/index.py`, replacing
+the bare `"index-job-bridge"` literal `start_index_job_bridge` already
+passed to `threading.Thread`) so the test imports one spelling instead of
+duplicating the string. This works regardless of which hypothesis holds:
+it excludes both a future tick that the `mirror_index_jobs_once` patch
+already silenced (that call never happens now) and any that reaches
+`runner.list_runs` regardless of the patch, whatever thread it runs on —
+covering "some other caller" too, not just the bridge specifically, as long
+as that caller isn't the request path itself. Confirmed the request path is
+never mistaken for the bridge thread: FastAPI's `async def
+api_index_rank` runs on the `TestClient`'s own `anyio` blocking-portal
+thread (named `asyncio-portal-...`), never `MainThread` and never
+`index-job-bridge` — checked directly rather than assumed, since a naive
+"only count calls from the test's own thread" (the brief's literal
+phrasing) would have zeroed out the legitimate calls too and made the test
+vacuously pass.
+
+The existing `mirror_index_jobs_once` monkeypatch was kept — it still
+silences the bridge's steady-state ticking, the common case — with the
+thread-origin filter as the belt-and-suspenders that closes the in-flight
+gap. `RUNS_CACHE_S = 3600.0` and `assert len(calls) == 1` are unchanged.
+
+Verified: `repro_deterministic.py` re-run with the fix's exact filter
+returns `calls == 1` where it previously reproduced `calls == 2`.
+`pytest tests/test_capture_stream.py
+tests/test_index_search.py::test_the_run_listing_is_not_re_read_on_every_keystroke
+-n0 -q`, looped 25 times (single worker, so the bridge thread `test_capture_stream.py`'s
+lifespan starts is guaranteed to still be running when the target test executes
+after it in the same process) — 25/25 passed, 0 assertion failures, in two
+separate 25-run batches. One batch mid-run hit 5 unrelated `RuntimeError:
+React shell not built` collisions (the frontend builder's concurrent rebuild of
+`frontend/` transiently removing `fused_render/static/shell-dist/`), not the
+target assertion — confirmed by grepping every run's log for
+`assert len(calls)` (no hits) versus `shell-dist` (the 5 failing logs only).
+`pytest tests/test_index_jobs.py tests/test_index_search.py -q`: 109 passed.
+
+## Ctrl/Cmd+L over a claimed folder seeds the field instead of focusing it empty
+
+Decision 1 (the merged field is the bar's one path affordance) left a gap:
+`requestSearchFocus()` took no argument, so Ctrl/Cmd+L over a claimed folder
+opened an EMPTY search box — a browser location bar seeds itself with the
+current address on the same chord, and this one didn't, so the "select all,
+type to replace, or copy" gesture stopped working the moment a folder
+claimed the bar.
+
+Fixed by giving `requestSearchFocus` an optional `seed` parameter
+(`listing/search-focus.ts`), threaded through to every subscriber. Click-to-
+edit (Breadcrumb.tsx's other caller) still calls it with nothing, unchanged.
+Ctrl/Cmd+L calls it with `displayPath` — the exact `~`-contracted string
+edit mode already seeds its own `<input>` with (`underHome ? "~" + rest :
+fsPath`), read through a new `displayPathRef` kept fresh every render so the
+always-on keydown listener (bound once, `[]` deps) never closes over a
+stale folder. No second contraction was written.
+
+`Listing.tsx`'s subscriber does three things with a seed: `setQuery(seed)`
+so React owns the text the same way anything typed does, `setPinnedOpen(true)`
+so the strip opens wide the way focusing it always has, and focuses the
+input. Selecting the seeded text could not happen in that same call: React 18
+batches `setQuery`, so the DOM's `value` is still last render's (empty)
+string at the moment `.select()` would fire, and calling it there selected
+nothing. A `seedSelectRef` flag is set instead and consumed by a second
+effect keyed on `query`, which fires only after the seeded text has actually
+painted — that is where `.select()` runs.
+
+Knock-on, expected and not special-cased: the seeded string always starts
+with `~/` (underHome) or `/` (not), and `query-base.ts`'s `escapesBase` is
+purely syntactic on those two prefixes — so every Ctrl/Cmd+L seed escapes the
+box root regardless of which folder it names, the Enter gate applies, and
+since the seeded path is exactly the folder already on screen, `statPath`
+resolves it and the chip reads "Press Enter to open `<name>`" (enter-
+prompt.ts's `exists` branch) rather than a search prompt. Confirmed by
+tracing `escapesBase`/`enterPrompt` rather than by a live server round trip
+(`useTypedPathAddress` calls the real API, which a unit test does not run).
+
+## Right-click over the RESTING merged field reopens the bar menu
+
+Change 3's regression: a claimed folder's search `<input>` covers the whole
+row, so right-clicking anywhere on the bar landed on that `<input>` and got
+the browser's own copy/paste menu — even over the plain breadcrumbs shown at
+rest, where the bar's own menu (New File, Paste, Refresh, ...) used to be
+one right-click away.
+
+Fixed narrowly: `listing/search-box-context-menu.ts` exports one predicate,
+`searchBoxRestingForContextMenu(query, pinnedOpen)`, which is exactly
+`query === "" && !pinnedOpen` — the same condition `Listing.tsx` already
+gates `PathCrumbs` (`.listing-search-crumbs`) on. Not a new definition of
+"resting": the same one, pulled out so the render and the handler read it
+from one place and can't drift apart. `Listing.tsx` wires an `onContextMenu`
+onto `.listing-search-box` (the `searchBoxRef` div that wraps the magnifier,
+the crumbs-or-input, and any pinned chip) that calls the predicate first and
+returns immediately when it is false — leaving the event alone, so the
+browser's native input menu opens. When it is true, `openTopbarMenu(e.clientX,
+e.clientY)` is called with no crumb argument (this box is always the CURRENT
+folder, never an ancestor) — the same route the bar's own right-click
+(Breadcrumb.tsx's `onBarContextMenu`) already uses for its dead space — and
+the event is only `preventDefault()`-ed if that call found an owner to hand
+it to.
+
+The handler stands down (does nothing at all, not even `preventDefault`) the
+moment the field has content or focus for one reason: this is the box the
+user pastes glob patterns into, and a right-click there is reaching for
+Paste. `pinnedOpen` alone (focused, still empty) already means the crumbs
+are gone and the caret is live, so treating "focused-empty" as still
+resting would break Paste on the very first click into the field — before a
+single character is typed.
+
+The handler sits on the BOX (`.listing-search-box`), not on
+`.listing-search-crumbs`, because that inner strip is `pointer-events: none`
+everywhere except its own crumb anchors (explorer.css ~1560, which carries
+an explicit warning against widening that back to the current-folder span —
+doing so creates a dead zone that swallows presses meant for the input
+underneath it). A handler on the box needs none of that: it sits below the
+crumbs in the DOM but wraps them, so it sees every right-click that reaches
+either the crumbs' anchors or the input beneath them, without touching any
+`pointer-events` rule.
+
+## `behind` still fired for a search that had never landed an answer
+
+Live in the browser, over `~/Downloads`, Ctrl+L seeded the field and selected
+it (the seeding decision above). The pinned chip read exactly `not
+refreshed`, with no count beside it, on a first-ever query in a freshly
+loaded folder. The `behind`/`awaitingCommit` split (above) had already
+narrowed `generationBehind` to `searching && answerGen.current !==
+gen` — the actual "an older generation answered these rows" claim — but
+`answerGen.current` is initialized to `gen` at mount and only ever moves
+forward when an answer actually lands (a memo hit or a fetch reply). A `gen`
+bump for any unrelated reason (a dir-watch event, a completed scan
+elsewhere) before this search had EVER gotten an answer made the two differ
+regardless, and "not refreshed" is a claim about an EXISTING answer — with
+none on screen it was simply false.
+
+Fixed with the explicit signal the split's own writeup called for rather
+than re-deriving it from row counts: a new ref, `answered`, set `true` at
+the same two places `answerGen.current` is assigned (`useListingSearch.ts`,
+the memo hit and the fetch reply), and cleared back to `false` everywhere
+`setAnswer(null)` already runs (the `[fsPath, pinned]` reset effect, and
+leaving search entirely). `generationBehind` is now `searching &&
+answered.current && answerGen.current !== gen` — true by inspection: a
+generation mismatch means nothing until an answer has actually been
+recorded for this search. The old `staleRows` disjunct the split had
+deliberately removed stays removed; this is a narrower condition on
+`generationBehind` itself, not a resurrection of the conflation.
+
+`useListingSearch.render.test.ts` gained a case: a query is typed and its
+request left outstanding (no reply yet), the render is driven forward two
+generations, and `behind` is asserted `false` — where it read `true` before
+this fix. Resolving the outstanding request afterward (now landing under the
+new generation) leaves `behind` `false` too, confirming the fix answers the
+right claim rather than merely suppressing it once.
+
+## The listing body blanked to nothing but the prompt row
+
+The other half of the same live session: with `~/Downloads` seeded and
+uncommitted (Ctrl+L, above), the entire table body was one row — the Enter
+prompt — and the folder's own entries were gone. Clearing rows was approved
+for STALE SEARCH RESULTS, answers to a query the user has since typed past
+(`4a0ae74cf`, "Replace stale rows with the Enter prompt while a search
+awaits commit"). The current directory's own entries are neither: they are
+not an answer to any query, stale or otherwise, and Ctrl+L is a gesture for
+reading the path, not for searching at all. The fix that landed the Enter
+prompt had replaced the WHOLE body with it, in both states it covers — no
+answer ever asked for yet (`searchState.status === "idle"`) and a previous
+committed answer sitting stale (`awaitingCommit`) — losing the folder's own
+rows in both.
+
+Fixed by making explicit the choice `Listing.tsx` was already making
+implicitly in three places that had to agree — the column count, the
+`<thead>`, and the body branch — and had started to drift, since the body
+branch alone had grown the `awaitingCommit` case the other two never learned
+about. Pulled into one pure predicate, `search-body-mode.ts`'s
+`showingSearchHits(searchState, awaitingCommit)`: `searchState.status !==
+"idle" && !awaitingCommit`. False in exactly the two states above — nothing
+to show as search hits — and all three read-sites (`cols`, `<thead>`, the
+body `if`) call it instead of branching on `searching` or duplicating the
+`awaitingCommit || status === "idle"` test that used to live only in the
+body.
+
+When it is false, the body falls through to the SAME branch that already
+renders the plain folder listing when there is no query at all — the
+`state.status === "loading" / "error" / "ok"` chain built on `useDirListing`'s
+own `state` and the already-memoized `sortedEntries`, unchanged. This
+satisfies "make the choice where the component already chooses between the
+folder listing and search hits, rather than reconstructing the folder's rows
+from a second source" directly: no new fetch, no second row-building loop,
+the exact `<tr>`s a plain unfocused folder view renders. A query still typed
+and uncommitted (`searching` true) has one banner `<tr>` — the Enter prompt,
+unchanged text and unchanged call (`enterPrompt(typedAddress, query)`) —
+prepended above those rows, rather than replacing them. Not a caveat folded
+into the count chip: the user had already rejected that shape ("the not
+refreshed or press enter to... part feels weird"), and the chip logic below
+is untouched by this fix — it is one row, above real rows, saying what Enter
+will do.
+
+Stale SEARCH results are unaffected: the `displayHits.length` /
+`scanPending` / empty-answer branches inside `showingSearchHits`'s `true`
+side are the same code, reached the same way, for a COMMITTED query whose
+rows are being shown or replaced — the split is by source (a previous
+query's hits vs. the directory's own entries), not by staleness, matching
+the constraint this fix was scoped against.
+
+Not extended to `navRows` / `rowCtxByPath` / the search auto-select effect
+(all still keyed on the raw `searching` flag): those stay empty while the
+folder's rows are the ones on screen in this state, so arrow-key navigation
+and the top-hit auto-select do not act on rows that are not search hits —
+correct by the same "opening a folder selects nothing" rule already
+documented at the plain-folder auto-select site (Listing.tsx), which this
+state now resembles rather than deviates from. Keyboard navigation OF the
+now-visible folder rows while a query sits uncommitted was not wired up;
+this was not asked for and left as a known gap rather than guessed at.
+
+Verified with a new pure-function test, `search-body-mode.test.ts`, pinning
+all four inputs `showingSearchHits` distinguishes: idle-with-nothing-asked,
+a settled answer, `awaitingCommit` overriding a settled `"ok"` status (the
+committed-search-with-rows case), and `pending`/`error` both counting as
+hits. The Listing.tsx branch reordering itself has no render-test coverage,
+for the same reason the rest of this file's React wiring has none (see the
+two-deviations note above): confirmed instead by `bunx tsc --noEmit`, the
+existing `Listing.test.tsx` suite passing unchanged, and reading the new
+`showingSearchHits`-gated branches directly.
+
+Three states, traced through the code after both fixes above (no live
+capture tool available in this pass; reasoned from `useListingSearch.ts`,
+`index-caveat.ts`, and `enter-prompt.ts` directly):
+
+- **A first-ever query in a bumped generation** (the request still
+  outstanding when `gen` moves): `behind` is `false`, `searchState.status`
+  is `"pending"`, `searchCount` stays `null` (only set once `status === "ok"
+  && hits.length > 0`) and no caveat applies (`behind` is `false`) — the
+  chip renders no text at all (a spinner glyph only once the wait crosses
+  `PENDING_INDICATOR_MS`). Body: one row, "Searching…" — `showingSearchHits`
+  is `true` here (status is not `"idle"`), so this is the ordinary
+  search-pending branch, unchanged by this fix.
+- **Ctrl/Cmd+L over a folder** (seeded, escaping, uncommitted, nothing ever
+  asked): `searchState.status` is `"idle"`, `awaitingCommit` is `false`
+  (no previous answer to be stale), `behind` is `false`. Chip: no text
+  (`searchCount` stays `null`; no caveat). Body: one banner row, "Press
+  Enter to open Downloads" (`enterPrompt` resolves the seeded path via
+  `typedAddress.status === "exists"`), followed by the folder's own rows —
+  `~/Downloads`'s entries, Name/Size/Modified, exactly as a plain unfocused
+  listing of that folder renders them.
+- **An escaping query typed over a committed search that had returned
+  rows** (edited further past a committed answer, not yet re-committed):
+  `searchState.status` is `"ok"` (the stale committed answer), `awaitingCommit`
+  is `true`, so `showingSearchHits` is `false` despite the `"ok"` status.
+  Chip: unchanged from before this fix — `searchCount` is still built from
+  the stale answer's `hits` (e.g. `"1 match"`), no caveat (`behind` is
+  `false`), an elapsed suffix appended (e.g. `"1 match · 12 ms"`) — the chip
+  logic reads `hits`/`searchState` directly and was never gated on
+  `awaitingCommit`. Body: one banner row naming the folder the escaping
+  query would search (e.g. "Press Enter to open ~/a and search"), followed
+  by the folder's own current rows — NOT the previous committed answer's
+  stale hits, which are dropped from the body exactly as approved for stale
+  search results.
+
+## A Ctrl/Cmd+L seed is provisional: a blur that never touches it discards it
+
+The seeding decision above documented `pinnedOpen` staying "until it blurs
+empty" — correct for text the user TYPED, where losing it to a stray click
+would be terrible. Seeding broke that rule's premise: the field is never
+empty right after Ctrl/Cmd+L, so a blur left it pinned open with the
+crumbs stood down and no way out except Escape or manually clearing the
+text — reported as "I can't escape the focus by clicking anywhere else."
+
+Fixed by making a seeded value provisional: it survives only while
+untouched. A new `queryProvisional` boolean (Listing.tsx, alongside
+`pinnedOpen`) is set `true` in the same subscriber call that lands the seed
+(`setQuery(seed)`) — right where the seed already lands, so the two state
+writes can't drift apart. It is cleared back to `false` by every place that
+turns the value into something indistinguishable from typed text: `onChange`
+(any keystroke, including a paste, which fires `onChange` too), a completion
+accepted via `acceptCompletion` (Tab, or a row's own click/mousedown) or
+`navigateToCompletion` (Enter on a highlighted row), and a committed Enter
+(both the "exists" navigate branch and the search-commit branch). Escape
+clears it too, consistent with the query it just wiped.
+
+The blur decision itself is a pure function, `searchBoxBlurAction`
+(`listing/search-provisional.ts`, mirroring `search-box-context-menu.ts`'s
+`searchBoxRestingForContextMenu`): given `(queryProvisional, queryEmpty)` it
+returns `"discard"` (provisional — wipe the query, unpin, stand the crumbs
+back up, regardless of whether the text looks empty, since an untouched seed
+never is), `"unpin"` (not provisional, user emptied it themselves — today's
+existing behavior), or `"keep-open"` (not provisional, text present —
+survives, unchanged). `onBlur` in Listing.tsx just carries out whichever one
+comes back.
+
+Watched-for trap avoided: the existing `navigateToCompletion` comment
+documents that `onBlur`'s `e.currentTarget.value` still holds the pre-clear
+text at blur time, because React has not yet flushed the DOM write — so a
+handler that read the DOM to decide "empty?" would miss a same-tick clear.
+`searchBoxBlurAction` sidesteps this by never reading the DOM at all: `onBlur`
+now passes the `query` REACT STATE (`query === ""`), which is always current
+by the time a genuine blur fires (nothing else writes to it in the same
+tick), rather than `e.currentTarget.value`.
+
+Clicking a completion row does not run this path in the first place: a
+row's `onMouseDown` calls `e.preventDefault()` (pre-existing, for item 6 in
+the section above), which keeps focus on the input throughout the click, so
+`onBlur` never fires — `acceptCompletion`/`navigateToCompletion` run instead,
+each clearing `queryProvisional` itself. Clicking the field itself or the
+magnifier only ever raises `onFocus`, never `onBlur`, so neither can trigger
+a discard either.
+
+Verified with `search-provisional.test.ts`, pinning all four
+`(queryProvisional, queryEmpty)` combinations against `searchBoxBlurAction`.
+The four scenarios asked for, traced through the code:
+
+- **Blur straight after Ctrl/Cmd+L**: `queryProvisional` is still `true`
+  (nothing has run since the seed landed). `searchBoxBlurAction` returns
+  `"discard"`: query clears to `""`, `pinnedOpen` and `queryProvisional`
+  both go `false`. The field returns to resting — crumbs visible, folder
+  listing shown, no ring.
+- **Blur after one keystroke**: the keystroke's `onChange` already cleared
+  `queryProvisional` to `false` before any blur happens. `searchBoxBlurAction`
+  returns `"keep-open"` (query is non-empty) — exactly today's behavior for
+  typed text: it survives the blur, unchanged.
+- **Blur after Enter**: Enter commits (`typedAddress.status === "exists"`
+  navigates, or `escapes` calls `commitSearch()`), and both branches clear
+  `queryProvisional` first. Any later blur runs the same `"keep-open"` path
+  as typed text — a committed query, provisional or not, is now a real query.
+- **Clicking a completion row while provisional**: the row's own `mousedown`
+  fires before any blur could, `preventDefault()`s it, and calls
+  `acceptCompletion`, which fills the row's path into `query` and clears
+  `queryProvisional` itself. No blur, and no discard — the completion is
+  accepted normally, whether or not the field started out provisional.
+
+## The chip is a fourth reader of `showsSearchHits`
+
+`Listing.tsx`'s match-count chip, its `widePin` reserved-width flag, and the
+selection readout's shortfall annotation ("N selected of M+") were all gated
+on raw `searching` (`q.length >= MIN_QUERY_CHARS`), not on `showsSearchHits`
+(`search-body-mode.ts`'s `showingSearchHits(searchState, awaitingCommit)`).
+An uncommitted query whose base escapes the current folder leaves `searching`
+true and `searchState` sitting on the previous committed answer while
+`awaitingCommit` makes the body fall back to the folder's own rows — so the
+chip kept describing a search that is not on screen.
+
+Fixed by switching all three onto `showsSearchHits`, already computed above
+the chip block for the column count, the `<thead>`, and the body branch:
+
+- The chip's own gate (`searchState.status === "ok" && hits.length > 0`).
+- The index-scan caveat (`searchCaveat`), which could otherwise fold a
+  "not refreshed" or "indexing…" note onto a chip with no count at all,
+  still describing the stale answer.
+- The selection shortfall's "of M+" annotation, which reads `hits.length`
+  and `searchState.truncated` — properties of the last committed search
+  answer, not of whatever is actually selected on screen. The plain "N
+  selected" count itself needed no change: it comes straight off `sel.paths`,
+  the live selection, and was never wrong.
+
+No new pure predicate was extracted: the chip's gate is exactly
+`showsSearchHits`, no new logic composed around it, so `showingSearchHits`'s
+existing test — "awaitingCommit wins even when a previous committed answer
+is 'ok' on screen" (`search-body-mode.test.ts`) — already pins the boundary
+that fixes the chip. `EntryActionsMenu.tsx`, `navRows`/`rowCtxByPath`, and the
+search auto-select stay keyed on raw `searching`, unchanged and out of scope.
+
+## The star moves inside the field's border, gated on `barSearchSlot`
+
+`BookmarkStar` renders at three sites, and only one of them needed to
+change: `Breadcrumb.tsx`'s main bar (search row when claimed, otherwise
+just crumbs), `StaticBreadcrumb` (a label row with no search box at all),
+and `Panel.tsx`'s own pane bar (a different component, also no search
+row). The move is scoped to `Listing.tsx`, which already knows whether
+*this* search row has portaled into a claimed crumb bar — `barSearchSlot`,
+truthy only after the portal lands. `Breadcrumb.tsx`'s own star render is
+gated on the dual condition, `claimed`, so exactly one copy renders for any
+given bar: inside the box when claimed, outside it (where it always was)
+otherwise.
+
+Inside the box it is absolutely positioned, trailing the count/spinner pin
+at the box's own right edge — the same mechanism the chip already used,
+extended rather than duplicated: `--pin-right` grows by 30px (24px hit
+area + 6px gap) so the chip and spinner shift in to clear the star, and
+`.has-pin`'s `padding-right` grows by the same 30px so typed text and the
+placeholder stay clear of it too. `.wide-pin` gets its own explicit bump
+for the same reason, since the generic rule also covers listing rows that
+render outside a crumb bar (and so carry no star to clear).
+
+Since the star now lives inside the field, it no longer stands down while
+searching — unlike the arrows, which still vacate their spot so the field
+can reach the bar's left edge, the star grows and shrinks with the box
+it's now part of, the way a browser's own address-bar star does while you
+type. That removes `.bookmark-star-btn` from the searching/expanded hide
+rule entirely.
+
+**What carries the bar's auto margin now, for the claimed case:** nothing
+new needs to. Tracing the pre-existing (untouched) comment on
+`.crumbs:has(.path-crumb) ~ .bookmark-star-btn { margin-right: auto }`
+confirms it never applied there in the first place — a claimed folder
+never renders a `.crumbs` element at all (`claimed ? null : <div
+className="crumbs">`), so that rule's `:has()` guard was already finding
+nothing to match over a claimed bar, by the codebase's own prior
+documentation. The mechanism that actually eats the bar's slack for a
+claimed search row is the unconditional `.crumb-search-slot >
+.listing-search { flex: 1 1 auto }` row-grow rule, untouched by this
+change. The auto-margin rule keeps its job exactly where it always had
+one: the unclaimed bar, where the star (still outside the box, still the
+zone's last child per the DOM-order test) remains its tail.
+
+**One pinned invariant genuinely cannot hold, and I did not force it
+green.** `search-bar-expand.test.ts` pinned "`.bookmark-star-btn`'s hide
+rule must stay scoped to `#breadcrumb`" — but once the star stops hiding
+while searching at all, there is no rule left to be scoped. I replaced
+that test with one asserting the opposite of what it used to: no
+searching-scoped rule exists for `.bookmark-star-btn` any more
+(`ruleFor(".bookmark-star-btn")` is `undefined`). This is a real,
+load-bearing assertion — it would fail loudly if a future change
+reintroduced an unscoped hide rule for the star — not a deletion to dodge
+a failure. The other two pinned invariants both still hold unchanged: the
+DOM-order test (`<CrumbNav />` < `.crumbs` < `<BookmarkStar
+id="bookmark-btn"`) is unaffected, since it is scanning the unclaimed
+bar's own JSX, which the move never touched; the "rendered unconditionally"
+test also passes as written, since the ternary I used (`claimed ? null :
+<BookmarkStar .../>`) does not match the `&&`-guard pattern that test
+checks for.
+
+## The completion header comes out clean; the row-cap math never depended on it
+
+`Listing.tsx`'s "In {displayDir(...)}" header sat as a plain sibling of
+`.listing-completion-rows`, not inside it. The 5.5-row cap
+(`rowsMaxHeight`, set from `firstRowRef.current.offsetHeight * 5.5`) was
+always measured off a rendered *row's* own height and applied as
+`max-height` to the rows container alone — the header was never part of
+that container, never part of the measurement, and never counted against
+the cap. Removing it needed no correction to `rowsMaxHeight` or the
+`Listing.tsx:371` comment describing it; both already only reasoned about
+`.listing-completion-row`. `displayDir` keeps a caller inside
+`completion-target.ts` itself (`applyQueryNotation`'s own `~`-relative
+fallback), so it stays exported — only the `Listing.tsx` import and call
+site are gone.
+
+## Merging main's marquee/status-line rework (95f749dd7)
+
+`git merge origin/main` resolved with no conflict markers in either
+`Listing.tsx` or `explorer.css` — the `ort` strategy applied both sides'
+hunks cleanly, matching the pre-merge line-number analysis: main's five
+`Listing.tsx` hunks and three `explorer.css` hunks sit adjacent to, not
+inside, the completion dropdown, the `.listing-search-box` trailing
+cluster, the `showsSearchHits` derivation, and the search-count/`widePin`
+block this branch owns. I still read the merged file rather than trusting
+the auto-merge, checking specifically for duplicate or orphaned
+declarations around those regions and around row selection.
+
+Main's own `useListingSelection.ts` change removes the
+`if (e.defaultPrevented) return` line from the Escape handler, because
+its matching removal in `App.tsx` deletes the capture-phase
+Escape-cancels-pending-clipboard listener that line existed to defer to
+(`fs-clipboard.ts`'s copy/cut/clear-epoch comment was edited in the same
+commit to stop mentioning "an Escape clear"). Neither half of that
+handler ever gated on search state, and this branch's own
+`showsSearchHits`-driven Enter routing lives in a separate `onKeyDown` on
+the search `<input>`, not in `useListingSelection.ts`'s document-level
+Escape branch — so this is main tidying its own feature with no bearing
+on search-driven row behaviour. I read the rest of
+`useListingSelection.ts`'s Enter/selection code path directly rather than
+scanning the diff for interaction: `inSearch` still gates the
+document-level Enter handler exactly where it did before, so a stale row
+selection cannot intercept Enter ahead of the search field's own commit
+logic added by this branch.
+
+All four verification commands are green post-merge:
+
+- `bunx tsc --noEmit`: clean, no output.
+- `bun test --run`: 3320 pass, 0 fail, 14267 `expect()` calls across 144
+  files (up from the pre-merge 3293, matching the new
+  `status-line.test.ts` and expanded `marquee.test.ts` /
+  `useListingSelection.render.test.ts` main added).
+- `node scripts/check-boundaries.mjs`: `boundaries OK (498 files)`.
+- `bun run build`: succeeds; the only warnings are pre-existing
+  chunk-size and dynamic/static dual-import notices unrelated to this
+  merge.
+
+Current anchors in the merged tree: `Listing.tsx`'s `showsSearchHits`
+derivation is at line 1481, the completion dropdown JSX starts at the
+`{showCompletion && (` on line 2139, and the `.listing-search-box`
+trailing cluster (search count chip, selection-count chip, then
+`{barSearchSlot && <BookmarkStar .../>}`) runs from roughly line 2184 to
+2215. `Breadcrumb.tsx`'s `FolderSearchSlot` is defined at line 284 and
+`BookmarkStar` at line 384.
+
+## The selection-count chip leaves the search field
+
+The user's screenshot showed two rows selected and the search field reading
+"2 selected" right next to the bottom status line's own "2 of 2 selected ·
+2.9 KB + 1 folder" — the same fact stated twice. The field's own chip is
+gone; the bottom status line is the one surviving readout.
+
+`selectionLabel` and `selectionShortfall` (`Listing.tsx`) existed only to
+feed that chip and are deleted with it. `selectionShortfall`'s removal takes
+the "N selected of M+" ceiling annotation out of the UI entirely — the
+bottom status line's own searching-and-selected branch
+(`listing/status-line.ts`) reads `${fmt(selected)} of ${fmt(hits)} selected`,
+where `hits` is the raw fetched count with no "+" and no truncation
+awareness, so it does not carry that annotation in any form. That is a
+known, accepted gap from this change, not a replacement built to close it —
+the user asked for the chip gone, and inventing a new "+" marker on the
+status line was out of scope for this pass.
+
+`hasPin` dropped `sel.paths.length > 1` from its three-way OR to two
+(`(searching && spinner) || searchCount !== null`), and its comment now says
+"two chip conditions" instead of three. `compact()` keeps its caller — the
+search count chip still uses it — and `.has-pin`/`.wide-pin`/`--pin-right`
+in `explorer.css` keep theirs for the same reason; none of that CSS was
+touched. The star stays the box's last child; with the selection chip gone,
+a folder with a selection and no active search now pins nothing, so the
+star sits alone against the field's resting right padding (no `has-pin`),
+which is the correct state — there is no longer a chip beside it to clear.
+
+The star's comment was rewritten to drop "now rather than out at the bar's
+end" and describe the arrangement as it stands: inside the field's border,
+gated on `barSearchSlot`, with `Breadcrumb.tsx` keeping the star for a pane
+or framed listing that has no bar to sit inside.
+
+## Search focus: one bold neutral border, not accent-plus-ring
+
+Two rules disagreed on how the merged field signals focus: the plain
+`:focus` rule already argued (in its own comment) for a muted brighten, not
+accent; the `.expanded`/`.searching` rule overrode it with an accent border,
+a 3px accent glow, and an accent magnifier glyph. They are now one rule —
+`.listing-search-input:focus`, `.expanded .listing-search-input`, and
+`.searching .listing-search-input` grouped together, `border-color:
+var(--fg)`, no box-shadow, no glyph override (the glyph falls back to its
+resting `--fg-muted`). The `:focus` rule's own stated principle is the one
+that survived; the merged comment argues for it directly — the accent
+already means "active sort" on the column header, and focus is the single
+most frequent transient state in the field, already legible from the caret,
+the crumbs-to-input swap, and the dropdown.
+
+The `.expanded`/`.searching` distinction itself is untouched: both still
+light the field with the same bold-neutral treatment, `.expanded` firing on
+focus alone and `.searching` keeping it lit after a blur that leaves text
+behind. Only the declarations each selector maps to changed.
+
+`--accent-rgb` keeps other callers outside this rule (badge/toast/tour
+backgrounds elsewhere in `explorer.css`), so the token stays defined —
+checked by grep, not assumed.
+
+Geometry check: `--fg` (`#e8eaed` dark / `#1f2023` light) replaces
+`var(--fg-muted)`/`var(--accent)` as a `border-color` only; no padding,
+border-width, or border-radius changed, and the box-shadow ring is removed
+entirely rather than shrunk, so the field's 29px height and its 9px/9px
+vertical gaps are unaffected in every state.
+
+`listing/search-bar-expand.test.ts` was checked for assertions naming the
+accent, the box-shadow, or the selection chip — it has none (it asserts
+`.searching`'s CSS declarations structurally and `Breadcrumb.tsx`'s DOM
+order, neither of which named color values or the chip), so no test edit
+was needed for either item.
+
+Verification: `bunx tsc --noEmit` clean; `bun test --run` — 3320 pass, 0
+fail, matching the post-merge baseline exactly; `node
+scripts/check-boundaries.mjs` — `boundaries OK (498 files)`; `bun run
+build` succeeds, and the built CSS's `.listing-search-input:focus` rule
+confirms the merge (one selector group, `border-color:var(--fg)`, no
+box-shadow).
+
+## On-demand scan targets the resolved base, not the open folder
+
+`applyStep`'s "scan" branch (`useListingSearch.ts`) called `requestFolderScan(fsPath)`
+— the folder currently open — regardless of what the answer's own `base` said.
+For a query that stays inside the open folder the two agree, so this was
+invisible; for a query that escapes it (`~/other/...`, an absolute path, a
+drive letter, a `..` segment — `query-base.ts`'s `escapesBase`), the server's
+`base` names the folder the answer is actually about, and it can differ from
+`fsPath`. Scanning `fsPath` in that case scans a folder nothing asked about
+and never indexes the real target, so `covered` never turns true and the
+uncovered state never resolves. The scan branch now reads
+`requestFolderScan(res.base || fsPath)`.
+
+`res.base` is typed as a required, always-present string on
+`IndexRankResult`, and `applyStep`'s caller only reaches this branch on a
+successful answer (an error response never gets here to be asked "what is
+its base"), so there is no error case to special-case. An empty-string
+`base` is defensive-only — nothing in `resolve_query` is known to produce
+one — and falls back to `fsPath` rather than sending an empty root to the
+server.
+
+`useListingSearch.render.test.ts` gained
+`"an escaping query asks for a scan of the resolved base, not the open
+folder"`, asserting `scanCalls` names the answer's `base` rather than the
+open folder for a `~`-prefixed query with `covered: false`; it fails against
+the unpatched branch (`scanCalls` came back `["/d"]`, the open folder, not
+`["/home/u/other"]`, the resolved base).
+
+## Bare Windows drive root normalizes through `_root_or_bare`
+
+`resolve_query`'s drive-letter branch (`query.py`) built `base` from
+`_walk_from` and returned it as-is, skipping the `_root_or_bare` pass that
+`stats()`, `_walk_from`'s other caller, and `search_ranked`'s own root
+argument each get. For any drive path with something after the separator
+this made no difference — `_walk_from` only collapses to the bare two-
+character form (`"C:"`) when `rest` is empty, i.e. when the whole query is
+just the drive. A bare `"C:\"` or `"C:/"` therefore resolved to `base:
+"C:"`, not the canonical `"C:/"` `canonical_root()` (`index/runner.py`)
+actually stores the drive under.
+
+Checked whether `search_ranked`'s downstream `_root_or_bare(norm(os.path.
+abspath(...)).rstrip("/"))` wrap on its `root` parameter neutralizes this
+before it reaches a real lookup: it does not — `os.path.abspath` treats a
+bare `"C:"` as a relative path segment on the platform this actually runs
+on and joins it onto the process's cwd instead of restoring `"C:/"`, so the
+wrap makes the value worse, not better. This is a genuine defect, not
+something already absorbed elsewhere. The drive branch now closes with
+`base = _root_or_bare(base.rstrip("/"))`, matching the other three call
+sites.
+
+`test_index_query.py` gained
+`test_resolve_bare_windows_drive_root_backslash_normalizes_to_slash_form`
+and `test_resolve_bare_windows_drive_root_forward_slash_normalizes_to_slash_form`,
+pinning `resolve_query("/box", "C:\\")` and `resolve_query("/box", "C:/")`
+to `base: "C:/"`; both fail against the unpatched branch (`base: "C:"`).
+`test-python-windows` is a pre-existing, unrelated CI failure on this
+branch; verification here ran on Linux only, and that failure neither
+masks nor is masked by this fix.
+
+## Highlight retries against the query's leaf when the full query refuses
+
+`hitsFromRank` (`ranked-hits.ts`) ran `substringMatch(q, h.rel)` with `q`
+exactly as typed — `useListingSearch.ts` never strips a base prefix before
+handing the query down — against `h.rel`, which is relative to the
+server's resolved base, not to the query. For a query that escapes the open
+folder, the consumed base prefix can never appear as a literal substring of
+a base-relative `rel`, so the match refused and the row rendered with no
+highlight even though the row itself stayed, correctly, in place. The
+segment after the query's last `"/"` is what the server's own walk actually
+matched against, so `hitsFromRank` now retries that leaf against `rel`
+whenever the full-query match refuses. A query with no `"/"` has a leaf
+equal to itself, so the retry is a no-op there rather than a second,
+different test; the "refusal drops only the highlight, never the row"
+property is unchanged either way.
+
+`ranked-hits.test.ts` gained `"a query carrying a base prefix the server
+already consumed still highlights the leaf"`, asserting
+`hitsFromRank([hit({ rel: "report.csv" })], "~/other/rep")` lands
+`positions: [0, 1, 2]` against `"report.csv"`; confirmed failing (empty
+`positions`) against the pre-fix single-match version by re-running the
+test against `git show HEAD:frontend/src/apps/explorer/listing/ranked-hits.ts`.
+
+## Search blur discards an uncommitted query, not just a seed
+
+`searchBoxBlurAction` (`search-provisional.ts`) decided blur off `provisional`
+— whether the app itself put the current text in the box (Ctrl/Cmd+L's seed)
+— and `queryEmpty`. A query the user typed and pressed no Enter for (one that
+escapes the box root: a leading `~`, `/`, a drive letter, or a `..`
+segment — `escapesBase`, `query-base.ts`) survived a blur exactly like a
+committed one, so clicking outside the field with `~/Downloads/agents/`
+typed neither released focus nor cleared it — reported directly. The
+distinction that matters is committed vs. not: does the query in the box
+have an actual answer on screen. `provisional` answered a narrower question
+(did the app write this, not the user) that happened to coincide with
+"uncommitted" for a seed, but said nothing about a typed-and-unentered query,
+which is the case that broke.
+
+`committed` is `showsSearchHits` (`Listing.tsx`, `showingSearchHits` from
+`listing/search-body-mode.ts`) passed straight into `searchBoxBlurAction`,
+not a new flag. It already asks exactly this question — the same boolean
+already picks the table's column count, `<thead>`, and body branch — and for
+a query still waiting on Enter it is `false` by construction: `gateOpen` is
+false, no answer has ever been fetched for it, and `showingSearchHits`'s own
+idle-status branch (`useListingSearch.ts`'s `searchState` ternary) covers
+exactly that "typed-but-uncommitted query with no answer ever fetched" case.
+An auto-searching query like `*.zip` never sits behind the gate, so it reads
+`committed: true` the moment `searchState.status` leaves `"idle"`, matching
+`showsSearchHits` turning true — no separate case to wire.
+`searchBoxBlurAction`'s new signature is `(committed, queryEmpty)`: empty
+always unpins; a non-empty, uncommitted query discards; a non-empty,
+committed one keeps the box open.
+
+`queryProvisional` is deleted along with its five write sites (the seed
+subscriber, `onChange`, `acceptCompletion`, `navigateToCompletion`, Escape,
+and both Enter-commit branches) — it had exactly one read, the blur handler,
+and nothing else in the component ever looked at it. Checked whether a seed
+still needs it now that the flag is gone: a seed is always the
+`"~"`-contracted current path, which always matches one of `escapesBase`'s
+own conditions, so it is always uncommitted (`committed: false`) from the
+instant it lands until Enter runs it — a blur before that already discards
+it through the same path a typed escaping query takes, with no seed-specific
+bit required. `provisional` carried no information the committed/uncommitted
+split cannot express.
+
+The regression this invites: a completion dropdown row's own `mousedown`
+already calls `e.preventDefault()` before `acceptCompletion`/before the
+input can blur (`Listing.tsx`, unchanged by this pass) — canceling the
+browser's default mousedown focus-shift, so the input never loses focus and
+`onBlur` never fires for a row click at all (the existing comment already
+says so: "clicking a row never fires this in the first place — focus stays
+on the input throughout"). That guard is untouched, so a row click still
+completes or navigates exactly as before; discard-on-blur has nothing to
+race there. Keyboard completion (`navigateToCompletion`) and Escape both set
+`query`/`pinnedOpen` explicitly before calling `.blur()` themselves, and the
+subsequent `onBlur` call — reading `query`/`showsSearchHits` from the
+pre-clear render closure — either repeats the same reset harmlessly
+(`discard`/`unpin`) or, in the `keep-open` case, touches neither `query` nor
+`pinnedOpen` at all, so it never fights the explicit reset either handler
+already made.
+
+Hand-verified by tracing each path against the actual code (no display is
+available in this environment to click a live browser, so this is a
+line-by-line trace of the exact handlers and closures involved, not a
+literal click):
+
+- Clicking a completion dropdown row: unaffected — the row's `mousedown`
+  `preventDefault` still blocks the browser's default blur before
+  `acceptCompletion` runs, exactly as the pre-existing comment describes.
+- Keyboard selection (arrows + Enter) of a completion row: unaffected —
+  `navigateToCompletion` sets `query`/`pinnedOpen`/`fieldActive` explicitly
+  before its own `.blur()` call; the resulting `onBlur` either repeats the
+  same reset or (an already-committed prior search) touches neither, never
+  overriding it.
+- Escape: unaffected — same explicit-then-blur shape as completion's Enter
+  path; `onBlur` never re-opens what Escape just cleared.
+- A committed search surviving a click elsewhere: `showsSearchHits` is true
+  while committed rows are on screen, so `searchBoxBlurAction` returns
+  `keep-open` exactly as `provisional: false, queryEmpty: false` did before.
+- Clicking outside with an uncommitted query (`~/Downloads/agents/`, no
+  Enter yet): `showsSearchHits` is `false` (the idle-status branch of
+  `searchState`), so blur now returns `discard` — the field clears and
+  `PathCrumbs` renders again (`query === "" && !pinnedOpen`), fixing the
+  report.
+
+Verification: `bunx tsc --noEmit` clean; `bun test --run` — 3323 pass, 0
+fail (3322 baseline plus one added `search-provisional.test.ts` case); `node
+scripts/check-boundaries.mjs` — `boundaries OK (498 files)`; `bun run build`
+succeeds.
+
+`search-provisional.test.ts`'s four cases were rewritten for the new
+`(committed, queryEmpty)` signature rather than edited case-by-case: the old
+suite tested `provisional`, which no longer exists as a parameter, so every
+assertion needed a new name and a new pair of inputs. The rewritten suite
+adds a fifth case (an emptied, committed field still unpins) and names one
+case for the auto-searching-query shape explicitly (`*.zip`, `committed:
+true` the moment its results land) alongside the base
+committed/uncommitted/empty split, per the brief's own worry that this shape
+not be missed. Confirmed failing against the pre-patch `searchBoxBlurAction`
+(three of the five cases returned `discard` where the new rule expects
+`keep-open`/`unpin`) before implementing the new function body.
+
+## Brief 22 — three corrections inside the merged field
+
+Four commits: two CSS-only fixes (items A and B), a bug fix (C1), and a
+design addition (C2).
+
+**Item A.** The grouped focus rule
+(`.listing-search-input:focus`/`.expanded`/`.searching`) drops
+`border-color` from `--fg` back to `--fg-muted`, restoring the pre-branch
+value. The comment above it now argues for a muted brighten rather than a
+bold jump; the sorted-column-header reasoning for staying off the accent
+carries over unchanged. Geometry is untouched — the change is a single
+custom-property swap on an existing rule, nothing that touches height or
+padding — so the field's 29px height and 9px/9px vertical gaps stand as
+they did.
+
+**Item B.** The star and the magnifier used to rest at identical weight —
+both `var(--fg-muted)`, no background on either — differing only on hover.
+The star now carries the app's quiet-control pill at rest (`--ctl-quiet-bg`
+→ `--ctl-quiet-bg-hover` on hover, tokens.css), so the resting pill is what
+marks it pressable before the pointer arrives; the magnifier drops a step
+dimmer, to `rgba(var(--fg-muted-rgb), 0.6)`, so it now rests visibly below
+the star instead of level with it. `.active` keeps its own accent-tinted
+pill (`rgba(var(--tint), 0.08)`), distinct from the neutral quiet-hover pill
+by colour and from a plain outline star by the filled glyph `StarIcon`
+already draws for a bookmarked view — no size step added; the pill plus the
+dimmer decoration read as a clear enough pair without stacking a third
+signal. Panel-mode bars pick up the same rules from the same
+`.bookmark-star-btn` base (only padding/svg size are scoped per surface in
+`preview.css`), so the panel star gets the resting pill too with no
+panel-specific change needed.
+
+**C1.** The wide-hint measurement (`boxWide`, gating whether the
+placeholder's pattern example renders) used an object ref read once inside
+a `useLayoutEffect` with `[]` deps. The search box that ref points at is
+portaled into the crumb bar once a folder claims it (search-slot.ts) — a
+swap that rebuilds the node, exactly the failure mode node-slot.ts's own
+comment documents ("a reference captured at mount would then point at a
+detached div"). The one-shot effect measured whichever node existed at the
+very first commit (before the portal swap landed) and never looked again,
+so `boxWide` froze at that reading and the long hint never appeared at any
+width. Fixed by extracting the measurement into a callback ref
+(`listing/search-hint-width.ts`, `useWidthThresholdRef`), which React calls
+with the live node on every mount — portal swaps included — so the
+ResizeObserver always tracks whatever node is actually in the document.
+Confirmed by tracing node-slot.ts's own documented failure mode against the
+ref/effect shape in Listing.tsx, not by a live browser (none available
+here); `search-hint-width.test.ts` exercises the callback ref directly
+against fake elements, including the node-swap case that reproduces the
+bug's exact shape.
+
+**C2.** `showCompletion` requires a non-null completion target and at least
+one item, both of which an empty query always fails, so a field focused
+with nothing typed renders no dropdown at all. `listing/search-examples.ts`
+gates a three-row panel onto that exact gap (`showSearchExamples`) and owns
+the copy: `*.csv` ("CSV files in this folder"), `.csv` ("CSV files in this
+folder and everything below it"), `~/work/*/*.csv` ("searches from ~/work
+instead of here") — the first two written to read as a contrast on purpose.
+The panel reuses `.listing-completion`'s surface and `.listing-completion-row`'s
+padding/hover rhythm; a stacked modifier (`.listing-completion-example`)
+replaces the side-by-side name/hint a path row uses, since an example pairs
+a pattern with a full sentence rather than a one-word file hint. A click
+writes the pattern into the field and keeps focus there (mirroring
+`acceptCompletion`) rather than searching it blind, and its `onMouseDown`
+carries the same `preventDefault()` a real completion row uses — without it
+the click-away blur rule would discard the just-inserted, uncommitted query
+before it ever got read. `showsSearchHits` and the blur truth table are
+untouched; the panel only ever renders in the query-empty branch that
+`showCompletion` already excludes itself from.
+
+Verification: `bunx tsc --noEmit` clean; `bun test --run` — 3331 pass, 0
+fail (3323 baseline plus 8 added: 4 in `search-hint-width.test.ts`, 4 in
+`search-examples.test.ts`); `node scripts/check-boundaries.mjs` —
+`boundaries OK (502 files)`; `bun run build` succeeds.
+
+No test assertion in `search-bar-expand.test.ts` referenced the focus
+border colour or the star's background — that file's rules are scoped to
+the `.searching` class family and to whether the star still stands down
+with the bar (it does not; item B changes nothing about that), so nothing
+there needed updating.
+
+## Brief 23
+
+**D1 (item A — verifying the trace).** The caveat's `!pending` guard
+(`index-caveat.ts`'s `searchCaveat`) does not receive `useListingSearch`'s
+raw local `pending` state directly — `Listing.tsx` passes it `scanPending`,
+which `index-source.ts` derives as `progress.answerComing = pending ||
+polling`. These are different names, but not a different mechanism: in the
+URL-restore reproduction, `polling` is false (no rescan is running), so
+`scanPending` reduces exactly to that root `pending` value, and the trace's
+conclusion — a debounce-armed-late flag reaching the guard late — holds.
+The imprecision is worth naming because it means the fix has to reach
+`scanPending`'s derivation chain, not just the raw state in isolation; it
+doesn't mean the trace pointed at the wrong bug.
+
+**D2 (item A — a new flag instead of reusing `pending`).** The brief's
+prescribed fix ("arm the flag when the effect schedules the request, not
+when it fires") was implemented as a new, dedicated `requestComing` state
+rather than moving the existing `setPending(true)` earlier. Moving
+`setPending` earlier was the literal first reading, but `pending` also
+drives the spinner and the heavy-dim treatment (`unsettled`/`slow`), and
+`PENDING_INDICATOR_MS` equals `INSTANT_DEBOUNCE_MS` at 200ms each — so
+re-arming `pending` on every debounced effect rerun during a multi-keystroke
+typing session would leave it continuously true for the whole session,
+turning the spinner on and keeping it on while the user types, a regression
+the brief asked to be checked for. `requestComing` is armed and cleared in
+parallel with `pending` (same early returns, same memo-hit branch, same
+success/rejection handlers) but wired only into the caveat call site in
+`Listing.tsx`; `pending`'s own consumers are untouched. Confirmed no
+spinner regression: all pre-existing `scanPending`-assertion tests in
+`useListingSearch.render.test.ts` pass unchanged.
+
+**D3 (item A — genuine staleness still shows the caveat).** Added a
+dedicated test (`describe("a dir-watch bump while searching: the deferral
+itself is the caveat")`) ahead of the existing "a completed scan" test,
+covering the case `listing/revalidate.ts`'s `shouldReconcile` deliberately
+declines: a dir-watch bump during an active search, where `behind` becomes
+true and no re-ask is ever scheduled — `requestComing` stays false and
+`searchCaveat` still returns the "not refreshed" caveat. This is
+unaffected by D1/D2 because `requestComing` never arms outside an effect
+run that is about to schedule a request.
+
+**D4 (item A — regression test, TDD).** `describe("a URL-restored search
+racing the app's own startup scan")` mounts with `urlSync=true` (query
+seeded before first render, `searching` starts true), resolves the first
+rank answer, calls `noteIndexLifecycle()` matching the existing completed-
+scan test's shape, and asserts the caveat is null before advancing the
+clock past the debounce. Confirmed failing pre-fix (`git stash push -u`
+scoped to the four source files, test file left in place): `not refreshed`
+returned instead of `null`. Confirmed passing post-fix, 28/28 in the scoped
+file.
+
+**D5 (item B — 440px, `max-width` not `width`).** The examples panel
+(`.listing-completion-row.listing-completion-example`) gets `max-width:
+440px` — inside the requested 420–480px band, sized to its own two-line
+pattern/hint content with headroom for the longest hint sentence in
+`search-examples.ts`. `max-width` rather than `width` so a field narrower
+than 440px still constrains the panel to the field's own width (the row's
+normal block-layout fallback) instead of overflowing it. No change to
+`.listing-completion-row` itself (the plain path-completion dropdown), so
+that rule's own full-field width is untouched. Left alignment under the
+magnifier is not a separate rule — it falls out of the row already being a
+block box with no auto margins, at the same `padding-left: 28px` gutter
+the input's own text already uses.
+
+Verification: `./frontend/node_modules/.bin/tsc --noEmit --project
+frontend/tsconfig.json` clean; `bun test --run` — 3333 pass, 0 fail (3331
+baseline plus 2 added in `useListingSearch.render.test.ts`); `node
+frontend/scripts/check-boundaries.mjs` — `boundaries OK (502 files)`; `bun
+run build` (run from `frontend/`) succeeds, bundle written to
+`fused_render/static/shell-dist/`.
+
+Item B's appearance at wide/narrow field widths was reasoned from the CSS
+(block-box left alignment, `max-width` fallback behavior) rather than
+observed in a browser — no display is available here.
+
+## Brief 24
+
+**D6 (item E — the cap belongs on the surface, not the row).** D5 capped
+`.listing-completion-row.listing-completion-example` at 440px, but that row
+is a block box inside `.listing-completion` — the element that actually
+paints the panel's background, border and shadow — and a `max-width` on a
+child cannot shrink the parent surface around it, so the panel kept
+rendering full field width regardless. Fixed by capping the surface
+instead: the examples panel gets its own modifier class,
+`.listing-completion.listing-completion-examples`, carrying `max-width:
+460px` (kept in the same 420–480px band as D5's original number, `max-width`
+again rather than `width` so a narrower field still constrains it). The
+row's own now-inert `max-width: 440px` was removed rather than left
+stranded. The plain `.listing-completion` rule (the real path-completion
+dropdown) is untouched and stays uncapped, since it lists real paths of
+whatever length rather than fixed example strings.
+
+**D7 (item A — the Enter-to-open-and-search row gets the one accent wash
+in this family).** Of the family of `.status-message` rows in the search
+body, exactly one (the `searching && !showsSearchHits` banner built from
+`enterPrompt`, Listing.tsx) is an instruction rather than a state report,
+so it alone carries a new modifier class, `listing-enter-row`, applied
+alongside `status-message` on that `<td>` and nowhere else. The rule lives
+in `explorer.css` (not `preview.css`, where the shared `.status-message`
+base and its `.error` variant live) — colocated with the rest of the
+search-field-specific chrome, and the file the repo's established
+CSS-parsing test pattern already reads. It washes the row with
+`background: rgba(var(--accent-rgb), 0.13)` and `color: var(--accent-soft)`
+— never `--on-accent` or a solid `--accent` fill, which would read as an
+error/alert rather than an instruction. No left accent bar: the wash plus
+the recolored text already read as two combined signals distinct from the
+plain-grey siblings, and a third (a border) risked tipping the row toward
+"warning label," which the row should not read as. This is a judgment
+call, not something observed in a browser — no display is available here,
+so if the wash alone doesn't read as attention-grabbing enough once
+someone can look at it, the border is the next thing to try. Two things in
+the brief's framing did not hold up under a grep of `explorer.css`: there
+is no literal row-striping rule anywhere in the file (only `tr.row:hover`
+and `tr.row.selected` differ visually from a resting row), so "check it
+reads against the striped rows beneath it" was evaluated against hover/
+selected only.
+
+**D8 (item D — the search-hits header names its base).** The single
+header the search-hits table renders (`showsSearchHits`'s branch of
+Listing.tsx's `<thead>`) said only "Path," with nothing answering "path
+relative to what" — the merged search field replaced the crumb strip that
+used to answer that. It now reads "Path in ~/Downloads" (or whatever
+`searchBase` contracts to), computed once as `baseLabel` and used for both
+the header text and its `title` attribute; the header falls back to the
+bare "Path" label when `searchBase` is empty, and a new `col-search-base`
+class truncates a long base with an ellipsis (`max-width: 0` under the
+table's existing `table-layout: fixed`, plus `overflow: hidden;
+white-space: nowrap`) rather than wrapping the sticky header taller. The
+header stays a plain, non-sortable `<th>` — no `sortable` class, no click
+handler. The "~" contraction is a new `contractHome(fsPath, home)` helper
+(`listing/home-path.ts`), matching the inline logic already duplicated in
+`Breadcrumb.tsx`, `listing/path-crumbs.tsx` and `Panel.tsx` — grepping all
+three found exactly three copies of that logic, not the four the brief
+described; only the new fourth call site (this header) was added, and the
+three existing ones were left exactly as they are, per the brief's own
+scope. The helper's shape (`fsPath.startsWith(home + "/") ? "~" +
+fsPath.slice(home.length) : fsPath`) is identical to what all three sites
+already inline, so it would drop into any of them with no behavior change
+— left for a follow-up, not done here. `useListingSearch.ts`'s own
+definition of `searchBase` (`answer.base` while searching, else `fsPath`)
+means it is never actually empty in the current implementation, so the
+bare-"Path" fallback is traced as currently unreachable rather than
+exercised by a live case — implemented anyway, since the header must not
+break if that ever changes.
+
+**D9 (item B — a real clear button, not the native cancel).** The native
+WebKit `::-webkit-search-cancel-button` stays suppressed (explorer.css
+already documented why: it collides with the absolutely-positioned count
+chip). A new `.listing-search-clear` button sits between the count/spinner
+chip and the star — the star stays the field's own last child — shown
+only while `query !== ""` (`hasClear`). It reuses the same teardown Escape
+already ran, pulled out into `clearSearchQuery()` (clears the query,
+un-pins the box) so the two call sites can never drift apart; unlike
+Escape, the button never blurs — the press is caught on `onMouseDown` with
+`preventDefault()`, the same click-away-blur-discard pattern the
+completion and example rows already use, so focus stays in the field.
+Styled as a quiet pill with the star's own `--ctl-quiet-bg`/
+`--ctl-quiet-bg-hover` token pair. Positioning followed the existing
+`--pin-right`/`has-pin`/`wide-pin` matrix: a new `has-clear` box class
+reserves an extra 24px hit area plus a 6px gap, both in the count chip's
+own `--pin-right` offset and in the input's `padding-right` (a new
+`has-clear` variant of every existing has-pin × wide-pin × crumb-slot
+combination, plus a bare `has-clear:not(.has-pin)` case for a freshly
+typed query with no chip pinned yet). `Panel.tsx` renders no
+`.listing-search` markup at all (confirmed by grep — no `Listing`/
+`listing-search` reference anywhere in that file), so panel-mode bars are
+unaffected by any of this; there was nothing to check there beyond
+confirming the file doesn't touch this code.
+
+**D10 (item C — spaced, muted "/" separators without touching the
+string).** A multi-segment search-hit path now reads as layered folders:
+`renderHighlightPath` (`listing/bits.tsx`), an opt-in sibling of
+`renderHighlight`, wraps each "/" inside a highlight segment's own text in
+a `<span className="path-sep">` (styled with `margin: 0 2px; color:
+rgba(var(--fg-muted-rgb), 0.6)` in `explorer.css`, which also covers
+`FilesHome.tsx`'s `.fh-result-path` since both stylesheets load into one
+global bundle via `shell.css`). The character it wraps is still the
+literal "/" from the original string — nothing is inserted or removed —
+because `highlightSegments` (`platform/lib/fuzzy.ts`) computes its match
+runs against raw character offsets, and the path still has to reproduce
+exactly on copy. The wrapping only rearranges a segment's own children, so
+a fuzzy match whose run straddles a separator stays the one continuous
+`<mark>` `highlightSegments` already produced for it, never two marks with
+a bare slash between them — covered by a dedicated
+`highlight-path.test.tsx` case (`"ab/cd"` matched at `[1, 2, 3]`, straddling
+the `/` at index 2), confirmed failing before `renderHighlightPath`
+existed. Listing.tsx's search-hit rows (`entry.rel`) and FilesHome.tsx's
+path span (`display`) use the new helper; FilesHome.tsx's name span and
+every other `renderHighlight` caller are unchanged, and a test asserts
+`renderHighlight` itself gains no separator wrapping.
+
+Verification for the whole brief: `./frontend/node_modules/.bin/tsc
+--noEmit --project frontend/tsconfig.json` clean; `bun test --run` — 3363
+pass, 0 fail (3333 baseline plus 30 added across the five items' test
+files); `node frontend/scripts/check-boundaries.mjs` — `boundaries OK (509
+files)`; `bun run build` (run from `frontend/`) succeeds, bundle written
+to `fused_render/static/shell-dist/` (the only build warnings are
+pre-existing manual-chunking notices about `router.ts`/`api.ts` being both
+statically and dynamically imported, unrelated to this brief). Every test
+added for E, A, D, B and C was confirmed to fail before its corresponding
+fix, each via a `git stash push -u` scoped to only that item's changed
+source files.
+
+All visual claims above (the accent wash's legibility, the clear button
+and star sitting side by side, the examples panel's width against the
+field at various sizes) are reasoned from the CSS and JSX rather than
+observed — no display is available in this environment.
+
+**D11 (item C — the path stays case-sensitive; the row's own label chrome
+does not).** The search-hits header's "Path in {base}" text inherited the
+row's uppercase transform, which silently altered a real Linux path (a
+correctness defect, not a style nit, on a case-sensitive filesystem). The
+"Path in " chrome text stays uppercase with the rest of the header row;
+only the path itself is wrapped in a new `<span className=
+"col-search-base-path">` (`Listing.tsx`) carrying `text-transform: none`
+(`explorer.css`), so the two halves of the same header cell now
+deliberately diverge in case. The exact-home case (`baseText = searchBase
+=== home ? "~" : contractHome(searchBase, home)`) is computed at this one
+call site rather than folded into `contractHome` itself — the helper's
+existing contract (home itself keeps its full path; only strictly-below
+paths contract) is exactly what the three crumb-strip call sites depend
+on, and the header wants the opposite behavior for the exact-home case
+only. Folding it into the helper would have silently changed those three
+sites too; a local ternary at the one call site that wants it does not.
+
+**D12 (item A — the field opens seeded with the current path, selected;
+`seed` becomes required).** Both `requestSearchFocus` callers in
+`Breadcrumb.tsx` — click-to-edit and Ctrl/Cmd+L, the only two callers,
+confirmed by a full grep of the codebase — now pass
+`displayPathRef.current`, the same "~"-contracted current path both
+gestures already compute for their own now-removed path-only editor. With
+every caller supplying a seed, `search-focus.ts`'s `seed` parameter moves
+from optional to required (`type Listener = (seed: string) => void`), and
+the subscriber in `Listing.tsx` drops its old `if (seed !== undefined)`
+branch — it now always seeds, selects, opens, and focuses.
+
+That covers both callers reaching the field through Breadcrumb.tsx's
+document-level click/keydown handlers, but neither of those handlers ever
+fires for a press that lands directly on the real `<input>` — `input` and
+`.listing-search` both sit in `BAR_EDIT_EXCLUDE`, and the crumb text,
+magnifier, and `.listing-search-crumbs` strip all use `pointer-events:
+none` specifically so a click on any of them falls through to the input
+underneath. That fall-through press never reaches `requestSearchFocus` at
+all; it goes straight to the input's own `onFocus`. So the input's
+`onFocus` handler independently seeds too, whenever `query === ""`:
+`setQuery(contractHome(fsPath, home)); seedSelectRef.current = true`,
+before opening and marking the field active. Between the two, every click
+that opens the merged field over a claimed folder now seeds it — the
+`requestSearchFocus` path for Breadcrumb-mediated gestures, the `onFocus`
+path for a direct hit on the field itself.
+
+The seed is placed with `setQuery`, not typed into the DOM directly, so
+it is exactly as "uncommitted" as anything else typed into the field —
+`search-provisional.ts`'s existing blur truth table (empty → unpin,
+non-empty-and-uncommitted → discard, non-empty-and-committed → keep-open)
+governs it unchanged, and Escape's existing revert handles it unchanged
+too. `seedSelectRef` (set alongside every `setQuery(seed)` call, read by a
+`useEffect` on `[query]` to call `.select()` only once React has actually
+committed the value) exists because `.select()` called synchronously right
+after `.focus()` would select whatever the input held BEFORE this render's
+`setQuery` — React 18 batches the two `setState` calls, so the DOM has not
+caught up yet at the point `.select()` would naively run.
+
+One consequence, reported rather than fixed since the brief scoped this
+item to seeding, not to the examples panel: `search-examples.ts`'s
+`showSearchExamples` gate requires `query === ""`, so the examples panel
+—  previously the first thing an empty-query click showed — now rarely
+appears on a fresh click, since the click itself populates `query`
+immediately. It still shows for the one path left where the field opens
+genuinely empty: Ctrl/Cmd+L or a click over an UNCLAIMED folder's bar,
+where `requestSearchFocus`/the claimed-folder seeding path never runs at
+all, or after the user clears a seeded query by hand.
+
+`closedByClickAwayRef` is untouched by any of this — it belongs entirely
+to Breadcrumb.tsx's own unclaimed-folder plain-text path editor, a
+separate code path from the merged search field this item changes.
+Traced, not observed: no display is available in this environment.
+
+**D13 (item B — the magnifier moves to the trailing edge, sharing the
+clear button's slot).** Read literally, "take the glyph out of absolute
+positioning and make it a real member of the trailing group" would mean a
+flex conversion of the whole pin/chip region — count chip, spinner, clear
+button, and star all currently live as siblings positioned independently
+off `--pin-right`/`right: 8px`/`right: 38px`, each with its own gate
+(`hasPin`, `hasClear`, `barSearchSlot`) and its own class-matrix padding
+reservation on the input. Converting that whole region to normal flow
+would touch the count chip's gate, the `wide-pin`/`has-clear` combinatorial
+padding matrix, and the star's guaranteed last-child position — all things
+the brief explicitly said not to change. Taken instead as "move the glyph
+out of its OWN fixed left gutter and into the group of things living at
+the trailing edge" — the lighter interpretation — the magnifier now shares
+`.listing-search-clear`'s own absolutely-positioned slot (`right: 8px`
+base, `right: 38px` inside `.crumb-search-slot .listing-search-box` to
+clear the star), rendered in that same JSX position as the clear button's
+own else-branch: `{hasClear ? <button className="listing-search-clear">
+… : <span className="listing-search-glyph">…}`. The two are mutually
+exclusive on the exact same condition already gating the clear button, so
+sharing one CSS position needs no new state and no new class.
+
+The magnifier stays pure decoration — no click handler, `pointer-events:
+none` unchanged — so a press on it still falls through to the input
+beneath, the same click-through behavior it always had; only which edge
+that input sits under moved. Reclaiming the glyph's old fixed `left: 9px`
+gutter also let the input drop its `padding-left: 28px` (back to the base
+`padding-right: 10px` rule, symmetric now — no left override at all), the
+crumb strip drop its `left: 28px` (now `left: 10px`, the input's own text
+edge), and the completion/example rows drop their `padding-left: 28px`
+(now `10px`, still lined up under the query text since neither the input
+nor the row reserves gutter space for the glyph any more).
+
+The resting bar — an idle, unfocused claimed-folder row showing the crumb
+strip and nothing else pinned — still shows the magnifier at its new
+position (`hasClear` is false with an empty query, so the glyph branch
+renders), so the box never reads as missing its one search affordance;
+traced through the render condition, not observed. The trailing region at
+its most crowded (a committed query, a pinned match count or caveat chip,
+the clear button occupying the shared slot, and the star) is unchanged
+from before this item — the glyph and the clear button were already
+mutually exclusive occupants of one slot, so this item does not add a
+fifth simultaneous element, only relocates where that slot sits. Panel-mode
+bars are confirmed unaffected: `grep -n "listing-search" Panel.tsx` finds
+nothing, so panel instances have no magnifier, clear button, or crumb
+strip to move in the first place. `showsSearchHits`'s return value, the
+count chip's gate on it, the blur truth table, `generationBehind`,
+`EntryActionsMenu.tsx`, and the star's last-child position are all
+unchanged.
+
+Verification for this round (items C, A, B): `./frontend/node_modules/
+.bin/tsc --noEmit --project frontend/tsconfig.json` clean; `bun test
+--run` — 3372 pass, 0 fail, up from the 3363-pass baseline this round
+started from, across new and rewritten cases in `home-path.test.ts`,
+`search-base-header.test.ts`, `search-focus.test.ts`, and
+`search-clear-button.test.ts`; `node frontend/scripts/
+check-boundaries.mjs` — `boundaries OK (509 files)`; `bun run build` (run
+from `frontend/`) succeeds, bundle written to `fused_render/static/
+shell-dist/` (only pre-existing manual-chunking warnings, unrelated to
+this round). Every test added or changed for C, A and B was confirmed to
+fail before its corresponding fix, each via a `git stash push -u` scoped
+to only that item's changed source files, restored via `git stash apply`
+(never `pop`).
+
+All visual claims in this round — the header's path staying
+case-sensitive, the field opening pre-filled and selected, the magnifier's
+new position and the resting bar's appearance, the trailing region's
+crowding at its busiest — are traced through the CSS and JSX, not observed
+in a browser, except item C's original defect, which the requester
+verified directly.
+
+## A folder that changes and then goes quiet never gets reindexed
+
+**Mechanism.** `note_folder_opened` (`fused_render/index/freshness.py`) is
+reached only from a listing fetch, ~`FRESHNESS_DELAY_S` (3s) after the
+directory-mtime change that made the client re-fetch in the first place. The
+`QUIET_S` (30s) gate compares that check's `now` against the folder's own
+`disk_ns`, so a check fired by the very change it is inspecting is refused by
+construction — it always lands inside the window. Nothing else asks again:
+once the folder is actually quiet, its mtime stops moving, so the watcher
+never broadcasts again, so no further listing is fetched, so no further check
+runs. A page reload works only because a fresh mount happens to list at some
+arbitrary later moment, comfortably past 30s.
+
+The pre-existing `QUIET_S` comment asserted "the next open after the churn
+stops still fires" — false whenever nothing re-opens the folder, which is
+exactly the reported case (a user re-running one search, not re-opening the
+folder). It now reads:
+
+> How long a directory must have been settled before its staleness is acted
+> on. A churny directory (a build tree, a cache) has a mtime that moves
+> continuously, so it is never quiet and never triggers — which is what stops
+> it queueing scan after scan. There is no guarantee a LATER open ever asks
+> again once the churn stops — a user who sits still after the last change
+> never fires another listing — so a refusal here is not the end of the
+> question: it comes back as `FreshnessCheck.retry_after`, which tells the
+> caller exactly when the folder will have been quiet for this long, so it
+> can ask again itself instead of depending on one to arrive by luck.
+
+One claim in the brief turned out to be wrong: it stated flatly that
+`freshness.py` is entirely untested ("no `test_freshness.py` anywhere, no
+test references `freshness`"). `tests/test_index_freshness.py` already
+existed with 22 passing tests, and `tests/test_index_api.py` already had a
+substantial freshness-check test section (throttle, defer, per-root
+debounce). The gap was narrower than described: the specific race — a
+refused check with no way to distinguish "still churning" from every other
+refusal — was untested, not the module as a whole.
+
+**The fix.** `note_folder_opened` returns a `FreshnessCheck` NamedTuple
+(`started: str | None`, `retry_after: float | None`) instead of `str | None`.
+`retry_after` is set in exactly one place: the `QUIET_S` gate, computed as
+the actual remaining wait (`quiet_at - now`) rather than a bare refusal. Every
+other early return (outside the roots, mount-guarded, within
+`MIN_INTERVAL_S`, vanished path, live run in progress, not actually stale)
+keeps returning the "never ask again" `FreshnessCheck()`.
+
+`routers/index.py`'s `_run_freshness_check` schedules a retry when
+`result.retry_after is not None`, via a new `_schedule_freshness_retry(path,
+root, delay)`.
+
+**Retry policy — one honest retry, coalesced per root, never chained.**
+`_schedule_freshness_retry` keeps a `root -> pending threading.Timer` dict;
+scheduling for a root that already has one pending cancels it and replaces it
+with a timer for the new deadline, so a folder touched fifty times in a row
+ends with exactly one live timer, not fifty. The retry itself
+(`_run_freshness_retry`) never reschedules regardless of outcome — if it
+finds the folder started, good; if `note_folder_opened` still returns
+`retry_after` (the folder is somehow still churning), that is left alone
+rather than chained. A directory that never truly settles gets one wasted
+retry, not an unbounded chain; the next real listing starts the decision
+over from scratch. This was a deliberate choice among the options the brief
+allowed (one retry / a bounded number / re-arm only on a fresh change) —
+one retry is the simplest policy that still fixes the reported case (a
+folder that changes once and then goes quiet), and re-arming on a fresh
+change is already what happens for free: a later listing calls
+`_run_freshness_check` again independently of any pending retry.
+
+**Clearing `FRESHNESS_CHECK_S` without retuning it.** The retry calls
+`freshness.note_folder_opened` directly, bypassing `_run_freshness_check`
+(and therefore `_freshness_due`/`FRESHNESS_CHECK_S`/`_freshness_wait`)
+entirely. This is not the same as raising or removing the throttle for
+everyone: `FRESHNESS_CHECK_S` paces new demand for checks arriving from
+browsing, and the coalescing above already guarantees at most one pending
+retry per root at any moment — the retry is the continuation of a check that
+already earned its slot and was told to come back at a specific time, not a
+second independent demand. Nothing about this lets a root be hammered faster
+than one retry per triggering refusal.
+
+**Timer mechanism.** `_schedule_freshness_retry` does not import
+`index_touch._real_schedule` — `index_touch.py` imports this module from
+inside its own functions (to reach `runner` and `_wake_index_job_bridge`), so
+importing it back here would be circular. The three-line pattern
+(`threading.Timer(delay, fn); t.daemon = True; t.start()`) is duplicated
+directly instead, keeping the same "never holds the process open" property
+(a daemon timer) without inventing a second scheduling primitive.
+
+`note_folder_opened`'s "never raises" promise extends to the retry:
+`_run_freshness_retry` wraps its body in `try/except Exception`, logging and
+returning rather than propagating — a background timer failing must not take
+the process down.
+
+**Tests.** Failing-first: added
+`test_a_folder_that_goes_quiet_after_the_check_refused_it_still_gets_scanned`
+to `tests/test_index_api.py`, reproducing the reported case at the router
+level — a check ~3s after a change is refused, and only a later,
+un-prompted retry (no further listing) finds the folder stale and scans it.
+Confirmed failing on pre-fix code (`AttributeError:
+_schedule_freshness_retry` does not exist) by temporarily restoring the two
+pre-fix source files from `HEAD` with the test changes kept, running just
+that test, then restoring the fix. Also added
+`test_the_freshness_retry_is_coalesced_per_root` (fifty scheduling calls for
+one root leave exactly one live timer, for the latest deadline) and
+`test_the_freshness_retry_does_not_chain_a_second_one` (a retry that still
+gets `retry_after` back does not schedule another). `freshness.py`'s own
+suite gained `test_churning_is_the_only_refusal_that_asks_to_be_retried` and
+`test_a_change_that_turns_out_not_to_be_stale_still_reports_retry_after`,
+alongside updating every existing assertion for the `FreshnessCheck` return
+type. All driven by the `now` parameter and a fake clock — no sleeping.
+
+Full results: `tests/test_index_api.py` + `tests/test_index_freshness.py` —
+131 passed. Every other test file importing `routers.index`
+(`test_git_repos_api.py`, `test_index_cancel.py`, `test_index_fda_gate.py`,
+`test_index_jobs.py`, `test_index_rank_concurrency.py`,
+`test_index_scan_on_demand.py`, `test_index_search.py`,
+`test_index_touch.py`, `test_mac_update.py`, `test_shell_prefs.py`) — 311
+passed, 5 failed, 1 skipped; the 5 failures are exactly
+`tests/test_index_scan_on_demand.py`'s pre-existing failures called out as
+not-mine, confirmed identical (same tests, same assertions) against
+unmodified `HEAD` via a tagged `git stash push -u`/`apply`/`drop` cycle, so
+nothing was added to that count.
+
+**D14 (a query naming exactly the folder already open is not a pending
+search).** Traced, not observed: no display is available in this
+environment. Confirmed the mechanism the brief named, by reading the code
+rather than re-deriving it: clicking the bar / Ctrl-Cmd+L both call
+`requestSearchFocus(displayPathRef.current)` (Breadcrumb.tsx), which reaches
+the one subscriber in Listing.tsx that does `setQuery(seed)`. That seed
+always starts with `"~"`, one of `escapesBase`'s own conditions
+(`query-base.ts`), so `useListingSearch`'s gate (decision 4) never opens for
+it on its own — `escapes` is true and `committedGate.current` is null until
+Enter, so `gateOpen` is false, no fetch is ever issued, and `searchState`
+stays `IDLE_SEARCH`. `showsSearchHits` (`showingSearchHits`,
+`search-body-mode.ts`) is therefore already `false` for this case, so the
+folder's own rows already render underneath — the banner render at
+`Listing.tsx`'s `if (searching && !showsSearchHits)` only ever WRAPS them
+with an extra row on top, it does not replace them. The banner's text comes
+from `enterPrompt(typedAddress, query)`; `typedAddress.status` is `"exists"`
+for the open folder (once its own debounced `statPath` round trip lands),
+so the prompt takes the resolved-path branch and names the leaf —
+`Press Enter to open random`. The second symptom, the "0 matches" footer, is
+`statusLine` (`listing/status-line.ts`), which branches purely on the
+`searching` boolean it is handed and, once in that branch, reports
+`hits.length` — 0, because the gate above never let a fetch happen. Both
+symptoms are visible for the same reason: nothing about this specific query
+is any different from a real escaping query as far as `searching`,
+`escapesBase`, or the gate are concerned, even though the folder it names is
+already open.
+
+Fixed at the gate's OWN render site (Listing.tsx), not inside `escapesBase`.
+`escapesBase` takes neither `fsPath` nor `home` by design (its own leading
+comment) and answers a purely syntactic question — widening it to compare
+against the open folder would turn one narrow yes/no predicate into two
+unrelated ones sharing a name, and every other caller of `escapesBase`
+(there is only the one, in `useListingSearch.ts`) would need to start
+passing `fsPath`/`home` it has no other use for. `Listing.tsx` already holds
+both, has already resolved a query into an absolute address once (via
+`useTypedPathAddress`/`listingAddress`, decision 5) for exactly this reason,
+and is the one place both symptom sites (the banner branch, the `statusText`
+computation) live. Reusing that same resolution rather than duplicating a
+second path-comparison also means this needed no new normalization logic:
+`listingAddress` (`listing-address.ts`) already turns `"~/…"` and an
+absolute spelling into the same string and already strips a trailing slash.
+
+The new pure predicate is `queryNamesOpenFolder(query, fsPath, home)`
+(`listing/query-current-folder.ts`): `listingAddress(query, fsPath, home)`
+resolved and compared against `fsPath` with its own trailing slash
+stripped. It is synchronous and cannot flash true-then-false while a stat is
+in flight, unlike `typedAddress` (which this predicate deliberately does not
+use, for that reason) — `fsPath` is already open, so there is nothing to
+confirm on the filesystem, only whether the typed text names it. A glob or
+one more path segment past the folder (`~/Fused/local/random/*.svg`,
+`~/Fused/local/random/ico`) resolves via `listingAddress` to `null` or to
+something other than `fsPath`, so both stay real, ungated queries exactly as
+before — this predicate only recognizes the exact folder, either spelling,
+with or without a trailing slash.
+
+Two render sites read it, both in `Listing.tsx`:
+- The banner gate: `if (searching && !showsSearchHits && !isOpenFolderQuery)`.
+- `statusText`'s search branch: a new `showsSearchFooter = searching &&
+  !isOpenFolderQuery` replaces the raw `searching` fed to `statusLine`
+  (and gates the selected-bytes/selected-folders loop the same way, so a
+  selection made while the field holds the open folder's own path still
+  reports its byte sum instead of silently going quiet the way a real
+  search's selection does).
+
+`showsSearchHits` itself is untouched — it was already `false` in this
+case, which is exactly why the brief's "do not change what it returns for
+any other case" reads as "leave it alone entirely" here: there is no case
+where its return value needed to change. The search count chip's own gate
+(`showsSearchHits && searchState.status === "ok" && hits.length > 0`) is
+likewise untouched and was never reachable in this scenario either way.
+`escapesBase`'s contract and leading comment are untouched — this predicate
+does not widen it, so there was nothing in that comment to correct. The
+`seedSelectRef` comment above (`Listing.tsx`) DID need correcting: it
+described the seed sitting uncommitted as the whole story, written before a
+plain click could seed the field with the folder already open. It now says
+the gate still never opens for the seed on its own (still true — decision 4
+is unchanged), but that being ungated is no longer the same thing as
+reading like a pending search: `queryNamesOpenFolder` is what keeps this one
+uncommitted query from painting the banner or the footer, and typing
+anything past the folder's own path — even one more segment — leaves that
+exemption and is uncommitted in the ordinary, banner-showing sense again.
+
+The four path-spelling cases:
+- Field holds exactly the open folder (absolute, `~`-contracted, with or
+  without a trailing slash — four spellings): `queryNamesOpenFolder` is true
+  in all four; no banner, no "0 matches" footer, the folder's own rows
+  render (they already did, underneath the banner, before this fix — only
+  the banner and the footer text change). Traced through
+  `listing-address.ts`'s own trailing-slash stripping and `~`-resolution,
+  confirmed by `query-current-folder.test.ts`'s matching cases; not
+  observed.
+- Field holds the folder's path plus more (`.../ico`, `.../*.svg`):
+  `listingAddress` resolves to a different path or to `null`;
+  `queryNamesOpenFolder` is false; unchanged from before this fix — a real,
+  gated query. Traced, and covered by `query-current-folder.test.ts`.
+- Field holds a different absolute or `~` path: resolves to a different
+  address; `queryNamesOpenFolder` false; unchanged — banner and "N matches"
+  footer both still show once a real answer lands or while uncommitted.
+  Traced, covered by `query-current-folder.test.ts`.
+- Ctrl/Cmd+L: confirmed (by reading Breadcrumb.tsx's two call sites) to call
+  the identical `requestSearchFocus(displayPathRef.current)` the click uses,
+  landing in the same Listing.tsx subscriber — no separate code path exists
+  for it, so it was not re-tested separately beyond confirming that identity
+  holds. Traced.
+
+Escape-to-revert and clicking-away-to-discard are untouched: neither this
+fix nor its predicate touches `search-provisional.ts`'s blur truth table,
+the Escape handler, or anything upstream of `query` itself — it only changes
+what two RENDER sites downstream of `query` do with an already-known value.
+
+What the bar looks like while holding the unmodified current path: `searching`
+itself (the length-gated boolean `useListingSearch` computes) is untouched
+by this fix and stays true, so `.searching`'s CSS
+(`#breadcrumb:has(.listing-search.searching)`) still stands the crumb strip
+down and lights the border — the field stays visibly focused, editable, and
+its seeded text stays selected for replacement — the field reads as active,
+which is correct: the user clicked into it deliberately. `hasClear`
+(`query !== ""`) is untouched and stays
+true, so the clear button (magnifier's shared trailing slot, decision D13)
+still shows. `hasPin` and the inline search-count chip are unaffected
+because `searchCount` was already `null` in this case (gated on
+`showsSearchHits`, already false) before this fix. The only chrome that
+changes is the banner row and the bottom-left status text — the "search is
+pending" claims — not the "this field is active" claims. Traced through the
+render logic; not observed.
+
+Tests: `query-current-folder.test.ts` (new) covers the predicate directly —
+all four spellings of the open folder, a segment past it, a glob past it, a
+different absolute path, a different `~` path, a plain filter word, and
+`home === undefined` for both the absolute and the `~` spelling.
+`search-enter-banner.test.ts`'s first test asserts the literal gate text in
+`Listing.tsx` includes `!isOpenFolderQuery`; confirmed to fail on the
+pre-fix source via a tagged `git stash push -u -m
+"brief27-listing-only-check" -- frontend/src/apps/explorer/Listing.tsx`
+(only `Listing.tsx`, keeping the new test), `bun test --run` on that one
+file (`Expected: > -1, Received: -1`), then `git stash apply` and `git
+stash drop` on that same entry — no stash entries left behind.
+`enter-prompt.test.ts` and `query-base.test.ts` needed no changes: neither
+function's contract moved.
+
+Verification: `./frontend/node_modules/.bin/tsc --noEmit --project
+frontend/tsconfig.json` clean. `bun test --run` — 3383 pass, 0 fail, up from
+the 3372-pass baseline this round started from (11 new cases, all in
+`query-current-folder.test.ts`). `node frontend/scripts/check-boundaries.mjs`
+— `boundaries OK (511 files)`, up from 509 by the two new files
+(`query-current-folder.ts`, `query-current-folder.test.ts`). `bun run build`
+(from `frontend/`) succeeds; only the pre-existing manual-chunking warnings,
+unrelated to this change.
+
+## D15 — a mode chip, a retired magnifier, a keyboard hint
+
+The field now says which of its two jobs it is doing, at both ends of the box.
+
+The chip, at the leading edge (`.listing-search-mode`, `Listing.tsx`), is driven
+directly off `chipIsSearch = searching && !isOpenFolderQuery` — `searching`
+(a non-empty query, already computed by `useListingSearch`) layered onto
+`isOpenFolderQuery` (D14's `queryNamesOpenFolder`, already computed by this
+render). Not a new predicate: `isOpenFolderQuery` alone is false for an empty
+query too (`listingAddress` returns `null` for empty/whitespace input), so an
+untouched field would otherwise show "Search" at rest — `searching` is what
+tells the two resting cases apart. `Path`/folder-outline when false, `Search`/
+magnifier when true; the magnifier glyph is the one the trailing slot used to
+own, so the meaning moves rather than doubling.
+
+The chip is a readout: `pointer-events: none`, no hover rule, no
+`--ctl-quiet-bg` pair — traced by grepping for both across `explorer.css` and
+confirmed absent. `Search` takes `--accent`, matching the enter-row wash's own
+argument that the accent marks a pending action; `Path` stays `--fg-muted`.
+
+Width went through a second pass after a user report against the first cut's
+screenshot: `.listing-search-mode-label` had carried a `min-width: 34px` sized
+for "Search", which meant the shorter "Path" state left its own trailing
+padding behind the word before the crumbs began — the label's `gap: 4px` (on
+the chip's flex container) already fixes the glyph-to-label distance, so the
+label's own width could only ever add space AFTER the word, not before it,
+which was the reported gap. The label now carries no width of its own.
+The invariant that must still hold — the crumbs never shifting when the mode
+word changes — moved to a single fixed offset on `.listing-search-crumbs`
+(`left`) and `.listing-search-input` (`padding-left`), sized for the chip at
+its widest state instead of for each state individually. That number was
+measured, not estimated: `-apple-system, BlinkMacSystemFont, "Segoe UI",
+Roboto, Helvetica, Arial, sans-serif` at `500 11px` (the label's own rule) run
+through `CanvasRenderingContext2D.measureText` in headless Chromium (`chromium
+--headless=new --dump-dom`, no display available in this environment) gives
+"Search" a width of 34.85px; the offset is 8px (chip's own left inset) + 12px
+(glyph) + 4px (glyph-to-label gap) + 35px (rounded up from the measurement) +
+8px (clearance before the crumbs) = 67px. Chromium's Linux font substitution
+is not macOS's San Francisco, so this is a close measurement rather than an
+exact one for the shipped font; the number is small enough (67px, on a field
+that is at minimum several hundred px wide before its own narrow-width rules
+kick in) that a few px of font-substitution error has no visible consequence,
+but a browser check against the actual rendering is still the way to confirm
+it precisely. `.listing-completion-row`'s own left padding tracks the same
+67px so a suggestion still lands under the query text it completes.
+
+The trailing decorative magnifier (`.listing-search-glyph`, the ternary's
+else-branch) is deleted outright, markup and CSS both — the chip's own
+magnifier now carries that meaning, and grepping `Listing.tsx` and
+`explorer.css` afterward turns up no remaining reference to the class. The
+trailing slot's ternary (`hasClear ? clear : glyph`) becomes a single `&&`
+(`hasClear && clear`): nothing renders in the query-less, unfocused-clear-slot
+gap that leaves — Item C's hint is a distinct sibling condition, not the old
+else-branch reused, because their gating conditions differ (`!hasClear` alone
+for the glyph before; `!pinnedOpen && !hasClear` for the hint now).
+
+The keyboard hint (`.listing-search-shortcut-hint`) shares that same trailing
+CSS position (`right: 8px`, `right: 38px` inside a claimed crumb bar — the
+exact numbers the deleted glyph used, confirmed by diffing against the
+pre-deletion rule before it was removed) because its gating condition
+(`!pinnedOpen && !hasClear`) never overlaps the clear button's own
+(`hasClear`). `pinnedOpen` is not simply `!hasClear`'s negation, though: the
+"unpin" blur path in `search-provisional.ts` sets `pinnedOpen` false while a
+committed query remains, so `!pinnedOpen` alone would paint the hint on top of
+a still-present clear button in that one state — `!hasClear` in the same
+condition is what keeps them from colliding. The label reads `isMac ? "⌘L" :
+"Ctrl L"`, `isMac` imported from `@platform/lib/platform` alongside the
+existing `isMod` import — the app's one platform detection, not a fresh
+`navigator` check, matching `shortcut-chord.ts`'s own rule that platform
+detection stays singular. The key cap (`.listing-search-shortcut-hint kbd`)
+carries the exact declarations `preferences.css`'s `.fh-ai-hint kbd` already
+uses (`padding: 0 4px`, `border: 1px solid var(--border)`, `border-radius:
+4px`, `background: var(--bg-alt)`) rather than a new style — duplicated
+rather than shared across stylesheets because nothing in `Listing.tsx`'s CSS
+file reaches into `preferences.css`.
+
+Narrow-width absence for the hint is `container-type: inline-size` on
+`.listing-search-box` plus `@container (max-width: 360px) { display: none }`
+on the hint itself — a CSS query rather than a measured ref, because
+`search-hint-width.ts`'s own comment records a `useLayoutEffect([])` version
+of a similar measurement on this branch freezing on a null ref and never
+recovering. The container query answers the BOX's own width, not the row's:
+the row can stay as wide as the whole crumb bar while the box inside it,
+squeezed by a deep path taking up the crumbs' share of that width, is the one
+that actually runs out of room for the hint.
+
+Panel-mode bars: traced by grepping `Panel.tsx`, which renders only
+`<BookmarkStar name="Panel" />` per pane — no reference to `.listing-search-*`
+markup or classes anywhere in that file, so none of this chip/hint work has
+anything to touch there. `EntryActionsMenu.tsx` and its `title="App actions"`
+were not opened. `showsSearchHits` and the search-count chip's gate on it are
+untouched — grepped, only referenced where they already were.
+
+Geometry: `--topbar-h` (48px) and `--topbar-pad-y` (8px) are untouched; the
+only property this round changed on `.listing-search-input` besides adding
+the trailing-slot elements was `padding-left` (10px → 67px) — vertical
+padding, border, and height all stay exactly as D13/D14 left them, focused and
+unfocused alike, since no rule touching `top`, `bottom`, `height`, or
+vertical `padding`/`border` was edited.
+
+Tests: `search-mode-chip.test.ts` (new) covers the chip's predicate
+composition, its readout-not-control CSS, the accent/muted color split, the
+label's lack of a reserved width, the fixed crumbs/input offset, the hint's
+visibility gate, its platform-detection source, its kbd styling, and its
+container-query narrow-width rule. `search-clear-button.test.ts` drops its
+three magnifier-specific assertions (the ternary, the glyph's own CSS, and the
+claimed-bar offset — none of those selectors exist any more) for one assertion
+that no `listing-search-glyph` reference survives anywhere, plus three new
+assertions for the hint occupying that same slot on the same offsets. Its one
+surviving unmodified assertion — "the input reserves no left gutter keyed to
+the magnifier's old name" — targets the compound selector
+`.listing-search .listing-search-input`, a distinct rule from the base
+`.listing-search-input` this round edited, so `padding-left`'s move to the
+base rule leaves the compound rule's own declarations, and this assertion,
+unaffected.
+
+Pre-change failure, confirmed by a tagged `git stash push -u -m
+"brief28-pretest-check"` (Listing.tsx and explorer.css only, keeping the new
+and edited test files) followed by `bun test --run` on the two search test
+files: 15 of 22 tests failed against the pre-chip/pre-hint source. A second,
+narrower check after Item A and B were already committed — stashing out only
+the Item C diff — showed 8 of 23 failing against the pre-hint source
+specifically. Both stash entries were applied back and dropped by their own
+recorded SHA; `git stash list` is empty.
+
+Verification: `./frontend/node_modules/.bin/tsc --noEmit --project
+frontend/tsconfig.json` clean at every one of the three commits. `bun test
+--run` — 3389 pass after item A, 3387 after item B (net -2: three
+magnifier-specific tests replaced by one), 3395 after item C, 0 fail
+throughout, up from the 3383-pass baseline this round started from.
+`node frontend/scripts/check-boundaries.mjs` — `boundaries OK (512 files)`
+from item A onward, up from 511 by the one new file
+(`search-mode-chip.test.ts`). `bun run build` (from `frontend/`) succeeds at
+the final state; only the pre-existing manual-chunking warnings, unrelated to
+this change.

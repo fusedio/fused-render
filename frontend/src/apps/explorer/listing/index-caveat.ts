@@ -86,10 +86,13 @@ export function withCaveat(count: string | null, caveat: IndexCaveat | null): st
  *
  * `behind` — "these rows answer a different query, or an older generation of
  * the tree" — is two situations wearing one name. While a request is in
- * flight the next answer is ~40 ms away, and captioning that "not refreshed…
- * clear the search and run it again" is corpus-staleness language for a round
- * trip, printed exactly where the 200 ms rule withholds a spinner. Only rows
- * that are STUCK are stale.
+ * flight, or is merely scheduled and still sitting out the debounce before it
+ * goes out, the next answer is at most a couple hundred ms away, and
+ * captioning that "not refreshed… clear the search and run it again" is
+ * corpus-staleness language for a round trip that has not even started yet.
+ * `pending` covers both — armed the moment a request is scheduled, not only
+ * once it is in flight — so this guard's window matches the whole wait, not
+ * just its back half. Only rows that are STUCK are stale.
  */
 export function searchCaveat(
   status: IndexStatus | null | undefined,

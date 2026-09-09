@@ -1186,6 +1186,8 @@ def test_the_run_listing_is_not_re_read_on_every_keystroke(home, tmp_path, monke
     run — and this fires on EVERY ranked request, which is one per keystroke in
     two search boxes. The answer cannot change meaningfully inside a poll
     interval, so it is cached for a beat."""
+    import threading
+
     from fused_render.index import runner
     from fused_render.server.routers import index as index_routes
 
@@ -1193,20 +1195,33 @@ def test_the_run_listing_is_not_re_read_on_every_keystroke(home, tmp_path, monke
     client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
     calls = []
     real = runner.list_runs
-    monkeypatch.setattr(runner, "list_runs",
-                        lambda cfg, limit=20: (calls.append(1), real(cfg, limit=limit))[1])
-    # `runner.list_runs` is shared process-wide, and `_live_runs` (the cache
-    # under test) is not its only caller: the Activity job bridge
-    # (`mirror_index_jobs_once`, `_index_job_loop`) reads through it directly,
-    # on its own timer, bypassing `_live_runs`'s cache entirely by design (its
-    # own docstring explains why). That timer runs on a daemon thread that
-    # `start_index_job_bridge` starts once per process and never stops, so any
-    # earlier test in the same worker whose app entered a full lifespan
-    # (`with TestClient(...) as client:`) leaves it ticking for the rest of
-    # the run. A tick landing inside the five requests below calls the same
-    # `list_runs` just monkeypatched above and inflates `calls` past 1 with
-    # `_live_runs` never having missed its cache — so the bridge is silenced
-    # here, isolating the count to the call site this test actually owns.
+
+    def recording(cfg, limit=20):
+        # `runner.list_runs` is shared process-wide, and `_live_runs` (the
+        # cache under test) is not its only caller: the Activity job bridge
+        # (`mirror_index_jobs_once`, `_index_job_loop`) reads through it
+        # directly, on its own timer, bypassing `_live_runs`'s cache
+        # entirely by design (its own docstring explains why). That timer
+        # runs on a daemon thread (`INDEX_JOB_BRIDGE_THREAD_NAME`) that
+        # `start_index_job_bridge` starts once per process and never stops,
+        # so any earlier test in the same worker whose app entered a full
+        # lifespan (`with TestClient(...) as client:`) leaves it ticking for
+        # the rest of the run. Re-patching `mirror_index_jobs_once` below
+        # stops FUTURE ticks from reaching this function, but not a tick
+        # already inside the real one's body when the patch lands: its own
+        # `runner.list_runs(...)` call resolves this name fresh, at call
+        # time, on the bridge's own thread, regardless of which version of
+        # `mirror_index_jobs_once` is executing — so a call landing on that
+        # thread is never one the five requests below caused, and is
+        # excluded by origin rather than raced against.
+        if threading.current_thread().name != index_routes.INDEX_JOB_BRIDGE_THREAD_NAME:
+            calls.append(1)
+        return real(cfg, limit=limit)
+
+    monkeypatch.setattr(runner, "list_runs", recording)
+    # Still silences the bridge's steady-state ticking (the common case);
+    # the thread-origin filter above is what makes a tick that was already
+    # in flight when this lands harmless too.
     monkeypatch.setattr(index_routes, "mirror_index_jobs_once", lambda cfg=None: False)
     index_routes._forget_runs()
     assert index_routes.RUNS_CACHE_S >= 1.0

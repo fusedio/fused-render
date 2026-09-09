@@ -57,10 +57,18 @@
   gap: 2px;
 }
 
-/* ★ bookmark button, at the tail of the path. Subtle: bare glyph, no box —
-   muted until hovered; a FILLED FOREGROUND star when the view is bookmarked
-   or an armed bookmark is live. Deliberately not accent-yellow any more: the
-   accent means exactly one thing in this chrome, the active view mode.
+/* ★ bookmark button, at the tail of the path. A quiet control — the app's
+   token pair for a button that rests visible and steps up on hover
+   (`--ctl-quiet-bg`/`--ctl-quiet-bg-hover`, tokens.css) — so the resting pill
+   is what tells a viewer this is pressable before the pointer ever arrives;
+   it shares the search field with two readouts that carry no such pill —
+   the mode chip at the field's leading edge (`.listing-search-mode`) and
+   the keyboard hint at its own trailing edge
+   (`.listing-search-shortcut-hint`) — and the star needs to read as a
+   different kind of thing from both, not just on hover.
+   Muted glyph until hovered; a FILLED FOREGROUND star when the view is
+   bookmarked or an armed bookmark is live. Deliberately not accent-yellow:
+   the accent means exactly one thing in this chrome, the active view mode.
    Bookmarking is state, not "the thing you are looking at". */
 .bookmark-star-btn {
   flex: 0 0 auto;
@@ -72,7 +80,7 @@
   padding: 5px;
   border: none;
   border-radius: 6px;
-  background: none;
+  background: var(--ctl-quiet-bg);
   color: var(--fg-muted);
   cursor: pointer;
   transition:
@@ -111,9 +119,14 @@
 
 .bookmark-star-btn:hover {
   color: var(--fg);
-  background: rgba(var(--tint), 0.08);
+  background: var(--ctl-quiet-bg-hover);
 }
 
+/* The bookmarked state keeps the accent-tinted pill the quiet-hover step no
+   longer carries (that step moved to the neutral `--ctl-quiet-bg-hover`
+   above), so "bookmarked" stays visually distinct from "merely hovered" by
+   colour, not just by the filled-vs-outline glyph `StarIcon` already draws
+   for it. */
 .bookmark-star-btn.active,
 .bookmark-star-btn.active:hover {
   color: var(--fg);
@@ -1292,6 +1305,32 @@ table.pane-mini-list td.status-message {
   padding: 14px 10px;
 }
 
+/* The Enter-to-open-and-search row: the one banner in this family that is an
+   instruction rather than a state report, so it gets the app's one accent
+   colour rather than the shared `.status-message` grey. A wash, not a fill —
+   `rgba(var(--accent-rgb), 0.13)` is the same "--bg-alt under the accent
+   0.13 wash" idea `--row-bg-active` names, applied straight to this row's
+   own background rather than baked into a token, since this surface isn't
+   `--bg-alt`. `--accent-soft` on the text keeps it one deliberate accent
+   element instead of grey text sitting on a tinted band. A full `--accent`
+   fill with `--on-accent` text was tried in reasoning and rejected: at that
+   weight the row reads as an error or a system alert, not as "type Enter
+   next" sitting quietly above a normal folder listing.
+
+   This is the ONLY row in the `.status-message` family carrying colour like
+   this — every sibling site (BookmarkOpen's "Opening bookmark…", the
+   truncated/empty states above and below it, `.status-message.error`) is
+   untouched; this rule only ever matches the modifier class below, never
+   the bare class.
+
+   The accent is spent here and nowhere else on this bar: the search field's
+   own focus border stays `--fg-muted` on purpose, so focus and "type Enter
+   to act" never compete for the same colour. */
+.status-message.listing-enter-row {
+  background: rgba(var(--accent-rgb), 0.13);
+  color: var(--accent-soft);
+}
+
 /* Skeleton loading state: shimmering bars shaped like the real listing rows
    (icon + name + size + mtime), plus a full-pane placeholder while a preview
    loads. Token-derived (--bg-alt/--border) so it reads as part of the UI. */
@@ -1422,9 +1461,10 @@ table.listing-table tr.skel-row:hover {
      resting size beside a strip of its own. */
   flex: 1 1 auto;
   width: auto;
-  /* The squeeze floor, and it moved with the in-field magnifier: the glyph took
-     28px of the input as padding, so the old 96px left ~58px of text and
-     started clipping the placeholder it was chosen to hold. */
+  /* The squeeze floor: below this, the placeholder it's chosen to hold
+     starts clipping before the box's own controls (magnifier or clear
+     button, count/spinner pin, star) have room to sit without overlapping
+     the text. */
   min-width: 124px;
 }
 
@@ -1457,30 +1497,26 @@ table.listing-table tr.skel-row:hover {
    would not match anything here: the two conditions it would name (claimed
    field, `.crumbs` present) are mutually exclusive.
 
-   The ★ and the history arrows still get out of the way below, for the
-   reason the path would have: */
-/* …and so do the ★ and the history arrows, for the same reason the path did.
-   Neither acts on the search — the star bookmarks the folder, which has not
-   changed, and the arrows leave it entirely — but between them they are the
-   whole of what holds the field off the left edge, and a search box that spans
-   the bar is what someone typing a query is asking for. Both come straight back
-   on Esc or an emptied query, so nothing is lost, only deferred.
+   The history arrows still get out of the way below, for the reason the path
+   would have: */
+/* …and so do the history arrows, for the same reason the path did — they hold
+   the field off the left edge, and a search box that spans the bar is what
+   someone typing a query is asking for. They come straight back on Esc or an
+   emptied query, so nothing is lost, only deferred.
 
-   `display: none`, not visibility/opacity: the star's box is 24px plus the
-   deliberate -11px margin above and the arrows are 28px each, and hiding any of
-   them while keeping the box would leave the field starting in from a gap. A
-   flex item removed this way
-   takes its `gap` share with it, so there is nothing left behind. (This is the
-   opposite of the table-column case in listing/column-shedding.test.ts, where
-   the shed element had to stay rendered — a table column under
-   `table-layout: fixed` outlives its hidden header.)
+   The star does not join them any more: it moved off the bar's left/outer
+   zone and into the field itself (Listing.tsx renders it as the box's own
+   trailing affordance, past the count/spinner pin above), so it has nothing
+   left to stand down FROM — it grows and shrinks with the box it now lives
+   inside, same as the count chip beside it.
 
-   Hidden, never unmounted: React keeps the button mounted, so an armed bookmark
-   is not disarmed by a keystroke (see useUpdateButton in Breadcrumb.tsx).
-   Scoped under #breadcrumb because panel mode renders one star per pane from the
-   same component. */
-#breadcrumb:has(.listing-search.searching) .bookmark-star-btn,
-#breadcrumb:has(.listing-search.expanded) .bookmark-star-btn,
+   `display: none`, not visibility/opacity: the arrows are 28px each, and
+   hiding them while keeping the box would leave the field starting in from a
+   gap. A flex item removed this way takes its `gap` share with it, so there
+   is nothing left behind. (This is the opposite of the table-column case in
+   listing/column-shedding.test.ts, where the shed element had to stay
+   rendered — a table column under `table-layout: fixed` outlives its hidden
+   header.) */
 #breadcrumb:has(.listing-search.searching) .crumb-nav,
 #breadcrumb:has(.listing-search.expanded) .crumb-nav {
   display: none;
@@ -1514,68 +1550,127 @@ table.listing-table tr.skel-row:hover {
    the widest thing left (the multi-selection readout, "1,234 selected") once
    the chip stops hanging 26px off the edge. Still a reservation and not a
    reflow — the chip is absolutely positioned, so a digit more or less never
-   moves the box. */
+   moves the box. 126px now: the star sits past the chip (below), and its
+   24px hit area plus a 6px gap is the same 30px added to `--pin-right`
+   beneath it — one reservation growing by one amount, not two. */
 .crumb-search-slot > .listing-search .listing-search-box.has-pin .listing-search-input {
-  padding-right: 96px;
+  padding-right: 126px;
+}
+
+/* Same +30px, for the caveat-widened pin ("indexing…" beside the count) —
+   the generic .wide-pin rule further down never learns about the star, since
+   it also covers listing rows with no crumb bar (and so no star) to clear. */
+.crumb-search-slot > .listing-search .listing-search-box.has-pin.wide-pin .listing-search-input {
+  padding-right: 240px;
 }
 
 /* The whole pin group moves in with it — the spinner too, or a streaming walk
-   would leave it hanging 16px out over the count. */
+   would leave it hanging 16px out over the count. 40px, not 10px: the star
+   (below) claims the box's true right edge now, so the count/spinner pin
+   — still hanging off this same variable — has to sit 30px further in to
+   clear it, the same 24px hit area plus 6px gap `.has-pin` reserves for
+   above. */
 .crumb-search-slot .listing-search-box {
-  --pin-right: 10px;
+  --pin-right: 40px;
 }
 
 /* A pin (the multi-selection readout, "12 selected", or the streaming
-   spinner) reserves 96px of the input as padding-right (above) — the box
+   spinner) reserves 126px of the input as padding-right (above) — the box
    itself keeps the plain grow-with-the-row sizing every merged field gets
    (`flex: 1 1 auto; width: auto;`), so a pin never squeezes the path down to
    a fixed width; the crumbs are scrollable and give up room first. */
 
+/* The star, trailing the count/spinner pin at the box's own right edge
+   (Listing.tsx renders it there once this row has portaled into a claimed
+   crumb bar — see `barSearchSlot` there). Absolutely positioned like the rest
+   of the pin group, so it costs the box no layout and sits inside the
+   field's own border rather than out past it. `margin-left` overrides the
+   path-tightening -6px `#breadcrumb .bookmark-star-btn` carries for the star's
+   other position (further down) — that pairing does not exist in here, and
+   the negative margin would just pull the glyph off-centre in its 24px box. */
+#breadcrumb .crumb-search-slot .listing-search-box .bookmark-star-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 0;
+}
+
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
-   toggle can sit beside them without disturbing the inside-the-input pin. */
+   toggle can sit beside them without disturbing the inside-the-input pin.
+   `container-type: inline-size` scopes the shortcut hint's own narrow-width
+   rule (`.listing-search-shortcut-hint` below) to THIS box's own width
+   rather than the row's — the row can be as wide as the whole crumb bar
+   while the box itself, squeezed by a deep path, is the one that runs out of
+   room for the hint. */
 .listing-search-box {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
+  container-type: inline-size;
+}
+
+/* The mode chip: the field's leading readout, always rendered (Listing.tsx
+   has no visibility condition of its own, only the search/path choice) —
+   the field must never be caught with neither word showing. Left-aligned at
+   the same 8px inset the trailing controls use on their own edge,
+   `pointer-events: none` so a press here lands on the input beneath it, the
+   same fall-through the crumbs use. No background, no hover, no cursor
+   change: this is a readout, not a third pressable thing beside the star
+   and the clear button — the whole point of a chip that never lies about
+   the mode is that it also never invites a click that would do nothing. */
+.listing-search-mode {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Search takes the accent: it marks the state with an action pending
+   (commit the query), the same argument the focused/searching border and
+   the enter-row wash already make elsewhere in this box. Path stays muted —
+   it is the resting state, not a claim about anything. */
+.listing-search-mode.search {
+  color: var(--accent);
+}
+
+/* No reserved width of its own: the label is exactly as wide as its own
+   text, so "Path" leaves no dead space between the word and the crumbs that
+   follow it. The two states are not meant to line up with each other pixel
+   for pixel — only the crumbs' own start position (below) has to hold
+   still, and that is fixed by the crumbs' own left offset, not by padding
+   inside a state that renders no crumbs at all. */
+.listing-search-mode-label {
+  display: inline-block;
 }
 
 .listing-search .listing-search-input {
   width: 100%;
   padding-right: 10px;
-  /* Room for the magnifier below: 9px gutter + a 14px glyph + 5px before the
-     text. The glyph is out of flow, so this padding is the only thing keeping
-     the placeholder and the caret off it. */
-  padding-left: 28px;
-}
-
-/* The magnifier INSIDE the field's left edge — the one search affordance the
-   claimed folder's bar carries, and it is the one part of the box that
-   survives the placeholder being typed over.
-
-   Absolutely positioned, so it costs the box no layout at either resting width
-   and the chips pinned at the right edge are untouched. `pointer-events: none`
-   is what makes it feel like part of the input rather than a control on top of
-   it: the press falls through to the input underneath, and that focus is what
-   expands the box (Listing.tsx `pinnedOpen`). */
-.listing-search-glyph {
-  position: absolute;
-  left: 9px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  color: var(--fg-muted);
-  pointer-events: none;
 }
 
 /* Decision 1: the breadcrumbs shown behind the merged field at REST, empty
    and unfocused (query === "" && !pinnedOpen, Listing.tsx). Same
-   click-through trick as the magnifier above — the strip itself lets a press
-   fall through to the input underneath (which is what focuses and expands
-   the box), while an actual crumb link claims its own click to navigate
-   instead. Left-aligned right after the glyph, the same reading order the
-   plain-file crumb strip uses — the magnifier and the path have to read as
-   one unit, not "icon here, path pushed to the far edge". Clipped rather
-   than wrapped, since the box beneath it is one line tall.
+   click-through trick as the mode chip ahead of it uses — the strip itself
+   lets a press fall through to the input underneath (which is what focuses
+   and expands the box), while an actual crumb link claims its own click to
+   navigate instead. Left-aligned past the chip, at the widest the chip ever
+   gets: 8px (the chip's own left inset) + 12px (its glyph) + 4px (the
+   glyph-to-label gap) + 35px (the "Search" label, the longer of the two
+   words the chip ever shows, measured at this rule's own 11px/500 weight)
+   + 8px clearance = 67px. Fixed at that one number regardless of which word
+   is showing, so the crumbs never shift when the mode changes — the state
+   that carries the leftover room is "Path", whose shorter word leaves a gap
+   before this same fixed start, not the crumbs' own position. Clipped
+   rather than wrapped, since the box beneath it is one line tall.
 
    A narrow field still has to keep the CURRENT folder readable rather than
    the root, so PathCrumbs.tsx pins the strip's scrollLeft to its own end —
@@ -1596,13 +1691,21 @@ table.listing-table tr.skel-row:hover {
    class here, so no `#breadcrumb .crumbs`/`.crumbs`-keyed rule elsewhere in
    this file — several exist for a sibling strip that does not exist once a
    folder is claimed — can match this element by accident. This rule
-   declares everything it needs on its own name instead: the monospace face
-   the plain strip wears, left-aligned with no packing, visible for exactly
-   as long as the JSX above renders it and no longer. */
+   declares everything it needs on its own name instead: the same monospace
+   face AND the same 12px size `#breadcrumb .crumbs`/`.panel-crumbs` wear,
+   left-aligned with no packing, visible for exactly as long as the JSX
+   above renders it and no longer.
+
+   12px, not the search input's 13px it floats over: this element is a PATH
+   STRIP, not a bigger version of the input's placeholder text, so its
+   reference is every other path strip in the app, not the field beneath it.
+   A monospace face is already the widest glyph set here, and the rest of
+   this row sits at 12–12.5px, so matching the input's size instead would
+   make the resting path read as the largest thing in the bar. */
 .listing-search-crumbs {
   position: absolute;
   inset: 0;
-  left: 28px;
+  left: 67px;
   right: 10px;
   display: flex;
   align-items: center;
@@ -1612,7 +1715,7 @@ table.listing-table tr.skel-row:hover {
   scrollbar-width: none;
   white-space: nowrap;
   font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 13px;
+  font-size: 12px;
   pointer-events: none;
 }
 
@@ -1721,6 +1824,135 @@ table.listing-table tr.skel-row:hover {
   }
 }
 
+/* Real clear control (not the suppressed native WebKit cancel button, which
+   collides with this same pinned chip group) — a quiet pill matching the
+   star's own resting/hover treatment (`--ctl-quiet-bg`/`--ctl-quiet-bg-hover`,
+   tokens.css), so it reads as pressable before the pointer ever arrives. Only
+   rendered while there is a query (Listing.tsx `hasClear`), and always
+   nearer the box's true right edge than the count/spinner pin — the star, if
+   present, still claims the very edge (crumb-slot rule below moves this one
+   in to clear it). */
+.listing-search-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  border: none;
+  border-radius: 6px;
+  background: var(--ctl-quiet-bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+}
+
+.listing-search-clear:hover {
+  color: var(--fg);
+  background: var(--ctl-quiet-bg-hover);
+}
+
+/* In the claimed-folder crumb bar the star still sits at the box's own true
+   right edge (right: 8px, a 24px hit box) — this control moves in to clear
+   it: 24px of star plus a 6px gap. */
+.crumb-search-slot .listing-search-box .listing-search-clear {
+  right: 38px;
+}
+
+/* The keyboard hint, sharing the clear button's own trailing slot rather
+   than a fixed left gutter — the two never render at once (Listing.tsx's
+   `!hasClear` guard), so sharing the position costs nothing and needs no
+   extra width reserved anywhere. Decoration, not a control:
+   `pointer-events: none` keeps a press falling through to the input
+   beneath it. */
+.listing-search-shortcut-hint {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.crumb-search-slot .listing-search-box .listing-search-shortcut-hint {
+  right: 38px;
+}
+
+/* The app's own key-cap vocabulary (preferences.css's `.fh-ai-hint kbd`,
+   also carried by `.fh-result-note kbd`) — this bar gets its own selector
+   rather than sharing theirs across stylesheets because nothing here reaches
+   into preferences.css, but the declarations are the same rule, not a new
+   one. */
+.listing-search-shortcut-hint kbd {
+  font: inherit;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-alt);
+}
+
+/* Absent, not clipped, on a narrow box — a deep path or a narrow window can
+   squeeze `.listing-search-box` well below the width this hint needs.
+   `container-type: inline-size` on the box itself (above) is what makes this
+   query answer the BOX's own width rather than the row's, which can stay
+   wide (the whole crumb bar) while the box inside it has already given up
+   most of that width to the path. A CSS query rather than a measured ref:
+   `useWidthThresholdRef`'s own comment records a `useLayoutEffect([])`
+   version of a similar measurement freezing on a null ref and never
+   recovering — this has no such failure mode because there is nothing to
+   attach or miss. */
+@container (max-width: 360px) {
+  .listing-search-shortcut-hint {
+    display: none;
+  }
+}
+
+/* The count/spinner pin moves in to clear the clear button the same way it
+   already moves in to clear the star (`--pin-right` above) — 24px of hit
+   area plus a 6px gap, on top of whichever base the context already sets. */
+.listing-search-box.has-clear {
+  --pin-right: 38px;
+}
+
+.crumb-search-slot .listing-search-box.has-clear {
+  --pin-right: 68px;
+}
+
+/* Input right-padding, so typed text never runs under the clear button —
+   each rule adds the same 30px (24px hit area + 6px gap) on top of whatever
+   the has-pin/wide-pin matrix above already reserves for the count chip. */
+.listing-search-box.has-clear:not(.has-pin) .listing-search-input {
+  padding-right: 40px;
+}
+
+.listing-search .listing-search-box.has-pin.has-clear .listing-search-input {
+  padding-right: 146px;
+}
+
+.listing-search .listing-search-box.has-pin.wide-pin.has-clear .listing-search-input {
+  padding-right: 240px;
+}
+
+.crumb-search-slot > .listing-search .listing-search-box.has-pin.has-clear .listing-search-input {
+  padding-right: 156px;
+}
+
+.crumb-search-slot
+  > .listing-search
+  .listing-search-box.has-pin.wide-pin.has-clear
+  .listing-search-input {
+  padding-right: 270px;
+}
+
 /* Dims the results briefly while a background render (React's deferred
    value) is catching up to the latest keystroke on a large search. */
 .listing-stale {
@@ -1739,7 +1971,10 @@ table.listing-table tr.skel-row:hover {
   opacity: 0.86;
 }
 
-/* Search-input chrome (explorer header). */
+/* Search-input chrome (explorer header). 67px left padding clears the mode
+   chip at its widest ("Search"): the same number `.listing-search-crumbs`
+   above reserves, so typed text and the crumbs it stands in for at rest
+   both begin where the chip's fixed clearance ends. */
 .listing-search-input {
   width: 100%;
   font: inherit;
@@ -1748,7 +1983,7 @@ table.listing-table tr.skel-row:hover {
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 6px 10px;
+  padding: 6px 10px 6px 67px;
 }
 
 .listing-search-input::placeholder {
@@ -1756,30 +1991,26 @@ table.listing-table tr.skel-row:hover {
 }
 
 /* Focus affordance: a muted border brighten, not the accent yellow — still
-   clearly perceivable against the resting --border, just not loud. */
-.listing-search-input:focus {
-  outline: none;
-  border-color: var(--fg-muted);
-}
-
-/* Decision 1/2: the merged field going LIVE — accent border plus a soft
-   outer ring, and the magnifier glyph joins in rather than staying grey, so
-   the state change reads on the glyph too. Two states share this, not one:
-   `.expanded` (focused, Listing's `pinnedOpen`) fires the moment the field
-   is entered, even before the first character — that IS the state change,
-   not a wait for a query — and `.searching` (a non-empty query) keeps it lit
-   after a blur that leaves text behind. Neither implies the other, so both
-   are named; higher specificity than the plain `:focus` brighten above,
-   which this replaces rather than adds to whenever either is true. */
+   clearly perceivable against the resting `--border`, just not loud.
+   `--fg-muted` is token-based, so it costs no per-theme rule. The accent
+   already carries meaning on this surface — the sorted column header uses
+   it for "this is the active sort" — and focus is the single most frequent
+   transient state in the app (every click into the field, every Ctrl+L),
+   already legible from the caret, the crumbs-to-input swap, and the
+   dropdown besides. Spending the palette's loudest colour on the commonest
+   state would dilute what the accent means elsewhere and make routine
+   interaction read like an alert. `.expanded` (focused, Listing's
+   `pinnedOpen`) fires the moment the field is entered, even before the
+   first character — that IS the state change, not a wait for a query —
+   and `.searching` (a non-empty query) keeps it lit after a blur that
+   leaves text behind. Neither implies the other, so both are named
+   alongside the plain `:focus` case; one rule, one treatment, for all
+   three. */
+.listing-search-input:focus,
 .crumb-search-slot .listing-search.expanded .listing-search-input,
 .crumb-search-slot .listing-search.searching .listing-search-input {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.25);
-}
-
-.crumb-search-slot .listing-search.expanded .listing-search-glyph,
-.crumb-search-slot .listing-search.searching .listing-search-glyph {
-  color: var(--accent);
+  outline: none;
+  border-color: var(--fg-muted);
 }
 
 /* Decision 2: the completion dropdown, floated below the field it belongs to.
@@ -1822,35 +2053,15 @@ table.listing-table tr.skel-row:hover {
   box-shadow: 0 8px 28px var(--shadow-lg);
 }
 
-/* Left padding matches `.listing-completion-row` below at 28px, not this
-   block's own 11px right padding — both share that value with
-   `.listing-search .listing-search-input`'s `padding-left` (the input's own
-   text gutter, clearing the magnifier glyph), so a suggestion name sits
-   directly under the query text it completes instead of drifting from it.
-   The two rules move together: a change to the magnifier gutter must be
-   mirrored here and on the row rule below, or the alignment silently
-   breaks. */
-.listing-completion-header {
-  padding: 7px 11px 4px 28px;
-  font-size: 10.5px;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-  /* A plain block sibling of `.listing-completion-rows` below, not inside
-     its scroll container — it labels the whole dropdown, not a list item,
-     so it must not scroll away with the rows. */
-}
-
-/* Decision 2 fixup: the rows scroll under the fixed header above once there
-   are more than fit at rest. `max-height` is set inline from Listing.tsx,
-   computed off a rendered row's own `offsetHeight` rather than duplicated
-   here as a second, driftable guess at this rule's own padding/font-size —
-   see the comment on `rowsMaxHeight` there. 5.5 rows, not an even 5: half a
-   sixth row peeking past the bottom edge is what tells a 6+-item list apart
-   from one that simply ended at 5 — the "there is more, scroll" cue. The
-   inline style is cleared (no max-height) when 5 or fewer rows exist, so a
-   short list still sizes to its own content instead of padding out to a
-   fixed height.
+/* The rows scroll once there are more than fit at rest. `max-height` is set
+   inline from Listing.tsx, computed off a rendered row's own `offsetHeight`
+   rather than duplicated here as a second, driftable guess at this rule's
+   own padding/font-size — see the comment on `rowsMaxHeight` there. 5.5
+   rows, not an even 5: half a sixth row peeking past the bottom edge is
+   what tells a 6+-item list apart from one that simply ended at 5 — the
+   "there is more, scroll" cue. The inline style is cleared (no max-height)
+   when 5 or fewer rows exist, so a short list still sizes to its own
+   content instead of padding out to a fixed height.
 
    This rule's own `max-height` is the fallback for a render where the
    inline one hasn't landed yet (row 0 not measurable, or a browser dropping
@@ -1870,16 +2081,14 @@ table.listing-table tr.skel-row:hover {
   display: none;
 }
 
-/* Left padding is 28px, same as `.listing-completion-header` above and for
-   the same reason: it matches `.listing-search .listing-search-input`'s own
-   `padding-left`, the input's text gutter past the magnifier glyph, so a
-   suggestion name lands directly under the query text it completes rather
-   than sitting 17px left of it. Right padding stays at 11px. */
+/* Left padding matches `.listing-search-input`'s own base left padding
+   (67px, cleared for the mode chip), so a suggestion name lands directly
+   under the query text it completes. Right padding stays at 11px. */
 .listing-completion-row {
   display: flex;
   align-items: baseline;
   gap: 9px;
-  padding: 4px 11px 4px 28px;
+  padding: 4px 11px 4px 67px;
   font-size: 12.5px;
   cursor: default;
 }
@@ -1914,6 +2123,57 @@ table.listing-table tr.skel-row:hover {
   color: inherit;
 }
 
+/* The focused-and-empty examples panel (Listing.tsx, gated by
+   search-examples.ts), in the same `.listing-completion` surface a real
+   completion dropdown uses — same padding rhythm, same row class, same
+   monospace-name/muted-hint pairing. Stacked rather than the side-by-side
+   name/hint a path row uses: an example pairs a short pattern with a full
+   sentence explaining it, and a sentence needs its own line rather than
+   being squeezed into a fixed-width tail the way "folder" or a file size
+   is. No keyboard highlight state (there are only three rows and nothing to
+   arrow between yet), so this is a plain `:hover`, not the `.highlight`
+   class the keyboard-driven rows above carry. */
+.listing-completion-row.listing-completion-example {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  cursor: pointer;
+}
+
+/* The examples panel's own surface (background/border/shadow, all painted by
+   `.listing-completion`) capped to its content: three short pattern/hint
+   pairs only need ~300px, far short of the dropdown's own width (which
+   tracks the field, itself often 1000px+). The cap has to sit on THIS
+   element — the row above is a block box inside it, and capping a child's
+   width cannot shrink the parent that paints the surface around it.
+   `max-width`, not `width`, so a field narrower than the cap still governs
+   it (the row's normal block-width fallback). Left-aligned for free — the
+   panel is `left: 0` on the box and the row's own 10px left padding matches
+   the input's own text edge, so the cap changes nothing about where the
+   content starts. */
+.listing-completion.listing-completion-examples {
+  max-width: 460px;
+}
+
+.listing-completion-example .listing-completion-name {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+.listing-completion-example .listing-completion-hint {
+  white-space: normal;
+}
+
+/* Same accent-tinted treatment `.listing-completion-row.highlight` gives a
+   keyboard-highlighted row — see that rule above. */
+.listing-completion-example:hover {
+  background: var(--row-bg-active);
+  color: var(--accent-soft);
+}
+
+.listing-completion-example:hover .listing-completion-hint {
+  color: inherit;
+}
+
 /* Matched-substring highlight in search results (explorer). */
 .search-mark {
   background: rgba(var(--accent-rgb), 0.22);
@@ -1925,6 +2185,17 @@ table.listing-table tr.skel-row:hover {
 .search-path {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Space and mute the "/" segment separators in a multi-segment search-hit
+   path, so it reads as layered folders rather than one long run of
+   characters (renderHighlightPath, listing/bits.tsx). Margin, not a literal
+   space — the character positions highlightSegments works from are computed
+   against the raw path string, and the path still has to copy to the
+   clipboard as the exact string it names, with no extra whitespace in it. */
+.path-sep {
+  margin: 0 2px;
+  color: rgba(var(--fg-muted-rgb), 0.6);
 }
 
 /* Fixed layout is what makes the list unscrollable sideways: with `auto`, the
@@ -2009,6 +2280,24 @@ table.listing-table th.sortable {
 
 table.listing-table th.sortable:hover {
   color: var(--fg);
+}
+
+/* The search-hits header names the base the shown relative paths are rooted
+   at ("Path in ~/Downloads"), which can run long — truncate to one line with
+   an ellipsis rather than wrapping the sticky header taller, and carry the
+   full text in the title attribute (Listing.tsx) for the truncated case. */
+table.listing-table th.col-search-base {
+  max-width: 0; /* lets the table-layout width win over the text's own size */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The "Path in " label is chrome and stays uppercase with the rest of the
+   header row; the path itself is data. Linux paths are case-sensitive, so
+   inheriting the header's uppercase would show a path that does not exist. */
+table.listing-table .col-search-base-path {
+  text-transform: none;
 }
 
 /* The accent means "the view mode you are in" and nothing else (only the

@@ -543,6 +543,13 @@ def resolve_query(root: str, raw: str) -> dict:
         drive_root = raw[:2] + "/"
         rest = raw[3:].replace("\\", "/")
         base, pattern, _ = _walk_from(drive_root, rest)
+        # A bare drive letter with nothing after it (`rest == ""`) leaves
+        # `_walk_from` at its own bare-root collapse, `"C:"` — the same
+        # bare spelling `_root_or_bare` exists to restore to `"C:/"`
+        # (this module's own `_BARE_DRIVE` comment), so the canonical form
+        # matches what `canonical_root()` (index/runner.py) actually stores
+        # this drive under.
+        base = _root_or_bare(base.rstrip("/"))
     elif raw.startswith("/"):
         rest = raw[1:]
         abs_base, abs_pattern, advanced = _walk_from("/", rest)

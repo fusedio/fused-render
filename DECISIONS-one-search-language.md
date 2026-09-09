@@ -223,3 +223,47 @@ machine to reproduce on.
   test_parse_porcelain_decodes_a_non_utf8_name_like_scandir_would`, is in a
   file this branch never touched (`git log origin/main..HEAD --stat --
   tests/test_git_status_listing.py` is empty) — left alone, per instruction.
+
+## Reconciling with a moved main (Listing.tsx / PreviewSidebar.tsx /
+## ListingPreviewPane.tsx / explorer.css)
+
+- **Listing.tsx, the search results header.** Main's side of the conflict was
+  a single plain `<th className="col-name">Path</th>` — main had not
+  restructured this cell, so the paste-back was direct: the search-aware
+  header (the base-labeling `(() => { ... })()` block that reads
+  `searchBase`/`home` and renders "Path in `~`" etc.) replaced it outright,
+  no re-expression needed.
+- **Listing.tsx, the `BookmarkStar` import.** Orthogonal addition — kept
+  alongside main's existing imports.
+- **Listing.tsx, a duplicated status-line block.** Not a marked conflict but
+  a side effect of the 3-way apply: after the `showsSearchFooter`-driven
+  `selectedBytes`/`selectedFolders`/`statusText` block landed, a second,
+  stale copy of the same three declarations survived right behind it, still
+  keyed on the older `searching` variable instead of `showsSearchFooter`
+  (`isOpenFolderQuery` unaccounted for). `tsc` caught it as
+  `TS2451: Cannot redeclare block-scoped variable`. Removed the second,
+  `searching`-keyed copy — the first block already implements search's
+  intended behavior.
+- **PreviewSidebar.tsx (three hunks: the `ChatFrame` import, the `chat`
+  destructured prop, the `chat?: ReactNode` type + its doc comment).** Main
+  had already refactored the claude companion from a directly-imported
+  `ChatFrame` into a prop the caller (`Listing.tsx`) mounts and hands down as
+  `chat`, landed in "Native Claude chat (PR1/4)" — a commit that predates
+  this branch's fork and is common ancestry, not one of the three PRs this
+  merge is about. The search-language patch's diff was generated against an
+  older snapshot of this file that still imported `ChatFrame` directly and
+  had no `chat` prop at all, so applying it verbatim would have both added
+  a dead, unused `ChatFrame` import and deleted the `chat` prop that
+  `Listing.tsx` already passes in and that the JSX at the bottom of the file
+  already renders (`active === CHAT_MODE ? chat : <iframe .../>`). Deleting
+  it would not compile. Kept main's side whole in all three hunks; none of
+  it is search-language's concern.
+- **ListingPreviewPane.tsx, the `initialAsk` prop.** Same root cause as
+  above — main added `initialAsk?: string | null` (the native chat's
+  pulled-and-cleared "Fix with AI" ask) as part of the same chat refactor,
+  and `Listing.tsx` already passes `initialAsk={...}` into this component.
+  Kept main's side; the search patch's empty side reflected the pre-refactor
+  file, not an intended search-language removal.
+- **explorer.css, the row-handle comment block.** Both sides of the conflict
+  were byte-identical (the same `cursor: grab` / drag-source paragraph) —
+  collapsed to one copy, no re-expression involved.

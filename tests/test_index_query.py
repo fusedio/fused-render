@@ -217,6 +217,22 @@ def test_resolve_windows_drive_letter_path_with_forward_slashes(monkeypatch):
                    "mode": "glob"}
 
 
+def test_resolve_bare_windows_drive_root_backslash_normalizes_to_slash_form():
+    """A drive letter with nothing after the separator (`C:\\`, the whole
+    drive) walks no segments at all — `_walk_from`'s own bare-root collapse
+    (`rest` empty) leaves `base` as the bare `"C:"` `_BARE_DRIVE` matches,
+    which has to come back out as `"C:/"`: canonical_root() (index/runner.py)
+    stores this drive under `"C:/"`, never the bare `"C:"` spelling."""
+    out = resolve_query("/box", "C:\\")
+    assert out == {"base": "C:/", "pattern": "", "mode": "substring"}
+
+
+def test_resolve_bare_windows_drive_root_forward_slash_normalizes_to_slash_form():
+    """The forward-slash spelling of the same bare drive root."""
+    out = resolve_query("/box", "C:/")
+    assert out == {"base": "C:/", "pattern": "", "mode": "substring"}
+
+
 def test_resolve_leading_slash_with_no_real_directory_stays_anchored():
     """The disambiguation's other branch: a leading `/` whose first segment
     is not a real directory (here, none of `/nonexistent-xyz` exists) is read

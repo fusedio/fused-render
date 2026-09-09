@@ -687,7 +687,7 @@ export function Breadcrumb({
       if (editingRef.current) return;
       if (!barClickEntersEdit(e.target as HTMLElement | null)) return;
       if (claimedRef.current) {
-        requestSearchFocus();
+        requestSearchFocus(displayPathRef.current);
         return;
       }
       setEditing(true);
@@ -739,6 +739,12 @@ export function Breadcrumb({
   // NOTE: Chrome/Firefox route Ctrl/Cmd+L to their own address bar before the
   // page sees it, so this only lands in app-mode/standalone windows (D: see
   // plan). Registered document-level, cleaned up on unmount (Listing.tsx).
+  //
+  // Over a claimed folder this seeds the merged field with the same
+  // "~"-contracted current path edit mode seeds below (displayPathRef, read
+  // fresh at keydown time — the effect's own deps are `[]`, so a ref is what
+  // keeps this from closing over the folder that was current when the
+  // listener was first attached).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!isMod(e) || e.key.toLowerCase() !== "l") return;
@@ -746,7 +752,7 @@ export function Breadcrumb({
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       e.preventDefault();
       if (claimedRef.current) {
-        requestSearchFocus();
+        requestSearchFocus(displayPathRef.current);
         return;
       }
       setEditing(true);
@@ -769,8 +775,16 @@ export function Breadcrumb({
   const parts = rest.split("/").filter((s) => s.length > 0);
 
   // Edit mode seeds the same "~"-contracted path the crumbs display; Enter
-  // expands a leading "~" back to the real home before navigating.
+  // expands a leading "~" back to the real home before navigating. Ctrl/Cmd+L
+  // over a claimed folder reuses the same value through displayPathRef below
+  // rather than computing a second contraction.
   const displayPath = underHome ? "~" + rest : fsPath;
+  // Kept fresh every render (same pattern as claimedRef above) so the
+  // always-on Ctrl/Cmd+L listener, bound once with `[]` deps, reads the
+  // current folder's contraction instead of the one in place when it first
+  // attached.
+  const displayPathRef = useRef(displayPath);
+  displayPathRef.current = displayPath;
   const submitEdit = (raw: string) => {
     let path = raw.trim();
     // A pasted URL, not a path. Handled before any path munging — "~"
@@ -923,8 +937,15 @@ export function Breadcrumb({
           bar's opening slot belongs to the history arrows (see the header). It
           rides OUTSIDE `.crumbs` deliberately — that strip is a scroll container
           for the path alone, and a star inside it would scroll away with the
-          crumbs on a long path, which is the one place it is most wanted. */}
-      <BookmarkStar id="bookmark-btn" name={renderedTitle || basename(fsPath)} />
+          crumbs on a long path, which is the one place it is most wanted.
+
+          Only over an UNCLAIMED bar, though — a claimed folder's search row
+          (FolderSearchSlot above) carries its own copy inside the field's own
+          border, trailing the match chip (Listing.tsx), so this one stands
+          down rather than rendering a second star beside it. */}
+      {claimed ? null : (
+        <BookmarkStar id="bookmark-btn" name={renderedTitle || basename(fsPath)} />
+      )}
       {/* THE PATH `⋮` IS GONE, both of them. Over a FOLDER the listing took its
           actions into the right end of its own column header (Listing.tsx), where
           they sit with the folder's other operations instead of being split
