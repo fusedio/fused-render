@@ -37,6 +37,8 @@ interface RunCall {
 const runs: RunCall[] = [];
 /** The `start` reply: an `{error}` is the road that hands the pictures back. */
 let startError = "";
+/** Held so a test can be INSIDE a send — the window `inFlight` exists for. */
+let holdStart = false;
 
 const realFetch = globalThis.fetch;
 
@@ -70,6 +72,7 @@ function stubFetch(): void {
       const action = String(body.params?.action ?? "");
       runs.push({ action, params: body.params ?? {} });
       if (action === "start") {
+        if (holdStart) return new Promise<Response>(() => {});
         return jsonRes({ ok: true, result: startError ? { error: startError } : { run_id: "r1" } });
       }
       if (action === "poll") {
@@ -126,6 +129,7 @@ let asFound: Record<string, unknown> = {};
 beforeEach(() => {
   runs.length = 0;
   startError = "";
+  holdStart = false;
   pathIds = 0;
   asFound = { ...API };
   resetAgentDirCacheForTests();
@@ -473,4 +477,108 @@ test("a send that never launched hands the very pictures it took back", async ()
   // what the returned chip shows (T:16693-16720).
   expect(chips(r)).toHaveLength(1);
   expect(chipText(chips(r)[0]!)).toContain("shot.png");
+});
+
+// ---- Bugbot: the camera's window is part of the send gate ------------------
+
+/**
+ * A HOST'S CONTENT FRAME, which is what gives this chat-only mount a camera at
+ * all (`annotateTarget`; ClaudeChat's `appFrame`). Only the two properties
+ * `frameIsCrossOrigin` and the capture path read off it.
+ */
+function hostFrame(): () => HTMLIFrameElement | null {
+  const frame = {
+    isConnected: true,
+    contentDocument: {},
+    contentWindow: { document: {}, location: { href: "http://localhost/render" } },
+  } as unknown as HTMLIFrameElement;
+  return () => frame;
+}
+
+test("a send fired DURING the camera's window waits for the picture", async () => {
+  // `capture()` plants NOTHING in the tray until the bytes are in hand — the
+  // seat swap is the whole of its commit — so `attachPending`, which read the
+  // chips, could not see the camera's window at all. The flash had already
+  // fired, so the picture looked taken; an Enter in that window went out
+  // WITHOUT it and it then landed in the tray for the NEXT message.
+  let release = () => {};
+  const landed = new Promise<void>((done) => {
+    release = done;
+  });
+  patchApi({
+    attachPane: async () => {
+      await landed;
+      return { id: "pane1", kind: "pane", seat: "pane", view: "/shots/v.png" } as Attachment;
+    },
+  });
+  const r = await mountChat({ annotateTarget: hostFrame() });
+  const box = r.root.findByType("textarea");
+  const send = () => r.root.findByProps({ className: "c-send" });
+  // Words, so the send would otherwise be perfectly sendable on its own.
+  await act(async () => box.props.onChange({ currentTarget: { value: "what is this" } }));
+  await settle();
+  expect(send().props.disabled).toBe(false);
+
+  // The shutter opens…
+  await act(async () => r.root.findByProps({ className: "c-viewshot" }).props.onClick());
+  await settle();
+  // …and no chip exists yet, which is exactly why the gate could not see it.
+  expect(chips(r)).toHaveLength(0);
+  expect(send().props.disabled).toBe(true);
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(20);
+  expect(started()).toHaveLength(0);
+
+  // The bytes land ⇒ the chip appears, the door opens, and the picture rides
+  // the message it was taken for.
+  release();
+  await settle(20);
+  expect(chips(r)).toHaveLength(1);
+  expect(send().props.disabled).toBe(false);
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(20);
+  expect(started()).toHaveLength(1);
+  expect(started()[0]!.params.message).toContain("<" + PANE_SHOT_TAG + ">");
+});
+
+// ---- Bugbot: the blobs a send is still carrying ---------------------------
+
+test("closing a chat mid-send revokes the pictures that send is carrying", async () => {
+  // `take()` moves them OUT of the tray and into `inFlight`, so the tray's own
+  // unmount revoke (which walks its live list) cannot see them — and
+  // `attachBack`'s cleanup nulls `giveBack`, so the hand-back cannot reach them
+  // either. Nothing was left holding a full-pane Blob's only handle.
+  const revoked: string[] = [];
+  patchApi({
+    revoke: (att: Attachment | null | undefined) => {
+      if (att) revoked.push(att.id);
+    },
+  });
+  holdStart = true;
+  const r = await mountChat();
+  const box = r.root.findByType("textarea");
+  await act(async () => {
+    box.props.onPaste({ clipboardData: {}, preventDefault: () => {} });
+  });
+  await settle();
+  expect(chips(r)).toHaveLength(1);
+
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(20);
+  // Out of the tray and into the send, which is parked: this is the window.
+  expect(chips(r)).toHaveLength(0);
+  expect(inFlightSizeForTests()).toBe(1);
+  expect(revoked).toEqual([]);
+
+  await act(() => {
+    r.unmount();
+  });
+  expect(revoked).toEqual(["f1"]);
+  expect(inFlightSizeForTests()).toBe(0);
 });

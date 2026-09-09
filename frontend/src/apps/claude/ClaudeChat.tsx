@@ -498,6 +498,26 @@ function ChatBody(props: ChatBodyProps) {
       if (inFlightForTests === inFlight.current) inFlightForTests = null;
     };
   }, []);
+  // …AND THE PICTURES ALREADY ON THEIR WAY, which nothing else can reach.
+  //
+  // `take()` moves a send's attachments OUT of the tray and into `inFlight`, so
+  // the tray's own unmount revoke — which walks its live list (useAttachments'
+  // `alive` effect) — cannot see them, and the hand-back that would have
+  // returned them is nulled by `attachBack`'s cleanup below. A chat closed while
+  // a send was in flight therefore pinned a full-pane Blob per picture for the
+  // life of the page (Bugbot, PR #1064).
+  //
+  // REVOKED, not handed back: there is no tray left to hand them to. Declared
+  // here so it is the FIRST of these three cleanups to run — React runs them in
+  // declaration order — and the map is cleared, so a StrictMode re-mount does
+  // not walk revoked handles again.
+  useEffect(() => {
+    const sends = inFlight.current;
+    return () => {
+      for (const items of sends.values()) for (const att of items) ATTACH_API.revoke(att);
+      sends.clear();
+    };
+  }, []);
   const attachBack = useRef<((items: readonly Attachment[]) => void) | null>(null);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
@@ -1342,7 +1362,7 @@ function ChatBody(props: ChatBodyProps) {
       // out without it, and it then landed in the tray for the NEXT message. T
       // holds the send for the in-flight shot for the same reason
       // (`shotBusy`/`shotAttachPane`); `capturing` is that flag.
-      attachPending: attach.items.some((a: Attachment) => a.pending),
+      attachPending: attach.capturing || attach.items.some((a: Attachment) => a.pending),
       chips: (
         <AttachTray
           items={attach.items}
