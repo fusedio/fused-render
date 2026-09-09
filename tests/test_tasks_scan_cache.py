@@ -219,6 +219,10 @@ def test_listings_write_at_most_once_per_window(projects_dir, state_dir, monkeyp
                         lambda p, d: (p == str(cache) and writes.append(p), real(p, d)))
 
     tasks_mod.load_scan_cache()  # a process that has looked at the file may write it
+    # The load starts the debounce clock (so warm's own save is not doubled);
+    # pretend a window has passed so the first listing is allowed to write.
+    monkeypatch.setattr(tasks_mod, "_SCAN_SAVED_AT",
+                        tasks_mod._SCAN_SAVED_AT - tasks_mod.SCAN_CACHE_SAVE_EVERY_S - 1)
     tasks_mod._task_rows()  # cold: read bytes → dirty → first write
     assert len(writes) == 1
     tasks_mod._task_rows()  # nothing read: not dirty → no write

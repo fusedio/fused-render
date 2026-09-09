@@ -335,7 +335,10 @@ def _scan(path: str) -> dict | None:
     # rewritten to the same length with different content (a compaction, a
     # resume) serve its old tail for the life of the process — and now that
     # records outlive the process (`load_scan_cache`), for good. A record from
-    # before mtime was kept (`.get`) simply misses once.
+    # before mtime was kept (`.get`) simply misses once. Residual: a filesystem
+    # with coarse mtimes (FAT's two seconds) can hide a same-size rewrite that
+    # lands within one tick of the write before it; no content hash is kept,
+    # and that is the accepted cost.
     if rec is not None and rec["size"] == size and rec.get("mtime") == mtime:
         return rec
     if rec is None or size < rec["offset"] or (rec["size"] == size and rec["offset"] > 0):
@@ -359,10 +362,6 @@ def _scan(path: str) -> dict | None:
                 _absorb(rec, line)
     rec["size"] = size
     rec["mtime"] = mtime
-    if len(_SCAN) > _SCAN_MAX and path not in _SCAN:
-        # Unbounded only if the user has twenty thousand sessions — the same
-        # guard the head cache keeps, and now also what bounds the file.
-        _SCAN.clear()
     _SCAN[path] = rec
     return rec
 
@@ -1954,8 +1953,12 @@ def load_scan_cache() -> int:
     still matches is a hit, one that grew is read from `offset`, one that
     shrank or vanished is re-read from zero or skipped. Returns how many scan
     records were taken. Never raises."""
-    global _SCAN_LOADED
+    global _SCAN_LOADED, _SCAN_SAVED_AT
     _SCAN_LOADED = True  # even a missing or bad file: saving is fair from here
+    # The debounce clock starts now, or the first listing's own save would fire
+    # (a zero clock is always "old enough") right before warm's unconditional
+    # one — the same file written twice within a second (review).
+    _SCAN_SAVED_AT = time.monotonic()
     try:
         data = storage.read_json(_scan_cache_path())
     except Exception:  # noqa: BLE001 — a cache that cannot be read is no cache
@@ -2093,6 +2096,13 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     are built for the named keys alone, and the day-one read initialisation is
     left to the full listing, which is the only caller that knows every count.
     """
+    # Bounded only if the user has twenty thousand sessions — the same guard the
+    # head cache keeps, and what bounds the file on disk. Checked ONCE per
+    # listing, here, not per path inside `_scan`: there it fired on every new
+    # path for the rest of the pass and threw away records this same pass had
+    # just built (review, #1081).
+    if len(_SCAN) > _SCAN_MAX:
+        _SCAN.clear()
     triage = sessions._load_state("triage.json")
     read = tasks_store.read_state()
     now = time.time()
