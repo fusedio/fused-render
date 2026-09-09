@@ -263,6 +263,7 @@ export default function Listing({
     searching,
     isStale,
     behind,
+    requestFailed,
     awaitingCommit,
     scanPending,
     requestComing,
@@ -1636,7 +1637,7 @@ export default function Listing({
   // scheduled, or already in flight — which is not the same claim as the
   // rows being stuck (listing/index-caveat).
   const caveat = showsSearchHits
-    ? searchCaveat(indexScan, { behind, pending: requestComing, rescanPending })
+    ? searchCaveat(indexScan, { behind, pending: requestComing, rescanPending, failed: requestFailed })
     : null;
   if (caveat) {
     searchCount = withCaveat(searchCount, caveat);

@@ -160,6 +160,32 @@ describe("never-blank / stale-while-revalidate", () => {
   });
 });
 
+describe("a request that fails with rows already on screen", () => {
+  test("the old rows stay, but the hook stops calling them a healthy answer", async () => {
+    const box = await search("foo");
+    await flush(() =>
+      rankCalls[0].reply.resolve(answer({ hits: [hit("foo.txt")], total: 1, base: "/d" })),
+    );
+    expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["foo.txt"]);
+    expect(box.current().behind).toBe(false);
+    expect(box.current().requestFailed).toBe(false);
+
+    await flush(() => box.current().setQuery("foobar"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    await flush(() => rankCalls[1].reply.reject(new Error("network error")));
+
+    // The rows from "foo" are still the ones on screen — never blanked —
+    // but a failed request for "foobar" must not read as a settled, healthy
+    // answer to it: `behind` (and the new `requestFailed`) flip true so the
+    // caveat chip can say the search itself failed, not merely "not
+    // refreshed".
+    expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["foo.txt"]);
+    expect(box.current().requestFailed).toBe(true);
+    expect(box.current().behind).toBe(true);
+    box.unmount();
+  });
+});
+
 describe("an uncovered folder: scan, poll, answer", () => {
   test("asks for a scan once, keeps saying an answer is coming, then answers", async () => {
     const box = await search("widget");

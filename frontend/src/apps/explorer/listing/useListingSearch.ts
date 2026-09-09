@@ -633,6 +633,16 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // answer for "not refreshed" to describe.
   const generationBehind = searching && answered.current && answerGen.current !== gen;
 
+  // A settled failure with rows still on screen: the last request for the
+  // CURRENT query errored, so `hits` is whatever an earlier query answered,
+  // not this one. `displayHits.length > 0` is what keeps this out of the
+  // zero-hit case — a failure with nothing on screen already reports
+  // `status: "error"` above and needs no caveat, since there is nothing to
+  // caption as an answer to something else. `failure` is cleared the
+  // instant a new request goes out (this file's `run`), so this can never
+  // be true at the same time as `pending`/`requestComing`.
+  const requestFailed = failure !== "" && displayHits.length > 0;
+
   // The rows on screen answer the last COMMITTED query, not the one now in
   // the box: the query names a different base (`escapesBase`,
   // listing/query-base.ts) and Enter has not been pressed for it yet. This
@@ -672,8 +682,18 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     commitSearch,
     // "These results are computed from an older generation of the tree, or for
     // a query that has moved on, and nothing is on its way to fix that" — see
-    // above. Drives the caveat chip and its own, lighter dim.
-    behind: generationBehind,
+    // above. Drives the caveat chip and its own, lighter dim. A settled
+    // failure with rows on screen (`requestFailed`) folds in here too: it is
+    // the same shape ("no answer is coming for the current query, these rows
+    // are from an earlier one, and it is staying that way until a boundary")
+    // even though the reason is a rejected request rather than a generation
+    // bump — the caveat text itself is what tells the two apart.
+    behind: generationBehind || requestFailed,
+    // Whether the failed request is what makes `behind` true above, as
+    // opposed to a generation bump — the caveat (listing/index-caveat.ts)
+    // needs this distinction because "not refreshed" is the wrong claim for
+    // rows sitting behind a request that already tried and errored.
+    requestFailed,
     // "The query in the box names a different base than these rows answer,
     // and Enter has not been pressed for it" — see above. Tells the caller
     // to replace the rows with the Enter prompt rather than caption them.

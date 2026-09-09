@@ -2675,3 +2675,56 @@ from "a relative .. prefix survives into the named folder" to "a relative
 described `..` as inert text passing through untouched, which was true of
 the search that ran (the bug) but not of what the banner said; the new name
 says what is true now that `resolve_query` walks it for real.
+
+## D20 — a request that fails with rows still on screen is not a healthy answer
+
+`useListingSearch`'s never-blank rule keeps the last good rows on screen
+while the next request is in flight, which is right for the ordinary case
+(a debounce, a round trip, a fresh answer). It also kept them on screen,
+untouched and undimmed, when the next request *failed* instead of
+answering: `setFailure(err.message)` ran, but nothing downstream read
+`failure` unless `displayHits` was empty, so a query that used to match and
+now errors (`foo` -> hits -> extend to `foobar` -> that request rejects)
+reported `status: "ok"` with the old rows, no caveat, no staleness class —
+indistinguishable from `foobar` genuinely matching those same rows. The
+zero-hits case already had this right (`status: "error"` when `failure !==
+"" && displayHits.length === 0`); the gap was only the case with something
+already on screen to hide behind.
+
+Fixed with one new derived value, `requestFailed = failure !== "" &&
+displayHits.length > 0`, folded into the existing `behind` boolean (so it
+picks up the same `listing-behind` dimming class `Listing.tsx` already
+applies to generation-stale rows) and also exposed on its own so the
+caption can say something more specific than "not refreshed." `searchCaveat`
+(`index-caveat.ts`) gained a fourth, optional input, `failed`, checked
+after the scanning branch and before `behind`: "not refreshed… clear the
+search and run it again" promises a plain re-run will catch up, which is
+false immediately after one just failed, so a failed request gets its own
+caption — "search failed" / "The last search request failed, so these
+results still answer an earlier query. Edit the search or press Enter
+again to retry." `failed` is optional because `FilesHome.tsx` calls
+`searchCaveat` too and already reports its own search's failures through a
+separate `ErrorBanner` row rather than this chip; omitting the argument
+there keeps its caption exactly as it was.
+
+The zero-hits+failure case is untouched: `requestFailed` requires
+`displayHits.length > 0`, so a failed request with nothing already on
+screen still falls through to the existing `status: "error"` branch,
+unchanged.
+
+A failed refetch now reads to the user as: the rows from the last query
+that worked, dimmed the same way a generation-stale answer already dims,
+with the status chip reading "N matches · search failed" instead of a bare
+match count — not a silent "N matches" that happens to be lying about which
+query it answers.
+
+Four tests were added, all confirmed to fail against the unpatched code:
+two on `indexCaveat` (the "search failed" caption fires when told a request
+failed, and a running scan still outranks it), one on `searchCaveat` (the
+same caption via the composed `state` shape, and that omitting `failed`
+falls back to the generic "not refreshed" caption `FilesHome.tsx` still
+relies on), and one hook-level test in
+`useListingSearch.render.test.ts` that drives the actual scenario — types
+`foo`, resolves a real hit, extends to `foobar`, rejects that request, and
+asserts the old row is still the one on screen while `requestFailed` and
+`behind` both flip true.
