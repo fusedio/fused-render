@@ -61,6 +61,7 @@ import {
 import {
   AnnStrip,
   AttachTray,
+  Kebab,
   CardPolicyProvider,
   Composer,
   createCardPolicy,
@@ -1208,15 +1209,6 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
-  /** The raw wire of the newest user turn, for the kebab's "what was sent". */
-  const lastRaw = useMemo(() => {
-    for (let i = state.turns.length - 1; i >= 0; i--) {
-      const t = state.turns[i];
-      if (t.role === "user" && t.raw) return t.raw;
-    }
-    return undefined;
-  }, [state.turns]);
-
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : "Claude";
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
@@ -1246,18 +1238,22 @@ function ChatBody(props: ChatBodyProps) {
   // `hostPane` is the polled answer to the second half and already lives above
   // (HOST_PANE_POLL_MS, T's tick), so this is the same OR that `hasPane` makes.
   const annTarget = paneShown || hostPane;
-  // THE STRIP IS NOT THE NARROW LAYOUT'S ALONE any more. In T `#anntools` is a
-  // row the landing and the transcript both keep in EVERY layout (T:3842) — it
-  // is where the three preview controls live — and PR1 rendered it only below
-  // the breakpoint, because until now its only contents were the narrow view's
-  // own two controls. The camera moved into it on 2026-08-27, so the row now
-  // exists wherever there is a pane to photograph — OURS OR THE HOST'S; the
-  // view toggle and the picker stay narrow-only inside it (`pickerHost`).
-  const stripShown = annTarget;
+  // THE STRIP ITSELF IS NOT CONDITIONAL any more (P2-1): T's `#anntools` is
+  // static markup and it holds the way out and the ⋮ as well as the three
+  // preview seats, so the row stands in every layout and `annTarget` decides
+  // only whether `AnnStrip` draws anything inside it. The view toggle and the
+  // picker stay narrow-only in there (`pickerHost`).
   // T:7566 `annFitStrip` — the strip's words collapse to icons only when they
   // MEASURABLY do not fit (QA #2: at 1280px with a pane the chat column is
   // ~308px and the three full labels overflowed it by 8px).
   const stripRef = useFitStrip();
+  // Where focus goes when the erase confirm closes, whichever way it closed
+  // (T:13293, 13319-13321). It lived in the top bar with the menu; the menu is
+  // in the shared strip now, so its seat is too.
+  const kebabBtn = useRef<HTMLElement | null>(null);
+  // The page must not stay on a transcript that no longer exists
+  // (T:13348-13366); the menu has already dropped every cache keyed by it.
+  const onErased = useCallback(() => onBack(), [onBack]);
 
   // MEMOIZED, like the two callbacks below it: a fresh object per render defeats
   // every `React.memo` in the tree it is handed to, and this one is handed to
@@ -1468,12 +1464,40 @@ function ChatBody(props: ChatBodyProps) {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        {stripShown ? (
-          // A row ABOVE both views, never over either, and the ONE row the
-          // narrow rules never hide — it carries the way out of each view
-          // (T:3833-3843). PR3 arms the annotate switch and the recorder here;
-          // their seats are already in it.
+        {!compact && !peek ? (
+          // ONE HEADER ROW, WHICH IS WHAT T HAS (T:3934-4010, P2-1). `#anntools`
+          // is a real layout row above both views and it carries FIVE things:
+          // `← Chats` at its left end, then the picker, the three preview seats,
+          // the view toggle and `#kebab` riding the right-hand end — on the
+          // landing and in the transcript alike (`#chat.home #topbar` hides only
+          // the IDENTITY row below, T:1277). Native had split those across three
+          // rows — this strip, `.c-hdr-tools` in the top bar and
+          // `.c-home-tools` on the landing — so the seats sat on a left-aligned
+          // row of their own ABOVE the row that held the ⋮ (Akshil, 2026-09-09:
+          // "just follow the UI we had previously").
+          //
+          // THE ROW IS ALWAYS THERE, and only its CONTENTS answer to the target:
+          // T's markup is static and `annPollTarget` hides the three buttons, so
+          // a folder listing keeps the row with the way out and the menu in it
+          // (T:526 `body.nopane #kebab { margin-left: auto }` is that exact
+          // state). `AnnStrip` returns null for itself when there is nothing to
+          // photograph.
           <div className="c-anntools" ref={stripRef}>
+            {/* The way back, at the strip's left end (T:3941). Absent on the
+                landing: there is no chat to leave. */}
+            {inChat ? (
+              <button
+                type="button"
+                className="c-back"
+                aria-label="Back to chats"
+                onClick={onBack}
+              >
+                ← Chats
+              </button>
+            ) : null}
+            {/* ONE auto margin in the row: everything before it sits left, the
+                seats and the ⋮ ride the right-hand end together (T:255-262). */}
+            <span className="c-hdr-slack" />
             <AnnStrip
               paneNoun={pane.paneNoun}
               // The camera photographs whatever the annotate target is, so the
@@ -1494,6 +1518,19 @@ function ChatBody(props: ChatBodyProps) {
               />
             ) : null}
             {narrowView.narrow ? <ViewToggle narrowView={narrowView} /> : null}
+            {/* The menu rides the same seat in BOTH views (T's `#kebab` is on
+                the one strip they share), so it never appears out of nowhere on
+                entering a chat. On the landing it is the one item that can mean
+                anything without a session (T:13415). */}
+            <Kebab
+              agentDir={agentDir}
+              file={file}
+              sessionId={inChat ? (state.sessionId ?? "") : ""}
+              btnRef={kebabBtn}
+              running={running}
+              landing={!inChat}
+              onErased={onErased}
+            />
           </div>
         ) : null}
         {inChat ? (
@@ -1503,14 +1540,10 @@ function ChatBody(props: ChatBodyProps) {
                 (T:1412-1438). */}
             {!compact && !peek ? (
               <Topbar
-                agentDir={agentDir}
-                file={file}
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
                 running={running}
-                onBack={onBack}
-                {...(lastRaw ? { lastRaw } : {})}
               />
             ) : null}
             <Transcript

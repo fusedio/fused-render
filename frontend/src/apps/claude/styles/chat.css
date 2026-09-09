@@ -180,11 +180,17 @@
 .chat-root .c-anntools {
   display: flex;
   align-items: center;
+  /* T:3934's own gap between the strip's members. `.c-anncta` keeps its tighter
+     6px between the three seats. */
   gap: 8px;
   flex-shrink: 0;
-  padding: 6px 10px;
+  /* T's box for this row: 26px seats in 8px/16px padding (inventory 02 §D). It
+     was 6px/10px while this was a strip of its own above the header; it IS the
+     header now, so it takes the padding the top bar under it has. */
+  padding: 8px 16px;
   border-bottom: 1px solid var(--c-border);
   background: var(--c-panel);
+  min-width: 0;
 }
 
 /* ---- the narrow single-view layout, chat-column half (T:3776-3884) --------
@@ -221,7 +227,6 @@
 
 /* COMPACT (`compact=1`, the cards wall): a read-mostly tile. T hides #topbar,
    #anntools, #inputbox, #home and #footnote and halves #log's top padding. */
-.chat-root.chat-compact .c-header,
 .chat-root.chat-compact .c-topbar,
 .chat-root.chat-compact .c-anntools,
 .chat-root.chat-compact .c-composer-chat,
@@ -349,7 +354,6 @@
    HOST draws. The strip and the top bar go; THE COMPOSER STAYS, which is the
    whole difference from compact — answering a question without leaving the wall
    is what the popup exists for (T:1434-1438). */
-.chat-root.chat-peek .c-header,
 .chat-root.chat-peek .c-topbar,
 .chat-root.chat-peek .c-anntools {
   display: none;

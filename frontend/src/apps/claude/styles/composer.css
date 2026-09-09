@@ -43,31 +43,16 @@
   --c-scrim: rgba(0, 0, 0, 0.48);
 }
 
-/* ---- the header's two rows (T:163-172 + T:1285-1310) --------------------
-   Row one is the CONTROL strip (T's `#anntools`: the way out at its left end,
-   the menu at its right, and the seat PR2/PR3's screenshot / comment /
-   annotate buttons land in). Row two is the chat's IDENTITY (T's `#topbar`).
-   One row carrying all six things is how a 43px strip in a narrow pane ends up
-   with the file name and the id fighting for the same inch (Akshil,
-   2026-09-08, #7). */
-.c-header {
-  flex-shrink: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.c-hdr-tools {
-  flex-shrink: 0;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--c-border);
-}
-/* ONE auto margin per row: everything before it sits left, everything after
-   rides the right-hand end with it (T:255-262). Two of them would split the
-   slack and park the kebab mid-strip. */
+/* ---- the header (T:163-172 + T:1285-1310) -------------------------------
+   ONE control row and one identity row, which is T's own shape: `#anntools` (the
+   way out at its left end, the preview seats and the ⋮ at its right) is
+   `ClaudeChat`'s `.c-anntools` and is styled in `styles/chat.css`, because it is
+   the row BOTH views share; `#topbar` below it is the chat's identity and is
+   what is left in this file. A control row of our own here as well is what put
+   PR2's seats on a third row above the ⋮ (Akshil, 2026-09-09, P2-1). */
+/* ONE auto margin in the control row: everything before it sits left,
+   everything after rides the right-hand end with it (T:255-262). Two of them
+   would split the slack and park the kebab mid-strip. */
 .c-hdr-slack {
   flex: 1 1 auto;
   min-width: 0;
