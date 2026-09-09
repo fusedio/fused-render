@@ -155,6 +155,69 @@ test("a parked card renders inside the turn it was answered in — not the strea
   expect([inFirst, inSecond]).toEqual([true, false]);
 });
 
+// Owner feedback R4-3, the transcript half. The controller keeps a LANDED
+// reply's row key for life and gives the follow-up's answer a new one
+// (`landedWindow` / the per-slot `chunks` map). This pins that the transcript
+// renders that as two bubbles in send order with the user bubble between them,
+// and — the part a final-state assertion cannot see — that re-rendering with
+// the follow-up appended leaves the earlier bubble's own node alone rather
+// than rebuilding it under the newer text.
+test("a landed reply keeps its own bubble when a follow-up's answer arrives (R4-3)", () => {
+  const first = {
+    role: "assistant" as const,
+    key: "a:1",
+    text: "Reply A, all of it.",
+  };
+  const asked = { role: "user" as const, key: "u:2", text: "now say done" };
+  const second = {
+    role: "assistant" as const,
+    key: "a:2",
+    text: "Reply B.",
+    streaming: true as const,
+  };
+  const r = mount(<Transcript state={state({ turns: [first] })} actions={actions} />);
+  const before = JSON.stringify(
+    (() => {
+      let node: Json | null = null;
+      walk(r.toJSON() as Json, (n) => {
+        if (cls(n).includes("assistant") && !node) node = n;
+      });
+      return node;
+    })(),
+  );
+
+  act(() => {
+    r.update(
+      <Transcript state={state({ turns: [first, asked, second] })} actions={actions} />,
+    );
+  });
+
+  // Three rows, in send order: the landed reply, the follow-up, its answer.
+  // Bodies ride `dangerouslySetInnerHTML` (markdown is rendered, not a text
+  // node), so a row's content is read off the serialized subtree.
+  const rows: string[] = [];
+  walk(r.toJSON() as Json, (n) => {
+    const c = cls(n);
+    if (c.includes("turn") && (c.includes("assistant") || c.includes("user"))) {
+      rows.push(JSON.stringify(n));
+    }
+  });
+  expect(rows.length).toBe(3);
+  expect(rows[0]).toContain("Reply A, all of it.");
+  expect(rows[1]).toContain("now say done");
+  expect(rows[2]).toContain("Reply B.");
+  // The answer to the follow-up is ONLY the answer to the follow-up: reply A
+  // is not typed a second time under it.
+  expect(rows[2]).not.toContain("Reply A");
+  // …and the landed bubble is untouched — same node, same content, not rebuilt
+  // beneath the newer one.
+  let after: Json | null = null;
+  walk(r.toJSON() as Json, (n) => {
+    if (cls(n).includes("assistant") && !after) after = n;
+  });
+  expect(JSON.stringify(after)).toBe(before);
+});
+
 test("a parked card survives the run ending: no streaming turn anywhere", () => {
   const r = mount(
     <Transcript

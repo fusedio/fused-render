@@ -3355,7 +3355,7 @@ def _thinking_delta_text(row) -> str:
     return str(delta.get("thinking") or "")
 
 
-def _segments_from_rows(rows: list) -> list:
+def _segments_from_rows(rows: list, shape: tuple = ()) -> list:
     """The ordered transcript of a reply: text, thinking and tool segments.
 
     ONE reader with TWO callers — `_poll` over the live `out.jsonl` and
@@ -3414,13 +3414,27 @@ def _segments_from_rows(rows: list) -> list:
     by_tool_id = {}     # tool_use id -> its segment, for the result to find
     stripped = set()    # tool_use ids of calls deliberately not shown
     orphans = {}        # results that arrived before their tool_use row
-    streamed = any(_is_text_delta(row) for row in rows)
+    # THE TWO GATES, AND WHY THEY CAN BE PASSED IN.
+    #
+    # Both are "does this row set carry deltas of that kind", decided ONCE over
+    # the whole list and then applied to every row — which is what makes the
+    # segmentation of a PREFIX of `rows` a prefix of the segmentation of
+    # `rows`, and that is the invariant `_absorbed_turn_breaks` measures its
+    # offsets against. Re-deriving them from a prefix breaks it wherever a gate
+    # holds for the window but not for the prefix: reply A carrying finalized
+    # text only, followed by a reply B that streams, made `streamed` False for
+    # the prefix and True for the window, and the offset then pointed at the
+    # wrong segment entirely — reply A claiming all of reply B, and B rendering
+    # empty. So a caller that has already computed them over the full window
+    # hands them down (`shape`) instead of letting a prefix answer for itself.
+    streamed = shape[0] if shape else any(_is_text_delta(row) for row in rows)
     # The same "deltas or finalized blocks, never both" choice as `streamed`,
     # decided separately because it is a different question: a run can stream its
     # prose and still carry no usable thinking delta (redacted, or a transcript
     # with no `stream_event` rows at all — which is EVERY row set `_history`
     # reads, and is why a restored turn never showed a thinking block before).
-    thinking_streamed = any(_thinking_delta_text(row) for row in rows)
+    thinking_streamed = (
+        shape[1] if shape else any(_thinking_delta_text(row) for row in rows))
     any_text = False    # mirrors _poll's `bool(text_parts)`
     pending_sep = False
     plumbing = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
@@ -3785,6 +3799,11 @@ def _absorbed_turn_breaks(rows: list) -> list:
     function is what guarantees a seam never falls inside a segment.
     """
     breaks = []
+    # Measured through the WINDOW's own gates, not the prefix's — see
+    # `_segments_from_rows`'s note on `shape`. Computed once here so every seam
+    # in one payload is measured against one segmentation.
+    shape = (any(_is_text_delta(row) for row in rows),
+             any(_thinking_delta_text(row) for row in rows))
     outstanding = 0
     # Whether a `result` has closed a reply since the last echo — the exact
     # test `_read_current_turn`'s cursor makes, and for the same reason: an echo
@@ -3805,7 +3824,7 @@ def _absorbed_turn_breaks(rows: list) -> list:
                 # seam — and one of the outstanding follow-ups is now the
                 # message the NEXT span answers.
                 outstanding -= 1
-                prefix = _segments_from_rows(rows[:i + 1])
+                prefix = _segments_from_rows(rows[:i + 1], shape)
                 breaks.append({
                     "segments": len(prefix),
                     "text": sum(len(seg.get("text") or "")
@@ -5379,6 +5398,15 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
     # included) on both platforms, but if it fails, a parked approval would
     # otherwise sit there holding the subprocess open for the full timeout.
     _deny_pending(run_dir, "cancelled")
+    # WHAT THE INBOX HELD, ON EVERY ROAD OUT OF HERE. `_discard_inbox` DELETES
+    # the undrained entries — that is its job, so a follow-up cannot be
+    # delivered right after the interrupt and open a fresh turn out of a Stop —
+    # which makes this list the only surviving copy of text the user typed. It
+    # used to be returned on one road only (the interrupt that answered), so a
+    # host that did not answer inside the timeout lost the message outright:
+    # gone from disk, never seen by the CLI, never handed back to the composer.
+    # Strictly worse than not discarding at all.
+    stranded = []
     if interrupt_first and _host_alive(run_dir):
         # Interrupt the TURN, not the whole session. A live host survives an
         # `interrupt` control request (verified live against 2.1.251) exactly
@@ -5481,9 +5509,26 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
         # between the liveness check above and now. Falls through to the
         # tree-kill below exactly as if no host had ever been found: ending
         # the whole session is the right fallback for "asked and got
-        # nothing back", not a hang.
+        # nothing back", not a hang. `stranded` is already populated, and the
+        # return below is what hands it back.
+    elif interrupt_first:
+        # A STOP WITH NO LIVE HOST TO ASK, so nothing was ever going to drain
+        # the inbox: the entries are emptied here too, rather than left on disk
+        # for a future session to deliver as if they had just been typed, and
+        # reported for the same reason the interrupt road reports them.
+        #
+        # `elif`, not `else`: `_send`'s respawn calls in with
+        # `interrupt_first=False` and its caller re-sends the message itself
+        # (`sendFollowUp`'s respawn branch reads `run_id`, never
+        # `still_queued`), so discarding there would delete text nobody is
+        # listening for a hand-back of.
+        stranded = _discard_inbox(run_dir)
     _kill_tree(run_dir)
-    return {"cancelled": run_id}
+    still = []
+    for item in stranded:
+        if item and item not in still:
+            still.append(item)
+    return {"cancelled": run_id, "still_queued": still}
 
 
 def _kill_tree(run_dir: str) -> None:

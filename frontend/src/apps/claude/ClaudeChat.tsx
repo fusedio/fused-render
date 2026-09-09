@@ -877,11 +877,21 @@ function ChatBody(props: ChatBodyProps) {
     resetCardPolicy(cardPolicy);
     controller.newChat();
     setEntered(false);
+    // AND THE STRANDED TEXT GOES WITH THE CONVERSATION IT WAS TYPED IN. It was
+    // never cleared, and `card.restore` reaches the LANDING's composer as well
+    // as the chat's — so words typed for session A sat one Enter away from
+    // opening a brand-new conversation, and the per-instance delivery ledger
+    // (`Composer`'s `delivered`) restarts on the Home/chat remount, so every
+    // Back appended them again.
+    setStranded(null);
   }, [controller, cardPolicy]);
   const onOpenSession = useCallback(
     (sessionId: string) => {
       resetCardPolicy(cardPolicy);
       setEntered(true);
+      // Same rule as Back: a hand-back belongs to the conversation it was typed
+      // in, and this is a different one.
+      setStranded(null);
       void controller.openSession(sessionId);
     },
     [controller, cardPolicy],
@@ -966,7 +976,10 @@ function ChatBody(props: ChatBodyProps) {
       back: currentUrl(),
       onNavigate,
       boxRef,
-      ...(stranded ? { restore: stranded } : {}),
+      // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
+      // well as the chat's, and a hand-back is about the turn that was running
+      // — the landing has none.
+      ...(stranded && entered ? { restore: stranded } : {}),
     }),
     [
       file,
@@ -981,6 +994,7 @@ function ChatBody(props: ChatBodyProps) {
       onNavigate,
       boxRef,
       stranded,
+      entered,
       urlTick,
     ],
   );

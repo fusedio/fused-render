@@ -74,6 +74,7 @@ import type {
 } from "./types";
 import { composeOutgoing, stripBlocks } from "./wire";
 
+
 // ---- constants (all with their T line) -------------------------------------
 
 /** T:16377 — the poll cadence. No backoff, ever. */
@@ -228,6 +229,36 @@ export function createChatController(deps: ControllerDeps): ChatController {
   let activeSeat = 0;
   let stoppedSeat = 0;
   let disposed = false;
+  /**
+   * THE WINDOW THAT IS ALREADY ON SCREEN, so a follow-up never re-types the
+   * reply before it (owner feedback R4-3).
+   *
+   * `_read_current_turn`'s cursor only ever advances past a turn boundary it
+   * has PROVEN — a `_starts_new_turn` echo with a `result` before it — and it
+   * never trims what the poll it advances on hands back (agent.py says so
+   * itself). So the first non-blank payload after an IDLE-time send is the
+   * previous reply in full with the new one growing behind it, and
+   * `turn_breaks` is empty for it: a genuine boundary is not an absorbed
+   * fold-in, so `_absorbed_turn_breaks` reports no seam to slice at.
+   *
+   * A send into a live host starts a FRESH `pollLoop` (`sendMessage`'s
+   * live-host road), and a fresh loop has no memory of that reply having
+   * landed — so it opened a new bubble, typed the previous answer into it
+   * again, and then replaced it with the new answer when the cursor finally
+   * moved: "sometimes when I reply, it re-streams the previous message's
+   * response, and then shows the new response".
+   *
+   * Recorded by the loop that SETTLED that reply — the only reader that knows
+   * the payload it settled is what the transcript now holds — and by
+   * `resumeAttach`'s repair of a run that finished with no frame attached, for
+   * the same reason. The next loop for the SAME run drops that prefix until
+   * the window no longer OPENS on that text, which is the cursor having
+   * stepped over the boundary; from that poll on the payload is only the new
+   * turn. The landed PROSE is what the base is anchored to rather than a pair
+   * of lengths: the newer reply is not reliably shorter than the pair it
+   * replaced (it commonly is not), so no length test can see the step.
+   */
+  let landedWindow: { runId: string; segments: number; text: string } | null = null;
   /** A live-run adoption watch is in flight — see `adoptLiveRun`. Separate
    *  from `state.adopting`, which is the RENDERER's gate: this one is the
    *  one-watch-at-a-time latch and stays set for as long as the adopted run
@@ -724,6 +755,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
      * those owes a seam.
      */
     let pendingSeams = 0;
+    /** The already-landed prefix of this run's window — see `landedWindow`. */
+    let baseSeg = 0;
+    let baseText = "";
+    if (landedWindow && landedWindow.runId === runId) {
+      baseSeg = landedWindow.segments;
+      baseText = landedWindow.text;
+    }
+    // CONSUMED EITHER WAY: one settled reply, one loop that may skip it. A base
+    // left standing past the loop that could use it would hide the opening of
+    // some later turn instead.
+    landedWindow = null;
     let tick = 0;
 
     try {
@@ -770,7 +812,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
         const segs = Array.isArray(poll.segments) ? poll.segments : [];
         const fullText = poll.text || "";
-        const breaks = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
+        const reported = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
 
         // A FOLLOW-UP LANDED. All this arms is the shrink test below: the seam
         // itself comes from the payload, so nothing about the transcript moves
@@ -812,7 +854,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // `segments` where there are any: `text` can shorten for an
           // unrelated reason on a delta-less run, where it falls back to the
           // `result` row — the LAST assistant message only.
-          const lost = prevBreaks - breaks.length;
+          const lost = prevBreaks - reported.length;
           const shrank = prevSegLen
             ? segs.length < prevSegLen
             : !poll.done && fullText.length < prevTextLen;
@@ -832,18 +874,52 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (anyBody) {
           prevSegLen = segs.length;
           prevTextLen = fullText.length;
-          prevBreaks = breaks.length;
+          prevBreaks = reported.length;
         }
+
+        // THE ALREADY-LANDED PREFIX RETIRES ITSELF the moment the window stops
+        // OPENING on it, because that is the cursor having stepped over the
+        // boundary: from that poll on the payload IS only this turn (see
+        // `landedWindow`). Anchored on the prose rather than on a length,
+        // because the newer reply is not reliably shorter than the pair it
+        // replaced — [A, B-first-half] and [B-first-half, B-second-half] are
+        // the same size and mean opposite things.
+        //
+        // A BLANK PAYLOAD IS NOT A STEP: the `pending_echo` window returns
+        // `text: ""` for as long as the echo is outstanding and means the exact
+        // opposite ("nothing has moved yet"), so the base has to survive it —
+        // hence `anyBody`.
+        if (
+          baseText &&
+          anyBody &&
+          !(fullText.startsWith(baseText) && baseSeg <= segs.length)
+        ) {
+          baseSeg = 0;
+          baseText = "";
+        }
+        const bodySegs = baseSeg ? segs.slice(baseSeg) : segs;
+        const bodyText = baseText ? fullText.slice(baseText.length) : fullText;
+        // Rebased onto the body, and a seam that falls AT the base is the
+        // boundary the base already stands for — it names no reply of ours.
+        const rebased = baseText
+          ? reported
+              .filter((b) => b.segments > baseSeg || b.text > baseText.length)
+              .map((b) => ({
+                segments: Math.max(0, b.segments - baseSeg),
+                text: Math.max(0, b.text - baseText.length),
+              }))
+          : reported;
+        const breaks = rebased;
 
         // One pass per reply the payload holds: N seams is N+1 replies, each
         // sliced to its own span and rendered into its own slot.
         for (let j = 0; j <= breaks.length; j++) {
           const from = j === 0 ? { segments: 0, text: 0 } : breaks[j - 1]!;
           const to = j < breaks.length ? breaks[j]! : null;
-          const mySegs = to ? segs.slice(from.segments, to.segments) : segs.slice(from.segments);
-          const myText = to
-            ? fullText.slice(from.text, to.text)
-            : fullText.slice(from.text);
+          const mySegs = to
+            ? bodySegs.slice(from.segments, to.segments)
+            : bodySegs.slice(from.segments);
+          const myText = to ? bodyText.slice(from.text, to.text) : bodyText.slice(from.text);
           const slot = chunkOffset + j;
           const chunk = chunkAt(slot);
           // The container number is allocated only once there is something to
@@ -868,6 +944,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
               followup: slot,
             });
           }
+          // A REPLY THE PAYLOAD HAS CLOSED OFF WITH A SEAM IS FINISHED, and
+          // saying so here rather than only at `poll.done` is what keeps the
+          // caret off an answer that ended minutes ago: only the LAST span is
+          // still growing (the seam is the `result` that ended the one before
+          // it), so every earlier one settles as soon as it is placed.
+          const spanLive = j === breaks.length;
           if (body.mode === "segments") {
             if (!chunk.segMode) {
               // A first poll with text but no segments yet started this reply on
@@ -879,11 +961,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
             replaceTurn(chunk.key, {
               segments: body.view.rows.map((r) => r.seg),
               text: chunk.tailText || "",
-              streaming: true,
+              streaming: spanLive,
             });
           } else {
             chunk.flatText = pollFlat;
-            if (!poll.done) replaceTurn(chunk.key, { text: chunk.flatText, streaming: true });
+            if (!poll.done) replaceTurn(chunk.key, { text: chunk.flatText, streaming: spanLive });
           }
           // THE NEWEST reply's bubble is where a resolved card parks — a card
           // answered now belongs in the turn now streaming, never in one the
@@ -916,6 +998,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
           deps.onArtifactsTick?.();
 
           const end = runEnding(poll, stoppedSeat === seat);
+          // WHAT IS NOW ON SCREEN, for whatever loop the next send starts — the
+          // RAW window sizes, which is the shape the next payload arrives in
+          // (see `landedWindow`). Only where the text stays: a dropped bubble
+          // is not a landed reply, and the next loop must be free to render
+          // that window again. Ownership-guarded like every other write here.
+          if (loopSeq === seat) {
+            landedWindow = end.keepText
+              ? { runId, segments: segs.length, text: fullText }
+              : null;
+          }
           // EVERY bubble this loop opened settles, not just the newest: a run
           // that absorbed a follow-up has two, and leaving the older one
           // `streaming: true` parks the caret on a reply that finished minutes
@@ -940,9 +1032,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // A run whose text only ever arrived on the poll that ENDED it, so
             // nothing was ever streaming (T:16345-16354). Seams still apply:
             // the payload can be two replies even when none of it streamed.
-            const spans = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
-            const allSegs = Array.isArray(poll.segments) ? poll.segments : [];
-            const allText = poll.text || "";
+            // The BASE-ADJUSTED body and its seams, not the raw payload: a
+            // turn whose text only ever arrived on the poll that ended it can
+            // still open on the reply already on screen (see `landedWindow`).
+            const spans = breaks;
+            const allSegs = bodySegs;
+            const allText = bodyText;
             for (let j = 0; j <= spans.length; j++) {
               const from = j === 0 ? { segments: 0, text: 0 } : spans[j - 1]!;
               const to = j < spans.length ? spans[j]! : null;
@@ -1808,19 +1903,48 @@ export function createChatController(deps: ControllerDeps): ChatController {
           addError(poll.error);
           return;
         }
-        const view = pollBody(poll.segments, poll.text, ++cardSeq);
-        if (view.mode !== "empty") {
+        // SEAMS APPLY TO A REPAIR TOO. A run that absorbed a follow-up and
+        // then finished with no frame attached is TWO replies in one window
+        // (`turn_breaks`), and one `pollBody` over the lot merged them into a
+        // single bubble — the same defect `pollLoop`'s own done branch already
+        // slices for.
+        const spans = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
+        const allSegs = Array.isArray(poll.segments) ? poll.segments : [];
+        const allText = poll.text || "";
+        for (let j = 0; j <= spans.length; j++) {
+          const from = j === 0 ? { segments: 0, text: 0 } : spans[j - 1]!;
+          const to = j < spans.length ? spans[j]! : null;
+          const view = pollBody(
+            to ? allSegs.slice(from.segments, to.segments) : allSegs.slice(from.segments),
+            to ? allText.slice(from.text, to.text) : allText.slice(from.text),
+            ++cardSeq,
+          );
+          if (view.mode === "empty") continue;
           pushTurn({
             role: "assistant",
             key: nextKey("a"),
             text: view.mode === "segments" ? view.view.tailText || "" : view.text,
             ...(view.mode === "segments" ? { segments: view.view.rows.map((r) => r.seg) } : {}),
+            ...(j > 0 ? { followup: j } : {}),
           });
         }
+        // AND THE WINDOW IS NOW ON SCREEN, so the next send's loop does not
+        // type it a second time (see `landedWindow`). This is the reload road
+        // into exactly the R4-3 shape: a finished run, repaired here, then a
+        // follow-up into the host that is still holding it open.
+        landedWindow = { runId, segments: allSegs.length, text: allText };
         return;
       }
       sending = false; // pollLoop is not gated on it, and follow-ups need it free
       await pollLoop(runId, gen);
+    } catch (err) {
+      // A THROWN PROBE IS A TROUBLE CARD, not an unhandled rejection. Every
+      // road in here is reached as a bare `void` (the boot's, `adoptWatch`'s),
+      // so without this a re-attach that failed — the server gone between
+      // mount and the probe — died silently and the reader was left looking at
+      // a restored transcript with no run and no explanation. T warns in
+      // exactly this place (T:17862); a card is the native surface for it.
+      if (!disposed && logGen === gen) reportTrouble(troubleFromError(err));
     } finally {
       if (sendSeq === seat) sending = false;
     }

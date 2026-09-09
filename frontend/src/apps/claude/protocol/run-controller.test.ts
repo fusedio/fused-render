@@ -698,6 +698,80 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.map((t) => !!t.streaming)).toEqual([false, false, false]);
   });
 
+  // ── owner feedback R4-3 ──────────────────────────────────────────────────
+  //
+  // "Sometimes when I reply, it re-streams the previous message's response, and
+  // then shows the new response."
+  //
+  // THE IDLE-TIME SEND. `_read_current_turn`'s cursor only advances past a turn
+  // boundary it has PROVEN, and it never trims what the poll it advances on
+  // hands back — so the first non-blank payload after a send into an idle host
+  // is the previous reply IN FULL with the new one growing behind it. And
+  // `turn_breaks` is empty for that window: a genuine boundary is not an
+  // absorbed fold-in, so `_absorbed_turn_breaks` names no seam.
+  //
+  // A send into a live host starts a FRESH `pollLoop` (`sendMessage`'s live-host
+  // road), which has no memory of that reply having landed — so it opened a new
+  // bubble, typed reply A into it a second time, and replaced it with reply B
+  // when the cursor finally moved. The payload sequence below is that shape.
+  test("a follow-up never re-types the turn already on screen (R4-3)", async () => {
+    const A = text("Reply A, all of it.");
+    const B1 = text("Reply B, first half. ");
+    const B2 = text("Reply B, second half.");
+    const params = createMemoryParamsStore();
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        poll: (_f, n) => {
+          // Turn one: A streams, then ends. The window is [echo q1, A…, result]
+          // and the cursor stays at q1 — there is no newer turn to prove yet.
+          if (n === 0) return poll({ segments: [A], text: A.text });
+          if (n === 1) return poll({ done: true, segments: [A], text: A.text });
+          // The send lands while the run is idle, so `pending_echo` blanks the
+          // payload for as long as the echo is outstanding.
+          if (n === 2) return poll({ segments: [], text: "" });
+          // The echo landed. `_read_current_turn` will advance PAST it — but
+          // not until the next call: this payload is still the old window, so
+          // it carries reply A in full with reply B behind it, and no seam.
+          if (n === 3) return poll({ segments: [A, B1], text: A.text + B1.text });
+          // The cursor has moved. B alone, still growing.
+          if (n === 4) return poll({ segments: [B1, B2], text: B1.text + B2.text });
+          return poll({ done: true, segments: [B1, B2], text: B1.text + B2.text });
+        },
+      },
+      params,
+    );
+    const { controller } = made;
+    await controller.sendMessage("go");
+    expect(assistants(controller).map((t) => t.text)).toEqual([A.text]);
+
+    // EVERY intermediate state is inspected, because the defect is transient:
+    // the bubble showed A, then was replaced by B. A final-state assertion
+    // cannot see it at all.
+    const seen: string[][] = [];
+    const off = controller.subscribe(() => {
+      seen.push(assistants(controller).map((t) => (t.segments || []).map(bodyOf).join("")));
+    });
+    await controller.sendMessage("now say done");
+    off();
+
+    // Two replies, in order, and the second is only ever reply B.
+    const reply = assistants(controller);
+    expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([
+      [A.text],
+      [B1.text, B2.text],
+    ]);
+    // …and it never once carried reply A, at any tick.
+    const restreamed = seen.filter((frame) => frame.slice(1).some((b) => b.includes(A.text)));
+    expect(restreamed).toEqual([]);
+    // The first bubble is left exactly as turn one settled it — not rebuilt,
+    // not re-typed, not duplicated into a third one.
+    expect(reply.length).toBe(2);
+    expect(reply.every((t) => !t.streaming)).toBe(true);
+  });
+
   test("an agent.py with no `turn_breaks` keeps one payload as one reply", async () => {
     // The compatibility floor: no seam reported, so nothing is split. One
     // bubble that grows, which is the pre-feedback-#9 rendering minus the

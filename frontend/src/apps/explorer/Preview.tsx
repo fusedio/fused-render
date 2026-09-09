@@ -1716,12 +1716,25 @@ function TemplatePreview({
   // if the flag lands on — and the one key change a `false` then causes happens
   // while `ChatMount` is still showing nothing but its cover, which costs a
   // remount of a placeholder.
+  //
+  // FLAG OFF, THE CONTENT PANE KEEPS ITS BASELINE KEY, which is the bare `m`:
+  // `claudeFrameKey` was only ever the SIDEBAR's key (see its call below), and
+  // `claudeAskInstance` bumps on EVERY incoming ask regardless of route. Keying
+  // the content pane on it meant an ask routed to the sidebar destroyed and
+  // reloaded the content pane's chat document — scroll position and a whole
+  // transcript re-restore — where before this file grew a mount it kept it.
   const claudeMountKey = (m: string) =>
     nativeChatState === false
-      ? claudeFrameKey(m)
+      ? m
       : m === CHAT_MODE
         ? `claude:${askDelivery ? askDelivery.seq : 0}`
         : m;
+  // THE SIDEBAR'S, whose flag-off shape genuinely IS `claudeFrameKey`: the
+  // legacy template pulls the ask at its own boot, so a second "Fix with AI"
+  // into an already-open sidebar has to remount for it to be pulled at all
+  // (tests/test_claude_ask_lifecycle.py pins that shape).
+  const claudeSideMountKey = (m: string) =>
+    nativeChatState === false ? claudeFrameKey(m) : claudeMountKey(m);
 
   // Held-frame swap. Switching mode used to destroy the iframe and mount the
   // next one bare (`key={mode}`), so the user watched a blank pane for as long
@@ -2323,7 +2336,7 @@ function TemplatePreview({
                  PULLED here, in the host, instead of the chat reaching up
                  through `window._fusedTakeClaudeAsk`. */
               <ChatMount
-                key={claudeMountKey(CHAT_MODE)}
+                key={claudeSideMountKey(CHAT_MODE)}
                 legacySrc={sideSrcFor(CHAT_MODE) ?? ""}
                 className="preview-side-frame"
                 title={modeTitle(CHAT_MODE)}

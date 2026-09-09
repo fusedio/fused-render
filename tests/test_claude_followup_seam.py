@@ -376,6 +376,133 @@ def test_an_interrupt_that_never_answers_leaves_the_gate_to_the_tree_kill(
     assert agent._poll("run")["done"] is True
 
 
+def test_an_interrupt_that_never_answers_still_hands_the_queued_text_back(
+        agent, run_dir, monkeypatch):
+    """The timeout road must not EAT the message.
+
+    `_discard_inbox` deletes the undrained entries — that is the point, so a
+    follow-up cannot be delivered right after the interrupt and open a fresh
+    turn out of a Stop — which leaves the list it returns as the only surviving
+    copy of text the user typed. It was returned on one road only (the
+    interrupt that answered), so a host that did not answer inside the timeout
+    lost the message outright: gone from disk, never seen by the CLI, never
+    handed back to the composer. Strictly worse than not discarding at all."""
+    _write(run_dir, [_user_row("turn one"), _text_row("A."), _result_row("A.")])
+    _setup(agent, run_dir)
+    agent._send("run", "queued message", "")
+    (run_dir / "pid").write_text("4242", encoding="utf-8")
+
+    agent._host_alive = lambda _run_dir: True
+    agent._write_control_request = lambda _d, _kind, **kw: "req-1"
+    agent._await_control_response = lambda _d, _rid, start_offset=0: None
+    _record_tree_kills(agent, monkeypatch)
+
+    assert agent._cancel("run")["still_queued"] == ["queued message"], (
+        "the only copy of the user's text is the one _discard_inbox returned")
+
+
+def test_a_stop_with_no_live_host_hands_the_queued_text_back_too(
+        agent, run_dir, monkeypatch):
+    """And the road where no host was ever found: the entries used to be left
+    on disk forever — never reported, and deliverable by a future session as
+    if they had just been typed."""
+    _write(run_dir, [_user_row("turn one"), _text_row("A."), _result_row("A.")])
+    _setup(agent, run_dir)
+    agent._send("run", "orphaned message", "")
+    (run_dir / "pid").write_text("4242", encoding="utf-8")
+
+    agent._host_alive = lambda _run_dir: False
+    _record_tree_kills(agent, monkeypatch)
+
+    assert agent._cancel("run")["still_queued"] == ["orphaned message"]
+    assert not any((run_dir / "inbox").glob("*.json")), (
+        "and the inbox is emptied on this road too, not orphaned on disk")
+
+
+def test_a_respawn_cancel_leaves_the_inbox_alone(agent, run_dir, monkeypatch):
+    """`_send`'s respawn calls in with `interrupt_first=False` and re-sends the
+    message itself — its caller reads `run_id`, never `still_queued` — so a
+    discard there would delete text nobody is listening for a hand-back of."""
+    _write(run_dir, [_user_row("turn one"), _text_row("A."), _result_row("A.")])
+    _setup(agent, run_dir)
+    agent._send("run", "still pending", "")
+    (run_dir / "pid").write_text("4242", encoding="utf-8")
+    _record_tree_kills(agent, monkeypatch)
+
+    assert agent._cancel("run", interrupt_first=False)["still_queued"] == []
+    assert any((run_dir / "inbox").glob("*.json")), (
+        "the respawn road is not a stop; the entry stays where it is")
+
+
+# --------------------------------- the seam offsets index the SAME segmentation
+
+def _finalized_text_row(body):
+    """An assistant reply with no stream deltas — an older CLI, or one run
+    without `--include-partial-messages`. `_segments_from_rows`'s `streamed`
+    gate is FALSE for a window of only these and TRUE the moment one delta
+    lands anywhere in it, which is the whole hazard below."""
+    return {"type": "assistant", "message": {"role": "assistant",
+            "content": [{"type": "text", "text": body}]}}
+
+
+def _thinking_row(body):
+    return {"type": "assistant", "message": {"role": "assistant",
+            "content": [{"type": "thinking", "thinking": body}]}}
+
+
+def _thinking_delta_row(body):
+    return {"type": "stream_event", "event": {
+        "type": "content_block_delta",
+        "delta": {"type": "thinking_delta", "thinking": body}}}
+
+
+@pytest.mark.parametrize("rows", [
+    # (a) reply A finalized-text-only, reply B streaming: `streamed` is False
+    # for the prefix and True for the window, so the prefix segmentation was a
+    # DIFFERENT document — A claimed all of B and B rendered empty.
+    [_user_row("q1"), _finalized_text_row("Reply A."),
+     _user_row("q2"), _result_row("Reply A."), _text_row("Reply B.")],
+    # (b) the same asymmetry on the thinking gate.
+    [_user_row("q1"), _text_row("Reply A."), _thinking_row("hmm"),
+     _user_row("q2"), _result_row("Reply A."),
+     _thinking_delta_row("later"), _text_row("Reply B.")],
+    # (c) the ordinary all-deltas shape, where both gates are uniformly true —
+    # the shape every other seam test in this file feeds, and the reason the
+    # instability was invisible.
+    [_user_row("q1"), _text_row("Reply A."),
+     _user_row("q2"), _result_row("Reply A."), _text_row("Reply B.")],
+])
+def test_every_seam_indexes_a_prefix_of_the_payloads_own_segmentation(agent, rows):
+    """THE INVARIANT THE OFFSETS DEPEND ON.
+
+    `_absorbed_turn_breaks` measures each seam by segmenting `rows[:i+1]` and
+    counting; `_poll` hands the page the segmentation of the WHOLE window. The
+    offsets only mean anything if the first is a strict prefix of the second —
+    and it was not, because `_segments_from_rows` re-derived its
+    `streamed`/`thinking_streamed` gates from whatever list it was given."""
+    full = agent._segments_from_rows(rows)
+    breaks = agent._absorbed_turn_breaks(rows)
+    assert breaks, "this window carries an absorbed follow-up"
+    for br in breaks:
+        n = br["segments"]
+        assert 0 <= n <= len(full), "the offset indexes into the payload"
+        # THE INVARIANT: the seam's `text` offset is the join of the text
+        # segments the payload itself puts before that index. Measured against
+        # the payload's own segmentation, which is the only one the page has.
+        assert br["text"] == sum(
+            len(seg.get("text") or "") for seg in full[:n]
+            if seg.get("kind") == "text"), (
+            "the seam offsets index a different segmentation from the one the "
+            "poll payload carries")
+    # AND THE LAST SPAN IS THE FOLLOW-UP'S OWN REPLY, not an empty slice. The
+    # broken prefix segmentation put the seam PAST reply B's only segment, so
+    # the reply before it claimed all of B and B's own bubble rendered empty.
+    tail = full[breaks[-1]["segments"]:]
+    assert "".join(seg.get("text") or "" for seg in tail
+                   if seg.get("kind") == "text").strip() == "Reply B.", (
+        "everything after the last seam is the answer to the follow-up")
+
+
 # --------------------------------- stop means stop, queue included (R2-12)
 
 def test_the_undrained_inbox_is_discarded_by_a_stop(agent, run_dir):
