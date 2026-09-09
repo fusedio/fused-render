@@ -133,13 +133,16 @@ export function SideTabs({
       <TabsList
         variant="line"
         aria-label="Sidebar panel"
-        className="h-full justify-start rounded-none border-b-0 p-0"
+        className="h-full justify-start gap-3 rounded-none border-b-0 p-0"
       >
         {tabs.map((t) => (
           <TabsTrigger
             key={t.mode}
             value={t.mode}
-            className="flex-none px-2.5 text-[13px]"
+            /* 12px, the bar's own type size (.bar-ctl / the mode control's
+               label), so the strip reads at the same weight as the mode
+               dropdown across the seam. */
+            className="flex-none px-2 text-[12px]"
             disabled={t.pending || !!t.disabledReason}
             title={t.pending ? "Checking if this view applies…" : t.disabledReason}
           >
