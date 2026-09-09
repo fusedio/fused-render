@@ -46,6 +46,12 @@ export interface SchedBlockProps {
   refused: boolean;
   /** A cancel is in flight — the button is dead for its duration. */
   stopping: boolean;
+  /** `Date.now()` as of the last schedule poll (`useSchedule.tick`). The time
+   *  cell is a function of the wall clock, not of the entry — "14:00 today"
+   *  becomes "any moment now" with every field of the entry unchanged — so the
+   *  poll hands the clock in rather than leaving the cell to whichever render
+   *  the entry happens to trigger. */
+  tick?: number;
   onStop(): void;
   /** The row's hop: the Tasks page, on the calendar. */
   onRow(): void;
@@ -59,6 +65,7 @@ export function SchedBlock({
   armed,
   refused,
   stopping,
+  tick,
   onStop,
   onRow,
   cardRef,
@@ -85,6 +92,10 @@ export function SchedBlock({
 
   const repeat = next ? schedIsRepeat(next) : false;
   const { state, label } = schedRowState(rec);
+  /** ONE POLL, ONE READ. `tick` moving is both the re-render and the clock the
+   *  cell is read against; `Date.now()` is the fallback for a caller that hands
+   *  no poll in (and for the render that precedes the first one). */
+  const when = next ? schedWhenText(next.due, new Date(tick || Date.now())) : "";
   const name = next ? (rec && rec.title) || schedMsgLine(next) : "";
 
   /**
@@ -137,7 +148,7 @@ export function SchedBlock({
               in the same row centres the right-hand group instead of pinning
               it (tasks.css's own house rule). */}
           <span className="sb-grow" />
-          <span className="sb-meta">{label + " · " + schedWhenText(next.due)}</span>
+          <span className="sb-meta">{label + " · " + when}</span>
         </button>
         <div className="sb-note">{refused ? schedRefusalNote(repeat) : ""}</div>
         <div className="sb-acts">

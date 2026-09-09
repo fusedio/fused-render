@@ -94,6 +94,10 @@ export interface ScheduleState {
   armed: boolean;
   refused: boolean;
   stopping: boolean;
+  /** `Date.now()` as of the last poll that saw a row, so the banner's when-text
+   *  is computed against the current clock rather than the one the entry last
+   *  changed on. 0 before any such poll — nothing is drawn then. */
+  tick: number;
   onStop(): void;
   onRow(): void;
   cardRef: React.MutableRefObject<HTMLDivElement | null>;
@@ -125,6 +129,18 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
    *  reconciling poll re-renders it rather than wiping it (T:16868-16871). */
   const [refusedId, setRefusedId] = useState("");
   const [stopping, setStopping] = useState(false);
+  /**
+   * THE CLOCK THE LAST POLL SAW, and the whole reason it is page state:
+   * `schedWhenText` is a function of the WALL CLOCK, not of the entry — a
+   * pending row crosses from "14:00 today" to "any moment now" with nothing
+   * about the entry changing at all. T gets that for free because it repaints
+   * the whole card on every tick (T:17088); `absorb` below does not, and must
+   * not, because the identity dedupe it keeps is what stops a caller with an
+   * unstable controller from re-rendering in a loop. So the dedupe stays and
+   * the clock is published beside it — a timestamp rather than a bare counter,
+   * so the banner READS it instead of merely being re-rendered by it.
+   */
+  const [tick, setTick] = useState(0);
   const cardRef = useRef<HTMLDivElement | null>(null);
 
   // Read by the poller, which outlives any one render.
@@ -138,13 +154,19 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
    * whose controller identity is not stable, a render loop.
    *
    * Compared on WHAT THE BANNER DRAWS — the id order AND each entry's `due`
-   * and `state` — rather than on identity alone. The id order is not enough:
-   * `schedWhenText` crosses from "14:00 today" to "any moment now" at the due
-   * boundary (T:16921-16931), and T gets that for free because it repaints the
-   * whole card on every 15 s poll. Dedupe on ids only and the row shows a stale
-   * time for the life of the pendency, and a re-issued `due` never lands at all.
+   * and `state` — rather than on identity alone. The id order is not enough: a
+   * re-issued `due` would never land at all.
+   *
+   * AND THE CLOCK IS PUBLISHED REGARDLESS, because the entry is only half of
+   * what the row draws: `schedWhenText` crosses from "14:00 today" to "any moment
+   * now" at the due boundary (T:16921-16931) with every field of the entry
+   * unchanged, so a dedupe on the entry alone froze that cell for the life of
+   * the pendency. Only while there IS a row — the point of the dedupe is that an
+   * open composer's column does not re-render four times a minute for nothing,
+   * and an empty schedule still draws nothing at all.
    */
   const absorb = useCallback((rows: SchedEntry[]) => {
+    if (rows.length) setTick(Date.now());
     setBlockers((prev) => {
       const same =
         prev.length === rows.length &&
@@ -384,6 +406,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     armed: !!nextId && armedId === nextId,
     refused: !!nextId && refusedId === nextId,
     stopping,
+    tick,
     onStop,
     onRow,
     cardRef,

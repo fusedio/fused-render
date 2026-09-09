@@ -128,6 +128,7 @@ function mount(over: { navLocked?: boolean; onNavigate?(url: string): void } = {
       armed: sched.armed,
       refused: sched.refused,
       stopping: sched.stopping,
+      tick: sched.tick,
       onStop: sched.onStop,
       onRow: sched.onRow,
       cardRef: sched.cardRef,
@@ -391,6 +392,52 @@ test("THE DUE BOUNDARY IS CROSSED IN PLACE: same entry, new when-text", async ()
   // ...and the listing row it was labelled from is NOT refetched: the pendency
   // is the same one, which is what the id dedupe is actually for.
   expect(texts(m.tree, "sb-id")).toEqual(["TASK-050"]);
+});
+
+test("THE CLOCK ALONE CROSSES IT: nothing about the entry changes", async () => {
+  // The half of the boundary the id/`due`/`state` dedupe cannot see. The entry
+  // is byte-for-byte the SAME OBJECT on both polls — what moves is the wall
+  // clock, and "14:01 today" is only true until 14:01. So the poll publishes
+  // the clock it saw (`useSchedule.tick`) beside the rows it deduped, and the
+  // cell is read against that rather than against whichever render the entry
+  // happened to trigger. Without it the row says "14:01 today" for the whole
+  // life of the pendency and never announces the run it is holding the box for.
+  const realNow = Date.now;
+  try {
+    // A FIXED CLOCK, so the 24-hour cell and the "today" gap are the same two
+    // strings on every machine and in every timezone.
+    const base = new Date(2026, 8, 9, 14, 0, 0).getTime();
+    Date.now = () => base;
+    const entry = {
+      id: "e10",
+      state: "pending",
+      session_id: "s1",
+      due: new Date(base + 60_000).toISOString(),
+    };
+    entries = [entry];
+    tasks = [{ key: "s1", task_id: "TASK-051", title: "Nightly tidy", status: "upcoming" }];
+    const m = mount();
+    await flush();
+    expect(texts(m.tree, "sb-meta")[0]).toBe("Upcoming · 14:01 today");
+    const before = m.api.blockers;
+
+    // ONE POLL LATER, past due — and `entries` is untouched: same array, same
+    // object, same `due`, same `state`.
+    Date.now = () => base + 120_000;
+    await act(async () => {
+      m.poll();
+    });
+    await flush();
+    expect(texts(m.tree, "sb-meta")[0]).toBe("Upcoming · any moment now");
+    // THE DEDUPE IS STILL DOING ITS JOB: the published array was not replaced
+    // (that is the identity the render loop was guarded against), and the
+    // listing row was not refetched for a pendency that never changed.
+    expect(m.api.blockers).toBe(before);
+    expect(m.api.blockers[0]).toBe(entry);
+    expect(texts(m.tree, "sb-id")).toEqual(["TASK-051"]);
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test("A HALF-PRESSED STOP DIES WITH ITS ENTRY (T:17091-17097, 17146)", async () => {

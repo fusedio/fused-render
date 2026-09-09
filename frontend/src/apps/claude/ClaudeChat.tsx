@@ -2721,6 +2721,7 @@ function ChatBody(props: ChatBodyProps) {
               armed={sched.armed}
               refused={sched.refused}
               stopping={sched.stopping}
+              tick={sched.tick}
               onStop={sched.onStop}
               onRow={sched.onRow}
               cardRef={sched.cardRef}
