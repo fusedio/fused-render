@@ -22,6 +22,17 @@ describe("statusLine", () => {
     expect(statusLine({ ...base, total: 128 })).toBe("128 items");
   });
 
+  test("a single entry is singular", () => {
+    expect(statusLine({ ...base, total: 1 })).toBe("1 item");
+  });
+
+  test("a truncated total keeps the '+' and stays plural", () => {
+    // "1+" would be a strange singular even if `total` were 1, and a
+    // truncated total from the walk is never exactly 1 anyway — the "+"
+    // itself is the tell that this is a floor, not a count.
+    expect(statusLine({ ...base, total: 1, truncated: true })).toBe("1+ items");
+  });
+
   test("a folder, 3 rows selected", () => {
     expect(
       statusLine({ ...base, total: 128, selected: 3, selectedBytes: 1_468_006 }),

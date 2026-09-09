@@ -54,7 +54,9 @@ export function statusLine({
   // truncation lives; this strip only ever says "at least this many".
   const totalLabel = truncated ? `${fmt(total)}+` : fmt(total);
 
-  if (selected === 0) return `${totalLabel} items`;
+  // A truncated total keeps its "+" and stays plural — it is a floor the walk
+  // stopped short of confirming, never a count that could actually read "1".
+  if (selected === 0) return `${totalLabel} ${total === 1 && !truncated ? "item" : "items"}`;
 
   // The listing does not know a folder's recursive size and must not stall
   // this line to find out, so a selected folder is counted on its own rather
