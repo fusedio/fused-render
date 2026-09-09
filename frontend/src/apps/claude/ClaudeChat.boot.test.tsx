@@ -58,6 +58,13 @@ function stubFetch(): void {
         templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
       });
     }
+    // THE LANDING'S LONG POLL, and it has to be a LONG poll here. `sessions.ts`
+    // re-arms `/api/tasks/changes` the moment one returns, so a stub that
+    // answers it immediately is an infinite re-arm inside `act` — which flushes
+    // until the queue is empty and therefore never returns at all. A promise
+    // that never settles is what the real endpoint does (it holds the request
+    // open until something changes), so the landing view can be mounted.
+    if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
     if (url === "/api/prefs") {
       if (holdPrefs) return new Promise<Response>(() => {});
       return jsonRes({});
@@ -325,4 +332,57 @@ test("a host that DROPS initialAsk mid-wait still sends the ask once (Fix with A
   await settle(1700);
   expect(started().length).toBe(1);
   expect(started()[0].params.message).toContain("fix it");
+});
+
+// ── THE ANNOTATION STRIP FOLLOWS THE TARGET, NOT THE LAYOUT ─────────────────
+//
+// T's `annPollTarget` sets `hidden` on Screenshot/Comment/Annotate off ONE fact
+// — is there an `annFrame` — and `annFrame` is the pane iframe in the split
+// layout or, in CHAT_ONLY, the host's marked frame (`annMarkedFrame`, T:6113).
+// So the only state that hides the group is "nothing to act on". Measured on
+// `:1777` for `?_side=claude` on a file: `#anncta` 312x26, all three buttons
+// `hidden:false`; on a FOLDER listing in the same layout, all three `hidden`
+// and the group collapsed. These pin both ends of that.
+
+/** Every element carrying `cls`, by className, wherever it is in the tree. */
+function byClass(r: ReturnType<typeof create>, cls: string) {
+  return r.root.findAll(
+    (n) => typeof n.type === "string" && String(n.props.className ?? "").split(/\s+/).includes(cls),
+    { deep: true },
+  );
+}
+
+test("a HOSTED chat shows the strip — landing included — because the host has a target", async () => {
+  // The bug: `stripShown` read `!chatOnly`, a question about OUR layout, so the
+  // sidebar lost the whole row on both views while the app sat on screen in the
+  // middle column with its mark on it.
+  const { r } = await mountChat({ annotateTarget: hostFrameStub() });
+  await settle(20);
+  // The landing, not the transcript: nothing has been sent.
+  expect(byClass(r, "c-home").length).toBe(1);
+  expect(byClass(r, "c-anntools").length).toBe(1);
+  expect(byClass(r, "c-anncta").length).toBe(1);
+  const seats = byClass(r, "c-anncta")[0].findAllByType("button");
+  expect(seats.length).toBe(3);
+  // Screenshot is PR2's and live; the other two are PR3's and are disabled
+  // SEATS rather than absences — the row must not grow two buttons under the
+  // reader's hand when they come alive.
+  expect(seats[0].props.disabled).toBe(false);
+  expect(seats[1].props.disabled).toBe(true);
+  expect(seats[2].props.disabled).toBe(true);
+});
+
+test("a hosted chat whose host has marked NOTHING hides the strip, like the folder listing on :1777", async () => {
+  const { r } = await mountChat({ annotateTarget: () => null });
+  await settle(20);
+  expect(byClass(r, "c-anntools").length).toBe(0);
+  expect(byClass(r, "c-anncta").length).toBe(0);
+});
+
+test("a chat-only mount with no host getter at all hides the strip", async () => {
+  // A cards tile and the peek modal pass none: there is genuinely nothing to
+  // photograph, and "absent beats dead" (T:238-241).
+  const { r } = await mountChat();
+  await settle(20);
+  expect(byClass(r, "c-anntools").length).toBe(0);
 });

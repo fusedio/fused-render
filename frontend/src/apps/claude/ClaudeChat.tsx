@@ -574,13 +574,20 @@ function ChatBody(props: ChatBodyProps) {
   // places, one list.
   const attach = useAttachments({
     agentDir,
-    // The pane's iframe, read at gesture time: a capture aimed at the element as
-    // it was when this callback was made would photograph a document that has
-    // since been replaced by a mode swap.
-    frame: () => paneFrame.current,
-    // What the shutter flashes over: the frame's own box, which is the offset
-    // parent the pins and the highlight also live in (T:11233).
-    flashHost: () => paneFrame.current?.parentElement ?? null,
+    // THE FRAME WHOSE DOCUMENT IS THE APP, read at gesture time: ours when we
+    // have a pane, the HOST's marked one when we do not (`appFrame`). A capture
+    // aimed at the element as it was when this callback was made would
+    // photograph a document that has since been replaced by a mode swap — and
+    // one aimed at `paneFrame` alone found nothing at all in the hosted
+    // `?_side=claude` layout, where the only app frame is the host's. T does not
+    // have this seam because `appWindow()` reads off `annFrame` whichever of the
+    // two it is (T:4865), and the camera reads `annFrame`.
+    frame: () => appFrame(),
+    // What the shutter flashes over: that frame's own box, which is the offset
+    // parent the pins and the highlight also live in (T:11233). The host's frame
+    // is a node in THIS document (Preview.tsx renders both columns), so its
+    // parent is a real box to flash over.
+    flashHost: () => appFrame()?.parentElement ?? null,
     paneNoun: pane.paneNoun,
   });
   /** The picture the viewer is showing, pending or sent (T:10681 `shotViewing`). */
@@ -1178,14 +1185,36 @@ function ChatBody(props: ChatBodyProps) {
   // persistent left column to hang a bar on (`pickerHost`).
   const host = pickerHost(narrowView.narrow, pane.noPane, pane.decision?.leftModes.length ?? 0);
   const paneShown = !chatOnly && !pane.noPane;
+  // IS THERE AN ANNOTATE TARGET — the one question the strip's visibility has
+  // ever asked, and it is NOT a question about our layout.
+  //
+  // T's `annPollTarget` (T:8449-8465) resolves `annFrame` to the pane iframe in
+  // the split layout OR, in CHAT_ONLY, to the host's marked frame
+  // (`annMarkedFrame`, T:6113) — polled, because the mark moves with the host's
+  // own mode switcher — and sets `hidden` on the three buttons off that one
+  // fact. `#anncta:not(:has(#annbtn:not([hidden])))` then collapses the group.
+  // So the ONLY state that hides them is "nothing to act on": a folder listing,
+  // or a standalone mount with no pane.
+  //
+  // Native read `!chatOnly` instead, which is a question about the LAYOUT, and
+  // so the hosted `?_side=claude` sidebar — where the app is on screen in the
+  // middle column and `annotateTarget` hands us its frame — lost the whole row,
+  // on the landing and in the transcript alike, while `:1777` kept all three
+  // buttons on the same URL (measured: legacy `#anncta` 312x26 with
+  // viewshot/annbtn/annrec all `hidden:false`; native rendered no `.c-anncta`
+  // at all).
+  //
+  // `hostPane` is the polled answer to the second half and already lives above
+  // (HOST_PANE_POLL_MS, T's tick), so this is the same OR that `hasPane` makes.
+  const annTarget = paneShown || hostPane;
   // THE STRIP IS NOT THE NARROW LAYOUT'S ALONE any more. In T `#anntools` is a
   // row the landing and the transcript both keep in EVERY layout (T:3842) — it
   // is where the three preview controls live — and PR1 rendered it only below
   // the breakpoint, because until now its only contents were the narrow view's
   // own two controls. The camera moved into it on 2026-08-27, so the row now
-  // exists wherever there is a pane to photograph; the view toggle and the
-  // picker stay narrow-only inside it (`pickerHost`).
-  const stripShown = paneShown;
+  // exists wherever there is a pane to photograph — OURS OR THE HOST'S; the
+  // view toggle and the picker stay narrow-only inside it (`pickerHost`).
+  const stripShown = annTarget;
   // T:7566 `annFitStrip` — the strip's words collapse to icons only when they
   // MEASURABLY do not fit (QA #2: at 1280px with a pane the chat column is
   // ~308px and the three full labels overflowed it by 8px).
@@ -1304,6 +1333,15 @@ function ChatBody(props: ChatBodyProps) {
       // ... but not while one of them is still on its way: `take()` leaves a
       // `pending` chip in the tray, so a send fired now would go out WITHOUT
       // the files whose chips made it sendable (Bugbot, PR #1064).
+      //
+      // AND THE CAMERA COUNTS, even though it plants no chip. `capture()` puts
+      // nothing in the tray until the bytes are in hand — the seat swap is the
+      // whole of its commit — so its window (up to the native path's several
+      // seconds on a large pane) was invisible to this gate: the flash had
+      // already fired, so the picture LOOKED taken, an Enter in that window went
+      // out without it, and it then landed in the tray for the NEXT message. T
+      // holds the send for the in-flight shot for the same reason
+      // (`shotBusy`/`shotAttachPane`); `capturing` is that flag.
       attachPending: attach.items.some((a: Attachment) => a.pending),
       chips: (
         <AttachTray
@@ -1399,11 +1437,13 @@ function ChatBody(props: ChatBodyProps) {
           <div className="c-anntools" ref={stripRef}>
             <AnnStrip
               paneNoun={pane.paneNoun}
-              // The camera photographs the PANE, so it goes when the pane is not
-              // on screen: the narrow CHAT view parks the preview off screen
-              // (T:3823 `body.view-chat .viewshot`), and a chat-only mount never
-              // had one.
-              shown={paneShown && !(narrowView.narrow && narrowView.view === "chat")}
+              // The camera photographs whatever the annotate target is, so the
+              // seats go only when there is nothing to photograph. The narrow
+              // CHAT view parks OUR preview off screen (T:3823
+              // `body.view-chat .viewshot`) and is the one layout answer left in
+              // here; a hosted mount's target is the host's own column, which
+              // that view does not move.
+              shown={annTarget && !(paneShown && narrowView.narrow && narrowView.view === "chat")}
               capturing={attach.capturing}
               onScreenshot={() => void attach.capture()}
             />
