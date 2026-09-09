@@ -7,6 +7,7 @@ one lives in `guarded_query.py` (tests/test_index_guarded_query.py), which is
 why the assertion below is about `query.py` specifically.
 """
 import os
+import posixpath
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -264,7 +265,11 @@ def test_resolve_relative_dotdot_clamps_at_the_filesystem_root(monkeypatch):
     real_dirs = {"/", "/etc"}
     monkeypatch.setattr(
         os.path, "isdir",
-        lambda p: os.path.normpath(p) in real_dirs)
+        # The fake filesystem is described in POSIX terms, so it has to be
+        # collapsed with POSIX rules too — `os.path.normpath` follows the
+        # host platform's separator conventions and would fold "/.." into
+        # "\\etc"-shaped strings on Windows, matching nothing in `real_dirs`.
+        lambda p: posixpath.normpath(p) in real_dirs)
     out = resolve_query("/", "../../../etc/*.conf")
     assert out == {"base": "/etc", "pattern": "*.conf", "mode": "glob"}
 

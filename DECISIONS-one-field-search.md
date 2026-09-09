@@ -2775,3 +2775,68 @@ the instant the answer resolves — confirmed failing against the unpatched
 code (it reported `/proj`, not `""`, while pending). The existing
 `"is the box's own root when nothing is searching"` case needed no change
 and still passes unmodified, pinning the untouched idle fallback.
+
+## D22 — the clamp-at-root fixture described its fake filesystem in the host's
+own dialect, not POSIX
+
+`test_resolve_relative_dotdot_clamps_at_the_filesystem_root`
+(`tests/test_index_query.py`) monkeypatches `os.path.isdir` with a lambda
+that answers from a fixed set, `real_dirs = {"/", "/etc"}`, keyed by
+`os.path.normpath(p) in real_dirs`. `os.path.normpath` is whichever of
+`posixpath.normpath` or `ntpath.normpath` the host aliases `os.path` to; the
+candidates `_walk_from` builds while consuming a `..` run past the root
+(`/..`, `/../..`, `/../../../etc`, ...) are POSIX-style strings the fixture
+itself wrote, so on a Windows CI runner `ntpath.normpath("/../../../etc")`
+answers `"\etc"` — a backslash-separated string that matches nothing in
+`real_dirs`, which only holds forward-slash keys. Every candidate reads as
+"not a directory," `_walk_from` stops consuming at the very first segment,
+and the resolver never climbs — the assertion then fails not on the
+resolver's clamping behavior but on the fixture's own platform leak.
+
+Fixed by keying the lookup on `posixpath.normpath` instead of
+`os.path.normpath`: `posixpath` is a plain importable stdlib module on every
+platform, not an alias like `os.path` — it always implements POSIX
+semantics regardless of which OS is running the test, so the same lambda
+now answers identically on Linux, macOS, and Windows. `fused_render.index.
+ignore.norm` was the other candidate the brief named; it was rejected
+because `norm` only flips its separator conversion when the real, current
+platform is Windows (`ignore.WINDOWS`), so it inherits the exact same host
+dependence `os.path.normpath` has here — it launders backslashes into
+forward slashes on an actual Windows host, but does nothing on Linux, so it
+would not have made the fixture's answer independent of where the test
+runs. `posixpath.normpath` alone is unconditional and platform-blind by
+construction, which is what a fixture describing a fake filesystem in POSIX
+terms needs.
+
+The production line the test exercises, `query.py`'s `base = norm(os.path.
+normpath(walked_base)).rstrip("/") or "/"`, was checked rather than assumed
+platform-correct: `ntpath.normpath("/../../../etc")` (imported directly,
+standing in for what a real Windows host's `os.path.normpath` returns) gives
+`"\etc"`, but that string is then passed through `norm()`, which — on an
+actual Windows host, where `ignore.WINDOWS` is genuinely `True` — replaces
+every backslash with a forward slash, turning it back into `"/etc"` before
+it reaches the caller. Verified by forcing both `os.path.normpath =
+ntpath.normpath` and `fused_render.index.ignore.WINDOWS = True` for the
+duration of one call and running `resolve_query("/", "../../../etc/*.conf")`
+unmodified against that simulated host: it still returned `{"base": "/etc",
+"pattern": "*.conf", "mode": "glob"}`. The production line is correct
+because `norm()` runs after `os.path.normpath` unconditionally, on every
+branch that calls it, and is what actually launders the separator — the bug
+was confined to the test fixture, which never routed its bookkeeping through
+`norm()` at all.
+
+Separately confirmed platform-independence of the fixed fixture itself,
+without needing the WINDOWS-flag trick above (which only matters for the
+production `norm()` call): compared `lambda p: ntpath.normpath(p) in
+real_dirs` (standing in for the old, host-aliased fixture on a Windows host)
+against `lambda p: posixpath.normpath(p) in real_dirs` (the fix) over the
+four candidates the walk actually builds (`/..`, `/../..`, `/../../..`,
+`/../../../etc`). The `ntpath`-keyed version answered `False` for all four —
+reproducing the reported CI failure exactly — while the `posixpath`-keyed
+version answered `True` for all four, matching what the real POSIX
+filesystem the fixture describes should report on any host.
+`./.venv/bin/python -m pytest tests/test_index_query.py
+tests/test_index_search.py tests/test_index_freshness.py -q` stayed at 157
+passed after the fixture change; `./frontend/node_modules/.bin/tsc --noEmit
+--project frontend/tsconfig.json` stayed clean (this fix touches no
+frontend file — checked for completeness, unaffected by construction).
