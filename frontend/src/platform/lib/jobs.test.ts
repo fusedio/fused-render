@@ -439,6 +439,33 @@ test("an index scan's job is not caught by the schedule-job filter", () => {
   expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:index:20260907-1200-ab12"]);
 });
 
+// A model load's own row (fused_render/ai/supervisor.py, "sys:ai-model:<repo>")
+// stays a live Activity row while it runs, but never becomes a stored
+// Notification once it succeeds — a live watcher (`_wait_ready`'s row-merge,
+// `fused.ai.models.load(wait=True)`) only ever reads it while it is RUNNING,
+// so nothing downstream needs the terminal row to survive. A failed or
+// cancelled load is not this quiet: only a successful one is.
+test("a model load's row disappears from Notifications once it succeeds", () => {
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done" })];
+  expect(jobRows(jobs)).toEqual([]);
+});
+
+test("a model load's row still shows while it is running", () => {
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "running" })];
+  expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
+});
+
+test("a failed or cancelled model load's row still shows", () => {
+  const jobs = [
+    job({ id: "sys:ai-model:org/fake-model", state: "error" }),
+    job({ id: "sys:ai-model:org/other-model", state: "cancelled" }),
+  ];
+  expect(jobRows(jobs).map((j) => j.id)).toEqual([
+    "sys:ai-model:org/fake-model",
+    "sys:ai-model:org/other-model",
+  ]);
+});
+
 // ---- the chip's one word and one line (D673, statusbar redesign) ------------
 
 test("a single job's chip word is its title's own -ing verb, capitalised", () => {

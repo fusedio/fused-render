@@ -211,11 +211,27 @@ export function isScheduleJob(job: Job): boolean {
   return job.id.startsWith(SCHEDULE_JOB_PREFIX);
 }
 
+// A model load's own row, by id (fused_render/ai/supervisor.py `_ai_model_job_id`).
+export const AI_MODEL_JOB_PREFIX = "sys:ai-model:";
+
+/** A model load's row once it has succeeded — never drawn as a Notification.
+ *  `fused.ai.models.load(wait=True)` (`_wait_job` in `fused_ai.py`) and
+ *  `_wait_ready`'s row-merge (D628) both poll this row while the load is
+ *  RUNNING, and neither reads it again once it goes terminal — so the row is
+ *  filtered here, in the UI layer, rather than removed from the store the way
+ *  a page destination's job is: the store keeps it (a "Model loaded" state a
+ *  live watcher can still observe going `done`), only Notifications drops it.
+ *  A FAILED or CANCELLED load still surfaces — only a successful, silent load
+ *  is this quiet. */
+export function isQuietModelLoad(job: Job): boolean {
+  return job.id.startsWith(AI_MODEL_JOB_PREFIX) && job.state === "done";
+}
+
 /** Which jobs get a row of their own in Activity: every job the registry
- *  knows about, except a scheduled run's — those never draw a row here,
- *  regardless of state (see `isScheduleJob`). */
+ *  knows about, except a scheduled run's (see `isScheduleJob`) or a model
+ *  load that finished quietly (see `isQuietModelLoad`). */
 export function jobRows(jobs: Job[]): Job[] {
-  return jobs.filter((j) => !isScheduleJob(j));
+  return jobs.filter((j) => !isScheduleJob(j) && !isQuietModelLoad(j));
 }
 
 export function mergedRows(jobs: Job[]): Job[] {
