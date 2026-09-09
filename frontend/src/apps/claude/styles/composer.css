@@ -784,74 +784,61 @@ select.c-pill {
 }
 
 /* ---- the screenshot viewer (T:997-1140) --------------------------------
-   The Dialog primitive owns the scrim and the centring; `.c-shotview-box` is T's
-   `figure#shotview-box`, and it is what SCROLLS at natural size.
+   THE BOX IS THE APP'S MODAL (P2-3): overlay, card, head with the ✕, footer,
+   focus trap and Esc all come from `platform/ui/modal/Modal`, the chassis the
+   Delete task dialog and "what was sent" use. So the whole shadcn-Dialog skin
+   that used to live here — the card's own width bound, the cascade-layer
+   argument against `sm:max-w-sm`, the scrim, the sticky bottom bar — is gone
+   with the primitive it was fighting. What is left is the BODY: the picture, the
+   framed preview, the caveat, and the path in the footer.
 
-   THE CARD'S OWN WIDTH BOUND, and it has to be stated here rather than left to
-   a utility in the className. `DialogContent` ships `sm:max-w-sm` — 384px — and
-   Tailwind emits a variant AFTER the unprefixed utility inside the same layer,
-   so `sm:max-w-sm` won over the `max-w-none` written beside it (a variant adds
-   no specificity; the order it is emitted in is the whole of it). Above 640px
-   the card was therefore pinned at 384px while the box inside it, a GRID ITEM
-   with an automatic minimum size of its own min-content, overflowed straight
-   past it: QA measured the caption bar 856px wide inside a 384px card, with
-   Close 35px past the right edge of a 1280px viewport and Escape the only way
-   out.
-
-   THE FIX IS THE CASCADE LAYER, not specificity. `src/styles/tailwind.css:7-8`
-   imports Tailwind's utilities as `layer(utilities)`, and this sheet arrives
-   UNLAYERED through a plain `import` in four TSX modules — and an unlayered
-   declaration beats every layered one whatever its selector or emit order. So
-   the rule below wins because of where it lives, and scoping it more tightly
-   costs nothing.
-
-   Scoped `.c-overlay.c-shotview`, which is the scope this app has for a PORTALED
-   surface: the dialog renders outside `.chat-root`, so the `.chat-root` prefix
-   every `.c-annchip*` rule above carries is not available here.
-
-   The number is T's: `#shotview` is the viewport with 12px of padding on each
-   side (T:997-1007), so the card gets the viewport minus 24. */
-/* AND ABOVE THE APP'S MODAL, which is a number this file now has to state.
-   "What was sent" is a `platform/ui/modal/Modal` (R4-1) and that chassis sits
-   at `z-index: 1000` (styles/deploy.css `.deploy-overlay`), while the Dialog
-   primitive here ships `z-50`. A picture opened from inside the record would
-   therefore land UNDER it and the click would look dead — the one failure the
-   viewer exists to prevent. The backdrop is an earlier sibling of the popup in
-   the portal (Base UI puts a positioner span between them, so `~` and not `+`),
-   and it is lifted with it rather than left behind the modal's scrim. */
-.c-overlay.c-shotview,
-[data-slot="dialog-overlay"]:has(~ .c-shotview) {
+   AND ABOVE THE APP'S MODAL, which is a number this file still has to state.
+   "What was sent" is a `Modal` too and the chassis sits at `z-index: 1000`
+   (`styles/deploy.css` `.deploy-overlay`), so a picture opened from inside the
+   record would land in the same plane as it and the click would look dead — the
+   one failure the viewer exists to prevent. The overlay is selected through the
+   dialog it holds, because `dialogClassName` is the only hook a caller has. */
+.modal-overlay:has(> .c-shotview-modal) {
   z-index: 1100;
 }
-.c-overlay.c-shotview {
-  width: auto;
-  min-width: 0;
-  max-width: calc(100vw - 24px);
+/* WIDER THAN A FORM DIALOG's 600px, because the content is a picture of a
+   screen — but still bounded, so a wide window does not stretch a table across
+   a metre of glass. T's own number for the framed preview was 900. */
+.modal-dialog.c-shotview-modal {
+  width: min(960px, 100%);
+}
+/* THE BODY IS WHAT SCROLLS, AND THE FOOTER NEVER MOVES (P2-5). The card is
+   `max-height: 85vh` (`.deploy-dialog`) with head and footer as fixed rows, so
+   stating the body's own max-height is belt to that braces: `85vh` minus the
+   head's 45 and the footer's 57, which is the height a body may take before the
+   card would have to grow past the card's own bound and push the footer out of
+   the viewport. `overflow: auto` on both axes — a natural-size screenshot is
+   wider than the card as well as taller. */
+.modal-dialog.c-shotview-modal .modal-body {
+  max-height: calc(85vh - 102px);
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .c-shotview-box {
   position: relative;
   margin: 0;
-  /* `min-width: 0` for the same reason the bar below has it: a grid item whose
+  /* `min-width: 0` for the same reason the path has it: a flex item whose
      automatic minimum size is its min-content ignores `max-width` outright. */
   min-width: 0;
-  max-width: min(100vw - 24px, 100%);
-  max-height: calc(100vh - 24px);
+  min-height: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  background: var(--c-panel);
-  border: 1px solid var(--c-border-strong);
-  border-radius: 10px;
-  padding: 10px;
-  box-shadow: 0 18px 50px var(--c-shadow);
 }
-/* `min-height: 0` so the flex column may actually shrink the image — without it
-   a tall screenshot pushes the caption bar off the bottom of the viewport, which
-   is where Discard lives.
-
-   TWO SIZES, and the second is not a nicety: fitted, a 1600px-wide capture lands
+/* TWO SIZES, and the second is not a nicety: fitted, a 1600px-wide capture lands
    at ~310px in the sidebar — four times the chip, still not enough to read the
-   UI it is a picture OF. The cursor names which click you are about to make. */
+   UI it is a picture OF. The cursor names which click you are about to make.
+
+   `min-height: 0` so the flex column may actually shrink the image rather than
+   handing the body a scrollbar for a picture that would have fitted. */
 .c-shotview-img {
   min-height: 0;
   max-width: 100%;
@@ -860,9 +847,6 @@ select.c-pill {
   background: var(--c-surface-2);
   cursor: zoom-in;
 }
-.c-shotview-box[data-zoom] {
-  overflow: auto;
-}
 .c-shotview-box[data-zoom] .c-shotview-img {
   max-width: none;
   max-height: none;
@@ -870,48 +854,21 @@ select.c-pill {
      its default `stretch` sizes the image to the container's width on the cross
      axis, and lifting max-width alone left the picture pinned at the box's own
      width — visibly identical to the fitted view, with a zoom-out cursor
-     promising something that had not happened. */
+     promising something that had not happened. The body above is what scrolls. */
   align-self: flex-start;
   width: auto;
   cursor: zoom-out;
 }
-/* The scrolled state needs the caption to stay put — it holds Discard and
-   Close, and a bar that scrolls away with a 1600px image takes the way out with
-   it. */
-.c-shotview-box[data-zoom] .c-shotview-bar {
-  position: sticky;
-  bottom: 0;
-  background: var(--c-panel);
-  padding-top: 6px;
-}
-.c-shotview-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11.5px;
-  color: var(--c-dim);
-  /* NEVER WIDER THAN THE CARD. The bar is what holds Discard and Close, so it
-     is the one row in this dialog that must not be the thing that decides the
-     dialog's width — and `min-width: 0` is what stops it: the default
-     `min-width: auto` on a flex item is its MIN-CONTENT, and a nowrap path is
-     min-content-wide however small its own `min-width` is. */
-  min-width: 0;
-  max-width: 100%;
-  align-self: stretch;
-}
-.c-shotview-bar .c-spacer {
-  flex: 1;
-}
 /* The path the AGENT was given, which is the one fact a picture cannot show
    about itself. Truncated from the LEFT: the filename identifies it.
 
-   `flex: 1 1 0` and not T's `flex: 0 1 auto` — a definite zero basis is what
-   keeps a 90-character temp path out of the bar's MAX-content width too, so the
-   dialog is sized by the picture and the path truncates into whatever room that
-   leaves. T needs neither, because its `#shotview` is a flex container with the
-   viewport's own definite width to shrink against. */
+   `margin-right: auto` is the footer grammar's far-left seat, and `flex: 1 1 0`
+   with a definite zero basis is what keeps a 90-character temp path from being
+   the thing that decides the dialog's width — the card is sized by the picture
+   and the path truncates into whatever room that leaves. */
 .c-shotview-path {
   flex: 1 1 0;
+  margin-right: auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -919,10 +876,7 @@ select.c-pill {
   text-align: left;
   min-width: 0;
   font-size: 11px;
-  color: var(--c-faint);
-}
-.c-shotview-drop {
-  color: var(--c-error);
+  color: var(--fg-muted);
 }
 /* Whatever the picture does NOT show, in the one place the user is actually
    looking at the picture. It rode the wire from the first version of this
@@ -933,25 +887,20 @@ select.c-pill {
   line-height: 1.45;
   color: var(--c-dim);
 }
-/* What a FILE viewer has instead of a picture: the name the user called it and
-   how big it is. An image says both of those by BEING shown, so this is simply
-   not rendered there. */
-.c-shotview-name {
-  font-size: 12.5px;
-  color: var(--c-fg);
-  font-weight: 600;
-  word-break: break-word;
-}
-/* The file's own template, in the footprint the picture gets — written against
-   the VIEWPORT rather than against the box (a box sized by its content cannot
-   give a percentage height to a child), minus the dialog's padding, and capped
-   at 900px so a wide window does not stretch a table across a metre of screen. */
+/* The file's own template, in the footprint the picture gets. It FILLS THE BODY
+   (P2-5): `width: 100%` of the body's content box rather than T's
+   `calc(100vw - 44px)`, which was written against the viewport because T's
+   overlay had no card to measure against — inside a 960px card that number was
+   wider than its container on any window over ~1000px, and the frame spilled
+   past the card and over the bar. The height is the same story: a fraction of
+   the body's own bound, so head, body and footer add up to a card that fits and
+   the footer is always the last thing on screen. */
 .c-shotview-frame {
   flex: 1 1 auto;
-  min-height: 0;
-  width: calc(100vw - 44px);
-  max-width: 900px;
-  height: calc(100vh - 120px);
+  width: 100%;
+  min-width: 0;
+  min-height: 240px;
+  height: calc(85vh - 150px);
   border: 1px solid var(--c-border-strong);
   border-radius: 4px;
   background: var(--c-surface-2);
@@ -959,6 +908,18 @@ select.c-pill {
 .c-shotview-loading {
   font-size: 11.5px;
   color: var(--c-dim);
+}
+/* Nothing to show and nothing to frame (a .zip, a refusal, an extension with no
+   template): the glyph, big and quiet, so the body is not empty. */
+.c-shotview-blank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 0;
+  color: var(--c-faint);
+}
+.c-shotview-glyph {
+  font-size: 44px;
 }
 .c-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

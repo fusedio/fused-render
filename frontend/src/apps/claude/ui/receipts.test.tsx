@@ -12,7 +12,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 const { Receipts } = await import("./Receipts");
 // The dialogs' BODIES: a Base UI dialog portals itself, and this suite has no
 // document to portal into — the body is the whole content either way.
-const { ShotViewerBody } = await import("./ShotViewer");
+const { ShotViewerBody, ShotViewerFooter, shotViewerTitle } = await import("./ShotViewer");
 const { SentPopBody } = await import("./SentPop");
 const { composeOutgoing, formatAnnotations, paneShotBlock, APP_STATE_TAG } = await import(
   "../protocol/wire"
@@ -200,12 +200,12 @@ const pending: Viewable = {
 };
 
 test("the viewer shows nothing at all until it is given a picture", () => {
-  const r = mount(<ShotViewerBody shot={null} paneNoun="preview" onClose={() => {}} />);
+  const r = mount(<ShotViewerBody shot={null} paneNoun="preview" />);
   expect(r.toJSON()).toBe(null);
 });
 
 test("the picture toggles fitted ⇄ actual size on click (T:10937)", () => {
-  const r = mount(<ShotViewerBody shot={pending} paneNoun="preview" onClose={() => {}} />);
+  const r = mount(<ShotViewerBody shot={pending} paneNoun="preview" />);
   const box = () => r.root.findByProps({ className: "c-shotview-box" });
   expect(box().props["data-zoom"]).toBe(undefined);
   act(() => r.root.findByProps({ className: "c-shotview-img" }).props.onClick());
@@ -214,18 +214,25 @@ test("the picture toggles fitted ⇄ actual size on click (T:10937)", () => {
   expect(box().props["data-zoom"]).toBe(undefined);
 });
 
+// P2-3: the viewer is a `platform/ui/modal/Modal` now, so the path, Discard and
+// Close are the chassis' FOOTER and the name is its TITLE. The chassis portals
+// itself and this suite has no document, so the seams are the footer and the
+// title function.
 test("Discard is offered for a PENDING shot only, and closes with it (T:4392)", () => {
   let discarded = 0;
   let closed = 0;
   const r = mount(
-    <ShotViewerBody
+    <ShotViewerFooter
       shot={pending}
       paneNoun="preview"
       onClose={() => (closed += 1)}
       onDiscard={() => (discarded += 1)}
     />,
   );
-  const drop = () => els(r, "c-pill c-shotview-drop");
+  const drop = () =>
+    r.root.findAll(
+      (n) => n.type === "button" && String(n.props.className).includes("c-shotview-drop"),
+    );
   expect(drop().length).toBe(1);
   act(() => drop()[0]!.props.onClick());
   expect(discarded).toBe(1);
@@ -234,7 +241,7 @@ test("Discard is offered for a PENDING shot only, and closes with it (T:4392)", 
   // un-send it would be a lie.
   act(() => {
     r.update(
-      <ShotViewerBody
+      <ShotViewerFooter
         shot={{ ...pending, pending: false }}
         paneNoun="preview"
         onClose={() => {}}
@@ -242,18 +249,34 @@ test("Discard is offered for a PENDING shot only, and closes with it (T:4392)", 
       />,
     );
   });
-  expect(els(r, "c-pill c-shotview-drop").length).toBe(0);
+  expect(drop().length).toBe(0);
+  // Close is always there, and it is the app's own secondary button rather than
+  // a pill of this component's own.
+  const close = r.root.findAll(
+    (n) => n.type === "button" && String(n.props.className) === "btn btn-secondary",
+  );
+  expect(close.length).toBe(1);
 });
 
-test("the caveat and the path are shown where the pixels are (T:1094, 1084)", () => {
-  const r = mount(<ShotViewerBody shot={pending} paneNoun="preview" onClose={() => {}} />);
-  expect(texts(r, "c-shotview-note")).toEqual(["the map did not render"]);
-  expect(texts(r, "c-shotview-path c-mono")).toEqual(["/shots/view.png"]);
-  // A picture says its own name by being shown, so the file stand-in stays away.
-  expect(els(r, "c-shotview-name").length).toBe(0);
+test("the caveat rides the pixels and the path rides the footer (T:1094, 1084)", () => {
+  const body = mount(<ShotViewerBody shot={pending} paneNoun="preview" />);
+  expect(texts(body, "c-shotview-note")).toEqual(["the map did not render"]);
+  const foot = mount(<ShotViewerFooter shot={pending} paneNoun="preview" onClose={() => {}} />);
+  expect(texts(foot, "c-shotview-path c-mono")).toEqual(["/shots/view.png"]);
 });
 
-test("a FILE has no pixels, so it gets its name, its size and its own template", async () => {
+test("the HEAD names it: a picture by its noun, a file by name and size", () => {
+  // A picture says how big it is by being looked at (T:7099), so no size.
+  expect(shotViewerTitle(pending, "preview")).toBe("preview screenshot");
+  expect(
+    shotViewerTitle(
+      { kind: "file", view: "/home/me/data/rows.csv", name: "rows.csv", size: 4096 },
+      "preview",
+    ),
+  ).toBe("rows.csv · 4 KB");
+});
+
+test("a FILE has no pixels, so it gets its own template framed in the body", async () => {
   const file: Viewable = {
     kind: "file",
     view: "/home/me/data/rows.csv",
@@ -261,18 +284,20 @@ test("a FILE has no pixels, so it gets its name, its size and its own template",
     size: 4096,
     pending: false,
   };
-  const r = mount(<ShotViewerBody shot={file} paneNoun="preview" onClose={() => {}} />);
-  expect(texts(r, "c-shotview-name")).toEqual(["rows.csv · 4 KB"]);
+  const r = mount(<ShotViewerBody shot={file} paneNoun="preview" />);
   // The line that promises a preview is up while the stat is in flight: a blank
   // box for those seconds reads as a preview that failed (T:4384).
   expect(texts(r, "c-shotview-loading")).toEqual(["loading preview…"]);
   expect(r.root.findAll((n) => n.type === "img").length).toBe(0);
   // No stat answer here (no server): the promise settles to null and the line
-  // goes, which is the D616 "no template for this extension" case.
+  // goes, which is the D616 "no template for this extension" case — and the
+  // glyph takes the empty body, so the viewer never shows nothing at all.
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
   });
+  expect(els(r, "c-shotview-loading").length).toBe(0);
+  expect(els(r, "c-shotview-blank").length).toBe(1);
 });
 
 // ---- "what was sent" -------------------------------------------------------
