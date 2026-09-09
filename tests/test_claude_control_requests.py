@@ -165,7 +165,10 @@ def test_cancel_with_no_host_still_tree_kills(agent, tmp_path):
         f.write(str(proc.pid))
 
     result = agent._cancel("20260901-140000-ccc")
-    assert "still_queued" not in result
+    # Nothing was queued, so nothing is owed back — but the KEY is present on
+    # every road now (agent.py `_cancel`'s `stranded`), so a caller never has to
+    # tell "no host answered" apart from "the host said nothing was queued".
+    assert result["still_queued"] == []
     assert _wait_for(lambda: proc.poll() is not None), \
         "no host.json at all means no one to interrupt — must fall back " \
         "to the tree-kill"

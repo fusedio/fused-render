@@ -1,0 +1,611 @@
+/* Composer + chat chrome. Only what Tailwind cannot express: the exact sizes,
+   radii and hover/focus states the pixel diff is measured against. Values are
+   copied verbatim from T (line cites per block), with the template's palette
+   read through chat.css's `--c-*` aliases. */
+
+/* ---- portaled surfaces --------------------------------------------------
+   A Popover / DropdownMenu / Dialog popup lands on <body>, OUTSIDE
+   .chat-root's cascade, so the `--c-*` aliases it paints with have to be
+   re-anchored. Only the subset the overlays actually use is mirrored here;
+   chat.css stays the source for the whole palette. */
+.c-overlay {
+  --c-bg: #191a1e;
+  --c-panel: #1e2025;
+  --c-surface: #26282f;
+  --c-surface-2: #2d3038;
+  --c-fg: #ececf1;
+  --c-fg-strong: #ffffff;
+  --c-dim: #9a9fa9;
+  --c-faint: #8a8f99;
+  --c-border: #34363e;
+  --c-border-strong: #4a4d57;
+  --c-accent: #d97757;
+  --c-on-accent: #1a1a1a;
+  --c-error: #f26d6d;
+  --c-shadow: rgba(0, 0, 0, 0.4);
+  --c-scrim: rgba(0, 0, 0, 0.62);
+}
+:root[data-theme="light"] .c-overlay {
+  --c-bg: #ffffff;
+  --c-panel: #fafafa;
+  --c-surface: #f4f4f6;
+  --c-surface-2: #ebebef;
+  --c-fg: #1f2023;
+  --c-fg-strong: #000000;
+  --c-dim: #61656c;
+  --c-faint: #676c74;
+  --c-border: #e3e4e8;
+  --c-border-strong: #c9cbd2;
+  --c-accent: #b8542f;
+  --c-on-accent: #ffffff;
+  --c-error: #c62828;
+  --c-shadow: rgba(0, 0, 0, 0.1);
+  --c-scrim: rgba(0, 0, 0, 0.48);
+}
+
+/* ---- the header's two rows (T:163-172 + T:1285-1310) --------------------
+   Row one is the CONTROL strip (T's `#anntools`: the way out at its left end,
+   the menu at its right, and the seat PR2/PR3's screenshot / comment /
+   annotate buttons land in). Row two is the chat's IDENTITY (T's `#topbar`).
+   One row carrying all six things is how a 43px strip in a narrow pane ends up
+   with the file name and the id fighting for the same inch (Akshil,
+   2026-09-08, #7). */
+.c-header {
+  flex-shrink: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.c-hdr-tools {
+  flex-shrink: 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--c-border);
+}
+/* ONE auto margin per row: everything before it sits left, everything after
+   rides the right-hand end with it (T:255-262). Two of them would split the
+   slack and park the kebab mid-strip. */
+.c-hdr-slack {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ---- top bar (T:1285-1310, 3942, 1448-1452) ---------------------------- */
+.c-topbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--c-border);
+}
+.c-topbar .c-spark {
+  color: var(--c-accent);
+  font-size: 15px;
+}
+.c-tb-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--c-fg-strong);
+  white-space: nowrap;
+}
+.c-tb-file {
+  color: var(--c-faint);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.c-session {
+  flex-shrink: 0;
+  color: var(--c-faint);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums;
+}
+/* "running" at the end of the chat's name — a shimmer through the WORD, not a
+   spinner, and the same mark every "running" in this app wears (T:1342-1372).
+   The travel stays inside 100% -> 0% over a 300%-wide image so no frame can
+   leave a letter unpainted, and the clip box holds the whole glyph. */
+.c-tb-run,
+.c-row-run {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  line-height: 1.6;
+  padding: 1px;
+  color: var(--c-status-progress);
+  background-image: linear-gradient(
+    100deg,
+    var(--c-dim) 20%,
+    var(--c-status-progress) 40%,
+    var(--c-status-progress) 60%,
+    var(--c-dim) 80%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: c-running-shimmer 2.2s linear infinite;
+}
+@keyframes c-running-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-tb-run,
+  .c-row-run {
+    animation: none;
+    -webkit-text-fill-color: currentcolor;
+  }
+}
+
+.c-back {
+  background: transparent;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    color 0.12s,
+    border-color 0.12s,
+    background 0.12s;
+}
+.c-back:hover {
+  color: var(--c-fg);
+  border-color: var(--c-border-strong);
+  background: var(--c-surface);
+}
+.c-back:disabled {
+  opacity: 0.55;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ---- kebab (T:522-602) -------------------------------------------------- */
+.c-kebab {
+  position: relative;
+  flex-shrink: 0;
+}
+.c-kebabbtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 26px;
+  padding: 0;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-dim);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    background 0.12s;
+}
+.c-kebabbtn:hover:not(:disabled),
+.c-kebabbtn[aria-expanded="true"] {
+  color: var(--c-fg);
+  background: var(--c-surface);
+}
+/* The landing's copy: on screen so the affordance does not appear from nowhere
+   on entering a chat, and plainly not pressable. */
+.c-kebabbtn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.c-kebabpop {
+  min-width: 196px;
+  padding: 4px;
+  background: var(--c-panel);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px var(--c-shadow);
+}
+.c-kebab-opt {
+  display: block;
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--c-fg);
+  cursor: pointer;
+  text-align: left;
+}
+.c-kebab-opt:hover:not([disabled]),
+.c-kebab-opt[data-highlighted]:not([disabled]),
+.c-kebab-opt:focus-visible:not([disabled]) {
+  background: var(--c-surface-2);
+}
+.c-kebab-opt[disabled],
+.c-kebab-opt[disabled]:hover {
+  color: var(--c-dim);
+  cursor: default;
+  background: transparent;
+}
+/* Coloured at REST and not only on hover: the item's whole job is to be told
+   apart from the reversible one directly above it BEFORE it is pressed. */
+.c-kebab-opt.is-danger {
+  color: var(--c-error);
+}
+.c-kebab-opt.is-danger:hover:not([disabled]),
+.c-kebab-opt.is-danger[data-highlighted]:not([disabled]),
+.c-kebab-opt.is-danger:focus-visible:not([disabled]) {
+  background: color-mix(in srgb, var(--c-error) 12%, transparent);
+}
+.c-kebab-opt.is-danger[disabled],
+.c-kebab-opt.is-danger[disabled]:hover {
+  color: var(--c-dim);
+  background: transparent;
+}
+
+/* ---- composer (T:2701-2790, 3000-3010) --------------------------------- */
+.c-composer {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 20px;
+  padding: 12px 14px 10px;
+  box-shadow: 0 6px 24px var(--c-shadow);
+  transition: border-color 0.15s;
+}
+.c-composer:focus-within {
+  border-color: var(--c-border-strong);
+}
+.c-composer textarea {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+  color: var(--c-fg);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  max-height: 200px;
+  padding: 2px 2px 6px;
+}
+.c-composer textarea::placeholder {
+  color: var(--c-faint);
+}
+.c-composer textarea:disabled {
+  cursor: default;
+}
+.c-composer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.c-composer-row .c-spacer {
+  flex: 1;
+}
+/* `.is-compact` carries no declarations on purpose: what it shortens is option
+   TEXT, which a stylesheet cannot rewrite (PERMISSION_SHORT). The class is
+   still written so the state is readable from the outside (T:2748). */
+.c-composer-row.is-tight {
+  gap: 3px;
+}
+.c-composer-row.is-tight .c-pill {
+  padding-left: 5px;
+  padding-right: 5px;
+}
+.c-composer-row.is-tight select.c-pill {
+  padding-right: 17px;
+  background-position: right 5px center;
+}
+/* The spacer becomes the LINE BREAK — `width: 100%` and not `flex-basis`,
+   which WKWebView ignored outright (T:2755-2769). */
+.c-composer-row.is-stack .c-spacer {
+  flex: 0 0 auto;
+  width: 100%;
+  height: 0;
+}
+.c-composer-row.is-stack .c-send {
+  margin-left: 0;
+}
+.c-composer-row.is-stack .c-lead2 {
+  margin-left: auto;
+}
+
+/* Followed-up text the live run has not acknowledged yet (queued, T:16024).
+   A quiet line under the box, not a bubble: the transcript owns bubbles. */
+.c-queued {
+  margin: 2px 2px 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--c-faint);
+}
+
+.c-pill {
+  background-color: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+  cursor: pointer;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+  transition:
+    background-color 0.12s,
+    color 0.12s,
+    filter 0.12s;
+}
+select.c-pill {
+  background-image: var(--c-pill-caret);
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 8px 8px;
+  padding-right: 22px;
+  text-align: left;
+}
+.c-pill:focus-visible {
+  border-color: var(--c-border-strong);
+  background-color: var(--c-surface-2);
+  color: var(--c-fg);
+}
+/* Spelled out rather than left to source order: a plain `.c-pill:hover` at the
+   same specificity repaints an ARMED pill neutral, and a dimmed pill that still
+   lights up says two things at once (T:2843-2848). */
+.c-pill:hover:not([aria-pressed="true"]):not(:disabled) {
+  background-color: var(--c-surface-2);
+  color: var(--c-fg);
+}
+.c-pill[aria-pressed="true"]:hover {
+  filter: brightness(1.1);
+}
+.c-pill:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* The platform popup a keyboard user still gets should not arrive white. */
+.c-pill option {
+  background: var(--c-bg);
+  color: var(--c-fg);
+}
+.c-pillwrap {
+  position: relative;
+  display: inline-flex;
+}
+/* The popover's anchor: the pill's own box, never a target of its own — the
+   pointer path is the select's cancelled pointerdown and the keyboard path is
+   the select itself (T:12571-12586). */
+.c-pill-anchor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* ---- the pills' menu (T:2860-2905) ------------------------------------- */
+.c-selpop {
+  padding: 4px;
+  background: var(--c-panel);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px var(--c-shadow);
+}
+.c-selpop-head {
+  padding: 4px 9px 6px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--c-faint);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+.c-selpop-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--c-fg);
+  cursor: pointer;
+  text-align: left;
+}
+.c-selpop-opt:hover,
+.c-selpop-opt:focus-visible {
+  background: var(--c-surface-2);
+}
+/* The wash alone carries the state — no tick glyph — and the ink stays --c-fg:
+   accent is a fill here, never text on its own tint (T:2900). */
+.c-selpop-opt.is-on {
+  background: color-mix(in srgb, var(--c-accent) 16%, transparent);
+}
+.c-selpop-opt.is-on:hover {
+  background: color-mix(in srgb, var(--c-accent) 26%, transparent);
+}
+
+/* ---- the Schedule confirm (T:2917-2954) -------------------------------- */
+.c-schedpop {
+  width: 260px;
+  padding: 12px;
+  background: var(--c-panel);
+  border: 1px solid var(--c-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px var(--c-shadow);
+}
+.c-schedpop-title {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--c-fg-strong);
+}
+.c-schedpop-sub {
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--c-faint);
+}
+.c-schedpop-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.c-schedpop-btn {
+  background-color: transparent;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 999px;
+  color: var(--c-dim);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 11px;
+  cursor: pointer;
+  transition:
+    background-color 0.12s,
+    color 0.12s,
+    filter 0.12s;
+}
+.c-schedpop-btn:hover {
+  background-color: var(--c-surface-2);
+  color: var(--c-fg);
+}
+/* Exactly one control here commits, and it is the one that navigates. */
+.c-schedpop-btn.is-go {
+  background: var(--c-accent);
+  border-color: transparent;
+  color: var(--c-on-accent);
+}
+.c-schedpop-btn.is-go:hover {
+  filter: brightness(1.1);
+}
+
+/* ---- send / stop (T:2956-2982) ----------------------------------------- */
+.c-send {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition:
+    filter 0.12s,
+    transform 0.12s,
+    opacity 0.12s;
+}
+.c-send:hover:not(:disabled) {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+.c-send:active {
+  transform: none;
+}
+.c-send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ---- the chat composer's column (T:3002-3010, 3053-3077) --------------- */
+.c-composer-chat {
+  flex-shrink: 0;
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 8px 20px 6px;
+}
+.c-footnote {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 24px 10px;
+  text-align: center;
+  color: var(--c-faint);
+  font-size: 11px;
+  /* An explicit value, because fitFootnote measures this box in LINES and has
+     to divide by something it knows (T:3060-3064). */
+  line-height: 1.5;
+}
+/* The SECOND sentence goes rather than the first being ellipsised: half a
+   sentence with a "…" says the app ran out of room (T:3066-3076). */
+.c-footnote.is-tight .c-fn-more {
+  display: none;
+}
+
+/* ---- "what was sent" (T:1145-1185) -------------------------------------
+   THE BOX IS THE APP'S MODAL now (R4-1): overlay, card, head, ✕, footer and
+   focus handling all come from `platform/ui/modal/Modal` — the chassis the
+   Delete task dialog uses — so nothing about the chrome is styled here any
+   more (the old sentpop box/bar/body skin is gone with it).
+   What is left is the two things inside the body, and they paint with the
+   PLATFORM palette (`--bg`, `--border`, `--fg-muted`), not the chat's `--c-*`
+   aliases: the dialog is portaled to <body>, outside .chat-root's cascade, and
+   it is now a dialog of the app rather than a popup of the chat. */
+.c-sent-head {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+}
+.c-sent-wire {
+  margin: 0;
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+/* NO ERASE-CONFIRM SKIN HERE ANY MORE (Akshil, 2026-09-08, #28). The chat's
+   delete confirm used to be a dialog of its own with the Tasks page's two
+   sentences re-typed into it and its whole chassis re-measured against
+   platform/ui/modal — one irreversible action, two designs, and the copy free
+   to drift. The component moved down to `platform/ui/EraseTaskModal` and both
+   surfaces now render THAT, so the styling is the app's shared modal CSS and
+   there is nothing left to keep in step here. */
+
+/* The overlays' own scrim, one value for all three (T:1147, 1189). */
+.c-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--c-scrim);
+}
+.c-modal-layer {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}

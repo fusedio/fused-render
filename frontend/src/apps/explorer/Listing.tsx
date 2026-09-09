@@ -94,6 +94,10 @@ import {
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
+// The flag module DIRECTLY, not the barrel: the barrel pulls `ChatMount` (and
+// through it the chat's lazy boundary) into this file's graph for one boolean,
+// which is the very thing feature-flag.ts's header says it is separate to avoid.
+import { useNativeChatFlag } from "@apps/claude/feature-flag";
 import {
   pendingClaudeAskVersion,
   subscribePendingClaudeAsk,
@@ -1018,6 +1022,40 @@ export default function Listing({
   // folded into the key passed down (below), the same fix Preview.tsx's
   // `claudeAskInstance` is for the sidebar's copy of this gap.
   const [claudeAskInstance, setClaudeAskInstance] = useState(0);
+  // WHO PULLS THE ASK (Preview.tsx carries the same pair for the file sidebar).
+  // Flag OFF, the claude template pulls it out of `window._fusedClaudeAskTake`
+  // at its own boot and nothing here may touch it. Flag ON there is no boot to
+  // pull from, so the host reads-and-clears once per ask — a LEDGER and not a
+  // memo, because the pull IS the clear (lib/claude-ask.ts) — and hands the text
+  // down as a prop.
+  // In a COMMITTED EFFECT, not the render body: the pull is destructive, so a
+  // render React discards would eat the ask. And the pane is keyed on the
+  // DELIVERY rather than on the arrival, because the effect lands after the
+  // render that saw the bumped instance — keying on the arrival remounted the
+  // pane before there was anything to boot it with (Preview.tsx carries the
+  // same pair, with the full argument).
+  // TRI-STATE, and the key below is why: `null` is "the prefs read has not
+  // landed", not "legacy". Flattened to a boolean for the ask ledger, where
+  // "not asked yet" is honestly "no" (feature-flag.ts).
+  const nativeChatState = useNativeChatFlag();
+  const nativeChat = nativeChatState === true;
+  const [askDelivery, setAskDelivery] = useState<{ text: string; seq: number } | null>(null);
+  const pulledFor = useRef(-1);
+  useEffect(() => {
+    if (!nativeChat || pulledFor.current === claudeAskInstance) return;
+    pulledFor.current = claudeAskInstance;
+    const text = takeClaudeAsk(claudeSeedRef);
+    if (text) setAskDelivery({ text, seq: claudeAskInstance });
+  }, [nativeChat, claudeAskInstance]);
+  // Handed over exactly once: `closeSide` then reselecting claude remounts
+  // `ListingPreviewPane` at the same key, and a ledger still holding the text
+  // would replay a stale prompt into the new conversation.
+  const deliveredAsk = useRef(-1);
+  useEffect(() => {
+    if (askDelivery) deliveredAsk.current = askDelivery.seq;
+  }, [askDelivery]);
+  const nativeAsk =
+    askDelivery && deliveredAsk.current !== askDelivery.seq ? askDelivery.text : null;
   // Whether claude is confirmed showable for THIS folder right now — the
   // exact question `selectSide("claude")` would answer by hand, with
   // `claudeEntryReady` additionally requiring the gate to have SETTLED, not
@@ -2154,7 +2192,22 @@ export default function Listing({
                   would never fire to pull the new prompt. */}
               <ListingPreviewPane
                 key={paneSide === "claude"
-                  ? `${paneKey(paneSide, fsPath)}:${claudeAskInstance}`
+                  ? `${paneKey(paneSide, fsPath)}:${
+                      // ONLY A REAL `false` TAKES THE LEGACY SHAPE. Read as a
+                      // boolean this walked `claudeAskInstance` (legacy, flag not
+                      // yet read) → the delivery seq (flag landed on) → the seq
+                      // again (delivered): the middle step remounted and booted a
+                      // whole chat only to throw it away. So "not asked yet"
+                      // takes the NATIVE shape — the one it keeps if the flag
+                      // lands on — and a later `false` changes the key while
+                      // `ChatMount` is still showing nothing but its cover
+                      // (Preview.tsx `claudeMountKey` carries the same argument).
+                      nativeChatState === false
+                        ? claudeAskInstance
+                        : askDelivery
+                          ? askDelivery.seq
+                          : 0
+                    }`
                   : paneKey(paneSide, fsPath)}
                 undecided={paneUndecided}
                 folder={fsPath}
@@ -2162,6 +2215,7 @@ export default function Listing({
                 sideEntries={sideEntries}
                 onSelectSide={selectSide}
                 onClose={closeSide}
+                initialAsk={paneSide === "claude" ? nativeAsk : null}
               />
             </div>
           </>

@@ -89,6 +89,10 @@ import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import { EntryActionsMenu } from "@apps/explorer/EntryActionsMenu";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
+import { ChatMount, sideFrameSrc, useNativeChatFlag } from "@apps/claude";
+
+/** The chat companion's mode key, in `templates` and in `_side` alike. */
+const CHAT_MODE = "claude";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
@@ -680,6 +684,27 @@ const FRAME_FADE_MS = 150;
 // previous mode's content forever — past this the swap completes regardless.
 const FRAME_SWAP_TIMEOUT_MS = 4000;
 
+/**
+ * THE CONTENT PANE THE SIDEBAR SITS BESIDE, found by its own mark.
+ *
+ * The `_side` split puts the chat next to this file's preview, and that preview
+ * IS the app: it is the document the sidebar's notes point at and the document
+ * its app-state reads describe (`ClaudeChat`'s `annotateTarget`). The legacy
+ * template found it by reaching up through `parent.document` for the mark
+ * (template.html `annMarkedFrame`, T:6117); natively the sidebar is a subtree of
+ * THIS document, so the lookup is a plain `querySelector` and nothing crosses a
+ * frame boundary at all.
+ *
+ * BY MARK, NOT BY POSITION, for the reason the attribute exists (see where it is
+ * stamped below): the held-frame swap keeps two frames mounted and only the
+ * SHOWN one carries the mark, so this cannot be fooled by a mode switch — and a
+ * view with no content pane at all (a listing, a pending gate, the fallback
+ * card) answers `null`, which the chat reads as "no pane" exactly as the
+ * template did.
+ */
+const annotateTargetFrame = (): HTMLIFrameElement | null =>
+  document.querySelector<HTMLIFrameElement>("iframe[data-fused-annotate-target]");
+
 // THIS FILE ONCE HOSTED NO SNAPSHOT INDICATOR OF ITS OWN — the reasoning was
 // that a content pane is the ordinary template rendering ordinary bytes, the
 // code editor looks exactly like the code editor, with no room to say "these
@@ -1106,6 +1131,47 @@ function TemplatePreview({
   // passes down (`claudeFrameKey`, further down), so a second ask on an
   // already-open sidebar gets a fresh document the same as a first one does.
   const [claudeAskInstance, setClaudeAskInstance] = useState(0);
+  // WHO PULLS THE ASK. Flag OFF, the claude template pulls it out of
+  // `window._fusedClaudeAskTake` at its own boot, so nothing here may touch it.
+  // Flag ON there is no boot to pull from — the host reads-and-clears once per
+  // ask (`claudeAskInstance` is bumped on every incoming one) and hands the text
+  // down as `initialAsk`, which lands on the chat's own ask branch (T:19194).
+  // THE TRI-STATE, not the boolean: `null` is "the prefs read has not landed",
+  // and the two things below need different answers to it. The PULL wants the
+  // boolean (`null` is honestly "no host pull yet" — the template would do its
+  // own, and nothing has mounted either way), while the mount KEY has to not
+  // move under a chat that is already on screen, which needs the difference
+  // between "off" and "not asked".
+  const nativeChatState = useNativeChatFlag();
+  const nativeChat = nativeChatState === true;
+  // A LEDGER, not a memo: the pull IS the clear (lib/claude-ask.ts), so it must
+  // happen exactly once per ask — and in a COMMITTED EFFECT, because a render
+  // React discards (StrictMode, a concurrent interruption, a Suspense retry)
+  // would consume the ask irrecoverably.
+  //
+  // The delivery is what the mount is keyed on, not the arrival: keying on
+  // `claudeAskInstance` remounted on the render BEFORE the effect had pulled
+  // anything, so the fresh chat booted with no ask and the text then arrived as
+  // a prop change its boot had already read past (`booted.current`).
+  const [askDelivery, setAskDelivery] = useState<{ text: string; seq: number } | null>(null);
+  const pulledFor = useRef(-1);
+  useEffect(() => {
+    if (!nativeChat || pulledFor.current === claudeAskInstance) return;
+    pulledFor.current = claudeAskInstance;
+    const text = takeClaudeAsk(claudeSeedRef);
+    if (text) setAskDelivery({ text, seq: claudeAskInstance });
+  }, [nativeChat, claudeAskInstance]);
+  // AND CLEARED ONCE IT HAS BEEN HANDED OVER. The mount keyed on this seq read
+  // the text at its own boot; a LATER remount at the same key — toggling the
+  // sidebar companion to git and back is one, see the held-frame note below —
+  // must not replay the same ask into a brand-new conversation, which is the
+  // round-1 bug the read-is-the-clear pull exists to prevent.
+  const deliveredAsk = useRef(-1);
+  useEffect(() => {
+    if (askDelivery) deliveredAsk.current = askDelivery.seq;
+  }, [askDelivery]);
+  const nativeAsk =
+    askDelivery && deliveredAsk.current !== askDelivery.seq ? askDelivery.text : null;
   // --- review #804 round 3: is claude actually going to be SHOWN? ----------
   // `window._fusedAskClaude`'s return value has to mean that, not merely "a
   // callback exists" (finding 4) — and answering it honestly is also what
@@ -1600,6 +1666,10 @@ function TemplatePreview({
     const target = borrowed ? parentDir : fsPath;
     const rem = borrowed ? "" : remote;
     const chatOnly = m === "claude" ? "&chat_only=1" : "";
+    // The two claude shapes live in `apps/claude/legacy-src.ts` behind the
+    // byte-for-byte parity test; `git`/`mcp` keep the inline form, which is the
+    // same string with an empty `chatOnly`.
+    if (m === CHAT_MODE) return sideFrameSrc(t.path, target, rem, thumbFlags);
     return (
       `/render?path=${encodeURIComponent(t.path)}` +
       `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`
@@ -1628,6 +1698,43 @@ function TemplatePreview({
   // same instance number and still remounts on the mode change alone, exactly
   // as before.
   const claudeFrameKey = (m: string) => (m === "claude" ? `claude:${claudeAskInstance}` : m);
+  // THE SAME GAP, ONE LAYER UP, for the mount that decides between the two
+  // branches (`ChatMount`). Flag off it is the legacy key above — the template
+  // pulls the ask at its own boot, so the ARRIVAL is the right trigger. Flag on
+  // the host pulls in a committed effect, so the render that first sees a
+  // bumped `claudeAskInstance` has nothing to hand down yet and a remount there
+  // would boot an askless chat; `askDelivery.seq` changes exactly when there IS
+  // text to boot with. Kept apart from `claudeFrameKey` rather than folded into
+  // it: that one is the legacy iframe's key and a legacy suite pins its shape
+  // (tests/test_claude_ask_lifecycle.py).
+  //
+  // ONLY A REAL `false` TAKES THE LEGACY SHAPE. Read as a boolean this walked
+  // `claude:1` (legacy shape, flag not yet read) → `claude:0` (flag landed on,
+  // nothing delivered) → `claude:1` (delivered): the middle step mounted and
+  // booted a whole chat on whatever `session_id` the URL carried, only to throw
+  // it away. So "not asked yet" takes the NATIVE shape — the shape it will keep
+  // if the flag lands on — and the one key change a `false` then causes happens
+  // while `ChatMount` is still showing nothing but its cover, which costs a
+  // remount of a placeholder.
+  //
+  // FLAG OFF, THE CONTENT PANE KEEPS ITS BASELINE KEY, which is the bare `m`:
+  // `claudeFrameKey` was only ever the SIDEBAR's key (see its call below), and
+  // `claudeAskInstance` bumps on EVERY incoming ask regardless of route. Keying
+  // the content pane on it meant an ask routed to the sidebar destroyed and
+  // reloaded the content pane's chat document — scroll position and a whole
+  // transcript re-restore — where before this file grew a mount it kept it.
+  const claudeMountKey = (m: string) =>
+    nativeChatState === false
+      ? m
+      : m === CHAT_MODE
+        ? `claude:${askDelivery ? askDelivery.seq : 0}`
+        : m;
+  // THE SIDEBAR'S, whose flag-off shape genuinely IS `claudeFrameKey`: the
+  // legacy template pulls the ask at its own boot, so a second "Fix with AI"
+  // into an already-open sidebar has to remount for it to be pulled at all
+  // (tests/test_claude_ask_lifecycle.py pins that shape).
+  const claudeSideMountKey = (m: string) =>
+    nativeChatState === false ? claudeFrameKey(m) : claudeMountKey(m);
 
   // Held-frame swap. Switching mode used to destroy the iframe and mount the
   // next one bare (`key={mode}`), so the user watched a blank pane for as long
@@ -2004,72 +2111,128 @@ function TemplatePreview({
              key is its own mode, so a frame is created once and never
              re-created by a switch away and back within the swap window. */}
             <div className="preview-frames">
-            {frames.map((m) => (
-              <iframe
-                key={m}
-                className={"preview-frame" + (m === shown ? " is-shown" : "")}
-                src={srcFor(m) as string}
-                /* The shell's ONE contribution to annotation, and deliberately
-                   the whole of it: the claude sidebar looks this attribute up
-                   through `parent.document` and treats the frame it marks as the
-                   document its notes point at — see
-                   fused_render/templates/claude/template.html (the annotate
-                   target seam). Nothing here knows what annotation is, and the
-                   template stays host-agnostic: no mark, no annotate switch.
+            {frames.map((m) => {
+              // THE ONE FRAME ELEMENT, built once here and used by BOTH branches
+              // below: a non-chat mode renders it directly, and claude hands it to
+              // `ChatMount` as its flag-off node. Built once rather than written
+              // twice because of the capability marks on it — each is a contract
+              // with EXACTLY ONE holder ("this frame is what notes point at" / "a
+              // revision can be driven into this frame"), and
+              // `tests/test_git_scope.py` counts the literal to keep it that way.
+              // Sharing only the CONDITION in a const and writing the attribute in
+              // both branches would still be two marks in the source; sharing the
+              // element is what keeps it at one.
+              const frame = (
+                <iframe
+                  key={m}
+                  className={"preview-frame" + (m === shown ? " is-shown" : "")}
+                  src={srcFor(m) as string}
+                  /* The shell's ONE contribution to annotation, and deliberately
+                     the whole of it: the claude sidebar looks this attribute up
+                     through `parent.document` and treats the frame it marks as the
+                     document its notes point at — see
+                     fused_render/templates/claude/template.html (the annotate
+                     target seam). Nothing here knows what annotation is, and the
+                     template stays host-agnostic: no mark, no annotate switch.
 
-                   The contract is "exactly one, and it is the content the reader
-                   is looking at". So it rides `shown` and not `activeMode`: the
-                   swap above keeps BOTH frames mounted while the incoming
-                   document loads, and only the shown one is on screen (the other
-                   is transparent and un-clickable), so marking the active mode
-                   mid-swap would aim the pins at a frame nobody can see. `shown`
-                   catches up the moment that frame paints.
+                     The contract is "exactly one, and it is the content the reader
+                     is looking at". So it rides `shown` and not `activeMode`: the
+                     swap above keeps BOTH frames mounted while the incoming
+                     document loads, and only the shown one is on screen (the other
+                     is transparent and un-clickable), so marking the active mode
+                     mid-swap would aim the pins at a frame nobody can see. `shown`
+                     catches up the moment that frame paints.
 
-                   `splitCapable` is what keeps it to the single-file explorer
-                   preview: a folder renders <Listing> and never reaches this
-                   branch, and a panel/tab embed has no sidebar to answer the
-                   mark. When no content pane shows at all — a listing, a pending
-                   gate, the fallback card — no frame renders and the mark is
-                   simply absent, which is exactly how the template is told
-                   there is nothing to annotate. */
-                data-fused-annotate-target={
-                  splitCapable && m === shown ? "" : undefined
-                }
-                /* The REVISION capability, and a second mark rather than a
-                   second reading of the one above: they are stamped under the
-                   same condition today and they do not mean the same thing —
-                   one says "this frame is what notes point at", the other says
-                   "a revision can be driven into this frame". A sidebar reading
-                   the annotate mark to decide whether to offer a commit preview
-                   would be inferring one capability from another, and the day
-                   either condition moves it would silently be wrong.
+                     `splitCapable` is what keeps it to the single-file explorer
+                     preview: a folder renders <Listing> and never reaches this
+                     branch, and a panel/tab embed has no sidebar to answer the
+                     mark. When no content pane shows at all — a listing, a pending
+                     gate, the fallback card — no frame renders and the mark is
+                     simply absent, which is exactly how the template is told
+                     there is nothing to annotate. */
+                  data-fused-annotate-target={
+                    splitCapable && m === shown ? "" : undefined
+                  }
+                  /* The REVISION capability, and a second mark rather than a
+                     second reading of the one above: they are stamped under the
+                     same condition today and they do not mean the same thing —
+                     one says "this frame is what notes point at", the other says
+                     "a revision can be driven into this frame". A sidebar reading
+                     the annotate mark to decide whether to offer a commit preview
+                     would be inferring one capability from another, and the day
+                     either condition moves it would silently be wrong.
 
-                   Same contract shape as the annotate mark, for the same reason
-                   and read the same way (the git template polls
-                   `parent.document` for it): PRESENT ONLY WHERE THE CAPABILITY
-                   REALLY EXISTS. `splitCapable` is what makes this the single-
-                   file explorer preview — the one surface with both a content
-                   pane and a git sidebar to select in — and `m === shown` keeps
-                   it on the frame the reader is actually looking at, since the
-                   held-frame swap can leave two mounted. A folder's listing
-                   preview pane renders no frame at all and so stamps nothing,
-                   which is exactly how the git template running in THAT pane
-                   learns it has nothing to drive. */
-                data-fused-rev-target={
-                  splitCapable && m === shown ? "" : undefined
-                }
-                onLoad={(e) => {
-                  // Completes the swap: the incoming document has painted, so
-                  // it can take over from the frame being held. Recorded so a
-                  // switch BACK to this still-mounted frame can complete
-                  // without a second load event (see loadedFrames).
-                  loadedFrames.current.add(m);
-                  if (m === activeMode) setShown(m);
-                  onRenderFrameLoad(e, m);
-                }}
-              />
-            ))}
-            </div>
+                     Same contract shape as the annotate mark, for the same reason
+                     and read the same way (the git template polls
+                     `parent.document` for it): PRESENT ONLY WHERE THE CAPABILITY
+                     REALLY EXISTS. `splitCapable` is what makes this the single-
+                     file explorer preview — the one surface with both a content
+                     pane and a git sidebar to select in — and `m === shown` keeps
+                     it on the frame the reader is actually looking at, since the
+                     held-frame swap can leave two mounted. A folder's listing
+                     preview pane renders no frame at all and so stamps nothing,
+                     which is exactly how the git template running in THAT pane
+                     learns it has nothing to drive. */
+                  data-fused-rev-target={
+                    splitCapable && m === shown ? "" : undefined
+                  }
+                  onLoad={(e) => {
+                    // Completes the swap: the incoming document has painted, so
+                    // it can take over from the frame being held. Recorded so a
+                    // switch BACK to this still-mounted frame can complete
+                    // without a second load event (see loadedFrames).
+                    loadedFrames.current.add(m);
+                    if (m === activeMode) setShown(m);
+                    onRenderFrameLoad(e, m);
+                  }}
+                />
+              );
+              // THE CONTENT PANE'S CHAT (`_mode=claude` as the main body): the
+              // FULL split variant, `chatOnly` false, because the template's own
+              // left half IS this target's preview and that is the whole point
+              // of this route (00 §1b, site 6). No `data-fused-annotate-target`
+              // on it either: the chat is not something notes point AT, and its
+              // own pane marks itself (pane/AppPane.tsx).
+              //
+              // Kept inside the held-frame swap so a switch into and out of
+              // claude crossfades like every other mode; `is-shown` is the one
+              // thing that decides which of the mounted panes is on screen.
+              return m === CHAT_MODE ? (
+                <ChatMount
+                  // The content pane's chat remounts for a fresh ask on the same
+                  // rule the sidebar's does: `initialAsk` is read once, at boot
+                  // (ClaudeChat's `booted`), so a second ask arriving while this
+                  // pane already shows claude needs a new document to boot it.
+                  key={claudeMountKey(m)}
+                  legacySrc={srcFor(m) ?? ""}
+                  mountClassName={"preview-frame" + (m === shown ? " is-shown" : "")}
+                  title={modeTitle(m)}
+                  file={fsPath}
+                  paramsSource="url"
+                  {...(stat.remote ? { remote: true } : {})}
+                  {...(IS_PREVIEW ? { preview: true, noFocus: true } : {})}
+                  {...(nativeAsk && claudeAskRoute === "content"
+                    ? { initialAsk: nativeAsk }
+                    : {})}
+                  onReady={() => {
+                    // The swap's own completion signal, which for a frame was
+                    // its `load`: the chat has painted, so it can take over from
+                    // whatever is being held.
+                    loadedFrames.current.add(m);
+                    if (m === activeMode) setShown(m);
+                  }}
+                  // The flag-off node, verbatim — the very element the
+                  // non-chat branch returns, marks and all, so flag off is the
+                  // plain iframe this branch has always built. Never a
+                  // `ChatFrame`: the content pane's crossfade IS its cover, and
+                  // a second one over it would be two covers on two clocks.
+                  legacy={frame}
+                />
+              ) : (
+                frame
+              );
+            })}
+          </div>
             </div>
           </>
         )}
@@ -2163,6 +2326,38 @@ function TemplatePreview({
             active={activeSide}
             frameKey={claudeFrameKey(activeSide)}
             src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
+            chat={
+              /* THE SIDEBAR'S CHAT, `chat_only` because the template's own left
+                 half would be this same file previewed twice in one window (see
+                 `sideSrcFor`). The key is `claudeFrameKey`'s, unchanged: it is
+                 what makes a second "Fix with AI" ask remount and be pulled.
+                 `_preview`/`_nofocus` become `autoFocus={false}` — a thumbnail
+                 must not take the keyboard (D348) — and the ask itself is
+                 PULLED here, in the host, instead of the chat reaching up
+                 through `window._fusedTakeClaudeAsk`. */
+              <ChatMount
+                key={claudeSideMountKey(CHAT_MODE)}
+                legacySrc={sideSrcFor(CHAT_MODE) ?? ""}
+                className="preview-side-frame"
+                title={modeTitle(CHAT_MODE)}
+                file={fsPath}
+                chatOnly
+                /* `chat_only` takes the chat's OWN pane away, not the pane:
+                   the app is still on screen in the middle column, and that
+                   frame is what the sidebar reads app state from and points its
+                   notes at. Handing it over is the whole of the shell's side of
+                   that contract — the same one attribute, read the same way the
+                   template read it (see `annotateTargetFrame`). Without it the
+                   chat reported `has_pane:"0"`, pushed no `<live-app-state>`
+                   block, and its sessions were recorded as FOLDER chats that
+                   never appeared in this file's Recent list. */
+                annotateTarget={annotateTargetFrame}
+                paramsSource="url"
+                {...(stat.remote ? { remote: true } : {})}
+                {...(IS_PREVIEW ? { preview: true, noFocus: true } : {})}
+                {...(nativeAsk && claudeAskRoute !== "content" ? { initialAsk: nativeAsk } : {})}
+              />
+            }
             onSelect={setSide}
             onClose={() => setSide(null)}
           />,

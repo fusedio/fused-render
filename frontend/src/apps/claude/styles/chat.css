@@ -1,0 +1,339 @@
+/* Native chat tokens (apps/claude). The template's palette (T:13-67 dark,
+   T:69-101 light) aliased under `.chat-root` with a `--c-` prefix: the old names
+   (`--bg`, `--accent`, `--border`, …) collide with tokens.css at different
+   values (shell accent is yellow, the chat's is Claude orange). Values verbatim.
+   Theme follows the shell's `data-theme` on <html>; no runtime handshake. */
+.chat-root {
+  color-scheme: dark;
+  --c-bg: #191a1e;
+  --c-panel: #1e2025;
+  --c-surface: #26282f;
+  --c-surface-2: #2d3038;
+  --c-bubble-user: #2f3239;
+  --c-fg: #ececf1;
+  --c-fg-strong: #ffffff;
+  --c-dim: #9a9fa9;
+  --c-faint: #8a8f99;
+  --c-status-progress: #facc15;
+  --c-border: #34363e;
+  --c-border-strong: #4a4d57;
+  --c-accent: #d97757;
+  --c-accent-text: #e8907a;
+  --c-on-accent: #1a1a1a;
+  --c-error: #f26d6d;
+  --c-ok: #6cc07a;
+  /* CARD SURFACE, its own pair of tokens (#22). A card is the one box in the
+     transcript that has to read as a THING SITTING ON the page — the run is
+     blocked on it — and at `--c-surface` (#26282f against a #191a1e page, ~4%
+     of lightness apart) it read as a slightly different shade of background.
+     Its own tokens rather than a louder `--c-surface`, because that token is
+     also the avatar disc, a chip's open tint, the copy button and the qhead
+     pill, and not one of those wants to get louder (≤5% drift elsewhere). */
+  --c-card-bg: #2e313a;
+  --c-card-bg-2: #383c47;
+  --c-card-border: #4e525f;
+  --c-code-bg: #2a2c33;
+  --c-code-fg: #e8c07d;
+  --c-pre-bg: #141519;
+  --c-pre-fg: #d4d4d8;
+  --c-link: #7aa8ff;
+  --c-diff-add-bg: rgba(108, 192, 122, .14);
+  --c-diff-add-fg: #8ed49a;
+  --c-diff-del-bg: rgba(242, 109, 109, .14);
+  --c-diff-del-fg: #f08d8d;
+  --c-shadow: rgba(0, 0, 0, .4);
+  --c-scrim: rgba(0, 0, 0, .62);
+  --c-scrollbar: #3a3d45;
+  --c-handle-hover: #4a4d57;
+  --c-pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%239a9fa9" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+}
+
+:root[data-theme="light"] .chat-root {
+  color-scheme: light;
+  --c-bg: #ffffff;
+  --c-panel: #fafafa;
+  --c-surface: #f4f4f6;
+  --c-surface-2: #ebebef;
+  --c-bubble-user: #f0f0f3;
+  --c-fg: #1f2023;
+  --c-fg-strong: #000000;
+  --c-dim: #61656c;
+  --c-faint: #676c74;
+  --c-status-progress: #ca8a04;
+  --c-border: #e3e4e8;
+  --c-border-strong: #c9cbd2;
+  --c-accent: #b8542f;
+  --c-accent-text: #9e4319;
+  --c-on-accent: #ffffff;
+  --c-error: #c62828;
+  --c-ok: #2e7d32;
+  /* Light theme's page is pure white, so the card goes DOWN rather than up —
+     the same "sitting on the page" separation, read the other way round — and
+     the border does the rest of the work. */
+  --c-card-bg: #f1f2f5;
+  --c-card-bg-2: #e4e6ec;
+  --c-card-border: #c2c5ce;
+  --c-code-bg: #f0f1f3;
+  --c-code-fg: #8a5a12;
+  --c-pre-bg: #f7f8f9;
+  --c-pre-fg: #33363c;
+  --c-link: #1c5fb8;
+  --c-diff-add-bg: rgba(46, 125, 50, .10);
+  --c-diff-add-fg: #1f6b25;
+  --c-diff-del-bg: rgba(198, 40, 40, .10);
+  --c-diff-del-fg: #a81f1f;
+  --c-shadow: rgba(0, 0, 0, .10);
+  --c-scrim: rgba(0, 0, 0, .48);
+  --c-scrollbar: #cdd0d6;
+  --c-handle-hover: #a8adb6;
+  --c-pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%2361656c" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+}
+
+.chat-root {
+  position: relative;
+  /* THE SPLIT'S OWN AXIS (T:119-139 `#wrap`): a row of [left pane | divider |
+     chat]. `useNarrowView` flips it to a column below the breakpoint
+     (`.chat-root.narrow`, styles/pane.css) — which is why the direction lives
+     here and not on a wrapper: there is one box, and the class on it decides. */
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  /* THE CHAT OWNS ITS OWN SCROLLER and nothing else does: `.chat-logwrap` is
+     the one scrolling surface (styles/transcript.css), and every host box this
+     mounts into is `overflow: hidden` (task-cards.css `.task-card-body`,
+     `.task-peek > .modal-body`) — so a page-level scrollbar here would be a
+     second one nobody asked for (00 §1e, "Scroll"). */
+  overflow: hidden;
+  background: var(--c-bg);
+  color: var(--c-fg);
+
+  /* THE READING FRAME — T's `body` rule (T:105-116), which the port had left
+     to whatever the shell's <body> happened to be (#13: "transcript spacing
+     feels compressed"). The shell is a 13px/1.45 application chrome; a
+     transcript is prose, and the two numbers that make it prose are here:
+     14px, and 1.65 line-height. Restated on the root rather than inherited,
+     because this box is mounted inside six different hosts and not one of them
+     is going to hand it a reading line-height by accident.
+
+     `letter-spacing: .003em` is the one value that is NOT T's: at 14px in a
+     720px column the system stack sets a hair tight, and the report asked for
+     air. Three thousandths of an em is ~0.04px per character — below the
+     threshold where it reads as tracking, and enough that a full line of prose
+     gains about half a character of width. */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  font-size: var(--c-fs-read);
+  line-height: var(--c-lh-read);
+  letter-spacing: 0.003em;
+  -webkit-font-smoothing: antialiased;
+
+  /* The type scale, as tokens, so the compact block below can restate it once
+     instead of the card being drawn at 4/3 and `transform: scale(0.75)`d — a
+     trick that existed only because the host could not restyle px type inside
+     another document (task-cards.css:370-386). Base values are the template's
+     own (T: 13px prose, 12px meta, 11px asides, 14px a question's lead). */
+  --c-fs-body: 13px;
+  --c-fs-meta: 12px;
+  --c-fs-small: 11px;
+  --c-fs-lead: 14px;
+  /* The READING pair, separate from `--c-fs-body` above: `--c-fs-body` is the
+     size the chrome inside a turn is drawn at (a chip's row, a card's head),
+     while these two are the prose itself. The compact cut scales both. */
+  --c-fs-read: 14px;
+  --c-lh-read: 1.65;
+}
+
+/* THE MOUNT BOX (ChatMount's native branch). It stands where the iframe stood
+   and takes the whole of the host's box, which every one of the six sites gives
+   it as a flex child or a 100%/100% pane. It carries NO host class — those are
+   frame geometry (`.task-card-frame` is laid out at 133.33% and drawn at 0.75),
+   and the compact variant replaces that trick rather than stacking on it. */
+.chat-mount {
+  display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* THE CHAT COLUMN — T's `#chat`. The transcript, the composer and the footnote
+   stack in it; `min-width: 0` because a flex child's `auto` minimum would let a
+   long code line push the pane off screen (T:2993-3010). */
+.chat-root .c-chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+/* THE SHARED CONTROL STRIP — T's `#anntools`. A row ABOVE both views, never
+   over either, so arming a tool pushes the content down instead of covering its
+   first 43px (T:3894-3896). Below the breakpoint it is the one row neither view
+   hides, because it carries the way out of each. PR3 fills it with the annotate
+   switch, the recorder and the screenshot button. */
+.chat-root .c-anntools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-panel);
+}
+
+/* ---- the narrow single-view layout, chat-column half (T:3776-3884) --------
+   The pane's own half is in styles/pane.css (it parks the preview column rather
+   than `display: none`-ing it, so the framed document keeps a real viewport);
+   these are the rules about THIS column, which only exist here because the
+   column's class does. */
+
+/* Chat view: the conversation owns the screen. */
+.chat-root.narrow .c-chat {
+  flex: 1;
+  min-height: 0;
+}
+/* Preview view: the chat SHRINKS TO ITS CONTROL STRIP and nothing else
+   (T:3879). The strip is what stays — it carries the way back — and everything
+   under it goes, transcript, composer, send button and Back alike. A host that
+   keys "can the user type" off this reads `composerLocked` (useNarrowView),
+   because offering a draft into a box that is off screen is worse than not
+   offering one. */
+.chat-root.narrow.view-preview .c-chat {
+  flex: 0 0 auto;
+}
+.chat-root.narrow.view-preview .c-chat > *:not(.c-anntools) {
+  display: none;
+}
+
+/* ---- host cuts (T:1412-1438) ------------------------------------------------
+   All three are host FACTS, decided when the mount was built, and all three are
+   spelled as classes on the root for the reason T gives: the chrome is HIDDEN
+   and not torn down, so each of these is one class away from being a whole chat
+   again with nothing to undo. The elements the cut takes away are also simply
+   not rendered (ClaudeChat's `compact` / `peek` branches); these rules are what
+   keeps the geometry honest for anything mounted underneath them anyway. */
+
+/* COMPACT (`compact=1`, the cards wall): a read-mostly tile. T hides #topbar,
+   #anntools, #inputbox, #home and #footnote and halves #log's top padding. */
+.chat-root.chat-compact .c-header,
+.chat-root.chat-compact .c-topbar,
+.chat-root.chat-compact .c-anntools,
+.chat-root.chat-compact .c-composer-chat,
+.chat-root.chat-compact .c-footnote,
+.chat-root.chat-compact .c-home {
+  display: none;
+}
+/* SCALED BY TYPE, NOT BY TRANSFORM. Six cards across a laptop leave each tile
+   ~380px, and at 1:1 the template's text was too big to read as a wall (Akshil,
+   2026-09-04) — so the old fit laid the frame out at 133.33% and drew it at
+   0.75. Native has no second document to fool: the four tokens take the same
+   0.75, the layout is real at the tile's real width, and hit-testing, wheel and
+   text selection are the browser's own rather than mapped through a matrix. */
+.chat-root.chat-compact {
+  --c-fs-body: 10px;
+  --c-fs-meta: 9px;
+  --c-fs-small: 8px;
+  --c-fs-lead: 10.5px;
+  /* The reading pair takes the same 0.75. The line-height does NOT: at 10px a
+     1.65 line is 16.5px, which is a lot of empty tile for six lines of glance
+     text, and a wall tile is scanned rather than read. */
+  --c-fs-read: 10px;
+  --c-lh-read: 1.5;
+}
+/* One rule per size, because the sheets these override state px directly and a
+   font-size on an ancestor does not reach a descendant that names its own. */
+.chat-root.chat-compact .chat-log,
+.chat-root.chat-compact .turn.user .bubble,
+.chat-root.chat-compact .turn.assistant .body,
+.chat-root.chat-compact .turn.working,
+.chat-root.chat-compact .seg-text,
+.chat-root.chat-compact .toolchip,
+.chat-root.chat-compact .thinking,
+.chat-root.chat-compact .perm .perm-head,
+.chat-root.chat-compact .perm .perm-status,
+.chat-root.chat-compact .perm .qopt,
+.chat-root.chat-compact .perm .plan-body {
+  font-size: var(--c-fs-body);
+}
+.chat-root.chat-compact .turn.note,
+.chat-root.chat-compact .turn.working .meta,
+.chat-root.chat-compact .turn.assistant .dot,
+.chat-root.chat-compact .perm .perm-sub,
+.chat-root.chat-compact .perm .perm-btn,
+.chat-root.chat-compact .toolchip .chip-sub,
+.chat-root.chat-compact .toolchip .chip-label {
+  font-size: var(--c-fs-meta);
+}
+/* THE QUESTION CARD'S OWN CHROME, which the cut had missed (R2-11). Each of
+   these names a px size in transcript.css, so the token on the root does not
+   reach it — a tile drew 10px prose under a 12px tab bar and a 13px answer
+   line. The tab bar, the Skip/Next row's caption and a resolved card's
+   per-question answers (R2-6) are all card META, at the same size as a chip's
+   path and a card's sub-line. */
+.chat-root.chat-compact .perm .qtab,
+.chat-root.chat-compact .perm .qsend .qsend-left,
+.chat-root.chat-compact .perm .qanswer,
+.chat-root.chat-compact .perm .qopt .qtype {
+  font-size: var(--c-fs-meta);
+}
+.chat-root.chat-compact .perm .qhead {
+  font-size: var(--c-fs-small);
+}
+/* NOT `.chip-marker` any more (R2-7): its box is the chip's own em, so that it
+   and `.chip-body`'s indent are one length resolved once — a font-size here put
+   them 2.4px apart again. The glyph is scaled instead (styles/transcript.css). */
+.chat-root.chat-compact .turn.user .sentbtn,
+.chat-root.chat-compact .seg-notice-glyph {
+  font-size: var(--c-fs-small);
+}
+.chat-root.chat-compact .perm .qtext {
+  font-size: var(--c-fs-lead);
+}
+/* With the bar gone, 24px of top padding is no longer the gap under a border —
+   it is dead space above the only thing the card is for. Halved rather than
+   dropped: the turns still need to start off the edge (T:1418-1422). And the
+   column's 720px measure is a promise about a full-width chat, not about a
+   380px tile, so the tile uses its own width. */
+.chat-root.chat-compact .chat-log {
+  max-width: none;
+  padding: 12px 12px 8px;
+}
+/* A tile is read at a glance from a wall, so its turns sit closer together. */
+.chat-root.chat-compact .turn {
+  margin-bottom: 12px;
+}
+/* The tail pin's opaque ground has to reach the tile's own padding, which is
+   12px here rather than the full column's 20px (styles/transcript.css). */
+.chat-root.chat-compact .chat-tailpin.is-pinned {
+  margin: 0 -12px;
+  padding: 8px 12px 0;
+}
+
+/* CHAT ONLY (`chat_only=1`): no pane column and no divider, from the first
+   paint. Both are simply not rendered (ClaudeChat's `paneShown`), and the rule
+   stands for the same reason T's did — the class is stamped before the no-pane
+   teardown has had its await (T:1427-1428). */
+.chat-root.chat-only .c-left,
+.chat-root.chat-only .c-divider {
+  display: none;
+}
+
+/* PEEK (`peek=1`, TaskPeek): the transcript and the composer under a head the
+   HOST draws. The strip and the top bar go; THE COMPOSER STAYS, which is the
+   whole difference from compact — answering a question without leaving the wall
+   is what the popup exists for (T:1434-1438). */
+.chat-root.chat-peek .c-header,
+.chat-root.chat-peek .c-topbar,
+.chat-root.chat-peek .c-anntools {
+  display: none;
+}
+/* Same halving as compact, for the same reason: the head above is the host's. */
+.chat-root.chat-peek .chat-log {
+  padding-top: 12px;
+}

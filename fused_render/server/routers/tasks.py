@@ -254,10 +254,79 @@ def _command(obj) -> str:
         tasks_store.first_text(message.get("content")))
 
 
+# An API failure — Wi-Fi off, a usage limit, a 429 — never reaches the schedule
+# store: Claude Code writes it into the TRANSCRIPT as an assistant row flagged
+# `isApiErrorMessage`, whose text is the whole report ("You've hit your session
+# limit · resets 7:20pm"). Nothing in this module used to read an assistant row
+# at all, which is exactly why a chat turn that never got an answer read `done`
+# in /tasks (R2-3, R2-14): the prompt was in the file, so the message was
+# in the thread, so the task had happened.
+#
+# Read by SUBSTRING, never by parsing. Both read paths screen a line before
+# `json.loads` precisely because a transcript is mostly assistant turns and
+# tool results, and widening that screen into "parse every assistant row" would
+# trade this bug for the cost these endpoints exist to avoid. Two spellings of each
+# hint because Claude Code writes compact JSON while a hand-written fixture
+# writes `json.dumps` defaults; the alternative is de-spacing every line.
+_API_ERROR_HINTS = ('"isApiErrorMessage":true', '"isApiErrorMessage": true')
+_ASSISTANT_HINTS = ('"type":"assistant"', '"type": "assistant"')
+_TEXT_HINTS = ('"type":"text"', '"type": "text"')
+_USER_HINTS = ('"type":"user"', '"type": "user"')
+
+
+def _reply_fate(line: str) -> bool | None:
+    """What one raw transcript line says about the newest prompt's LAST answer:
+    True for "it failed with an API error", False for "it was answered
+    normally", None for a line that is not an assistant reply.
+
+    False is as load-bearing as True. A turn that errored and was RETRIED — the
+    Wi-Fi came back, the limit reset — has an ordinary reply after the error
+    row, and reporting that turn as blocked would be the same defect pointing
+    the other way. So an ordinary assistant text row clears the mark, which is
+    what makes the rule "the last reply" instead of "any reply".
+
+    `isApiErrorMessage` rides on ordinary assistant rows too, as `false`, so
+    the test is the flag's VALUE and never its presence.
+
+    A `type: user` record is refused up front whatever it quotes: the hints are
+    substrings, a human can paste `"type":"assistant"` into a prompt, and
+    swallowing that line here would throw away the message the user typed —
+    which is the bug this reader is supposed to be fixing, not causing. An
+    assistant row that quotes `"type":"user"` loses its vote by the same rule
+    and the turn keeps its old reading; a missed mark costs the old answer,
+    a stolen prompt costs a message.
+    """
+    if any(hint in line for hint in _USER_HINTS):
+        return None
+    if any(hint in line for hint in _API_ERROR_HINTS):
+        return True  # checked first: an error row is a text row as well
+    if (any(hint in line for hint in _ASSISTANT_HINTS)
+            and any(hint in line for hint in _TEXT_HINTS)):
+        return False
+    return None
+
+
+def _mark_fate(prompts: list[dict], fate: bool) -> None:
+    """Record an assistant reply's fate on the newest prompt seen SO FAR — the
+    prompt it is a reply to. The mark lives on the prompt dict, which is where
+    both read paths keep their state (`_SCAN`'s `tail`, `_FULL`'s list), so a
+    scan that resumes from its saved offset carries the mark across polls
+    instead of re-deriving it from bytes it will never read again."""
+    if prompts:
+        prompts[-1]["failed"] = fate
+
+
 def _absorb(rec: dict, line: str) -> None:
     """Fold one raw transcript line into a scan record. Screened before parsing:
     a transcript is mostly assistant turns and tool results, and `json.loads` on
     every one of them is the cost this endpoint cannot pay."""
+    # An assistant reply is the one non-user line with a fact to contribute:
+    # whether the newest prompt's last answer was an API error. Substring tests
+    # only, and it stays on this side of `json.loads`. See `_reply_fate`.
+    fate = _reply_fate(line)
+    if fate is not None:
+        _mark_fate(rec["tail"], fate)
+        return
     if '"user"' not in line and sessions.AI_TITLE_HINT not in line:
         return
     try:
@@ -349,6 +418,14 @@ def _full_prompts(path: str) -> list[dict]:
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
+                # The same widening as `_absorb`'s, for the same reason and
+                # ahead of the same parse: the thread path and the listing path
+                # have to agree about a failed turn or the row and the messages
+                # it opens contradict each other.
+                fate = _reply_fate(line)
+                if fate is not None:
+                    _mark_fate(prompts, fate)
+                    continue
                 if '"user"' not in line:
                     continue
                 try:
@@ -514,7 +591,12 @@ def _chat_message(prompt: dict) -> dict:
         "unread": False,
         "entry_id": "",
         "template_id": "",
-        "turn": "done",
+        # A chat turn whose LAST answer was an API error did not happen, and
+        # `error` is the word `_message_verdict` reads as blocked. Hardcoding
+        # `done` here was the whole of R2-3/R2-14: a turn that died with the
+        # Wi-Fi sat in the Done lane looking answered. `state` stays `sent` —
+        # the message really was delivered, and the verdict is what changes.
+        "turn": "error" if prompt.get("failed") else "done",
         "anchor": prompt["anchor"],
     }
 
@@ -576,7 +658,13 @@ def _turn_of_newest_chat(messages: list[dict], live: bool) -> None:
     older one has been answered by definition."""
     for message in reversed(messages):
         if message["kind"] == "chat":
-            message["turn"] = "" if live else "idle"
+            # NOT over an API failure. The failed turn is a FACT read out of
+            # the transcript (`_reply_fate`); liveness is a heuristic about the
+            # file's mtime, and letting it write "" / "idle" here handed the
+            # broken turn straight back to Done — the R2-3 defect surviving its
+            # own fix, one function later.
+            if message["turn"] != "error":
+                message["turn"] = "" if live else "idle"
             return
 
 
@@ -595,7 +683,8 @@ def _message_running(message: dict) -> bool:
 
     `unknown` is deliberately NOT running: the watcher said it stopped being
     able to tell, and reporting that as work in progress is the frozen
-    progress-bar lie.
+    progress-bar lie. `error` is not running either, for the stronger reason:
+    the transcript already holds the API failure that ended the turn.
     """
     state = message["state"]
     if state == "sending":
@@ -654,12 +743,17 @@ def _message_verdict(message: dict) -> str | None:
     A turn the user STOPPED (`cancelled`) still answers `done` — the lane for
     a settled outcome — and the word "Stopped" rides on the message's `turn`
     (`_entry_turn`), so the board and the dock describe the stop identically.
+
+    `error` joins `unknown` in the blocked answers: it is a chat turn whose
+    last reply out of the transcript was an API failure (`_reply_fate`), which is a
+    turn nobody answered — the same reader-must-do-something fact `unknown`
+    carries, arrived at from the transcript instead of from the watcher.
     """
     state = message["state"]
     if state == "error":
         return "blocked"
     if state == "sent":
-        if message["turn"] == "unknown":
+        if message["turn"] in ("unknown", "error"):
             return "blocked"
         if message["kind"] == "scheduled" and not message["turn"]:
             return None
@@ -1158,9 +1252,19 @@ def _failed(speaker: dict | None) -> bool:
     It is also the other half of what the Blocked lane holds. The lane took the
     wider word on 2026-09-03 and now carries two different things — a run that
     broke and a run parked on a card — so the row has to say which; this flag
-    and `blocked_reason` are how (see `_row`)."""
+    and `blocked_reason` are how (see `_row`).
+
+    THE THREE SPELLINGS OF A BROKEN RUN, and all three have to be here or the
+    row contradicts itself (whole-stack review, PR1). `_message_verdict` reads
+    `state == "error"` and, for a delivered message, `turn in ("unknown",
+    "error")` as `blocked`; this used to read only the first two. So a chat turn
+    whose last reply out of the transcript was an API failure (`_reply_fate`
+    writes `turn: "error"`) filed under `blocked` with `failed: False` on the
+    row, while `_row`'s `blocked_reason` — which falls back on the status — said
+    `"failed"` in the same breath. One row, two answers: the ring stayed un-red
+    and the caption said the run broke."""
     return speaker is not None and (
-        speaker["state"] == "error" or speaker["turn"] == "unknown")
+        speaker["state"] == "error" or speaker["turn"] in ("unknown", "error"))
 
 
 # ----------------------------------------------------------------- the titles

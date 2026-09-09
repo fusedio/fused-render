@@ -1,0 +1,99 @@
+/* highlight.js 11.11.1 github-dark + github, scoped under `.chat-root` so the
+   chat's code colours never leak into the shell (copied from
+   fused_render/templates/claude/vendor/hljs.css; dark is the default, light
+   follows the shell's `data-theme` — the same signal as chat.css). */
+.chat-root pre code.hljs { display:block;overflow-x:auto;padding:1em }
+.chat-root code.hljs { padding:3px 5px }
+.chat-root .hljs { color:#c9d1d9;background:#0d1117 }
+.chat-root .hljs-doctag,
+.chat-root .hljs-keyword,
+.chat-root .hljs-meta .hljs-keyword,
+.chat-root .hljs-template-tag,
+.chat-root .hljs-template-variable,
+.chat-root .hljs-type,
+.chat-root .hljs-variable.language_ { color:#ff7b72 }
+.chat-root .hljs-title,
+.chat-root .hljs-title.class_,
+.chat-root .hljs-title.class_.inherited__,
+.chat-root .hljs-title.function_ { color:#d2a8ff }
+.chat-root .hljs-attr,
+.chat-root .hljs-attribute,
+.chat-root .hljs-literal,
+.chat-root .hljs-meta,
+.chat-root .hljs-number,
+.chat-root .hljs-operator,
+.chat-root .hljs-selector-attr,
+.chat-root .hljs-selector-class,
+.chat-root .hljs-selector-id,
+.chat-root .hljs-variable { color:#79c0ff }
+.chat-root .hljs-meta .hljs-string,
+.chat-root .hljs-regexp,
+.chat-root .hljs-string { color:#a5d6ff }
+.chat-root .hljs-built_in,
+.chat-root .hljs-symbol { color:#ffa657 }
+.chat-root .hljs-code,
+.chat-root .hljs-comment,
+.chat-root .hljs-formula { color:#8b949e }
+.chat-root .hljs-name,
+.chat-root .hljs-quote,
+.chat-root .hljs-selector-pseudo,
+.chat-root .hljs-selector-tag { color:#7ee787 }
+.chat-root .hljs-subst { color:#c9d1d9 }
+.chat-root .hljs-section { color:#1f6feb;font-weight:700 }
+.chat-root .hljs-bullet { color:#f2cc60 }
+.chat-root .hljs-emphasis { color:#c9d1d9;font-style:italic }
+.chat-root .hljs-strong { color:#c9d1d9;font-weight:700 }
+.chat-root .hljs-addition { color:#aff5b4;background-color:#033a16 }
+.chat-root .hljs-deletion { color:#ffdcd7;background-color:#67060c }
+
+:root[data-theme="light"] .chat-root pre code.hljs { display:block;overflow-x:auto;padding:1em }
+:root[data-theme="light"] .chat-root code.hljs { padding:3px 5px }
+:root[data-theme="light"] .chat-root .hljs { color:#24292e;background:#fff }
+:root[data-theme="light"] .chat-root .hljs-doctag,
+:root[data-theme="light"] .chat-root .hljs-keyword,
+:root[data-theme="light"] .chat-root .hljs-meta .hljs-keyword,
+:root[data-theme="light"] .chat-root .hljs-template-tag,
+:root[data-theme="light"] .chat-root .hljs-template-variable,
+:root[data-theme="light"] .chat-root .hljs-type,
+:root[data-theme="light"] .chat-root .hljs-variable.language_ { color:#d73a49 }
+:root[data-theme="light"] .chat-root .hljs-title,
+:root[data-theme="light"] .chat-root .hljs-title.class_,
+:root[data-theme="light"] .chat-root .hljs-title.class_.inherited__,
+:root[data-theme="light"] .chat-root .hljs-title.function_ { color:#6f42c1 }
+:root[data-theme="light"] .chat-root .hljs-attr,
+:root[data-theme="light"] .chat-root .hljs-attribute,
+:root[data-theme="light"] .chat-root .hljs-literal,
+:root[data-theme="light"] .chat-root .hljs-meta,
+:root[data-theme="light"] .chat-root .hljs-number,
+:root[data-theme="light"] .chat-root .hljs-operator,
+:root[data-theme="light"] .chat-root .hljs-selector-attr,
+:root[data-theme="light"] .chat-root .hljs-selector-class,
+:root[data-theme="light"] .chat-root .hljs-selector-id,
+:root[data-theme="light"] .chat-root .hljs-variable { color:#005cc5 }
+:root[data-theme="light"] .chat-root .hljs-meta .hljs-string,
+:root[data-theme="light"] .chat-root .hljs-regexp,
+:root[data-theme="light"] .chat-root .hljs-string { color:#032f62 }
+:root[data-theme="light"] .chat-root .hljs-built_in,
+:root[data-theme="light"] .chat-root .hljs-symbol { color:#e36209 }
+:root[data-theme="light"] .chat-root .hljs-code,
+:root[data-theme="light"] .chat-root .hljs-comment,
+:root[data-theme="light"] .chat-root .hljs-formula { color:#6a737d }
+:root[data-theme="light"] .chat-root .hljs-name,
+:root[data-theme="light"] .chat-root .hljs-quote,
+:root[data-theme="light"] .chat-root .hljs-selector-pseudo,
+:root[data-theme="light"] .chat-root .hljs-selector-tag { color:#22863a }
+:root[data-theme="light"] .chat-root .hljs-subst { color:#24292e }
+:root[data-theme="light"] .chat-root .hljs-section { color:#005cc5;font-weight:700 }
+:root[data-theme="light"] .chat-root .hljs-bullet { color:#735c0f }
+:root[data-theme="light"] .chat-root .hljs-emphasis { color:#24292e;font-style:italic }
+:root[data-theme="light"] .chat-root .hljs-strong { color:#24292e;font-weight:700 }
+:root[data-theme="light"] .chat-root .hljs-addition { color:#22863a;background-color:#f0fff4 }
+:root[data-theme="light"] .chat-root .hljs-deletion { color:#b31d28;background-color:#ffeef0 }
+
+/* T:3123-3140 — the chat's own overrides: no vendor padding inside a
+   transcript or card `pre`; the light rule is one class richer so it outranks
+   the light vendor rule on specificity alone. */
+.chat-root .assistant pre code.hljs,
+.chat-root .perm pre code.hljs { padding: 0; overflow-x: visible; }
+:root[data-theme="light"] .chat-root .assistant pre code.hljs,
+:root[data-theme="light"] .chat-root .perm pre code.hljs { padding: 0; overflow-x: visible; }
