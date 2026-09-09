@@ -11,7 +11,7 @@
 // an absolute path the same way `Breadcrumb.tsx`'s `submitEdit` resolves a
 // typed path, with one addition: a relative query (no leading "/" or "~")
 // resolves against the folder being searched, since that is the folder this
-// field's queries are implicitly scoped to (`SPEC-one-search-language.md`).
+// field's queries are implicitly scoped to.
 // The caller still has to `statPath` it — this function only says what to
 // ask about, not whether it exists.
 // A Windows drive-letter path (`C:\` or `C:/`) — same test query.py's
