@@ -538,13 +538,26 @@ function ChatBody(props: ChatBodyProps) {
    * `blob:` handle any more.
    */
   const [spentBlobs, setSpentBlobs] = useState<readonly Attachment[]>([]);
+  /** The same queue, where an UNMOUNT can still reach it. A chat closed between
+   *  the store write and its commit would otherwise leave handles nothing has a
+   *  reference to any more — the tray gave them up and `inFlight` has already
+   *  deleted the send — pinned for the life of the document. */
+  const spentAlive = useRef<Attachment[]>([]);
   useEffect(() => {
     if (!spentBlobs.length) return;
     for (const att of spentBlobs) ATTACH_API.revoke(att);
+    spentAlive.current = [];
     // Emptied, so a later swap's queue is its own; `revoke` is idempotent, so a
     // re-run before that lands (StrictMode) costs nothing.
     setSpentBlobs((q) => (q === spentBlobs ? [] : q));
   }, [spentBlobs]);
+  useEffect(
+    () => () => {
+      for (const att of spentAlive.current) ATTACH_API.revoke(att);
+      spentAlive.current = [];
+    },
+    [],
+  );
   const attachBack = useRef<((items: readonly Attachment[]) => void) | null>(null);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
@@ -1127,6 +1140,7 @@ function ChatBody(props: ChatBodyProps) {
           // they were showing stop resolving, and a store write is not a render
           // (`spentBlobs` above).
           controller.settleAttachments(key, settled.receipts);
+          spentAlive.current = spentAlive.current.concat(settled.spent);
           setSpentBlobs((q) => (q.length ? q.concat(settled.spent) : settled.spent));
         },
       };
