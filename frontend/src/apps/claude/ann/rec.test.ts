@@ -503,6 +503,28 @@ describe("end() (T:8132)", () => {
     expect(w.isArmed()).toBe(false);
   });
 
+  test("a transcription that GIVES UP still hands the seat back (T:8302-8318)", async () => {
+    // The `jobId` the listing never carries — the watch is bounded and rejects
+    // with the reporting sentence rather than sitting in "Transcribing…"
+    // forever (Bugbot, PR #1074). The recovery is the `finally`'s: status
+    // cleared, busy dropped, mode disarmed, so the Comment seat is live again.
+    const w = makeWorld({}, new Error("the transcription job is no longer being reported"));
+    await record(w);
+    w.advance(1000);
+    w.rec.mark({ kind: "element" });
+    await w.rec.end();
+    expect(w.log).toContain(
+      "warn:spoken annotation transcription failed: the transcription job is no longer being reported",
+    );
+    expect(w.rec.snapshot().state).toBe("off");
+    expect(w.rec.snapshot().status).toBe("");
+    expect(w.rec.snapshot().busy).toBe(false);
+    expect(w.isArmed()).toBe(false);
+    // The marks survive the failure, stamped and editable by hand.
+    expect(w.notes).toHaveLength(1);
+    expect(w.delivered).toEqual([]);
+  });
+
   test("a stop that landed on the start's own beat is nothing to transcribe (T:8199)", async () => {
     const w = makeWorld({ seconds: 0.3 });
     await record(w);

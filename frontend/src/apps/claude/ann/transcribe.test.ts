@@ -321,3 +321,82 @@ describe("startTranscribe", () => {
     expect(err.message).toBe("the transcription was cancelled");
   });
 });
+
+// ── the watch always ends ──────────────────────────────────────────────────
+//
+// `end()` paints "Transcribing…" and disables the Comment seat before it awaits
+// this promise, so an exit the loop can never reach is a status bar stuck for
+// the life of the page (Bugbot, PR #1074). Two ways a row is never terminal —
+// never LISTED, and never READ — and both are bounded.
+describe("a job the listing never carries", () => {
+  test("stops polling instead of watching forever (Bugbot, PR #1074)", async () => {
+    let asked = 0;
+    const err = (await transcribe(
+      { path: "/a" },
+      deps({
+        // The row is absent from the very first poll: nothing was ever seen, so
+        // the old `seen &&` gate never armed the miss counter.
+        jobs: (() => {
+          asked += 1;
+          return Promise.resolve(snapshot([]));
+        }) as never,
+        readJson: () => Promise.reject(new Error("gone")),
+      }),
+    ).catch((e: TranscribeError) => e)) as TranscribeError;
+    // Five misses is the whole budget — the loop is not still running.
+    expect(asked).toBe(5);
+    expect(err.message).toBe("the transcription job is no longer being reported");
+    expect(err.type).toBe("ai_error");
+    // The salvage paths ride along, same as the aged-out row's rejection.
+    expect(err.jobId).toBe("j1");
+    expect(err.outputPartial).toBe("/t/a.partial.jsonl");
+  });
+
+  test("…and is still answered from the transcript when the words did land", async () => {
+    // Unseen is not failed: the worker may have finished and the row retired
+    // before the first poll. The FILE is the witness (R:4448).
+    const out = await transcribe(
+      { path: "/a" },
+      deps({ jobs: (() => Promise.resolve(snapshot([]))) as never }),
+    );
+    expect(out.text).toBe("hello world");
+  });
+
+  test("a listing that keeps failing gives up too, and never spends a miss", async () => {
+    let asked = 0;
+    const err = (await transcribe(
+      { path: "/a" },
+      deps({
+        jobs: (() => {
+          asked += 1;
+          return Promise.reject(new Error("offline"));
+        }) as never,
+        readJson: () => Promise.reject(new Error("gone")),
+      }),
+    ).catch((e: TranscribeError) => e)) as TranscribeError;
+    // A failed READ says nothing about the row, so it costs a failure and not a
+    // miss: ten tries, not five.
+    expect(asked).toBe(10);
+    expect(err.message).toBe("the transcription job is no longer being reported");
+  });
+
+  test("a blip in the listing does NOT count against the row", async () => {
+    // Four failures, then the row, then done. Nothing is spent permanently: a
+    // transient `/api/jobs` outage must not retire a job that is still running.
+    const script: Array<() => Promise<JobsSnapshot>> = [
+      () => Promise.reject(new Error("blip")),
+      () => Promise.reject(new Error("blip")),
+      () => Promise.reject(new Error("blip")),
+      () => Promise.reject(new Error("blip")),
+      () => Promise.resolve(snapshot([job()])),
+      () => Promise.reject(new Error("blip")),
+      () => Promise.resolve(snapshot([job({ state: "done" })])),
+    ];
+    let i = 0;
+    const out = await transcribe(
+      { path: "/a" },
+      deps({ jobs: (() => script[Math.min(i++, script.length - 1)]()) as never }),
+    );
+    expect(out.text).toBe("hello world");
+  });
+});

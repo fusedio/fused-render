@@ -299,11 +299,41 @@ async function startJob(
   return started;
 }
 
+/** How many CONSECUTIVE polls may come back WITHOUT the row before the watch
+ *  gives up on it. `FINISHED_TTL_S` (`fused_render/jobs.py`) is a few seconds
+ *  against this watch's sub-second poll, so one slow tick or a throttled
+ *  background timer can miss a finished row's whole window — five cannot.
+ *  Matches `runtime.js`'s `watchJob` and the playground's own
+ *  `GONE_MISS_TOLERANCE`, which have tolerated five for the same reason.
+ *
+ *  COUNTED FROM THE FIRST POLL, not from the first sighting (Bugbot, PR #1074).
+ *  Gating the counter on "seen at least once" made the row's very existence the
+ *  loop's only exit: a `jobId` the listing never carries — retired before the
+ *  first poll landed, or a supervisor that dropped it — left `end()` sitting in
+ *  "Transcribing…" with the Comment seat held for the life of the page. An
+ *  UNSEEN job is exactly the case with no other witness, so it needs the same
+ *  bound, and the transcript file is still consulted afterwards
+ *  (`startTranscribe`'s `!record` branch): a run that really finished is read
+ *  off disk, and only a run with no words to show for it becomes the typed
+ *  "no longer being reported" rejection. */
+const GONE_MISS_TOLERANCE = 5;
+
+/** How many CONSECUTIVE `/api/jobs` reads may FAIL before the watch gives up.
+ *  A failed poll is not a missing row — that conflation is what let a flaky
+ *  listing spend a miss it had not earned — but it cannot be tolerated forever
+ *  either, or an offline server polls until the tab closes. Ten, per the
+ *  playground's `MAX_POLL_FAILURES`, is well past a transient blip. */
+const MAX_POLL_FAILURES = 10;
+
 /** `watchJob(id).watch()` (R:4711-4746): poll `/api/jobs` until the row leaves
  *  "running", calling back on the way. Resolves NULL when the row is GONE — a
  *  finished record is dropped after its retention window (SPEC BG-6), which a
  *  backgrounded tab can sleep straight through, and polling forever for a row
- *  that is never coming back is a promise that never settles. */
+ *  that is never coming back is a promise that never settles.
+ *
+ *  Every exit is BOUNDED, which is the whole point: the caller paints
+ *  "Transcribing…" and disables the Comment seat before awaiting this, so a
+ *  loop with an unreachable exit is a stuck status bar, not a slow one. */
 async function watchJob(
   deps: TranscribeDeps,
   id: string,
@@ -312,19 +342,25 @@ async function watchJob(
   const list = deps.jobs || fetchJobs;
   const sleep = deps.sleep || ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const every = Math.max(200, deps.intervalMs || 700);
-  let seen = false;
   let missing = 0;
+  let failures = 0;
   for (;;) {
     if (stopped()) return null;
     const snapshot = await list().catch(() => null);
-    const record = snapshot ? snapshot.jobs.find((j) => j.id === id) || null : null;
-    if (record) {
-      seen = true;
-      missing = 0;
-      if (deps.onProgress) deps.onProgress(record);
-      if (record.state !== ("running" as JobState)) return record;
-    } else if (seen && ++missing >= 5) {
-      return null;
+    if (!snapshot) {
+      // The READ failed; nothing was learned about the row either way. Spend a
+      // failure, not a miss, and ask again on the next tick.
+      if (++failures >= MAX_POLL_FAILURES) return null;
+    } else {
+      failures = 0;
+      const record = snapshot.jobs.find((j) => j.id === id) || null;
+      if (record) {
+        missing = 0;
+        if (deps.onProgress) deps.onProgress(record);
+        if (record.state !== ("running" as JobState)) return record;
+      } else if (++missing >= GONE_MISS_TOLERANCE) {
+        return null;
+      }
     }
     await sleep(every);
   }
