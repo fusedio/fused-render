@@ -292,8 +292,47 @@ The "five producers" table undercounted: `sys:env-install:*`, `sys:ai-claude:*`,
   `test_install_opens_a_cancellable_download_row_for_the_version`,
   `tests/test_mac_update.py`)
 
-Still open from this finding: `sys:ai-claude:*` (`fused_render/server/ai.py`)
-and the four `ai/supervisor.py`-owned prefixes (Finding 1).
+The remaining two prefixes this table names — `sys:ai-claude:*`
+(`fused_render/server/ai.py`) and the four `ai/supervisor.py`-owned prefixes
+(`ai-image:`, `ai-text:`, `ai-transcribe:`, `ai-video:`) — are Finding 1,
+below.
+
+### Finding 1 — `_job_page` returning `""` for four `ai/supervisor.py` prefixes
+
+`_job_page()` only ever answered for `sys:ai-model:*` and `sys:ai-benchmark-*`;
+every image, text, transcribe and video job, plus the Claude relay in
+`server/ai.py`, got `page == ""` regardless of which page made the request.
+Unlike the four Finding 2 producers, these all run behind an existing page
+that already knows its own route — so instead of a fixed `_job_page` answer,
+the calling page now travels in over `X-Fused-Page` (the same header
+`routers/jobs.py` and `routers/capture.py` already read) and is threaded
+through as an explicit `page=` argument, which `_report` takes over
+`_job_page(job)` entirely when a caller supplies one.
+
+`/api/ai/image`, `/api/ai/video` and `/api/ai` (Claude and local/Apple text)
+read and unquote `X-Fused-Page` and pass it to
+`start_image`/`start_video`/`_ai_relay`. Image and video set `page` only on
+the opening report: the row cannot be evicted and rebuilt mid-render the way
+a transcription's can, and `upsert` keeps whatever truthy `page` is already
+on the row through every later tick that omits it. Text generation and
+transcription instead carry `page` inside their row-identity dicts
+(`text_row_fields`, `transcribe_row_fields`) alongside `title` and `model`,
+since those rows are restated on every tick and must survive
+`jobs._sweep`'s eviction the same way the rest of that identity does. The
+Claude tier falls back to `/claude-config` when no page was given — unlike
+local/Apple, a direct module-level call or a test may never supply
+`X-Fused-Page` at all, and Claude Code's settings page is where that model
+is configured, so the row is never left with nowhere to go.
+
+(new tests: `test_relay_remote_job_row_page_defaults_to_claude_config`,
+`test_relay_remote_job_row_page_is_the_callers_page_when_given`
+(`tests/test_server_ai.py`);
+`test_an_image_rows_page_is_the_caller_supplied_X_Fused_Page`,
+`test_an_image_row_with_no_X_Fused_Page_has_no_page`,
+`test_a_video_rows_page_is_the_caller_supplied_X_Fused_Page`,
+`test_a_transcript_rows_page_is_the_caller_supplied_X_Fused_Page`,
+`test_api_ai_threads_X_Fused_Page_into__ai_relay`
+(`tests/test_ai_runtime.py`))
 
 ## Explicitly out of scope (per spec, unchanged)
 
