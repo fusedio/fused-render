@@ -29,9 +29,9 @@ import {
 import { barFit, createBarPush, paintBar } from "./AnnBar";
 import { chipEditXY, clockOf, rectOf } from "./geometry";
 import { createRenderQueue, createXOLayer, hideHl, injectLayer, paintPins, pinSpotOf } from "./layer";
-import { createAnnMode, escapeAction, type AnnModeMachine } from "./mode";
+import { createAnnMode, escapeAction, walkthroughOwns, type AnnModeMachine } from "./mode";
 import { applyOverview, overviewFor, type OverviewResult } from "./overview";
-import { createAnnStore, isSendable, type AnnStore } from "./store";
+import { createAnnStore, isSendableNow, type AnnStore } from "./store";
 import { createAnnTarget, type AnnTarget } from "./target";
 import { wireTarget } from "./wire-target";
 import type { AnnAnchor, AnnLayout, AnnMode, AnnRecorder, AnnTool, Annotation } from "./types";
@@ -223,6 +223,36 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
   const targetRef = useRef<AnnTarget | null>(null);
   const barPush = useRef<((doc: Document | null) => void) | null>(null);
   if (!barPush.current) barPush.current = createBarPush();
+  /** Which document the PAINT last asked to be pushed down — the answer the
+   *  hand-back replays once the photograph has been taken. */
+  const barWant = useRef<Document | null>(null);
+  /** How many send-time captures are in flight (`overviewForSend`). */
+  const shotHold = useRef(0);
+  /**
+   * THE MARGIN OUTLIVES THE DISARM FOR AS LONG AS A CAPTURE IS IN FLIGHT
+   * (Bugbot, PR #1074).
+   *
+   * `createBarPush` pushes the hosted document down by the bar's 43px while the
+   * bar shows, and a point note's coordinates are PAGE coordinates read with
+   * that margin applied. ✓ Done starts its send WITHOUT waiting and disarms
+   * immediately, so the repaint handed the margin back before the send's capture
+   * photographed the pane: the content moved up by a bar's height between the
+   * coordinates and the picture, and every badge on the overview landed about
+   * one bar-height off. (The composer's own Send never disarms first, which is
+   * why only Done skewed.)
+   *
+   * The photograph has to be of the pane the notes were MEASURED against, so the
+   * hand-back waits rather than the disarm being reordered — one rule that holds
+   * whichever door started the send, and for a bar that goes away or a target
+   * that changes mid-capture too. A push to a real document is never delayed:
+   * the skew is the margin going AWAY under a capture, and a document arriving
+   * means the bar is appearing, which no capture is riding yet.
+   */
+  const pushBar = useCallback((doc: Document | null) => {
+    barWant.current = doc;
+    if (doc === null && shotHold.current > 0) return;
+    barPush.current?.(doc);
+  }, []);
 
   // The picker: ONE imperative node for the life of the mount, because it rides
   // the bar into the app's document (T:6860).
@@ -290,7 +320,7 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     // needs nothing here beyond the list it already subscribes to.
     if (liveOpts.current.noPane && !liveOpts.current.hosted) {
       layerRef.current = { pins: null, hl: null, bar: null, stage: null, root: null };
-      barPush.current?.(null);
+      pushBar(null);
       return;
     }
     target.sync();
@@ -301,7 +331,7 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
       const hostedDoc =
         bar.ownerDocument !== ownDoc && !target.xo() ? bar.ownerDocument : null;
       const show = machine.mode() === "comment" || machine.mode() === "recording";
-      barPush.current?.(show ? hostedDoc : null);
+      pushBar(show ? hostedDoc : null);
       paintBar(bar, {
         mode: machine.mode(),
         clock: clock.current,
@@ -310,7 +340,7 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
         ownDoc,
       });
     } else {
-      barPush.current?.(null);
+      pushBar(null);
     }
     const doc = target.doc();
     paintPins({
@@ -336,7 +366,7 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     if (pop && pop.ownerDocument !== ownDoc && pop.getRootNode() !== layerRef.current.root) {
       closeComposer();
     }
-  }, [ownDoc, store, closeComposer]);
+  }, [ownDoc, store, closeComposer, pushBar]);
   const renderRef = useRef(render);
   renderRef.current = render;
   if (!queue.current) {
@@ -735,6 +765,11 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
       // the layer above, and without this hand-back the content pane was left
       // pushed down by a bar that is not there for as long as the reader stayed
       // in that mode (measured in the browser, PR3 round 2).
+      //
+      // UNCONDITIONAL, unlike the paint's own hand-back: this document is going
+      // away, so there is no photograph left to protect and a margin left on the
+      // host's pane would outlive everything that could take it off (`pushBar`).
+      barWant.current = null;
       barPush.current?.(null);
       const pop = popRef.current;
       if (pop && ownDoc) unportalPop(pop, ownDoc, liveOpts.current.composerHome ?? (() => ownDoc.body));
@@ -842,24 +877,49 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     rescueComposer: () => closeComposer(),
 
     async overviewForSend(captureOpts) {
-      const pending = store.pending().filter(isSendable);
+      // A MARK WHOSE WORDS ARE STILL COMING IS NOT ON THIS MESSAGE
+      // (`isSendableNow`, Bugbot PR #1074): through the recording and both
+      // tenses of the settle a wordless stamped mark belongs to the walkthrough,
+      // and an Enter typed meanwhile used to fold it in — the transcript then
+      // wrote its words onto a note already stamped `sent`. The composer stays
+      // live either way: the words the reader typed are sent, the marks wait for
+      // theirs, and the walkthrough's own auto-send takes them the moment
+      // `assignWords` has filled them in.
+      const live = walkthroughOwns(machine.mode());
+      const pending = store.pending().filter((n) => isSendableNow(n, live));
       if (!pending.length) return { notes: [], overview: null };
       // The letters FIRST, because the badge and the wire's `label` are the same
       // string and the picture is drawn from it (T:16053).
       const stamped = store.stampLabels(pending);
       const t = targetRef.current;
       const doc = t?.doc() ?? null;
-      const overview = await overviewFor(
-        t?.frame() ?? null,
-        stamped,
-        {
-          doc,
-          xo: t?.xo() ?? false,
-          stage: layerRef.current.stage as { clientWidth: number; clientHeight: number } | null,
-          resolve: (c, d) => store.resolve(c, d),
-        },
-        captureOpts,
-      );
+      // AND THE BAR'S MARGIN STAYS UP UNTIL THE PICTURE IS TAKEN (`pushBar`):
+      // the badge points below are measured NOW, against a pane the bar has
+      // pushed down, and a disarm racing the capture (✓ Done sends and disarms
+      // without waiting) would photograph a pane that has since moved up by the
+      // bar's own height.
+      shotHold.current += 1;
+      let overview: OverviewResult | null = null;
+      try {
+        overview = await overviewFor(
+          t?.frame() ?? null,
+          stamped,
+          {
+            doc,
+            xo: t?.xo() ?? false,
+            stage: layerRef.current.stage as { clientWidth: number; clientHeight: number } | null,
+            resolve: (c, d) => store.resolve(c, d),
+          },
+          captureOpts,
+        );
+      } finally {
+        shotHold.current = Math.max(0, shotHold.current - 1);
+        // The paint's last word, replayed now that the photograph is safe. Only
+        // the LAST capture out hands the margin back — two sends in flight are a
+        // window the send latch closes, but the counter is what makes that a
+        // fact of this file rather than a promise made in another.
+        if (shotHold.current === 0) barPush.current?.(barWant.current);
+      }
       const notes = applyOverview(stamped, overview ? overview.marks : null);
       store.merge(notes);
       return { notes, overview };
@@ -913,6 +973,6 @@ export function seatsAria(mode: AnnMode): {
   // is the recorder's, start window and settle alike, and the seat is inert for
   // all of them (`COMMENT_SEAT_WHILE_SETTLING` already NAMES it that way — this
   // is the other half of the same fact).
-  const owned = armed && mode !== "comment";
+  const owned = walkthroughOwns(mode);
   return { comment: owned, annotate: armed && !recording, screenshot: armed };
 }

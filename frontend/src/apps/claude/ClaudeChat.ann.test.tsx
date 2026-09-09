@@ -78,6 +78,20 @@ function stubFetch(): void {
     // A34's boot probe (`captureSources`) — what this machine can record, asked
     // without prompting for permission.
     if (url === "/api/capture") return jsonRes({ sources: audioSource });
+    // The mic itself: `captureAudio`'s native road (no `sources.client`), which
+    // is what lets a test record a real walkthrough — the marks are then the
+    // recorder's own writes, stamped with its clock.
+    if (url === "/api/capture/start") {
+      return jsonRes({
+        id: "cap1",
+        mode: "audio",
+        path: "/w/p/.fused/walkthrough.wav",
+        state: "recording",
+        seconds: 0,
+        maxSeconds: 600,
+        jobId: "job1",
+      });
+    }
     if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
     if (url === "/api/run") {
       const body = JSON.parse(String(init?.body ?? "{}")) as {
@@ -989,4 +1003,96 @@ test("the run going live opens the door without waiting for the turn to end", as
   await settle(30);
   expect(boxValue(r)).toBe("");
   expect(started()).toHaveLength(2);
+});
+
+// ---- a send during a walkthrough -----------------------------------------
+
+/** The Send button (the composer's `.c-send`, which is a Stop while a run is
+ *  live). */
+function sendBtn(r: Chat) {
+  return byClass(r, "c-send")[0]!;
+}
+
+/** The mic seat in the `#anncta` strip. */
+function micSeat(r: Chat) {
+  return byClass(r, "c-annrec")[0]!;
+}
+
+/**
+ * A REAL WALKTHROUGH, RECORDING, with one wordless mark in it.
+ *
+ * The mic seat is pressed and the capture is the native road (`/api/capture/start`
+ * above), so the mode machine calls this a recording exactly as it does in the
+ * browser; the mark is then made by a CLICK in the framed app, which is the
+ * recorder's own write — its id, its `t` stamp, no words until a transcript
+ * lands.
+ */
+async function recordingWithAMark(r: Chat): Promise<void> {
+  await act(async () => micSeat(r).props.onClick());
+  await settle();
+  await act(async () => clickInApp(BODY as unknown as Element));
+  await settle();
+}
+
+test("Enter mid-walkthrough sends the typed words and NOT the wordless marks", async () => {
+  // `hasAttachments` called a mark sendable as soon as it had a `t`, and
+  // `beginSend` folds every pending sendable note in — while `annlock` only
+  // greys the ways OUT of the chat, so the composer stays live. An Enter typed
+  // during the walkthrough therefore uploaded still-wordless marks, and the
+  // transcription then wrote words onto notes already stamped `sent` (Bugbot,
+  // PR #1074).
+  const { r } = await mountChat();
+  await recordingWithAMark(r);
+  expect(annotationsForTests()!.mode).toBe("recording");
+
+  // The chip is there — it is a spot the reader clicked — but it is not a
+  // message yet, so nothing lights the Send button up on its own.
+  expect(annChips(r)).toHaveLength(1);
+  expect(typeof annotationsForTests()!.annotations[0]!.t).toBe("number");
+  expect(sendBtn(r).props.disabled).toBe(true);
+
+  // A line typed meanwhile is a normal thing to send, and it goes.
+  await typeInBox(r, "while I am talking");
+  expect(sendBtn(r).props.disabled).toBe(false);
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(30);
+
+  expect(started()).toHaveLength(1);
+  const message = started()[0]!.params.message;
+  expect(message).toContain("while I am talking");
+  // No annotations block, no picture, and the mark is still the walkthrough's:
+  // pending, chipped, waiting on its words.
+  expect(message).not.toContain("<" + ANN_TAG + ">");
+  expect(overviews).toBe(0);
+  expect(annChips(r)).toHaveLength(1);
+  expect(annotationsForTests()!.annotations[0]!.sent).toBeFalsy();
+});
+
+test("the transcript's words make the mark sendable, walkthrough or no", async () => {
+  const { r } = await mountChat();
+  await recordingWithAMark(r);
+
+  // What `assignWords` does when the transcription lands, and it lands while
+  // the walkthrough still owns the mode — Transcribing… is where the
+  // walkthrough's OWN auto-send fires from, so words have to be enough on
+  // their own or that send would go out carrying nothing.
+  await act(async () => {
+    const ann = annotationsForTests()!;
+    const mark = ann.annotations[0]!;
+    ann.store.merge([{ ...mark, content: "this header is wrong" }]);
+  });
+  await settle();
+  expect(sendBtn(r).props.disabled).toBe(false);
+
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(30);
+
+  const message = started()[0]!.params.message;
+  expect(message).toContain("<" + ANN_TAG + ">");
+  expect(message).toContain("this header is wrong");
+  expect(annChips(r)).toHaveLength(0);
 });

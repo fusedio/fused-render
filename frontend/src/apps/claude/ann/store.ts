@@ -57,6 +57,35 @@ export function isSendable(note: Pick<Annotation, "content" | "t">): boolean {
   return !!note.content || typeof note.t === "number";
 }
 
+/**
+ * THE SAME RULE, ASKED AT A MOMENT — and the moment is "are this note's words
+ * still coming?" (Bugbot, PR #1074).
+ *
+ * A stamped mark is sendable BECAUSE the transcription fills it in, which is
+ * exactly why it must not go out while that transcription is still on its way:
+ * `beginSend` folds every pending sendable note into the message, so an Enter
+ * pressed mid-walkthrough uploaded still-wordless marks and the transcript then
+ * wrote words onto notes already stamped `sent` — words the agent never saw,
+ * silently mutating a note it had already been handed. The nav lock does not
+ * cover this: it greys the ways OUT of the chat, and the composer stays live on
+ * purpose (a line typed during a walkthrough is a normal thing to send).
+ *
+ * So while the walkthrough owns the mode (`walkthroughOwns`: the mic's start
+ * window, the recording itself, Stopping… and Transcribing…) a note with no
+ * words is not sendable YET. A note that has words is sendable throughout —
+ * including on the walkthrough's own auto-send, which fires from inside
+ * Transcribing… the moment `assignWords` has written them. And once the mode is
+ * off, a mark the transcription never filled in is sendable again exactly as
+ * before: it is a spot the reader clicked, editable by hand and theirs to send.
+ */
+export function isSendableNow(
+  note: Pick<Annotation, "content" | "t">,
+  walkthroughLive: boolean,
+): boolean {
+  if (walkthroughLive && !note.content) return false;
+  return isSendable(note);
+}
+
 export interface AnnStoreOptions {
   params: ParamsStore;
   /**

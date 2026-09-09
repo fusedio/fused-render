@@ -50,11 +50,12 @@ import {
   AnnPins,
   AnnPopover,
   createRecorder,
-  isSendable,
+  isSendableNow,
   recClockText,
   RecControls,
   transcribe,
   useAnnotations,
+  walkthroughOwns,
   warmTranscriber,
   type AnnAnchor,
   type AnnBarHandlers,
@@ -907,7 +908,14 @@ function ChatBody(props: ChatBodyProps) {
           const words = new Map(texts.map((t) => [t.id, t.text]));
           const next = store
             .list()
-            .filter((n) => words.has(n.id))
+            // NOT ONTO A NOTE THE AGENT ALREADY HAS (Bugbot, PR #1074). A mark
+            // sent before its words landed cannot be corrected by rewriting the
+            // page's copy: Claude was handed the note as it stood, and a silent
+            // edit afterwards makes this page and that transcript disagree about
+            // what was asked. `isSendableNow` is the half that keeps a WORDLESS
+            // mark from being sent at all; this is the other half, for a mark
+            // whose words the reader typed by hand and sent mid-walkthrough.
+            .filter((n) => words.has(n.id) && !n.sent)
             .map((n) => ({ ...n, content: words.get(n.id) as string }));
           if (next.length) store.merge(next);
         },
@@ -2001,11 +2009,21 @@ function ChatBody(props: ChatBodyProps) {
       // (T:17903, and ✓ Done's whole gesture: a round of comments IS the
       // message).
       // ...and the ONE predicate the send path and ✓ Done read as well
-      // (`ann/store.isSendable`): a chip with neither words nor a recording
+      // (`ann/store.isSendableNow`): a chip with neither words nor a recording
       // stamp is not a sendable note, so Send must not light up for one — a
       // single click in Comment mode makes exactly that chip, and the three
       // answers used to disagree about it.
-      hasAttachments: attach.items.length > 0 || ann.chips.some((c) => isSendable(c.note)),
+      //
+      // ASKED AT THIS MOMENT, because a walkthrough's marks are stamped long
+      // before their words land: while it records or settles a wordless mark is
+      // not sendable, so Send does not light up for one and `beginSend` (which
+      // filters by the same predicate) cannot fold it into a line the reader
+      // typed meanwhile. Sending it there uploaded an empty note and the
+      // transcript then wrote words onto it after it was stamped `sent`
+      // (Bugbot, PR #1074).
+      hasAttachments:
+        attach.items.length > 0 ||
+        ann.chips.some((c) => isSendableNow(c.note, walkthroughOwns(ann.mode))),
       // ... but not while one of them is still on its way: `take()` leaves a
       // `pending` chip in the tray, so a send fired now would go out WITHOUT
       // the files whose chips made it sendable (Bugbot, PR #1064).
@@ -2072,6 +2090,10 @@ function ChatBody(props: ChatBodyProps) {
       onPaste,
       pane.paneNoun,
       ann.chips,
+      // THE MOMENT `hasAttachments` IS ASKED AT: while a walkthrough records or
+      // settles its wordless marks are not sendable, so the Send affordance has
+      // to be recomputed when the mode moves and not only when the chips do.
+      ann.mode,
       ann.editNote,
       ann.removeNote,
     ],

@@ -59,6 +59,7 @@ export {
   ANN_PARAM,
   createAnnStore,
   isSendable,
+  isSendableNow,
   parseAnnotations,
   serializeAnnotations,
   type AnnStore,
@@ -87,6 +88,7 @@ export { isWired, wireTarget, type WireTargetDeps } from "./wire-target";
 export {
   createAnnMode,
   escapeAction,
+  walkthroughOwns,
   type AnnModeDeps,
   type AnnModeMachine,
 } from "./mode";

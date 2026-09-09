@@ -103,6 +103,21 @@ export interface AnnModeMachine {
   busyHold(): boolean;
 }
 
+/**
+ * DOES THE WALKTHROUGH OWN THE MODE RIGHT NOW — every state but `off` and
+ * `comment`, which is to say the mic's start window, the recording, Stopping…
+ * and Transcribing… (Bugbot, PR #1074).
+ *
+ * One spelling for the four readers of that fact: the seats it draws inert
+ * (`seatsAria`), the two doors that refuse (`done`, `notesDiscard`), and the
+ * send-time question `ann/store.isSendableNow` asks — are this mark's words
+ * still coming. They were three separate `recording()` tests and each one was a
+ * chance to disagree about the settle.
+ */
+export function walkthroughOwns(mode: AnnMode): boolean {
+  return mode !== "off" && mode !== "comment";
+}
+
 export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
   const now = deps.now ?? (() => Date.now());
   const rec = () => (deps.recorder ? deps.recorder() : null);
@@ -257,8 +272,7 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
       // mid-transcription. The same refusal `notesDiscard` already makes, for
       // the same reason — stated here and not only in the seats, because the
       // injected bar and a stale render both reach this door directly.
-      const r0 = rec();
-      if ((r0 && r0.recording()) || phase !== null) return;
+      if (walkthroughOwns(mode())) return;
       // ONE AT A TIME (Bugbot, PR #664): the commit's await could span a second
       // Done click, which would see no open composer, read the just-saved note as
       // merely pending, and send it twice.

@@ -106,6 +106,18 @@ function popNode(ownDoc: Document) {
   return { pop: pop as unknown as HTMLElement, ta };
 }
 
+/** A stylesheet read that answers everything the bar's paint asks and means
+ *  nothing: `barTheme` copies tokens across documents and `barFit` measures the
+ *  fold, and neither has anything to measure in a renderer with no CSS. */
+function css() {
+  return {
+    getPropertyValue: () => "",
+    columnGap: "0px",
+    paddingLeft: "0px",
+    paddingRight: "0px",
+  } as unknown as CSSStyleDeclaration;
+}
+
 /** The chat's own document — one we can build nodes in, which is what makes the
  *  hook treat it as a document at all. */
 function ownDocument() {
@@ -126,6 +138,9 @@ function ownDocument() {
     defaultView: {
       addEventListener: () => {},
       removeEventListener: () => {},
+      // `barTheme` reads THIS document's palette to copy it onto a bar standing
+      // in another one.
+      getComputedStyle: () => css(),
     } as unknown as Window,
   };
   return { doc: doc as unknown as Document, own };
@@ -619,4 +634,135 @@ test("a Done reaching the seat mid-transcription sends nothing and leaves the mo
   await act(async () => {});
   expect(w.autoSubmits.n).toBe(1);
   expect(api!.mode).toBe("off");
+});
+
+// ── the send's picture, and the bar's 43px (Bugbot, PR #1074) ───────────────
+
+/**
+ * A BAR STANDING IN ANOTHER DOCUMENT — the hosted layout's shape, which is the
+ * only one `barPush` speaks to: the bar is injected into the app's document, so
+ * it PUSHES that document down by its own height instead of covering the top of
+ * the page.
+ *
+ * `margins` is the tape of what the root's `margin-top` has been told: `"43px"`
+ * on a push, `null` on the hand-back.
+ */
+function hostedBar() {
+  const margins: Array<string | null> = [];
+  const root = {
+    style: {
+      setProperty: (_name: string, v: string) => {
+        margins.push(v);
+      },
+      removeProperty: () => {
+        margins.push(null);
+      },
+    },
+  };
+  const doc = {
+    documentElement: root,
+    querySelector: () => null,
+    defaultView: { getComputedStyle: () => css() } as unknown as Window,
+  } as unknown as Document;
+  const classes = new Set<string>();
+  const bar = {
+    ownerDocument: doc,
+    clientWidth: 400,
+    style: { setProperty: () => {} },
+    classList: {
+      add: (c: string) => classes.add(c),
+      remove: (...cs: string[]) => cs.forEach((c) => classes.delete(c)),
+      contains: (c: string) => classes.has(c),
+      toggle: (c: string, on: boolean) => (on ? classes.add(c) : classes.delete(c)),
+    },
+    querySelector: () => null,
+  } as unknown as HTMLElement;
+  return { bar, doc, margins, last: () => margins[margins.length - 1] };
+}
+
+/** A capture held open, so a test can stand inside the window between the
+ *  badge coordinates and the photograph. */
+function heldCapture() {
+  let release = () => {};
+  const gate = new Promise<void>((res) => {
+    release = res;
+  });
+  return {
+    release: () => release(),
+    opts: {
+      timeoutMs: 10_000,
+      strategies: { native: async () => (await gate, null) },
+    },
+  };
+}
+
+test("the bar's margin outlives a disarm racing the send's capture", async () => {
+  // THE SKEW. `✓ Done` starts its send and disarms WITHOUT waiting, so the
+  // repaint handed the hosted document's 43px back before the capture
+  // photographed the pane — while the badge coordinates had been measured with
+  // it. Every badge on the overview landed about a bar-height off.
+  const w = hostedBar();
+  mount();
+  act(() => api!.bindBar(w.bar));
+  arm();
+  expect(w.last()).toBe("43px");
+
+  act(() => {
+    api!.store.add({ content: "make this blue" });
+  });
+  const held = heldCapture();
+  let notes = -1;
+  let send!: Promise<void>;
+  // Inside `act`, because the label stamp is a store write and the send starts
+  // synchronously — exactly as ✓ Done starts it.
+  act(() => {
+    send = api!.overviewForSend(held.opts).then((r) => {
+      notes = r.notes.length;
+    });
+  });
+  // Done's own ordering, verbatim: the send is away, the mode goes.
+  act(() => api!.setMode(false));
+
+  // The picture has not been taken yet, so the pane must not move.
+  expect(w.last()).toBe("43px");
+  held.release();
+  await act(async () => {
+    await send;
+  });
+  // …and the moment it has, the paint's last word is honoured.
+  expect(w.last()).toBeNull();
+  expect(notes).toBe(1);
+});
+
+test("a wordless mark waits for the walkthrough's words, whoever presses send", async () => {
+  // `beginSend` folds every pending SENDABLE note into the message, and a
+  // walkthrough's marks are sendable the instant they are stamped — so an Enter
+  // typed mid-walkthrough shipped wordless marks and the transcript then wrote
+  // words onto notes already stamped `sent`.
+  mount();
+  arm();
+  act(() => {
+    api!.store.add({ content: "", t: 1.2 });
+    api!.store.add({ content: "typed before the mic", createdAt: 10 });
+  });
+  const opts = { timeoutMs: 5_000, strategies: { native: async () => null } };
+
+  act(() => api!.machine.setPhase("transcribing"));
+  let out!: Awaited<ReturnType<AnnotationsApi["overviewForSend"]>>;
+  await act(async () => {
+    out = await api!.overviewForSend(opts);
+  });
+  // The typed note goes; the mark whose words are still coming does not.
+  expect(out.notes.map((n) => n.content)).toEqual(["typed before the mic"]);
+
+  // Once the transcript has landed, the mark rides the walkthrough's own send —
+  // which fires from INSIDE Transcribing…, so words have to be enough.
+  act(() => {
+    const mark = api!.annotations.find((n) => n.t === 1.2)!;
+    api!.store.merge([{ ...mark, content: "and this bit here" }]);
+  });
+  await act(async () => {
+    out = await api!.overviewForSend(opts);
+  });
+  expect(out.notes.map((n) => n.content)).toContain("and this bit here");
 });

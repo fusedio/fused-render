@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 
 const { createMemoryParamsStore } = await import("../params/store");
 const { createAnnStore } = await import("./store");
-const { createAnnMode, escapeAction } = await import("./mode");
+const { createAnnMode, escapeAction, walkthroughOwns } = await import("./mode");
 import type { AnnMode, AnnRecorder } from "./types";
 
 interface Rig {
@@ -475,5 +475,20 @@ describe("who claims Escape (T:15950)", () => {
     expect(escapeAction(false, true, true)).toBe("close-composer");
     expect(escapeAction(false, false, true)).toBe("exit-annotate");
     expect(escapeAction(false, false, false)).toBe("");
+  });
+});
+
+describe("walkthroughOwns — one spelling of \"are this mark's words still coming\"", () => {
+  test("every state but off and comment belongs to the recorder", () => {
+    // The seats read it (`seatsAria`), the two doors that refuse read it
+    // (`done`, and `notesDiscard`'s own phase test), and so does the send
+    // (`isSendableNow`). Three private `recording()` tests were three chances
+    // to disagree about the SETTLE, which is where every one of PR #1074's
+    // walkthrough bugs lived.
+    expect(walkthroughOwns("off")).toBe(false);
+    expect(walkthroughOwns("comment")).toBe(false);
+    expect(walkthroughOwns("recording")).toBe(true);
+    expect(walkthroughOwns("settling")).toBe(true);
+    expect(walkthroughOwns("transcribing")).toBe(true);
   });
 });

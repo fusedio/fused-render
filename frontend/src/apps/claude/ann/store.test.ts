@@ -11,6 +11,7 @@ const {
   ANN_PARAM,
   createAnnStore,
   isSendable,
+  isSendableNow,
   parseAnnotations,
   serializeAnnotations,
 } = await import("./store");
@@ -282,5 +283,36 @@ describe("isSendable — the ONE rule, for all three readers (Bugbot, PR #1074)"
     // would count it, and the model would be handed a letter with nothing
     // beside it.
     expect(isSendable(note({ anchorId: "hero" }))).toBe(false);
+  });
+});
+
+describe("isSendableNow — the same rule, asked at a moment (Bugbot, PR #1074)", () => {
+  const note = (over: Partial<Annotation>): Annotation =>
+    ({ id: "n", content: "", createdAt: 0, ...over }) as Annotation;
+
+  test("a stamped mark whose words are still coming is NOT on this message", () => {
+    // The bug: `beginSend` folds every pending sendable note in, and a
+    // walkthrough's marks are stamped the instant they are clicked — so an
+    // Enter typed mid-walkthrough uploaded wordless marks and the transcript
+    // then wrote words onto notes already stamped `sent`.
+    expect(isSendableNow(note({ t: 4.2 }), true)).toBe(false);
+    // …and the same mark, once the walkthrough is over: a spot the reader
+    // clicked, sendable exactly as `isSendable` says.
+    expect(isSendableNow(note({ t: 4.2 }), false)).toBe(true);
+  });
+
+  test("WORDS ride whatever the moment — including the walkthrough's own send", () => {
+    // `assignWords` writes the transcript onto the marks and only THEN does
+    // `deliver` press send, from inside Transcribing… — so a mark with words
+    // has to be sendable while the walkthrough still owns the mode, or its own
+    // auto-send would go out carrying nothing.
+    expect(isSendableNow(note({ content: "make it blue", t: 4.2 }), true)).toBe(true);
+    // A note typed in Comment mode before the mic ever opened, too.
+    expect(isSendableNow(note({ content: "this button" }), true)).toBe(true);
+  });
+
+  test("neither words nor a stamp is still nothing, whenever it is asked", () => {
+    expect(isSendableNow(note({}), false)).toBe(false);
+    expect(isSendableNow(note({}), true)).toBe(false);
   });
 });
