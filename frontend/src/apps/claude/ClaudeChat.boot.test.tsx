@@ -195,6 +195,31 @@ test("a hosted mount whose host has marked NOTHING sends has_pane EMPTY (R3-5)",
   expect(started()[0].params.message).not.toContain("<live-app-state>");
 });
 
+test("a host frame we cannot READ is not a pane (Bugbot #1061)", async () => {
+  // The host's mark says "this frame is the content the reader is looking at",
+  // not "its document is yours to read": the canvases workbench frames a
+  // cross-origin document. Counting it made the first send claim `has_pane: 1`,
+  // which puts `app_state` on the session's `--allowed-tools` FOR THE WHOLE
+  // SESSION with no way back, while `blockForSend` could only ever answer "" —
+  // the model told it could see an app it cannot. Unreadable answers the same as
+  // absent: empty, and agent.py decides off the filesystem.
+  const crossOrigin = () =>
+    ({
+      isConnected: true,
+      get contentWindow(): never {
+        throw new Error("Blocked a frame with origin … from accessing a cross-origin frame.");
+      },
+      get contentDocument(): never {
+        throw new Error("Blocked a frame with origin … from accessing a cross-origin frame.");
+      },
+    }) as unknown as HTMLIFrameElement;
+  await mountChat({ initialAsk: "what can you see?", annotateTarget: crossOrigin });
+  await settle(20);
+  expect(started().length).toBe(1);
+  expect(started()[0].params.has_pane).toBe("");
+  expect(started()[0].params.message).not.toContain("<live-app-state>");
+});
+
 test("a chat-only mount's first send says has_pane: 0", async () => {
   // CHAT_ONLY has no pane of ours whatever the target turns out to be
   // (`decidePane` answers `kind: "none"` for every kind there), so the status is

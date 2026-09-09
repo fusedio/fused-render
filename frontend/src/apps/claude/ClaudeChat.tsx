@@ -311,11 +311,25 @@ function ChatBody(props: ChatBodyProps) {
   // never fail to send because a host's lookup did.
   const annotate = useRef(props.annotateTarget);
   annotate.current = props.annotateTarget;
+  //
+  // AND READABLE, OR IT IS NOT A PANE (Bugbot, PR #1061). The mark says "this
+  // frame is the content the reader is looking at", not "its document is yours
+  // to read" — the canvases workbench frames a CROSS-ORIGIN document. Counting
+  // it made the first send claim `has_pane: 1`, which puts `app_state` on the
+  // session's `--allowed-tools` for the WHOLE session with no way back, while
+  // `blockForSend` could only ever answer "": the model told it could see an
+  // app it cannot, and the session still recorded no pane. Unreadable answers
+  // the same as absent, and every reader of the host's pane goes through here.
   const hostFrame = useCallback((): HTMLIFrameElement | null => {
     try {
-      return annotate.current?.() ?? null;
+      const frame = annotate.current?.() ?? null;
+      if (!frame) return null;
+      // A frame still loading answers with its own `about:blank` document,
+      // which is readable and no reason to disown it — the watcher polls.
+      if (!frame.contentDocument && !frame.contentWindow) return null;
+      return frame;
     } catch {
-      return null;
+      return null; // the getter threw, or the document is not ours to read
     }
   }, []);
   /** The frame whose document IS the app: ours when we have a pane, the host's
@@ -553,14 +567,26 @@ function ChatBody(props: ChatBodyProps) {
   }, []);
 
   // ── boot (T:19178-19296, inventory 05 §G) ──────────────────────────────────
-  const booted = useRef(false);
+  //
+  // THE LATCH IS PER CONTROLLER, not per mount (Bugbot, PR #1061). It was a
+  // bare boolean, and `ChatBody` is not keyed on `file`: switching to a target
+  // whose `agentDir` is already cached rebuilds the controller WITHOUT the
+  // `agentDir === undefined` round trip that would have remounted this tree, so
+  // the effect re-ran, found the latch set, and the new controller never got its
+  // `openSession` / `resumeRun` / ask at all — a live conversation replaced by
+  // an empty transcript that boots nothing.
+  const bootedFor = useRef<object | null>(null);
   /** The boot's ONE dispatch — the ask, or the restore — the moment it reaches
    *  the controller. What makes the re-arm below safe: a boot cancelled before
    *  it dispatched can be run again, one that dispatched never is. */
   const bootDispatched = useRef(false);
   useEffect(() => {
-    if (booted.current) return;
-    booted.current = true;
+    if (bootedFor.current === controller) return;
+    bootedFor.current = controller;
+    // A NEW CONTROLLER IS A NEW BOOT, so the dispatch guard re-arms with it —
+    // it exists to keep ONE boot from dispatching twice, not to keep a second
+    // target from dispatching at all.
+    bootDispatched.current = false;
     // CANCELLED ON THE WAY OUT, and checked after every await. The boot is an
     // async walk over a controller and a piece of React state that both belong
     // to THIS mount: `agentDir` going back to `undefined` (a new `_file`), a
@@ -661,7 +687,7 @@ function ChatBody(props: ChatBodyProps) {
       // would be cancelled and never redone, and a "Fix with AI" mount would sit
       // there with the prompt unsent. Once the boot HAS reached the controller
       // the latch stays: whatever it started is the one thing this mount does.
-      if (!bootDispatched.current) booted.current = false;
+      if (!bootDispatched.current) bootedFor.current = null;
     };
   }, [controller, params, props.initialAsk, markReady, cardPolicy]);
 
