@@ -356,17 +356,24 @@ test("a HOSTED chat shows the strip — landing included — because the host ha
   expect(seats[2].props.disabled).toBe(false);
 });
 
-test("a hosted chat whose host has marked NOTHING hides the strip, like the folder listing on :1777", async () => {
+test("the strip ROW stands even with nothing to photograph — it carries the ⋮", async () => {
+  // T's `#anntools` is static markup and holds `← Chats` and `#kebab` as well as
+  // the three seats, so a folder listing keeps the row and loses only the
+  // buttons (T:526 `body.nopane #kebab { margin-left: auto }` is that state).
+  // Native used to drop the whole row, which took the menu with it (P2-1) —
+  // and PR3's own copy of these two tests pinned the old behaviour until the
+  // re-stack (2026-09-10).
   const { r } = await mountChat({ annotateTarget: () => null });
   await settle(20);
-  expect(byClass(r, "c-anntools").length).toBe(0);
+  expect(byClass(r, "c-anntools").length).toBe(1);
   expect(byClass(r, "c-anncta").length).toBe(0);
+  expect(byClass(r, "c-kebab").length).toBe(1);
 });
 
-test("a chat-only mount with no host getter at all hides the strip", async () => {
+test("the seats are absent on a chat-only mount with no host getter at all", async () => {
   // A cards tile and the peek modal pass none: there is genuinely nothing to
   // photograph, and "absent beats dead" (T:238-241).
   const { r } = await mountChat();
   await settle(20);
-  expect(byClass(r, "c-anntools").length).toBe(0);
+  expect(byClass(r, "c-anncta").length).toBe(0);
 });
