@@ -99,6 +99,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+import fused_render
 from fused_render import current_apps, schedule, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import storage
@@ -203,6 +204,8 @@ def reset_cache() -> None:
     _SCAN_DIRTY = False
     _SCAN_SAVED_AT = 0.0
     _SCAN_LOADED = False
+    for k in _SCAN_STATS:
+        _SCAN_STATS[k] = 0
     _BUILD_SEQ = 0
     _OBSERVED_SEQ = 0
     tasks_store.reset_cache()
@@ -304,12 +307,36 @@ def _absorb(rec: dict, line: str) -> None:
         rec["tail"].pop(0)
 
 
+# How many bytes just before `offset` a record remembers (hex), so a file that
+# GREW can be checked to still be the file we read: the delta is read from the
+# offset only if those bytes are still there. Transcripts are append-only, so
+# this only ever fails for a file replaced by different, longer content — a
+# restore from backup, a hand edit — which is exactly the case where reading
+# from the old offset would fold foreign bytes into the record.
+_ANCHOR_BYTES = 32
+# Where the cache file is counted as read/missed since load; the warm's log
+# line prints them so a stale row can be traced to the path that took it.
+_SCAN_STATS = {"hit": 0, "grown": 0, "zero": 0, "anchor_miss": 0}
+
+
 def _new_scan() -> dict:
     # Every reader of `command` uses `.get`, so a record built before this key
     # existed — one already in `_SCAN` when the module is hot-reloaded under the
     # dev server — degrades to "no command" instead of raising.
     return {"offset": 0, "size": -1, "mtime": 0.0, "count": 0, "tail": [],
-            "title": "", "command": ""}
+            "title": "", "command": "", "anchor": ""}
+
+
+def _anchor_holds(f, rec: dict) -> bool:
+    """Are the bytes just before the record's offset still what we read? `f` is
+    open for reading; the position is left at the offset either way."""
+    anchor = rec.get("anchor") or ""
+    n = len(anchor) // 2
+    if n == 0 or rec["offset"] < n:
+        f.seek(rec["offset"])
+        return True  # nothing remembered (an older record): trust the offset
+    f.seek(rec["offset"] - n)
+    return f.read(n).hex() == anchor
 
 
 def _scan(path: str) -> dict | None:
@@ -340,14 +367,24 @@ def _scan(path: str) -> dict | None:
     # lands within one tick of the write before it; no content hash is kept,
     # and that is the accepted cost.
     if rec is not None and rec["size"] == size and rec.get("mtime") == mtime:
+        _SCAN_STATS["hit"] += 1
         return rec
     if rec is None or size < rec["offset"] or (rec["size"] == size and rec["offset"] > 0):
         # New, shrunk, or same length with a different mtime: the bytes we hold
         # may not be the bytes on disk, so read from the top.
         rec = _new_scan()
+        _SCAN_STATS["zero"] += 1
+    else:
+        _SCAN_STATS["grown"] += 1
     try:
         with open(path, "rb") as f:
-            f.seek(rec["offset"])
+            if rec["offset"] and not _anchor_holds(f, rec):
+                # Longer, but not the file we read: the bytes before our offset
+                # are gone. Foreign content from the offset on would be folded
+                # into a record built from the old file — start over instead.
+                _SCAN_STATS["anchor_miss"] += 1
+                rec = _new_scan()
+                f.seek(0)
             chunk = f.read()
     except OSError:
         return rec if rec["size"] >= 0 else None
@@ -356,7 +393,12 @@ def _scan(path: str) -> dict | None:
     cut = chunk.rfind(b"\n")
     if cut >= 0:
         text = chunk[:cut + 1].decode("utf-8", "replace")
+        consumed = chunk[:cut + 1]
         rec["offset"] += cut + 1
+        # The last bytes of what we consumed, or of what we consumed before
+        # plus this, are the new anchor.
+        keep = (bytes.fromhex(rec.get("anchor") or "") + consumed)[-_ANCHOR_BYTES:]
+        rec["anchor"] = keep.hex()
         for line in text.split("\n"):
             if line.strip():
                 _absorb(rec, line)
@@ -1921,11 +1963,16 @@ _OBSERVED_SEQ = 0
 # transcript grew by since. Next to `read.json` and `task_ids.json`, so the
 # per-branch state isolation the dev server already does applies.
 SCAN_CACHE_FILE = "tasks-scan.json"
-_SCAN_CACHE_VERSION = 1
+# The file's version carries the APP version too: the records are derived by
+# this module's parsing (`_absorb`, `_prompt`, ai_title, _BODY_MAX), and a file
+# whose bytes have not changed is never re-parsed. Without this, a release that
+# changed how a title or a count is derived would keep the old answer for every
+# unchanged transcript for good. One full read per upgrade is the price, once.
+_SCAN_CACHE_VERSION = f"2/{fused_render.__version__}"
 # A listing that read bytes writes the file at most this often; the warm and
 # the shutdown write unconditionally.
 SCAN_CACHE_SAVE_EVERY_S = 30.0
-_SCAN_KEYS = ("offset", "size", "mtime", "count", "tail", "title", "command")
+_SCAN_KEYS = ("offset", "size", "mtime", "count", "tail", "title", "command", "anchor")
 
 
 def _scan_cache_path() -> str:
@@ -1941,7 +1988,8 @@ def _valid_scan_record(rec) -> bool:
             and isinstance(rec["count"], int)
             and isinstance(rec["tail"], list)
             and isinstance(rec["title"], str)
-            and isinstance(rec["command"], str))
+            and isinstance(rec["command"], str)
+            and isinstance(rec["anchor"], str))
 
 
 def load_scan_cache() -> int:
@@ -2049,8 +2097,10 @@ def warm() -> None:
         return
     with _ROWS_LOCK:
         save_scan_cache()
-    logger.info("tasks warm: %d rows in %.2fs (%d from cache)",
-                len(rows), time.monotonic() - started, cached)
+    logger.info("tasks warm: %d rows in %.2fs (%d records from cache; "
+                "scan hits %d, grown %d, from zero %d, anchor misses %d)",
+                len(rows), time.monotonic() - started, cached, _SCAN_STATS["hit"],
+                _SCAN_STATS["grown"], _SCAN_STATS["zero"], _SCAN_STATS["anchor_miss"])
 
 
 def _task_rows(only: frozenset | set | None = None) -> list[dict]:

@@ -95,7 +95,7 @@ def test_warm_writes_the_file_and_the_next_process_reads_nothing(
     cache = state_dir / tasks_mod.SCAN_CACHE_FILE
     assert cache.exists()
     data = json.loads(cache.read_text())
-    assert data["version"] == 1
+    assert data["version"] == tasks_mod._SCAN_CACHE_VERSION
     assert data["scan"][str(path)]["count"] == 1
     assert data["scan"][str(path)]["title"] == "Pull today's news"
     assert str(path) in data["head"]
@@ -142,7 +142,9 @@ def test_a_transcript_that_grew_between_processes_is_read_from_its_offset(
     rows = tasks_mod._task_rows()
 
     assert rows[0]["message_count"] == 2
-    assert seen and seen[0] == offset, "read from where the last process stopped"
+    # One seek, to the anchor just before the offset: the check reads those 32
+    # bytes and the delta read continues from the offset. Never from zero.
+    assert seen == [offset - tasks_mod._ANCHOR_BYTES], "read from where the last process stopped"
 
 
 def test_a_transcript_that_shrank_between_processes_is_read_from_zero(projects_dir):
@@ -167,7 +169,7 @@ def test_a_transcript_that_shrank_between_processes_is_read_from_zero(projects_d
 @pytest.mark.parametrize("body", [
     "not json{",
     json.dumps({"version": 99, "scan": {}, "head": {}}),
-    json.dumps({"version": 1, "scan": "nope", "head": []}),
+    json.dumps({"version": tasks_mod._SCAN_CACHE_VERSION, "scan": "nope", "head": []}),
     json.dumps([1, 2, 3]),
 ])
 def test_a_corrupt_or_foreign_file_is_ignored_not_raised_on(projects_dir, state_dir, body):
@@ -340,3 +342,69 @@ def test_a_head_comes_back_only_for_an_unchanged_file(projects_dir, state_dir):
     assert str(path) not in tasks_store._HEAD_CACHE, "stale head left for a fresh parse"
     rows = tasks_mod._task_rows()
     assert rows[0]["project"] == "/home/me/othr"
+
+
+def test_a_file_replaced_by_longer_different_content_is_read_from_zero(projects_dir):
+    """Growth is read from the saved offset on the strength of transcripts being
+    append-only. A file REPLACED by different, longer content (a restore, a hand
+    edit) breaks that, and reading from the old offset would fold foreign bytes
+    into a record built from the old file. The anchor — the bytes just before
+    the offset — catches it."""
+    path = _transcript(projects_dir)
+    tasks_mod.warm()
+    assert tasks_mod._SCAN[str(path)]["count"] == 1
+    old_size = path.stat().st_size
+    # Entirely different, and LONGER — long enough that the shrink rule cannot
+    # be what catches it; only the anchor can.
+    path.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "user", "uuid": "sess-a-0", "sessionId": "sess-a", "cwd": "/home/me/proj",
+         "timestamp": "2023-11-14T22:13:20Z", "message": {"role": "user", "content": "first of the new file"}},
+        {"type": "user", "uuid": "sess-a-1", "sessionId": "sess-a", "cwd": "/home/me/proj",
+         "timestamp": "2023-11-14T22:14:20Z", "message": {"role": "user", "content": "second " * 200}},
+    ]) + "\n")
+    assert path.stat().st_size > old_size
+    os.utime(path, (OLD + 60, OLD + 60))
+
+    _new_process()
+    tasks_mod.load_scan_cache()
+    rows = tasks_mod._task_rows()
+
+    assert rows[0]["message_count"] == 2
+    bodies = [m["body"] for m in rows[0]["messages"]]
+    assert "first of the new file" in bodies, "the new file's own first message, not a fold over foreign bytes"
+    assert tasks_mod._SCAN_STATS["anchor_miss"] == 1
+
+
+def test_an_appended_file_keeps_its_anchor_and_reads_only_the_delta(projects_dir):
+    path = _transcript(projects_dir)
+    tasks_mod.warm()
+    with path.open("a") as f:
+        f.write('{"type":"user","uuid":"sess-a-9","sessionId":"sess-a",'
+                '"cwd":"/home/me/proj","timestamp":"2023-11-14T22:14:00Z",'
+                '"message":{"role":"user","content":"and tomorrow"}}\n')
+    os.utime(path, (OLD + 60, OLD + 60))
+
+    _new_process()
+    tasks_mod.load_scan_cache()
+    rows = tasks_mod._task_rows()
+
+    assert rows[0]["message_count"] == 2
+    assert tasks_mod._SCAN_STATS["grown"] == 1
+    assert tasks_mod._SCAN_STATS["anchor_miss"] == 0
+    assert tasks_mod._SCAN_STATS["zero"] == 0
+
+
+def test_a_file_written_by_another_app_version_is_read_afresh(projects_dir, state_dir):
+    """Records are what THIS code derived from the bytes; an unchanged file is
+    never re-parsed. So a release that changes the parsing must not inherit the
+    old answers: the version in the file carries the app version."""
+    _transcript(projects_dir)
+    tasks_mod.warm()
+    cache = state_dir / tasks_mod.SCAN_CACHE_FILE
+    data = json.loads(cache.read_text())
+    assert data["version"].endswith("/" + __import__("fused_render").__version__)
+    data["version"] = "2/0.0.1"
+    cache.write_text(json.dumps(data))
+
+    _new_process()
+    assert tasks_mod.load_scan_cache() == 0
