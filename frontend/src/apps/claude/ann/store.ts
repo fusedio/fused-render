@@ -38,6 +38,25 @@ export function serializeAnnotations(list: readonly Annotation[]): string {
   return JSON.stringify(list);
 }
 
+/**
+ * IS THIS NOTE SENDABLE — the one rule, in one place.
+ *
+ * A note carries WORDS (typed into the composer) or a STAMP (`t`, the second
+ * into a walkthrough a wordless click marked, whose words the transcription
+ * assigns later). Either one is a message; a note with neither is the empty
+ * card a single click in Comment mode leaves behind, and nothing may send it.
+ *
+ * Three readers used to state that rule for themselves and the third disagreed:
+ * `overviewForSend` filtered on `content || t`, the composer's Send affordance
+ * matched it, and `mode.done()` looked only at `content` — so ✓ Done on a round
+ * of stamped-but-wordless notes lit up the button, disarmed the mode, and left
+ * the notes sitting there unsent (Bugbot, PR #1074). One predicate, three
+ * callers, no drift.
+ */
+export function isSendable(note: Pick<Annotation, "content" | "t">): boolean {
+  return !!note.content || typeof note.t === "number";
+}
+
 export interface AnnStoreOptions {
   params: ParamsStore;
   /**

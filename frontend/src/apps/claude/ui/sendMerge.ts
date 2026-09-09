@@ -30,6 +30,27 @@ import type { SendOptions } from "../protocol/controller-api";
  * NOT an answer, so it does not blank what the tray put there — which is the
  * "unless only the tray named it" half of the rule above.
  */
+/**
+ * THE SEND PATH'S OWN BLOCK, ADDED TO THE CALLER'S — never over it.
+ *
+ * `mergeSendOptions` unions `base.blocks` with `extra.blocks`, and the send path
+ * built its `base` as `{ ...opts, blocks: [mine] }`: a REPLACEMENT, one line
+ * above the call to the very helper that exists to prevent one. Any block the
+ * caller brought (PR4's `<live-app-state>`, a walkthrough's own) was dropped
+ * silently, the message going out and the run succeeding without it (whole-stack
+ * review, PR #1074).
+ *
+ * So the addition is a named function with a test of its own rather than a
+ * spread at each call site, and it goes through `composeBlocks` — the union is
+ * ORDERED (state, pane-shot, annotations), whichever owner emitted which.
+ */
+export function sendBlocks(
+  caller: readonly (string | null | undefined)[] | null | undefined,
+  ...mine: (string | null | undefined)[]
+): string[] {
+  return composeBlocks(caller, mine);
+}
+
 export function mergeSendOptions(base: SendOptions, extra: SendOptions): SendOptions {
   const out: SendOptions = { ...extra };
   for (const [k, v] of Object.entries(base)) {

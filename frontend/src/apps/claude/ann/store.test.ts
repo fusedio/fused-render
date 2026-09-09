@@ -6,8 +6,14 @@ installDomShim();
 import { describe, expect, test } from "bun:test";
 
 const { createMemoryParamsStore } = await import("../params/store");
-const { ANN_MODE_PARAM, ANN_PARAM, createAnnStore, parseAnnotations, serializeAnnotations } =
-  await import("./store");
+const {
+  ANN_MODE_PARAM,
+  ANN_PARAM,
+  createAnnStore,
+  isSendable,
+  parseAnnotations,
+  serializeAnnotations,
+} = await import("./store");
 import type { Annotation } from "./types";
 
 function fixed(start = 1000) {
@@ -253,5 +259,28 @@ describe("annmode: the write is skipped when the URL already MEANS this (T:7639,
     expect(params.get(ANN_MODE_PARAM)).toBe("banana"); // both mean off
     store.syncModeParam("1");
     expect(params.get(ANN_MODE_PARAM)).toBe("1");
+  });
+});
+
+describe("isSendable — the ONE rule, for all three readers (Bugbot, PR #1074)", () => {
+  const note = (over: Partial<Annotation>): Annotation =>
+    ({ id: "n", content: "", createdAt: 0, ...over }) as Annotation;
+
+  test("words OR a walkthrough stamp — either one is a message", () => {
+    expect(isSendable(note({ content: "make it blue" }))).toBe(true);
+    // A wordless click during a walkthrough: its words arrive with the
+    // transcript, and the note is sendable the moment it is stamped.
+    expect(isSendable(note({ t: 12.5 }))).toBe(true);
+    expect(isSendable(note({ t: 0 }))).toBe(true); // the very first second
+    expect(isSendable(note({ content: "both", t: 3 }))).toBe(true);
+  });
+
+  test("neither is the empty card a single Comment click leaves behind", () => {
+    expect(isSendable(note({}))).toBe(false);
+    expect(isSendable(note({ t: undefined }))).toBe(false);
+    // An anchor is not a message: `overviewForSend` would badge it, ✓ Done
+    // would count it, and the model would be handed a letter with nothing
+    // beside it.
+    expect(isSendable(note({ anchorId: "hero" }))).toBe(false);
   });
 });

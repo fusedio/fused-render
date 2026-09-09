@@ -414,6 +414,15 @@ export interface ControllerDeps {
     attachments?: Receipt[];
     /** `SendOptions.sendId`, echoed: WHICH send came back (see its own note). */
     sendId?: string;
+    /**
+     * The send was turned away BEFORE any bubble went up (disposed, the
+     * `sending` gate, nothing to send) — so `text` is not in the transcript,
+     * not in the follow-up queue, and not in the composer's box, which cleared
+     * on the keystroke. The caller owes those words back to the box (Bugbot,
+     * PR #1074). Absent for a send that reached a bubble and then failed: that
+     * one left the failure in the chat, where the reader is.
+     */
+    refused?: boolean;
   }) => void;
 }
 

@@ -31,7 +31,7 @@ import { chipEditXY, clockOf, rectOf } from "./geometry";
 import { createRenderQueue, createXOLayer, hideHl, injectLayer, paintPins, pinSpotOf } from "./layer";
 import { createAnnMode, escapeAction, type AnnModeMachine } from "./mode";
 import { applyOverview, overviewFor, type OverviewResult } from "./overview";
-import { createAnnStore, type AnnStore } from "./store";
+import { createAnnStore, isSendable, type AnnStore } from "./store";
 import { createAnnTarget, type AnnTarget } from "./target";
 import { wireTarget } from "./wire-target";
 import type { AnnAnchor, AnnLayout, AnnMode, AnnRecorder, AnnTool, Annotation } from "./types";
@@ -462,6 +462,16 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
         wireTarget(doc, {
           armed: () => machineRef.current?.armed() ?? false,
           recording: () => liveOpts.current.recorder?.()?.recording() ?? false,
+          // THE SETTLE IS NOT COMMENT MODE. `armed()` stays true through
+          // Stopping…/Transcribing… (the transcription is this chat's) while
+          // the recorder's own flag is already down, so without this the
+          // in-frame handlers read the settle as a typed round: the click was
+          // swallowed and a composer opened under a hidden bar (Bugbot,
+          // PR #1074).
+          settling: () => {
+            const m = machineRef.current?.mode();
+            return m === "settling" || m === "transcribing";
+          },
           tool: () => toolRef.current,
           composerOpen: () => isOpen(popRef.current),
           hl: () => layerRef.current.hl,
@@ -810,7 +820,7 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     rescueComposer: () => closeComposer(),
 
     async overviewForSend(captureOpts) {
-      const pending = store.pending().filter((c) => c.content || typeof c.t === "number");
+      const pending = store.pending().filter(isSendable);
       if (!pending.length) return { notes: [], overview: null };
       // The letters FIRST, because the badge and the wire's `label` are the same
       // string and the picture is drawn from it (T:16053).

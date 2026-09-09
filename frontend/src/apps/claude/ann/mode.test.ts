@@ -253,10 +253,35 @@ describe("§D — comment → off", () => {
     expect(modeOf(r)).toBe("off");
   });
 
-  test("a note with no words is not a message (T:7714's `a.content &&`)", async () => {
+  test("a note with neither words nor a stamp is not a message (`isSendable`)", async () => {
     const r = rig();
     r.machine.set(true);
+    // The empty card a single click in Comment mode leaves behind: no words, no
+    // walkthrough stamp, nothing to say.
     r.store.add({ content: "" });
+    await r.machine.done();
+    expect(r.log).not.toContain("submit");
+  });
+
+  test("a WORDLESS STAMPED note is a message, and Done sends it", async () => {
+    // The one rule, read three ways: `overviewForSend` filtered on `content ||
+    // t` and the composer's Send affordance matched it, while Done asked only
+    // for `content` — so ✓ Done on a round of walkthrough marks lit the button,
+    // disarmed the mode, and left the notes sitting there unsent (Bugbot,
+    // PR #1074). `isSendable` is now the only spelling of the test.
+    const r = rig();
+    r.machine.set(true);
+    r.store.add({ content: "", t: 12.5 });
+    await r.machine.done();
+    expect(r.log.filter((l) => l === "submit")).toHaveLength(1);
+    expect(modeOf(r)).toBe("off");
+  });
+
+  test("a stamped note ALREADY SENT is not sent again by Done", async () => {
+    const r = rig();
+    r.machine.set(true);
+    const note = r.store.add({ content: "", t: 3 });
+    r.store.markSent([note]);
     await r.machine.done();
     expect(r.log).not.toContain("submit");
   });

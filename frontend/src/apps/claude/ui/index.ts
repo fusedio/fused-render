@@ -164,7 +164,7 @@ export type { AttachIconProps } from "./AttachIcon";
 export type { AnnStripProps } from "./AnnStrip";
 export { useAttachments } from "./useAttachments";
 export { fitStrip, useFitStrip } from "./useFitStrip";
-export { mergeSendOptions } from "./sendMerge";
+export { mergeSendOptions, sendBlocks } from "./sendMerge";
 export type {
   Attachments,
   OutgoingAttachments,

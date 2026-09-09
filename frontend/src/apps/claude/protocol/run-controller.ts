@@ -1273,7 +1273,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * from those left the tray empty and the map holding the only handle to the
    * user's pictures, which is the picture disappearing (Bugbot, PR #1064).
    */
-  const returnSend = (text: string, opts: SendOptions): void => {
+  const returnSend = (text: string, opts: SendOptions, refused = false): void => {
     // The optimistic bubble goes with it: this send never happened, so the row
     // its caller put up ahead of the capture has nothing behind it. Dropped
     // HERE rather than by the caller, because the caller cannot tell a refusal
@@ -1282,6 +1282,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (opts.optimisticKey) dropOptimisticUser(opts.optimisticKey);
     deps.onSendReturned?.({
       text,
+      // REFUSED means the message was turned away before `addUser` ever ran:
+      // there is no bubble and no queue entry holding the words, so the caller
+      // has to put them back in the box or they are gone (Bugbot, PR #1074). A
+      // send that got as far as a bubble and then failed is NOT this: it left
+      // the failure in the transcript, which is where the reader stays to read
+      // it (`sendMessage`'s catch).
+      ...(refused ? { refused: true as const } : {}),
       ...(opts.attachments ? { attachments: opts.attachments } : {}),
       // WHICH send came back. A counter could not tell "this send returned"
       // from "some send returned while this one was out", and a second submit
@@ -1299,13 +1306,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // (ClaudeChat's boot walks it), so refusing here is the one place that can
     // be sure (Bugbot, PR #1061).
     if (disposed) {
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     // ONE TURN AT A TIME, and the refused one is refused OUT LOUD: its pictures
-    // are already out of the tray by now.
+    // are already out of the tray by now, and so are its WORDS.
     if (sending) {
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     sending = true;
@@ -1317,7 +1324,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const blocks = opts.blocks || [];
     if (!text && !blocks.length) {
       sending = false;
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     clearTrouble();
@@ -1455,13 +1462,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   async function sendFollowUp(text: string, opts: SendOptions = {}): Promise<void> {
     if (disposed) {
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     const gen = logGen;
     const blocks = opts.blocks || [];
     if (!text && !blocks.length) {
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     // Every send carries the app state, a follow-up included: T calls

@@ -58,6 +58,7 @@ export {
   ANN_MODE_PARAM,
   ANN_PARAM,
   createAnnStore,
+  isSendable,
   parseAnnotations,
   serializeAnnotations,
   type AnnStore,

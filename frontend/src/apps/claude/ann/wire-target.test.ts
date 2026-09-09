@@ -53,6 +53,8 @@ function fakeDoc() {
 interface Rig {
   armed: boolean;
   recording: boolean;
+  /** Stopping…/Transcribing… — armed, but the clicks are over. */
+  settling: boolean;
   tool: AnnTool;
   open: boolean;
   opened: Array<{ x: number; y: number; anchor: AnnAnchor }>;
@@ -71,6 +73,7 @@ function deps(state: Rig) {
     api: {
       armed: () => state.armed,
       recording: () => state.recording,
+      settling: () => state.settling,
       tool: () => state.tool,
       composerOpen: () => state.open,
       hl: () => hl,
@@ -101,6 +104,7 @@ function rig(over: Partial<Rig> = {}) {
   const state: Rig = {
     armed: true,
     recording: false,
+    settling: false,
     tool: "element",
     open: false,
     opened: [],
@@ -181,6 +185,79 @@ describe("gating on the mode", () => {
     r.fire("click", { target: child(), preventDefault: () => (prevented = true), stopPropagation: () => {} });
     expect(prevented).toBe(false);
     expect(r.state.opened).toHaveLength(0);
+  });
+
+  test("a click through the SETTLE is the app's own too (Bugbot, PR #1074)", () => {
+    // `armed()` stays true through Stopping…/Transcribing… — the transcription
+    // belongs to this chat and holds the nav lock — while `recording()` is
+    // already false. Read as Comment mode, the click was BOTH swallowed and
+    // answered with a composer: the app lost the click and a card opened under
+    // a bar that is hidden, in a state whose own round is already closed.
+    const r = rig({ settling: true });
+    let prevented = false;
+    let stopped = false;
+    r.fire("click", {
+      target: child(),
+      clientX: 5,
+      clientY: 5,
+      altKey: false,
+      preventDefault: () => (prevented = true),
+      stopPropagation: () => (stopped = true),
+    });
+    expect(prevented).toBe(false);
+    expect(stopped).toBe(false);
+    expect(r.state.opened).toHaveLength(0);
+    // Nor is it a walkthrough mark: the recording is over.
+    expect(r.state.marked).toHaveLength(0);
+    expect(r.state.markedPoints).toHaveLength(0);
+  });
+
+  test("the POINTER's own events pass through the settle as well", () => {
+    // The swallow that beats the click (a slider setting itself from the
+    // pointer): gated on the same reading, or a drag through Transcribing…
+    // would still be eaten with nothing to show for it.
+    const r = rig({ settling: true });
+    let prevented = 0;
+    const ev = () => ({
+      target: child(),
+      preventDefault: () => (prevented += 1),
+      stopPropagation: () => {},
+    });
+    r.fire("pointerdown", ev());
+    r.fire("mousedown", ev());
+    expect(prevented).toBe(0);
+  });
+
+  test("the settle takes the CROSSHAIR off the app, and leaves the dismissal", () => {
+    const r = rig({ settling: true, tool: "point", open: true });
+    r.fire("mousemove", { target: child(), clientX: 5, clientY: 5, altKey: false });
+    expect(r.root.style.cursor).toBe("");
+    // A composer left open by the arm still closes on a click outside it — that
+    // is ours to do whichever way the mode reads, and only the SWALLOW moved.
+    r.fire("mousedown", { target: child(), preventDefault: () => {}, stopPropagation: () => {} });
+    expect(r.state.closes).toBe(1);
+  });
+
+  test("a caller with no `settling` seam gets the old reading", () => {
+    // Optional dep: the hook wires it, and a bare integrator still swallows.
+    const f = fakeDoc();
+    const state: Rig = {
+      armed: true, recording: false, settling: false, tool: "element", open: false,
+      opened: [], marked: [], markedPoints: [], closes: 0, renders: 0, escapes: 0, hlDisplay: "",
+    };
+    const { api } = deps(state);
+    const { settling: _drop, ...bare } = api;
+    wireTarget(f.doc, bare);
+    let prevented = false;
+    f.fire("click", {
+      target: child(),
+      clientX: 1,
+      clientY: 1,
+      altKey: false,
+      preventDefault: () => (prevented = true),
+      stopPropagation: () => {},
+    });
+    expect(prevented).toBe(true);
   });
 
   test("armed, EVERY click is swallowed — buttons and links included", () => {

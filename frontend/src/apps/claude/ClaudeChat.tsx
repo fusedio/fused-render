@@ -50,6 +50,7 @@ import {
   AnnPins,
   AnnPopover,
   createRecorder,
+  isSendable,
   recClockText,
   RecControls,
   transcribe,
@@ -100,6 +101,7 @@ import {
   TroubleView,
   ATTACH_API,
   mergeSendOptions,
+  sendBlocks,
   useAttachments,
   useFitStrip,
   useComposerDefaults,
@@ -647,14 +649,33 @@ function ChatBody(props: ChatBodyProps) {
    *  reads it in the very tick it calls `onSend` — before React can re-render
    *  with a new prop (`dispatchSend`). */
   const sendBusy = useRef(false);
+  /** WHICH send holds the latch, by `SendOptions.sendId`. A release is decided
+   *  long after it was armed — at the end of a turn, or by a status the store
+   *  reports — and unowned, one send's release would open the door in the
+   *  middle of another send's capture window. */
+  const sendHolder = useRef("");
+  /** The send that has been TAKEN but whose run is not live yet: the window the
+   *  status effect below closes (`dispatchSend`). */
+  const liveWait = useRef("");
   /** The same fact as state, for the send button's `disabled`. */
   const [sendLocked, setSendLocked] = useState(false);
-  const releaseSend = useCallback(() => {
+  const releaseSend = useCallback((id: string) => {
+    if (sendHolder.current !== id) return;
+    sendHolder.current = "";
+    liveWait.current = "";
     sendBusy.current = false;
     setSendLocked(false);
   }, []);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
+  /** Words that have nowhere else to be go back in the BOX — the follow-up the
+   *  CLI never delivered (`onStranded`) and a send the controller refused
+   *  before it ever reached `addUser` both land here. */
+  const strand = useCallback((text: string) => {
+    if (!text) return;
+    strandSeq.current += 1;
+    setStranded({ text, seq: strandSeq.current });
+  }, []);
 
   // One collapse policy per MOUNT, not per module: six compact mounts on the
   // cards wall share this module and their chip keys collide by construction
@@ -674,12 +695,7 @@ function ChatBody(props: ChatBodyProps) {
         onActivity: stampChatActivity,
         // Follow-ups the CLI never delivered come BACK to the box they were
         // typed in rather than being dropped (`still_queued`, T:15911).
-        onStranded: (texts) => {
-          const text = texts.filter(Boolean).join("\n");
-          if (!text) return;
-          strandSeq.current += 1;
-          setStranded({ text, seq: strandSeq.current });
-        },
+        onStranded: (texts) => strand(texts.filter(Boolean).join("\n")),
         // THE PUSH CHANNEL. Read at SEND time from the watcher, which is the
         // same object the pull channel answers through — `blockForSend` does
         // push → offload → block, in T's order (T:16483, 5177-5218). Gated on
@@ -706,7 +722,15 @@ function ChatBody(props: ChatBodyProps) {
         // The agent saw none of it, so the pictures come back to the tray —
         // never revoked on this road, because those very thumbnails are what the
         // returned chips show (T:16693-16720).
-        onSendReturned: ({ attachments, sendId }) => {
+        onSendReturned: ({ attachments, sendId, text, refused }) => {
+          // A REFUSED SEND OWES THE WORDS BACK. The composer cleared its box on
+          // the keystroke and the controller turned the message away before it
+          // ever reached `addUser`, so there is no bubble and no queue entry
+          // holding them: unless they come back to the box they are simply
+          // gone (Bugbot, PR #1074). The latch below makes this window hard to
+          // reach from the composer; ✓ Done and the walkthrough share the seat,
+          // and a refusal must never cost the user a sentence.
+          if (refused) strand(text);
           // T:16068 — THE ROLL-BACK SIGNAL, and it NAMES ITS SEND: the agent saw
           // none of THAT message, which is what its notes' `sent = 0` and its
           // overview's revoke hang off. It used to be a counter, and a counter
@@ -722,7 +746,7 @@ function ChatBody(props: ChatBodyProps) {
           attachBack.current?.(back);
         },
       }),
-    [agentDir, file, params],
+    [agentDir, file, params, strand],
   );
   useEffect(() => () => controller.dispose(), [controller]);
 
@@ -731,6 +755,28 @@ function ChatBody(props: ChatBodyProps) {
     controller.getState,
     controller.getState,
   );
+
+  /**
+   * THE DOOR OPENS WHEN THE RUN IS LIVE, not when the controller took the
+   * message.
+   *
+   * `sendMessage` sets its own `sending` gate before its first await and holds
+   * it for the whole turn, but the STATUS the composer reads stays `idle` until
+   * `pollLoop` reports — one `start` round-trip away. A line typed inside that
+   * window read as "no run yet", so the composer sent it as a fresh message
+   * rather than a follow-up: the controller refused it out loud, and the
+   * refusal took the optimistic bubble down with it. The words were nowhere
+   * (Bugbot, PR #1074).
+   *
+   * So the latch stays shut across the start window and lifts here, on the
+   * first status that is not `idle` — from which point the composer routes the
+   * same keystroke to `sendFollowUp`, which the run can actually take.
+   * `dispatchSend`'s own release is the other end: a send that never went live
+   * (refused, or a `start` that failed) must not latch the box for ever.
+   */
+  useEffect(() => {
+    if (liveWait.current && state.status !== "idle") releaseSend(liveWait.current);
+  }, [state.status, releaseSend]);
 
   // ── the attachments this message will carry (PR2, inventory 03) ────────────
   //
@@ -1530,7 +1576,16 @@ function ChatBody(props: ChatBodyProps) {
       // before the tray is emptied (T:16549).
       const notes = await takeAnnotations();
       const mine = takeAttachments(notes.overview ? [notes.overview] : []);
-      const merged = mergeSendOptions({ ...opts, ...(notes.block ? { blocks: [notes.block] } : {}) }, mine.opts);
+      // THE CALLER'S BLOCKS ARE NOT OURS TO DROP. `{ ...opts, blocks: [ours] }`
+      // reads as "add the notes" and is a REPLACEMENT: any block the caller
+      // brought — PR4's `<live-app-state>`, a walkthrough's own — vanished
+      // silently, the message still going out and succeeding without it. Which
+      // is the very bug `mergeSendOptions` exists to prevent, re-introduced one
+      // line above the call to it (whole-stack review, PR #1074). ORDERED
+      // union, through the same `composeBlocks`, so the wire reads state,
+      // pane-shot, annotations whoever emitted which.
+      const blocks = sendBlocks(opts.blocks, notes.block);
+      const merged = mergeSendOptions({ ...opts, ...(blocks.length ? { blocks } : {}) }, mine.opts);
       const key = mine.items.length ? merged.attachments : undefined;
       if (key) inFlight.current.set(key, mine.items);
       // T:16064 — the send has taken them. Stamped BEFORE the request, because
@@ -1597,10 +1652,15 @@ function ChatBody(props: ChatBodyProps) {
    * PR #1074). Three things answer it, and all three are needed:
    *
    *   * THE LATCH (`sendBusy`, a ref the composer reads in the same tick it
-   *     calls in here) closes the door from the first keystroke until the
-   *     controller has TAKEN the message. Taken is when `sendMessage` hands
-   *     back its promise, not when that promise settles: it awaits the whole
-   *     turn (`pollLoop`), and a follow-up has to be typeable inside one.
+   *     calls in here) closes the door from the first keystroke until THE RUN
+   *     IS LIVE — the first status that is not `idle`, not the moment
+   *     `sendMessage` hands back its promise. Taken-but-idle is a real window
+   *     (one `start` round-trip), and a line typed inside it read as "no run
+   *     yet": the composer sent it as a fresh message, the controller refused
+   *     it, and the refusal dropped the bubble. Once the run IS live the door
+   *     is open and the same keystroke goes to `sendFollowUp`, which is why the
+   *     latch cannot simply be held for the whole turn. A send that never goes
+   *     live releases it when its promise settles instead.
    *   * THE HAND-BACK IS KEYED (`sendId`), so "a send came back" can never be
    *     mistaken for "my send came back" again.
    *   * THE BUBBLE GOES UP FIRST (`postOptimisticUser`) and the controller's
@@ -1616,6 +1676,7 @@ function ChatBody(props: ChatBodyProps) {
       sendBusy.current = true;
       setSendLocked(true);
       const sendId = `s${++sendSeq.current}`;
+      sendHolder.current = sendId;
       // A WORDLESS send (notes or pictures alone) posts no optimistic row: its
       // bubble is the markers `stripBlocks` builds out of the composed wire,
       // and only the controller can write those.
@@ -1635,10 +1696,15 @@ function ChatBody(props: ChatBodyProps) {
               ? controller.sendFollowUp(text, wire)
               : controller.sendMessage(text, wire);
             // The controller has taken it: its own `sending` gate is set and
-            // its bubble is up, both before its first await. The door opens
-            // here, and the turn is the composer's Stop button from now on.
+            // its bubble is up, both before its first await. But TAKEN IS NOT
+            // LIVE — the status the composer routes on stays `idle` until
+            // `pollLoop` reports, and a line typed in between would be sent as
+            // a fresh message the controller then refuses. So the door stays
+            // shut until the run is live (the status effect above); a follow-up
+            // dispatched into a run that already is opens it right here.
             taken = true;
-            releaseSend();
+            if (controller.getState().status === "idle") liveWait.current = sendId;
+            else releaseSend(sendId);
             await sent;
           } catch {
             ok = false;
@@ -1646,12 +1712,14 @@ function ChatBody(props: ChatBodyProps) {
           // MY send, asked of my own id — and spent, whichever way it went.
           done(ok && !returnedSends.current.delete(sendId));
         } finally {
-          // `beginSend` itself threw, so nothing was ever dispatched: the row
-          // has nothing behind it and the door is still shut.
-          if (!taken) {
-            if (optimisticKey) controller.dropOptimisticUser(optimisticKey);
-            releaseSend();
-          }
+          // THE OTHER END OF THE LATCH. `beginSend` itself threw, so nothing
+          // was ever dispatched (the row has nothing behind it) — or the send
+          // is over: a turn that ran to its end, and equally one the controller
+          // refused or a `start` that failed, neither of which ever reported a
+          // live status for the effect above to read. Owned by `sendId`, so a
+          // turn ending cannot open the door on a LATER send's window.
+          if (!taken && optimisticKey) controller.dropOptimisticUser(optimisticKey);
+          releaseSend(sendId);
         }
       })();
     },
@@ -1916,14 +1984,12 @@ function ChatBody(props: ChatBodyProps) {
       // Pictures — and NOTES — alone are sendable, with no words at all
       // (T:17903, and ✓ Done's whole gesture: a round of comments IS the
       // message).
-      // ...and the SAME predicate `overviewForSend` filters on
-      // (`useAnnotations.overviewForSend`): a chip with neither words nor a
-      // recording stamp is not a sendable note, so Send must not light up for
-      // one — a single click in Comment mode makes exactly that chip, and the
-      // two answers used to disagree about it.
-      hasAttachments:
-        attach.items.length > 0 ||
-        ann.chips.some((c) => !!c.note.content || typeof c.note.t === "number"),
+      // ...and the ONE predicate the send path and ✓ Done read as well
+      // (`ann/store.isSendable`): a chip with neither words nor a recording
+      // stamp is not a sendable note, so Send must not light up for one — a
+      // single click in Comment mode makes exactly that chip, and the three
+      // answers used to disagree about it.
+      hasAttachments: attach.items.length > 0 || ann.chips.some((c) => isSendable(c.note)),
       // ... but not while one of them is still on its way: `take()` leaves a
       // `pending` chip in the tray, so a send fired now would go out WITHOUT
       // the files whose chips made it sendable (Bugbot, PR #1064).

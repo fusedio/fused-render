@@ -52,6 +52,8 @@ let startError = "";
 let appEntry: string | null = "/w/p/index.html";
 /** `GET /api/capture`'s `sources`, so a test can be a machine with no mic. */
 let audioSource: Record<string, unknown> = { audio: { available: true, reason: null } };
+/** Set by `heldStart()` — the `start` request, parked until the test says go. */
+let holdStart: Promise<void> | null = null;
 
 const realFetch = globalThis.fetch;
 
@@ -94,6 +96,10 @@ function stubFetch(): void {
       const action = String(body.params?.action ?? "");
       runs.push({ action, params: body.params ?? {} });
       if (action === "start") {
+        // HOLDABLE, so a test can act inside the window between "the controller
+        // took the message" and "the run is live" — where `status` is still
+        // idle and PR #1074's lost follow-up lived.
+        if (holdStart) return holdStart.then(() => jsonRes({ ok: true, result: { run_id: "r1" } }));
         return jsonRes({ ok: true, result: startError ? { error: startError } : { run_id: "r1" } });
       }
       if (action === "poll") {
@@ -163,6 +169,7 @@ beforeEach(() => {
   audioSource = { audio: { available: true, reason: null } };
   overviews = 0;
   revoked = [];
+  holdStart = null;
   keydowns.length = 0;
   asFound = { ...API };
   resetAgentDirCacheForTests();
@@ -807,6 +814,11 @@ function typeInBox(r: Chat, value: string): Promise<void> {
   });
 }
 
+/** What is in the composer's box right now. */
+function boxValue(r: Chat): string {
+  return String(r.root.findByType("textarea").props.value ?? "");
+}
+
 function pressEnterInBox(r: Chat): Promise<void> {
   return act(async () => {
     r.root
@@ -898,4 +910,83 @@ test("a send that never launched takes its optimistic bubble back down", async (
   // And the round is pending again, exactly as the wordless road already was.
   expect(annChips(r)).toHaveLength(1);
   expect(annotationsForTests()!.annotations[0]!.sent).toBe(0);
+});
+
+// ---- the start window: taken, but not yet live ----------------------------
+
+/** A `start` that will not answer until the test says so. */
+function heldStart(): () => void {
+  let open!: () => void;
+  holdStart = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return open;
+}
+
+test("a line typed while the run is only STARTING stays in the box, and sends after", async () => {
+  // `sendMessage` sets its own `sending` gate before its first await and holds
+  // it for the whole turn, but the STATUS the composer routes on stays `idle`
+  // until `pollLoop` reports — one `start` round-trip away. The door used to
+  // open the moment the controller took the message, so a line typed inside
+  // that window read as "no run yet": the composer sent it as a FRESH message,
+  // the controller refused it out loud, and the refusal took the optimistic
+  // bubble down with it. The words were nowhere (Bugbot, PR #1074).
+  const open = heldStart();
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle();
+
+  // The message is out and the run is NOT live yet: this is the window.
+  expect(started()).toHaveLength(1);
+  expect(boxValue(r)).toBe("");
+
+  // A follow-up typed inside it. THE DOOR IS SHUT — said out loud, on the very
+  // button: the run is not live, so this is not yet a follow-up the controller
+  // could take, and the seat that would refuse it does not pretend otherwise.
+  await typeInBox(r, "second message");
+  const sendBtn = () =>
+    r.root.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === "Send")[0]!;
+  expect(sendBtn().props.disabled).toBe(true);
+
+  await pressEnterInBox(r);
+
+  // Refused by the latch — so it costs the user nothing: the words are still in
+  // the box, and no second `start` was spawned for the controller to refuse.
+  expect(boxValue(r)).toBe("second message");
+  expect(started()).toHaveLength(1);
+  // ONE bubble, the first message's; the second is still a draft.
+  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual(["first message"]);
+
+  await act(async () => open());
+  await settle(30);
+
+  // The turn is over, the door is open, and the words that were held are still
+  // there to send — never lost.
+  expect(boxValue(r)).toBe("second message");
+  await pressEnterInBox(r);
+  await settle(30);
+  expect(started()).toHaveLength(2);
+  expect(started()[1]!.params.message).toContain("second message");
+});
+
+test("the run going live opens the door without waiting for the turn to end", async () => {
+  // The latch cannot simply be held for the whole turn: a follow-up has to be
+  // sendable inside one, and the composer routes it to `sendFollowUp` as soon
+  // as the status says the run is live.
+  const { r } = await mountChat();
+  await typeInBox(r, "first message");
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(30);
+  // The run ran to its end, so the door is open and the box is free again.
+  expect(started()).toHaveLength(1);
+  await typeInBox(r, "a second one");
+  await pressEnterInBox(r);
+  await settle(30);
+  expect(boxValue(r)).toBe("");
+  expect(started()).toHaveLength(2);
 });

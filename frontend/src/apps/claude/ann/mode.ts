@@ -10,7 +10,7 @@
 // default, the `annmode` param, the hosted re-arm when a target appears, and
 // the app menu's exit action), which is why `capable()` is enforced HERE rather
 // than at each of them: a check at each is a check the seventh one forgets.
-import type { AnnStore } from "./store";
+import { isSendable, type AnnStore } from "./store";
 import type { AnnMode, AnnRecorder } from "./types";
 
 export interface AnnModeDeps {
@@ -261,7 +261,12 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
         // so this file and T's read the same test.
         const typed = deps.composerText ? deps.composerText().trim() !== "" : true;
         if (deps.composerOpen() && typed) await deps.commitDraft();
-        const pending = deps.store.list().some((a) => a.content && !a.sent);
+        // THE SAME RULE THE SEND PATH AND THE BUTTON READ (`isSendable`): a
+        // WORDLESS note stamped by a walkthrough click is a message too, and
+        // asking only for `content` here made ✓ Done disarm a round of them
+        // and leave them sitting unsent — while the Send affordance beside it
+        // said they were sendable (Bugbot, PR #1074).
+        const pending = deps.store.list().some((a) => isSendable(a) && !a.sent);
         if (pending && deps.canSend()) deps.autoSubmit();
         set(false);
       } finally {

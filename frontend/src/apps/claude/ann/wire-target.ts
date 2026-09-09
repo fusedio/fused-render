@@ -25,6 +25,18 @@ export interface WireTargetDeps {
   /** A walkthrough is live: a click IS the note, immediately, with no composer —
    *  the whole point of talking instead of typing is that nothing grabs focus. */
   recording(): boolean;
+  /**
+   * THE MODE IS ARMED BUT THE CLICKS ARE OVER — `settling`/`transcribing`, the
+   * "Stopping…"/"Transcribing…" seat. `armed()` is still true (the
+   * transcription belongs to this chat and holds the nav lock) while
+   * `recording()` is already false, so every handler below used to read this
+   * as Comment mode: a click in the app was swallowed AND opened a composer,
+   * over a bar that is hidden and a round that is already closed (Bugbot,
+   * PR #1074).
+   *
+   * Optional: a caller that cannot see the phase gets the old reading.
+   */
+  settling?(): boolean;
   tool(): AnnTool;
   composerOpen(): boolean;
   /** The ring, in whichever layer is current. Re-read per event: hosted it lives
@@ -80,6 +92,14 @@ export function wireTarget(doc: Document, deps: WireTargetDeps): () => void {
   };
 
   /**
+   * ARMED, AND STILL TAKING CLICKS. The gate every handler reads instead of
+   * `armed()`: through the settle the mode is armed but the gesture is over, so
+   * a click there belongs to the APP again — passed through, un-swallowed, and
+   * opening nothing (Bugbot, PR #1074).
+   */
+  const live = (): boolean => deps.armed() && !(deps.settling?.() ?? false);
+
+  /**
    * THE AIM SIGNAL. While the click would pin a SPOT — the Point tool is in hand,
    * or Alt overrides the Element tool for this click — the cursor is a crosshair
    * and the ring goes away; the pointer says what the click will do before it
@@ -120,7 +140,7 @@ export function wireTarget(doc: Document, deps: WireTargetDeps): () => void {
    * model of what the platform does on a pointerdown.
    */
   const swallowPointer = (e: Event): void => {
-    if (!deps.armed()) return;
+    if (!live()) return;
     if (ownNode(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -149,7 +169,7 @@ export function wireTarget(doc: Document, deps: WireTargetDeps): () => void {
   const onKeyUp = (e: Event) => {
     const ke = e as KeyboardEvent;
     if (ke.key !== "Alt") return;
-    const aimPoint = deps.armed() && deps.tool() === "point";
+    const aimPoint = live() && deps.tool() === "point";
     aimCursor(aimPoint);
     // The ring Alt brought back (the element override on the Point tool) must go
     // with the key: leaving it until the next mousemove has the crosshair and the
@@ -163,7 +183,7 @@ export function wireTarget(doc: Document, deps: WireTargetDeps): () => void {
   // ── 5. mousemove: the hover ring follows what the click would take ────────
   const onMouseMove = (e: Event) => {
     const me = e as MouseEvent;
-    if (!deps.armed()) {
+    if (!live()) {
       aimCursor(false);
       return;
     }
@@ -195,7 +215,7 @@ export function wireTarget(doc: Document, deps: WireTargetDeps): () => void {
   // controls WITHOUT triggering them. Toggle off to use the app normally.
   const onClick = (e: Event) => {
     const me = e as MouseEvent;
-    if (!deps.armed()) return;
+    if (!live()) return;
     // A pin of ours, hosted, is the one thing in this document that must reach
     // its own handler: swallowing it here would eat the click that reopens the
     // note's editor and then anchor a NEW note to the pin marking the old one.

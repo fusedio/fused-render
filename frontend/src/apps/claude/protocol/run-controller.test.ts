@@ -98,7 +98,7 @@ function makeController(
   const stranded: string[][] = [];
   /** Every send that reported itself NOT SENT — the road the composer takes its
    *  words and its pictures back on. */
-  const returned: { text: string; attachments?: unknown[] }[] = [];
+  const returned: { text: string; attachments?: unknown[]; refused?: boolean }[] = [];
   const controller = createChatController({
     ...over,
     file: "/proj/app.py",
@@ -309,11 +309,28 @@ describe("start → poll → done", () => {
     await controller.sendMessage("two", { attachments: shots });
     // Refused, and refused OUT LOUD: the same array the caller handed down, so
     // the map it parked the Attachments under can be unlocked by identity.
-    expect(returned).toEqual([{ text: "two", attachments: shots }]);
+    //
+    // `refused` is the OTHER half of what the caller owes back. This road turned
+    // the message away before `addUser` ever ran, so those words are in no
+    // bubble, no queue and no composer (the box cleared on the keystroke): the
+    // flag is what tells the caller to put them back rather than let them
+    // vanish (Bugbot, PR #1074).
+    expect(returned).toEqual([{ text: "two", attachments: shots, refused: true }]);
     release();
     await first;
     expect(agent.of("start").length).toBe(1);
     expect(users(controller).map((t) => t.text)).toEqual(["one"]);
+  });
+
+  test("a send that REACHED a bubble and then failed is not `refused`", async () => {
+    // The distinction the flag draws: `start` answering `{error}` left the
+    // failure in the transcript, which is where the reader stays to read it —
+    // so the words must NOT also reappear in the box, or a failed send reads as
+    // two messages. Only a pre-flight refusal owes them back.
+    const { controller, returned } = makeController({ start: () => ({ error: "no session" }) });
+    await controller.sendMessage("this one failed");
+    expect(returned).toEqual([{ text: "this one failed" }]);
+    expect(users(controller)).toEqual([]);
   });
 
   test("a send into a DISPOSED controller hands its pictures back", async () => {
@@ -326,8 +343,8 @@ describe("start → poll → done", () => {
     // Both roads, because both refuse before anything is attempted — and on an
     // unmount the hand-back is what releases the blob URLs.
     expect(returned).toEqual([
-      { text: "hi", attachments: shots },
-      { text: "also this", attachments: shots },
+      { text: "hi", attachments: shots, refused: true },
+      { text: "also this", attachments: shots, refused: true },
     ]);
   });
 
