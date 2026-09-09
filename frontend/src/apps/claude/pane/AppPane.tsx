@@ -196,6 +196,47 @@ export function usePaneState(opts: UsePaneStateOptions): PaneState {
   live.current = opts;
   const ownFlag = useRef(false);
 
+  // THE STATE DESCRIBES ONE TARGET, and a hop to another must not leave the
+  // previous one's answers standing while the new stat is out (Bugbot, PR
+  // #1061). `gate.current.promise` is already per-target, so anything that
+  // AWAITS `ready` was always correct; `status`, `decision` and `noPane` are
+  // read SYNCHRONOUSLY, and holding them on the old file cost two things:
+  //
+  //  - the pane went on framing the OLD file's preview (`decision.src`) until
+  //    the round trip landed — for a file hop, someone else's document under
+  //    this conversation's header; and
+  //  - `has_pane` answered TRUE off a stale `status: "ready"`, which bypasses
+  //    the `"resolving" → null` mitigation below. That guard only ever
+  //    protected the FIRST target — the one whose state STARTS OUT resolving —
+  //    so the race it exists to prevent came back on every hop, and with it the
+  //    price the comment there spells out: a session spawned with no
+  //    `mcp__fused_approvals__app_state` and no way back.
+  //
+  // Hosts that remount per file never saw this (the explorer's `ChatMount` is
+  // keyed, and PreviewSidebar remounts on every hop); one that swaps `file` in
+  // place — `agentDir` already cached, so the tree is not rebuilt either — does.
+  //
+  // RESET IN THE RENDER that first sees the new `file`, not in the effect: an
+  // effect lands after a paint, and that paint is exactly the stale frame.
+  const stateFor = useRef(file);
+  if (stateFor.current !== file) {
+    stateFor.current = file;
+    // The latch RE-ARMS with the target. It exists to keep ONE target's
+    // no-pane steps from running twice (CHAT_ONLY enters before the stat and
+    // the decision reaches the same branch after), never to keep the next
+    // target from entering no-pane at all — left set, a hop from a paneless
+    // target to another paneless one would skip the five steps entirely.
+    (opts.noPaneFlag ?? ownFlag).current = false;
+    setState({
+      status: noPaneTarget ? "none" : "resolving",
+      decision: null,
+      error: null,
+      noPane: noPaneTarget,
+      noun: "",
+      paneNoun: "preview",
+    });
+  }
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
