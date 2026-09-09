@@ -478,7 +478,7 @@
       <div id="georesults"></div>
     </div>
 
-    <div id="attr">Made with <b>fused-render</b> · © OpenStreetMap © CARTO</div>
+    <div id="attr">Made with <b>fused-render</b> · © OpenStreetMap © OpenFreeMap</div>
     <div id="coordpill"><span id="coords">—</span></div>
     <div id="toast" class="hidden"></div>
   </main>
@@ -606,9 +606,13 @@ function rasterStyle(tiles, attribution, maxzoom) {
   return { version: 8, sources: { base: { type: "raster", tiles, tileSize: 256, attribution, maxzoom } },
            layers: [{ id: "base", type: "raster", source: "base" }] };
 }
+// OpenFreeMap (openfreemap.org) — free, no API key, no usage cap. Vector
+// tiles rather than CARTO's raster PNGs, which require a paid plan past
+// CARTO's free tier. maplibregl.Map.style/setStyle both accept a style-JSON
+// URL directly, so these are handed to it as-is rather than fetched here.
 const BASEMAPS = {
-  dark:  rasterStyle(["a","b","c","d"].map(s=>`https://${s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png`), "© OpenStreetMap © CARTO", 20),
-  light: rasterStyle(["a","b","c","d"].map(s=>`https://${s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png`), "© OpenStreetMap © CARTO", 20),
+  dark:  "https://tiles.openfreemap.org/styles/dark",
+  light: "https://tiles.openfreemap.org/styles/positron",
   sat:   rasterStyle(["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], "Esri, Maxar, Earthstar Geographics", 18),
 };
 
