@@ -129,6 +129,11 @@ VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
 #: answers, and a shared id would have the second overwrite the first's row
 #: mid-stream.
 TEXT_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-text:"
+#: `ai/benchmark.py`'s own row prefix, minted here rather than as an inline
+#: literal there — both of its call sites (the watched row and the unwatched
+#: fallback id) use this, and `_job_page` below reads it, so the mapping from
+#: a benchmark job to its destination has one owner.
+BENCHMARK_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-benchmark-"
 
 #: One transcription in flight at a time, decided HERE rather than left to the
 #: worker's `GENERATE_LOCK`.
@@ -895,10 +900,29 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
 # --------------------------------------------------------------- bring-up flow
 
 
+def _job_page(job: str) -> str:
+    """Where clicking this row goes, once it reaches Notifications (SPEC-
+    actionable-notifications.md's producer table). Only `sys:ai-model:*`
+    rows have a settled destination — the Local models page, where a load in
+    progress is shown — and `sys:ai-benchmark-*` rows (`ai/benchmark.py`,
+    which reports through this same `_report`) go to the Benchmark page.
+    Every other prefix family this module reports through (`ai-image:`,
+    `ai-transcribe:`, `ai-video:`, `ai-text:`) returns "": the spec names
+    only those two rows, and `upsert()` only writes `page` when it is
+    truthy, so "" for the rest is a no-op rather than a placeholder waiting
+    to be filled in.
+    """
+    if job.startswith(JOB_PREFIX):
+        return "/ai-models/local"
+    if job.startswith(BENCHMARK_JOB_PREFIX):
+        return "/ai-models/benchmark"
+    return ""
+
+
 def _report(job: str, **fields) -> None:
     """One progress tick, best-effort. Reporting must never break the load."""
     try:
-        jobs.upsert({"id": job, **fields}, server=True)
+        jobs.upsert({"id": job, **fields}, page=_job_page(job), server=True)
     except (jobs.JobError, ValueError):
         pass
 

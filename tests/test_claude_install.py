@@ -515,3 +515,14 @@ def test_a_worker_that_dies_unexpectedly_frees_the_slot(monkeypatch):
     assert rec["state"] == "error"
     assert "stopped unexpectedly" in rec["error"]
     assert claude_install.running() is False
+
+
+def test_the_reported_job_points_at_the_claude_config_page(monkeypatch):
+    """SPEC-actionable-notifications.md: clicking this row in Notifications
+    has to land on the Claude Code settings page, not just say who raised
+    it."""
+    captured = {}
+    monkeypatch.setattr(claude_install.jobs, "upsert",
+                        lambda body, **kw: captured.update(kw))
+    _run_install(monkeypatch, ["installed 2.1.246\n"])
+    assert captured.get("page") == "/claude-config"
