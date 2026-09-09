@@ -19,33 +19,39 @@ import {
 
 const file = (path: string) => ({ path, parentDir: path.slice(0, path.lastIndexOf("/")) });
 
-// Where a drag may start. The whole rule, and it has ONE input — and the input
-// is a SNAPSHOT: the selection as it stood BEFORE the press, never as it stands
-// once the press has had its effect.
+// Where a drag may start. The item is its icon+name handle; the rest of the
+// row — dead space, size, modified — is marquee ground, same as the
+// background. `rowWasSelected` is still a SNAPSHOT: the selection as it stood
+// BEFORE the press, never as it stands once the press has had its effect.
 describe("pressStartsDrag", () => {
+  const press = (p: Partial<{ onHandle: boolean; rowWasSelected: boolean; modified: boolean }>) =>
+    pressStartsDrag({ onHandle: false, rowWasSelected: false, modified: false, ...p });
+
+  test("a press on the icon+name handle starts a move-drag, selected or not", () => {
+    expect(press({ onHandle: true })).toBe(true);
+    expect(press({ onHandle: true, rowWasSelected: true })).toBe(true);
+  });
+
   test("a press on an already-selected row starts a move-drag", () => {
-    expect(pressStartsDrag({ rowWasSelected: true })).toBe(true);
+    expect(press({ rowWasSelected: true })).toBe(true);
   });
 
-  test("a press on an unselected row starts no drag, wherever it lands", () => {
-    // Including the name and icon, which used to be a permanent drag handle.
-    // That handle is why a drag started across rows grabbed one file and moved
-    // it instead of selecting the rows it crossed: the same pixels cannot serve
-    // a move-drag and a sweep, and drag-to-select is the commoner gesture by
-    // far. The cost is that moving a single unselected file is two gestures now
-    // — click it, then drag it.
-    expect(pressStartsDrag({ rowWasSelected: false })).toBe(false);
+  test("a press on an unselected row's dead space, size or modified cell sweeps", () => {
+    expect(press({})).toBe(false);
   });
 
-  test("the rule is exactly the sweep rule inverted", () => {
-    // useMarquee calls this same function to find where a SWEEP may start, so
-    // the two gestures cannot both claim a pixel and cannot drift apart. If
-    // this ever needs a second input, that property is what to preserve.
-    for (const rowWasSelected of [true, false]) {
-      const drags = pressStartsDrag({ rowWasSelected });
-      expect(drags).toBe(rowWasSelected);
-      expect(!drags).toBe(!rowWasSelected);
-    }
+  test("the background is never a drag, whatever is selected", () => {
+    // No row pressed at all: neither onHandle nor rowWasSelected can be true.
+    expect(press({})).toBe(false);
+  });
+
+  test("a MODIFIED press never drags, even from the handle or a selected row", () => {
+    // Shift/Mod mean "change my selection" — extend the range, toggle this
+    // row — and that always gets the additive sweep, never a move: a modifier
+    // that also picked up files would be two gestures on one keychord.
+    expect(press({ onHandle: true, modified: true })).toBe(false);
+    expect(press({ rowWasSelected: true, modified: true })).toBe(false);
+    expect(press({ onHandle: true, rowWasSelected: true, modified: true })).toBe(false);
   });
 });
 
@@ -58,12 +64,16 @@ describe("pressStartsDrag", () => {
 // the caller (useMarquee, in the capture phase of pointerdown) is what makes
 // the value a snapshot, and this is what says why it must be.
 describe("the snapshot is what decides, not the live selection", () => {
-  // The gesture as the arbiter sees it: the row pressed, and the selection as
-  // it stood before the press.
-  const gesture = (path: string, selectionBefore: string[]) =>
-    pressStartsDrag({ rowWasSelected: selectionBefore.includes(path) });
+  // The gesture as the arbiter sees it: the row pressed, whether the press
+  // landed on its handle, and the selection as it stood before the press.
+  const gesture = (path: string, selectionBefore: string[], onHandle = false) =>
+    pressStartsDrag({
+      onHandle,
+      rowWasSelected: selectionBefore.includes(path),
+      modified: false,
+    });
 
-  test("pressing an UNSELECTED row sweeps, even though the press selects it", () => {
+  test("pressing an UNSELECTED row's dead space sweeps, even though the press selects it", () => {
     // The bug, stated as a test. Live, the row is selected a moment after the
     // press and every reading from then on says "move-drag" — which is what a
     // `draggable` attribute is, evaluated when the movement begins rather than
@@ -72,12 +82,25 @@ describe("the snapshot is what decides, not the live selection", () => {
     const before: string[] = [];
     expect(gesture("/w/notes.md", before)).toBe(false);
     const afterThePress = ["/w/notes.md"];
-    expect(pressStartsDrag({ rowWasSelected: afterThePress.includes("/w/notes.md") })).toBe(true);
+    expect(
+      pressStartsDrag({
+        onHandle: false,
+        rowWasSelected: afterThePress.includes("/w/notes.md"),
+        modified: false,
+      }),
+    ).toBe(true);
+  });
+
+  test("pressing an UNSELECTED row's handle moves just that row", () => {
+    // The handle needs no snapshot at all: it is a fact about the DOM at
+    // pointerdown, not about a selection the press itself could change.
+    expect(gesture("/w/notes.md", [], true)).toBe(true);
   });
 
   test("pressing a row that WAS selected moves it", () => {
     // Select-then-drag: the second press on the same row is the one that moves
-    // it, and this is the only way a move-drag ever begins.
+    // it, and this is one of two ways a move-drag can begin (the other is a
+    // handle press, which needs no prior selection at all).
     expect(gesture("/w/notes.md", ["/w/notes.md"])).toBe(true);
   });
 
@@ -90,18 +113,21 @@ describe("the snapshot is what decides, not the live selection", () => {
     expect(dragPathsFor("/w/b.md", before)).toEqual(before);
   });
 
-  test("pressing OUTSIDE a multi-selection sweeps and does not carry it off", () => {
+  test("pressing OUTSIDE a multi-selection, off the handle, sweeps and does not carry it off", () => {
     // The other half of the same press: an unselected row is not part of what
-    // is selected, so the gesture is a sweep and the old selection is replaced
-    // rather than moved.
+    // is selected, so a dead-space press is a sweep and the old selection is
+    // replaced rather than moved.
     const before = ["/w/a.md", "/w/b.md"];
     expect(gesture("/w/z.md", before)).toBe(false);
   });
 
   test("the background is never a drag, whatever is selected", () => {
-    // No row pressed at all: `rowWasSelected` is false by construction, so the
-    // background always sweeps — including with the whole folder selected.
-    expect(pressStartsDrag({ rowWasSelected: false })).toBe(false);
+    // No row pressed at all: `onHandle` and `rowWasSelected` are false by
+    // construction, so the background always sweeps — including with the
+    // whole folder selected.
+    expect(pressStartsDrag({ onHandle: false, rowWasSelected: false, modified: false })).toBe(
+      false,
+    );
   });
 });
 

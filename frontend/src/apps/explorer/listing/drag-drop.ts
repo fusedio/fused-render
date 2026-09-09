@@ -95,22 +95,31 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
 // --- where a drag may start from ---------------------------------------------
 //
 // The listing has TWO press-and-move gestures over the same pixels, and this is
-// the one rule that separates them. It has exactly one input:
+// the one rule that separates them. The ITEM is its icon+name handle; the rest
+// of the row — the dead space beside the name, the size and modified cells —
+// is marquee ground, same as the background:
 //
-//   ┌──────────────────────────────────┬──────────────────────────────┐
-//   │ press lands on…                  │ press-and-move does…         │
-//   ├──────────────────────────────────┼──────────────────────────────┤
-//   │ a row that WAS ALREADY SELECTED  │ MOVE-DRAG the selection      │
-//   │ any part of an unselected row    │ SWEEP                        │
-//   │ the background                   │ SWEEP                        │
-//   └──────────────────────────────────┴──────────────────────────────┘
+//   ┌────────────────────────────────────────┬──────────────────────────┐
+//   │ press lands on…                        │ press-and-move does…     │
+//   ├────────────────────────────────────────┼──────────────────────────┤
+//   │ the icon+name HANDLE of any row        │ MOVE-DRAG that row       │
+//   │ anywhere inside an ALREADY-SELECTED row│ MOVE-DRAG the selection  │
+//   │ an unselected row's dead space/size/…  │ SWEEP                    │
+//   │ the background                         │ SWEEP                    │
+//   │ any of the above, Shift or Mod held    │ SWEEP, additive          │
+//   └────────────────────────────────────────┴──────────────────────────┘
 //
 // `false` is not "nothing happens": everywhere else SWEEPS, selecting the rows
 // the pointer crosses. useMarquee reads this function BACKWARDS to know where a
 // sweep may start, which is why there is a function at all — one rule read two
 // ways can't disagree with itself, and two gestures can't claim one pixel.
 //
-// THE INPUT IS A SNAPSHOT, AND THAT IS THE WHOLE FIX. `rowWasSelected` is the
+// A MODIFIED press never drags, whatever it lands on. Shift and Mod mean
+// "change my selection" — extend the range, toggle this row — and that request
+// gets the additive sweep, never a move: a modifier that also picked up files
+// would be two very different gestures sharing one keychord.
+//
+// THE SNAPSHOT STILL MATTERS FOR `rowWasSelected`, exactly as before: it is the
 // selection AS IT STOOD BEFORE THIS PRESS, not as it stands while the pointer
 // is moving. The press itself selects the row it lands on, so the live flag is
 // contaminated by the very gesture it is being asked about: read live, EVERY
@@ -120,37 +129,51 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
 // why the native drag API had to go rather than be re-tuned. The snapshot is
 // taken once, in the capture phase of pointerdown, before any handler can
 // change the selection (useMarquee), and the answer never changes mid-gesture.
+// `onHandle` needs no such snapshot: the handle a press lands on is a fact
+// about the DOM at pointerdown, not about state the press itself could change.
 //
-// This used to also make each row's icon-and-name a permanent drag handle, so
-// that a single unselected file could be moved in one gesture. That was wrong
-// in the way the user kept reporting: starting a drag across rows from a name
-// grabbed that one file and moved it instead of selecting the rows swept over.
-// Dragging to select is the far more common gesture and it needs the row's
-// whole width, so the drag source shrank to the one region where nothing
-// competes for the pixel — a row the user has already picked.
+// The icon-and-name handle was removed once and is now back, and the reversal
+// is not a return to the bug that removal fixed. The bug was that EVERY row's
+// entire width doubled as a drag source, so a sweep begun anywhere — including
+// across a name — grabbed the one file under the press and moved it instead of
+// selecting what the pointer crossed. Shrinking the item to its name cell fixes
+// that without giving the handle back up: drag-to-select no longer needs the
+// row's whole width, because it no longer competes with the handle for the
+// SAME pixels, only for the space around them. A sweep can still start from any
+// row's dead space, its size or modified cell, or the background — everywhere
+// the handle is not.
 //
-// The cost is real and worth stating: moving a single unselected file is now
-// TWO gestures, a click to select it and then a drag, where the handle made it
-// one. That is the price of drag-to-select working on rows at all, and it is
-// what select-then-drag has meant in every file manager — you can only drag
-// what you can see is coming with you.
+// The cost is real and worth stating: a drag from the handle of an unselected
+// row moves JUST that row, because the press SELECTS it first (`selectOnly` on
+// pointerdown) before the move-drag reads the selection — so `dragPathsFor`
+// always sees a one-row selection when it is reached this way, and the payload
+// can never disagree with the highlight. Sweeping a range that starts ON a
+// file's name now has to start a few pixels to its right, or from the row
+// above's dead space — Shift+click covers the same ground and always did.
 //
 // Either way, a press that never travels the sweep's 4px slop is neither
 // gesture: it is the press that selects one row (selection's rowPressAction).
 // There is exactly ONE threshold for all three outcomes.
-export function pressStartsDrag(press: { rowWasSelected: boolean }): boolean {
-  return press.rowWasSelected;
+export function pressStartsDrag(press: {
+  onHandle: boolean;
+  rowWasSelected: boolean;
+  modified: boolean;
+}): boolean {
+  return !press.modified && (press.onHandle || press.rowWasSelected);
 }
 
 // What a press on `path` picks up. The standard file-manager rule: a row that
 // is part of the current selection drags the WHOLE selection, and a row outside
 // it drags only itself.
 //
-// Under pressStartsDrag above only the first branch can be reached from the
-// listing — a drag starts on a selected row or not at all. The second stays
-// because it is the right answer to the question, not because something asks
-// it today: it is what any future drag source would need, and a rule that
-// silently dragged the wrong rows would be worse than one clause of slack.
+// Only the first branch is reached from the listing, and that stays true even
+// for a handle press on an UNSELECTED row: `selectOnly` runs on pointerdown
+// before the move-drag reads the selection, so by the time this is called
+// `selected` is already just `[path]` and `selected.includes(path)` is true.
+// The second branch stays dead, and correctly so — it is the right answer to
+// the question, not something the listing happens never to ask: it is what any
+// future drag source would need, and a rule that silently dragged the wrong
+// rows would be worse than one clause of slack.
 //
 // `selected` arrives in rendered order, so a batch move processes rows
 // top-to-bottom however they were picked.
