@@ -618,3 +618,38 @@ in `frontend/src/styles/explorer.css`.
 
 Scope was CSS-only in `explorer.css`; no `.tsx`, test, or layout geometry
 changed.
+
+## Search chip: the plain-count branch names its own numbers
+
+The user saw the search chip read `10 · 45 ms` and `471 · not refreshed` and
+said it makes no sense — two unlabeled numbers joined by a middot read as two
+unrelated figures. `resultCountLabel` (`listing/result-cap.ts`) already
+produces the labelled form ("10 matches") but only reached `title`/
+`aria-label`, never the visible chip; Home's box, which the user asked this
+to match, renders the labelled form on screen (`homeCountNote`,
+`lib/home-search.ts`, shown at `FilesHome.tsx`).
+
+Fixed at the composition point in `Listing.tsx` (~1764-1769), not in the
+elapsed branch further down, so every downstream combination inherits the
+noun: the plain branch is now `` `${compact(hits.length)}${suffix} match${hits.length === 1 ? "" : "es"}` ``,
+pluralised off the raw hit count. The `cappedAway > 0` branch ("top 100 of
+4.9K+") was left alone — it already names what its numbers are, and a noun
+would only add length for no gain. The chip keeps `compact()` throughout
+rather than switching to `resultCountLabel`: the chip wants "4.9K", the
+tooltip wants "4,900" (`toLocaleString`), and that's the one place
+`resultCountLabel` should stay.
+
+No CSS changed. `.listing-search .listing-search-box.has-pin.wide-pin
+.listing-search-input`'s 210px reservation was checked by rendering the two
+composed strings headlessly (12px, the app's system-ui stack): "10 matches ·
+45 ms" measures ~105px and "471 matches · not refreshed" measures ~150px,
+both comfortably under 210px.
+
+No existing test asserted this composed chip string before this change —
+`searchCount`'s composition is inline in `Listing.tsx` and never extracted
+to a pure helper or exercised by a component-level render harness (the only
+render tests near it, `Listing.test.tsx` and `empty-result.test.tsx`, cover
+`snapshotListing`/`useDirListing` and `EmptyResultMessage`, not this chip).
+Per scope, no new test harness was built for it; `result-cap.test.ts`
+(`resultCountLabel`) and `index-caveat.test.ts` were re-run untouched and
+still pass, since neither was changed.

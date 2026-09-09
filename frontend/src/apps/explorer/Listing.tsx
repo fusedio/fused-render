@@ -1739,10 +1739,13 @@ export default function Listing({
   // The chip is pinned inside the input's right edge, so every character it
   // spends is a character the query cannot use — and since the row moved up
   // into the crumb bar (search-slot.ts) it is competing with the path as well.
-  // "1,204 matches · 45,110 scanned…" was most of a narrow box. The numbers are
-  // the whole message; "matches" and "scanned" are recoverable from context by
-  // anyone looking at a list of search results, and stay in the title and the
-  // aria-label for anyone who is not.
+  // "1,204 matches · 45,110 scanned…" was most of a narrow box, so the chip
+  // stays terse everywhere it can: compact notation for the count, and the
+  // "top N of M" branch names its own numbers well enough without a noun.
+  // The plain branch, though, is two bare numbers once a latency or caveat
+  // suffix joins it (e.g. "10 · 45 ms"), which reads as unrelated figures —
+  // so it alone carries "matches", pluralised off the raw hit count. The full
+  // sentence (`resultCountLabel`) stays in the title and the aria-label.
   const compact = (n: number) =>
     n.toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 });
 
@@ -1764,7 +1767,7 @@ export default function Listing({
     searchCount =
       cappedAway > 0
         ? `top ${visibleHits.length} of ${compact(hits.length)}${suffix}`
-        : `${compact(hits.length)}${suffix}`;
+        : `${compact(hits.length)}${suffix} match${hits.length === 1 ? "" : "es"}`;
     searchCountFull = resultCountLabel(hits.length, searchState.truncated, mode);
   }
 
