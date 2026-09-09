@@ -2429,3 +2429,87 @@ from item A onward, up from 511 by the one new file
 (`search-mode-chip.test.ts`). `bun run build` (from `frontend/`) succeeds at
 the final state; only the pre-existing manual-chunking warnings, unrelated to
 this change.
+
+## D16 — a settled zero-hit search still gets its count and its latency
+
+The match-count chip's guard read `showsSearchHits && searchState.status ===
+"ok" && hits.length > 0` — confirmed unchanged from the traced form before
+touching anything (`Listing.tsx`, the block above `searchCount`'s
+assignment). Withholding the chip on an empty answer withheld the latency
+readout too, as a side effect: the latency branch (`else if
+(searchState.status === "ok" && searchCount !== null)`) never runs once
+`searchCount` stays `null`, so one guard produced two absences for the one
+user-visible complaint ("how come we don't show counts and search timing
+when no matches?").
+
+The fix drops the `hits.length > 0` clause outright: the guard is now
+`showsSearchHits && searchState.status === "ok"`. A settled answer of zero is
+still a settled answer, and `resultCountLabel`/the chip's own terse form both
+already treat 0 as a plural (`0 !== 1`, so the `"es"` branch fires) — no zero
+special case needed anywhere downstream.
+
+Consequences walked and confirmed, not assumed:
+
+- `cappedAway` (`useListingSearch.ts`, `displayHits.length -
+  visibleHits.length`) is 0 when `displayHits` is empty, since `capHits` of
+  an empty array returns an empty array — the `top N of M` branch stays
+  unreachable at zero hits, same as before.
+- `hasPin` (`(searching && spinner) || searchCount !== null`) now goes true
+  for a settled zero-hit search, where it did not before — the chip
+  genuinely occupies a slot it did not occupy previously. The input's
+  right-padding rules for every `has-pin`/`wide-pin`/`has-clear` combination
+  already existed in `explorer.css` (D15's own matrix, four fixed-padding
+  rules covering has-pin alone, has-pin+wide-pin, has-clear alone, and both
+  together) — zero hits reaches an already-handled combination, not a new
+  one. The clear button (`.listing-search-clear`) and the star
+  (`BookmarkStar`) both sit at fixed `right: 8px` / `right: 38px` offsets
+  independent of `has-pin`/`wide-pin`, so neither moves.
+- The keyboard hint (D15, `.listing-search-shortcut-hint`) is gated on
+  `!pinnedOpen && !hasClear`; `hasClear` is `query !== ""`, which is true
+  whenever a search is running at all — the hint and a zero-hit chip can
+  never both want the trailing slot, confirmed by reading the gate rather
+  than assumed from "the hint is rest-only."
+- The scan-caveat branch (`if (caveat) { … } else if (searchState.status ===
+  "ok" && searchCount !== null) { … }`) is untouched text — the caveat still
+  runs first and the latency figure is still its `else if`, so a stale count
+  can never pick up a fresh elapsed time.
+- `showingSearchHits` (`search-body-mode.ts`) is untouched: `searchState.status
+  !== "idle" && !awaitingCommit`. The open-folder query case
+  (`queryNamesOpenFolder`, D14) never reaches the chip at all through this
+  change — an uncommitted query (decision 4's Enter gate) leaves
+  `searchState` at `IDLE_SEARCH`, so `showingSearchHits` reads `false` and
+  `searchCount` stays `null` regardless of `awaitingCommit`.
+- A pending or errored search still renders no count: both the base
+  assignment and the latency branch require `searchState.status === "ok"` on
+  their own, independent of `showsSearchHits`.
+
+No existing assertion was weakened or deleted. `search-clear-button.test.ts`
+and `search-mode-chip.test.ts` (D15) needed no changes — neither touches the
+count-chip's own hit-count guard.
+
+Tests: `search-zero-count.test.ts` (new) — the codebase's established
+pattern for `Listing.tsx`'s inline JSX conditionals (source-text assertions,
+no render harness; see the "Two deviations from a strict TDD loop" note
+above). Covers: the guard no longer carries `hits.length > 0` (this
+assertion fails against the pre-change source — confirmed by stashing only
+`Listing.tsx` via a tagged `git stash push -u -m
+"brief29-pretest-check"` and running the new test file, then popping and
+dropping that stash entry, `git stash list` empty afterward); the latency
+branch stays the guard's own `else if`, downstream of the caveat branch;
+zero hits still take the plural ternary rather than a bespoke zero case; and
+`showingSearchHits` (called directly, a real pure function, not text
+matching) reads `false` for `IDLE_SEARCH` and for a settled `"ok"` state
+paired with `awaitingCommit: true`, covering the open-folder and
+pending/uncommitted cases behaviorally rather than by pattern. Two new cases
+also went into `result-cap.test.ts`, an actual behavioral check rather than
+text matching: `resultCountLabel(0, false)` is `"0 matches"`, and
+`capHits(hits(0))` has length 0.
+
+Verification: `./frontend/node_modules/.bin/tsc --noEmit --project
+frontend/tsconfig.json` clean. `bun test --run` — 3967 pass, 0 fail, up from
+the 3960-pass baseline this round started from (7 new cases: 5 in
+`search-zero-count.test.ts`, 2 in `result-cap.test.ts`).
+`node frontend/scripts/check-boundaries.mjs` — `boundaries OK (630 files)`,
+up from 629 by the one new file (`search-zero-count.test.ts`). `bun run
+build` (from `frontend/`) succeeds; only the pre-existing manual-chunking
+warnings, unrelated to this change.

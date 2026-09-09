@@ -1848,7 +1848,7 @@ export default function Listing({
   // The chip's reserved width covers a match count; the scan caveat makes it
   // longer, so the input reserves more while one is running.
   let widePin = false;
-  if (showsSearchHits && searchState.status === "ok" && hits.length > 0) {
+  if (showsSearchHits && searchState.status === "ok") {
     // A truncated rank (server per-query cap) means `hits` undercounts the
     // real tree. Signal that without new UI: a "+" on the number plus a
     // tooltip. Terse form for the chip, full sentence for title/aria. Past the
