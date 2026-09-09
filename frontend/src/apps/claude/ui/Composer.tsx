@@ -200,6 +200,17 @@ export interface ComposerCardProps {
   onStop(): void;
   /** Notes or pictures alone are sendable, with no words at all (T:17903). */
   hasAttachments?: boolean;
+  /**
+   * A CHIP IS STILL ATTACHING, so nothing leaves this box yet — the camera's
+   * own `shotBusy` gate (T:11203), one level up.
+   *
+   * `hasAttachments` counts in-flight placeholders (they are chips the user can
+   * see), but `take()` deliberately leaves a `pending` item in the tray for the
+   * NEXT message. Sendable-because-of-chips plus taken-without-them is a
+   * wordless Enter dispatching an EMPTY send, and a worded one going out
+   * without the files it was written about (Bugbot, PR #1064).
+   */
+  attachPending?: boolean;
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
@@ -260,6 +271,7 @@ export function ComposerCard({
   onFollowUp,
   onStop,
   hasAttachments,
+  attachPending,
   blocked,
   blockedPlaceholder,
   autoFocus,
@@ -327,12 +339,19 @@ export function ComposerCard({
     grow();
   }, [restore, boxRef, grow]);
 
-  const canSend = text.trim().length > 0 || !!hasAttachments;
+  // A tray still uploading holds the send back rather than sending half of it.
+  const attaching = !!attachPending;
+  const canSend = !attaching && (text.trim().length > 0 || !!hasAttachments);
 
   const submit = useCallback(() => {
     // Nothing leaves this composer while a scheduled message is pending — not a
     // typed line, not a follow-up (T:17871).
     if (blocked) return;
+    // ... nor while a chip is still attaching, on EITHER road: both of them
+    // empty the tray, and both would leave the pending files behind. The box
+    // KEEPS its words (the `setText("")` below is past this door), so the same
+    // Enter a moment later sends the message the user actually wrote.
+    if (attaching) return;
     const message = text.trim();
     if (!message && !hasAttachments) return;
     setText("");
@@ -346,7 +365,7 @@ export function ComposerCard({
         permission: controls.permission,
       });
     }
-  }, [blocked, text, hasAttachments, running, onFollowUp, onSend, controls]);
+  }, [blocked, attaching, text, hasAttachments, running, onFollowUp, onSend, controls]);
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -442,7 +461,7 @@ export function ComposerCard({
           className="c-send"
           type="submit"
           aria-label={running ? "Stop" : "Send"}
-          title={running ? "Stop" : "Send"}
+          title={running ? "Stop" : attaching ? "Attaching…" : "Send"}
           disabled={blocked || (!running && !canSend)}
         >
           {running ? (

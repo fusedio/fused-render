@@ -22,9 +22,8 @@ afterAll(() => {
   G.document = BEFORE.document;
 });
 
-const { captureXO, currentStream, getStream, stopStream, watchStreamTeardown } = await import(
-  "./xo-capture"
-);
+const { captureXO, currentStream, getStream, stopStream, streamWatchers, watchStreamTeardown } =
+  await import("./xo-capture");
 
 // ── the fakes ───────────────────────────────────────────────────────────────
 
@@ -277,6 +276,63 @@ describe("watchStreamTeardown (T:9731 annXOStreamStop)", () => {
     expect(removed[0][1]).toBe(added[0][1]);
     expect(currentStream()).toBeNull();
     expect(t2.stops).toBe(1);
+  });
+
+  test("REFERENCE-COUNTED: one chat closing does not revoke another's share", async () => {
+    // The stream is a module singleton and EVERY `ChatBody` registers a
+    // teardown, so a teardown that always stopped meant a card or peek
+    // unmounting killed the share the chat next to it was mid-walkthrough with
+    // (Bugbot, PR #1064).
+    const listeners: Record<string, unknown[]> = { added: [], removed: [] };
+    const win = {
+      addEventListener: (...a: unknown[]) => listeners.added.push(a),
+      removeEventListener: (...a: unknown[]) => listeners.removed.push(a),
+    } as unknown as Window;
+
+    const first = watchStreamTeardown(win);
+    const second = watchStreamTeardown(win);
+    expect(streamWatchers()).toBe(2);
+
+    const t = track();
+    nextStream = () => stream(t);
+    await getStream();
+
+    // The first one out unregisters ITS listener and leaves the share alone.
+    first();
+    expect(listeners.removed.length).toBe(1);
+    expect(currentStream()).not.toBeNull();
+    expect(t.stops).toBe(0);
+    // Twice is the same as once: a double-invoked teardown must not decrement a
+    // registration it already gave back.
+    first();
+    expect(streamWatchers()).toBe(1);
+    expect(currentStream()).not.toBeNull();
+
+    // The LAST one out ends it.
+    second();
+    expect(streamWatchers()).toBe(0);
+    expect(currentStream()).toBeNull();
+    expect(t.stops).toBe(1);
+  });
+
+  test("`pagehide` ends the share outright, watchers or not", async () => {
+    // There is no page left to share to, so the count does not get a vote.
+    const hides: (() => void)[] = [];
+    const win = {
+      addEventListener: (_k: unknown, fn: () => void) => hides.push(fn),
+      removeEventListener: () => {},
+    } as unknown as Window;
+    const a = watchStreamTeardown(win);
+    const b = watchStreamTeardown(win);
+    const t = track();
+    nextStream = () => stream(t);
+    await getStream();
+    hides[0]!();
+    expect(currentStream()).toBeNull();
+    expect(t.stops).toBe(1);
+    a();
+    b();
+    expect(streamWatchers()).toBe(0);
   });
 
   test("no window still hands back a teardown that releases the share", async () => {

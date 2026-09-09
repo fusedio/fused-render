@@ -369,6 +369,59 @@ test("a send carries the tray's block and its Read rules, and empties the tray",
   expect(chips(r)).toHaveLength(0);
 });
 
+test("nothing is sent while a chip is still attaching", async () => {
+  // `hasAttachments` counts the in-flight placeholder but `take()` leaves it in
+  // the tray, so this submit used to launch an EMPTY send — the words (if any)
+  // going out without the files they were written about (Bugbot, PR #1064).
+  let release = (): void => {};
+  const landed = new Promise<void>((done) => {
+    release = done;
+  });
+  patchApi({
+    attachFiles: async function* (_dir, files) {
+      await landed;
+      for (const f of files) {
+        yield {
+          id: "f" + ++pathIds,
+          kind: "image",
+          view: "/shots/" + (f.name || "x"),
+          name: f.name,
+        } satisfies Attachment;
+      }
+    },
+  });
+  const r = await mountChat();
+  const box = r.root.findByType("textarea");
+  const send = () => r.root.findByProps({ className: "c-send" });
+  await act(async () => {
+    box.props.onPaste({ clipboardData: {}, preventDefault: () => {} });
+  });
+  await settle();
+  // A chip the user can see, and a Send they cannot press.
+  expect(chips(r)).toHaveLength(1);
+  expect(send().props.disabled).toBe(true);
+
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(20);
+  expect(started()).toHaveLength(0);
+  // Still in the tray, waiting for the message it belongs to.
+  expect(chips(r)).toHaveLength(1);
+
+  // The bytes land ⇒ the door opens, and the picture rides the send.
+  release();
+  await settle(20);
+  expect(send().props.disabled).toBe(false);
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(20);
+  expect(started()).toHaveLength(1);
+  expect(started()[0]!.params.message).toContain("<" + PANE_SHOT_TAG + ">");
+  expect(chips(r)).toHaveLength(0);
+});
+
 test("a send that LANDED lets go of its pictures", async () => {
   // The other half of the `inFlight` map, and the half with no symptom: the
   // entry is keyed by the `Receipt[]` the controller was handed, and on the road

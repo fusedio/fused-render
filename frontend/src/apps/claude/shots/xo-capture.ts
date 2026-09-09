@@ -16,6 +16,17 @@ import type { PaneBitmap } from "./types";
 
 let stream: MediaStream | null = null;
 
+/**
+ * HOW MANY MOUNTS ARE STILL WATCHING. The stream is a MODULE singleton and
+ * every `ChatBody` registers a teardown for it, so a teardown that always
+ * stopped meant one card or peek closing killed a share another chat on the
+ * same page was mid-walkthrough with — the prompt paid once and then revoked by
+ * somebody else's unmount (Bugbot, PR #1064). The share ends when the LAST
+ * watcher leaves; `pagehide` still ends it outright, because there is no page
+ * left to share to.
+ */
+let watchers = 0;
+
 /** Stop the kept stream. Idempotent — both `ended` and an explicit teardown
  *  reach it (T:9731 annXOStreamStop). */
 export function stopStream(): void {
@@ -47,16 +58,34 @@ export function currentStream(): MediaStream | null {
  * `watchTopOrigin` is: any bundle that so much as imports `shots/*` would
  * otherwise carry a listener for a feature its page never turns on (T:9731
  * `annXOStreamStop`).
+ *
+ * REFERENCE-COUNTED, because several chats can be mounted at once (a card
+ * behind a peek, two cards in the stack) over ONE module-level stream: the
+ * returned teardown always unregisters its own listener, but only the LAST one
+ * out ends the share.
  */
 export function watchStreamTeardown(win: Window | null | undefined): () => void {
-  const host = win;
-  if (!host || typeof host.addEventListener !== "function") return stopStream;
+  const host = win && typeof win.addEventListener === "function" ? win : null;
   const onHide = (): void => stopStream();
-  host.addEventListener("pagehide", onHide);
+  if (host) host.addEventListener("pagehide", onHide);
+  watchers += 1;
+  // IDEMPOTENT, so a double-invoked teardown (StrictMode, a defensive caller)
+  // cannot decrement a registration it already gave back and pull the count
+  // below the mounts that are really still watching.
+  let released = false;
   return () => {
-    host.removeEventListener("pagehide", onHide);
-    stopStream();
+    if (released) return;
+    released = true;
+    if (host) host.removeEventListener("pagehide", onHide);
+    watchers = Math.max(0, watchers - 1);
+    if (!watchers) stopStream();
   };
+}
+
+/** Registrations still outstanding — for the tests that assert the counting,
+ *  and the only way to observe it from outside. */
+export function streamWatchers(): number {
+  return watchers;
 }
 
 /** The kept stream, or a fresh share. Chromium's current-tab hints preselect

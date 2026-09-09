@@ -1090,6 +1090,44 @@ describe("app state rides out with every message (T:16483)", () => {
     expect(posted.map((t) => t.appState)).toEqual([true, true]);
   });
 
+  test("the state leads the tray's pictures on BOTH send roads (§D order)", async () => {
+    // The wire is state → pane-shot → annotations → text. `[...blocks, live]`
+    // appended the controller's own block AFTER the tray's `<pane-shot>`, which
+    // is §D backwards and exactly what `composeBlocks` exists to decide
+    // (Bugbot, PR #1064).
+    const SHOTS = "<pane-shot>\n[]\n</pane-shot>";
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            await controller.sendFollowUp("and this", { blocks: [SHOTS] });
+            return poll({ segments: [text("ok")] });
+          }
+          return poll({ done: true, segments: [text("ok")] });
+        },
+      },
+      createMemoryParamsStore(),
+      { appStateBlock: () => Promise.resolve(BLOCK) },
+    );
+    controller = made.controller;
+    await controller.sendMessage("look at my app", { blocks: [SHOTS] });
+
+    const roads: [string, string][] = [
+      [String(made.agent.of("start")[0]!.fields.message), "look at my app"],
+      [String(made.agent.of("send")[0]!.fields.message), "and this"],
+    ];
+    for (const [wire, typed] of roads) {
+      expect(wire).toContain(BLOCK);
+      expect(wire).toContain(SHOTS);
+      expect(wire.indexOf(BLOCK)).toBeLessThan(wire.indexOf(SHOTS));
+      // And the typed words stay LAST, after everything the page prepended.
+      expect(wire.indexOf(SHOTS)).toBeLessThan(wire.indexOf(typed));
+    }
+  });
+
   test("nothing to say ⇒ no block, no receipt, and the message is unchanged", async () => {
     // A chat with no pane, or a pane the watcher has learned nothing from:
     // `blockForSend` answers "" and this path must add neither markers nor a

@@ -1301,6 +1301,10 @@ function ChatBody(props: ChatBodyProps) {
       boxRef,
       // Pictures alone are sendable, with no words at all (T:17903).
       hasAttachments: attach.items.length > 0,
+      // ... but not while one of them is still on its way: `take()` leaves a
+      // `pending` chip in the tray, so a send fired now would go out WITHOUT
+      // the files whose chips made it sendable (Bugbot, PR #1064).
+      attachPending: attach.items.some((a: Attachment) => a.pending),
       chips: (
         <AttachTray
           items={attach.items}

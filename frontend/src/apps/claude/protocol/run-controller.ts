@@ -72,7 +72,7 @@ import type {
   StartResponse,
   SwitchableMode,
 } from "./types";
-import { composeOutgoing, stripBlocks } from "./wire";
+import { composeBlocks, composeOutgoing, stripBlocks } from "./wire";
 /** PR2: the attachment pipeline's receipt row — carried, never built here. */
 import type { Receipt } from "../shots/types";
 
@@ -1256,7 +1256,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // is not consulted: the watcher answers "" for a pane it has learned
     // nothing from, which is the same non-answer a missing pane gives.
     const live = await appStateBlock();
-    const outgoing = composeOutgoing(text, live ? [...blocks, live] : blocks);
+    // THROUGH `composeBlocks`, never appended: the tray's `<pane-shot>` is
+    // already in `blocks`, and `[...blocks, live]` put the state AFTER the
+    // pictures — §D's reading order is state → pane-shot → annotations → text.
+    // `composeBlocks` ranks `<live-app-state>` first wherever it arrives from
+    // (Bugbot, PR #1064).
+    const outgoing = composeOutgoing(text, composeBlocks(blocks, live ? [live] : []));
     // The bubble shows what the user TYPED (or the markers for a wordless
     // send); the raw wire rides along for the "what was sent" popover.
     //
@@ -1383,7 +1388,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // three tool calls into a turn is describing a pane that has moved since
     // the opening one.
     const live = await appStateBlock();
-    const outgoing = composeOutgoing(text, live ? [...blocks, live] : blocks);
+    // THROUGH `composeBlocks`, never appended: the tray's `<pane-shot>` is
+    // already in `blocks`, and `[...blocks, live]` put the state AFTER the
+    // pictures — §D's reading order is state → pane-shot → annotations → text.
+    // `composeBlocks` ranks `<live-app-state>` first wherever it arrives from
+    // (Bugbot, PR #1064).
+    const outgoing = composeOutgoing(text, composeBlocks(blocks, live ? [live] : []));
     // The follow-up's bubble goes up immediately; the `followupSeq` bump that
     // tells a streaming pollLoop to start a NEW bubble after it happens only
     // once the INBOX has taken it. Bumping here left a failed send with a
