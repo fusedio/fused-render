@@ -901,16 +901,18 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
 
 
 def _job_page(job: str) -> str:
-    """Where clicking this row goes, once it reaches Notifications (SPEC-
-    actionable-notifications.md's producer table). Only `sys:ai-model:*`
-    rows have a settled destination — the Local models page, where a load in
-    progress is shown — and `sys:ai-benchmark-*` rows (`ai/benchmark.py`,
-    which reports through this same `_report`) go to the Benchmark page.
-    Every other prefix family this module reports through (`ai-image:`,
-    `ai-transcribe:`, `ai-video:`, `ai-text:`) returns "": the spec names
-    only those two rows, and `upsert()` only writes `page` when it is
-    truthy, so "" for the rest is a no-op rather than a placeholder waiting
-    to be filled in.
+    """Where clicking this row goes, once it reaches Notifications, for the
+    two prefix families that have exactly one destination regardless of who
+    is asking: `sys:ai-model:*` goes to the Local models page, where a load
+    in progress is shown, and `sys:ai-benchmark-*` (`ai/benchmark.py`, which
+    reports through this same `_report`) goes to the Benchmark page.
+
+    Every other prefix this module reports through (`ai-image:`,
+    `ai-transcribe:`, `ai-video:`, `ai-text:`) has no fixed destination here —
+    the caller knows it instead (the page that made the request, carried in
+    over `X-Fused-Page`) and passes it as an explicit `page=` to `_report`,
+    which takes that over this function entirely. This function only answers
+    for the rows a caller never has an opinion about.
     """
     if job.startswith(JOB_PREFIX):
         return "/ai-models/local"
@@ -920,9 +922,20 @@ def _job_page(job: str) -> str:
 
 
 def _report(job: str, **fields) -> None:
-    """One progress tick, best-effort. Reporting must never break the load."""
+    """One progress tick, best-effort. Reporting must never break the load.
+
+    `page`, if a caller passes one, wins over `_job_page(job)` — the explicit
+    kwarg is popped out of `fields` first so it never collides with the one
+    `jobs.upsert` accepts by name. Absent, `_job_page(job)` answers instead
+    (still "" for a prefix family with no fixed destination), and `upsert`
+    only ever writes a truthy `page`, so a tick that has nothing to say about
+    it leaves whatever the opening report already set untouched.
+    """
+    page = fields.pop("page", None)
+    if page is None:
+        page = _job_page(job)
     try:
-        jobs.upsert({"id": job, **fields}, page=_job_page(job), server=True)
+        jobs.upsert({"id": job, **fields}, page=page, server=True)
     except (jobs.JobError, ValueError):
         pass
 
@@ -1499,7 +1512,7 @@ def image_job_id(uid: str) -> str:
 
 
 def _start_render(capability: str, model: str, request: dict, job: str,
-                   generate, *, noun: str, thread_name: str) -> None:
+                   generate, *, noun: str, thread_name: str, page: str = "") -> None:
     """Open `job` and render `generate(model, request, job)` on a thread.
     Raises before starting if it cannot.
 
@@ -1512,6 +1525,12 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     machine with no runner for `capability` answers with the reason instead
     of opening a job row that immediately fails — the caller gets an error
     it can show, rather than a progress bar it has to watch die.
+
+    `page` is set only on this opening report: it is not part of a rebuild-
+    safe identity dict the way a transcription's row is (this row cannot be
+    evicted and rebuilt mid-render the same way a queue of transcriptions
+    can), and `jobs.upsert` keeps a truthy `page` already on the row through
+    every later tick that does not repeat it.
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
@@ -1524,7 +1543,8 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     # prompt) or `detail` (that's the worker's progress ticks, which would
     # overwrite a model name concatenated there on the very next tick).
     _report(job, title=title[:80], model=model, state="running", kind="task",
-            cancellable=True, unit="", detail="Preparing…", done=None, total=None)
+            cancellable=True, unit="", detail="Preparing…", done=None, total=None,
+            page=page)
 
     def run() -> None:
         try:
@@ -1542,10 +1562,14 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     threading.Thread(target=run, name=thread_name, daemon=True).start()
 
 
-def start_image(model: str, request: dict, job: str) -> None:
-    """Open `job` and render an image on a thread. See `_start_render`."""
+def start_image(model: str, request: dict, job: str, page: str = "") -> None:
+    """Open `job` and render an image on a thread. See `_start_render`.
+
+    `page` is the caller's own page (`/api/ai/image`'s `X-Fused-Page`) — the
+    destination a click on this row should go to.
+    """
     _start_render(registry.IMAGE_GENERATION, model, request, job, generate_image,
-                  noun="image", thread_name="ai-image")
+                  noun="image", thread_name="ai-image", page=page)
 
 
 #: What a queued transcription's row says while it waits.
@@ -1563,7 +1587,7 @@ _QUEUED_DETAIL = "Queued behind another transcription…"
 _JOINED_INSTALL_DETAIL = "Waiting for the {short} environment — another download is building it…"
 
 
-def transcribe_row_fields(title: str, model: str = "") -> dict:
+def transcribe_row_fields(title: str, model: str = "", page: str = "") -> dict:
     """Everything a report must carry for a transcription row to survive being
     RE-CREATED — the row's identity, as opposed to its progress.
 
@@ -1592,14 +1616,19 @@ def transcribe_row_fields(title: str, model: str = "") -> dict:
     `model` rides along the same way, for the same reason: a dimmed suffix on
     the title row (jobs.py `Job.model`) that a rebuilt row must not lose any
     more than it may lose its title.
+
+    `page` rides along for the identical reason — the destination a click on
+    this row should go to (the page that started the transcription, over
+    `X-Fused-Page`) is exactly as much this row's identity as its title is,
+    and a rebuilt row that dropped it would send the next click nowhere.
     """
     return {"title": title, "model": model, "kind": "task", "cancellable": True,
-            "unit": "s"}
+            "unit": "s", "page": page}
 
 
-def _transcribe_row(title: str, detail: str, model: str = "") -> dict:
+def _transcribe_row(title: str, detail: str, model: str = "", page: str = "") -> dict:
     """`transcribe_row_fields` plus the progress of a row that has none yet."""
-    return {**transcribe_row_fields(title, model), "state": "running",
+    return {**transcribe_row_fields(title, model, page), "state": "running",
             "done": None, "total": None, "detail": detail}
 
 
@@ -1624,7 +1653,7 @@ def text_job_id(uid: str) -> str:
     return TEXT_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def text_row_fields(title: str, model: str = "") -> dict:
+def text_row_fields(title: str, model: str = "", page: str = "") -> dict:
     """Everything a report must carry for a text-generation row to survive
     being REBUILT — see `transcribe_row_fields`'s docstring for the full
     argument (a row can be recreated from scratch on any tick, so every
@@ -1643,17 +1672,26 @@ def text_row_fields(title: str, model: str = "") -> dict:
     `unit="tokens"`: the row counts chunks emitted, not bytes or seconds —
     unlike a transcription's `"s"` or a download's `"bytes"`, the useful
     number here is how much has been said so far.
+
+    `page` is the destination a click on this row should go to — the page
+    that made the `/api/ai` request, over `X-Fused-Page` — restated here for
+    the same reason `transcribe_row_fields` restates it: this dict is the
+    row's identity, resent on every tick, and a tick that dropped it would
+    leave a rebuilt row with nowhere to send a click.
     """
     return {"title": title, "model": model, "kind": "task", "cancellable": True,
-            "unit": "tokens"}
+            "unit": "tokens", "page": page}
 
 
-def start_transcribe(model: str, request: dict, job: str) -> None:
+def start_transcribe(model: str, request: dict, job: str, page: str = "") -> None:
     """Open `job` and transcribe on a thread. Raises before starting if it cannot.
 
     The runner check is synchronous here for the reason `start_image` explains:
     a request a machine cannot serve should answer with the reason, not open a
-    row that immediately dies.
+    row that immediately dies. `page` is the caller's own page
+    (`/api/ai/transcribe`'s `X-Fused-Page`) and travels inside the row
+    identity (`transcribe_row_fields`) rather than as a one-off, the same as
+    every other field a rebuilt row must not lose.
     """
     _runner_or_raise(registry.SPEECH_TO_TEXT)
     _require_build_tools()
@@ -1663,21 +1701,21 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     # relabels itself under the user. The payload is shared with the queue
     # ticks so an evicted row is rebuilt as the same row, not a partial one.
     title = _transcribe_title(request, model)
-    _report(job, **_transcribe_row(title, "Preparing…", model))
+    _report(job, **_transcribe_row(title, "Preparing…", model, page))
     # The worker reports to this same row for the whole decode, so it needs the
     # row's identity to restate — it is a different PROCESS, and a tick of its
     # that arrives after an eviction would otherwise be dropped outright
     # (`upsert` refuses a first report with no title) and take the ✕, the
     # progress and the terminal state with it. Sent rather than re-spelled
     # there, so the two cannot disagree about what this row is.
-    request = {**request, "row": transcribe_row_fields(title, model)}
+    request = {**request, "row": transcribe_row_fields(title, model, page)}
 
     def run() -> None:
         # Every terminal report carries the identity too: the row may have been
         # evicted at any point during a decode that ran for hours, and a bare
         # `state="done"` would be refused, leaving the page watching a row that
         # never finishes for a transcript that is already on disk.
-        fields = transcribe_row_fields(title, model)
+        fields = transcribe_row_fields(title, model, page)
         try:
             result = generate_transcript(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
@@ -2508,15 +2546,16 @@ def video_job_id(uid: str) -> str:
     return VIDEO_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def start_video(model: str, request: dict, job: str) -> None:
+def start_video(model: str, request: dict, job: str, page: str = "") -> None:
     """Open `job` and render a video on a thread. See `_start_render`.
 
     Raises before starting if it cannot — a request this machine cannot
     serve (no Apple Silicon) answers with the reason instead of opening a
-    row that immediately dies.
+    row that immediately dies. `page` is the caller's own page
+    (`/api/ai/video`'s `X-Fused-Page`).
     """
     _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
-                  noun="video", thread_name="ai-video")
+                  noun="video", thread_name="ai-video", page=page)
 
 
 def _generate_via_worker(capability: str, model: str, request: dict, job: str,
@@ -2573,7 +2612,7 @@ def generate_video(model: str, request: dict, job: str) -> dict:
                                 timeout=VIDEO_TIMEOUT_S, noun="video")
 
 
-def _await_turn(job: str, title: str, model: str = "") -> None:
+def _await_turn(job: str, title: str, model: str = "", page: str = "") -> None:
     """Take `_TRANSCRIBE_LOCK`, saying so on `job` for as long as it takes.
 
     Returns holding the lock — the caller releases it. Raises
@@ -2594,7 +2633,7 @@ def _await_turn(job: str, title: str, model: str = "") -> None:
     request. A guard an optimisation can skip is a guard in the wrong place.
     """
     if not _TRANSCRIBE_LOCK.acquire(blocking=False):
-        _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
+        _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model, page))
         warned = False
         next_tick = time.monotonic() + _QUEUE_TICK_S
         # POLLED often, REPORTED rarely — and rebuilt ON DETECTION, which is
@@ -2631,7 +2670,7 @@ def _await_turn(job: str, title: str, model: str = "") -> None:
                         "transcription row %s was evicted while queued; rebuilt, "
                         "but a cancel requested just before that is lost", job)
                     warned = True  # once per wait; the sweep may do this often
-                _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
+                _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model, page))
                 next_tick = time.monotonic() + _QUEUE_TICK_S
                 continue
             if time.monotonic() < next_tick:
@@ -2640,7 +2679,7 @@ def _await_turn(job: str, title: str, model: str = "") -> None:
             # is nothing to say but "still waiting" — which is exactly what a
             # heartbeat is (AI-5h). Deliberately slower than the running row so
             # the cap sheds queued rows first; see `_QUEUE_TICK_S`.
-            _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
+            _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model, page))
             next_tick = time.monotonic() + _QUEUE_TICK_S
     # Guarded, because this runs while we HOLD the lock and before any caller's
     # `finally` exists to release it: `_cancel_state` walks `jobs.list_jobs()`,
@@ -2660,7 +2699,7 @@ def _await_turn(job: str, title: str, model: str = "") -> None:
 
 
 @contextlib.contextmanager
-def _transcribe_turn(job: str, title: str, model: str = ""):
+def _transcribe_turn(job: str, title: str, model: str = "", page: str = ""):
     """`_await_turn` as a `with`, so the acquire and the release are one thing.
 
     The release used to live in a `try/finally` the CALLER opened after
@@ -2669,7 +2708,7 @@ def _transcribe_turn(job: str, title: str, model: str = ""):
     the shape that cannot regress: there is no way to take this turn without
     also giving it back, and a future caller cannot forget.
     """
-    _await_turn(job, title, model)
+    _await_turn(job, title, model, page)
     try:
         yield
     finally:
@@ -2697,7 +2736,12 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
     a handle to a process an unload may since have killed, so the request went
     to a dead port instead of re-resolving.
     """
-    with _transcribe_turn(job, _transcribe_title(request, model), model):
+    # The row's identity — including its destination — was already minted
+    # once, at `start_transcribe`'s opening report, and travels here inside
+    # `request["row"]` rather than being re-derived: this function has no
+    # page of its own to offer, only the one the caller already decided.
+    page = (request.get("row") or {}).get("page", "")
+    with _transcribe_turn(job, _transcribe_title(request, model), model, page):
         worker = ready_worker(registry.SPEECH_TO_TEXT, model)
         if worker is None:
             # The row identity travels into the wait too — it is the longest

@@ -5007,9 +5007,9 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     captured = {}
     real_start = supervisor.start_image
 
-    def spy(model, request, job):
+    def spy(model, request, job, page=""):
         captured.update(request)
-        return real_start(model, request, job)
+        return real_start(model, request, job, page=page)
 
     monkeypatch.setattr(supervisor, "start_image", spy)
     started = client.post("/api/ai/image", json={"prompt": "x"},
@@ -5686,9 +5686,9 @@ def test_the_request_the_WORKER_gets_carries_image_ONLY_when_asked(
     captured = []
     real_start = supervisor.start_image
 
-    def spy(model, request, job):
+    def spy(model, request, job, page=""):
         captured.append(dict(request))
-        return real_start(model, request, job)
+        return real_start(model, request, job, page=page)
 
     monkeypatch.setattr(supervisor, "start_image", spy)
 
@@ -5715,8 +5715,8 @@ def test_an_edits_DEFAULTS_are_the_PROTOTYPES_not_the_generate_defaults(
     captured = []
     real_start = supervisor.start_image
     monkeypatch.setattr(supervisor, "start_image",
-                        lambda model, request, job: (captured.append(dict(request)),
-                                                      real_start(model, request, job))[1])
+                        lambda model, request, job, page="": (captured.append(dict(request)),
+                                                      real_start(model, request, job, page=page))[1])
 
     edit = client.post(
         "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
@@ -7107,8 +7107,8 @@ def test_the_partial_path_reaches_the_WORKER_as_well_as_the_page(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
 
     reply = _post_transcribe(client, path=recording).json()
     _wait_job(reply["jobId"])
@@ -7172,8 +7172,8 @@ def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
     for sent, expected in (({}, True), ({"vad": None}, True),
                            ({"vad": True}, True), ({"vad": False}, False)):
         started = _post_transcribe(client, path=recording, **sent).json()
@@ -7217,8 +7217,8 @@ def test_diarizing_WITHOUT_a_count_is_accepted_and_estimates_it(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
     for sent in ({"diarize": True}, {"diarize": True, "speakers": None},
                  {"diarize": True, "speakers": ""}):
         seen.clear()
@@ -7317,8 +7317,8 @@ def test_diarize_and_speakers_reach_the_worker_and_default_to_OFF(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
     for sent, expected in (({}, None), ({"diarize": False}, None),
                            ({"diarize": None}, None),
                            ({"diarize": True, "speakers": 3}, 3)):
@@ -7342,8 +7342,8 @@ def test_words_reaches_the_worker_and_defaults_to_OFF(
     seen = {}
     real = supervisor.start_transcribe
     monkeypatch.setattr(supervisor, "start_transcribe",
-                        lambda model, request, job: (seen.update(request),
-                                                     real(model, request, job)))
+                        lambda model, request, job, page="": (seen.update(request),
+                                                     real(model, request, job, page=page)))
     for sent, expected in (({}, False), ({"words": False}, False),
                            ({"words": None}, False), ({"words": True}, True)):
         seen.clear()
@@ -7441,7 +7441,7 @@ def test_the_worker_is_given_the_row_identity_to_restate(
     _wait_job(started["jobId"])
 
     assert seen["row"] == {"title": os.path.basename(recording), "model": "org/fake-whisper",
-                           "kind": "task", "cancellable": True, "unit": "s"}
+                           "kind": "task", "cancellable": True, "unit": "s", "page": ""}
 
 
 def test_the_terminal_report_can_rebuild_an_evicted_row(
@@ -7938,7 +7938,8 @@ def test_an_exception_taking_the_turn_does_not_WEDGE_transcription_forever(monke
 def test_the_turn_is_released_even_when_the_body_raises(monkeypatch):
     """The pairing itself: acquisition and release are one construct, so a
     caller cannot take a turn and forget to give it back."""
-    monkeypatch.setattr(supervisor, "_await_turn", lambda job, title, model="": None)
+    monkeypatch.setattr(supervisor, "_await_turn",
+                        lambda job, title, model="", page="": None)
     supervisor._TRANSCRIBE_LOCK.acquire()
     with pytest.raises(ValueError):
         with supervisor._transcribe_turn("sys:ai-transcribe:x", "x.m4a"):

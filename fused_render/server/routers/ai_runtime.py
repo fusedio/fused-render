@@ -38,6 +38,7 @@ import os
 import secrets
 import struct
 import time
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
@@ -1542,7 +1543,8 @@ def api_ai_cancel(body: dict = Body(...), x_fused: str | None = Header(default=N
 
 
 @router.post("/api/ai/image")
-def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                 x_fused_page: str | None = Header(default=None)):
     """Render one image. Returns everything about it except the pixels.
 
     **Job-backed, like a download, and for the same reason**: this runs for
@@ -1556,10 +1558,15 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     The file is written by the worker and read back through `/api/fs/raw`, the
     same door every other local file goes through — `fused.ai.image()` hands the
     page a ready-made URL for it.
+
+    `X-Fused-Page` names the calling page, the same channel `routers/jobs.py`
+    and `routers/capture.py` read it from — threaded into `start_image` below
+    so the row this call opens knows where a click on it should go.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    page = unquote(x_fused_page) if x_fused_page else ""
 
     # Checked first, so an unknown option is reported even when another field
     # is also wrong — see `_reject_unknown`. The wider, SERVER set: `base` is
@@ -1777,7 +1784,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # tell those two apart because this route always sent one.
         request["image"] = image_path
     try:
-        supervisor.start_image(model, request, job)
+        supervisor.start_image(model, request, job, page=page)
     except supervisor.SupervisorError as e:
         # 409 for the same reason a load does: the request was well-formed and
         # the answer is a fact about this machine, not a server fault.
@@ -1823,7 +1830,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 
 
 @router.post("/api/ai/video")
-def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                 x_fused_page: str | None = Header(default=None)):
     """Render one video (with audio). Returns everything about it except the
     bytes. `api_ai_image`'s twin — job-backed for the same reason, minus
     `guidance` (the engine is CFG-distilled) and `previewPath` (no live
@@ -1833,10 +1841,14 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     video generation is the first capability with no "everywhere" row, so on
     anything but Apple Silicon this always answers with
     `registry.unavailable_reason` rather than ever reaching a default model.
+
+    `X-Fused-Page` is read the same way `api_ai_image` reads it, and threaded
+    into `start_video` for the same reason.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    page = unquote(x_fused_page) if x_fused_page else ""
 
     # Checked first, so an unknown option (`guidance`, say) is reported even
     # when another field is also wrong — see `_reject_unknown`. The wider,
@@ -1996,7 +2008,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         # `image=` to `generate_and_save` at all.
         request["image"] = image_path
     try:
-        supervisor.start_video(model, request, job)
+        supervisor.start_video(model, request, job, page=page)
     except supervisor.SupervisorError as e:
         # 409 for the same reason a load does: the request was well-formed and
         # the answer is a fact about this machine, not a server fault.
@@ -2035,7 +2047,8 @@ _TRANSCRIBE_TASKS = ("transcribe", "translate")
 
 
 @router.post("/api/ai/transcribe")
-def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                      x_fused_page: str | None = Header(default=None)):
     """Transcribe one audio or video file. Returns where the words will land.
 
     **Job-backed like `/api/ai/image`, not streamed like chat**, and for the
@@ -2050,10 +2063,14 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     same-origin, and the worker's own port needs the token the supervisor
     generated. So the only checks are the ones a typo deserves: normalize, and
     refuse something missing or not a regular file before a job row opens.
+
+    `X-Fused-Page` is read the same way `api_ai_image` reads it, and threaded
+    into `start_transcribe` for the same reason.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    page = unquote(x_fused_page) if x_fused_page else ""
 
     # Checked first, same as `api_ai_image` — see `_reject_unknown`. `base` is
     # in the server's accepted set (the bridge injects it) but not the
@@ -2228,7 +2245,7 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "outPartial": partial.partial_path(out_base + ".json"),
     }
     try:
-        supervisor.start_transcribe(model, request, job)
+        supervisor.start_transcribe(model, request, job, page=page)
     except supervisor.SupervisorError as e:
         return _error(str(e), status=409)
     return {

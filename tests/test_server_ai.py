@@ -491,7 +491,7 @@ def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
     monkeypatch.setattr(_server_ai, "_is_local_model", lambda m: True)
     monkeypatch.setattr(
         _server_ai, "_local_relay",
-        lambda model, prompt, system_prompt, stream, body, warnings=None:
+        lambda model, prompt, system_prompt, stream, body, warnings=None, page="":
             _server_ai.JSONResponse({"ok": True, "result": {
                 "text": "hi", "model": model, "usage": None}}))
     _relay({"prompt": "hello", "model": "mlx-community/Qwen3-8B-4bit"})
