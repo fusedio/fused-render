@@ -1252,9 +1252,19 @@ def _failed(speaker: dict | None) -> bool:
     It is also the other half of what the Blocked lane holds. The lane took the
     wider word on 2026-09-03 and now carries two different things — a run that
     broke and a run parked on a card — so the row has to say which; this flag
-    and `blocked_reason` are how (see `_row`)."""
+    and `blocked_reason` are how (see `_row`).
+
+    THE THREE SPELLINGS OF A BROKEN RUN, and all three have to be here or the
+    row contradicts itself (whole-stack review, PR1). `_message_verdict` reads
+    `state == "error"` and, for a delivered message, `turn in ("unknown",
+    "error")` as `blocked`; this used to read only the first two. So a chat turn
+    whose last reply out of the transcript was an API failure (`_reply_fate`
+    writes `turn: "error"`) filed under `blocked` with `failed: False` on the
+    row, while `_row`'s `blocked_reason` — which falls back on the status — said
+    `"failed"` in the same breath. One row, two answers: the ring stayed un-red
+    and the caption said the run broke."""
     return speaker is not None and (
-        speaker["state"] == "error" or speaker["turn"] == "unknown")
+        speaker["state"] == "error" or speaker["turn"] in ("unknown", "error"))
 
 
 # ----------------------------------------------------------------- the titles

@@ -1958,6 +1958,23 @@ def test_a_chat_turn_that_died_on_an_api_error_is_blocked(client,
     assert task["blocked_reason"] == "failed"
 
 
+def test_a_chat_turn_the_api_killed_reports_failed_on_the_row_too(client,
+                                                                  projects_dir):
+    """`failed` and `blocked_reason` are two halves of ONE answer and cannot
+    disagree. `_failed` read only `state == "error"` and `turn == "unknown"`, so
+    this task said `blocked_reason: "failed"` (the status's own fallback) with
+    `failed: False` beside it — the caption said the run broke and the flag that
+    paints the ring red said it did not."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", T9, uuid="a1"),
+        _api_error("API Error: Can't reach the API server (ENOTFOUND)", T10)])
+    task = _by_key(client)["sess-a"]
+    assert task["messages"][0]["turn"] == "error"
+    assert task["status"] == "blocked"
+    assert task["blocked_reason"] == "failed"
+    assert task["failed"] is True
+
+
 def test_an_api_error_the_turn_recovered_from_is_not_blocked(client,
                                                              projects_dir):
     """THE LAST reply, not any reply. The Wi-Fi comes back and the retry

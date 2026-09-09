@@ -705,10 +705,25 @@ export function createChatController(deps: ControllerDeps): ChatController {
     let prevTextLen = 0;
     let prevBreaks = 0;
     let seenFollowupSeq = followupSeq;
-    /** Set when a follow-up lands, cleared by the first payload that proves the
-     *  seam one way or the other. Only while it is set can a shrink be read as
-     *  the cursor stepping over a seam. */
-    let awaitingSeam = false;
+    /**
+     * HOW MANY SEAMS ARE STILL OWED — a COUNT, not a flag (Bugbot PR #1061).
+     *
+     * One per follow-up that landed and whose reply this loop has not yet seen
+     * the cursor step over. Only while it is above zero can a shrink be read as
+     * the cursor stepping over a seam.
+     *
+     * It was a boolean, and a boolean is wrong for two follow-ups absorbed into
+     * ONE run: the first cursor step disarmed it, so the SECOND step — which
+     * commonly arrives with no `turn_breaks` at all, the newer reply alone in
+     * the window — was read as an ordinary payload and rendered into the
+     * PREVIOUS slot, overwriting the reply before it. Counted, the test stays
+     * armed until every landed follow-up has been placed.
+     *
+     * Incremented by the DELTA, not by one: `followupSeq` can move by more than
+     * a step between two polls (two sends inside one 400 ms lap), and each of
+     * those owes a seam.
+     */
+    let pendingSeams = 0;
     let tick = 0;
 
     try {
@@ -762,8 +777,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // until the payload says where it is (T:16269 froze the bases here and
         // guessed instead — see `Chunk`).
         if (followupSeq !== seenFollowupSeq) {
+          pendingSeams += followupSeq - seenFollowupSeq;
           seenFollowupSeq = followupSeq;
-          awaitingSeam = true;
         }
 
         // THE CURSOR STEPPED OVER THE SEAM. `_read_current_turn` advances past
@@ -784,7 +799,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // the echo, which is by far the commonest "smaller than last time" and
         // means the exact opposite of a cursor step: nothing has moved yet.
         const anyBody = segs.length > 0 || fullText.length > 0;
-        if (awaitingSeam && anyBody) {
+        if (pendingSeams > 0 && anyBody) {
           // A SEAM THE PAYLOAD LOST is the cursor having carried it out of the
           // window, and it is the reliable read: a window's seam count only
           // ever drops that way. It is also the only read the flat legacy text
@@ -802,12 +817,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
             ? segs.length < prevSegLen
             : !poll.done && fullText.length < prevTextLen;
           if (lost > 0 || shrank) {
-            chunkOffset += lost > 0 ? lost : 1;
-            awaitingSeam = false;
+            // A LOST seam count is how many steps happened, so it settles that
+            // many of the outstanding ones; a bare shrink is one step, and the
+            // rest stay owed. Never below zero: a shrink for an unrelated
+            // reason must not lend the next follow-up a step it did not make.
+            const stepped = lost > 0 ? lost : 1;
+            chunkOffset += stepped;
+            pendingSeams = Math.max(0, pendingSeams - stepped);
           }
           // A seam APPEARING is not the answer: it is handled by the loop below
           // for as long as it stays in the payload, and the cursor may still
-          // step over it later. `awaitingSeam` stays armed until it does.
+          // step over it later. `pendingSeams` stays armed until it does.
         }
         if (anyBody) {
           prevSegLen = segs.length;
@@ -1339,16 +1359,21 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // Either way the ENTRIES go: after a stop nothing is "queued for this
       // turn" any more, whether it was handed back or left standing.
       const still = (result && (result.still_queued as string[])) || [];
-      const named = new Set(
-        still.filter((t): t is string => typeof t === "string" && !!t),
-      );
+      // A COUNTED list, not a Set (Bugbot PR #1061). `still_queued` names WIRE
+      // TEXTS, and two follow-ups can carry the same one — "again", "again",
+      // both landed, both dropped unread. A Set collapsed them into a single
+      // hand-back, so the second came back to nobody: its entry was spliced
+      // out and its bubble dropped, leaving the text nowhere at all. Each
+      // match now consumes exactly ONE name.
+      const named = still.filter((t): t is string => typeof t === "string" && !!t);
       const stranded: string[] = [];
       for (const entry of queued.slice()) {
         // Matched against the WIRE form, which is what `still_queued` carries;
         // what goes BACK to the box is the TYPED form, because that is the text
         // the user owns and would edit — handing back the composed wire payload
         // would put the app-state and attachment markers into their box.
-        const back = named.has(entry.wire) || !entry.landed;
+        const at = named.indexOf(entry.wire);
+        const back = at >= 0 || !entry.landed;
         if (!back) continue;
         stranded.push(entry.typed || entry.wire);
         // The optimistic bubble goes with it. A follow-up the interrupt
@@ -1358,9 +1383,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // edit it. T leaves the row behind (its stop only ever touches
         // `box.value`); this deliberately does not.
         dropTurn(entry.bubble);
-        // Each stranded text clears ONE entry, so two identical follow-ups
+        // Each stranded text clears ONE name, so two identical follow-ups
         // both come back and both leave the hint.
-        named.delete(entry.wire);
+        if (at >= 0) named.splice(at, 1);
         const i = queued.indexOf(entry);
         if (i >= 0) queued.splice(i, 1);
       }
@@ -1723,6 +1748,27 @@ export function createChatController(deps: ControllerDeps): ChatController {
    */
   async function resumeRun(runId: string): Promise<void> {
     if (disposed) return;
+    try {
+      await resumeAttach(runId);
+    } finally {
+      // THE ADOPTION GATE COMES DOWN ON EVERY ROAD OUT OF HERE (Bugbot PR
+      // #1061). `openSession` raises `adopting` before the first frame, and on
+      // the URL-`run` road NOTHING else lowers it: `adoptLiveRun` is skipped
+      // (that is `resumeRun`'s job) and only a live `pollLoop`'s first poll
+      // clears the flag. So every exit that never reaches the loop — a stale
+      // param, a run that finished while the frame was away, a bail on the
+      // send gate, a thrown probe — used to return with the gate still up,
+      // and the transcript kept `is-settling` (`visibility: hidden`) for the
+      // life of the page: a restored conversation, rendered and invisible.
+      //
+      // Idempotent and cheap: `setAdopting` only emits on a real change, so
+      // the ordinary live road (where the first poll already cleared it) pays
+      // nothing here.
+      setAdopting(false);
+    }
+  }
+
+  async function resumeAttach(runId: string): Promise<void> {
     if (sending) return;
     sending = true;
     const seat = ++sendSeq;
