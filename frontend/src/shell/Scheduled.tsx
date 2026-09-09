@@ -100,6 +100,7 @@ import {
 } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
+import { TasksSkeleton } from "./TasksSkeleton";
 import { useMissingFolders } from "./useMissingFolders";
 import { isUnderDir } from "./current-apps-lib";
 
@@ -670,10 +671,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           )}
 
           {!tasksLoaded ? (
-            // The rows' own skeleton, under the toolbar the schedule already
-            // let us draw: the page shape is settled, only the list is in the
-            // air. Eight bars — about a screen of rows at this row height.
-            <SkeletonLines rows={8} label="Loading tasks" />
+            // The view's own ghost, under the toolbar the schedule already let
+            // us draw: the page has its final shape from the first paint, and
+            // the reader can tell which view they are on before a row lands.
+            <TasksSkeleton view={view} />
           ) : view === "calendar" ? (
             <ScheduleCalendar
               // The FILTERED set, same as the other two views get: the toolbar's

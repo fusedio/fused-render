@@ -8291,6 +8291,25 @@ describe("provisionalTasks", () => {
     expect(taskUnread(none, new Set())).toBe(0);
   });
 
+  it("the page waits behind a ghost of the CURRENT view, not eight bars", () => {
+    // One ghost per view (TasksSkeleton), each built from the real view's
+    // container classes so the swap to rows moves nothing. Gated on the same
+    // `tasksLoaded` as before; the toolbar above it is already real.
+    const SCHED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
+    expect(SCHED).toContain("{!tasksLoaded ? (");
+    expect(SCHED).toContain("<TasksSkeleton view={view} />");
+    const SKEL = readFileSync(join(SHELL, "TasksSkeleton.tsx"), "utf8");
+    for (const cls of ["tasks-list-frame", "schedule-tv-board", "schedule-tv-lane",
+                       "task-cards", "schedule-cal-grid"]) {
+      expect(SKEL).toContain(`"${cls}`);
+    }
+    // The a11y attrs ride the ghost's ROOT, which is the view's own container
+    // class — `.schedule-main > .task-cards-scroll` and friends must match it.
+    expect(SKEL).toContain('role: "status"');
+    expect(SKEL).toContain('"aria-label": "Loading tasks"');
+    expect(SKEL).toContain('ghost("cards", "task-cards-scroll")');
+  });
+
   it("the List blanks the count AND the time cell of a provisional row", () => {
     // Both cells would otherwise print a default as a fact: `message_count` is
     // 0 by construction, and taskWhen, with no message window to read, falls
