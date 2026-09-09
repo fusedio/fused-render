@@ -772,6 +772,65 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.every((t) => !t.streaming)).toBe(true);
   });
 
+  // THE RELOAD ROAD into the same shape. A page that restored its transcript
+  // from `_history` and then sends into the still-open host has every earlier
+  // turn on screen and no memory of any payload — so `landedWindow` is empty
+  // and the window it gets back opens on the previous reply just the same. The
+  // FIRST payload's own seams answer it: a span the payload has already closed
+  // off ended before this send, because this loop was started BY the send.
+  test("a send into a restored session skips the turns already on screen", async () => {
+    const A = text("The answer from before the reload.");
+    const B = text("The new answer.");
+    const params = createMemoryParamsStore({ session_id: "s1" });
+    const { controller } = makeController(
+      {
+        // The restore itself: one user turn and its reply, already on screen.
+        history: () => ({
+          turns: [
+            { role: "user" as const, text: "earlier question", uuid: "u1" },
+            { role: "assistant" as const, text: A.text, uuid: "a1" },
+          ],
+        }),
+        live_run: () => ({ run_id: "" }),
+        live_host: () => ({ run_id: "r1" }),
+        send: () => ({ sent: true as const }),
+        start: () => {
+          throw new Error("the live host took it");
+        },
+        poll: (_f, n) => {
+          // `pending_echo` blanks the first lap, then the window opens on the
+          // reply that is already on screen with the seam that closed it.
+          if (n === 0) return poll({ segments: [], text: "" });
+          if (n === 1) {
+            return poll({
+              segments: [A, B],
+              text: A.text + B.text,
+              turn_breaks: [{ segments: 1, text: A.text.length }],
+            });
+          }
+          return poll({ done: true, segments: [B], text: B.text });
+        },
+      },
+      params,
+    );
+    await controller.openSession("s1");
+    expect(controller.getState().turns.map((t) => t.role)).toEqual(["user", "assistant"]);
+    await controller.sendMessage("and now this");
+
+    // The restored reply is untouched and unduplicated; the new one is its own
+    // bubble under its own message.
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply[0]!.text).toBe(A.text);
+    expect(reply[1]!.text).toBe(B.text);
+    expect(reply[1]!.text).not.toContain("before the reload");
+  });
+
   // VERIFIED LIVE, on :2019: a mid-stream follow-up drained AFTER the first
   // reply's `result` is a GENUINE turn boundary, not a fold-in — and agent.py
   // used to report no seam for one, on the reasoning that the cursor moves and

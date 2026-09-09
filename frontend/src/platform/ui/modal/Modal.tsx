@@ -28,6 +28,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useDeferredClose } from "@platform/lib/hooks";
+import { isTopmost, popModal, pushModal } from "./esc-stack";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 import {
   CLOSE_CONTROL_SELECTOR,
@@ -245,9 +246,22 @@ export function Modal({
   // Nested popovers (TemplatePicker, chip-draft inputs) stopPropagation on
   // their own Esc, which also stops the native event before it reaches this
   // document listener, so they close themselves without closing the modal.
+  //
+  // ONLY THE TOPMOST MODAL REACTS, which is what makes one press peel one
+  // layer when a dialog is nested inside another (see `openModals`). The token
+  // is this instance's own identity, registered for the life of the mount — the
+  // exit animation included, since a dialog still on screen is still a layer.
+  const token = useRef({});
+  useEffect(() => {
+    const mine = token.current;
+    pushModal(mine);
+    return () => popModal(mine);
+  }, []);
   useEffect(() => {
     const onDocKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") attemptClose();
+      if (e.key !== "Escape") return;
+      if (!isTopmost(token.current)) return;
+      attemptClose();
     };
     document.addEventListener("keydown", onDocKey);
     return () => document.removeEventListener("keydown", onDocKey);

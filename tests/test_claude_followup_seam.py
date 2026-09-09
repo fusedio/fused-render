@@ -245,7 +245,32 @@ def test_a_genuinely_new_turn_IS_a_seam(agent):
         "and the seam falls between the segments, never inside one")
 
 
-def test_a_wake_continuation_is_not_a_seam(agent):
+def test_a_wake_continued_turn_reports_no_seam(agent):
+    """Bugbot, PR #1061. A D415 wake appends more rows of the SAME displayed
+    turn after that turn's `result` — a `notice` divider and its continuation —
+    and when a genuinely new turn then opens there is no `result` adjacent to
+    the echo to cut at. Cutting at the earlier `result` anyway filed the wake's
+    own text under the turn that had not started yet."""
+    rows = [
+        _user_row("q1"), _text_row("A."), _result_row("A."),
+        {"type": "system", "subtype": "task_notification",
+         "message": "a task finished"},
+        _text_row("And the task is done."),
+        _user_row("q2"), _text_row("B."),
+    ]
+    # NOTHING, and that is the only honest answer. A seam is safe only at a
+    # `hard_break`, which `_segments_from_rows` puts at a `result` and nowhere
+    # else — with a wake in between, its continuation and the next reply are one
+    # merged text segment, so any offset here either files the wake's text under
+    # the turn that had not started yet or swallows the new reply whole. The
+    # page's shrink test still covers this shape, as it did before genuine
+    # boundaries were reported at all.
+    assert agent._absorbed_turn_breaks(rows) == []
+    segs = agent._segments_from_rows(rows)
+    assert [sg.get("kind") for sg in segs].count("text") >= 1
+
+
+def test_a_wake_with_nothing_after_it_is_not_a_seam(agent):
     """A D415 wake is a `result` followed by more rows of the SAME displayed
     turn and NO user echo — `_segments_from_rows` joins it with a `notice`
     divider — so it must not be split into two bubbles. The genuine-boundary

@@ -3810,9 +3810,11 @@ def _absorbed_turn_breaks(rows: list) -> list:
     # WITH one before it is a genuinely new turn (the cursor is about to advance
     # past it), an echo WITHOUT one was folded into the reply still in flight.
     seen_result = False
-    # A main-turn `result` this scan has not turned into a seam yet — see the
-    # genuine-boundary branch below.
+    # A main-turn `result` this scan has not turned into a seam yet, and the
+    # index of the row before the one being looked at (subagent rows skipped) —
+    # see the genuine-boundary branch below for why the ADJACENCY matters.
     last_result = None
+    last_main = None
     for i, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
@@ -3820,6 +3822,7 @@ def _absorbed_turn_breaks(rows: list) -> list:
         # `_read_current_turn`'s cursor and `_segments_from_rows` both make.
         if row.get("parent_tool_use_id"):
             continue
+        prev_main, last_main = last_main, i
         if row.get("type") == "result":
             seen_result = True
             if outstanding:
@@ -3827,7 +3830,7 @@ def _absorbed_turn_breaks(rows: list) -> list:
                 # seam — and one of the outstanding follow-ups is now the
                 # message the NEXT span answers.
                 outstanding -= 1
-                _seam(breaks, rows, i, shape)
+                _seam(breaks, rows, i + 1, shape)
                 last_result = None
             else:
                 # Not a seam YET. It becomes one if a new user turn shows up
@@ -3859,22 +3862,46 @@ def _absorbed_turn_breaks(rows: list) -> list:
                 # (`_segments_from_rows` joins it with a `notice` divider), so
                 # it never reaches this branch: only an echo can, and an echo
                 # is a new message by definition.
-                if last_result is not None:
-                    _seam(breaks, rows, last_result, shape)
+                # ONLY WHEN THE `result` IS THE ROW RIGHT BEFORE THIS ECHO.
+                #
+                # A D415 wake appends more rows of the SAME displayed turn after
+                # that `result` — a `notice` divider and its continuation — and
+                # a seam is only ever safe at a `hard_break`, which is what
+                # `_segments_from_rows` puts at a `result` and nowhere else. Cut
+                # anywhere else and the seam falls INSIDE a segment: with a wake
+                # in between, its continuation and the next reply are one merged
+                # text segment, so the offset either files the wake's text under
+                # the turn that had not started yet or swallows the new reply
+                # whole (Bugbot, PR #1061).
+                #
+                # So a wake-continued turn reports nothing here, exactly as it
+                # did before genuine boundaries were reported at all — the page
+                # still has its shrink test for that one, and the shape this
+                # branch exists for (a follow-up the CLI drained straight after
+                # the reply's `result`) has no wake in it by construction.
+                if last_result is not None and prev_main == last_result:
+                    _seam(breaks, rows, i, shape)
                     last_result = None
             else:
                 outstanding += 1
     return breaks
 
 
-def _seam(breaks: list, rows: list, i: int, shape: tuple) -> None:
-    """Record the seam that the `result` at `rows[i]` is, as payload offsets.
+def _seam(breaks: list, rows: list, end: int, shape: tuple) -> None:
+    """Record a seam at `rows[:end]`, as payload offsets.
 
-    The `segments` count and the `text` length of everything up to and
-    including that row, both measured through `_segments_from_rows` with the
-    WINDOW's own gates (`shape`) — so they are indices into the exact lists
-    `_poll` returns. See `_segments_from_rows`'s note on why the gates travel."""
-    prefix = _segments_from_rows(rows[:i + 1], shape)
+    `end` is EXCLUSIVE, and the two callers pass different things for good
+    reason: a fold-in's seam is the `result` that closed the reply the
+    follow-up was absorbed into (`i + 1`, the result included), while a genuine
+    boundary's is everything before the echo that opens the next turn (`i`) —
+    which is the same `result` PLUS anything a D415 wake appended to that turn
+    after it.
+
+    The `segments` count and the `text` length of that prefix, both measured
+    through `_segments_from_rows` with the WINDOW's own gates (`shape`) — so
+    they are indices into the exact lists `_poll` returns. See
+    `_segments_from_rows`'s note on why the gates travel."""
+    prefix = _segments_from_rows(rows[:end], shape)
     breaks.append({
         "segments": len(prefix),
         "text": sum(len(seg.get("text") or "")

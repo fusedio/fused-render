@@ -669,7 +669,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   // ---- the poll loop (T:16204-16428) -------------------------------------
 
-  async function pollLoop(runId: string, gen: number): Promise<void> {
+  async function pollLoop(
+    runId: string,
+    gen: number,
+    opts: { ownTurn?: boolean } = {},
+  ): Promise<void> {
     const seat = ++loopSeq;
     // This run is now the one the stop button aims at. Set here, the one place a
     // run is ever in flight, which covers a re-attached run for free.
@@ -766,6 +770,26 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // left standing past the loop that could use it would hide the opening of
     // some later turn instead.
     landedWindow = null;
+    /**
+     * A LOOP STARTED BY A SEND OWNS ONLY THE TURN IT SENT.
+     *
+     * `landedWindow` covers the case where THIS controller watched the previous
+     * reply land. It cannot cover the reload road: a page that restored its
+     * transcript from `_history` and then sent into the still-open host has
+     * every earlier turn on screen and no memory of any payload at all. The
+     * window it gets back opens on the previous reply just the same.
+     *
+     * So the FIRST payload's own seams answer it: a span the payload has
+     * already closed off (`turn_breaks`) is a reply that ended BEFORE this send
+     * — this loop was started by the send, so nothing it owns can have finished
+     * yet — and the last of those seams is exactly where this turn begins. It
+     * is adopted as the base, and everything below runs unchanged from there.
+     *
+     * Never set for an ADOPTED run (`resumeRun`, `adoptLiveRun`): there the
+     * earlier spans are a cold read of turns this page has not rendered, and
+     * skipping them would drop them.
+     */
+    let adoptFirstSeam = !!opts.ownTurn;
     let tick = 0;
 
     try {
@@ -875,6 +899,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
           prevSegLen = segs.length;
           prevTextLen = fullText.length;
           prevBreaks = reported.length;
+        }
+
+        // THE SPANS THIS LOOP DID NOT SEND, taken as the base — see
+        // `adoptFirstSeam`. Once only, off the first payload that carries a
+        // body: after that, a seam is this turn's own and belongs to a bubble.
+        if (adoptFirstSeam && anyBody) {
+          adoptFirstSeam = false;
+          const last = reported[reported.length - 1];
+          if (last && (last.segments > baseSeg || last.text > baseText.length)) {
+            baseSeg = last.segments;
+            baseText = fullText.slice(0, last.text);
+          }
         }
 
         // THE ALREADY-LANDED PREFIX RETIRES ITSELF the moment the window stops
@@ -1268,7 +1304,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // (PR-3, T:16673-16678).
       if (logGen === gen) {
         setRunParam(runId);
-        await pollLoop(runId, gen);
+        // `ownTurn`: this loop was started by THIS send, so anything the first
+        // payload has already closed off is a turn that ended before it — see
+        // `adoptFirstSeam`.
+        await pollLoop(runId, gen, { ownTurn: true });
       }
       // else: the reader left during start — the run continues server-side and
       // resumeRun can re-attach; the landing gains no run param.
