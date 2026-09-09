@@ -1842,11 +1842,15 @@ function TemplatePreview({
           EmbedStrip's "Open in explorer". The explorer stays put now; the
           embed's strip still carries the query back for anyone who wants it.
 
-          Over a DIRECTORY previewed by this view (a folder opened in one of its
-          non-listing modes) the kebab carries that one row alone: `isEntry`
-          is answered `false` up front — the folder is not a page — so none of
-          the app rows are asked for, and nothing probes the parent for MCP. */}
-      <EntryActionsMenu
+          Over a DIRECTORY previewed by this view in one of its NON-LISTING
+          modes the kebab carries that one row alone: `isEntry` is answered
+          `false` up front — the folder is not a page — so none of the app rows
+          are asked for, and nothing probes the parent for MCP. In LISTING mode
+          the listing owns the bar's kebab (Listing.tsx's EntryActionsMenu, with
+          its own Open in embed row), so this one stands down — two `⋮` in one
+          bar was the bug. */}
+      {!(stat.is_dir && isListing) && (
+        <EntryActionsMenu
           fsPath={fsPath}
           isEntry={stat.is_dir ? false : undefined}
           snapshotSha={snapshotSha}
@@ -1878,6 +1882,7 @@ function TemplatePreview({
           }
           onOpenMcp={() => setMcpOpen(true)}
         />
+      )}
       {/* The sidebar's OPENER, LAST in the bar — the shared control (SideChrome),
           which is where the "one affordance, two places, chosen by state" split
           between this button and the column's own close button is written down,

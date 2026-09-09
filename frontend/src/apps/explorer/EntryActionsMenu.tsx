@@ -98,6 +98,12 @@ export interface EntryActionsMenuProps {
   // over a folder that may well be one.
   mcp?: { available: boolean; pending: boolean; reason?: string };
   onOpenMcp: () => void;
+  // The host surface's OWN actions, appended after the app rows under a
+  // separator. The folder listing hands in its folder menu (lib/bar-menus'
+  // folderBarMenu: rename, new file/folder, paste, refresh, reveal, copy path,
+  // the splits) so the folder has ONE kebab rather than this one in the bar and
+  // a second `⋮` on the column header.
+  extraItems?: OverflowEntry[];
 }
 
 export function EntryActionsMenu({
@@ -110,6 +116,7 @@ export function EntryActionsMenu({
   onOpenEmbed,
   mcp,
   onOpenMcp,
+  extraItems,
 }: EntryActionsMenuProps) {
   const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
   const name = basename(dir);
@@ -271,9 +278,15 @@ export function EntryActionsMenu({
       : []),
   ];
 
+  if (extraItems && extraItems.length) {
+    if (items.length) items.push("separator");
+    items.push(...extraItems);
+  }
   // A trailing separator with nothing after it (an entry page over a surface
-  // with neither embed nor MCP) would draw a rule under the last row.
+  // with neither embed nor MCP) would draw a rule under the last row; a leading
+  // one (extras under no app rows) a rule over the first.
   while (items.length && items[items.length - 1] === "separator") items.pop();
+  while (items.length && items[0] === "separator") items.shift();
 
   // NOTHING QUALIFIES, NO KEBAB: OverflowMenu already renders nothing for an
   // empty list, so a plain folder that is not an app and publishes no MCP gets
