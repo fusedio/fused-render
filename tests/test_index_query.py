@@ -15,7 +15,7 @@ import pytest
 from fused_render.index import query as index_query
 from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig
-from fused_render.index.query import prune, stats
+from fused_render.index.query import _glob_to_regex, prune, resolve_query, stats
 from fused_render.index.store import Sink, compact
 
 
@@ -79,6 +79,114 @@ def test_prune_falls_back_to_the_byte_test_without_folded_bounds():
     assert prune(parts, "/Users/me") == parts
     assert prune(parts, "/users/me") == []
     assert prune(parts, "/zzz") == []
+
+
+# -- glob translation -----------------------------------------------------------
+
+@pytest.mark.parametrize("pattern,rel,expected", [
+    ("*.csv", "report.csv", True),
+    ("*.csv", "a/report.csv", False),
+    ("**/*.csv", "report.csv", True),
+    ("**/*.csv", "a/b/report.csv", True),
+    ("*/*.csv", "a/report.csv", True),
+    ("*/*.csv", "report.csv", False),
+    ("*/*.csv", "a/b/report.csv", False),
+    ("a/b/*.c", "a/b/x.c", True),
+    ("a/b/*.c", "a/b/c/x.c", False),
+    ("draft*", "draft1.txt", True),
+    ("draft*", "a/draft1.txt", False),
+    ("report?.csv", "report1.csv", False),  # ? is a literal character
+    ("report?.csv", "report?.csv", True),
+    ("[abc].csv", "[abc].csv", True),
+    ("[abc].csv", "a.csv", False),
+])
+def test_glob_to_regex_full_match_semantics(pattern, rel, expected):
+    import re as _re
+
+    regex = _glob_to_regex(pattern.lower())
+    assert bool(_re.fullmatch(regex[1:-1], rel.lower())) is expected
+
+
+# -- query resolution ------------------------------------------------------------
+#
+# The behaviour table from the spec, turned into tests: every row names a
+# typed string, the base it resolves against, and (via `mode`/`pattern`) how
+# far it reaches. `_home` below is a real directory tree on disk — base
+# resolution walks the filesystem, so a fake string root would silently
+# short-circuit every case that depends on a segment actually existing.
+
+@pytest.fixture()
+def _home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "a" / "b").mkdir(parents=True)
+    monkeypatch.setattr(os.path, "expanduser",
+                        lambda p: str(home) if p in ("~", "~/") else p)
+    return str(home)
+
+
+def test_resolve_bare_substring_query_is_any_depth_at_the_box_root():
+    out = resolve_query("/box", ".csv")
+    assert out == {"base": "/box", "pattern": ".csv", "mode": "substring"}
+    out = resolve_query("/box", "report")
+    assert out == {"base": "/box", "pattern": "report", "mode": "substring"}
+
+
+def test_resolve_star_with_no_slash_gets_the_implicit_any_depth_prefix():
+    out = resolve_query("/box", "*.csv")
+    assert out == {"base": "/box", "pattern": "**/*.csv", "mode": "glob"}
+    out = resolve_query("/box", "draft*")
+    assert out == {"base": "/box", "pattern": "**/draft*", "mode": "glob"}
+
+
+def test_resolve_leading_slash_anchors_at_depth_one():
+    out = resolve_query("/box", "/*.csv")
+    assert out == {"base": "/box", "pattern": "*.csv", "mode": "glob"}
+
+
+def test_resolve_one_slash_inside_reaches_exactly_two():
+    out = resolve_query("/box", "*/*.csv")
+    assert out == {"base": "/box", "pattern": "*/*.csv", "mode": "glob"}
+
+
+def test_resolve_explicit_any_depth_form_is_unchanged():
+    out = resolve_query("/box", "**/*.csv")
+    assert out == {"base": "/box", "pattern": "**/*.csv", "mode": "glob"}
+
+
+def test_resolve_tilde_star_escapes_to_home_at_depth_one(_home):
+    out = resolve_query("/box", "~/*.csv")
+    assert out == {"base": _home, "pattern": "*.csv", "mode": "glob"}
+
+
+def test_resolve_tilde_path_walks_to_the_deepest_real_directory(_home):
+    out = resolve_query("/box", "~/a/b/*.c")
+    assert out == {"base": _home + "/a/b", "pattern": "*.c", "mode": "glob"}
+
+
+def test_resolve_tilde_path_stops_at_the_first_glob_segment(_home):
+    out = resolve_query("/box", "~/a/*/b.csv")
+    assert out == {"base": _home + "/a", "pattern": "*/b.csv", "mode": "glob"}
+
+
+def test_resolve_a_missing_named_folder_widens_instead_of_failing(_home):
+    out = resolve_query("/box", "~/nope/x.csv")
+    assert out == {"base": _home, "pattern": "nope/x.csv", "mode": "substring"}
+
+
+def test_resolve_absolute_path_walks_the_filesystem(tmp_path):
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    out = resolve_query("/box", f"{etc}/*/x.conf")
+    assert out == {"base": str(etc), "pattern": "*/x.conf", "mode": "glob"}
+
+
+def test_resolve_leading_slash_with_no_real_directory_stays_anchored():
+    """The disambiguation's other branch: a leading `/` whose first segment
+    is not a real directory (here, none of `/nonexistent-xyz` exists) is read
+    as the depth-1 anchor, not an absolute path."""
+    out = resolve_query("/box", "/nonexistent-xyz/*.csv")
+    assert out == {"base": "/box", "pattern": "nonexistent-xyz/*.csv",
+                   "mode": "glob"}
 
 
 # -- stats ---------------------------------------------------------------------
