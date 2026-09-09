@@ -4,7 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Task, TaskMessage } from "@platform/lib/api";
+import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import { BOARD_COLUMNS, BOARD_LANES, cardFrameSrc, laneOf, peekFrameSrc } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
@@ -110,6 +110,7 @@ import {
   viewFromSearch,
   viewUrl,
   mergeTaskChanges,
+  provisionalTasks,
   emptyPaneText,
 } from "./tasks-lib";
 
@@ -3159,7 +3160,10 @@ describe("the one-message row's missing chevron", () => {
     // The guard is in the derived value, not in the render: a row in the List's
     // expanded set that stops being expandable closes, instead of being stuck open
     // with nothing left to close it.
-    expect(VIEWS).toContain("const expandable = isExpandable(task);");
+    // `&& !task.provisional` since 2026-09-09: a row painted from pulse has a
+    // DEFAULT message_count, not a count, so it is not an accordion until the
+    // full listing replaces it (tasks-lib.provisionalTasks).
+    expect(VIEWS).toContain("const expandable = isExpandable(task) && !task.provisional;");
     expect(VIEWS).toContain("const open = expandable && requested;");
     // The toggle is the CHEVRON's press now (2026-08-18) — the row's own press
     // opens the conversation — so the guard is the arm that renders the button at
@@ -8214,5 +8218,76 @@ describe("attentionRows", () => {
              project: "" }),
     ]);
     expect(nowhere[0].href).toBeNull();
+  });
+});
+
+describe("provisionalTasks", () => {
+  const row = (over: Partial<TaskPulseTask> = {}): TaskPulseTask => ({
+    key: "sess-1",
+    status: "in_progress",
+    unread: 2,
+    last_active: 1_700_000_000,
+    happened_at: 1_699_999_000,
+    project: "/Users/me/proj",
+    task_id: "TASK-002",
+    title: "Pull today's news",
+    target: "/Users/me/proj/news.py",
+    session_id: "sess-1",
+    ...over,
+  });
+
+  it("carries every pulse field through untouched", () => {
+    // The point of the seed: these ten fields are what a row DRAWS — its link,
+    // its ring, its chip, its title, its time — so a provisional row and the
+    // listing row that replaces it say the same things about all of them.
+    const [t] = provisionalTasks([row()]);
+    expect(t.key).toBe("sess-1");
+    expect(t.task_id).toBe("TASK-002");
+    expect(t.project).toBe("/Users/me/proj");
+    expect(t.target).toBe("/Users/me/proj/news.py");
+    expect(t.session_id).toBe("sess-1");
+    expect(t.title).toBe("Pull today's news");
+    expect(t.status).toBe("in_progress");
+    expect(t.unread).toBe(2);
+    expect(t.last_active).toBe(1_700_000_000);
+    expect(t.happened_at).toBe(1_699_999_000);
+  });
+
+  it("fills everything pulse does not carry with a neutral default", () => {
+    // NEUTRAL, not plausible: a guessed `live` or `failed` would put a shimmer
+    // or a red ring on a row this client knows nothing about, and every one of
+    // these is replaced whole when /api/tasks lands.
+    const [t] = provisionalTasks([row()]);
+    expect(t.messages).toEqual([]);
+    expect(t.message_count).toBe(0);
+    expect(t.live).toBe(false);
+    expect(t.failed).toBe(false);
+    expect(t.attention).toBeNull();
+    expect(t.description).toBe("");
+    expect(t.title_source).toBe("message");
+    expect(t.blocked_reason).toBe("");
+    expect(t.next_run).toBe(0);
+    expect(t.next_run_entry).toBe("");
+    expect(t.started).toBe(0);
+  });
+
+  it("marks the row provisional, and is not expandable", () => {
+    // The flag is the whole contract with the views: the count cell and the
+    // caret read it and draw placeholders rather than printing `message_count`
+    // as if it were a count (ScheduleTaskViews).
+    const [t] = provisionalTasks([row()]);
+    expect(t.provisional).toBe(true);
+    expect(isExpandable(t)).toBe(false);
+  });
+
+  it("is empty for an empty store, and keeps the store's order", () => {
+    // A fresh reload straight to /tasks has nothing in the pulse store yet, and
+    // the seed is then exactly the `[]` the page used to start from.
+    expect(provisionalTasks([])).toEqual([]);
+    const keys = provisionalTasks([
+      row({ key: "a", task_id: "TASK-001" }),
+      row({ key: "b", task_id: "TASK-002" }),
+    ]).map((t) => t.key);
+    expect(keys).toEqual(["a", "b"]);
   });
 });

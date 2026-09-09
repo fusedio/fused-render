@@ -1863,7 +1863,42 @@ def _row_order(row: dict) -> tuple:
     return (rank, -float(row.get("last_active") or 0.0))
 
 
+# One listing at a time. The scan caches above are filled by whichever request
+# first asks; two requests landing on a cold process (the sidebar's pulse and
+# the Tasks page fire within the same second) would otherwise each read every
+# transcript on the machine from byte zero. A warm listing is tens of
+# milliseconds, so serializing them costs nothing anyone can see, and a request
+# that arrives while `warm` is still reading waits for that one scan rather
+# than starting a second.
+_ROWS_LOCK = threading.Lock()
+
+
+def warm() -> None:
+    """Fill the transcript caches once, so the first real listing is warm.
+
+    The process starts with `_SCAN` and the head cache empty, and the first
+    `_task_rows` reads every transcript on the machine from byte zero — close to
+    a gigabyte and three seconds on a busy laptop — synchronously, inside
+    whichever request asked first. Called from the app's startup event on a
+    thread of its own (server/app.py), never from create_app: tests build apps
+    without lifespan and must not read the developer's real ~/.claude.
+    """
+    started = time.monotonic()
+    try:
+        rows = _task_rows()
+    except Exception:  # noqa: BLE001 — a warm that fails costs nothing but the warmth
+        logger.debug("tasks warm failed", exc_info=True)
+        return
+    logger.info("tasks warm: %d rows in %.2fs", len(rows), time.monotonic() - started)
+
+
 def _task_rows(only: frozenset | set | None = None) -> list[dict]:
+    """`_build_task_rows`, one caller at a time. See `_ROWS_LOCK`."""
+    with _ROWS_LOCK:
+        return _build_task_rows(only)
+
+
+def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     """Build the authoritative task rows shared by the two listing shapes.
 
     Keeping collection here makes the compact sidebar endpoint a projection of

@@ -21,7 +21,7 @@
 // changes.
 import { useEffect, useState } from "react";
 import { getTasksPulse } from "@platform/lib/api";
-import type { TaskPulseTask } from "@platform/lib/api";
+import type { Task, TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
   TASKS_SEEN_KEY,
@@ -183,6 +183,42 @@ export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
  *  origin writes (seen stamps, list memory) are the readers' own state. */
 export function pokeOnChatActivity(key: string | null) {
   if (key === CHAT_ACTIVITY_KEY) pokeTasks();
+}
+
+/**
+ * The rows as they stand RIGHT NOW, read synchronously.
+ *
+ * For a first render, not for a subscription — useTasksPulseRows is still the
+ * way to follow the rows over time. The Tasks page seeds its own state from
+ * this so it can paint before /api/tasks answers (which is 2.9s on a cold
+ * process): the sidebar's poll has usually already put every task's key,
+ * status, project and title in here, and a row drawn from those is the same row
+ * the listing will confirm. Empty until the first answer lands, which is the
+ * behaviour the page had before this existed.
+ */
+export function readTasksRows(): TaskPulseTask[] {
+  return tasks;
+}
+
+/**
+ * The last FULL /api/tasks answer of this JS session — remembered here, beside
+ * the pulse rows, because both are the same question asked at two widths.
+ *
+ * The Tasks page unmounts on every navigation (App keys it on the nav epoch),
+ * so List → Home → List used to throw away a complete listing and go back to a
+ * skeleton while the same 2.9s call ran again. Module scope outlives the
+ * component and dies with the reload, which is the right lifetime: a listing
+ * carried across a reload could be arbitrarily old, and there is nothing to
+ * invalidate it against before the page's own poll answers anyway.
+ */
+let listing: Task[] | null = null;
+
+export function rememberListing(next: Task[]) {
+  listing = next;
+}
+
+export function readListing(): Task[] | null {
+  return listing;
 }
 
 /** Hand over a known-fresh answer — what the Tasks page's own poll returned. */

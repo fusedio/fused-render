@@ -1636,7 +1636,13 @@ function TaskNode({
   // stops being expandable closes itself instead of being stuck open with no
   // control to close it. That cannot happen today (a thread never shrinks), but
   // "cannot happen" is not a thing to leave a render depending on.
-  const expandable = isExpandable(task);
+  // A PROVISIONAL row is never an accordion: its `message_count` is a default
+  // (tasks-lib.provisionalTasks), not a count, so "does this thread have more
+  // than one message in it" is a question pulse cannot answer yet. The gutter
+  // still draws — only the chevron goes — which is the same placeholder a
+  // one-message row already gets, and the row becomes expandable on its own
+  // when the listing lands and replaces it.
+  const expandable = isExpandable(task) && !task.provisional;
   const open = expandable && requested;
   const view = threadView(task, loaded);
   // Everything this thread holds, one list: the listing window before Show more,
@@ -2527,6 +2533,19 @@ function TaskNode({
             because none of its user entries is typed prose. This default is the
             preventive fix; the counter is a separate job.) */}
         {(() => {
+          // A PROVISIONAL row has no count to show — /api/tasks/pulse does not
+          // carry `message_count`, so the floor of one below would be a number
+          // this client invented. The cell is still DRAWN, with its ink hidden
+          // rather than its box removed: an absent chip would widen the title
+          // beside it and snap it back the moment the listing lands, and the
+          // whole point of painting early is that nothing jumps when it does.
+          if (task.provisional) {
+            return (
+              <span className="tasks-row-msgs tasks-row-msgs--blank" aria-hidden>
+                1<span className="tasks-row-msgs-icon">{ICON_MSG}</span>
+              </span>
+            );
+          }
           const shown = Math.max(1, task.message_count);
           return (
             <span

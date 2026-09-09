@@ -82,8 +82,21 @@ import {
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
-import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
-import { TASK_VIEWS, mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
+import {
+  publishTasks,
+  readListing,
+  readTasksRows,
+  rememberListing,
+  TASKS_POKE_EVENT,
+  useTasksFeeder,
+} from "./tasksPulse";
+import {
+  TASK_VIEWS,
+  mergeTaskChanges,
+  provisionalTasks,
+  viewFromSearch,
+  viewUrl,
+} from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { useMissingFolders } from "./useMissingFolders";
@@ -136,7 +149,19 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // make no calls", so the shared store stands down until this unmounts.
   useTasksFeeder();
   const [state, setState] = useState<ScheduleResult | null>(null);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  // NOT `[]`, because this page remounts on every navigation and /api/tasks is
+  // 2.9s on the first call of a server process — so a bare `[]` meant List →
+  // Home → List went back to a skeleton over a listing this session had already
+  // read, and a cold first visit showed nothing while the sidebar beside it
+  // already knew every task's name (see .claude-design/tasks-cold-load.md).
+  //
+  // Two seeds, best first: the last full listing of this JS session, else rows
+  // upcast from the pulse store the sidebar has been filling all along. Both
+  // are replaced whole by the poll below — this is what the page paints WHILE
+  // that call is in the air, not a cache it trusts.
+  const [tasks, setTasks] = useState<Task[]>(
+    () => readListing() ?? provisionalTasks(readTasksRows()),
+  );
   const [tasksFailed, setTasksFailed] = useState(false);
   // The rows as the changes loop below last saw them, and the server
   // generation they answer to. Refs, not state: the loop is one long-lived
@@ -295,6 +320,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
         // twenty seconds at a time. Publishing also restarts that module's own
         // timer, so while this page is open nothing else calls /api/tasks.
         publishTasks(r.tasks ?? []);
+        // And keep it for the next mount: this page is remounted on every
+        // navigation, and the seed above is what saves the trip back from
+        // paying for the listing twice.
+        rememberListing(r.tasks ?? []);
       },
       () => {
         setTasks([]);
@@ -384,6 +413,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             tasksRef.current = merged;
             setTasks(merged);
             publishTasks(merged);
+            // The merge is now the freshest full listing there is, so it — not
+            // the poll's older answer — is what a remount should seed from.
+            rememberListing(merged);
           }
         } catch {
           if (stopped) return;

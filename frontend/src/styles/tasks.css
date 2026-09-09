@@ -620,6 +620,16 @@ button.tasks-caret,
   gap: 3px;
 }
 
+/* A PROVISIONAL row's count cell (ScheduleTaskViews, tasks-lib.provisionalTasks):
+   the box a one-message row would occupy, with nothing visible in it. Painted
+   from /api/tasks/pulse before the full listing lands, this row has no count to
+   print — and `visibility` rather than `display: none` is the point, because the
+   cell has to hold its width until the real number arrives or the title beside
+   it would widen and then snap back on the swap. */
+.tasks-row-msgs--blank {
+  visibility: hidden;
+}
+
 /* Optically centred with the digits rather than sitting on their baseline: the
    glyph's box is taller than the numerals it stands beside. */
 .tasks-row-msgs-icon {
