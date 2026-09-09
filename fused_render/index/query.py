@@ -15,7 +15,6 @@ See specs/query.md.
 import logging
 import os
 import re
-import time
 
 from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig
