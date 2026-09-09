@@ -264,6 +264,7 @@ export default function Listing({
     rowsAnswerQuery,
     cappedAway,
     reason,
+    mode,
   } = useListingSearch(fsPath, refresh);
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
@@ -1709,7 +1710,7 @@ export default function Listing({
       cappedAway > 0
         ? `top ${visibleHits.length} of ${compact(hits.length)}${suffix}`
         : `${compact(hits.length)}${suffix}`;
-    searchCountFull = resultCountLabel(hits.length, searchState.truncated);
+    searchCountFull = resultCountLabel(hits.length, searchState.truncated, mode);
   }
 
   // --- index scan caveat ----------------------------------------------------
@@ -1729,6 +1730,23 @@ export default function Listing({
     searchCountFull = caveat.title;
     widePin = true;
   }
+
+  // Select-all covers every FETCHED row (navRows === visibleHits while
+  // searching), which is everything the ceiling (SEARCH_RANK_LIMIT /
+  // SEARCH_GLOB_RANK_LIMIT) let through — not necessarily everything that
+  // matched. `searchState.truncated` is that ceiling having bitten; selecting
+  // exactly the fetched set while it's true is the one moment the plain count
+  // would understate what got left out, so the chip owns up to it instead of
+  // implying a hundred-percent select-all.
+  const selectionShortfall =
+    searching &&
+    searchState.status === "ok" &&
+    searchState.truncated &&
+    sel.paths.length > 1 &&
+    sel.paths.length === visibleHits.length;
+  const selectionLabel = selectionShortfall
+    ? `${sel.paths.length} selected of ${compact(hits.length)}+`
+    : `${sel.paths.length} selected`;
 
   // Is anything pinned inside the search input right now? Mirrors the three
   // chip conditions in the render below; drives the input's right padding, so
@@ -1898,10 +1916,16 @@ export default function Listing({
                     {searchCount}
                   </span>
                 )}
-                {/* Multi-selection readout — a single selected row needs no count. */}
+                {/* Multi-selection readout — a single selected row needs no count.
+                    States the ceiling's shortfall (selectionShortfall above)
+                    rather than a plain count once select-all has picked up
+                    every fetched row and the server says there was more. */}
                 {sel.paths.length > 1 && (
-                  <span className="listing-search-count">
-                    {sel.paths.length} selected
+                  <span
+                    className="listing-search-count"
+                    title={selectionShortfall ? "More matches exist than were fetched" : undefined}
+                  >
+                    {selectionLabel}
                   </span>
                 )}
               </div>

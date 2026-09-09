@@ -81,3 +81,16 @@ test("exactly at the cap is not reported as capped", () => {
   expect(capHits(hits(SEARCH_RESULT_CAP))).toHaveLength(SEARCH_RESULT_CAP);
   expect(resultCountLabel(SEARCH_RESULT_CAP, false)).toBe("100 matches");
 });
+
+test("a glob answer renders every fetched hit, past SEARCH_RESULT_CAP", () => {
+  // Every glob match is equally relevant — there is no tail to trim, so the
+  // hundred-row display cap is a substring-only rule.
+  const all = hits(4880);
+  const shown = capHits(all, "glob");
+  expect(shown).toBe(all); // no slice at all, not even a copy
+});
+
+test("a glob answer's count never says 'Showing top N of'", () => {
+  expect(resultCountLabel(4880, false, "glob")).toBe("4,880 matches");
+  expect(resultCountLabel(4880, true, "glob")).toBe("4,880+ matches");
+});

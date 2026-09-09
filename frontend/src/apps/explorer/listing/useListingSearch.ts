@@ -49,6 +49,7 @@ import { nextStep, remembersAnswer, searchProgress } from "@apps/explorer/listin
 import {
   IDLE_SEARCH,
   SCAN_POLL_MS,
+  SEARCH_GLOB_RANK_LIMIT,
   SEARCH_RANK_LIMIT,
   URL_SYNC_MS,
   type SearchHit,
@@ -76,6 +77,10 @@ interface RankAnswer {
   truncated: boolean;
   total: number;
   reason: RankReason;
+  // Which mode the server actually ran (resolve_query's own call — see
+  // SPEC-one-search-language.md), never re-derived client-side: it is what
+  // decides which cap applies below (listing/result-cap).
+  mode: "substring" | "glob";
 }
 
 // `urlSync=false` (an embedded Listing, e.g. the preview pane's `_listing`
@@ -298,7 +303,11 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
       setPending(true);
       // The previous failure is not this request's verdict.
       setFailure("");
-      indexRank(fsPath, q, { signal: ctl.signal, limit: SEARCH_RANK_LIMIT, ranked: rankedPref }).then(
+      // Same disambiguation the server uses (resolve_query: mode is `"*" in
+      // raw`, unconditionally) — asked here only to pick how many rows are
+      // worth fetching before the answer says which mode actually ran.
+      const limit = q.includes("*") ? SEARCH_GLOB_RANK_LIMIT : SEARCH_RANK_LIMIT;
+      indexRank(fsPath, q, { signal: ctl.signal, limit, ranked: rankedPref }).then(
         (res) => {
           if (ctl.signal.aborted || sourceEpoch.current !== epoch) return;
           inflightKey.current = null;
@@ -312,6 +321,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
             truncated: res.truncated,
             total: res.total,
             reason: res.reason ?? "",
+            mode: res.mode,
           };
           // Remembered only once nothing is on its way to change it: an answer
           // taken mid-scan is a snapshot of a folder still being indexed.
@@ -454,10 +464,16 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // in flight at all.
   const rowsAnswerQuery = !searching || (!staleRows && !deferredStale);
 
-  // The rendered rows: the top of the ranking only (listing/result-cap). This
-  // is also what keyboard nav and auto-select walk, so they never address a
-  // row that is not on screen.
-  const visibleHits = useMemo(() => capHits(displayHits), [displayHits]);
+  // The mode the LAST settled answer actually ran under — "substring" once
+  // nothing has searched yet, since that is the cap capHits already defaults
+  // to.
+  const mode = answer?.mode ?? "substring";
+
+  // The rendered rows: the top of the ranking only for a substring answer; a
+  // glob answer's cap is the fetch limit alone (listing/result-cap), so every
+  // fetched hit renders. This is also what keyboard nav and auto-select walk,
+  // so they never address a row that is not on screen.
+  const visibleHits = useMemo(() => capHits(displayHits, mode), [displayHits, mode]);
 
   // How many ranked matches the cap is hiding — the counter reports the true
   // total and tells the user to narrow the query (listing/result-cap).
@@ -537,5 +553,6 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     visibleHits,
     rowsAnswerQuery,
     cappedAway,
+    mode,
   };
 }
