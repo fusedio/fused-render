@@ -5003,12 +5003,49 @@ def test_an_image_rows_page_is_the_caller_supplied_X_Fused_Page(
     _wait_job(started["jobId"])
 
 
-def test_an_image_row_with_no_X_Fused_Page_has_no_page(client, fake_image_runner):
+def test_an_image_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done(
+        client, fake_image_runner):
+    """The Playground raises a render with no `X-Fused-Page` at all (it runs
+    in the shell, not a page iframe — see `client.ts`'s own comment). The
+    OPENING report has nowhere to point yet, since the file does not exist
+    until the render finishes — but the terminal report does, and points the
+    row at the rendered file itself."""
     started = client.post("/api/ai/image", json={"prompt": "a red square"},
                           headers={"X-Fused": "1"}).json()
     row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
     assert row["page"] == ""
-    _wait_job(started["jobId"])
+    finished = _wait_job(started["jobId"])
+    assert finished["page"] == started["path"]
+
+
+def test_a_caller_supplied_page_still_wins_once_the_image_is_done(
+        client, fake_image_runner):
+    """An app that raised the render keeps opening that app — the output
+    path never overrides a real `X-Fused-Page`."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    finished = _wait_job(started["jobId"])
+    assert finished["page"] == "/tasks"
+
+
+def test_a_failed_image_render_with_no_caller_page_points_at_its_output_folder(
+        fake_image_runner, monkeypatch, tmp_path):
+    """A render that fails or is cancelled never wrote its file — pointing the
+    row at the missing file itself would open nothing. The folder that would
+    have held it still exists (the route creates it before the render
+    starts), so that is the destination instead."""
+    def boom(model, request, job):
+        raise RuntimeError("the worker choked")
+
+    monkeypatch.setattr(supervisor, "generate_image", boom)
+    out = tmp_path / "renders" / "one.png"
+    out.parent.mkdir(parents=True)
+    job = supervisor.image_job_id("f1")
+    supervisor.start_image("org/fake-image", {"prompt": "x", "out": str(out)}, job)
+    row = _row(job)
+    assert row["state"] == "error"
+    assert row["page"] == str(out.parent)
 
 
 def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
@@ -7088,6 +7125,32 @@ def test_a_video_rows_page_is_the_caller_supplied_X_Fused_Page(
     row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
     assert row["page"] == "/tasks"
     _wait_job(started["jobId"])
+
+
+def test_a_video_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done(
+        client, fake_video_runner):
+    """Same rule as the image path (`_start_render` is shared): no caller
+    page means the row points at its own rendered file once the render is
+    actually done and the file exists."""
+    started = client.post("/api/ai/video", json={"prompt": "a fox"},
+                          headers={"X-Fused": "1"}).json()
+    finished = _wait_job(started["jobId"])
+    assert finished["page"] == started["path"]
+
+
+def test_a_failed_video_render_with_no_caller_page_points_at_its_output_folder(
+        fake_video_runner, monkeypatch, tmp_path):
+    def boom(model, request, job):
+        raise RuntimeError("the worker choked")
+
+    monkeypatch.setattr(supervisor, "generate_video", boom)
+    out = tmp_path / "renders" / "one.mp4"
+    out.parent.mkdir(parents=True)
+    job = supervisor.video_job_id("f1")
+    supervisor.start_video("org/fake-video", {"prompt": "x", "out": str(out)}, job)
+    row = _row(job)
+    assert row["state"] == "error"
+    assert row["page"] == str(out.parent)
 
 
 # -- transcription (SPEC §40) ---------------------------------------------------

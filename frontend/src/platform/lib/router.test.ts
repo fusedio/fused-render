@@ -300,6 +300,18 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
     expect(page.url).toBe("/explorer/view/Users/me/Work/widget/index.html");
     expect(page.state).toEqual({ fsDir: false });
   });
+
+  test("a rendered output file paints as a file, not a directory — its own extension is the tell, not just .htm(l)", () => {
+    const png = pushedJobPage("/Users/me/Desktop/render.png");
+    expect(png.state).toEqual({ fsDir: false });
+    const video = pushedJobPage("/Users/me/Desktop/render.mp4");
+    expect(video.state).toEqual({ fsDir: false });
+    // A folder name that happens to contain a dot (a version suffix, say) is
+    // still a directory: the test is on the BASENAME's extension, not on
+    // whether "." appears anywhere in the path.
+    const dotDir = pushedJobPage("/Users/me/Work/widget-v1.2/output");
+    expect(dotDir.state).toEqual({ fsDir: true });
+  });
 });
 
 describe("isJobPageRoute", () => {

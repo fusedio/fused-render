@@ -1526,11 +1526,17 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     of opening a job row that immediately fails — the caller gets an error
     it can show, rather than a progress bar it has to watch die.
 
-    `page` is set only on this opening report: it is not part of a rebuild-
-    safe identity dict the way a transcription's row is (this row cannot be
-    evicted and rebuilt mid-render the same way a queue of transcriptions
-    can), and `jobs.upsert` keeps a truthy `page` already on the row through
-    every later tick that does not repeat it.
+    `page` is set both on this opening report AND on the terminal one — the
+    only two ticks that can name a destination this row did not already have.
+    A caller-supplied `page` (Playground's own app, an app that raised the
+    render over `X-Fused-Page`) wins outright and is set once, at open; a
+    render with NO caller page instead gets one on the CLOSING report, once
+    the output path is actually known — the rendered file itself on success,
+    or the folder that would have held it on a failure or a cancellation (the
+    file may not exist, but its parent directory always does — the caller
+    already created it before starting this render). Either way `jobs.upsert`
+    keeps a truthy `page` already on the row through every later tick that
+    does not repeat it, so the two writes never race each other.
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
@@ -1546,18 +1552,27 @@ def _start_render(capability: str, model: str, request: dict, job: str,
             cancellable=True, unit="", detail="Preparing…", done=None, total=None,
             page=page)
 
+    # Where the row opens when NOBODY raised this render from a page — the
+    # AI Models Playground runs in the shell, not in a page iframe, and has no
+    # `X-Fused-Page` of its own to send (see `client.ts`'s own comment on the
+    # call this row traces back to). The output path the route already picked
+    # (`request["out"]`) is the only destination available in that case, so it
+    # becomes one: the file itself once it exists, its folder if it never did.
+    out_dir = os.path.dirname(str(request.get("out") or "")) or None
+
     def run() -> None:
         try:
             result = generate(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
-                _report(job, state="cancelled")
+                _report(job, state="cancelled", page=page or out_dir or "")
             else:
-                _report(job, state="error", message=message)
+                _report(job, state="error", message=message, page=page or out_dir or "")
             return
         _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
-                detail=f"Saved {os.path.basename(result.get('path') or noun)}")
+                detail=f"Saved {os.path.basename(result.get('path') or noun)}",
+                page=page or result.get("path") or "")
 
     threading.Thread(target=run, name=thread_name, daemon=True).start()
 

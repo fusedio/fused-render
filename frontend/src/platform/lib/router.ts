@@ -530,7 +530,17 @@ export function navigateToJobPage(page: string): void {
     navigateUrl(page);
     return;
   }
-  navigate(page, { isDir: !/\.html?$/i.test(page) });
+  // The paint hint only: is this an fs path that names a FILE (an .html view,
+  // a rendered .png/.mp4) or a directory? A rendered output's own path is now
+  // a real destination (an image/video job with no X-Fused-Page opens the
+  // file itself), so the old `/\.html?$/i` test — which called every non-html
+  // path a directory, .png included — is wrong for it. Any basename ending in
+  // a recognisable extension (a dot with no further "/" or "." after it) is a
+  // file; anything else (a repo root, a folder with no dot in its name) is a
+  // directory. `.html`/`.htm` keep behaving exactly as before, since they are
+  // themselves an extension this test already matches.
+  const base = page.slice(page.lastIndexOf("/") + 1);
+  navigate(page, { isDir: !/\.[^./]+$/.test(base) });
 }
 
 // Whether `page` is one of the shell routes above rather than an fs path —
