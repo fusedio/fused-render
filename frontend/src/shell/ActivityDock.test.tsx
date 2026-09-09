@@ -6,8 +6,15 @@
 // use for the parts of a dock that are wrong in ways a screenshot won't show.
 import { expect, test } from "bun:test";
 
-import { retiredEngines } from "@shell/ActivityDock";
+// ActivityDock.tsx now renders DownloadManager's JobRow, which imports
+// router.ts (a terminal row's rowClick dispatches through `navigateToJobPage`)
+// — router.ts reads `location` at module scope, so the shim has to land
+// before the import, via a dynamic import exactly like JobRow.test.tsx's own.
+import { installDomShim } from "@platform/lib/testDomShim";
 import type { RunningEngine } from "@platform/lib/api";
+
+installDomShim();
+const { retiredEngines } = await import("@shell/ActivityDock");
 
 function engine(over: Partial<RunningEngine> = {}): RunningEngine {
   return {

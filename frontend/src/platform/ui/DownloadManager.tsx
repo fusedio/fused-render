@@ -75,6 +75,7 @@
 // "Cancelling…" until the work actually stops, rather than lying about it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStatusChip } from "@platform/lib/statusChip";
+import { navigateToJobPage } from "@platform/lib/router";
 import StatusChip from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
 import {
@@ -566,6 +567,27 @@ export function JobRow({
     }
   };
 
+  // A TERMINAL row with somewhere to go OPENS on click (SPEC-actionable-
+  // notifications.md): `job.page` widened from "who raised it" to "where
+  // clicking this row goes", and `navigateToJobPage` is the one place that
+  // turns either shape it can hold — an fs path or one of a handful of shell
+  // routes — into a real navigation. Gated on `isTerminal`, not just `page`
+  // truthiness, because `JobRow` is also `DownloadManagerView`'s own
+  // in-flight-jobs row, and a RUNNING job must never open — only a job that
+  // has already reached Notifications gets a whole-row click at all.
+  //
+  // A SUCCESS DISMISSES ITSELF ON OPEN, reusing the exact `dismiss()` above —
+  // having gone to look IS the acknowledgement. A FAILURE OR A CANCELLATION
+  // DOES NOT: D663 already fought (and won) the argument that a failure
+  // should clear itself on anything short of an explicit dismiss, and a
+  // click that also swept the row away would quietly resurrect the old 3s-TTL
+  // problem under a new trigger. Its ✕ still works exactly as before.
+  const canOpen = isTerminal(job) && !!job.page;
+  const open = () => {
+    navigateToJobPage(job.page);
+    if (job.state === "done") void dismiss();
+  };
+
   // NO EXEMPTION FOR "done" HERE (C1 fix): `JobRow` is reused verbatim by
   // `RepoUpdatesDock.tsx` to draw every terminal job — done, error and
   // cancelled alike — in Notifications, and a `done` job returning null left
@@ -634,6 +656,7 @@ export function JobRow({
       progress={jobProgress(job)}
       terminal={isTerminal(job) ? (job.state as "done" | "error" | "cancelled") : undefined}
       status={statusLine || undefined}
+      rowClick={canOpen ? { onClick: open, title: `Open ${job.title}` } : undefined}
     />
   );
 }

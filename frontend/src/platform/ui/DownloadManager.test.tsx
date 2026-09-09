@@ -21,15 +21,22 @@
 import { describe, expect, it, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
-import {
-  DownloadManagerView,
-  engineLabel,
-  engineDetail,
-  engineKind,
-  type EnginesSlot,
-} from "@platform/ui/DownloadManager";
+// DownloadManager.tsx now imports router.ts (a terminal row's rowClick
+// dispatches through `navigateToJobPage`), which reads `location` at module
+// scope (`IS_EMBED`) — this file otherwise renders with no DOM at all, so
+// the shim has to land before the import, via a dynamic import exactly like
+// router.test.ts's own (see testDomShim.ts's header for why every suite
+// that needs this shares the one shim rather than hand-rolling its own
+// globals).
+import { installDomShim } from "@platform/lib/testDomShim";
+import type { EnginesSlot } from "@platform/ui/DownloadManager";
 import { engineDuration, jobAmount, type Job } from "@platform/lib/jobs";
 import type { RunningEngine } from "@platform/lib/api";
+
+installDomShim();
+const { DownloadManagerView, engineLabel, engineDetail, engineKind } = await import(
+  "@platform/ui/DownloadManager"
+);
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];

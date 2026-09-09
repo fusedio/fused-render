@@ -12,8 +12,18 @@ import { expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 import type { ReactTestRendererJSON } from "react-test-renderer";
 
-import { JobRow } from "@platform/ui/DownloadManager";
+// DownloadManager.tsx now imports router.ts (a terminal row's rowClick
+// dispatches through `navigateToJobPage`), which reads `location` at module
+// scope (`IS_EMBED`) — this file otherwise renders JobRow with no DOM at
+// all, so the shim has to land before the import, via a dynamic import
+// exactly like router.test.ts's own (see testDomShim.ts's header for why
+// every suite that needs this shares the one shim rather than hand-rolling
+// its own globals).
+import { installDomShim } from "@platform/lib/testDomShim";
 import type { Job } from "@platform/lib/jobs";
+
+installDomShim();
+const { JobRow } = await import("@platform/ui/DownloadManager");
 
 const BASE: Job = {
   id: "a",
@@ -297,6 +307,121 @@ test("the dismiss control disables while its own request is in flight, so a seco
 
   resolveFn({ dismissed: BASE.id });
   await clicked;
+});
+
+// ---- a terminal row with a destination opens it, and clears itself (SPEC-actionable-notifications.md) --
+
+// Captures whatever url a rowClick's `navigateToJobPage` pushes, without
+// touching the shared shim's own no-op — restored after each use so the next
+// test's shim call still sees the plain stub testDomShim.ts installed.
+function pushedUrl(run: () => void): string {
+  const hist = globalThis.history as { pushState: (s: unknown, t: string, u: string) => void };
+  const prev = hist.pushState;
+  let url = "";
+  hist.pushState = (_s, _t, u) => {
+    url = u;
+  };
+  try {
+    run();
+  } finally {
+    hist.pushState = prev;
+  }
+  return url;
+}
+
+test("a done job's row opens its page and dismisses itself, the same way its own ✕ would", async () => {
+  const theJob = { ...BASE, state: "done" as const, page: "/ai-models/local" };
+  let dismissCalls = 0;
+  const dismissFn = () => {
+    dismissCalls += 1;
+    return Promise.resolve({ dismissed: BASE.id });
+  };
+  const patched: Job[][] = [];
+  const tree = create(
+    <JobRow
+      job={theJob}
+      onChanged={() => {}}
+      onPatch={(fn) => patched.push(fn([theJob]))}
+      dismissFn={dismissFn}
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  expect(findAll(root, "dl-row-open")).toHaveLength(1);
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  await act(async () => {
+    pushedUrl(onClick);
+    await Promise.resolve();
+  });
+  expect(dismissCalls).toBe(1);
+  expect(patched[0]).toEqual([]); // the same onPatch filter dismiss() always applies
+});
+
+test("a done job's row navigates to its page", () => {
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "done", page: "/ai-models/local" }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={() => new Promise(() => {})} // never settles — isolates the nav assertion
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  const url = pushedUrl(() => act(() => onClick()));
+  expect(url).toBe("/ai-models/local");
+});
+
+test("an error job's row navigates too, but does NOT dismiss itself — only the ✕ can", () => {
+  // D663's own reversal (the deleted 3s TTL): a failure stays until an
+  // explicit dismiss, regardless of the fact that it now has a destination.
+  const onPatch = () => {
+    throw new Error("onPatch must not run — a failure's row must not clear on click");
+  };
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "error", message: "boom", page: "/ai-models/benchmark" }}
+      onChanged={() => {}}
+      onPatch={onPatch}
+      dismissFn={() => Promise.resolve({ dismissed: BASE.id })}
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  const url = pushedUrl(() => act(() => onClick()));
+  expect(url).toBe("/ai-models/benchmark");
+  expect(findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row").length).toBeGreaterThan(0);
+});
+
+test("a cancelled job's row navigates too, but does NOT dismiss itself either", () => {
+  const onPatch = () => {
+    throw new Error("onPatch must not run — a cancelled row must not clear on click");
+  };
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "cancelled", page: "/claude-config" }}
+      onChanged={() => {}}
+      onPatch={onPatch}
+      dismissFn={() => Promise.resolve({ dismissed: BASE.id })}
+    />,
+  );
+  const root = tree.toJSON() as ReactTestRendererJSON;
+  const row = findAll(root, "dl-row")[0];
+  const onClick = (row.props as { onClick: () => void }).onClick;
+  const url = pushedUrl(() => act(() => onClick()));
+  expect(url).toBe("/claude-config");
+});
+
+test("a terminal job with no page at all draws no rowClick — nothing to open", () => {
+  const root = renderRow({ ...BASE, state: "done", page: "" });
+  expect(findAll(root, "dl-row-open")).toHaveLength(0);
+});
+
+test("a RUNNING job never opens on click, even when it names a page — only a terminal row does", () => {
+  const root = renderRow({ ...BASE, state: "running", page: "/ai-models/local" });
+  expect(findAll(root, "dl-row-open")).toHaveLength(0);
 });
 
 test("a bare running row's fallback status measures against the caller's clock, not the browser's (C4)", () => {

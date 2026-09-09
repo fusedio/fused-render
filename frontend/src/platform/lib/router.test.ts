@@ -11,7 +11,7 @@ import { installDomShim } from "./testDomShim";
 // installs, rather than a stub hand-rolled per file.
 installDomShim();
 
-const { navigate, rewriteLegacyUrl, withPreviewFlag } = await import("./router");
+const { navigate, navigateToJobPage, rewriteLegacyUrl, withPreviewFlag } = await import("./router");
 const { setResolvedSnapshot } = await import("./snapshot-param");
 const setSnapshotAppDir = (appDir: string | null) =>
   setResolvedSnapshot(appDir ? { sha: "abc1234", dir: "/cache/k/abc1234", app_dir: appDir } : null);
@@ -255,4 +255,48 @@ test("withPreviewFlag stamps the thumbnail param", () => {
   // Idempotent: cards rebuild src every render; accumulating would reload.
   const once = withPreviewFlag("/render?path=x");
   expect(withPreviewFlag(once)).toBe(once);
+});
+
+// Job.page carries either a shell route (widened meaning,
+// SPEC-actionable-notifications.md) or an absolute fs path — syntactically
+// indistinguishable, since both start with "/". navigateToJobPage is the one
+// place that turns either shape into an actual navigation, checking a small
+// closed table of the routes a job can legitimately name before falling back
+// to treating the value as an fs path.
+function pushedJobPage(page: string): { url: string; state: unknown } {
+  const hist = globalThis.history as {
+    pushState: (state: unknown, title: string, url: string) => void;
+  };
+  const prevPush = hist.pushState;
+  let url = "";
+  let state: unknown;
+  hist.pushState = (s, _t, u) => {
+    url = u;
+    state = s;
+  };
+  try {
+    navigateToJobPage(page);
+  } finally {
+    hist.pushState = prevPush;
+  }
+  return { url, state };
+}
+
+describe("navigateToJobPage dispatches a Job.page value", () => {
+  test("a known shell route goes through navigateUrl untouched", () => {
+    expect(pushedJobPage("/ai-models/local").url).toBe("/ai-models/local");
+    expect(pushedJobPage("/ai-models/benchmark").url).toBe("/ai-models/benchmark");
+    expect(pushedJobPage("/claude-config").url).toBe("/claude-config");
+    expect(pushedJobPage("/preferences").url).toBe("/preferences");
+  });
+
+  test("anything else is an fs path — a directory unless it ends in .htm(l)", () => {
+    const repoRoot = pushedJobPage("/Users/me/Work/widget");
+    expect(repoRoot.url).toBe("/explorer/view/Users/me/Work/widget");
+    expect(repoRoot.state).toEqual({ fsDir: true });
+
+    const page = pushedJobPage("/Users/me/Work/widget/index.html");
+    expect(page.url).toBe("/explorer/view/Users/me/Work/widget/index.html");
+    expect(page.state).toEqual({ fsDir: false });
+  });
 });

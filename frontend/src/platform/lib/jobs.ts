@@ -60,7 +60,13 @@ export interface Job {
   total_estimated: boolean;
   unit: string; // "bytes" | "s" | "" — decides how done/total are formatted
   message: string; // the error text when state is "error"; the question's caption when state is "waiting"
-  page: string; // the .html that raised it (attribution)
+  // Where clicking this row goes, once it lands in Notifications — an
+  // absolute fs path (the .html that raised it, or a server producer's own
+  // repo root/output folder) OR one of a handful of shell routes a few
+  // server producers name directly (router.ts's `navigateToJobPage` is the
+  // one place that tells the two shapes apart and turns either into a real
+  // navigation). Empty for a job no destination has been given yet.
+  page: string;
   owner: JobOwner;
   cancellable: boolean;
   cancel_requested: boolean;
