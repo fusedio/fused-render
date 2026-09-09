@@ -39,17 +39,15 @@ import { createPortal } from "react-dom";
 import {
   IS_PANEL_PANE,
   IS_SNAPSHOT,
-  encodeFsPathSegments,
+  embedUrlForFsPath,
   navigate,
-  navigateUrl,
   replaceSearch,
 } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { useUrlVersion } from "@platform/lib/hooks";
-import { addCurrentApp, getAppEntry } from "@platform/lib/api";
+import { getAppEntry } from "@platform/lib/api";
 import { shortSha, snapshotListing } from "@platform/lib/snapshot-param";
 import { useSnapshotForFolder } from "@apps/explorer/listing/useSnapshotForFolder";
-import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
 import { basename, formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
@@ -58,7 +56,7 @@ import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
-import { EllipsisIcon } from "@apps/explorer/BarMenu";
+import type { OverflowEntry } from "@apps/explorer/BarMenu";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import { AccessDenied, isAccessDenied } from "@apps/explorer/AccessDenied";
@@ -101,7 +99,11 @@ import {
   subscribePendingClaudeAsk,
   takePendingClaudeAsk,
 } from "@apps/explorer/lib/pending-claude-ask";
-import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
+import { SideToggleButton } from "@apps/explorer/SideChrome";
+import { EntryActionsMenu, canonEntryPath } from "@apps/explorer/EntryActionsMenu";
+import { McpDialog } from "@apps/explorer/McpDialog";
+import { withNoFocus } from "@platform/lib/frame-focus";
+import { unavailableReason } from "@platform/lib/mode-visibility";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
@@ -381,8 +383,8 @@ export default function Listing({
   const folderClaude = useDirMode(paneEnabled ? fsPath : null, "claude");
   const folderGit = useDirMode(paneEnabled ? fsPath : null, "git");
   // `mcp` for the same reason as `git`: the manifest it curates covers the FOLDER
-  // (templates/mcp/condition.py), so a folder that is not an app shows the pill
-  // disabled rather than not at all.
+  // (templates/mcp/condition.py). Not a pane mode — it gates the kebab's "MCP
+  // config" row (below) and the dialog behind it.
   const folderMcp = useDirMode(paneEnabled ? fsPath : null, "mcp");
   // While the probe is in flight the entries are PLACEHOLDERS with no template
   // path (lib/dir-mode), which would build a `path=null` iframe URL — so a
@@ -398,17 +400,34 @@ export default function Listing({
   // mode's REAL icon — lib/dir-mode keeps a denied entry for exactly that, so the
   // Git row is the Git glyph dimmed instead of a boxed "G". Nothing else reads
   // either; what the pane may BE is still `claude`/`git` alone.
+  //
+  // MCP IS NOT A PANE MODE (listing/pane-side's PANE_SIDE_COMPANIONS): the
+  // pane's switcher is a two-tab strip over Claude and Git (SideChrome's
+  // SideTabs), and the MCP companion opens as a dialog off the search row's
+  // kebab (EntryActionsMenu → McpDialog, the same arrangement the file preview
+  // has). The `folderMcp` probe above feeds that row alone, through `mcpSrc`.
   const sideEntries = {
     claude: folderClaude.pending ? null : folderClaude.entry,
     git: folderGit.pending ? null : folderGit.entry,
-    mcp: folderMcp.pending ? null : folderMcp.entry,
     claudePending: folderClaude.pending,
     gitPending: folderGit.pending,
-    mcpPending: folderMcp.pending,
     claudeBound: folderClaude.bound,
     gitBound: folderGit.bound,
-    mcpBound: folderMcp.bound,
   };
+  // The MCP dialog's document — the URL ListingPreviewPane built for the mcp
+  // pane (`_file` is the folder, `_noopen=1` so the render is not recorded as an
+  // app open), or null while the probe is out or where the folder is not an app.
+  const mcpSrc =
+    !folderMcp.pending && folderMcp.entry && folderMcp.entry.path !== null
+      ? withNoFocus(
+          `/render?path=${encodeURIComponent(folderMcp.entry.path)}` +
+            `&_file=${encodeURIComponent(fsPath)}&_noopen=1`
+        )
+      : null;
+  const [mcpOpen, setMcpOpen] = useState(false);
+  useEffect(() => {
+    setMcpOpen(false);
+  }, [fsPath]);
   const paneOpen = pane.on && sideState.open;
   // One writer for both halves of the state, and it writes the URL only where the
   // listing owns one: a frozen-tree snapshot and a panel pane are each a whole
@@ -939,27 +958,8 @@ export default function Listing({
     };
   }, [base]);
 
-  // The ONE "Open in project" click, shared by the pane strip's button and its
-  // shut-pane fallback in the bar so they can't drift. Gated on the folder
-  // having an entry page (it IS an app), it puts the folder on the sidebar's
-  // desk (POST /api/current-apps/add — a no-op when the row is already there,
-  // which then simply reads as the active row) and hops to the folder's app
-  // page, `/apps/<folder>` — spelled here rather than imported from
-  // shell/current-apps-lib's appPageUrl because an app may not import the
-  // shell (Preview.tsx's Migrate button does the same). The add is awaited
-  // and announced before the hop so the row is on top the moment the page
-  // paints; a failed add still opens the page — the desk is a convenience,
-  // the page is the point.
-  const openAppEntry = async () => {
-    if (!appEntryPath) return;
-    try {
-      await addCurrentApp(base);
-      announceCurrentAppsChanged();
-    } catch {
-      /* the page still opens; the row shows up on the next task under it */
-    }
-    navigateUrl("/apps/" + encodeFsPathSegments(base));
-  };
+  // "Open in project" itself — desk add, then `/apps/<folder>` — is
+  // EntryActionsMenu's row now, on the search row's kebab, gated on this answer.
 
   const paneSides = paneSideList(sideEntries);
   // UNDECIDED — this folder's companion probes have not answered yet (pane-side's
@@ -1374,64 +1374,12 @@ export default function Listing({
     setMenu({ x: e.clientX, y: e.clientY, items: backgroundMenu() });
   };
 
-  // The header `⋮` (right end of the MODIFIED column). Everything here is about
-  // THIS FOLDER, which is what the crumb bar's own `⋮` used to be for over a
-  // listing — that one is gone (Breadcrumb.tsx) and its two unique items moved
-  // in below the background menu's set, so there is one place to look instead
-  // of a path menu and a right-click each holding half the folder's actions.
-  //
-  // Discoverability is the whole point of the button: the same items were
-  // already a right-click on the background, which nobody finds, and which an
-  // empty folder gives you no obvious surface to try.
-  //
-  // `barMenu()` (useFileOps -> lib/bar-menus) is the list, not an array built
-  // here: a right-click anywhere on the crumb bar opens the same one, and two
-  // copies of "the folder's actions plus the splits" is how the two surfaces
-  // would end up disagreeing about what the folder can do.
-  const openHeaderMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
-    e.preventDefault();
-    e.stopPropagation(); // never sorts — the th around it is a sort control
-    const r = e.currentTarget.getBoundingClientRect();
-    setMenu({
-      // Right-ish alignment by hand: ContextMenu only clamps at the VIEWPORT
-      // edge, and with a preview pane open this button is nowhere near it, so
-      // an unbiased x would hang the popup off to the right of the column.
-      // 220 is the menu's own min-width (context-menu.css).
-      x: Math.max(4, r.right - 220),
-      y: r.bottom + 2,
-      items: barMenu(),
-    });
-  };
-
-  // The folder's `⋮`, absolutely positioned against the LAST header cell's
-  // right edge (the th is sticky, so it is already the positioned ancestor) —
-  // NOT a fourth column: rows have three cells, and a column they don't render
-  // breaks their backgrounds. It overlays the header's own padding, which is
-  // why .col-mtime reserves room for it (explorer.css) rather than letting it
-  // land on the sort arrow.
-  // Both handlers stop propagation: the normal header's th sorts on click, and
-  // a press that re-sorts the listing under the menu about to open is not what
-  // the button says it does. One element, three homes — the mtime th, the
-  // search header's Path th, and (labels hidden) the empty folder's strip —
-  // because the actions act on the current folder in every one of them.
-  //
-  // Only where this listing OWNS the bar chrome: the menu replaces the crumb
-  // bar's path `⋮`, so it belongs to the same view that dropped it. A
-  // snapshot's or a panel pane's listing never had that menu — and its "Split
-  // right" would rewrite the SHELL's URL from inside a nested surface.
-  const headerMenuBtn = !ownsBarChrome ? null : (
-    <button
-      type="button"
-      className="listing-head-menu"
-      aria-haspopup="menu"
-      aria-label="Folder actions"
-      title="Folder actions"
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={openHeaderMenu}
-    >
-      <EllipsisIcon />
-    </button>
-  );
+  // The folder's `⋮` used to sit on the MODIFIED column header (and on the
+  // search view's Path header, and on an empty folder's bare strip), opening
+  // `barMenu()`. It is gone: the bar's kebab (EntryActionsMenu, in the search
+  // row) carries that same list under the app rows, so a folder has ONE `⋮`.
+  // `barMenu()` itself stays the single source — the crumb bar's right-click
+  // opens it too (publishTopbarMenu).
 
   // --- table body -----------------------------------------------------------
 
@@ -1979,38 +1927,82 @@ export default function Listing({
                   Here rather than in the crumb bar because over a folder THIS ROW
                   is the bar (it portals into it — search-slot.ts), and this is the
                   folder's own chrome, beside the folder's own search box. */}
-              {/* OPEN IN PROJECT, the SHUT-PANE FALLBACK. Its home is the pane's own
-                  strip, beside the chevron and the pill (ListingPreviewPane) — the
-                  button is about the pane's SUBJECT, so it belongs to the pane. With
-                  the pane shut there is no strip to live in, and this row is the
-                  folder's own chrome, so it lands here instead of vanishing with the
-                  column.
+              {/* THE KEBAB (EntryActionsMenu), the folder's app-level one-shots:
+                  App Doctor, Download app, Open as project — gated on the folder
+                  having an entry page (`appEntryPath`: it IS an app) — and MCP
+                  config, gated on the folder publishing a manifest. Whether or not
+                  the pane is open: this row is the folder's own chrome, and the
+                  pane's strip is the tab strip alone. "Open in project" used to
+                  stand here as a bordered button while the pane was shut and in the
+                  pane's strip while it was open; one kebab in one place replaces
+                  both copies. A folder that qualifies for none of the rows gets no
+                  `⋮` at all (the menu renders nothing on an empty list). Not on a
+                  snapshot or a panel pane (`paneEnabled`), where the companions are
+                  off too.
 
-                  `!paneOpen` and not `!pane.on`: a pane the user has closed
-                  (`_side=off`) is the case this exists for. When the pane is open the
-                  strip has it and a second copy here would be two buttons for one
-                  action a few pixels apart, which reads as a rendering fault.
-
-                  It hops to the folder's app page (`/apps/<folder>`) and puts the
-                  folder on the sidebar's desk on the way — `openAppEntry`, above.
-                  It used to open the entry page itself ("Open app"); the app page's
-                  Overview tab frames that page, so nothing is lost. */}
-              {!paneOpen && appEntryPath && (
-                <button
-                  type="button"
-                  className="bar-ctl bar-ctl-bordered"
-                  title={"Open " + basename(base) + " as a project"}
-                  onClick={openAppEntry}
-                >
-                  Open in project
-                </button>
+                  The entry page is what the rows act on (export's `entry_html`),
+                  with `<folder>/index.html` as a stand-in when there is none so
+                  the folder is still what the menu resolves. */}
+              {(paneEnabled || ownsBarChrome) && (
+                <EntryActionsMenu
+                  /* The server's answer is os.path.abspath — backslashes on
+                     Windows — and the menu derives the folder with a "/" split,
+                     so it goes through the same drive-letter-only normalisation
+                     the file surface applies before comparing. */
+                  fsPath={appEntryPath ? canonEntryPath(appEntryPath) : fsPath + "/index.html"}
+                  isEntry={paneEnabled && appEntryPath !== null}
+                  mcp={
+                    paneEnabled
+                      ? {
+                          available: mcpSrc !== null,
+                          pending: folderMcp.pending,
+                          reason: unavailableReason("mcp"),
+                        }
+                      : undefined
+                  }
+                  onOpenMcp={() => setMcpOpen(true)}
+                  /* Open in embed — this listing under the chrome-free embed
+                     prefix, in a new tab, `_mode=_listing` stamped so the embed
+                     shows the LISTING rather than hopping to the folder's app
+                     entry (the same stamp the file preview's row writes). Only
+                     where this listing owns the bar: a panel pane or a snapshot
+                     is not a page of its own to open. */
+                  onOpenEmbed={
+                    ownsBarChrome
+                      ? () => {
+                          const search = location.search;
+                          const stamped = new URLSearchParams(search).has("_mode")
+                            ? search
+                            : (search ? search + "&" : "?") + "_mode=_listing";
+                          window.open(embedUrlForFsPath(fsPath, stamped), "_blank", "noopener");
+                        }
+                      : undefined
+                  }
+                  /* The folder's own actions (lib/bar-menus' folderBarMenu via
+                     `barMenu()`) — what the column header's `⋮` used to open.
+                     Rebuilt per render, which is how Paste's enabled state
+                     tracks the clipboard. Submenu rows have no home in this
+                     flat menu; the folder menu has none. */
+                  extraItems={
+                    ownsBarChrome
+                      ? barMenu().flatMap((e): OverflowEntry[] =>
+                          e === "separator"
+                            ? [e]
+                            : e.submenu
+                              ? []
+                              : [{
+                                  label: e.label,
+                                  icon: e.icon,
+                                  disabled: e.disabled,
+                                  onClick: e.onClick ?? (() => {}),
+                                }]
+                        )
+                      : undefined
+                  }
+                />
               )}
               {pane.on && !sideState.open && (
-                <SideToggleButton
-                  what={modeTitle(paneSide)}
-                  icon={paneSideIcon(paneSide, sideEntries)}
-                  onClick={openSide}
-                />
+                <SideToggleButton what={modeTitle(paneSide)} onClick={openSide} />
               )}
               {/* The path `···` is not here any more: it rides the crumb strip
                   now (Breadcrumb.tsx), immediately right of the folder name it
@@ -2053,9 +2045,8 @@ export default function Listing({
           >
             <table className="listing-table">
               {/* Over an empty folder the column LABELS hide (visibility, see
-                  .listing-head-empty) but the strip stays: the folder `⋮`
-                  lives on it, and an empty folder is where that menu matters
-                  most. */}
+                  .listing-head-empty); the strip itself stays so the table
+                  keeps its shape under the "Empty directory" message. */}
               <thead className={emptyDir ? "listing-head-empty" : undefined}>
                 <tr>
                   {searching ? (
@@ -2065,14 +2056,7 @@ export default function Listing({
                     // that by name or date presents it as an answer it isn't,
                     // and the search box already says the coverage is
                     // approximate (listing/index-caveat).
-                    // The folder `⋮` stays through a search: its actions act on
-                    // the CURRENT folder either way, and search replacing the
-                    // one header that carried it would make the control come
-                    // and go with the query.
-                    <th className="col-name">
-                      Path
-                      {headerMenuBtn}
-                    </th>
+                    <th className="col-name">Path</th>
                   ) : (
                     (Object.entries(SORT_KEYS) as [SortKey, string][]).map(
                       ([key, label]) => (
@@ -2088,8 +2072,7 @@ export default function Listing({
                           }}
                         >
                           {/* Wrapped so the empty-folder state can hide the
-                              LABEL without unmounting the strip — the `⋮` on
-                              this row must survive it (explorer.css,
+                              LABEL without unmounting the strip (explorer.css,
                               .listing-head-empty). */}
                           <span className="col-label">{label}</span>
                           {/* One glyph that ROTATES for desc (see .sort-arrow):
@@ -2104,7 +2087,6 @@ export default function Listing({
                               ▲
                             </span>
                           )}
-                          {key === "mtime" && headerMenuBtn}
                         </th>
                       ),
                     )
@@ -2161,8 +2143,6 @@ export default function Listing({
                   ? `${paneKey(paneSide, fsPath)}:${claudeAskInstance}`
                   : paneKey(paneSide, fsPath)}
                 undecided={paneUndecided}
-                appEntry={appEntryPath}
-                onOpenApp={openAppEntry}
                 folder={fsPath}
                 side={paneSide}
                 sideEntries={sideEntries}
@@ -2174,6 +2154,11 @@ export default function Listing({
         )}
       </div>
 
+      {/* The MCP companion's dialog, off the kebab (McpDialog). `mcpSrc` is
+          re-read here rather than trusted from the click. */}
+      {mcpOpen && mcpSrc && (
+        <McpDialog src={mcpSrc} folderName={basename(base)} onClose={() => setMcpOpen(false)} />
+      )}
       {menu && (
         <ContextMenu
           x={menu.x}

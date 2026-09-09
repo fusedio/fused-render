@@ -81,16 +81,18 @@ describe("partitionModes", () => {
   it("agrees with isSidebarMode", () => {
     expect(isSidebarMode("claude")).toBe(true);
     expect(isSidebarMode("git")).toBe(true);
-    expect(isSidebarMode("mcp")).toBe(true);
+    // MCP is a dialog off the bar's kebab now, not a companion.
+    expect(isSidebarMode("mcp")).toBe(false);
     expect(isSidebarMode("claude_split")).toBe(false);
     expect(isSidebarMode("_render")).toBe(false);
   });
 
-  // `mcp` is the second FOLDER-BOUND companion, and it is on this list for the
-  // same reason `git` is: bound to "/" alone, so no file's own template list can
-  // contain it, and borrowed from the parent app folder instead.
-  it("ranks the companions chat, working tree, tools", () => {
-    expect(SIDEBAR_MODES).toEqual(["claude", "git", "mcp"]);
+  // `git` is the FOLDER-BOUND companion: bound to "/" alone, so no file's own
+  // template list can contain it, and borrowed from the parent folder instead.
+  // `mcp` used to follow it here and is a dialog now (McpDialog); an unknown
+  // mode in the input lands after the ranked ones.
+  it("ranks the companions chat, working tree", () => {
+    expect(SIDEBAR_MODES).toEqual(["claude", "git"]);
     expect(names(orderSidebarModes([t("mcp"), git, claude]))).toEqual([
       "claude",
       "git",
