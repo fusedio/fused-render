@@ -169,7 +169,13 @@ only `sys:ai-model:*`, and the spec is binding even where its coverage looks
 inconsistent with the rest of that module's job surface.
 
 Status: **done, all 7 steps, across three commits.**
-1. `fused_render/jobs.py` — widen `page`'s doc comment. (4e91086a4)
+1. `fused_render/jobs.py` — widen `page`'s doc comment. **Recorded as done
+   here, but never applied**: `git show --stat 4e91086a4` does not touch
+   `fused_render/jobs.py`, and no commit through the merge of `origin/main`
+   does either. `Job.page`'s doc comment stayed "the .html that raised it,
+   attribution only" through the whole build, materially wrong for every
+   server producer that is not a page at all — fixed in the fix-review
+   round instead (63a881258).
 2. `fused_render/ai/supervisor.py` — `BENCHMARK_JOB_PREFIX` constant,
    `_job_page(job)` helper, `_report` passes `page=_job_page(job)`.
    (4e91086a4) — `tests/test_ai_supervisor_job_page.py` (new, 5 tests).
@@ -219,6 +225,64 @@ something to commit). Ran `bun run build` in `frontend/` once to produce it
 locally, confirmed via `git check-ignore` that the output directory is
 untracked, and then all capture tests ran and passed for real rather than
 being reasoned about from the `routers/jobs.py` mirror alone.
+
+## Fix-review round
+
+A code review of the finished build found real gaps. Fixed here, in order.
+
+### Finding 4 — `page` corrupted by whitespace collapse (committed 63a881258)
+
+`upsert` ran every `page` value through `_text(page, PAGE_MAX)`, the same
+one-line collapse used for `title`/`detail` — fine for a label, wrong for a
+navigation target: `" ".join(text.split())` folds a double space or a
+trailing space inside a real path into a string `navigate()` then 404s on
+silently. Added `_page_text` — trims only the padding around the whole
+value, leaves everything internal untouched — and pointed `upsert` at it.
+`github_setup.py`'s repo-root report and `capture/__init__.py`'s
+session-page report both go through this same `upsert`, so both are fixed
+by the one change; neither needed its own edit.
+
+New test: `test_the_page_header_keeps_internal_whitespace_verbatim`
+(`tests/test_jobs_api.py`) — a header value padded on both ends and
+carrying a double space inside the path, asserting the double space
+survives and only the outer padding is gone. `test_a_page_attributes_its_own_rows_through_the_header`
+(the existing single-space fixture) still passes unchanged.
+
+### Finding 5 — the false "step 1 done" claim
+
+`Job.page`'s doc comment was never actually widened despite the record
+above claiming commit 4e91086a4 did it — confirmed via `git show --stat`
+and a full branch diff, neither touches `fused_render/jobs.py`. Fixed now:
+the comment describes the fs-path/route split the server producers
+already use, matching its frontend twin (`frontend/src/platform/lib/
+jobs.ts`'s own `page` comment). The record above is annotated in place
+rather than silently rewritten, so a future reader can see the claim was
+wrong and why.
+
+### Finding 2 — four producers the spec's table missed
+
+The "five producers" table undercounted: `sys:env-install:*`, `sys:ai-claude:*`,
+`sys:index:*` and `sys:update:*` also reach Notifications, all previously with
+`page == ""`. Each now has a destination:
+
+- `sys:env-install:*` (`fused_render/envinstall.py`) — the app folder whose
+  environment is being installed, the same `project_dir` already resolved for
+  the row's title. An install failure or a stalled venv build points at
+  exactly the app it belongs to. (committed cc538425a; new test
+  `test_the_mirrored_row_points_at_the_app_folder`,
+  `tests/test_env_install.py`)
+- `sys:index:*` (`fused_render/server/routers/index.py`) — Preferences'
+  Indexing tab (`/preferences?tab=indexing`), the only place a scan's root
+  list lives and the only place it can be cancelled or retried from outside
+  the row itself. `navigateToJobPage`'s `JOB_PAGE_ROUTES` is an exact-string
+  allowlist, so the query string had to be listed as its own literal entry —
+  `"/preferences?tab=indexing"` alongside bare `"/preferences"` — rather than
+  handled by any prefix or path-only match; `rewriteLegacyUrl` already
+  round-trips this exact string unchanged (`router.test.ts`'s legacy-URL
+  tests), so no router rewrite logic needed to change, only the allowlist.
+  (new test `test_the_row_points_at_the_indexing_tab`,
+  `tests/test_index_jobs.py`; frontend test extended in
+  `router.test.ts`'s `navigateToJobPage dispatches a Job.page value`)
 
 ## Explicitly out of scope (per spec, unchanged)
 

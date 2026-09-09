@@ -257,12 +257,11 @@ test("withPreviewFlag stamps the thumbnail param", () => {
   expect(withPreviewFlag(once)).toBe(once);
 });
 
-// Job.page carries either a shell route (widened meaning,
-// SPEC-actionable-notifications.md) or an absolute fs path — syntactically
-// indistinguishable, since both start with "/". navigateToJobPage is the one
-// place that turns either shape into an actual navigation, checking a small
-// closed table of the routes a job can legitimately name before falling back
-// to treating the value as an fs path.
+// Job.page carries either a shell route or an absolute fs path —
+// syntactically indistinguishable, since both start with "/".
+// navigateToJobPage is the one place that turns either shape into an actual
+// navigation, checking a small closed table of the routes a job can
+// legitimately name before falling back to treating the value as an fs path.
 function pushedJobPage(page: string): { url: string; state: unknown } {
   const hist = globalThis.history as {
     pushState: (state: unknown, title: string, url: string) => void;
@@ -288,6 +287,7 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
     expect(pushedJobPage("/ai-models/benchmark").url).toBe("/ai-models/benchmark");
     expect(pushedJobPage("/claude-config").url).toBe("/claude-config");
     expect(pushedJobPage("/preferences").url).toBe("/preferences");
+    expect(pushedJobPage("/preferences?tab=indexing").url).toBe("/preferences?tab=indexing");
   });
 
   test("anything else is an fs path — a directory unless it ends in .htm(l)", () => {

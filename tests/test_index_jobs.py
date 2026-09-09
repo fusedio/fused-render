@@ -60,6 +60,14 @@ def test_active_run_creates_an_indeterminate_job_keyed_by_run_id(monkeypatch):
     assert row["done"] == 12.0
 
 
+def test_the_row_points_at_the_indexing_tab(monkeypatch):
+    """A click on an index run's row in Notifications has nowhere else to
+    go but Preferences > Indexing — the run's own root list and toggle, and
+    the only place a scan can be cancelled or retried from outside this row."""
+    _tick(monkeypatch, [_run("r1")])
+    assert jobs.list_jobs()[0]["page"] == "/preferences?tab=indexing"
+
+
 def test_two_concurrent_runs_produce_two_distinct_jobs(monkeypatch):
     _tick(monkeypatch, [
         _run("r1", root="/Users/tester/a"),

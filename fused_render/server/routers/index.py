@@ -716,7 +716,11 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
             files_done = summary.get("files")
         fields["message"] = f"{int(files_done or 0)} files indexed"
     try:
-        result = jobs.upsert({"id": job_id, **fields}, server=True)
+        # The Indexing tab of Preferences — where this run's own root list
+        # and toggle live, and the only place a scan can be cancelled or
+        # retried from outside this row.
+        result = jobs.upsert({"id": job_id, **fields},
+                             page="/preferences?tab=indexing", server=True)
     except jobs.JobError:
         # A reporting failure says nothing about whether the RUN is live —
         # `running` above already answered that from `run` itself, before
