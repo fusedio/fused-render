@@ -15,7 +15,7 @@
 //
 // **This makes the pane agree with the full-screen file sidebar, which was
 // companions-only from the start** (`lib/preview-side.ts` over
-// `mode-visibility.SIDEBAR_MODES` = `["claude", "git", "mcp"]` — no `preview`
+// `mode-visibility.SIDEBAR_MODES` = `["claude", "git"]` — no `preview`
 // side, ever).
 // The listing pane was the odd one out, and the four decisions above are it
 // converging on the shape the other half of the app already had.
@@ -26,9 +26,10 @@
 //   git      the OPEN FOLDER's working tree — not the row's. See dir-mode.ts:
 //            a working tree belongs to the folder, so `git` is bound to the
 //            universal "/" key alone and the pane borrows the folder's entry.
-//   mcp      the OPEN FOLDER's MCP tools — the curation panel over the app's
-//            Python entrypoints. Folder-bound for the same shape of reason: the
-//            `mcp.toml` manifest it writes covers the folder, not a row in it.
+//   (mcp     the OPEN FOLDER's MCP tools was a third mode here for a while.
+//            Folder-bound for the same shape of reason as `git`, but it is a
+//            DIALOG off the search row's kebab now — EntryActionsMenu →
+//            McpDialog — not a pane mode.)
 //
 //   preview  **NOT SELECTABLE, and not in the switcher.** It survives as the
 //            pane's internal FALLBACK for one state: neither companion offered (a
@@ -62,7 +63,7 @@ import { unavailableReason } from "@platform/lib/mode-visibility";
 
 // Every state the pane can BE IN. `preview` is here because the fallback needs
 // the type, not because anything offers it (see the header).
-export const PANE_SIDE_MODES = ["preview", "claude", "git", "mcp"] as const;
+export const PANE_SIDE_MODES = ["preview", "claude", "git"] as const;
 
 export type PaneSide = (typeof PANE_SIDE_MODES)[number];
 
@@ -70,7 +71,10 @@ export type PaneSide = (typeof PANE_SIDE_MODES)[number];
 // else. Splitting this out of `PaneSide` is what makes "the pane fell back to
 // preview" un-writable and un-requestable at the type level rather than by
 // convention — a `_side=preview` cannot round-trip because it cannot be held.
-export const PANE_SIDE_COMPANIONS = ["claude", "git", "mcp"] as const;
+// `mcp` was the third companion here; it left for a dialog off the search
+// row's kebab (EntryActionsMenu → McpDialog), so a `_side=mcp` is an unknown
+// value now and parses as no choice.
+export const PANE_SIDE_COMPANIONS = ["claude", "git"] as const;
 
 export type PaneSideChoice = (typeof PANE_SIDE_COMPANIONS)[number];
 
@@ -189,12 +193,11 @@ export function paneSideParam(state: PaneSideState): string | null {
 //
 // Order is by construction, not by sorting: this list IS the switcher's order.
 export interface PaneSideEntries {
-  // The OPEN FOLDER's `claude` / `git` / `mcp` template entries, or null when the
+  // The OPEN FOLDER's `claude` / `git` template entries, or null when the
   // folder does not offer the mode. `preview` needs no entry — it is the selected
   // row's own default template, resolved from the row's stat by pane-modes.ts.
   claude: TemplateEntry | null;
   git: TemplateEntry | null;
-  mcp: TemplateEntry | null;
   // The dir-mode probe behind that null has not answered yet (Listing passes the
   // flag alongside; the entry stays null because a placeholder has no template
   // path to frame). Only the MENU reads these — an undecided mode is neither
@@ -202,14 +205,12 @@ export interface PaneSideEntries {
   // disabled one asserting a reason nobody has established.
   claudePending?: boolean;
   gitPending?: boolean;
-  mcpPending?: boolean;
   // The folder's entry for a mode it will not SHOW: the binding as the stat
   // reported it, gate verdict or not (lib/dir-mode's `bound`). Read for one thing
   // only — see `paneSideIconEntry` — and never as an offer: a mode is on offer
   // when `claude`/`git` above is non-null, and nowhere else.
   claudeBound?: TemplateEntry | null;
   gitBound?: TemplateEntry | null;
-  mcpBound?: TemplateEntry | null;
 }
 
 // `isFolderBoundSide` and the `FOLDER_BOUND_SIDES` set it read used to separate
@@ -276,13 +277,12 @@ export function paneSideList(entries: PaneSideEntries): PaneSide[] {
   const companions: PaneSide[] = [];
   if (entries.claude) companions.push("claude");
   if (entries.git) companions.push("git");
-  if (entries.mcp) companions.push("mcp");
   if (companions.length > 0) return companions;
   // Nothing offered yet AND a follower still out is still undecided: falling
   // through to the fallback here would put the pane on `preview` and then move it
   // the moment the verdict landed, which is the jump the leader wait above exists
   // to prevent.
-  if (entries.gitPending || entries.mcpPending) return [];
+  if (entries.gitPending) return [];
   return [PANE_SIDE_FALLBACK];
 }
 
@@ -321,7 +321,6 @@ export function paneSideMenu(entries: PaneSideEntries): PaneSideMenuEntry[] {
   const pendingOf: Record<PaneSideChoice, boolean | undefined> = {
     claude: entries.claudePending,
     git: entries.gitPending,
-    mcp: entries.mcpPending,
   };
   const companion = (mode: PaneSideChoice): PaneSideMenuEntry => {
     if (entries[mode]) return { mode };
@@ -358,7 +357,6 @@ export function paneSideIconEntry(
   const bound: Record<PaneSideChoice, TemplateEntry | null | undefined> = {
     claude: entries.claudeBound,
     git: entries.gitBound,
-    mcp: entries.mcpBound,
   };
   return entries[side] ?? bound[side] ?? null;
 }

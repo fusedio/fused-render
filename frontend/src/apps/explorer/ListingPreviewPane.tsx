@@ -1,6 +1,7 @@
 // Right-hand preview pane for the directory listing (views/Listing.tsx): the
-// OPEN FOLDER's companions — `claude` (chat about the folder), `git` (its
-// working tree) and `mcp` (its MCP tools) — never the selection.
+// OPEN FOLDER's companions — `claude` (chat about the folder) and `git` (its
+// working tree) — never the selection. (`mcp`, its MCP tools, is a dialog off the
+// search row's kebab rather than a pane mode.)
 // listing/pane-side.ts owns the list and the `_side` param that records which.
 //
 // **THE PANE NO LONGER FOLLOWS THE SELECTION AT ALL** (D460, superseding
@@ -30,8 +31,7 @@ import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { ChatFrame } from "@platform/ui/ChatFrame";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
-import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
-import { ModeMenu } from "@apps/explorer/BarMenu";
+import { SideCloseButton, SideTabs, paneSideIcon } from "@apps/explorer/SideChrome";
 import { paneChatOnly } from "@apps/explorer/listing/pane-modes";
 import {
   paneSideMenu,
@@ -50,8 +50,6 @@ export default function ListingPreviewPane({
   folder,
   side,
   sideEntries,
-  appEntry,
-  onOpenApp,
   onSelectSide,
   onClose,
 }: {
@@ -73,14 +71,6 @@ export default function ListingPreviewPane({
   // per selection — see the module comment.
   sideEntries: PaneSideEntries;
   onSelectSide: (side: PaneSideChoice) => void;
-  // The FOLDER's entry page (`index.html`), or null when it has none — the
-  // "Open in project" button in the strip (gates it: an app, not any folder).
-  appEntry: string | null;
-  // Opens the folder as a project (its /apps page). The caller's own
-  // navigation, for the reason the whole button lives in Listing: an EMBEDDED
-  // pane may not move the host view, and the way that stays true is that this
-  // component never navigates.
-  onOpenApp: () => void;
   // Shuts the pane (`_side=off`). The listing's search row grows the reopening
   // half of the affordance while the pane is down — SideChrome writes the split
   // between the two down.
@@ -91,19 +81,20 @@ export default function ListingPreviewPane({
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
 
   // --- the pane's modes (listing/pane-side.ts) --------------------------------
-  // EVERY MODE THE PANE MAY BE ON, and never fewer: an unofferable COMPANION is
-  // drawn disabled with its reason, or spinning while its probe is out
-  // (paneSideMenu), rather than dropped — a menu that shrinks to one row hides
-  // itself, which once left a mount-backed folder's pane header a lone chevron.
+  // A TAB STRIP over the two companions the pane may be on (SideChrome's
+  // SideTabs — the same control the file sidebar's header wears), and never
+  // fewer: an unofferable companion is drawn disabled with its reason, or
+  // spinning while its probe is out (paneSideMenu), rather than dropped, so a
+  // mount-backed folder's pane header still says what it cannot show.
+  //
+  // (`mcp` is not a pane mode — PANE_SIDE_COMPANIONS is the pair — but a dialog
+  // off the search row's kebab, EntryActionsMenu → McpDialog.)
   //
   // Unlike before D460 this list HOLDS STILL as the selection moves, because
-  // nothing here ever read the selection: walking from a repository into a
-  // folder outside one still dims the Git row exactly as it always did, but no
-  // row-driven `preview` mode ever widened or narrowed the pill to make room
-  // for a fourth option.
-  const sideMenu = (
-    <ModeMenu
-      entries={paneSideMenu(sideEntries).map((e) => ({
+  // nothing here ever read the selection.
+  const sideTabs = (
+    <SideTabs
+      tabs={paneSideMenu(sideEntries).map((e) => ({
         ...e,
         icon: paneSideIcon(e.mode, sideEntries),
       }))}
@@ -118,28 +109,15 @@ export default function ListingPreviewPane({
   // its height in every state or the seam it shares with the crumb bar on the
   // left breaks (see .pane-header).
   //
-  // It opens with the way OUT of the column and it ends with the mode pill,
+  // It opens with the way OUT of the column and it ends with the tab strip,
   // which is the file sidebar's header exactly (SideChrome, PreviewSidebar) —
   // the two columns are the same column over a folder and over a file, so they
-  // wear the same bar. "Open in project" rides in here too, ahead of the pill, in
-  // every state including the skeleton — the subject (the open folder) is
-  // known long before the pane has resolved what to show about it.
+  // wear the same bar. "Open in project" no longer rides in here: it is a row of
+  // the search row's kebab, which is there whether or not this column is.
   const strip = () => (
     <div className="pane-header">
       <SideCloseButton what={modeTitle(side)} onClick={onClose} />
-      <div className="side-header-tail">
-        {appEntry && (
-          <button
-            type="button"
-            className="bar-ctl bar-ctl-bordered"
-            title={"Open " + folder.slice(folder.lastIndexOf("/") + 1) + " as a project"}
-            onClick={onOpenApp}
-          >
-            Open in project
-          </button>
-        )}
-        {sideMenu}
-      </div>
+      <div className="side-header-tail">{sideTabs}</div>
     </div>
   );
 
