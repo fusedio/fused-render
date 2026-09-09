@@ -314,3 +314,25 @@ def test_a_save_before_the_load_leaves_the_file_alone(projects_dir, state_dir):
     tasks_mod.load_scan_cache()
     tasks_mod.save_scan_cache()  # after a load, saving is fair again
     assert json.loads(cache.read_text())["scan"]
+
+
+def test_a_head_comes_back_only_for_an_unchanged_file(projects_dir, state_dir):
+    """`head` keys on size alone, so a same-size rewrite kept a stale cwd for
+    the life of a process and a restart healed it. The file must not take that
+    away: a head is imported only when size AND mtime still match the scan
+    record saved beside it (Bugbot, #1081)."""
+    path = _transcript(projects_dir)
+    tasks_mod.warm()
+    assert tasks_store.head(str(path))[0] == "/home/me/proj"
+    before = path.read_bytes()
+    # Same length, different folder — nine characters each.
+    after = before.replace(b"/home/me/proj", b"/home/me/othr")
+    assert len(after) == len(before)
+    path.write_bytes(after)
+    os.utime(path, (OLD + 60, OLD + 60))
+
+    _new_process()
+    tasks_mod.load_scan_cache()
+    assert str(path) not in tasks_store._HEAD_CACHE, "stale head left for a fresh parse"
+    rows = tasks_mod._task_rows()
+    assert rows[0]["project"] == "/home/me/othr"
