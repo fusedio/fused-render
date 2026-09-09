@@ -1430,11 +1430,12 @@ table.listing-table tr.skel-row:hover {
 }
 
 .crumb-search-slot > .listing-search {
-  /* Decision 1: this field IS the path bar for a claimed folder — no
-     sibling `.crumbs` strip competes for the row (Breadcrumb.tsx renders
-     none while claimed), so the field grows to fill the space a crumb strip
-     would otherwise hold, right where one would sit (Breadcrumb.tsx portals
-     this slot immediately after the crumb-nav arrows, ahead of the star). */
+  /* Decision 1: this field IS the path bar for a claimed bar — a folder's or
+     a plain file's — no sibling `.crumbs` strip competes for the row
+     (Breadcrumb.tsx renders none while claimed), so the field grows to fill
+     the space a crumb strip would otherwise hold, right where one would sit
+     (Breadcrumb.tsx portals this slot immediately after the crumb-nav
+     arrows, ahead of the star). */
   flex: 1 1 auto;
   min-width: 0;
   justify-content: flex-start;

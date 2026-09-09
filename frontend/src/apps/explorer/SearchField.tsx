@@ -1,0 +1,494 @@
+// THE MERGED SEARCH FIELD — one box, rendered by whichever view currently
+// claims the crumb bar's search row (folder-chrome.ts): a folder's own
+// Listing, or a file's own Preview. Both hosts render this exact component
+// with this exact JSX; the difference between them is entirely in what they
+// pass it, never in a second copy of the markup.
+//
+// A folder host owns real search state — the query answers real rows it is
+// about to show in its own body — so it keeps calling useListingSearch,
+// useCompletion and useTypedPathAddress itself and hands the results down.
+// A file host has no body of its own to answer: committing a query there
+// navigates to the parent folder instead of showing anything in place (see
+// FileSearchField.tsx), so its caller supplies the same shape of props built
+// from the SAME hooks, called against the parent path, with the results-
+// display props (spinner/count/pin) left inert since nothing here ever shows
+// them before the navigation away.
+//
+// What stays LOCAL to this component, in both hosts, is the field's own
+// interaction chrome: whether it is pinned open, which completion row is
+// highlighted, whether the field is focused right now, and the measured
+// width that picks the short or long placeholder. None of that answers
+// anything about search RESULTS, so neither host needs it and duplicating it
+// per host would be the drift this component exists to prevent.
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+  type RefObject,
+} from "react";
+import { navigate } from "@platform/lib/router";
+import { basename, formatSize } from "@platform/lib/format";
+import { isMac } from "@platform/lib/platform";
+import { PathCrumbs } from "@apps/explorer/listing/path-crumbs";
+import { subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";
+import { searchBoxRestingForContextMenu } from "@apps/explorer/listing/search-box-context-menu";
+import { searchBoxBlurAction } from "@apps/explorer/listing/search-provisional";
+import { openTopbarMenu } from "@apps/explorer/topbar-menu";
+import { type TypedAddress } from "@apps/explorer/listing/useTypedPathAddress";
+import { type Completion, type CompletionItem } from "@apps/explorer/listing/useCompletion";
+import { completionKeyAction, moveHighlight } from "@apps/explorer/listing/completion-keys";
+import { isExactSingleMatch } from "@apps/explorer/listing/completion-target";
+import { contractHome } from "@apps/explorer/listing/home-path";
+import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
+import { SEARCH_EXAMPLES, showSearchExamples } from "@apps/explorer/listing/search-examples";
+import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
+import { BookmarkStar } from "@apps/explorer/Breadcrumb";
+
+export interface SearchFieldProps {
+  /** This host currently owns the crumb bar's search row. */
+  active: boolean;
+  /**
+   * The `<input>` itself. Owned by the CALLER, not this component: a
+   * folder's own useListingSelection/useListingShortcuts already hold this
+   * ref to focus the field directly for type-to-search and Ctrl+F-style
+   * shortcuts, before this component's own subscribeSearchFocusRequest
+   * effect ever runs — one ref, so both paths agree on which node "the
+   * search input" means. A file host with no such external consumer just
+   * makes its own with `useRef` and passes it through unused elsewhere.
+   */
+  searchInputRef: RefObject<HTMLInputElement>;
+  /** The folder a committed query searches/navigates against. */
+  fsPath: string;
+  /**
+   * What the resting (empty, unfocused) crumbs show. Defaults to `fsPath` —
+   * a folder's own resting crumbs are its own path. A file host passes its
+   * own path here (ending in its own name) while `fsPath` stays the parent
+   * folder that a query actually searches.
+   */
+  crumbsFsPath?: string;
+  home: string | undefined;
+  query: string;
+  setQuery: (q: string) => void;
+  searching: boolean;
+  isOpenFolderQuery: boolean;
+  /**
+   * Whether the CURRENT query has a committed, matching search behind it
+   * (Listing.tsx's `showsSearchHits`, `showingSearchHits(searchState,
+   * awaitingCommit)`). Blur's discard/unpin choice keys on this, not on the
+   * looser `searching` (typed-but-uncommitted still discards) — passed as
+   * its own prop instead of re-derived here so both hosts read one
+   * definition of "committed" rather than each guessing at it.
+   */
+  committed: boolean;
+  escapes: boolean;
+  commitSearch: () => void;
+  prefetchIndex: () => void;
+  typedAddress: TypedAddress;
+  completion: Completion;
+  spinner: boolean;
+  searchCount: string | null;
+  searchCountFull: string | undefined;
+  hasPin: boolean;
+  widePin: boolean;
+  /**
+   * Row-level chrome that sits AFTER the box, inside the same `.listing-search`
+   * strip that stands the crumbs down and takes the whole width once
+   * `searching`/`pinnedOpen` say so (Listing.tsx's pane-reopen button and the
+   * folder's own kebab menu). Not part of this component's own concern — a
+   * folder's row and a file's differ here — so it is handed in as children
+   * rather than grown into a second prop surface; a file host passes none.
+   */
+  children?: ReactNode;
+}
+
+export function SearchField({
+  active,
+  searchInputRef,
+  fsPath,
+  crumbsFsPath,
+  home,
+  query,
+  setQuery,
+  searching,
+  isOpenFolderQuery,
+  committed,
+  escapes,
+  commitSearch,
+  prefetchIndex,
+  typedAddress,
+  completion,
+  spinner,
+  searchCount,
+  searchCountFull,
+  hasPin,
+  widePin,
+  children,
+}: SearchFieldProps) {
+  const crumbsPath = crumbsFsPath ?? fsPath;
+
+  // The field's own mode chip: whether the box currently holds the open
+  // folder's own path (nothing typed yet, or the seed left untouched) or a
+  // real pending search. `searching` already answers "is anything typed at
+  // all"; layered onto it, `isOpenFolderQuery` is the one existing predicate
+  // for "typed text that still just names the folder already open"
+  // (query-current-folder.ts) — there is no second, parallel test for "is
+  // this a search" here, only these two already-computed booleans.
+  const chipIsSearch = searching && !isOpenFolderQuery;
+
+  // Decision 1: the focused-and-empty hint's two variants — the full example
+  // teaches the pattern syntax in the space it takes to read it, but a narrow
+  // field would clip it mid-example, teaching the wrong thing. `boxWide`
+  // tracks whether the field currently has room for the long form; measured
+  // rather than a CSS breakpoint because the threshold is about THIS box's
+  // width, not the window's.
+  const [boxWide, setBoxWide] = useState(false);
+  const HINT_LONG = "Search, or type a path or pattern like ~/work/*/*.csv";
+  const HINT_SHORT = "Search, or type a path or pattern";
+  const HINT_WIDE_PX = 340; // roughly what HINT_LONG needs at 13px not to clip
+  const searchBoxRef = useWidthThresholdRef(HINT_WIDE_PX, setBoxWide);
+
+  // Breadcrumb.tsx's click-to-edit and Ctrl/Cmd+L, once this view's bar is
+  // claimed, ask this field to focus instead of opening a second path editor
+  // over it. `requestSearchFocus` has no per-view target — it notifies every
+  // subscriber — so an inactive SearchField (a preview pane's own embedded
+  // listing, `active` false) must not act on it, or a click on the CLAIMED
+  // bar's crumb would steal focus into the wrong field.
+  const seedSelectRef = useRef(false);
+  useEffect(() => {
+    if (!active) return;
+    return subscribeSearchFocusRequest((seed) => {
+      setQuery(seed);
+      seedSelectRef.current = true;
+      setPinnedOpen(true);
+      searchInputRef.current?.focus();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+  useEffect(() => {
+    if (!seedSelectRef.current) return;
+    seedSelectRef.current = false;
+    searchInputRef.current?.select();
+  }, [query]);
+
+  // `pinnedOpen` is the user asking for the full-strip box (clicked the
+  // magnifier, or focused it — it stays until it blurs empty, or until an
+  // uncommitted query blurs with text in it at all — search-provisional.ts),
+  // rendering `.expanded`. A non-empty query outranks it the same way:
+  // `.searching` stands the crumbs down and takes the whole strip too.
+  const [pinnedOpen, setPinnedOpen] = useState(false);
+
+  // Enter on an explicitly highlighted completion row NAVIGATES into it — a
+  // completed folder path is a destination, not just more text (unlike Tab's
+  // `acceptCompletion` below).
+  const navigateToCompletion = (item: CompletionItem) => {
+    navigate(item.absPath, { isDir: item.is_dir });
+    setQuery("");
+    setPinnedOpen(false);
+    setFieldActive(false);
+    searchInputRef.current?.blur();
+  };
+  // The teardown Escape and the clear button both need — an uncommitted
+  // query is discarded and the box stands down from its pinned-open state.
+  const clearSearchQuery = () => {
+    setQuery("");
+    setPinnedOpen(false);
+  };
+  // Tab and a row's own mousedown both COMPLETE TEXT: write the row's path
+  // into the field so the dropdown re-keys on the new directory, without
+  // navigating.
+  const acceptCompletion = (item: CompletionItem) => {
+    setQuery(item.path);
+    searchInputRef.current?.focus();
+  };
+  // A click on an example inserts it rather than searching it blind — the
+  // point is to teach, so it leaves the user holding an editable query with
+  // focus intact, same as `acceptCompletion`.
+  const acceptExample = (pattern: string) => {
+    setQuery(pattern);
+    searchInputRef.current?.focus();
+  };
+
+  const [highlight, setHighlight] = useState(-1);
+  // The highlight tracks the CURRENT list by position, not by identity —
+  // resets on every list change, to -1 (nothing highlighted), not 0. See
+  // Listing.tsx's own history of this exact effect for why.
+  useEffect(() => {
+    setHighlight(-1);
+  }, [completion.target?.dir, completion.items.length]);
+  // Whether the field itself is the thing focused right now — distinct from
+  // `pinnedOpen` above, which deliberately OUTLIVES a blur once there is a
+  // query. The dropdown needs the opposite: it must close the moment focus
+  // leaves.
+  const [fieldActive, setFieldActive] = useState(false);
+  const showCompletion =
+    fieldActive &&
+    completion.target !== null &&
+    completion.items.length > 0 &&
+    !isExactSingleMatch(completion.items, completion.target);
+  const showExamples = showSearchExamples(fieldActive, query, showCompletion);
+
+  const firstRowRef = useRef<HTMLDivElement>(null);
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const [rowsMaxHeight, setRowsMaxHeight] = useState<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (completion.items.length > 5 && firstRowRef.current) {
+      setRowsMaxHeight(firstRowRef.current.offsetHeight * 5.5);
+    } else {
+      setRowsMaxHeight(undefined);
+    }
+  }, [completion.items.length, completion.target?.dir, fieldActive]);
+  useLayoutEffect(() => {
+    if (highlight < 0) return;
+    const row = rowsRef.current?.querySelector<HTMLElement>(`[data-idx="${highlight}"]`);
+    row?.scrollIntoView({ block: "nearest" });
+  }, [highlight]);
+
+  // The pin is a request to type: focus follows it in the same interaction.
+  useEffect(() => {
+    if (pinnedOpen) searchInputRef.current?.focus();
+  }, [pinnedOpen]);
+
+  // …the search row portals into the crumb bar's own slot once one is
+  // published there (search-slot.ts) — non-null only once the bar has
+  // rendered its target, which is only ever over a view that claimed the
+  // chrome; a host with no crumb bar (the app builder) keeps the row in
+  // place as its own first strip.
+  const barSearchSlot = useSyncExternalStore(subscribeSearchSlot, searchSlot, () => null);
+
+  const hasClear = query !== "";
+
+  return (
+    <div
+      className={
+        "listing-search" +
+        (searching ? " searching" : "") +
+        (pinnedOpen ? " expanded" : "")
+      }
+    >
+      <div
+        ref={searchBoxRef}
+        className={
+          "listing-search-box" +
+          (hasPin ? " has-pin" : "") +
+          (widePin ? " wide-pin" : "") +
+          (hasClear ? " has-clear" : "")
+        }
+        // Right-click restores the bar menu, but only while resting — the
+        // same `query === "" && !pinnedOpen` PathCrumbs itself gates on
+        // (searchBoxRestingForContextMenu), so this and the crumbs' own
+        // visibility can never disagree. `openTopbarMenu` with no crumb
+        // argument resolves whatever the CURRENT view published for itself
+        // (topbar-menu.ts) — the open folder's menu over a folder, the open
+        // file's own menu over a file — so this needs no host-specific
+        // branch of its own.
+        onContextMenu={(e) => {
+          if (!searchBoxRestingForContextMenu(query, pinnedOpen)) return;
+          if (!openTopbarMenu(e.clientX, e.clientY)) return;
+          e.preventDefault();
+        }}
+      >
+        <span
+          className={"listing-search-mode" + (chipIsSearch ? " search" : "")}
+          aria-hidden="true"
+        >
+          {chipIsSearch ? (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="7" />
+              <line x1="16.5" y1="16.5" x2="21" y2="21" />
+            </svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </svg>
+          )}
+          <span className="listing-search-mode-label">
+            {chipIsSearch ? "Search" : "Path"}
+          </span>
+        </span>
+        {/* Decision 1: one field, carrying either a path or a pattern. The
+            resting crumbs are the HOST's own path — a folder's own, or a
+            file's own ending in its own name — never the search scope
+            (`fsPath`) when the two differ. */}
+        {query === "" && !pinnedOpen && (
+          <PathCrumbs fsPath={crumbsPath} home={home} />
+        )}
+        <input
+          ref={searchInputRef}
+          type="search"
+          className="listing-search-input"
+          placeholder={pinnedOpen ? (boxWide ? HINT_LONG : HINT_SHORT) : ""}
+          value={query}
+          onFocus={() => {
+            if (query === "") {
+              setQuery(contractHome(fsPath, home));
+              seedSelectRef.current = true;
+            }
+            setPinnedOpen(true);
+            setFieldActive(true);
+            prefetchIndex();
+          }}
+          onBlur={() => {
+            const action = searchBoxBlurAction(committed, query === "");
+            if (action === "discard") {
+              setQuery("");
+              setPinnedOpen(false);
+            } else if (action === "unpin") {
+              setPinnedOpen(false);
+            }
+            setFieldActive(false);
+          }}
+          onChange={(e) => {
+            setQuery(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              clearSearchQuery();
+              e.currentTarget.blur();
+              return;
+            }
+            const action = completionKeyAction(
+              e.key,
+              showCompletion,
+              highlight,
+              completion.items.length,
+            );
+            if (action.type === "move") {
+              e.preventDefault();
+              setHighlight((h) => moveHighlight(h, action.delta, completion.items.length));
+              return;
+            }
+            if (action.type === "tab-accept") {
+              e.preventDefault();
+              acceptCompletion(completion.items[action.index]);
+              return;
+            }
+            if (action.type === "enter-accept") {
+              e.preventDefault();
+              navigateToCompletion(completion.items[action.index]);
+              return;
+            }
+            if (e.key !== "Enter") return;
+            // Decision 5: Enter resolves the field three ways. A real folder
+            // navigates; a real file navigates too. Anything else falls
+            // through to committing the search (decision 4's gate).
+            if (typedAddress.status === "exists") {
+              e.preventDefault();
+              navigate(typedAddress.path, { isDir: typedAddress.is_dir });
+              return;
+            }
+            if (escapes) {
+              e.preventDefault();
+              commitSearch();
+            }
+          }}
+        />
+        {showExamples && (
+          <div className="listing-completion listing-completion-examples" role="listbox">
+            <div className="listing-completion-rows">
+              {SEARCH_EXAMPLES.map((ex) => (
+                <div
+                  key={ex.pattern}
+                  role="option"
+                  aria-selected={false}
+                  className="listing-completion-row listing-completion-example"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    acceptExample(ex.pattern);
+                  }}
+                >
+                  <span className="listing-completion-name">{ex.pattern}</span>
+                  <span className="listing-completion-hint">{ex.hint}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {showCompletion && (
+          <div className="listing-completion" role="listbox">
+            <div
+              className="listing-completion-rows"
+              ref={rowsRef}
+              style={rowsMaxHeight !== undefined ? { maxHeight: rowsMaxHeight } : undefined}
+            >
+              {completion.items.map((item, i) => (
+                <div
+                  key={item.path}
+                  ref={i === 0 ? firstRowRef : undefined}
+                  data-idx={i}
+                  role="option"
+                  aria-selected={i === highlight}
+                  className={
+                    "listing-completion-row" +
+                    (i === highlight ? " highlight" : "")
+                  }
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    acceptCompletion(item);
+                  }}
+                  onMouseEnter={() => setHighlight(i)}
+                >
+                  <span className="listing-completion-name">{item.name}</span>
+                  <span className="listing-completion-hint">
+                    {item.is_dir ? "folder" : formatSize(item.size)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {searching && spinner && (
+          <span className="listing-search-spinner" aria-hidden="true" />
+        )}
+        {searchCount !== null && (
+          <span
+            className="listing-search-count"
+            title={searchCountFull}
+            aria-label={searchCountFull}
+          >
+            {searchCount}
+          </span>
+        )}
+        {hasClear && (
+          <button
+            type="button"
+            className="listing-search-clear"
+            aria-label="Clear search"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              clearSearchQuery();
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M4 4l8 8M12 4l-8 8"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        )}
+        {!pinnedOpen && !hasClear && (
+          <span className="listing-search-shortcut-hint" aria-hidden="true">
+            Search <kbd>{isMac ? "⌘L" : "Ctrl L"}</kbd>
+          </span>
+        )}
+        {/* The star, trailing the count/spinner pin, as the box's own last
+            child — it sits inside the field's own border. Gated on
+            `barSearchSlot`: this row IS the bar's search row only once it has
+            portaled into a claimed crumb bar; the inline copy this component
+            would otherwise render for a pane or a framed listing has no bar
+            of its own to sit inside, so Breadcrumb.tsx keeps carrying the
+            star for those. */}
+        {barSearchSlot && (
+          <BookmarkStar id="bookmark-btn" name={basename(crumbsPath)} />
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}

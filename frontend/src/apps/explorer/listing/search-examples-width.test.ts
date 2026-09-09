@@ -2,9 +2,9 @@
 // which paints the background/border/shadow), not on the row inside it — a
 // row is a block box inside that surface, and capping a child's width cannot
 // shrink the parent around it. Same CSS-parsing pattern as
-// search-bar-expand.test.ts: read explorer.css and Listing.tsx as text and
-// assert on the selectors/declarations and the class names actually used,
-// rather than rendering (there is no DOM in this suite).
+// search-bar-expand.test.ts: read explorer.css and SearchField.tsx as text
+// and assert on the selectors/declarations and the class names actually
+// used, rather than rendering (there is no DOM in this suite).
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ const CSS = readFileSync(join(import.meta.dir, "../../../styles/explorer.css"), 
   /\/\*[\s\S]*?\*\//g,
   "",
 );
-const LISTING = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
+const LISTING = readFileSync(join(import.meta.dir, "../SearchField.tsx"), "utf8");
 
 /** Every declaration block for a given selector fragment. */
 function rulesFor(fragment: string): string[] {

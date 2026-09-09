@@ -38,7 +38,7 @@ import {
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
 import { escapesBase } from "@apps/explorer/listing/query-base";
-import { replaceSearch } from "@platform/lib/router";
+import { navHintQCommitted, replaceSearch } from "@platform/lib/router";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
 import { MIN_QUERY_CHARS } from "@apps/explorer/lib/home-search";
 import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
@@ -143,7 +143,16 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // text instead means `committedGate.current === q` starts true the instant
   // the deferred value reaches what was actually committed, with no second
   // press needed.
-  const committedGate = useRef<string | null>(null);
+  // Seeded already-open, once, for a query the navigation that landed on this
+  // URL already committed (navHintQCommitted, router.ts) — the file view's
+  // merged field pushes here with a query it had already cleared its own
+  // commit gate for, and asking this page's box to clear it again would be
+  // the second Enter that navigation exists to avoid. Any other mount
+  // (a fresh load, a typed URL, a plain in-folder navigation) has no such
+  // hint and starts closed exactly as before.
+  const committedGate = useRef<string | null>(
+    urlSync && navHintQCommitted() ? currentQuery().trim() : null,
+  );
   const [gateNonce, setGateNonce] = useState(0);
   const gateOpen = !escapes || committedGate.current === q;
   const commitSearch = () => {

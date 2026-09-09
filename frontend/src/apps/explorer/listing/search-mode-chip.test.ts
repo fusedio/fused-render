@@ -1,6 +1,8 @@
 // The field's own mode chip. No DOM in this suite (same text-parsing
 // pattern as search-bar-expand.test.ts and search-clear-button.test.ts):
-// read Listing.tsx and explorer.css as text.
+// read SearchField.tsx and explorer.css as text — the box's own markup, and
+// both hosts (Listing.tsx over a folder, FileSearchField.tsx over a plain
+// file) render this same component rather than each carrying a copy.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +11,7 @@ const CSS = readFileSync(join(import.meta.dir, "../../../styles/explorer.css"), 
   /\/\*[\s\S]*?\*\//g,
   "",
 );
-const LISTING = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
+const LISTING = readFileSync(join(import.meta.dir, "../SearchField.tsx"), "utf8");
 
 function rulesFor(selectorExact: string): string[] {
   const out: string[] = [];
@@ -21,22 +23,28 @@ function rulesFor(selectorExact: string): string[] {
   return out;
 }
 
-// The chip's mode is driven off the same predicate brief 27 introduced for
-// "is the field just holding the open folder's own path" — not a second,
-// parallel test for "is this a search". `searching` (non-empty query,
-// useListingSearch.ts) is layered on top only because `queryNamesOpenFolder`
-// itself is false for an empty query too, and an empty field is "Path", not
-// "Search".
+// The chip's mode is driven off the same predicate introduced for "is the
+// field just holding the open folder's (or file's parent's) own path" — not
+// a second, parallel test for "is this a search". `searching` (non-empty
+// query, useListingSearch.ts) is layered on top only because
+// `queryNamesOpenFolder` itself is false for an empty query too, and an
+// empty field is "Path", not "Search". `isOpenFolderQuery` itself is a prop
+// here — computed once per host (Listing.tsx, FileSearchField.tsx) against
+// that host's own base path, so the two never call `queryNamesOpenFolder`
+// with different arguments for what should be the same answer.
 test("the chip's mode is queryNamesOpenFolder layered under the existing searching gate, not a second predicate", () => {
   const at = LISTING.indexOf("const chipIsSearch =");
   expect(at).toBeGreaterThan(-1);
   const line = LISTING.slice(at, LISTING.indexOf(";", at) + 1);
   expect(line).toMatch(/searching\s*&&\s*!isOpenFolderQuery/);
-  const predicateDef = LISTING.indexOf(
+  const propAt = LISTING.indexOf("isOpenFolderQuery: boolean;");
+  expect(propAt).toBeGreaterThan(-1);
+  expect(propAt).toBeLessThan(at);
+  const LISTING_HOST = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
+  const hostPredicateDef = LISTING_HOST.indexOf(
     "const isOpenFolderQuery = queryNamesOpenFolder(query, fsPath, home);",
   );
-  expect(predicateDef).toBeGreaterThan(-1);
-  expect(predicateDef).toBeLessThan(at);
+  expect(hostPredicateDef).toBeGreaterThan(-1);
 });
 
 test("the chip renders both words, gated on the same variable that colors it", () => {
@@ -114,7 +122,7 @@ test("the hint's label comes from the app's one platform detection, not a fresh 
   expect(at).toBeGreaterThan(-1);
   const block = LISTING.slice(at, at + 300);
   expect(block).toMatch(/isMac\s*\?\s*"⌘L"\s*:\s*"Ctrl L"/);
-  const importAt = LISTING.indexOf('import { isMac, isMod } from "@platform/lib/platform";');
+  const importAt = LISTING.indexOf('import { isMac } from "@platform/lib/platform";');
   expect(importAt).toBeGreaterThan(-1);
   expect(block).not.toMatch(/navigator/);
 });

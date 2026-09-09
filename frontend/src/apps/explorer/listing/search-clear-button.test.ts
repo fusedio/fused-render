@@ -1,7 +1,9 @@
 // A real clear-search control, not the suppressed native WebKit cancel
 // button (that collision with the count chip is why it was hidden in the
 // first place). Same CSS-parsing pattern as search-bar-expand.test.ts: read
-// explorer.css and Listing.tsx as text, no DOM in this suite.
+// explorer.css and SearchField.tsx as text, no DOM in this suite. The box's
+// own markup lives in SearchField.tsx (both the folder host, Listing.tsx, and
+// the file host, FileSearchField.tsx, render it) rather than in either host.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +12,7 @@ const CSS = readFileSync(join(import.meta.dir, "../../../styles/explorer.css"), 
   /\/\*[\s\S]*?\*\//g,
   "",
 );
-const LISTING = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
+const LISTING = readFileSync(join(import.meta.dir, "../SearchField.tsx"), "utf8");
 
 function rulesFor(selectorExact: string): string[] {
   const out: string[] = [];

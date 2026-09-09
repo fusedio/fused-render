@@ -2513,3 +2513,100 @@ the 3960-pass baseline this round started from (7 new cases: 5 in
 up from 629 by the one new file (`search-zero-count.test.ts`). `bun run
 build` (from `frontend/`) succeeds; only the pre-existing manual-chunking
 warnings, unrelated to this change.
+
+## D18 — the merged field reaches the file view
+
+A plain file's crumb bar shows the same merged field a folder's does,
+resting on the file's own path crumbs with the file's own name as the last
+crumb. Searching on a file page is the same as searching in the parent
+folder with the query pre-seeded: committing a query navigates to the
+parent's listing with the query applied, as a pushed history entry (Back
+returns to the file). The parent's own `Listing.tsx` does the searching —
+nothing on the file page ever issues a search request.
+
+Field ownership: the merged field's box/dropdown/star JSX moved out of
+`Listing.tsx` into a new shared component, `SearchField.tsx`. Both hosts
+supply their own search state as props and render `<SearchField>` — a
+folder's `Listing.tsx`, and a new `FileSearchField.tsx` mounted over a plain
+file (`Preview.tsx`, gated the same way `usePreviewFileMenu`'s `ownsBar` is:
+`actionsInTopbar && !stat.is_dir`). This was the only ownership shape that
+satisfies "no second copy of the field's JSX": a file's box and a folder's
+box are visually and behaviorally the same control, so they are the same
+component, not two components kept in sync by hand.
+
+`FileSearchField` reuses `useListingSearch` unmodified — the same hook a
+folder calls — aimed at the file's parent path, with its third parameter
+(`urlSync`) `false` so the file's own URL is never mirrored with a `q=` the
+file page has no business owning. It computes `escapes`/`gateOpen` exactly
+as a folder would, and the instant the box's own commit gate opens (Enter
+for an escaping path, or immediately for a plain filter/glob that never
+escapes the folder) a `useLayoutEffect` calls `navigate(parentPath, { isDir:
+true, q: query })` and stops. `opts.q` both appends `q=` to the destination
+URL and stashes `qCommitted: true` in `history.state`
+(`navHintQCommitted()`), which is the existing mechanism (already built for
+folder-to-folder navigation) that lets the parent's own `useListingSearch`
+seed its `committedGate` already open — the parent never asks for a second
+Enter. Firing this from `useLayoutEffect`, ahead of `useListingSearch`'s own
+passive-effect-driven fetch, is what keeps a search request from ever going
+out against the parent while the file's page is still on screen: the
+navigation swaps the whole view before that fetch could ever be scheduled.
+An auto-searchable query needs no Enter over a file either, for the same
+reason — `gateOpen` is already true for a non-escaping query, so the effect
+fires on the very next render after such a query is typed.
+
+Three star cases, confirmed:
+
+- **Folder bar** — unchanged. `Listing.tsx` still calls `claimFolderChrome`
+  with a slot node, `BarSearchSlot` (renamed from `FolderSearchSlot`;
+  Breadcrumb.tsx) still portals the row in, the star still renders inside
+  the field's border via the same `barSearchSlot` gate.
+- **File bar** — new. `FileSearchField` calls `claimFolderChrome(null)`: it
+  claims the "claimed" boolean (the star moves inside the field, the crumb
+  bar's own path-edit stands down) without a slot node, since Preview.tsx
+  has no split-pane column for the bar to relocate into — that layout
+  behavior stays folder-only. The star ends up inside the field's border
+  over a file exactly as it does over a folder, through the same JS gate.
+- **Panel-mode bars** — still outside the field, unaffected. Panel mode
+  never calls `claimFolderChrome`, so `claimed` stays false there regardless
+  of this change.
+
+`claimed` (Breadcrumb.tsx) is now a "does something on this page have a
+search row" question rather than a "is this a folder" question — it reads
+`folderChromeClaimed()`, a plain boolean on the claim stack, indifferent to
+whether the claimant is `Listing.tsx` (with a slot) or `FileSearchField.tsx`
+(without one).
+
+The file bar's auto-margin slack is carried by the same, unmodified CSS
+rule that already carried it for a folder: `.crumb-search-slot >
+.listing-search { flex: 1 1 auto; ... }` (`explorer.css`). It required no
+change because it is scoped by class name, and `SearchField.tsx` kept that
+exact outer class for both hosts — the file bar's field grows to fill the
+row the same way a folder's does, automatically, with no file-specific rule
+anywhere.
+
+`inSearchSlot(slot, row)` — previously a private two-line helper inside
+`Listing.tsx` — moved to `search-slot.ts` as a shared export, so both hosts
+portal into the slot through the one function rather than each carrying its
+own copy.
+
+Three existing test files that read `Listing.tsx`'s source as text
+(`search-clear-button.test.ts`, `search-mode-chip.test.ts`,
+`search-examples-width.test.ts`) were retargeted to read `SearchField.tsx`
+instead, since the markup and declarations they assert on physically moved
+there. `search-mode-chip.test.ts`'s provenance test for `isOpenFolderQuery`
+was rewritten: that value is no longer a `const` computed inline inside the
+search box's own file, it is a prop (`SearchFieldProps.isOpenFolderQuery`)
+computed once per host against that host's own base path — the test now
+confirms the prop's declaration precedes the chip's own read of it in
+`SearchField.tsx`, and separately confirms `Listing.tsx` still defines the
+predicate via `queryNamesOpenFolder(query, fsPath, home)`. The same file's
+platform-detection test was adjusted for `SearchField.tsx`'s actual import
+line (`import { isMac } from "@platform/lib/platform";`, no `isMod` in that
+file — `isMod` belongs to the keyboard-shortcut handler in Breadcrumb.tsx,
+not the field itself). No assertion about behavior, only about which file a
+piece of code now lives in, was weakened.
+
+Verification: `bunx tsc --noEmit` clean. `bun test --run` — 3967 pass, 0
+fail. `node scripts/check-boundaries.mjs` — `boundaries OK (632 files)`, up
+by two (`FileSearchField.tsx`, `SearchField.tsx`). `bun run build` succeeds;
+only the pre-existing manual-chunking warnings, unrelated to this change.
