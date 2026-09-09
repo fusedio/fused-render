@@ -537,6 +537,42 @@ support the test:
   closure-capture bug directly, plus the existing commit/gate tests in
   `useListingSearch.render.test.ts` passing unchanged.
 
+## Decision 4 revisited: the gate keys on base, not syntax
+
+The gate that decides whether Enter is required moved off `q.includes("/")
+|| q.includes("*")` and onto a new pure predicate, `escapesBase` in
+`listing/query-base.ts`. The syntactic test made an in-folder glob like
+`*/*.json` demand Enter even though it never leaves the folder being
+searched — a slash inside a query only limits how deep the pattern reaches
+(SPEC-one-search-language.md's `**/` rule), it does not by itself relocate
+the base. `escapesBase` answers the narrower, actually-relevant question:
+can this query's base differ from the box's own root? Yes only for a
+leading `~` (alone or `~/`), a leading `/`, a drive letter, or a `..`
+segment; everything else — `*/*.json`, `data/2024`, `**/*.csv`, `.csv` —
+is relative to the box root and live-filters like plain text.
+
+The predicate is deliberately conservative about a leading `/`: server-side
+(`fused_render/index/query.py`) a leading `/` is ambiguous between an
+absolute path and a depth-1 anchor at the box root, resolved only by
+walking the filesystem. `escapesBase` cannot do that synchronously and does
+not try to — it treats every leading `/` as escaping, which gates the
+expensive case (a genuine absolute path) and costs one extra keypress on
+the cheap one (`/foo` used as an anchor).
+
+`escapesBase` lives in its own module rather than inside the hook so
+`FilesHome.tsx`'s box — which has no commit gate at all — can adopt it
+later without a file move. It is not wired into `FilesHome.tsx` in this
+round. `completion-target.ts` remains the sibling that does the full
+three-notation resolution (`~`, `/`, drive letters) down to a real
+directory + partial; `escapesBase` answers only the yes/no question and,
+on purpose, needs neither `fsPath` nor `home` to do it.
+
+`useListingSearch.render.test.ts`'s decision-4 describe block was updated
+rather than left pointing at the old syntactic rule: its glob-gates-until-
+commit example changed from the box-relative `a/*.py` (which no longer
+gates) to the escaping `~/a/*.py`, and a new case confirms a box-anchored
+glob like `a/*.py` fires on every debounced keystroke same as plain text.
+
 One incidental finding while sweeping comments: the sandboxed shell's
 `grep` (a wrapper invoking `ugrep -I`, which skips files its heuristics
 classify as binary) silently returns no matches on
