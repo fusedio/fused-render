@@ -143,13 +143,15 @@ export function springDisarms(leaving: string, armed: string | null): boolean {
 // row's dead space, its size or modified cell, or the background — everywhere
 // the handle is not.
 //
-// The cost is real and worth stating: a drag from the handle of an unselected
-// row moves JUST that row, because the press SELECTS it first (`selectOnly` on
-// pointerdown) before the move-drag reads the selection — so `dragPathsFor`
-// always sees a one-row selection when it is reached this way, and the payload
-// can never disagree with the highlight. Sweeping a range that starts ON a
+// The cost is real and worth stating: sweeping a range that starts ON a
 // file's name now has to start a few pixels to its right, or from the row
 // above's dead space — Shift+click covers the same ground and always did.
+// A drag from the handle of an unselected row still moves JUST that row —
+// `dragPathsFor`'s own header explains why: the move-drag's snapshot of the
+// selection (taken via `useRowDrag`'s `selRef`, itself only current as of the
+// LAST render) still excludes the just-pressed row, so it is that function's
+// "not in the selection" branch, not `selectOnly`, that keeps the payload a
+// single row.
 //
 // Either way, a press that never travels the sweep's 4px slop is neither
 // gesture: it is the press that selects one row (selection's rowPressAction).
@@ -166,14 +168,20 @@ export function pressStartsDrag(press: {
 // is part of the current selection drags the WHOLE selection, and a row outside
 // it drags only itself.
 //
-// Only the first branch is reached from the listing, and that stays true even
-// for a handle press on an UNSELECTED row: `selectOnly` runs on pointerdown
-// before the move-drag reads the selection, so by the time this is called
-// `selected` is already just `[path]` and `selected.includes(path)` is true.
-// The second branch stays dead, and correctly so — it is the right answer to
-// the question, not something the listing happens never to ask: it is what any
-// future drag source would need, and a rule that silently dragged the wrong
-// rows would be worse than one clause of slack.
+// BOTH branches are live from the listing, and which one runs turns on timing
+// that is easy to get backwards. `startMoveDrag` (useRowDrag) is invoked from
+// the CAPTURE-phase arbiter (useMarquee), which runs BEFORE the row's own
+// bubble-phase pointerdown — the handler that calls `selectOnly` — has fired
+// at all. And even once `selectOnly` has run, `useRowDrag`'s `selRef` only
+// picks up the new selection on the NEXT render; this function is called
+// synchronously, inside the same pointerdown, against the selection as it
+// stood before the press. So a handle press on an UNSELECTED row reaches here
+// with `selected` still excluding `path`, `selected.includes(path)` is false,
+// and the SECOND branch (`[path]`) is what runs — the row's own drag payload,
+// matching the highlight the row already carries. The FIRST branch is what
+// runs for a press inside an ALREADY-selected row, where `selected` (last
+// render's) already contains `path`. Deleting either branch on the belief that
+// it is unreachable would make some handle drag carry the wrong payload.
 //
 // `selected` arrives in rendered order, so a batch move processes rows
 // top-to-bottom however they were picked.

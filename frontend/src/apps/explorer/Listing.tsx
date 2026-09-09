@@ -2033,9 +2033,10 @@ export default function Listing({
             data-fs-drop-dir="1"
             /* THE PRESS ARBITER, and the CAPTURE phase is load-bearing: it runs
                before the row's own pointerdown, so the selection it snapshots is
-               the one from before this press. A press on an already-selected row
-               drags the selection; anywhere else sweeps; a press that barely
-               moves is still the click it always was. */
+               the one from before this press. A press on a row's icon+name
+               handle, or anywhere on an already-selected row, drags; everything
+               else sweeps; a press that barely moves is still the click it
+               always was. */
             onPointerDownCapture={onListingPointerDownCapture}
             /* Bubble phase, so the marquee's capture snapshot above runs
                first. Deselecting on the CLICK instead is a trap — see
