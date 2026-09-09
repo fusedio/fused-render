@@ -548,9 +548,9 @@
    the layout half of that sharing.
 
    NO RULE FOR THE BUTTONS THEMSELVES (.side-close, .side-toggle): both ride the
-   plain .bar-ctl-icon recipe above, and their glyphs are the 16px right-hand
-   panel icon (platform/ui/PanelIcon) / the companion's own mode icon, in
-   currentColor like everything else in these rows.
+   plain .bar-ctl-icon recipe above, and both wear the same 16px right-hand
+   panel icon (platform/ui/PanelIcon), in currentColor like everything else in
+   these rows.
    A `.side-toggle.active` pressed look lived here for one round, while the opener
    stayed on screen with the panel open and the column carried a close button of
    its own. Exactly one of the two buttons is ever rendered now (SideChrome
@@ -576,6 +576,68 @@
    expand button to put here.) */
 .side-header-tail:empty {
   display: none;
+}
+
+/* ---- The side column's tab strip (SideChrome's SideTabs) ------------------
+   shadcn Tabs, line variant — the app page's tab bar (.app-page-tabs) in the
+   column header. The utilities own the look (muted text, active in full ink,
+   the 2px after-bar); the two things this file adds are GEOMETRY the utilities
+   cannot know: the strip stretches to the header's height (the tail wrapper
+   stretches too — its own align-items still centres the rest of what it
+   holds), and the active bar is moved down by the header's vertical padding
+   plus its 1px border so it sits ON the header's bottom rule rather than
+   floating 5px under the label. Unlayered, so these beat the layered
+   utilities without !important. */
+.side-header-tail:has(.side-tabs) {
+  align-self: stretch;
+}
+
+.side-tabs {
+  flex: 0 0 auto;
+  align-self: stretch;
+  display: flex;
+}
+
+.side-tabs [data-slot="tabs-list"] {
+  height: 100%;
+}
+
+.side-tabs [data-slot="tabs-trigger"]::after {
+  bottom: calc(-1 * var(--topbar-pad-y) - 1px);
+}
+
+/* The kebab trigger's corner badge — the App Doctor's status dot, visible
+   with the menu shut (BarMenu's OverflowMenu `badge`). Positioned off the
+   28px square; the dot's own size and hue are app-doctor.css's. */
+.bar-overflow .bar-ctl {
+  position: relative;
+}
+
+.bar-overflow-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: inline-flex;
+  pointer-events: none;
+}
+
+.bar-menu-item-trailing {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The MCP dialog's document (McpDialog.tsx): fills the dialog's second grid
+   row, which the dialog sizes explicitly — a replaced element has no height
+   of its own to give. */
+.mcp-dialog-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
 }
 
 /* ---- The mode control ---------------------------------------------------
@@ -934,14 +996,6 @@
      above, the arrow (which carries its own 9px size) here. */
   table.listing-table thead th.col-mtime .sort-arrow {
     display: none;
-  }
-  /* With MODIFIED collapsed, that table-edge `⋮` falls inside SIZE's header
-     (SIZE holds out until 300px). Pad the HEADER cell only, so the label stops
-     short of the button; border-box keeps the column at its 96px, and the body
-     figures don't share the cell with the button, so they keep the full
-     width. */
-  table.listing-table thead th.col-size {
-    padding-right: 34px;
   }
 }
 
@@ -1739,12 +1793,8 @@ table.listing-table th.col-size {
   width: 96px;
 }
 
-/* The extra right padding is the folder `⋮`'s berth: that button overlays this
-   cell rather than taking a column of its own (see .listing-head-menu below),
-   so the label and its sort arrow have to stop short of it. */
 table.listing-table th.col-mtime {
   width: 172px;
-  padding-right: 34px;
 }
 
 table.listing-table th {
@@ -1764,38 +1814,6 @@ table.listing-table th {
      rides with the header instead. */
   box-shadow: inset 0 -1px 0 var(--border);
   user-select: none;
-}
-
-/* The folder's `⋮` — the listing's own menu of what the crumb bar's path menu
-   used to offer over a folder, plus the background right-click's set. Pinned to
-   the last header cell's right edge; the sticky th is the positioned ancestor,
-   so this needs no wrapper. Vertically centred against a header whose height is
-   set by its text, hence the translate rather than a matching height.
-   Left as --fg-muted with the labels beside it: it is chrome for the folder,
-   not a fourth column heading, and it should not out-weigh the sorted column. */
-table.listing-table .listing-head-menu {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: background 90ms var(--ease-out), color 90ms var(--ease-out);
-}
-
-/* The same wash every other quiet icon button in the chrome uses (.bar-ctl). */
-table.listing-table .listing-head-menu:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
 }
 
 /* Only a header that sorts something gets the affordance. Search mode's single

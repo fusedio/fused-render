@@ -269,6 +269,15 @@ export interface OverflowItem {
   // one iconless row among icon'd ones reads as a broken row — so a caller
   // either gives every item one or none.
   icon?: ReactNode;
+  // Listed but not clickable, with `title` saying why (the native tooltip, the
+  // same carrier ModeMenu's disabledReason uses). A row that vanishes while its
+  // precondition is unmet reads as a menu that changes shape; a dimmed row
+  // reads as the same menu with one thing unavailable right now.
+  disabled?: boolean;
+  title?: string;
+  // Something small after the label — a status dot, a spinner — in the row's
+  // trailing slot.
+  trailing?: ReactNode;
 }
 
 // A menu may group its items. Same shape as ContextMenu's entry list, so the
@@ -287,12 +296,26 @@ export type OverflowEntry = OverflowItem | "separator";
 // where they cost no chrome at all — and which is also how Rename and "Open in
 // Claude Code", both missing from the four-item dropdown, joined them.
 //
-// `OverflowMenu` below stays: the panel pane bars still use it for their own
-// one-shot ("Open in a new tab").
+// `OverflowMenu` below stays: the panel pane bars use it for their own one-shot
+// ("Open in a new tab"), and the file preview's crumb bar uses it as THE kebab
+// for the app-level actions that used to stand in that bar as bordered buttons
+// (EntryActionsMenu.tsx: App Doctor, Download app, Open as project, Open in
+// embed, MCP config).
 
 // `⋮` menu for the bars. Renders nothing when it has no items, so a caller can
 // pass a conditional list without guarding the control itself.
-export function OverflowMenu({ items, title = "More actions" }: { items: OverflowEntry[]; title?: string }) {
+export function OverflowMenu({
+  items,
+  title = "More actions",
+  badge,
+}: {
+  items: OverflowEntry[];
+  title?: string;
+  // Something pinned to the trigger's corner — the App Doctor's status dot,
+  // whose whole job is to be seen without a click. A dot that only shows on a
+  // row inside a closed menu is a dot nobody sees.
+  badge?: ReactNode;
+}) {
   const { pos, rootRef, toggle, close } = useMenuAnchor("right");
   if (items.length === 0) return null;
   return (
@@ -313,6 +336,7 @@ export function OverflowMenu({ items, title = "More actions" }: { items: Overflo
         onClick={toggle}
       >
         <EllipsisIcon />
+        {badge && <span className="bar-overflow-badge">{badge}</span>}
       </button>
       {pos && (
         <div
@@ -330,6 +354,8 @@ export function OverflowMenu({ items, title = "More actions" }: { items: Overflo
                 type="button"
                 role="menuitem"
                 className="bar-menu-item"
+                disabled={item.disabled}
+                title={item.title}
                 onClick={() => {
                   close();
                   item.onClick();
@@ -337,6 +363,7 @@ export function OverflowMenu({ items, title = "More actions" }: { items: Overflo
               >
                 {item.icon && <span className="bar-menu-item-icon">{item.icon}</span>}
                 <span className="bar-menu-item-label">{item.label}</span>
+                {item.trailing && <span className="bar-menu-item-trailing">{item.trailing}</span>}
               </button>
             )
           )}
