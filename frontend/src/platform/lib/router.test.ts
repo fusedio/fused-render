@@ -11,7 +11,8 @@ import { installDomShim } from "./testDomShim";
 // installs, rather than a stub hand-rolled per file.
 installDomShim();
 
-const { navigate, navigateToJobPage, rewriteLegacyUrl, withPreviewFlag } = await import("./router");
+const { navigate, navigateToJobPage, isJobPageRoute, rewriteLegacyUrl, withPreviewFlag } =
+  await import("./router");
 const { setResolvedSnapshot } = await import("./snapshot-param");
 const setSnapshotAppDir = (appDir: string | null) =>
   setResolvedSnapshot(appDir ? { sha: "abc1234", dir: "/cache/k/abc1234", app_dir: appDir } : null);
@@ -298,5 +299,21 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
     const page = pushedJobPage("/Users/me/Work/widget/index.html");
     expect(page.url).toBe("/explorer/view/Users/me/Work/widget/index.html");
     expect(page.state).toEqual({ fsDir: false });
+  });
+});
+
+describe("isJobPageRoute", () => {
+  test("is true for every known shell route", () => {
+    expect(isJobPageRoute("/ai-models/local")).toBe(true);
+    expect(isJobPageRoute("/ai-models/benchmark")).toBe(true);
+    expect(isJobPageRoute("/claude-config")).toBe(true);
+    expect(isJobPageRoute("/preferences")).toBe(true);
+    expect(isJobPageRoute("/preferences?tab=indexing")).toBe(true);
+    expect(isJobPageRoute("/tasks")).toBe(true);
+  });
+
+  test("is false for an fs path, even one that looks route-like", () => {
+    expect(isJobPageRoute("/Users/me/Work/widget")).toBe(false);
+    expect(isJobPageRoute("/Users/me/Work/widget/index.html")).toBe(false);
   });
 });

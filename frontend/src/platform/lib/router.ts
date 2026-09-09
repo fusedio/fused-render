@@ -532,3 +532,11 @@ export function navigateToJobPage(page: string): void {
   }
   navigate(page, { isDir: !/\.html?$/i.test(page) });
 }
+
+// Whether `page` is one of the shell routes above rather than an fs path —
+// the one thing a caller displaying `job.page` as text (a tooltip, say)
+// cannot tell on its own, since both shapes start with "/". `JOB_PAGE_ROUTES`
+// itself stays unexported: this is the one question about it a caller needs.
+export function isJobPageRoute(page: string): boolean {
+  return JOB_PAGE_ROUTES.has(page);
+}

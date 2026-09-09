@@ -424,6 +424,18 @@ test("a RUNNING job never opens on click, even when it names a page — only a t
   expect(findAll(root, "dl-row-open")).toHaveLength(0);
 });
 
+test("a page that is a shell route draws no title tooltip — the row's own click already says where it goes", () => {
+  const root = renderRow({ ...BASE, state: "done", page: "/ai-models/local" });
+  const title = findAll(root, "dl-title");
+  expect(title[0].props.title).toBeUndefined();
+});
+
+test("a page that is an fs path draws it as the title tooltip", () => {
+  const root = renderRow({ ...BASE, state: "done", page: "/Users/me/Desktop/render.png" });
+  const title = findAll(root, "dl-title");
+  expect(title[0].props.title).toBe("/Users/me/Desktop/render.png");
+});
+
 test("a bare running row's fallback status measures against the caller's clock, not the browser's (C4)", () => {
   // No status text (no `detail`, no `message`) and no amount (`unit: ""`,
   // both `done`/`total` null): this is D665's fallback case, `jobDetail`,

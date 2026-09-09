@@ -75,7 +75,7 @@
 // "Cancelling…" until the work actually stops, rather than lying about it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStatusChip } from "@platform/lib/statusChip";
-import { navigateToJobPage } from "@platform/lib/router";
+import { navigateToJobPage, isJobPageRoute } from "@platform/lib/router";
 import StatusChip from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
 import {
@@ -567,9 +567,8 @@ export function JobRow({
     }
   };
 
-  // A TERMINAL row with somewhere to go OPENS on click (SPEC-actionable-
-  // notifications.md): `job.page` widened from "who raised it" to "where
-  // clicking this row goes", and `navigateToJobPage` is the one place that
+  // A TERMINAL row with somewhere to go OPENS on click: `job.page` is where
+  // clicking this row goes, and `navigateToJobPage` is the one place that
   // turns either shape it can hold — an fs path or one of a handful of shell
   // routes — into a real navigation. Gated on `isTerminal`, not just `page`
   // truthiness, because `JobRow` is also `DownloadManagerView`'s own
@@ -623,7 +622,10 @@ export function JobRow({
   return (
     <NotificationCard
       title={job.title}
-      titleTooltip={job.page || undefined}
+      // Only an fs path is worth showing as attribution text — a shell route
+      // like "/tasks" or "/claude-config" says nothing a hover needs to add,
+      // since the row's title and the click target already say where it goes.
+      titleTooltip={job.page && !isJobPageRoute(job.page) ? job.page : undefined}
       stalled={job.stalled}
       trailing={
         fraction !== null && running ? (
