@@ -22,7 +22,7 @@ file, not from the session that wrote it.
 - Repo-update rows are unchanged per spec (buttons only, no whole-row click)
   — no code needed touching there at all.
 
-## Frontend, unit 2 (uncommitted as of this writing — see "open regression" below)
+## Frontend, unit 2 (committed 45ad8c35f)
 
 - `Job.page`'s meaning widened in its doc comment: from "the `.html` that
   raised it, attribution only" to "where clicking this row goes" — either an
@@ -116,11 +116,32 @@ with an explicit rationale in its own header comment for not using
 other file can also safely import alongside it, learned the hard way from
 an earlier `mock.module` attempt that broke two unrelated files).
 
-(Once the full suite is reconfirmed clean at the pre-existing 2-fail/2-error
-baseline, this section will be updated with the final file list and the
-commit this unit landed in.)
+The 38-fail/25-error number above was the raw symptom, not the true fix
+scope. Bun runs every test file in one shared process, so one file's
+uncaught module-eval crash can cascade into "Unhandled error between tests"
+blocks misattributed to other, unrelated files running nearby in the same
+invocation — the ~24-file failure list this looked like at first was mostly
+that misattribution. A dispatched investigation ran files standalone
+(one-at-a-time bun invocations) to separate real dependency chains from
+collateral noise, and found only **three** files with a genuine, unshimmed
+path reaching `router.ts`:
 
-## Producer→destination table (backend, not yet implemented as of this writing)
+- `frontend/src/shell/ActivityDock.test.tsx` — renders `DownloadManager`'s
+  `JobRow` directly.
+- `frontend/src/platform/ui/StatusBar.test.tsx` — its bare-`DownloadManager`
+  fallback path pulls the same chain in.
+- `frontend/src/apps/ai_models/playground/appSeed.test.ts` — reaches
+  `params.ts`'s `readParam`, which imports `router.ts` for `replaceSearch`
+  (the same reason `params.test.ts` already carries this shim).
+
+Each got the same `installDomShim()` + dynamic-import treatment, verified
+standalone, then the full suite was re-run and landed back at baseline: 3226
+pass, 2 fail, 2 errors (same pre-existing PNG-import 2/2; the higher pass
+count is this feature's own new tests). `bunx tsc --noEmit -p .` and `node
+scripts/check-boundaries.mjs` (485 files) both clean. Committed as its own
+unit in **45ad8c35f**.
+
+## Producer→destination table (backend)
 
 Settled, from the spec:
 
@@ -147,30 +168,57 @@ are deliberately left with `page` unset — the spec's binding table names
 only `sys:ai-model:*`, and the spec is binding even where its coverage looks
 inconsistent with the rest of that module's job surface.
 
-Status: **not yet implemented.** No backend Python file has been edited in
-this build. Still to do, TDD (test first) for each:
-1. `fused_render/jobs.py` — widen `page`'s doc comment.
+Status: **done, all 7 steps, across three commits.**
+1. `fused_render/jobs.py` — widen `page`'s doc comment. (4e91086a4)
 2. `fused_render/ai/supervisor.py` — `BENCHMARK_JOB_PREFIX` constant,
    `_job_page(job)` helper, `_report` passes `page=_job_page(job)`.
+   (4e91086a4) — `tests/test_ai_supervisor_job_page.py` (new, 5 tests).
 3. `fused_render/ai/benchmark.py` — replace the two inline
    `jobs.SERVER_ID_PREFIX + "ai-benchmark-"` literals with
-   `supervisor.BENCHMARK_JOB_PREFIX`.
+   `supervisor.BENCHMARK_JOB_PREFIX`. (4e91086a4)
 4. `fused_render/claude_install.py` — `page="/claude-config"` on its
-   `jobs.upsert(...)` call.
+   `jobs.upsert(...)` call. (4e91086a4) — `tests/test_claude_install.py`
+   gained `test_the_reported_job_points_at_the_claude_config_page`.
 5. `fused_render/github_setup.py` — `page="/preferences"` on
-   `_report_install`'s `jobs.upsert(...)`; add a `root` field to
-   `_publish_state`, thread `real_root` through `publish_start`, and
-   `page=snapshot.get("root") or ""` on `_report_publish`'s `jobs.upsert(...)`.
+   `_report_install`'s `jobs.upsert(...)`; added a `root` field to
+   `_publish_state`, threaded `real_root` through `publish_start`, and
+   `page=snapshot.get("root") or ""` on `_report_publish`'s
+   `jobs.upsert(...)`. (5cffcceb5) — `tests/test_github_setup.py` gained
+   `test_the_reported_install_job_points_at_preferences` and
+   `test_the_reported_publish_job_points_at_the_repo_root`.
 6. `fused_render/capture/__init__.py` — `page` param on `_Session.__init__`
-   and `start()`, threaded through, used in `_report`.
+   and `start()` (keyword-only, default `""`), threaded through, read by
+   `_report` as `page=session.page`. (225b8a242)
 7. `fused_render/server/routers/capture.py` — `x_fused_page` header param on
    `api_capture_start`, extracted via `unquote` mirroring
-   `routers/jobs.py`'s exact pattern, passed to `capture.start(mode, body,
-   page=page)`.
+   `routers/jobs.py`'s exact pattern (`unquote(x_fused_page) if
+   x_fused_page else ""`), passed to `capture.start(mode, body,
+   page=page)`. (225b8a242) — `tests/test_capture.py` gained
+   `test_the_row_opens_the_page_that_started_the_capture` and
+   `test_no_page_header_leaves_the_row_with_no_destination`.
 
 Server-side spoof-proofing (`X-Fused-Page` header only, never request body)
 was reconfirmed correct and unchanged in `routers/jobs.py` — no edit needed
-there.
+there; `routers/capture.py` mirrors the identical channel.
+
+Scoped test runs, all green: `tests/test_ai_supervisor_job_page.py` (5
+passed) plus `test_ai_supervisor_video.py`/`test_ai_benchmark.py` combined
+(89 passed); `tests/test_claude_install.py` (29 passed);
+`tests/test_github_setup.py` (80 passed) plus
+`test_server_github.py`/`test_github_login.py` (43 passed);
+`tests/test_capture.py` (41 passed, 10 skipped — pre-existing, unrelated);
+`tests/test_capture.py`+`test_capture_mixdown.py`+`test_capture_stream.py`
+combined (96 passed, 11 skipped).
+
+A local-only wrinkle surfaced and was resolved on the capture unit: any
+`TestClient(create_app(...))`-based test fails locally with `RuntimeError:
+React shell not built (fused_render/static/shell-dist/ missing)` unless
+`frontend/`'s shell has been built at least once in the worktree
+(`shell-dist/` is gitignored, so this is a one-time local artifact, not
+something to commit). Ran `bun run build` in `frontend/` once to produce it
+locally, confirmed via `git check-ignore` that the output directory is
+untracked, and then all capture tests ran and passed for real rather than
+being reasoned about from the `routers/jobs.py` mirror alone.
 
 ## Explicitly out of scope (per spec, unchanged)
 
