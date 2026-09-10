@@ -141,33 +141,9 @@ export function isRunning(job: Job): boolean {
 }
 
 /**
- * Whether a terminal job is specifically a FAILURE, as opposed to a `done` or
- * `cancelled` one — the one thing `isTerminal` does not distinguish. All
- * three terminal states route to Notifications and leave Jobs the same tick
- * (D663, broadened from D586's original `error`-only route: "running
- * activities are shown in jobs and after done, a completed message goes to
- * notifications" never meant only failures). What this narrower question is
- * still used for is `.is-failure`'s red tint in Notifications — a `done` or
- * `cancelled` row belongs there too, but neither is a failure and must not
- * turn the chip red.
- *
- * (C7: this doc used to describe D586's original error-only routing —
- * "only `error` moves", `done`/`cancelled` "aging out" via `FINISHED_TTL_S`
- * — none of which has been true since D663 stopped sweeping any terminal
- * row until dismissed and started routing all three states the same way.)
- */
-export function isFailure(job: Job): boolean {
-  return job.state === "error";
-}
-
-/**
- * A job that has stopped and is not coming back — the three states that used
- * to be handled one at a time (`isFailure` for D586's failures-only route) are
- * now one question, because Notifications draws all three the same way and
- * Activity must lose all three the same tick they land there (user: "running
- * activities are shown in jobs and after done, a completed message goes to
- * notifications" — the "after done" half never distinguished which terminal
- * state, only D586's `error` half ever got built).
+ * A job that has stopped and is not coming back — `done`, `error` and
+ * `cancelled` are one question, because Notifications draws all three the
+ * same way and Activity loses all three the same tick they land there.
  */
 export function isTerminal(job: Job): boolean {
   return job.state === "done" || job.state === "error" || job.state === "cancelled";
