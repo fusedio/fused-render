@@ -19,12 +19,15 @@ export interface IndexCaveat {
 // so the same spinner means progress, not staleness.
 //
 // `behind` is the third message and the quiet one: no scan is running, but
-// these results were computed from an older generation of the tree and the
-// search is deliberately not refetching (listing/revalidate — swapping the
-// rows out from under someone reading them is worse than being a little
-// behind). That trade is only defensible if it is stated, which is what this
-// says. A running scan outranks it: "indexing…" already implies the same
-// caveat and names the reason.
+// the file index itself moved since these results were computed (a completed
+// scan bumping `useListingSearch.ts`'s lifecycle count — not a bare dir-watch
+// event, which is background churn under the tree that says nothing about
+// whether the index changed, and does not set this) and the search is
+// deliberately not refetching (listing/revalidate — swapping the rows out
+// from under someone reading them is worse than being a little behind). That
+// trade is only defensible if it is stated, which is what this says. A
+// running scan outranks it: "indexing…" already implies the same caveat and
+// names the reason.
 // `rescanPending` is the third input and the one with no poll behind it: this
 // app just changed a file, the server has been told to rescan that folder
 // (server/index_touch.py), and until a status poll catches the run, `scanning`
@@ -77,7 +80,7 @@ export function indexCaveat(
     return {
       note: "not refreshed",
       title:
-        "This folder or the file index changed since these results were computed. They are kept as they are rather than swapped out while you read them — clear the search and run it again for the newest.",
+        "The file index changed since these results were computed. They are kept as they are rather than swapped out while you read them — clear the search and run it again for the newest.",
     };
   }
   return null;

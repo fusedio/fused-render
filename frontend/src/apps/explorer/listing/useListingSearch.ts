@@ -28,10 +28,14 @@
 // screen, dimmed and captioned, until the next answer lands.
 //
 // Neither the ranked answer nor the scan poll re-fetches on background churn.
-// A dir-watch event or a scan completing elsewhere is RECORDED, and the
-// results stay put — dimmed and captioned "not refreshed" — until a boundary
-// where a repaint costs the user nothing: the search ending, or a change this
-// app itself made. See listing/revalidate.
+// A dir-watch event elsewhere under the folder is RECORDED, and the results
+// stay put — silently, since nothing about the index this query was answered
+// from has moved — until a boundary where a repaint costs the user nothing:
+// the search ending, or a change this app itself made. See listing/revalidate.
+// A completed scan is different: the fetch effect re-asks for it directly
+// (its key includes the index lifecycle count), so it is what "not
+// refreshed" actually describes — an answer whose index has since moved and
+// has not yet been repainted over it.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { indexRank, requestFolderScan } from "@platform/lib/api";
 import type { IndexRankResult, RankReason } from "@platform/lib/api";
@@ -79,6 +83,19 @@ interface RankAnswer {
    * moved said "current" over rows that were not.
    */
   gen: number;
+  /**
+   * The index lifecycle count (lib/index-freshness) this answer was fetched
+   * under — a scan completing or the index being rebuilt, as opposed to
+   * `gen` above, which also moves on every dir-watch event anywhere under
+   * the folder. `generationBehind` (below) keys off THIS, not `gen`: a scan
+   * actually finishing is answered by the fetch effect re-asking (its key
+   * includes `lifecycle` directly) almost as soon as it happens, but a bare
+   * dir-watch bump is background churn the search is designed to ignore
+   * (listing/revalidate) — captioning it "not refreshed" told the user their
+   * on-screen answer was suspect when nothing about the index, or this
+   * query's answer, had actually moved.
+   */
+  lifecycle: number;
   hits: SearchHit[];
   truncated: boolean;
   total: number;
@@ -294,11 +311,15 @@ export function useListingSearch(
   // caption is about THIS answer rather than about a counter that has since
   // moved.
   const answerGen = useRef(gen);
+  // The index lifecycle count the answer on screen was fetched under — see
+  // `RankAnswer.lifecycle`'s own comment for why this, and not `answerGen`
+  // above, is what `generationBehind` actually keys off.
+  const answerLifecycle = useRef(lifecycle);
   // Whether an answer has EVER been recorded for the current search episode —
   // set at the same two places `answerGen.current` is (a memo hit, a fetch
   // landing), cleared wherever the answer itself is cleared. `generationBehind`
-  // below needs this: `answerGen.current` starts equal to `gen` at mount, but
-  // a later bump (of `gen`, for reasons that have nothing to do with this
+  // below needs this: `answerLifecycle.current` starts equal to `lifecycle` at
+  // mount, but a later bump (for reasons that have nothing to do with this
   // search) makes them differ even when no answer was ever fetched — and "not
   // refreshed" is a claim about an EXISTING answer, meaningless with none on
   // screen.
@@ -309,6 +330,10 @@ export function useListingSearch(
   // exists to refuse.
   const genRef = useRef(gen);
   genRef.current = gen;
+  // Same reasoning, for the lifecycle half of `gen` alone — see
+  // `RankAnswer.lifecycle`.
+  const lifecycleRef = useRef(lifecycle);
+  lifecycleRef.current = lifecycle;
   // The index MOVING makes every remembered answer suspect at once — that is
   // the memo's whole coherence story (platform/lib/instant-search). Only the
   // memo goes here: the rows on screen stay, and are replaced when the re-ask
@@ -425,6 +450,7 @@ export function useListingSearch(
       // The rows come back with their own generation, so the caption is about
       // THESE rows rather than about the last request that happened to run.
       answerGen.current = remembered.gen;
+      answerLifecycle.current = remembered.lifecycle;
       answered.current = true;
       setAnswer(remembered);
       setFailure("");
@@ -467,10 +493,12 @@ export function useListingSearch(
           const step = applyStep(res, epoch);
           answerSeq.current += 1;
           answerGen.current = genRef.current;
+          answerLifecycle.current = lifecycleRef.current;
           answered.current = true;
           const next: RankAnswer = {
             query: q,
             gen: genRef.current,
+            lifecycle: lifecycleRef.current,
             hits: hitsFromRank(res.hits, q, res.mode),
             truncated: res.truncated,
             total: res.total,
@@ -731,13 +759,18 @@ export function useListingSearch(
   // in a moment — so a scan running for a minute is deliberately NOT one of
   // them; it has the "indexing…" caveat instead.
   const isStale = deferredStale || progress.inFlight;
-  // Being a generation behind is NOT momentary: the folder or the index moved
-  // and this search deliberately did not follow, and it will stay that way
-  // until a real boundary (listing/revalidate). Requires `answered.current`:
-  // with no answer ever recorded for this search, `answerGen.current` and
-  // `gen` differing says nothing about staleness — there is no existing
-  // answer for "not refreshed" to describe.
-  const generationBehind = searching && answered.current && answerGen.current !== gen;
+  // Keyed on `lifecycle`, not the combined `gen` (refresh + lifecycle):
+  // `gen` also moves on every dir-watch event anywhere under the folder — a
+  // churny root's own Library/, logs, the index worker's own writes — and
+  // none of those says anything about whether THIS query's answer is out of
+  // date, only that something, somewhere under the tree, changed. A lifecycle
+  // bump is the one that means the index itself moved, and it is answered by
+  // the fetch effect re-asking (its own key includes `lifecycle`) about as
+  // soon as it happens, so this is rarely observed true for long. Requires
+  // `answered.current`: with no answer ever recorded for this search,
+  // `answerLifecycle.current` and `lifecycle` differing says nothing about
+  // staleness — there is no existing answer for "not refreshed" to describe.
+  const generationBehind = searching && answered.current && answerLifecycle.current !== lifecycle;
 
   // A settled failure with rows still on screen: the last request for the
   // CURRENT query errored, so `hits` is whatever an earlier query answered,

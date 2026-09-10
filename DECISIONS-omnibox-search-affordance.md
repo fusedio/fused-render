@@ -1173,3 +1173,53 @@ anymore; `broadenOffer.label` is computed but no longer rendered.
 
 **Verification**: `bun test src/apps/explorer` (1146 pass, 0 fail) and
 `bunx tsc --noEmit` (clean).
+
+## "not refreshed" fired on background churn unrelated to the index (2026-09-10)
+
+Reported against a live root: searching `*/*.js` gave a correct, fresh "No
+matches" — and the chip still said "not refreshed". Traced to
+`useListingSearch.ts`'s `generationBehind`, which compared the answer's
+fetched-under generation (`answerGen`, `gen = refresh + lifecycle`) against
+the CURRENT `gen` — and `refresh` (the dir-watch counter) bumps on every
+filesystem event anywhere under the folder, a home directory's Library/,
+logs, and the index worker's own writes included. None of that says the
+ranked INDEX this query was answered from has moved; only a completed scan
+does (`lifecycle`, lib/index-freshness), and the fetch effect already re-asks
+for that on its own (its key includes `lifecycle` directly) about as soon as
+it happens — so on a churny root the caption was close to permanently on,
+describing background noise rather than the query in front of the user.
+
+Verified this against `revalidate.ts`, `index-caveat.ts`, `index-freshness.ts`
+and the `behind`/`pinned` wiring before changing anything, per the brief this
+came in on. One part of that brief's own reading did not hold up: it argued
+the caption's remedy ("clear the search and run it again") no longer
+reconciles anything, since `revalidate.ts`'s v2 removed a QUERY CHANGE as a
+boundary. But clearing the box (or backspacing below `MIN_QUERY_CHARS`) ends
+the search — `searching` goes false — and "the search ending" was never one
+of the boundaries that change touched; it still reconciles `pinned` to `gen`
+immediately, and retyping the query re-asks against the now-current
+generation. The remedy still works; only the TRIGGER for showing it was
+wrong. Caption kept, with "This folder or the file index changed" narrowed to
+"The file index changed", matching what now actually sets `behind`.
+
+Fix: added a second ref (`answerLifecycle`, and a `lifecycle` field on
+`RankAnswer` alongside its existing `gen`) recording the `lifecycle` count an
+answer was fetched or memoized under. `generationBehind` now compares against
+this instead of the combined `gen` — a pure dir-watch bump no longer sets it,
+a completed scan or index rebuild still can (transiently; the scan's own
+re-ask nearly always lands before anyone would see it). `rescanPending`,
+`scanning`, and `failed` are untouched — they are separate branches this fix
+does not gate on.
+
+**TDD**: `useListingSearch.render.test.ts`'s "a dir-watch bump while
+searching" test previously asserted the OLD behavior directly (pure `refresh`
+churn produces `behind === true` and a non-null caveat) — watched it invert
+to the new expectation (both `false`/`null`) rather than adding a parallel
+test that could pass either way. Its neighboring "an answer served from the
+memo" test made the same assumption through a memo hit; rewritten the same
+way. "a completed scan" and the URL-restored-search racing test were already
+exercising the lifecycle path and needed no change — confirmed they still
+pass unchanged.
+
+**Verification**: `bun test src/apps/explorer` (1146 pass, 0 fail) and
+`bunx tsc --noEmit` (clean).
