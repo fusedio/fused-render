@@ -808,17 +808,21 @@ test("the footer is absent at one repo row and present at two", () => {
   expect(findAll(two, "dl-clear")).toHaveLength(1);
 });
 
-test("repo rows come before failures — the actionable rows first", () => {
+test("a failure comes before an ordinary repo row — Needs you precedes Worth keeping (item 3)", () => {
   // Both row kinds share `.dl-row` now (status-bar merge, brief item 4), so
   // ordering is asserted by what each kind carries rather than by class name:
   // a repo row's own action button is `.q-all` (kept — see this row's own
   // header comment for why it did not migrate to `.dl-row-cancel`), which a
-  // terminal-job row (`JobRow`) never renders.
+  // terminal-job row (`JobRow`) never renders. `failedJob()`'s `state: "error"`
+  // makes its `effectiveTier` "attention" regardless of its declared tier, so
+  // it lands in "Needs you" — the section item 3 draws FIRST — ahead of the
+  // ordinary repo row in "Worth keeping", reversing what used to be true when
+  // every terminal job shared one flat list with the repo rows.
   const tree = renderView({ rows: repoRows([status({ root: "/a/one" })]), terminal: [failedJob()] });
   const rows = findAll(tree, "dl-row");
   expect(rows).toHaveLength(2);
-  expect(findAll(rows[0], "q-all")).toHaveLength(1);
-  expect(findAll(rows[1], "q-all")).toHaveLength(0);
+  expect(findAll(rows[0], "q-all")).toHaveLength(0);
+  expect(findAll(rows[1], "q-all")).toHaveLength(1);
 });
 
 // D673 (supersedes D574/D586's "repo arrivals auto-open, failures are
@@ -1038,4 +1042,80 @@ test("Clear never counts a waiting row — there is nothing there to clear", () 
   });
   expect(findAll(tree, "dl-head")).toHaveLength(0);
   expect(findAll(tree, "dl-clear")).toHaveLength(0);
+});
+
+// ---------------------------------------------------------- item 3: two sections, one chip
+
+test("rows split into 'Needs you' and 'Worth keeping', each drawn only when non-empty", () => {
+  // A waiting task and a failed job both land in "Needs you"; a repo row
+  // lands in "Worth keeping" — the two sections never mix. Both headings show
+  // here because both sections are actually present at once — the same
+  // "2+ sections" rule ActivityDock's own Running/Background split follows.
+  const tree = renderView({
+    rows: repoRows([status({ root: "/a/one" })]),
+    terminal: [failedJob()],
+    attention: [asking()],
+  });
+  const titles = findAll(tree, "dl-section-head").map((n) => text(n));
+  expect(titles).toEqual(["Needs you", "Worth keeping"]);
+});
+
+test("a lone section draws no heading at all — nothing here needs disambiguating", () => {
+  // Same "PLURALITY, NOT PRESENCE" rule this file already follows for the
+  // Clear-all footer and ActivityDock follows for its own section headings:
+  // with only "Worth keeping" ever populated, a label distinguishing it from
+  // an empty sibling is a redundant header.
+  const onlyTrail = renderView({ rows: repoRows([status()]) });
+  expect(findAll(onlyTrail, "dl-section-head")).toHaveLength(0);
+  expect(findAll(onlyTrail, "dl-row")).toHaveLength(1);
+
+  const onlyAttention = renderView({ rows: [], attention: [asking()] });
+  expect(findAll(onlyAttention, "dl-section-head")).toHaveLength(0);
+  expect(findAll(onlyAttention, "dl-row")).toHaveLength(1);
+});
+
+test("an attention-tier terminal job never folds behind the trail cap, however many trail jobs there are", () => {
+  // 8 ordinary (done, trail-tier) jobs plus 1 failed (attention-tier) job:
+  // TERMINAL_VISIBLE_CAP (5) folds the trail jobs down to 5, with 3 folded —
+  // but the failed job is never part of that count at all, because it never
+  // reaches `terminalTrail` in the first place.
+  const trail = Array.from({ length: 8 }, (_, i) => doneJob({ id: `j${i}` }));
+  const tree = renderView({ rows: [], terminal: [...trail, failedJob()] });
+  const rows = findAll(tree, "dl-row");
+  // 5 shown trail jobs + 1 attention job, never folded.
+  expect(rows).toHaveLength(6);
+  expect(text(rows[0])).toContain("Pyramid build"); // attention section first
+  expect(text(findAll(tree, "dl-panel-more")[0])).toBe("3 older notifications");
+});
+
+test("the chip reads 'N needs you' and turns loud the moment anything needs a look", () => {
+  const idle = renderView({ rows: repoRows([status()]) });
+  expect(text(findAll(idle, "dl-summary")[0])).toBe("Notifications");
+  expect(toggleClasses(idle)).not.toContain("is-failure");
+
+  const oneNeedsYou = renderView({ rows: [], terminal: [failedJob()] });
+  expect(text(findAll(oneNeedsYou, "dl-summary")[0])).toBe("1 needs you");
+  expect(toggleClasses(oneNeedsYou)).toContain("is-failure");
+
+  const twoNeedYou = renderView({
+    rows: [],
+    terminal: [failedJob()],
+    attention: [asking()],
+  });
+  expect(text(findAll(twoNeedYou, "dl-summary")[0])).toBe("2 needs you");
+});
+
+test("'N needs you' counts a waiting task and an attention-tier job together, not just one source", () => {
+  const tree = renderView({
+    rows: repoRows([status()]), // a repo row must never count toward "needs you"
+    terminal: [failedJob(), doneJob()], // one attention-tier, one trail-tier
+    attention: [asking()],
+  });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("2 needs you");
+});
+
+test("a done (trail-tier) job alone never turns the label loud — only attention rows do", () => {
+  const tree = renderView({ rows: [], terminal: [doneJob()] });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
+  expect(toggleClasses(tree)).not.toContain("is-failure");
 });
