@@ -2609,6 +2609,19 @@ table.listing-table tr.row:hover {
   opacity: 1;
 }
 
+/* The row is already the click target (tr.row's own `cursor: pointer`,
+   above) — this is what tells a hovering eye WHERE in it a click lands. Same
+   pattern as transcript.css's `.annsum-note:hover .annsum-txt`: a row that is
+   itself the affordance, with the underline landing on its text rather than
+   a second background or border competing with `tr.row:hover`'s own. Covers
+   both the plain listing's name and a search hit's relative path — the same
+   "this is the name" role in either row shape. */
+table.listing-table tr.row:hover .name-text,
+table.listing-table tr.row:hover .search-path {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* Keyboard-selected row (arrow-key navigation). Distinct from :hover so the
    selection stays visible while the cursor is elsewhere; full opacity so a
    selected .ignored row is still readable. */

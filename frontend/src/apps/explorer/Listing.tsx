@@ -1523,7 +1523,10 @@ export default function Listing({
               <span className="icon">
                 {iconForEntry(entry.name, entry.is_dir)}
               </span>
-              {entry.name}
+              {/* Its own span so a row hover can underline the name alone
+                  (explorer.css, tr.row:hover .name-text) — the one thing in
+                  an otherwise-plain row a hover singles out as "go here". */}
+              <span className="name-text">{entry.name}</span>
             </span>
             <GitMark status={entry.git} />
             <ClipMark
