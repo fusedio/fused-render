@@ -1931,18 +1931,27 @@ table.listing-table tr.skel-row:hover {
   right: 38px;
 }
 
-/* The app's own key-cap vocabulary (preferences.css's `.fh-ai-hint kbd`,
-   also carried by `.fh-result-note kbd`) — this bar gets its own selector
-   rather than sharing theirs across stylesheets because nothing here reaches
-   into preferences.css, but the declarations are the same rule, not a new
-   one. Only ever rendered in the wide (`bar-ctl`, non-`bar-ctl-icon`) form —
-   the collapsed glyph carries no `<kbd>` at all. */
+/* A quiet suffix, NOT the app's bordered key-cap (preferences.css's
+   `.fh-ai-hint kbd`). Those caps sit in running prose, where a box is what
+   separates a keystroke from the sentence around it. This one sits inside a
+   `bar-ctl` that already draws its own filled pill on hover, and a ring
+   inside that fill is two concentric rounded rectangles 28px tall — the
+   shortcut ends up louder than the word it qualifies. Ink alone carries it
+   here: the button's own box is the boundary. Only ever rendered in the wide
+   (`bar-ctl`, non-`bar-ctl-icon`) form — the collapsed glyph carries no
+   `<kbd>` at all. */
 .listing-search-shortcut-hint kbd {
   font: inherit;
-  padding: 0 4px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-alt);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+}
+
+/* The glyph rides at the muted step even when the label beside it lifts to
+   `--fg` on hover, so the word stays the thing being read and the mark stays
+   an icon. */
+.listing-search-shortcut-hint svg {
+  opacity: 0.8;
 }
 
 /* Absent, not clipped, on a narrow box — a deep path or a narrow window can

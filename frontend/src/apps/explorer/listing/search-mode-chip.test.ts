@@ -180,18 +180,22 @@ test("the hint is a real button now, gone the instant the field takes focus, and
   expect(block).toMatch(/"listing-search-shortcut-hint bar-ctl"/);
 });
 
-// The words are still on screen — "Search" plus the platform-conditional
-// shortcut — exactly what the old decorative hint rendered, just inside a
-// real button now. `boxWide` (the SAME measurement the placeholder's own
-// long/short switch already uses) collapses this to the bare glyph at
-// narrow widths, where the accessible name (below) becomes the only place
-// the shortcut still appears.
+// The magnifier is unconditional and the words ride beside it at wide
+// width — "Search" plus the platform-conditional shortcut. `boxWide` (the
+// SAME measurement the placeholder's own long/short switch already uses)
+// drops the words at narrow widths, leaving the glyph that was already
+// there; the accessible name (below) becomes the only place the shortcut
+// still appears.
 test("the words render at wide width: Search plus the platform-conditional shortcut", () => {
   const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
   expect(at).toBeGreaterThan(-1);
-  const block = LISTING.slice(at, at + 700);
+  const block = LISTING.slice(at, at + 1100);
   expect(block).toMatch(/boxWide/);
-  expect(block).toMatch(/Search <kbd>\{isMac \? "⌘L" : "Ctrl L"\}<\/kbd>/);
+  expect(block).toMatch(/\{"Search"\}/);
+  expect(block).toMatch(/<kbd>\{isMac \? "⌘L" : "Ctrl L"\}<\/kbd>/);
+  // Unconditional: the glyph is outside the `boxWide` guard, so the
+  // collapsed form is the same control with its label dropped.
+  expect(block.indexOf("<svg")).toBeLessThan(block.indexOf("{boxWide &&"));
   const importAt = LISTING.indexOf('import { isMac } from "@platform/lib/platform";');
   expect(importAt).toBeGreaterThan(-1);
   expect(block).not.toMatch(/navigator/);

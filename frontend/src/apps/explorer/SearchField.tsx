@@ -804,15 +804,15 @@ export function SearchField({
             aria-label={`Search this folder (${isMac ? "⌘L" : "Ctrl L"})`}
             onClick={() => requestSearchFocus(contractHome(crumbsPath, home))}
           >
-            {boxWide ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <line x1="16.5" y1="16.5" x2="21" y2="21" />
+            </svg>
+            {boxWide && (
               <>
-                Search <kbd>{isMac ? "⌘L" : "Ctrl L"}</kbd>
+                {"Search"}
+                <kbd>{isMac ? "⌘L" : "Ctrl L"}</kbd>
               </>
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="11" cy="11" r="7" />
-                <line x1="16.5" y1="16.5" x2="21" y2="21" />
-              </svg>
             )}
           </button>
         )}
