@@ -263,13 +263,30 @@ export function SearchField({
   // listing, `active` false) must not act on it, or a click on the CLAIMED
   // bar's crumb would steal focus into the wrong field.
   const seedSelectRef = useRef(false);
+  // Set for the one focus event this request itself triggers, so the
+  // `onFocus` handler below (input) can tell "a caller just told me what to
+  // show" apart from "something merely put the cursor here" and skip its own
+  // opinion. Without this, `searchInputRef.current?.focus()` a few lines down
+  // fires `onFocus` SYNCHRONOUSLY, reading `query` from this render's stale
+  // closure (still "" — `setQuery(seed)` above hasn't committed yet), and
+  // `onFocus`'s own "empty query? seed the current path" rule stomps the
+  // caller's seed right back — including the Search button's deliberate ""
+  // (FINDING 1, code review, 2026-09-10). Cleared in `onFocus` itself when it
+  // fires; also cleared on a microtask so a focus() call that is a no-op
+  // (the field was already focused, so no event fires at all) can't leave a
+  // stale flag around to swallow the NEXT, unrelated plain focus.
+  const focusFromRequestRef = useRef(false);
   useEffect(() => {
     if (!active) return;
     return subscribeSearchFocusRequest((seed) => {
       setQuery(seed);
       seedSelectRef.current = true;
       setPinnedOpen(true);
+      focusFromRequestRef.current = true;
       searchInputRef.current?.focus();
+      queueMicrotask(() => {
+        focusFromRequestRef.current = false;
+      });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
@@ -557,7 +574,22 @@ export function SearchField({
           placeholder={pinnedOpen ? (boxWide ? HINT_LONG : HINT_SHORT) : ""}
           value={query}
           onFocus={() => {
-            if (query === "") {
+            // `requestSearchFocus` already decided what this field should
+            // show — the Search button's deliberate "" included — and this
+            // very focus event is that call's own doing (the ref above).
+            // Deferring to it here, rather than re-seeding, is what lets the
+            // button actually open the box empty: without this branch every
+            // focus, requested or not, fell into the plain-focus rule below
+            // and rewrote an empty query back to the current path.
+            if (focusFromRequestRef.current) {
+              focusFromRequestRef.current = false;
+            } else if (query === "") {
+              // A plain focus nobody seeded — tabbing in, or a direct click
+              // on the input itself rather than through a crumb or the
+              // Search button — still opens holding the current path,
+              // selected: the field is a location bar first, and typing
+              // over a pre-filled address is the one thing every text input
+              // already teaches you to expect.
               setQuery(contractHome(fsPath, home));
               seedSelectRef.current = true;
             }
