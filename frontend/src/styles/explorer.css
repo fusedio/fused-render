@@ -2216,9 +2216,7 @@ table.listing-table tr.skel-row:hover {
    its own affordance (the `↵`, or the "folder"/size hint) stranded far
    from the label it belongs to, reading as a rendering fault rather than
    one row. `max-width` (not `width`) so a field narrower than the cap
-   still governs it — the same reasoning the examples panel's own cap used
-   to carry alone (`.listing-completion.listing-completion-examples`,
-   removed below now that this rule covers it for every row kind); a name
+   still governs it, for every row kind this dropdown renders; a name
    or a label longer than the cap degrades through
    `.listing-completion-name`'s own `text-overflow: ellipsis` rather than
    forcing the panel wide again. Left-aligned for free — `left: 0` on the
@@ -2285,13 +2283,10 @@ table.listing-table tr.skel-row:hover {
    keeps the two from being able to drift apart. Right padding stays at
    11px. Top/bottom padding reads `--completion-row-pad-y` the same way —
    this ONE rule is what every row kind in this dropdown (folder
-   completions, the not-found notice, the search-action row, and the
-   teaching panel's own prose paragraph — ITEM 8, running-screen review,
-   2026-09-10, retired the three example ROWS this used to also cover, but
-   the panel's remaining prose line still renders through this same class)
-   renders through, so there was never a second rule set to drift; the
-   token exists so the number itself can't silently diverge from
-   `--chip-inset`'s own pattern the next time any of them changes.
+   completions, the not-found notice, the search-action row) renders
+   through, so there was never a second rule set to drift; the token exists
+   so the number itself can't silently diverge from `--chip-inset`'s own
+   pattern the next time any of them changes.
 
    ITEM 5: `calc(var(--chip-inset) - var(--completion-panel-pad))`, not a
    bare `var(--chip-inset)`, now that the panel itself carries
@@ -2353,47 +2348,6 @@ table.listing-table tr.skel-row:hover {
 
 .listing-completion-row.highlight .listing-completion-hint {
   color: inherit;
-}
-
-/* The focused-and-pristine teaching panel (`.listing-completion-examples`,
-   SearchField.tsx) is a syntax key: a monospace token and its gloss per
-   row, so the three rules are scanned rather than read. The panel sizes to
-   its own content (`width: max-content`, still under the shared 460px cap)
-   because a three-token key against a field-wide card strands the glosses
-   far from the tokens they belong to. `dt` widths align through the grid's
-   own first column, so no token column width is written down here.
-
-   Left padding repeats `.listing-completion-row`'s
-   `calc(var(--chip-inset) - var(--completion-panel-pad))` for the same
-   reason that rule does: the tokens land under the query text, and the
-   panel's own padding is given back so the offset is measured from the
-   FIELD's edge. */
-.listing-completion-examples {
-  width: max-content;
-}
-
-.listing-completion-legend {
-  display: grid;
-  grid-template-columns: auto auto;
-  align-items: baseline;
-  column-gap: 10px;
-  row-gap: 3px;
-  margin: 0;
-  padding: var(--completion-row-pad-y) 11px var(--completion-row-pad-y)
-    calc(var(--chip-inset) - var(--completion-panel-pad));
-  font-size: 12.5px;
-}
-
-.listing-completion-legend dt {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11.5px;
-  color: var(--fg);
-  white-space: nowrap;
-}
-
-.listing-completion-legend dd {
-  margin: 0;
-  color: var(--fg-muted);
 }
 
 /* Matched-substring highlight in search results (explorer). */

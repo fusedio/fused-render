@@ -9,7 +9,7 @@
 // full text always survives in the pin's own tooltip even once nothing is
 // visible.
 //
-// Same CSS-parsing pattern as search-examples-width.test.ts and
+// Same CSS-parsing pattern as search-completion-width.test.ts and
 // search-mode-chip.test.ts: read explorer.css and SearchField.tsx as text
 // and assert on the selectors/declarations/markup actually present, since
 // there is no container-query engine in this suite's DOM to render against

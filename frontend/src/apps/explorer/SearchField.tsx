@@ -43,12 +43,23 @@ import { completionKeyAction, moveHighlight } from "@apps/explorer/listing/compl
 import { isExactSingleMatch } from "@apps/explorer/listing/completion-target";
 import { searchAffordance, type SearchActionRow } from "@apps/explorer/listing/search-action-rows";
 import { resolveFolderToOpen } from "@apps/explorer/listing/enter-prompt";
-import { isPristineQuery, isUntouchedCwdQuery } from "@apps/explorer/listing/query-pristine";
+import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
 import { contractHome } from "@apps/explorer/listing/home-path";
 import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
-import { showSearchExamples } from "@apps/explorer/listing/search-examples";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import { BookmarkStar } from "@apps/explorer/Breadcrumb";
+
+// The search button's own instant tooltip (platform/lib/hints.ts): the
+// grammar this box understands, one rule per line — a bare word searches
+// here and below, a `*` pattern stays confined to this folder, and a
+// leading `~/` or `/` starts the search somewhere else. `hints.ts` renders
+// `data-hint` text through `white-space: pre-wrap` (styles/base.css), so the
+// `\n`s below are what turns this into three lines rather than one run-on
+// sentence.
+const SEARCH_GRAMMAR_HINT =
+  "text — names here and below\n" +
+  "*.zip — this folder only\n" +
+  "~/ or / — start somewhere else";
 
 export interface SearchFieldProps {
   /** This host currently owns the crumb bar's search row. */
@@ -204,13 +215,6 @@ export function SearchField({
   // rather than a CSS breakpoint because the threshold is about THIS box's
   // width, not the window's.
   const [boxWide, setBoxWide] = useState(false);
-  // SPEC-omnibox-search-affordance.md correction (2026-09-10): the long
-  // form used to end "...like ~/work/*/*.csv" — the same invented, likely-
-  // wrong example the examples panel below carried, hardcoded a second
-  // time. Dropped rather than derived a second way: the panel below is
-  // where a REAL, folder-specific example belongs now, and repeating one
-  // here would be the same fact typed twice, driftable the moment either
-  // copy changes.
   const HINT_LONG = "Search, or type a path or pattern to search elsewhere";
   const HINT_SHORT = "Search, or type a path or pattern";
   const HINT_WIDE_PX = 340; // roughly what HINT_LONG needs at 13px not to clip
@@ -259,20 +263,15 @@ export function SearchField({
   // The teardown Escape and the clear button both need — an uncommitted
   // query is discarded and the box stands down from its pinned-open state.
   //
-  // ITEM 2 fix (2026-09-10): this used to only empty the query. An empty
-  // query is pristine by definition, and the teaching panel's own gate is
-  // `showSearchExamples(fieldActive, pristine)` — so clearing satisfied the
-  // exact condition that OPENS the panel, and since the clear button's own
-  // onMouseDown calls `preventDefault()` (to stop the browser's native
-  // mousedown-blur from firing before the click completes), the field
-  // stayed focused throughout, so `fieldActive` never went false either.
-  // The result: crumbs visible (query is "" and pinnedOpen is now false —
-  // looks unfocused) with the dropdown still open behind them (the field
-  // never actually blurred). Now sets `fieldActive` false directly, the
-  // same way `navigateToCompletion` above already does, rather than relying
-  // on the `onBlur` handler to get there — and blurs the input explicitly,
-  // which is required anyway since a focused element does not un-focus
-  // itself just because its own state says it should. This lands on the
+  // Sets `fieldActive` false directly, the same way `navigateToCompletion`
+  // above already does, rather than relying on the `onBlur` handler to get
+  // there — the clear button's own onMouseDown calls `preventDefault()` (to
+  // stop the browser's native mousedown-blur from firing before the click
+  // completes), so without this the field would stay focused (and
+  // `showCompletion` gated on `fieldActive` would stay live) through the
+  // clear. Also blurs the input explicitly, which is required anyway since
+  // a focused element does not un-focus itself just because its own state
+  // says it should. This lands on the
   // resting, pre-filled state (an EMPTY query with the field unfocused —
   // `PathCrumbs` renders the folder's own path here, not this field's
   // value) and does not fight `onFocus`'s own pre-fill: `onFocus` only
@@ -296,12 +295,7 @@ export function SearchField({
   // Nothing has been TYPED in either case, even though the box's own value
   // is non-empty in the second — the distinction `searchAffordance` below
   // and the completion exclusion need (SPEC-omnibox-search-affordance.md
-  // correction, 2026-09-10). This is the SEARCH-GATING notion of
-  // "untouched" (tolerant of an empty box, a trailing slash, surrounding
-  // whitespace) — the teaching panel below uses a DIFFERENT, narrower one
-  // (`untouchedCwd`, `isUntouchedCwdQuery`) that has to vanish on the very
-  // first keystroke; see query-pristine.ts's own comment for why the two
-  // don't share one predicate.
+  // correction, 2026-09-10).
   //
   // FINDING 5 (code review, 2026-09-10): checked against `q` (the deferred,
   // trimmed value), not the live `query` above — the same reasoning
@@ -406,13 +400,12 @@ export function SearchField({
   // query. The dropdown needs the opposite: it must close the moment focus
   // leaves.
   const [fieldActive, setFieldActive] = useState(false);
-  // `&& !pristine`: SPEC correction, 2026-09-10. A pristine, pre-filled path
-  // resolves to a real folder, so this would otherwise legitimately be true
-  // for it (the completion machinery happily offers that folder's own
-  // children) — but the teaching panel (`showExamples`, below) is what a
-  // pristine box shows instead, and enforcing the exclusion HERE (rather
-  // than trusting `showSearchExamples` to defer the other way) is what
-  // keeps the two surfaces from ever both rendering by construction.
+  // `&& !pristine`: a pristine, pre-filled path resolves to a real folder,
+  // so this would otherwise legitimately be true for it (the completion
+  // machinery happily offers that folder's own children) — but nothing has
+  // been TYPED into a pristine box, so there is nothing yet to complete;
+  // the dropdown only opens once an actual edit gives it something to
+  // answer.
   const showCompletion =
     fieldActive &&
     !pristine &&
@@ -420,23 +413,6 @@ export function SearchField({
       (completion.target !== null &&
         completion.items.length > 0 &&
         !isExactSingleMatch(completion.items, completion.target)));
-  // ITEM 8 (running-screen review, 2026-09-10): `showSearchExamples`
-  // itself (and the pristine-wins-over-completions precedence above) is
-  // UNCHANGED — this changes what the panel CONTAINS (prose, not derived
-  // example rows), not when it appears.
-  //
-  // The user's own follow-up request (2026-09-10): the panel is only ever
-  // "the cwd's own teaching moment" — it must vanish on the FIRST keystroke
-  // of any kind, including one that only appends a "/" to the pre-filled
-  // path or lands a bare space. `pristine` above is the WRONG gate for
-  // that: it tolerates a trailing slash and treats an emptied box as
-  // pristine too, both of which kept this panel up past the first
-  // keystroke. `isUntouchedCwdQuery` (query-pristine.ts) is the narrower,
-  // byte-exact predicate built for exactly this gate — and it reads the
-  // LIVE `query`, not the deferred `q` above, because the panel has to
-  // react on the keystroke itself, not one render later.
-  const untouchedCwd = isUntouchedCwdQuery(query, fsPath, home);
-  const showExamples = showSearchExamples(fieldActive, untouchedCwd);
   // The action row, when present, is always the FIRST row (index 0) — the
   // folder completions that follow it shift up by exactly this many slots.
   // One number, read everywhere an index has to cross that boundary, so the
@@ -664,24 +640,6 @@ export function SearchField({
             }
           }}
         />
-        {showExamples && (
-          // A three-line syntax key, not a paragraph: the panel is read at a
-          // glance while the box is still empty, so each rule is one token
-          // and one short gloss. The placeholder above carries the prompt
-          // ("Search, or type a path or pattern..."); this carries the
-          // grammar — bare text searches deep, a `*` pattern stays shallow,
-          // a leading `~/` or `/` starts elsewhere.
-          <div className="listing-completion listing-completion-examples" role="note">
-            <dl className="listing-completion-legend">
-              <dt>text</dt>
-              <dd>names here and below</dd>
-              <dt>*.zip</dt>
-              <dd>this folder only</dd>
-              <dt>~/ or /</dt>
-              <dd>start somewhere else</dd>
-            </dl>
-          </div>
-        )}
         {showCompletion && (
           <div className="listing-completion" role="listbox">
             {/* SPEC-omnibox-search-affordance.md scope item 4: a path-shaped
@@ -826,12 +784,19 @@ export function SearchField({
 
             `requestSearchFocus` is the exact call Breadcrumb.tsx's own
             ⌘L/Ctrl+L listener makes (listing/search-focus.ts) — reused
-            rather than a second path to the same open-and-focus behaviour. */}
+            rather than a second path to the same open-and-focus behaviour.
+
+            `data-hint` carries the box's own grammar (SEARCH_GRAMMAR_HINT,
+            above) rather than a native `title` — `hints.ts` is this app's
+            one instant, un-clippable tooltip, and a native title would
+            double up with it (both firing over the same point). The
+            accessible name stays on `aria-label` below; the hint is a
+            sighted-hover affordance only, read by nothing else. */}
         {!pinnedOpen && !hasClear && (
           <button
             type="button"
             className={"listing-search-shortcut-hint bar-ctl" + (boxWide ? "" : " bar-ctl-icon")}
-            title="Search this folder"
+            data-hint={SEARCH_GRAMMAR_HINT}
             // The accessible name carries the shortcut in BOTH forms — in
             // the collapsed (icon-only) form this is the ONLY place it
             // still appears at all, so it is load-bearing there, not just

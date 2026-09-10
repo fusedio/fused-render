@@ -197,6 +197,16 @@ function input(renderer: ReactTestRenderer) {
   return renderer.root.findByProps({ type: "search" });
 }
 
+// The button carries the search grammar through `data-hint` (hints.ts), not
+// a native `title` — see SearchField.tsx's own comment on the button. This
+// finds it by that attribute rather than by its (locale-dependent) aria-label
+// text.
+function searchButtons(renderer: ReactTestRenderer) {
+  return renderer.root.findAll(
+    (n) => n.type === "button" && typeof n.props["data-hint"] === "string",
+  );
+}
+
 interface JsonNode {
   type: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -543,7 +553,7 @@ describe("the clear button exits the omnibox entirely (ITEM 2, 2026-09-10)", () 
   // was satisfied by the very click meant to leave it. Driven here through
   // the real completion dropdown (this harness's FileSearchField passes no
   // `entries`, so the teaching-examples panel itself never renders through
-  // it — see search-examples*.test.ts for that surface, and DECISIONS'
+  // it — see search-completion-width.test.ts for that surface, and DECISIONS'
   // "Correction 4" for why `entries: []` yields no examples by design) —
   // the underlying defect is the same one either dropdown surface would
   // show: the box looks unfocused but the dropdown stays open behind it.
@@ -565,9 +575,9 @@ describe("the clear button exits the omnibox entirely (ITEM 2, 2026-09-10)", () 
     // The dropdown is gone, not just re-keyed to an empty query.
     expect(completionRows(renderer).length).toBe(0);
     // Back to the resting, unfocused, pre-filled-on-next-focus state: the
-    // "Search this folder" button reoccupies the trailing slot, which only
-    // renders once BOTH `pinnedOpen` and `hasClear` are false.
-    expect(renderer.root.findAllByProps({ title: "Search this folder" }).length).toBe(1);
+    // search button reoccupies the trailing slot, which only renders once
+    // BOTH `pinnedOpen` and `hasClear` are false.
+    expect(searchButtons(renderer).length).toBe(1);
     expect(blurCount).toBe(1);
   });
 });
@@ -581,7 +591,7 @@ describe("the search button (SPEC scope item 3, words-stay revision)", () => {
     const renderer = mount("/home/iamsdas/notes.txt");
     await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
 
-    const button = renderer.root.findByProps({ title: "Search this folder" });
+    const button = searchButtons(renderer)[0];
     expect(input(renderer).props.value).toBe("");
 
     await flush(() => button.props.onClick());
@@ -591,8 +601,6 @@ describe("the search button (SPEC scope item 3, words-stay revision)", () => {
     expect(input(renderer).props.value).toBe("~/notes.txt");
     // The button itself only renders while unpinned — pressing it pins the
     // field open, so it should be gone from the tree now.
-    expect(
-      renderer.root.findAllByProps({ title: "Search this folder" }).length,
-    ).toBe(0);
+    expect(searchButtons(renderer).length).toBe(0);
   });
 });

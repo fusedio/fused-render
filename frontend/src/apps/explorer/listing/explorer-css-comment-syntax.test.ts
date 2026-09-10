@@ -5,7 +5,7 @@
 // declarations, and an apostrophe in ordinary prose ("isn't") opened a
 // string that never closed — a build failure (vite: "Unterminated
 // string") with no test failure, because every CSS test in this directory
-// (search-mode-chip.test.ts, search-examples-width.test.ts,
+// (search-mode-chip.test.ts, search-completion-width.test.ts,
 // search-count-pin-degrade.test.ts) strips comments with a regex before
 // asserting anything, and `tsc` never parses CSS at all. `bun run build`
 // was the only thing that actually caught it.
