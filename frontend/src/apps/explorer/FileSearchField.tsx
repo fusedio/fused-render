@@ -59,7 +59,6 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
     q,
     searching,
     isPathQuery,
-    escapes,
     gateOpen,
     commitSearch,
     prefetchIndex,
@@ -151,7 +150,16 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
       searching={searching}
       isPathQuery={isPathQuery}
       committed={committed}
-      escapes={escapes}
+      // NOT the same-named `awaitingCommit` destructured above (that one is
+      // the hook's own "stale rows sitting behind this gated query" flag,
+      // used only for `committed`/`showingSearchHits`) — SearchField's own
+      // `awaitingCommit` prop is ITEM 9's STATE check, "has this exact
+      // query's commit gate opened yet" (`!gateOpen`), used by the
+      // dropdown's search-offer row. Two different questions that happen
+      // to share a name; `!gateOpen` is written out explicitly here rather
+      // than aliasing the hook's `awaitingCommit` so the two can't be
+      // mistaken for one another at this call site.
+      awaitingCommit={!gateOpen}
       commitSearch={commitSearch}
       prefetchIndex={prefetchIndex}
       typedAddress={typedAddress}

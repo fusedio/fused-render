@@ -42,6 +42,7 @@ import { type Completion, type CompletionItem } from "@apps/explorer/listing/use
 import { completionKeyAction, moveHighlight } from "@apps/explorer/listing/completion-keys";
 import { isExactSingleMatch } from "@apps/explorer/listing/completion-target";
 import { searchAffordance, type SearchActionRow } from "@apps/explorer/listing/search-action-rows";
+import { resolveFolderToOpen } from "@apps/explorer/listing/enter-prompt";
 import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
 import { contractHome } from "@apps/explorer/listing/home-path";
 import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
@@ -79,16 +80,18 @@ export interface SearchFieldProps {
   query: string;
   /**
    * FINDING 5 (code review, 2026-09-10): the SAME deferred, trimmed value
-   * `escapes` (below) is computed from (`useListingSearch.ts`'s own `q`) —
-   * not `query` above, which echoes every keystroke immediately. Mixing a
-   * live `query`/`pristine` with a deferred `escapes` left `pristine` (and
-   * the text `searchAffordance` reads) one render out of step with the
-   * gate it's paired with: clearing a gated query down to a plain word left
-   * `escapes` true for one extra render while the box had already moved on,
-   * showing a stale offer over results already live. `query` above stays
-   * live — the `<input>`'s own `value` and every interaction handler still
-   * need the immediate echo — this is only for the affordance calculation,
-   * which needs to agree with `escapes` about which render it's describing.
+   * `awaitingCommit` (below) is computed from (`useListingSearch.ts`'s own
+   * `q`) — not `query` above, which echoes every keystroke immediately.
+   * Mixing a live `query`/`pristine` with a deferred `awaitingCommit` left
+   * `pristine` (and the text `searchAffordance` reads) one render out of
+   * step with the gate it's paired with: clearing a gated query down to a
+   * plain word left the old, shape-based version of this value true for
+   * one extra render while the box had already moved on, showing a stale
+   * offer over results already live. `query` above stays live — the
+   * `<input>`'s own `value` and every interaction handler still need the
+   * immediate echo — this is only for the affordance calculation, which
+   * needs to agree with `awaitingCommit` about which render it's
+   * describing.
    */
   q: string;
   setQuery: (q: string) => void;
@@ -109,7 +112,23 @@ export interface SearchFieldProps {
    * definition of "committed" rather than each guessing at it.
    */
   committed: boolean;
-  escapes: boolean;
+  /**
+   * ITEM 9 (running-screen review, 2026-09-10): whether THIS gated query's
+   * commit gate has NOT yet been satisfied — `!gateOpen`
+   * (useListingSearch.ts) — fed to the dropdown's search-offer predicate
+   * instead of a text-shape check. The offer row promises "pressing this
+   * changes what's on screen"; a promise about STATE (has this run yet)
+   * has to be answered by state, not by shape (does this text escape the
+   * folder), because shape stays true forever — `escapesFsPath`-derived
+   * `gated` kept re-breaking this offer for exactly that reason (offering
+   * over already-live results, one render out of step with `escapes`
+   * itself, and — the running-screen review that renamed this — still
+   * offering after the user had already pressed Enter and gotten their
+   * 31 matches). `gateOpen` flips true the moment `commitSearch()` runs
+   * for this exact text, so this value does too, with no second commit
+   * tracker of its own.
+   */
+  awaitingCommit: boolean;
   commitSearch: () => void;
   prefetchIndex: () => void;
   typedAddress: TypedAddress;
@@ -154,7 +173,7 @@ export function SearchField({
   searching,
   isPathQuery,
   committed,
-  escapes,
+  awaitingCommit,
   commitSearch,
   prefetchIndex,
   typedAddress,
@@ -302,15 +321,24 @@ export function SearchField({
   // `searchAffordance` reads the SAME `isPathQuery`/`typedAddress`/
   // `searching` this field already has — not a second, parallel notion of
   // "is this a path" (the hard constraint the spec calls out by name) —
-  // plus `escapes` (correction, 2026-09-10): the SAME predicate the
-  // caller's own commit gate reads (useListingSearch.ts's `escapesFsPath`),
-  // so an already-live, ungated search is never offered a row that would
-  // read as "nothing has happened yet" over results already on screen.
+  // plus `awaitingCommit` (ITEM 9, running-screen review, 2026-09-10; this
+  // parameter was called `gated` and read `escapes` until then): a STATE
+  // read off the caller's own commit gate (useListingSearch.ts's
+  // `!gateOpen`), not a text-shape check. `escapes` alone stays true for as
+  // long as the text starts with `~/`, including after the commit that
+  // satisfies it — three separate regressions traced back to exactly that
+  // mismatch (offering over already-live results; a one-render skew
+  // against the deferred `escapes` FINDING 5 fixed below used to read
+  // instead; and finally, offering a row that would do nothing because the
+  // search it promises had already run). `awaitingCommit` answers "would
+  // pressing this row change what's on screen" directly, so it can't drift
+  // from that promise the way a shape check already has three times.
   //
-  // FINDING 5 (code review, 2026-09-10): reads `q`, not `query` — `escapes`
-  // is already computed off `q` by the caller, and passing the live `query`
-  // text alongside it let the two disagree about which render they were
-  // describing (see the `q` prop's own doc comment above).
+  // FINDING 5 (code review, 2026-09-10): reads `q`, not `query` —
+  // `awaitingCommit` (like `escapes` before it) is already computed off `q`
+  // by the caller, and passing the live `query` text alongside it let the
+  // two disagree about which render they were describing (see the `q`
+  // prop's own doc comment above).
   //
   // FINDING 3 (code review, 2026-09-10): also reads whether the completion
   // dropdown already has a real match for this text — a live completion
@@ -322,20 +350,43 @@ export function SearchField({
     isPathQuery,
     typedAddress,
     searching,
-    escapes,
+    awaitingCommit,
     pristine,
     hasCompletions,
   );
   const hasAction = affordance.action !== null;
-  // Pressing the action row: a bare word commits the query exactly as Enter
-  // already falls through to (decision 4's gate); a path-shaped query that
-  // does not resolve rewrites the box to a plain word instead (see
-  // search-action-rows.ts's own comment on `commitInPlace` for why a
-  // second commit path for THAT case would be a no-op — `isPathQuery`
-  // suppresses the rank request no matter how many times commitSearch()
-  // runs).
+  // Pressing the action row: a `commitInPlace` row NAVIGATES to the folder
+  // its own label names (ITEM 10, running-screen review, 2026-09-10) — a
+  // path-shaped query that does not resolve rewrites the box to a plain
+  // word instead (see search-action-rows.ts's own comment on
+  // `commitInPlace` for why a second commit path for THAT case would be a
+  // no-op — `isPathQuery` suppresses the rank request no matter how many
+  // times commitSearch() runs).
+  //
+  // ITEM 10: `commitInPlace: true` used to mean "call `commitSearch()`",
+  // which runs the search but never actually opens the folder the row's
+  // own label promises ("Press Enter to open ~ and search") — the
+  // breadcrumb, the URL and the search-hit rows' own relative paths then
+  // all disagreed about where the search actually ran. The search is
+  // already effectively rooted at `resolveFolderToOpen`'s folder (that's
+  // what made this query "gated" in the first place), so opening it is
+  // what makes those three agree, and it's what the retired banner
+  // promised all along. `navigate(..., { q: action.query })` carries the
+  // UNCHANGED query text along (`navHintQCommitted`, router.ts) so the
+  // destination's own gate opens immediately rather than asking for a
+  // second Enter — the same mechanism FileSearchField.tsx's own file-to-
+  // folder hand-off already uses, not a second one grown for this case.
+  // Falls back to the old in-place commit only when `home` has not
+  // resolved yet (`resolveFolderToOpen` returns null) — nothing to
+  // navigate to yet, so committing in place is still better than doing
+  // nothing.
   const runAction = (action: SearchActionRow) => {
     if (action.commitInPlace) {
+      const folder = resolveFolderToOpen(action.query, home);
+      if (folder !== null) {
+        navigate(folder, { isDir: true, q: action.query });
+        return;
+      }
       commitSearch();
     } else {
       setQuery(action.query);
@@ -586,7 +637,24 @@ export function SearchField({
               navigate(typedAddress.path, { isDir: typedAddress.is_dir });
               return;
             }
-            if (escapes) {
+            // ITEM 10 (running-screen review, 2026-09-10): a bare Enter on a
+            // gated, non-path query — nothing explicitly arrowed to, so
+            // `completionKeyAction` fell through to `enter-passthrough`
+            // above — gets the SAME treatment the action row does: navigate
+            // to the folder this query is actually rooted at, carrying the
+            // unchanged query text, rather than calling `commitSearch()`
+            // and leaving the folder unopened. `awaitingCommit`, not
+            // `escapes`: once the gate has already opened for this exact
+            // text (a second Enter, or arriving here with nothing left to
+            // do), there is nothing to navigate to — `escapes` alone would
+            // still fire and re-navigate to the same folder for no reason.
+            if (awaitingCommit) {
+              const folder = resolveFolderToOpen(query.trim(), home);
+              if (folder !== null) {
+                e.preventDefault();
+                navigate(folder, { isDir: true, q: query });
+                return;
+              }
               e.preventDefault();
               commitSearch();
             }

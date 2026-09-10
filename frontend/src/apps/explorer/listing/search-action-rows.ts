@@ -20,8 +20,9 @@ export interface SearchActionRow {
   /**
    * The row's full, ready-to-render label. FINDING 2 (code review,
    * 2026-09-10): a `commitInPlace` row's query base can genuinely be a
-   * DIFFERENT folder than the one on screen (`gated` below is exactly that
-   * case) — "Search this folder for …" is a lie for it, the same lie the
+   * DIFFERENT folder than the one on screen (`awaitingCommit` below,
+   * renamed from `gated` by ITEM 9, is exactly that case) — "Search this
+   * folder for …" is a lie for it, the same lie the
    * banner this row replaced never told (`Press Enter to open <folder> and
    * search`, `enter-prompt.ts`'s own wording, reused rather than invented a
    * second time). Computed here, once, rather than left for the render
@@ -67,24 +68,36 @@ export function searchAffordance(
   typedAddress: TypedAddress,
   searching: boolean,
   /**
-   * SPEC-omnibox-search-affordance.md correction (2026-09-10, defect 1):
-   * whether THIS query's base genuinely differs from the folder being
-   * searched (`escapesFsPath`, query-base.ts — the SAME predicate
-   * useListingSearch.ts's own commit gate reads, not a second one). A
-   * non-path query that is NOT gated is already answering live — the rows
-   * below are the real search result — so offering to "search this folder"
-   * for it would read as "nothing has happened yet" over a box that has
-   * already acted. Only a genuinely gated query (needs an explicit commit
-   * before anything runs) gets the offer; the path-shaped-but-missing case
-   * below is unaffected — it never asks the index at all, gated or not.
+   * ITEM 9 (running-screen review, 2026-09-10): whether this query's commit
+   * gate has NOT yet been satisfied — a STATE (`!gateOpen`,
+   * useListingSearch.ts), not a property of the query TEXT. This parameter
+   * used to be named `gated` and carry `escapesFsPath(query, fsPath, home)`
+   * — "this query's base is a different folder from the one being
+   * searched" — which is a fact about the text that stays true for as long
+   * as the text keeps starting with `~/`, INCLUDING after the commit that
+   * satisfies it. That mismatch broke this exact offer row three separate
+   * times: offering it over an already-live, ungated search (defect 1,
+   * fixed by adding this parameter in the first place); a one-render skew
+   * against the deferred value the caller's own gate reads (FINDING 5,
+   * fixed by reading `q` instead of `query` — unrelated to this rename, but
+   * the same family of bug); and finally, still offering "Press Enter to
+   * open ~ and search" after the user had ALREADY pressed Enter and gotten
+   * 31 matches — pressing the row at that point would do nothing, because
+   * the search it promises had already run. A non-path query that is not
+   * awaiting a commit is either already answering live (the rows below ARE
+   * the result) or was never gated to begin with — either way, offering to
+   * "search this folder" reads as "nothing has happened yet" over a box
+   * that has already acted, or has nothing left to do. The path-shaped-but-
+   * missing case below is unaffected — it never asks the index at all,
+   * awaiting a commit or not.
    */
-  gated: boolean,
+  awaitingCommit: boolean,
   /**
    * The query is empty, or still the untouched path the box pre-filled
    * itself with (`isPristineQuery`, query-pristine.ts) — nothing has been
    * typed to search FOR yet, so neither the offer nor the not-found notice
    * has anything to say. Checked first: a pristine query is also, by
-   * construction, one `escapesFsPath` would call gated (it names fsPath
+   * construction, one `escapesFsPath` would call escaping (it names fsPath
    * itself) and one `isPathQuery` calls path-shaped, so without this check
    * first the missing-path branch below could fire for a folder that very
    * much exists — the one the box is standing in.
@@ -119,11 +132,12 @@ export function searchAffordance(
       action: { label: `Search this folder for "${leaf}"`, query: leaf, commitInPlace: false },
     };
   }
-  if (!gated) return NOTHING;
-  // FINDING 2 (code review, 2026-09-10): `gated` here means the query's own
-  // base genuinely differs from the folder on screen (`escapesFsPath`,
-  // query-base.ts) — name THAT folder, the one Enter is actually about to
-  // search, rather than claiming "this folder". `folderToOpen` derives it
+  if (!awaitingCommit) return NOTHING;
+  // FINDING 2 (code review, 2026-09-10): a query reaching here has escaped
+  // (that's what put it in `awaitingCommit`'s true branch at all) — its own
+  // base genuinely differs from the folder on screen — so name THAT folder,
+  // the one Enter is actually about to search, rather than claiming "this
+  // folder". `folderToOpen` derives it
   // from the query text alone, the same way the retired banner did; when it
   // has nothing to name (a bare `~`/`/` with nothing after it), fall back to
   // the generic wording rather than printing an empty folder name.

@@ -44,7 +44,18 @@ test("neither enterPrompt nor the old banner's own gate survives as dead weight 
   expect(LISTING).not.toMatch(
     /import \{ enterPrompt, pathNotFoundMessage \} from "@apps\/explorer\/listing\/enter-prompt";/,
   );
-  expect(LISTING).not.toMatch(/gateOpen/);
+});
+
+// ITEM 9 (running-screen review, 2026-09-10) gave `gateOpen` a genuine,
+// necessary job in Listing.tsx: feeding the dropdown's `awaitingCommit`
+// prop (the STATE half of "has this query's commit gate opened yet",
+// replacing the `escapesFsPath`-derived `gated` that kept re-breaking the
+// offer row — see search-action-rows.ts's own doc comment). This is a
+// deliberate, live use, not the dead weight the previous test above
+// guarded against — asserted here so a future edit can tell the two apart.
+test("gateOpen is destructured and threaded to the dropdown's awaitingCommit prop, not dead weight", () => {
+  expect(LISTING).toMatch(/gateOpen,/);
+  expect(LISTING).toMatch(/awaitingCommit=\{!gateOpen\}/);
 });
 
 // The coverage moved to SearchField.tsx: it reads `searchAffordance` off
@@ -58,10 +69,14 @@ test("SearchField.tsx drives the dropdown's search offer off searchAffordance, n
   expect(at).toBeGreaterThan(-1);
   const call = SEARCH_FIELD.slice(at, SEARCH_FIELD.indexOf(";", at));
   // FINDING 5 (code review, 2026-09-10): reads `q` (the deferred value),
-  // never the live `query` — that mismatch against `escapes` (also
+  // never the live `query` — that mismatch against the 5th argument (also
   // deferred) was the defect. FINDING 3 (code review, 2026-09-10): also
-  // reads `hasCompletions`, added as a new trailing argument.
-  expect(call).toMatch(/searchAffordance\(\s*q,\s*isPathQuery,\s*typedAddress,\s*searching,\s*escapes,\s*pristine,\s*hasCompletions,?\s*\)/);
+  // reads `hasCompletions`, added as a new trailing argument. ITEM 9
+  // (running-screen review, 2026-09-10): that 5th argument is
+  // `awaitingCommit` now, not `escapes` — a state read off the caller's own
+  // commit gate rather than a fact about the query's text (see
+  // search-action-rows.ts's own doc comment on the rename).
+  expect(call).toMatch(/searchAffordance\(\s*q,\s*isPathQuery,\s*typedAddress,\s*searching,\s*awaitingCommit,\s*pristine,\s*hasCompletions,?\s*\)/);
 });
 
 // pathNotFoundMessage's own text is unchanged (enter-prompt.test.ts covers

@@ -322,6 +322,68 @@ describe("the dropdown's action row", () => {
   });
 });
 
+describe("ITEM 10 (running-screen review, 2026-09-10): the offer/Enter actually OPENS the folder it names", () => {
+  // Bug as reported: `~/*/*.zip` committed while standing in `~/Downloads`
+  // ran the search (31 matches, rows named "Downloads/canvas_1.zip") but
+  // the URL/breadcrumb never moved off Downloads — commitInPlace used to
+  // mean "call commitSearch()", which searches without navigating. Fixed
+  // to navigate to `resolveFolderToOpen`'s folder, carrying the query
+  // text unchanged via `navigate(folder, { isDir: true, q })`.
+  test("pressing the action row navigates to the named folder with the query intact", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    await focusAndType(renderer, "/mnt/other/*.json");
+
+    const rows = completionRows(renderer);
+    expect(rows.length).toBe(1);
+    await flush(() =>
+      rows[0].props.onMouseDown({ preventDefault: () => {} }),
+    );
+
+    expect(navigateCalls.length).toBe(1);
+    expect(navigateCalls[0].fsPath).toBe("/mnt/other");
+    expect(navigateCalls[0].opts).toEqual({ isDir: true, q: "/mnt/other/*.json" });
+  });
+
+  test("a bare Enter on a gated query (nothing arrowed to) navigates the same way", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    await focusAndType(renderer, "/mnt/other/*.json");
+
+    await flush(() =>
+      input(renderer).props.onKeyDown({ key: "Enter", preventDefault: () => {} }),
+    );
+
+    expect(navigateCalls.length).toBe(1);
+    expect(navigateCalls[0].fsPath).toBe("/mnt/other");
+    expect(navigateCalls[0].opts).toEqual({ isDir: true, q: "/mnt/other/*.json" });
+    // The query text in the box is untouched by the navigation itself —
+    // still the full thing the user typed, not rewritten or cleared.
+    expect(input(renderer).props.value).toBe("/mnt/other/*.json");
+  });
+
+  test("a `~`-rooted gated query resolves through home before navigating", async () => {
+    // A `~`-rooted query genuinely escapes only when the folder open on
+    // screen is NOT itself under home (a query pointing back inside the
+    // box's own subtree is a live-filtering append, not an escape — see
+    // escapesFsPath's own segment-comparison doc comment). Mounted at
+    // /tmp/staging, not under home, so "~/other/*.py" is a real escape.
+    const renderer = mount("/tmp/staging/x.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    await focusAndType(renderer, "~/other/*.py");
+
+    await flush(() =>
+      input(renderer).props.onKeyDown({ key: "Enter", preventDefault: () => {} }),
+    );
+
+    expect(navigateCalls.length).toBe(1);
+    // folderToOpen("~/other/*.py") is "~/other"; resolveFolderToOpen
+    // expands "~" against the resolved home before navigate() ever sees it.
+    expect(navigateCalls[0].fsPath).toBe("/home/iamsdas/other");
+    expect(navigateCalls[0].opts).toEqual({ isDir: true, q: "~/other/*.py" });
+  });
+});
+
 describe("the hard behavioural constraint (PR #1091's HIGH-severity fix)", () => {
   test("a path-shaped query's bare Enter still resolves the path, never the action row", async () => {
     const renderer = mount("/home/iamsdas/notes.txt");

@@ -37,6 +37,31 @@ export function folderToOpen(query: string): string | null {
   return folder || null;
 }
 
+// ITEM 10 (running-screen review, 2026-09-10): `folderToOpen` above returns
+// DISPLAY text ("~/Work") — exactly what the offer row's own label should
+// say, but not itself an fsPath `navigate()` can use: a leading "~" needs
+// `home` to become an absolute path. Before this, the offer row's own
+// label promised "Press Enter to open ~ and search" while `commitInPlace`
+// only ever called `commitSearch()` — running the search but never
+// actually opening the named folder, so the breadcrumb, the URL and the
+// search-hit rows' own relative paths all disagreed about where the user
+// was. This resolves the SAME text `folderToOpen` already names to the
+// real fsPath `navigate()` needs, with the same `~`-expansion
+// `escapesFsPath` (query-base.ts) already does for its own, narrower
+// yes/no question — `home === undefined` returns null (nothing resolvable
+// yet) the same way that predicate stays on the safe side when home has
+// not loaded. An already-absolute or drive-letter folder (no leading "~")
+// passes through unchanged, same as `folderToOpen` leaves it.
+export function resolveFolderToOpen(query: string, home: string | undefined): string | null {
+  const folder = folderToOpen(query);
+  if (folder === null) return null;
+  if (folder === "~" || folder.startsWith("~/")) {
+    if (home === undefined) return null;
+    return home + folder.slice(1);
+  }
+  return folder;
+}
+
 // Finding 3 (code review): a COMMITTED path-shaped query (Enter already
 // pressed — `useListingSearch.ts`'s `gateOpen`) that resolves to no real
 // filesystem entry (`typedAddress.status === "missing"`) was a silent dead

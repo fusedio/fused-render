@@ -279,7 +279,7 @@ export default function Listing({
     cappedAway,
     reason,
     mode,
-    escapes,
+    gateOpen,
     commitSearch,
   } = useListingSearch(fsPath, home, refresh);
 
@@ -1752,7 +1752,7 @@ export default function Listing({
               searching={searching}
               isPathQuery={isPathQuery}
               committed={showsSearchHits}
-              escapes={escapes}
+              awaitingCommit={!gateOpen}
               commitSearch={commitSearch}
               prefetchIndex={prefetchIndex}
               typedAddress={typedAddress}
