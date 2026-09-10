@@ -10,7 +10,7 @@ import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 import type { UpdateStatus } from "@platform/lib/api";
 
 const { default: UpdateBadge } = await import("./UpdateBadge");
-const { resetUpdateStatusForTests } = await import("@platform/lib/update-status");
+const { pokeUpdateStatus, resetUpdateStatusForTests } = await import("@platform/lib/update-status");
 
 function status(overrides: Partial<UpdateStatus>): UpdateStatus {
   return {
@@ -168,6 +168,43 @@ test("a check the SERVER could not complete is a failed check, not up to date", 
   });
   await flush();
   expect(text(find(r.toJSON(), "update-badge-row-check"))).toBe("Couldn't check");
+});
+
+test("a server already mid-fetch answers 'checking', and the row waits for the real answer", async () => {
+  // A non-forced check() that lands while the auto tick's fetch is out returns
+  // "checking" at once. That is a promise of an answer, not an answer, and the
+  // row must not read it as "Up to date" (bugbot, PR #1097).
+  configUpdate = status({});
+  checkAnswer = () => status({ state: "checking" });
+  const r = await mount(<UpdateBadge version="0.5.22" />);
+  await act(async () => {
+    find(r.toJSON(), "update-badge-row-check")!.props.onClick();
+  });
+  await flush();
+  const mid = find(r.toJSON(), "update-badge-row-check")!;
+  expect(text(mid)).toBe("Checking…");
+  expect(mid.props.disabled).toBe(true);
+  // The fetch ends; the next poll carries the durable answer.
+  configUpdate = status({});
+  await act(async () => {
+    pokeUpdateStatus();
+  });
+  await flush();
+  expect(text(find(r.toJSON(), "update-badge-row-check"))).toBe("Up to date · v0.5.22");
+});
+
+test("an update on screen does not blink out while the server's own tick re-checks", async () => {
+  configUpdate = status({ state: "available", latest_version: "9.9.9", check_only: true });
+  const r = await mount(<UpdateBadge version="0.5.22" />);
+  expect(text(find(r.toJSON(), "update-badge-row"))).toContain("Update available — v9.9.9");
+  // The five-minute tick: the poll now says "checking" for a few seconds.
+  configUpdate = status({ state: "checking" });
+  await act(async () => {
+    pokeUpdateStatus();
+  });
+  await flush();
+  expect(find(r.toJSON(), "update-badge-row-check")).toBeNull();
+  expect(text(find(r.toJSON(), "update-badge-row"))).toContain("Update available — v9.9.9");
 });
 
 test("a failed check says so and does not throw", async () => {

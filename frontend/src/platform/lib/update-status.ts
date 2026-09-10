@@ -48,11 +48,31 @@ let lastCheckTriggerAt = Date.now();
 let generation = 0;
 
 function set(next: UpdateStatus | null): void {
+  next = holdThroughCheck(current, next);
   // By VALUE: getConfig() hands back a fresh object every tick, so an identity
   // check never held and every subscriber re-rendered on every poll.
   if (JSON.stringify(next) === JSON.stringify(current)) return;
   current = next;
   listeners.forEach((fn) => fn());
+}
+
+/**
+ * A check in flight does not un-know an update (bugbot, PR #1097). The server's
+ * auto tick runs `check(force=True)` from EVERY state, and for the seconds the
+ * manifest fetch takes it reports "checking" — which `updateRelevant` rejects,
+ * so a poll landing mid-fetch swapped the "Update available" accordion for the
+ * idle "Check for updates" row and back. At an hourly tick that was a rare
+ * blink; at five minutes it is a habit. So a relevant status is HELD while the
+ * next one says "checking": the fetch ends in seconds with the durable answer
+ * (available / installed / idle), and that one is taken as usual. Pure, so the
+ * rule is testable; `set` is the one place it is applied.
+ */
+export function holdThroughCheck(
+  shown: UpdateStatus | null,
+  next: UpdateStatus | null
+): UpdateStatus | null {
+  if (next?.state === "checking" && shown && updateRelevant(shown)) return shown;
+  return next;
 }
 
 async function poll(): Promise<void> {
@@ -77,6 +97,14 @@ async function poll(): Promise<void> {
 // nothing to be quick about.
 export function pollDelay(status: UpdateStatus | null, sinceStartMs = Date.now() - startedAt): number {
   if (status?.state === "installing") return POLL_BUSY_MS;
+  // "checking" IS busy, at any age (bugbot, PR #1097): a manifest fetch lasts
+  // seconds (FETCH_TIMEOUT_S bounds it at 15), and the server's own tick starts
+  // one every five minutes, so the state is short-lived and frequent. Polled
+  // at the slow tick, a manual check that landed mid-fetch — the server hands
+  // back "checking" rather than an answer — would leave the row saying
+  // "Checking…" for up to a minute after the answer existed. Bounded: the
+  // busy cadence lasts exactly as long as the fetch does.
+  if (status?.state === "checking") return POLL_BUSY_MS;
   // WARM ONLY WHILE THE FIRST ANSWER IS PLAUSIBLY STILL COMING (bugbot, PR
   // #1049): "idle" is also the packaged app's resting state after a check that
   // found nothing, so warm-on-idle forever would never settle. The server's
@@ -84,7 +112,7 @@ export function pollDelay(status: UpdateStatus | null, sinceStartMs = Date.now()
   // how long the check itself takes (a manifest fetch over the network, seconds
   // rather than sub-second) — two minutes after this page started the cadence
   // goes back to the slow tick for good.
-  const pending = status?.state === "checking" || status?.state === "idle";
+  const pending = status?.state === "idle";
   if (status && pending && sinceStartMs < HOT_WINDOW_MS) return POLL_HOT_MS;
   if (status && pending && sinceStartMs < WARM_WINDOW_MS) return POLL_WARM_MS;
   return POLL_IDLE_MS;

@@ -19,9 +19,9 @@
 // running version and ServerStatusBanner's restart card takes over — so the
 // row drops to a plain "Ready to restart" status line with nothing to expand
 // (no chevron either), and the restart card carries the wording.
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
-import { updateInstall } from "@platform/lib/api";
+import { updateInstall, type UpdateStatus } from "@platform/lib/api";
 import {
   CHECK_RESULT_HOLD_MS,
   checkForUpdates,
@@ -100,6 +100,31 @@ export default function UpdateBadge({ version = null }: { version?: string | nul
   const [phase, setPhase] = useState<ManualCheckPhase>("rest");
   const holdTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(holdTimer.current), []);
+  // WHEN THE SERVER WAS ALREADY LOOKING (bugbot, PR #1097). A non-forced
+  // check() that lands while the auto tick's fetch is out returns at once with
+  // "checking" — not an answer, a promise of one. The row must not read that
+  // as "Up to date": it stays on "Checking…" with this flag raised, and the
+  // store's poll (busy cadence while "checking", pollDelay) brings the real
+  // answer within a couple of seconds; the effect below settles the row then.
+  const awaiting = useRef(false);
+  // Stable (setters and refs only), so the effect below can list it honestly.
+  const settle = useCallback((result: UpdateStatus) => {
+    let next: ManualCheckPhase = result.check_error ? "failed" : "current";
+    if (updateRelevant(result)) {
+      // The accordion takes the slot; open it so the Update button is on
+      // screen without a second press. The phase is not read on that branch.
+      setOpen(true);
+      next = "current";
+    }
+    setPhase(next);
+    clearTimeout(holdTimer.current);
+    holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
+  }, []);
+  useEffect(() => {
+    if (!awaiting.current || !status || status.state === "checking") return;
+    awaiting.current = false;
+    settle(status);
+  }, [status, settle]);
   if (!status) return null;
 
   if (!updateRelevant(status)) {
@@ -107,24 +132,23 @@ export default function UpdateBadge({ version = null }: { version?: string | nul
       if (phase === "checking") return;
       clearTimeout(holdTimer.current);
       setPhase("checking");
-      let next: ManualCheckPhase = "failed";
       try {
         const result = await checkForUpdates();
-        // "available"/"installed"/"error" re-render this component down the
-        // accordion branch below; the phase is only read on THIS branch, so
-        // "current" is the right resting value for a store that says idle.
-        if (updateRelevant(result)) setOpen(true);
+        if (result.state === "checking") {
+          // Not an answer yet — see `awaiting` above.
+          awaiting.current = true;
+          return;
+        }
         // The server answers a failed fetch with "idle" (nothing found) plus the
         // reason; without reading it, an offline laptop would be told it is up
-        // to date.
-        next = result.check_error ? "failed" : "current";
+        // to date. `settle` reads it.
+        settle(result);
       } catch {
         // 404 (no updater), offline, server down — say so briefly and go back
         // to offering the button; the poll owns the durable story.
-        next = "failed";
+        setPhase("failed");
+        holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
       }
-      setPhase(next);
-      holdTimer.current = setTimeout(() => setPhase("rest"), CHECK_RESULT_HOLD_MS);
     };
     return (
       // The live region is the FRAME, not the button (cmux-ux-tester,

@@ -521,6 +521,30 @@ def test_a_real_manager_reports_check_only_false(monkeypatch):
     assert manager.status()["check_only"] is False
 
 
+def test_a_failed_check_does_not_start_the_throttle_clock(monkeypatch):
+    # bugbot, PR #1097: the gap guards the CDN against a run of fetches; a fetch
+    # that failed is not that load, and a person who just came back online must
+    # be able to press the row again and get a real retry.
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    calls = []
+
+    def flaky(url, **kw):
+        calls.append(url)
+        if len(calls) == 1:
+            raise OSError("no route to host")
+        return {"version": "0.0.1", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""}
+
+    monkeypatch.setattr(common, "fetch_manifest", flaky)
+    assert manager.check()["check_error"] == "no route to host"
+    # Non-forced, immediately after: fetched again rather than answered from memory.
+    status = manager.check()
+    assert len(calls) == 2
+    assert status["check_error"] is None
+    # ...and a SUCCESSFUL check does start it.
+    manager.check()
+    assert len(calls) == 2
+
+
 def test_a_failed_check_names_its_failure_and_a_good_one_clears_it(monkeypatch):
     # Without this, "offline" and "up to date" were the same wire status, and
     # the sidebar's manual check would have said the wrong one.

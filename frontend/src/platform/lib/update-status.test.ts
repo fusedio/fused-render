@@ -6,6 +6,7 @@ import type { UpdateStatus } from "@platform/lib/api";
 import {
   CHECK_RESULT_HOLD_MS,
   checkNowLabel,
+  holdThroughCheck,
   pollDelay,
   shouldCheckOnReturn,
   updateLabel,
@@ -78,12 +79,14 @@ describe("pollDelay", () => {
     expect(pollDelay(st("installing"), 0)).toBe(2_000);
     // Hot for the first twenty seconds — the server's first check lands ~1s in.
     expect(pollDelay(st("checking"), 0)).toBe(2_000);
+    // "checking" is busy at ANY age (bugbot, PR #1097): a fetch lasts seconds,
+    // and the answer it ends in must not wait out a slow tick.
+    expect(pollDelay(st("checking"), 20_000)).toBe(2_000);
+    expect(pollDelay(st("checking"), 300_000)).toBe(2_000);
     expect(pollDelay(st("idle"), 10_000)).toBe(2_000);
-    expect(pollDelay(st("checking"), 20_000)).toBe(15_000);
     expect(pollDelay(st("idle"), 30_000)).toBe(15_000);
     // …and settles: idle is also the resting state after a check found nothing.
     expect(pollDelay(st("idle"), 120_000)).toBe(60_000);
-    expect(pollDelay(st("checking"), 300_000)).toBe(60_000);
     expect(pollDelay(st("available"), 0)).toBe(60_000);
     // No updater at all (dev run): nothing to be quick about.
     expect(pollDelay(null, 0)).toBe(60_000);
@@ -148,5 +151,29 @@ describe("checkNowLabel", () => {
   it("holds an answer long enough to read, not long enough to look stuck", () => {
     expect(CHECK_RESULT_HOLD_MS).toBeGreaterThanOrEqual(3_000);
     expect(CHECK_RESULT_HOLD_MS).toBeLessThanOrEqual(6_000);
+  });
+});
+
+describe("holdThroughCheck", () => {
+  // The server's five-minute tick reports "checking" from every state for the
+  // seconds a fetch takes; a relevant status must not blink out for them.
+  const avail = status({ state: "available", latest_version: "0.5.23" });
+  const checking = status({ state: "checking" });
+
+  it("keeps a relevant status while the next one is only 'checking'", () => {
+    expect(holdThroughCheck(avail, checking)).toBe(avail);
+    expect(holdThroughCheck(status({ state: "installed" }), checking)?.state).toBe("installed");
+    expect(holdThroughCheck(status({ state: "error" }), checking)?.state).toBe("error");
+  });
+
+  it("lets 'checking' through when nothing relevant was shown", () => {
+    expect(holdThroughCheck(status({ state: "idle" }), checking)).toBe(checking);
+    expect(holdThroughCheck(null, checking)).toBe(checking);
+  });
+
+  it("takes every real answer as usual", () => {
+    const idle = status({ state: "idle" });
+    expect(holdThroughCheck(avail, idle)).toBe(idle);
+    expect(holdThroughCheck(avail, null)).toBe(null);
   });
 });

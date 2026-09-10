@@ -359,6 +359,15 @@ class UpdateManager:
             logger.info("update check failed: %s", error)
             with self._lock:
                 self._check_error = str(error) or error.__class__.__name__
+                # A failure does not start the MIN_CHECK_GAP_S clock (bugbot, PR
+                # #1097): the gap exists to keep a run of focus flips from
+                # becoming a run of CDN fetches, and a fetch that failed is not
+                # the load it guards against. Left running, the sidebar's row
+                # would come back to "Check for updates" after four seconds,
+                # look pressable, and answer the same "Couldn't check" from
+                # memory for the rest of the minute — to a laptop that had just
+                # come back online.
+                self._last_check_at = None
             # Keep a previously-found update visible over a transient failure —
             # but re-derive WHICH state from the bundle on disk, exactly like
             # the success path below: a network blip after a completed install
