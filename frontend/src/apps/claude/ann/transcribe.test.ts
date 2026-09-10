@@ -38,6 +38,7 @@ function job(over: Partial<Job> = {}): Job {
     finished_at: null,
     stalled: false,
     waiting_for: "",
+    tier: "trail",
     ...over,
   };
 }
