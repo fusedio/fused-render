@@ -1,12 +1,17 @@
-// Decision 9: the "Press Enter to search" placeholder shown while a
-// path/pattern query sits uncommitted (decision 4's gate). Driven off
-// decision 5's `typedAddress` — the same `TypedAddress` the Enter handler
-// branches on, and checks FIRST — not off the gate alone: a resolved, real
-// folder in the field means Enter navigates, not searches, and the prompt
-// has to say so rather than promising a search next to a dropdown naming
-// the exact folder Enter would open. Being a pure projection of
-// `typedAddress` is what keeps the prompt and the handler from disagreeing.
-import type { TypedAddress } from "@apps/explorer/listing/useTypedPathAddress";
+// FINDING 6 (code review, 2026-09-10): the "Press Enter to search" banner
+// this file originally existed for (`enterPrompt`, decisions 9/9-revisited)
+// was removed from Listing.tsx by SPEC-omnibox-search-affordance.md scope
+// item 5 — its coverage moved into the dropdown's own action row
+// (search-action-rows.ts's `searchAffordance`) instead. `enterPrompt` itself
+// went unreferenced outside its own test the moment that landed; deleted
+// here along with that test, per the spec's own instruction to check
+// `tests/` for the symbol first (nothing there references it — confirmed by
+// grep — `test_github_login.py`'s "Press Enter to open github.com..." is an
+// unrelated CLI prompt). `folderToOpen` below survives: `searchAffordance`
+// reuses it directly (finding 2) to name the folder a gated, escaping query
+// would actually search, rather than inventing a second way to compute it.
+// `pathNotFoundMessage` survives too — search-action-rows.ts's own
+// not-found row reuses it verbatim.
 
 // Decision 9 revisited: name the folder Enter is about to open, not just say
 // "outside this folder" — pressing Enter here does two things (move the
@@ -24,7 +29,7 @@ import type { TypedAddress } from "@apps/explorer/listing/useTypedPathAddress";
 // search on a missing folder instead of failing, which this prompt cannot
 // know about synchronously. Recorded as a known limitation in
 // DECISIONS-one-field-search.md rather than solved here.
-function folderToOpen(query: string): string | null {
+export function folderToOpen(query: string): string | null {
   const segments = query.split("/");
   const globIdx = segments.findIndex((s) => /[*?]/.test(s));
   const folderSegments = globIdx === -1 ? segments.slice(0, -1) : segments.slice(0, globIdx);
@@ -51,29 +56,4 @@ export function pathNotFoundMessage(query: string): string {
   const trimmed = query.trim().replace(/\/+$/, "");
   const name = trimmed.split("/").pop() || trimmed;
   return `No such file or folder: ${name}`;
-}
-
-export function enterPrompt(typedAddress: TypedAddress, query: string): string {
-  // Resolved to a real path: name it. Whether it's a file or a folder, Enter
-  // opens it, not a search.
-  if (typedAddress.status === "exists") {
-    const trimmed = typedAddress.path.replace(/\/+$/, "");
-    const name = trimmed.split("/").pop() || trimmed;
-    return `Press Enter to open ${name}`;
-  }
-  // "checking" is still resolving — do not flip the wording into a third
-  // state that appears and vanishes mid-keystroke. Enter falls through to
-  // the search commit while unresolved, so the search wording is what is
-  // actually true right now, same as "idle" and "missing".
-  //
-  // This function's one call site (Listing.tsx) only reaches here for a
-  // query whose base escapes the folder being searched
-  // (listing/query-base.ts's `escapesBase`) — a same-base query never gates
-  // and never shows this. `folderToOpen` names that base from the query
-  // text itself (no server round trip); when the query has nothing left to
-  // name (bare `~`, bare `/`, or a `..` with nothing after it once
-  // `typedAddress` has not already resolved it above), the generic phrasing
-  // below stands in rather than printing an empty name.
-  const folder = folderToOpen(query);
-  return folder ? `Press Enter to open ${folder} and search` : "Press Enter to open that folder and search";
 }

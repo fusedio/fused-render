@@ -257,6 +257,7 @@ export default function Listing({
 
   const {
     query,
+    q,
     setQuery,
     searching,
     isPathQuery,
@@ -1741,6 +1742,7 @@ export default function Listing({
               fsPath={fsPath}
               home={home}
               query={query}
+              q={q}
               setQuery={setQuery}
               searching={searching}
               isPathQuery={isPathQuery}

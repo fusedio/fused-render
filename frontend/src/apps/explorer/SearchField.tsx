@@ -77,6 +77,20 @@ export interface SearchFieldProps {
   crumbsFsPath?: string;
   home: string | undefined;
   query: string;
+  /**
+   * FINDING 5 (code review, 2026-09-10): the SAME deferred, trimmed value
+   * `escapes` (below) is computed from (`useListingSearch.ts`'s own `q`) —
+   * not `query` above, which echoes every keystroke immediately. Mixing a
+   * live `query`/`pristine` with a deferred `escapes` left `pristine` (and
+   * the text `searchAffordance` reads) one render out of step with the
+   * gate it's paired with: clearing a gated query down to a plain word left
+   * `escapes` true for one extra render while the box had already moved on,
+   * showing a stale offer over results already live. `query` above stays
+   * live — the `<input>`'s own `value` and every interaction handler still
+   * need the immediate echo — this is only for the affordance calculation,
+   * which needs to agree with `escapes` about which render it's describing.
+   */
+  q: string;
   setQuery: (q: string) => void;
   searching: boolean;
   /**
@@ -135,6 +149,7 @@ export function SearchField({
   crumbsFsPath,
   home,
   query,
+  q,
   setQuery,
   searching,
   isPathQuery,
@@ -252,7 +267,13 @@ export function SearchField({
   // is non-empty in the second — the distinction both the examples panel
   // and `searchAffordance` below need (SPEC-omnibox-search-affordance.md
   // correction, 2026-09-10).
-  const pristine = isPristineQuery(query, fsPath, home);
+  //
+  // FINDING 5 (code review, 2026-09-10): checked against `q` (the deferred,
+  // trimmed value), not the live `query` above — the same reasoning
+  // FileSearchField.tsx's own pristine guard already applies to its
+  // navigation effect, applied here to keep this in step with `escapes`
+  // (see the `q` prop's own doc comment).
+  const pristine = isPristineQuery(q, fsPath, home);
 
   // SPEC-omnibox-search-affordance.md scope item 4 (variant E): the ONE
   // pressable search offer the dropdown gets, plus the non-interactive
@@ -264,7 +285,26 @@ export function SearchField({
   // caller's own commit gate reads (useListingSearch.ts's `escapesFsPath`),
   // so an already-live, ungated search is never offered a row that would
   // read as "nothing has happened yet" over results already on screen.
-  const affordance = searchAffordance(query, isPathQuery, typedAddress, searching, escapes, pristine);
+  //
+  // FINDING 5 (code review, 2026-09-10): reads `q`, not `query` — `escapes`
+  // is already computed off `q` by the caller, and passing the live `query`
+  // text alongside it let the two disagree about which render they were
+  // describing (see the `q` prop's own doc comment above).
+  //
+  // FINDING 3 (code review, 2026-09-10): also reads whether the completion
+  // dropdown already has a real match for this text — a live completion
+  // means the query is mid-typed toward something real, not a dead end, so
+  // the not-found report has nothing true left to say.
+  const hasCompletions = completion.items.length > 0;
+  const affordance = searchAffordance(
+    q,
+    isPathQuery,
+    typedAddress,
+    searching,
+    escapes,
+    pristine,
+    hasCompletions,
+  );
   const hasAction = affordance.action !== null;
   // Pressing the action row: a bare word commits the query exactly as Enter
   // already falls through to (decision 4's gate); a path-shaped query that
@@ -588,9 +628,7 @@ export function SearchField({
                   }}
                   onMouseEnter={() => setHighlight(0)}
                 >
-                  <span className="listing-completion-name">
-                    Search this folder for &quot;{affordance.action.query}&quot;
-                  </span>
+                  <span className="listing-completion-name">{affordance.action.label}</span>
                   <span className="listing-completion-hint">↵</span>
                 </div>
               )}

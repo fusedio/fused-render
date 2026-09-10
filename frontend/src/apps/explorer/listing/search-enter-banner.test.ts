@@ -57,9 +57,11 @@ test("SearchField.tsx drives the dropdown's search offer off searchAffordance, n
   const at = SEARCH_FIELD.indexOf("const affordance = searchAffordance(");
   expect(at).toBeGreaterThan(-1);
   const call = SEARCH_FIELD.slice(at, SEARCH_FIELD.indexOf(";", at));
-  expect(call).toMatch(
-    /searchAffordance\(query, isPathQuery, typedAddress, searching, escapes, pristine\)/,
-  );
+  // FINDING 5 (code review, 2026-09-10): reads `q` (the deferred value),
+  // never the live `query` — that mismatch against `escapes` (also
+  // deferred) was the defect. FINDING 3 (code review, 2026-09-10): also
+  // reads `hasCompletions`, added as a new trailing argument.
+  expect(call).toMatch(/searchAffordance\(\s*q,\s*isPathQuery,\s*typedAddress,\s*searching,\s*escapes,\s*pristine,\s*hasCompletions,?\s*\)/);
 });
 
 // pathNotFoundMessage's own text is unchanged (enter-prompt.test.ts covers

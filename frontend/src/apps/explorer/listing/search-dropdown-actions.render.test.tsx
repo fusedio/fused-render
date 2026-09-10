@@ -19,7 +19,7 @@
 // walks back into that blast radius, so "a path-shaped query's bare Enter
 // still resolves the path, never the action row" gets its own test below,
 // not just an inference from the source.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { Clock, Deferred } from "@apps/explorer/listing/hook-harness";
@@ -27,9 +27,68 @@ import { resetFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { resetSearchSlot } from "@apps/explorer/search-slot";
 import { resetHome } from "@apps/explorer/listing/home-path";
 
+// FINDING 7 (code review, 2026-09-10): this file used to rely on the REAL
+// `@platform/lib/router` module — via `navigate()`'s own call to
+// `window.history.pushState`, stubbed below — to prove Enter navigated.
+// `useListingSearch.render.test.ts` (unchanged by this branch) calls
+// `mock.module("@platform/lib/router", ...)` with a stub that omits
+// `navigate` entirely, and bun's `mock.module` replaces the module
+// registry entry for the WHOLE PROCESS, not just that one test file — so in
+// a full `bun test` run, whichever file's imports resolve "@platform/lib/
+// router" AFTER that call sees the incomplete stub, `navigate` included.
+// This file's own `pushStateCalls` count went from 1 to 0 for exactly that
+// reason: `navigate` bound to `undefined` and its call silently did
+// nothing (`SearchField.tsx`'s own `navigate(typedAddress.path, ...)` never
+// ran). CI stayed green only because Linux happens to enumerate files in a
+// different order than macOS (`bun test`, `.github/workflows/test.yml:142`)
+// — an order-dependent pass is not a pass, and the test below guards PR
+// #1091's HIGH-severity fix, so it must not go silently inert under
+// whatever some OTHER file's stub happens to be this run.
+//
+// The fix: stub the module ourselves, completely — EVERY named export
+// `@platform/lib/router.ts` actually has, confirmed against the module
+// itself rather than only the handful this file's own import graph happens
+// to reach today (a narrower list would just move the missing-export crash
+// to whichever export some FUTURE change under this tree starts reading) —
+// and track `navigate()`'s OWN calls directly rather than an implementation
+// detail of the real one (`history.pushState`). This makes the test's
+// verdict independent of whatever mock.module call ran earlier in the same
+// process, instead of merely avoiding the missing-export crash that already
+// happened once on this project (see this test file's own module-level
+// comment above and DECISIONS-omnibox-search-affordance.md).
+let navigateCalls: { fsPath: string; opts: unknown }[];
+mock.module("@platform/lib/router", () => ({
+  VIEW_PREFIX: "/explorer/view/",
+  EMBED_PREFIX: "/explorer/embed/",
+  rewriteLegacyUrl: (url: string) => url,
+  IS_EMBED: false,
+  PREVIEW_PARAM: "_preview",
+  IS_PREVIEW: false,
+  withPreviewFlag: (src: string) => src,
+  IS_SNAPSHOT: false,
+  IS_TOP_EMBED: false,
+  isPanelPath: () => false,
+  IS_PANEL_PANE: false,
+  IS_FOREIGN_EMBED: false,
+  NAV_EVENT: "fused:navigate",
+  rootedFsPath: (joined: string) => joined,
+  fsPathFromLocation: () => null,
+  encodeFsPathSegments: (fsPath: string) => fsPath,
+  urlForFsPath: (fsPath: string) => fsPath,
+  embedUrlForFsPath: (fsPath: string) => fsPath,
+  viewUrlForFsPath: (fsPath: string) => fsPath,
+  navigate: (fsPath: string, opts?: unknown) => {
+    navigateCalls.push({ fsPath, opts });
+  },
+  navHintIsDir: () => null,
+  navHintQCommitted: () => false,
+  replaceSearch: () => {},
+  navigateUrl: () => {},
+  currentUrl: () => "",
+}));
+
 const realFetch = globalThis.fetch;
 let configReply: Deferred<{ home: string }>;
-let pushStateCalls: unknown[][];
 
 type Entry = { name: string; is_dir: boolean; size: number | null };
 let listDirEntries: Record<string, Entry[]>;
@@ -84,7 +143,7 @@ beforeEach(() => {
   configReply = new Deferred<{ home: string }>();
   listDirEntries = {};
   statOkPaths = new Set();
-  pushStateCalls = [];
+  navigateCalls = [];
   resetHome();
   globalThis.fetch = fakeFetch as typeof fetch;
   clock.install();
@@ -92,9 +151,7 @@ beforeEach(() => {
   (globalThis as Record<string, unknown>).history = {
     state: null,
     replaceState: () => {},
-    pushState: (...args: unknown[]) => {
-      pushStateCalls.push(args);
-    },
+    pushState: () => {},
   };
   (globalThis as Record<string, unknown>).document = {
     addEventListener: () => {},
@@ -207,7 +264,11 @@ describe("the dropdown's action row", () => {
     expect(completionRows(renderer).length).toBe(0);
   });
 
-  test("a GATED non-path query (escapes to a genuinely different folder) offers to search this folder", async () => {
+  // FINDING 2 (code review, 2026-09-10): the row used to claim "this
+  // folder" even though pressing it searches a genuinely DIFFERENT folder
+  // (/mnt/other, not /home/iamsdas) — corrected to name the real folder,
+  // reusing the retired banner's own wording (`folderToOpen`).
+  test("a GATED non-path query (escapes to a genuinely different folder) names that folder, not 'this folder'", async () => {
     const renderer = mount("/home/iamsdas/notes.txt");
     await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
     // A glob anchored somewhere other than the folder being searched
@@ -218,7 +279,8 @@ describe("the dropdown's action row", () => {
 
     const rows = completionRows(renderer);
     expect(rows.length).toBe(1);
-    expect(rowText(rows[0])).toContain('Search this folder for "/mnt/other/*.json"');
+    expect(rowText(rows[0])).toContain("Press Enter to open /mnt/other and search");
+    expect(rowText(rows[0])).not.toContain("this folder");
     expect(rows[0].props.className).toContain("listing-completion-action");
   });
 
@@ -236,6 +298,32 @@ describe("the dropdown's action row", () => {
     expect(rowText(rows[0])).toContain("No such file or folder: nope");
     expect(rows[0].props.className).not.toContain("listing-completion-action");
     expect(rowText(rows[1])).toContain('Search this folder for "nope"');
+  });
+
+  // FINDING 3 (code review, 2026-09-10): the not-found report used to fire
+  // for every uncommitted, half-typed path — even one with a live
+  // completion sitting right below it. It now shows only when the typed
+  // text resolves to nothing at all.
+  test("a half-typed path WITH a live completion shows no not-found notice", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    listDirEntries["/home/iamsdas"] = [{ name: "Documents", is_dir: true, size: null }];
+    await focusAndType(renderer, "/home/iamsdas/Doc");
+
+    const rows = completionRows(renderer);
+    expect(rows.some((r) => rowText(r).includes("No such file or folder"))).toBe(false);
+    expect(rows.some((r) => rowText(r).includes("Search this folder for"))).toBe(false);
+    expect(rows.some((r) => rowText(r).includes("Documents"))).toBe(true);
+  });
+
+  test("a half-typed path with NO completions still shows the not-found notice", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    listDirEntries["/home/iamsdas"] = [{ name: "Documents", is_dir: true, size: null }];
+    await focusAndType(renderer, "/home/iamsdas/zzzz");
+
+    const rows = completionRows(renderer);
+    expect(rows.some((r) => rowText(r).includes("No such file or folder: zzzz"))).toBe(true);
   });
 });
 
@@ -259,7 +347,8 @@ describe("the hard behavioural constraint (PR #1091's HIGH-severity fix)", () =>
     );
 
     // Enter navigated the real path...
-    expect(pushStateCalls.length).toBe(1);
+    expect(navigateCalls.length).toBe(1);
+    expect(navigateCalls[0].fsPath).toBe("/mnt/data/report.csv");
     // ...rather than running the action row's rewrite-to-a-plain-word path,
     // which would have replaced the query with "report.csv"'s own basename
     // and left the full path behind.
@@ -268,24 +357,20 @@ describe("the hard behavioural constraint (PR #1091's HIGH-severity fix)", () =>
 });
 
 describe("arrow-key navigation across the action row", () => {
-  // A gated non-path query is always a glob (the only way `escapesBase` can
-  // be true while `isPathQuery` is false), and `completionTarget` refuses
-  // any query containing "*" outright — so a gated query never has folder
-  // completions to sit alongside. The one place an action row and real
-  // folder completions coexist is the MISSING-PATH case: the folder itself
-  // ("/home/iamsdas/sub") can exist and list entries even though the exact
-  // name typed doesn't.
-  test("reaches the action row first, then lands correctly on the folder completions after it", async () => {
+  // FINDING 3 (code review, 2026-09-10) changed what this describe block can
+  // demonstrate: the not-found row (notice + action) is now suppressed the
+  // moment ANY real completion exists for the same text (see "the dropdown's
+  // action row" above), so an action row and real folder completions no
+  // longer coexist in the dropdown AT ALL — the gated/escaping branch never
+  // had completions to begin with (a query containing "*" is refused
+  // outright by `completion-target.ts`'s `completionTarget`), and finding 3
+  // closed the one remaining case (the missing-path branch). This test now
+  // covers arrow-key navigation with the action row as the dropdown's ONLY
+  // row, via the gated-glob scenario.
+  test("arrows to, and wraps back onto, the lone action row when it is the only row", async () => {
     const renderer = mount("/home/iamsdas/notes.txt");
     await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
-    listDirEntries["/home/iamsdas/sub"] = [
-      { name: "nopeish.csv", is_dir: false, size: 10 },
-      { name: "report.csv", is_dir: false, size: 20 },
-    ];
-    // "/home/iamsdas/sub/nope" itself doesn't exist (statOkPaths is empty),
-    // but "nopeish.csv" in that same folder matches the "nope" partial —
-    // one action row (index 0) plus one real folder completion (index 1).
-    await focusAndType(renderer, "/home/iamsdas/sub/nope");
+    await focusAndType(renderer, "/mnt/other/*.json");
 
     const highlightedIdx = () => {
       const hit = completionRows(renderer).find((r) => r.props.className.includes("highlight"));
@@ -293,7 +378,7 @@ describe("arrow-key navigation across the action row", () => {
     };
 
     const indexed = completionRows(renderer).filter((r) => "data-idx" in r.props);
-    expect(indexed.length).toBe(2);
+    expect(indexed.length).toBe(1);
     expect(highlightedIdx()).toBeUndefined();
 
     await flush(() => input(renderer).props.onKeyDown({ key: "ArrowDown", preventDefault: () => {} }));
@@ -301,36 +386,29 @@ describe("arrow-key navigation across the action row", () => {
     const action = completionRows(renderer).find((r) => r.props["data-idx"] === 0)!;
     expect(action.props.className).toContain("listing-completion-action");
 
+    // Only row: wraps back onto itself rather than losing the highlight.
     await flush(() => input(renderer).props.onKeyDown({ key: "ArrowDown", preventDefault: () => {} }));
-    expect(highlightedIdx()).toBe(1);
-    const first = completionRows(renderer).find((r) => r.props["data-idx"] === 1)!;
-    expect(rowText(first)).toContain("nopeish.csv");
+    expect(highlightedIdx()).toBe(0);
   });
 
-  // FINDING 1 (code review, 2026-09-10): Tab, with NOTHING arrowed to yet,
-  // used to accept whatever sits at index 0 — the action row, once one
-  // exists — destroying the typed path instead of completing it. Tab must
-  // always complete the first REAL completion by default; the action row
-  // stays reachable only by explicitly arrowing to it (covered above).
-  test("an un-arrowed Tab completes the real folder match, never the action row sitting at index 0", async () => {
-    const renderer = mount("/home/iamsdas/notes.txt");
-    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
-    listDirEntries["/home/iamsdas/sub"] = [
-      { name: "nopeish.csv", is_dir: false, size: 10 },
-    ];
-    await focusAndType(renderer, "/home/iamsdas/sub/nope");
-
-    // Never arrowed — the default, resting highlight.
-    expect(completionRows(renderer).some((r) => r.props["aria-selected"] === true)).toBe(false);
-
-    await flush(() =>
-      input(renderer).props.onKeyDown({ key: "Tab", preventDefault: () => {} }),
-    );
-
-    // Tab wrote the real completion's path into the box, not the action
-    // row's basename rewrite ("nope").
-    expect(input(renderer).props.value).toBe("/home/iamsdas/sub/nopeish.csv");
-  });
+  // FINDING 1 (code review, 2026-09-10): `completionKeyAction`'s Tab
+  // default (index 0, nothing arrowed to) used to land on the action row
+  // whenever one occupied that slot, destroying a typed path instead of
+  // completing it — see completion-keys.test.ts's own
+  // "Tab with nothing highlighted targets the given default index" and
+  // "Tab still accepts an EXPLICITLY highlighted row 0" for the fix's
+  // direct, differentiating coverage (old vs. new `tabDefaultIndex`
+  // behaviour). A DRIVEN reproduction of it through this component is no
+  // longer possible in this codebase: finding 3's fix above means an action
+  // row and a real folder completion never appear together any more (the
+  // one scenario finding 1 quoted, "/home/iamsdas/sub/nope" with
+  // "nopeish.csv" in that folder, now suppresses the action row entirely —
+  // see "a half-typed path WITH a live completion shows no not-found
+  // notice"), so `SearchField.tsx`'s own `tabDefaultIndex` guard
+  // (`hasAction && completion.items.length > 0`) is presently unreachable
+  // through any live combination of props this component can produce.
+  // Kept anyway per the finding's explicit "must-fix", as defensive
+  // correctness against a future change that reintroduces coexistence.
 });
 
 describe("the search button (SPEC scope item 3, words-stay revision)", () => {

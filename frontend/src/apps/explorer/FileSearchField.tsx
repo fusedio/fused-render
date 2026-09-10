@@ -146,6 +146,7 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
       crumbsFsPath={fsPath}
       home={home}
       query={query}
+      q={q}
       setQuery={setQuery}
       searching={searching}
       isPathQuery={isPathQuery}
