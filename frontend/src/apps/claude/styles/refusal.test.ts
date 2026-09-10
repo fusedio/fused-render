@@ -79,9 +79,15 @@ test("the chip's door covers the pill's own padding (PR2 deferred D9)", () => {
   // the pill's padding — so the hit area was ~65% × 73% of a shape whose hover
   // state lit up all of it. The padding moved onto the door; the pill keeps
   // only the trailing side, where the ✕ (the door's sibling) sits.
-  expect(block(".chat-root .c-annchip .c-chip-door")).toContain("padding: 3px 0 3px 10px");
+  const door = block(".chat-root .c-annchip .c-chip-door");
+  expect(door).toContain("padding: 3px 0 3px 10px");
+  // A MATCHING NEGATIVE MARGIN, not a stripped pill: the pill's inset is shared
+  // with the ANNOTATION chips in the same tray, which render no door at all —
+  // taking it off them clipped their pin letter against the rounded edge
+  // (Bugbot, PR #1074). The trailing side stays 0, because the ✕ lives there.
+  expect(door).toContain("margin: -3px 0 -3px -10px");
   const pill = block(".chat-root .c-annchip");
-  expect(pill).toContain("padding: 0 6px 0 0");
+  expect(pill).toContain("padding: 3px 6px 3px 10px");
 });
 
 test("a picture door is `zoom-in`, a glyph door is not, a refused door is neither (T:948, T:969)", () => {

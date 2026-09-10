@@ -213,7 +213,16 @@ export const Transcript = memo(function Transcript({
       .map((p) => p.id);
     // The transition, off the PREVIOUS commit's open set: a row that was open
     // and is now filed into a turn.
-    if (wrap && !followTail.current) {
+    //
+    // NOT WHILE A CARD IS OPEN (Bugbot, PR #1074). One poll can both answer a
+    // card and open the next one, and the open-card effect above runs FIRST —
+    // so this pass would land last and pull the viewport back to the receipt,
+    // hiding the card the run is blocked on. An open card is the hard block
+    // (T:14652-14663 scrolls to it unconditionally); a receipt is a courtesy.
+    // T reaches the same answer by another road: `parkResolvedCard` runs
+    // `followBottom()` before this scroll, and with a card open the log is
+    // following.
+    if (wrap && !followTail.current && !open.length) {
       const parked = new Set(
         state.permissions.filter((p) => p && p.id && p.decision && p.parkedIn).map((p) => p.id),
       );

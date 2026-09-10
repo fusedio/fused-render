@@ -535,3 +535,130 @@ test("the log stays hidden while a live run is still being adopted (R2-11)", () 
     (globalThis as { ResizeObserver?: unknown }).ResizeObserver = realRO;
   }
 });
+
+// ---- the receipt's scroll never outranks an OPEN card --------------------
+
+/** `Transcript`'s scroll effects need real nodes. `createNodeMock` gives every
+ *  host element the same stand-in, which is enough here: the assertion is WHICH
+ *  calls happen, not where they land. */
+function mountWithNodes(el: React.ReactElement) {
+  const calls: string[] = [];
+  const wheelHandlers: Array<(e: unknown) => void> = [];
+  /** THE CARD NODES `findCard` walks. Real ones, with a `dataset.permId` — a
+   *  mock whose `querySelectorAll` answered `[]` made the whole assertion
+   *  vacuous (the lookup found nothing, so nothing ever scrolled either way).
+   *  IN VIEW by their rect, which is the other half of the condition. */
+  const cardNodes = ["p1", "p2"].map((id) => ({
+    dataset: { permId: id },
+    getBoundingClientRect: () => ({ top: 20, bottom: 60, width: 300, height: 40 }),
+    scrollIntoView: () => calls.push("scrollIntoView:" + id),
+  }));
+  const node = {
+    scrollIntoView: () => calls.push("scrollIntoView"),
+    getBoundingClientRect: () => ({ top: 10, bottom: 400, width: 300, height: 390 }),
+    // The port reads and writes these on every follow pass.
+    scrollTop: 0,
+    scrollHeight: 1000,
+    clientHeight: 400,
+    dataset: {},
+    querySelectorAll: (sel: string) =>
+      sel === "[data-perm-id]" ? cardNodes : [],
+    querySelector: () => null,
+    classList: { add() {}, remove() {}, contains: () => false },
+    // The port binds a wheel listener on the scrollport and a ResizeObserver on
+    // the pin; a stand-in has to answer both surfaces or the mount throws
+    // before any effect this test is about can run. The wheel handler is KEPT,
+    // because dispatching it is the only door to `followTail` from out here —
+    // and both scrolls this file tests are gated on that flag, so a mock that
+    // swallowed it made every assertion vacuous.
+    addEventListener(type: string, fn: (e: unknown) => void) {
+      if (type === "wheel") wheelHandlers.push(fn);
+    },
+    removeEventListener() {},
+    isConnected: true,
+    ownerDocument: globalThis.document,
+    parentNode: null,
+    children: [],
+  };
+  // The pin's own measure uses one; the suite has no DOM.
+  const G = globalThis as Record<string, unknown>;
+  const realRO = G.ResizeObserver;
+  G.ResizeObserver = class {
+    observe() {}
+    disconnect() {}
+  };
+  restores.push(() => {
+    if (realRO === undefined) delete G.ResizeObserver;
+    else G.ResizeObserver = realRO;
+  });
+
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(el, { createNodeMock: () => node });
+  });
+  mounted.push(r);
+  return {
+    calls,
+    /** The scrollport's own follow flag, which BOTH scrolls read. A wheel-up is
+     *  what drops it in the real component — "an unambiguous 'let me read', so
+     *  it drops the follow with NO distance threshold" — so that is what this
+     *  dispatches, rather than reaching for a ref it cannot see. */
+    setFollowTail(on: boolean) {
+      if (on) return;
+      act(() => {
+        for (const fn of wheelHandlers) fn({ deltaY: -120 });
+      });
+    },
+    update(next: React.ReactElement) {
+      act(() => r.update(next));
+    },
+  };
+}
+
+
+const restores: Array<() => void> = [];
+afterEach(() => {
+  for (const undo of restores.splice(0)) undo();
+});
+
+test("answering a card while ANOTHER opens does not scroll to the receipt", () => {
+  // One poll can both answer a card and open the next one, and the open-card
+  // effect runs FIRST — so the receipt pass would land last and pull the
+  // viewport back to it, hiding the card the run is blocked on. An open card is
+  // the hard block (T:14652-14663 scrolls to it unconditionally); a receipt is
+  // a courtesy. T reaches the same answer by another road: `parkResolvedCard`
+  // runs `followBottom()` first, and with a card open the log is following.
+  // (Bugbot, PR #1074.)
+  const open = row({ id: "p1", decision: "", placement: "open" });
+  const view = (perms: PermissionRow[]) => (
+    <Transcript state={state({ turns: [turn("a:1")], permissions: perms })} actions={actions} />
+  );
+  const h = mountWithNodes(view([open]));
+  // Not following the tail: the reader has scrolled up to re-read the reply,
+  // which is the only state either scroll is about.
+  h.setFollowTail(false);
+  h.calls.length = 0;
+
+  // p1 answered and filed, p2 opens in the SAME update.
+  h.update(
+    view([
+      row({ id: "p1", decision: "allow", placement: "parked", parkedIn: "a:1" }),
+      row({ id: "p2", decision: "", placement: "open" }),
+    ]),
+  );
+  expect(h.calls).not.toContain("scrollIntoView:p1");
+});
+
+test("…but with nothing open, the receipt IS brought into view", () => {
+  // The courtesy still happens on the ordinary path — otherwise the guard above
+  // would have quietly disabled the whole feature (T:14738-14742).
+  const view = (perms: PermissionRow[]) => (
+    <Transcript state={state({ turns: [turn("a:1")], permissions: perms })} actions={actions} />
+  );
+  const h = mountWithNodes(view([row({ id: "p1", decision: "", placement: "open" })]));
+  h.setFollowTail(false);
+  h.calls.length = 0;
+
+  h.update(view([row({ id: "p1", decision: "allow", placement: "parked", parkedIn: "a:1" })]));
+  expect(h.calls).toContain("scrollIntoView:p1");
+});

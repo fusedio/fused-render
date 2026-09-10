@@ -195,14 +195,31 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
     if (!measuresBox) return;
     const el = opts.boxRef?.current;
     if (!el) return;
+    /** BOOT, and only boot — the same distinction `shown.current !== null` makes
+     *  for the disarm below. A mount that is ALREADY narrow is not a reader
+     *  crossing the breakpoint. */
+    let first = true;
     const read = (): void => {
       const w = el.getBoundingClientRect().width;
       // NOT LAID OUT YET is not "narrow": a zero width during a mount would
-      // otherwise collapse the layout for a frame and then uncollapse it.
+      // otherwise collapse the layout for a frame and then uncollapse it. It is
+      // not a first read either — nothing was measured — so `first` stands.
       if (!w) return;
       const next = w <= NARROW_MAX_PX;
+      const boot = first;
+      first = false;
       if (next === narrowNow.current) return;
-      if (next && !noPane && !params.get("paneview")) crossView.current = "preview";
+      // `crossView` IS A CROSSING, and the first read is not one (Bugbot, PR
+      // #1074). It keeps on screen the preview a reader "was just looking at",
+      // which presupposes that both halves WERE on screen a moment ago — so on
+      // a boot there is nothing to keep, and the unset-`paneview` default must
+      // stand: CHAT, the conversation, which is the reason the mode exists
+      // (T:8868). Setting it here opened every pane that mounted at or under
+      // 800px inside a wider window on the PREVIEW, with the composer locked
+      // (`composerLocked`) — the exact opposite of the default.
+      if (!boot && next && !noPane && !params.get("paneview")) {
+        crossView.current = "preview";
+      }
       narrowNow.current = next;
       setNarrow(next);
     };

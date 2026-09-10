@@ -206,6 +206,35 @@ test("a narrow chat box in a wide window IS narrow", () => {
   const hook = mountWithBox(p.store, box);
   expect(hook.get().narrow).toBe(true);
   expect(hook.get().classNames).toContain("narrow");
+
+  // …AND IT OPENS ON THE CHAT, not the preview (Bugbot, PR #1074). A mount that
+  // is already narrow is not a CROSSING: `crossView` exists to keep on screen
+  // the preview a reader "was just looking at", which presupposes both halves
+  // were on screen a moment ago. On a boot there is nothing to keep, so the
+  // unset-`paneview` default stands — chat, the conversation, which is the
+  // reason the mode exists (T:8868). Getting this wrong opened every pane that
+  // mounted at or under 800px in a wider window on the preview, with the
+  // composer locked.
+  expect(hook.get().view).toBe("chat");
+  expect(hook.get().classNames).toContain("view-chat");
+  expect(hook.get().composerLocked).toBe(false);
+  expect(p.calls).toHaveLength(0);
+});
+
+test("a mount that is already narrow, then crosses UP and back DOWN, does cross", () => {
+  // The boot suppression must not disarm the rule for later crossings.
+  const p = fakeParams();
+  const box = fakeBox(380);
+  const hook = mountWithBox(p.store, box);
+  expect(hook.get().view).toBe("chat");
+
+  act(() => box.resize(1200));
+  expect(hook.get().narrow).toBe(false);
+  act(() => box.resize(400));
+  expect(hook.get().narrow).toBe(true);
+  // A real crossing down with no `paneview` set: the preview stays on screen.
+  expect(hook.get().view).toBe("preview");
+  expect(p.calls).toHaveLength(0);
 });
 
 test("a wide chat box is not narrow, and a resize of the BOX crosses", () => {

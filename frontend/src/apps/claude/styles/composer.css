@@ -679,11 +679,13 @@ select.c-pill {
   background: var(--c-surface-2);
   border: 1px solid var(--c-border);
   border-radius: 999px;
-  /* NO PADDING OF ITS OWN on the leading three sides: it moved onto the door
-     (below), which is the only way a button can cover it. The trailing 6px
-     stays here, because what sits there is the ✕ — the door's sibling, not part
-     of it. See the door's rule for why this matters. */
-  padding: 0 6px 0 0;
+  /* THE PILL KEEPS ITS OWN INSET. It was moved onto `.c-chip-door` at first,
+     and that broke the OTHER kind of chip in the same tray: an annotation chip
+     renders a badge and `.c-annchip-txt`, never a door, so it lost its leading
+     inset entirely and its pin letter clipped against the rounded edge
+     (Bugbot, PR #1074). The door covers this padding with negative margins
+     instead — see its rule. */
+  padding: 3px 6px 3px 10px;
   font-size: 12px;
   color: var(--c-fg);
   transition:
@@ -703,17 +705,23 @@ select.c-pill {
   min-width: 0;
   border: 0;
   background: none;
-  /* THE PILL'S OWN PADDING, MOVED HERE (PR2 deferred D9). The full-pill door
-     landed in P2-4, but with `padding: 0` it could not reach the pill's
+  /* THE DOOR COVERS THE PILL'S OWN PADDING (PR2 deferred D9). The full-pill
+     door landed in P2-4, but with `padding: 0` it could not reach the pill's
      `3px 6px 3px 10px` — so the hit area was ~65% × 73% of a shape whose hover
      state correctly lit up all of it, and clicks 2px inside the pill's own
      corner did nothing. An affordance that promises more than the target
      delivers is worse than a small target honestly drawn.
 
-     The pill keeps only its trailing 6px, so the door's box now runs from the
-     pill's leading edge to the ✕. */
+     PADDING PLUS A MATCHING NEGATIVE MARGIN, rather than taking the inset off
+     the pill: the pill's padding is shared with the annotation chips in the
+     same tray, which render no door at all. So the button grows back OVER the
+     three leading sides and its box now starts at the pill's leading edge and
+     spans its full inner height.
+     The TRAILING side is deliberately untouched — what sits there is the ✕, the
+     door's sibling and a control of its own, and a door reaching under it would
+     be a click that means two things. */
   padding: 3px 0 3px 10px;
-  margin: 0;
+  margin: -3px 0 -3px -10px;
   font: inherit;
   color: inherit;
   text-align: left;
