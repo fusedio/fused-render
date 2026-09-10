@@ -361,13 +361,25 @@ describe("arrow-key navigation across the action row", () => {
     expect(indexed.length).toBe(1);
     expect(highlightedIdx()).toBeUndefined();
 
-    await flush(() => input(renderer).props.onKeyDown({ key: "ArrowDown", preventDefault: () => {} }));
+    await flush(() =>
+      input(renderer).props.onKeyDown({
+        key: "ArrowDown",
+        preventDefault: () => {},
+        stopPropagation: () => {},
+      }),
+    );
     expect(highlightedIdx()).toBe(0);
     const action = completionRows(renderer).find((r) => r.props["data-idx"] === 0)!;
     expect(action.props.className).toContain("listing-completion-action");
 
     // Only row: wraps back onto itself rather than losing the highlight.
-    await flush(() => input(renderer).props.onKeyDown({ key: "ArrowDown", preventDefault: () => {} }));
+    await flush(() =>
+      input(renderer).props.onKeyDown({
+        key: "ArrowDown",
+        preventDefault: () => {},
+        stopPropagation: () => {},
+      }),
+    );
     expect(highlightedIdx()).toBe(0);
   });
 
@@ -389,6 +401,59 @@ describe("arrow-key navigation across the action row", () => {
   // through any live combination of props this component can produce.
   // Kept anyway per the finding's explicit "must-fix", as defensive
   // correctness against a future change that reintroduces coexistence.
+});
+
+describe("arrow keys stop at the dropdown when it is open (defect: one keypress moved two things)", () => {
+  // The user's screenshot showed `Downloads.json` highlighted in the
+  // dropdown while `Archive` was ALSO selected in the file listing behind
+  // it — one ArrowDown reaching both useListingSelection's document-level
+  // keydown listener (registered on `document`, bubble phase — see its own
+  // file) and this field's own onKeyDown. react-test-renderer never
+  // dispatches a real bubbling DOM event (every test in this file calls
+  // `props.onKeyDown` directly), so a true end-to-end bubble-and-stop can't
+  // be driven here — these tests instead verify the mechanism the fix
+  // relies on directly: whether SearchField's own handler calls
+  // `stopPropagation()`, which is exactly what keeps a real keydown from
+  // ever reaching `document`'s bubble-phase listener.
+  test("dropdown OPEN: ArrowDown stops propagation, so the listing behind it can't also move", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    // Same gated-glob scenario as the arrow-key test above: a single action
+    // row, dropdown open (showCompletion true).
+    await focusAndType(renderer, "/mnt/other/*.json");
+
+    let stopped = false;
+    await flush(() =>
+      input(renderer).props.onKeyDown({
+        key: "ArrowDown",
+        preventDefault: () => {},
+        stopPropagation: () => {
+          stopped = true;
+        },
+      }),
+    );
+    expect(stopped).toBe(true);
+  });
+
+  test("dropdown CLOSED: ArrowDown does not stop propagation — the listing keeps navigating from the search box", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    // Never focused/typed into: showCompletion is false (fieldActive is
+    // false), so completionKeyAction returns "none" for arrows and the
+    // preserved behaviour (arrows drive the listing from the search box)
+    // must still apply — this handler must not touch propagation at all.
+    let stopped = false;
+    await flush(() =>
+      input(renderer).props.onKeyDown({
+        key: "ArrowDown",
+        preventDefault: () => {},
+        stopPropagation: () => {
+          stopped = true;
+        },
+      }),
+    );
+    expect(stopped).toBe(false);
+  });
 });
 
 describe("the search button (SPEC scope item 3, words-stay revision)", () => {

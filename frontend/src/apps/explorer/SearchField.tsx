@@ -526,6 +526,17 @@ export function SearchField({
             );
             if (action.type === "move") {
               e.preventDefault();
+              // The dropdown is open and navigable: this arrow belongs to it
+              // alone. Without stopPropagation, the SAME keypress also
+              // reaches useListingSelection's document-level keydown
+              // listener (bubble phase, registered on `document`), which
+              // moves the file listing's selection behind the dropdown —
+              // one keypress, two things moving at once. When the dropdown
+              // is CLOSED, completionKeyAction returns "none" for arrows
+              // (see its own showCompletion gate) and this branch is never
+              // reached, so the event bubbles untouched and the listing
+              // still navigates from the search box exactly as before.
+              e.stopPropagation();
               setHighlight((h) => moveHighlight(h, action.delta, totalRows));
               return;
             }
