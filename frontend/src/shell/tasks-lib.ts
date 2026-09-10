@@ -3618,8 +3618,8 @@ export interface AttentionRow {
   taskId: string;
   /** The task's own title, for the row's second line. */
   title: string;
-  /** Where clicking the row lands, or null when there is nowhere to go. */
-  href: string | null;
+  /** Where clicking the row lands — always a real destination (see below). */
+  href: string;
 }
 
 /**
@@ -3637,9 +3637,10 @@ export interface AttentionRow {
  * `folderHref`): `taskHref` is null until the run reports a session id, and a run
  * that has parked on a question inside that window is exactly the one somebody
  * needs to reach. The folder with the Claude pane on it is where the answer can
- * be given, so it is a better answer than an inert row. Null only when the task
- * names no folder at all, which the section draws as an unclickable row rather
- * than dropping the news.
+ * be given, so it is a better answer than an inert row. And when the task names
+ * no folder at all, the row still needs a door — every row in the Notifications
+ * panel is clickable, so the last resort is the Tasks page itself, which is
+ * always a correct place to land on "a task needs you".
  */
 export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
   const rows: AttentionRow[] = [];
@@ -3649,7 +3650,7 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       key: task.key,
       taskId: task.task_id,
       title: task.title,
-      href: taskHref(task) ?? folderHref(task),
+      href: taskHref(task) ?? folderHref(task) ?? "/tasks",
     });
   }
   return rows;

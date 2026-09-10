@@ -619,7 +619,36 @@ def _display_root(root: str) -> str:
 # minted once per `runner.start` (a timestamp plus a random suffix) and is
 # never reused, and a process restart — which empties this set — is also what
 # empties the job registry itself (jobs.py carries no state across restarts).
+#
+# Also the destination for a run this process is choosing NOT to mirror at
+# all (see `_seen_running` below) — either way, once a run_id lands here,
+# `_mirror_one_run_job` never looks at it again.
 _mirrored_terminal: set = set()
+
+# run_ids this process has itself observed `running`. `list_runs` reads run
+# directories off DISK (KEEP_RUNS=20), so on a fresh process's very first
+# tick it can just as easily hand back a run that finished — successfully,
+# or abandoned by a worker that died — in an EARLIER process as one this
+# process is actually doing right now. Nothing in this session watched that
+# earlier run happen, so mirroring its terminal state into a job the moment
+# it is first read back is manufacturing a notification for something
+# nobody here ever saw start: an abandoned pre-restart scan reports itself
+# via `_with_liveness` as a synthetic "died without finishing" error on
+# every such first read, forever (module-local `_mirrored_terminal` is empty
+# again after every restart), which is exactly how a quit-or-killed scan from
+# a previous session turns into a permanent "Indexing files" failure that
+# resurrects at every launch.
+#
+# The fix reads liveness itself as the signal, not a wall clock: a run only
+# gets mirrored into a job at all once THIS process has actually seen it
+# `running`. A run that is already terminal the very first time this process
+# reads it is skipped outright (added straight to `_mirrored_terminal`, no
+# `jobs.upsert` call, no row ever created) — its run may be perfectly real,
+# but it is not news to a session that never watched it. A run seen running
+# here — including one a previous process started that is still genuinely
+# scanning when this process boots — is mirrored normally and, once it goes
+# terminal, gets its terminal row exactly as before.
+_seen_running: set = set()
 
 
 # Phases in which `files + reused` has nothing to do with `prev_total` yet:
@@ -655,6 +684,14 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
     if job_id in _mirrored_terminal:
         return False
     running = bool(run.get("running"))
+    if running:
+        _seen_running.add(job_id)
+    elif job_id not in _seen_running:
+        # Never seen live in THIS process — see `_seen_running`'s own
+        # comment. Skip the mirror outright rather than upserting a
+        # notification for a run nobody here watched happen.
+        _mirrored_terminal.add(job_id)
+        return False
     if not running:
         prev_total = None
     phase = str(run.get("phase") or "")
@@ -721,6 +758,20 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
         # bridge does not special-case it into a separate concept.
         "message": str(run.get("phase") or ""),
         "cancellable": True,
+        # A finished scan's success has no destination worth keeping — the
+        # index itself isn't a file a click could open — so nobody asked for
+        # this row to stick around (SPEC actionable-notifications), and
+        # `_sweep` ages a `done` transient row like this one out on the
+        # read-gated clock rather than waiting on a dismiss. A failed or
+        # cancelled run is different on both counts: `effective_tier`'s
+        # override turns it `attention` for VISIBILITY, and `_sweep` only
+        # ages a transient row out once its state is `done` — an
+        # error/cancelled row here is kept until dismissed, same as any
+        # other row a surface can show and let the user clear.
+        "tier": jobs.TRANSIENT,
+        # This row is the Explorer's own indexing scan, never anything a
+        # different feature raises against the same id.
+        "origin": "Explorer",
     }
     if running:
         fields["state"] = jobs.RUNNING
@@ -737,7 +788,11 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
             files_done = summary.get("files")
         fields["message"] = f"{int(files_done or 0)} files indexed"
     try:
-        result = jobs.upsert({"id": job_id, **fields}, server=True)
+        # The Indexing tab of Preferences — where this run's own root list
+        # and toggle live, and the only place a scan can be cancelled or
+        # retried from outside this row.
+        result = jobs.upsert({"id": job_id, **fields},
+                             page="/preferences?tab=indexing", server=True)
     except jobs.JobError:
         # A reporting failure says nothing about whether the RUN is live —
         # `running` above already answered that from `run` itself, before

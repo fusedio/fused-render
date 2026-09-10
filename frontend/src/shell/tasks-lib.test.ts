@@ -8326,13 +8326,14 @@ describe("attentionRows", () => {
     expect(noSession[0].href)
       .toBe("/explorer/view/Users/me/proj?_side=claude&session_id=");
 
-    // Nowhere at all: the news is still true, so the row exists and says so by
-    // being unclickable rather than by not being drawn.
+    // Nowhere at all: the news is still true, so the row still gets a door —
+    // the Tasks page itself, which is always a valid destination for "a task
+    // needs you" even when this particular task names no folder.
     const nowhere = attentionRows([
       task({ key: "x", status: "needs_attention", session_id: "", target: "",
              project: "" }),
     ]);
-    expect(nowhere[0].href).toBeNull();
+    expect(nowhere[0].href).toBe("/tasks");
   });
 });
 

@@ -164,6 +164,22 @@ def test_update_runs_on_a_native_install(monkeypatch):
     assert planned == ["/home/u/.local/bin/claude"]
 
 
+def test_the_job_report_carries_an_explicit_origin(monkeypatch):
+    """`_report` (claude_install.py) states `origin="Claude setup"` on every
+    mirrored tick — the fixture's own `_clean` stubs `jobs.upsert` to a no-op,
+    so this reads the call the real registry would have received instead of
+    the row it would have produced."""
+    captured = {}
+    monkeypatch.setattr(claude_install.jobs, "upsert",
+                        lambda body, **kw: captured.update(body) or {})
+    monkeypatch.setattr(claude_health, "resolve",
+                        lambda allow_shell=True: ("/home/u/.local/bin/claude", "candidate"))
+    monkeypatch.setattr(claude_health, "executable", lambda p: True)
+    monkeypatch.setattr(claude_install.threading, "Thread", _FakeThread)
+    claude_install.start("update")
+    assert captured.get("origin") == "Claude setup"
+
+
 def test_update_never_sources_the_login_shell(monkeypatch):
     """`resolve(allow_shell=False)`: this runs on a button press, and sourcing
     the user's whole profile would add seconds to it. Anything the shell probe
@@ -515,3 +531,14 @@ def test_a_worker_that_dies_unexpectedly_frees_the_slot(monkeypatch):
     assert rec["state"] == "error"
     assert "stopped unexpectedly" in rec["error"]
     assert claude_install.running() is False
+
+
+def test_the_reported_job_points_at_the_claude_config_page(monkeypatch):
+    """SPEC-actionable-notifications.md: clicking this row in Notifications
+    has to land on the Claude Code settings page, not just say who raised
+    it."""
+    captured = {}
+    monkeypatch.setattr(claude_install.jobs, "upsert",
+                        lambda body, **kw: captured.update(kw))
+    _run_install(monkeypatch, ["installed 2.1.246\n"])
+    assert captured.get("page") == "/claude-config"

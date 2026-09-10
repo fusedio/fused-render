@@ -26,6 +26,29 @@ export type JobKind = "download" | "task";
 // "server" — this app owns the process and really stops it.
 export type JobOwner = "page" | "server";
 
+// Which of the four notification tiers a row belongs to (SPEC
+// actionable-notifications). `tier` governs RETENTION, and, for "silent"
+// alone, whether the row pops a card in the floating column at all
+// (`popupJobs`/`popupTick`, `platform/ui/JobPopupCard.tsx`) — every other
+// tier still pops on its way to terminal, `transient` included; what a
+// non-silent tier decides is what happens AFTER that pop:
+//   "attention"  — kept in the panel until dismissed, and drawn there
+//                  without the panel having to be opened.
+//   "trail"      — kept in the panel until dismissed.
+//   "transient"  — kept nowhere; its card is the only trace it leaves.
+//   "silent"     — kept nowhere AND pops nothing: a producer declares this
+//                  when finishing is not news (a resident model load/unload
+//                  is the shipped example — the running row was already
+//                  visible, and turning "done" says nothing new). Silence
+//                  is a property of SUCCESS only — `effectiveTier` still
+//                  promotes an `error`/`cancelled` row to "attention"
+//                  regardless of the declared tier, so a silent job that
+//                  fails is always news.
+// "trail" is the default on the server (`fused_render/jobs.py`'s `Job.tier`)
+// on purpose: a producer that sets nothing behaves exactly like every row
+// did before this field existed.
+export type JobTier = "attention" | "trail" | "transient" | "silent";
+
 export interface Job {
   id: string;
   title: string;
@@ -60,7 +83,23 @@ export interface Job {
   total_estimated: boolean;
   unit: string; // "bytes" | "s" | "" — decides how done/total are formatted
   message: string; // the error text when state is "error"; the question's caption when state is "waiting"
-  page: string; // the .html that raised it (attribution)
+  // Where clicking this row goes, once it lands in Notifications — an
+  // absolute fs path (the .html that raised it, or a server producer's own
+  // repo root/output folder) OR one of a handful of shell routes a few
+  // server producers name directly (router.ts's `navigateToJobPage` is the
+  // one place that tells the two shapes apart and turns either into a real
+  // navigation). Empty for a job no destination has been given yet.
+  page: string;
+  // A short, human-readable label naming WHAT RAISED this job — "Playground",
+  // "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
+  // "Scheduler", "App install". Deliberately NOT `page` and never derived
+  // from it: `page` answers "where does clicking this row go", `origin`
+  // answers "who asked for this" — a Playground render's `page` is its own
+  // output file, while its `origin` stays "Playground", and the two move
+  // independently (a scheduled run's `page` can point at its own output
+  // while its `origin` stays "Scheduler"). "" when no producer named one —
+  // JobRow renders no caption at all for it, never an empty placeholder.
+  origin: string;
   owner: JobOwner;
   cancellable: boolean;
   cancel_requested: boolean;
@@ -75,6 +114,15 @@ export interface Job {
   // model load (`fused_render/ai/supervisor.py` `_wait_ready`'s merge). See
   // `mergedRows` below for what the manager does with it.
   waiting_for: string;
+  // Which of the four tiers this row belongs to (see `JobTier` above) —
+  // chosen by the PRODUCER, server-side only. Sticky across ticks on one id
+  // like every other field: `job_id_for(model)` (`ai/supervisor.py`) is
+  // shared by a resident load, a weights-only download and an unload, so
+  // each of those reports restates its own tier explicitly rather than
+  // relying on what an earlier report on that id left behind. Read this
+  // through `effectiveTier` below, not directly — a terminal row's actual
+  // tier can differ from what its producer declared.
+  tier: JobTier;
 }
 
 export interface JobsSnapshot {
@@ -112,33 +160,9 @@ export function isRunning(job: Job): boolean {
 }
 
 /**
- * Whether a terminal job is specifically a FAILURE, as opposed to a `done` or
- * `cancelled` one — the one thing `isTerminal` does not distinguish. All
- * three terminal states route to Notifications and leave Jobs the same tick
- * (D663, broadened from D586's original `error`-only route: "running
- * activities are shown in jobs and after done, a completed message goes to
- * notifications" never meant only failures). What this narrower question is
- * still used for is `.is-failure`'s red tint in Notifications — a `done` or
- * `cancelled` row belongs there too, but neither is a failure and must not
- * turn the chip red.
- *
- * (C7: this doc used to describe D586's original error-only routing —
- * "only `error` moves", `done`/`cancelled` "aging out" via `FINISHED_TTL_S`
- * — none of which has been true since D663 stopped sweeping any terminal
- * row until dismissed and started routing all three states the same way.)
- */
-export function isFailure(job: Job): boolean {
-  return job.state === "error";
-}
-
-/**
- * A job that has stopped and is not coming back — the three states that used
- * to be handled one at a time (`isFailure` for D586's failures-only route) are
- * now one question, because Notifications draws all three the same way and
- * Activity must lose all three the same tick they land there (user: "running
- * activities are shown in jobs and after done, a completed message goes to
- * notifications" — the "after done" half never distinguished which terminal
- * state, only D586's `error` half ever got built).
+ * A job that has stopped and is not coming back — `done`, `error` and
+ * `cancelled` are one question, because Notifications draws all three the
+ * same way and Activity loses all three the same tick they land there.
  */
 export function isTerminal(job: Job): boolean {
   return job.state === "done" || job.state === "error" || job.state === "cancelled";
@@ -194,22 +218,53 @@ export function jobsAfterClear(jobs: Job[]): Job[] {
 // A scheduled message's job row, by id (fused_render/schedule.py `_JOB_PREFIX`).
 export const SCHEDULE_JOB_PREFIX = "sys:schedule:";
 
-/** A scheduled message's own run, never drawn as an Activity row (user: "a
- *  task is not something I even want in the activity. that was added
- *  unintentionally"). The "Task finished:"/"Task failed:"/"Scheduled message
- *  ran:" toast (platform/lib/schedule-toast.ts) is the one surface for these
- *  now; the job-registry write behind it stays untouched server-side, because
- *  `schedule.py`'s poll loop reads its own report back to notice a live
- *  cancel request. */
-export function isScheduleJob(job: Job): boolean {
-  return job.id.startsWith(SCHEDULE_JOB_PREFIX);
+// A model load's own row, by id (fused_render/ai/supervisor.py `job_id_for`).
+export const AI_MODEL_JOB_PREFIX = "sys:ai-model:";
+
+/** The tier a reader should actually treat this row as — DERIVED, never
+ *  stored. `job.tier` is what the producer declared; this is what the row
+ *  means right now.
+ *
+ *  The one override: a terminal job in `error` or `cancelled` is always
+ *  `attention`, regardless of what its producer declared. A failed run is
+ *  news even for a producer that otherwise declares itself `transient` (a
+ *  scheduled run, an index scan, a text generation) or `silent` (a resident
+ *  model load/unload) — the thing that makes those tiers correct on SUCCESS
+ *  (nothing survives it, or nothing about finishing is news) is exactly what
+ *  is no longer true on a failure: the user did not get what they asked for,
+ *  which is always worth a look. A `done` row, or a still-running one, is
+ *  unaffected and reads its stored tier as-is.
+ *
+ *  Mirrors `effective_tier` in `fused_render/jobs.py` — keep the two in
+ *  step. */
+export function effectiveTier(job: Job): JobTier {
+  if (job.state === "error" || job.state === "cancelled") return "attention";
+  return job.tier;
 }
 
 /** Which jobs get a row of their own in Activity: every job the registry
- *  knows about, except a scheduled run's — those never draw a row here,
- *  regardless of state (see `isScheduleJob`). */
+ *  knows about, except:
+ *  - a scheduled message's own row, in ANY state (D661: "a task is not
+ *    something I even want in the activity" — an explicit product decision,
+ *    not a consequence of its declared tier, so it is checked by id prefix
+ *    rather than by `effectiveTier` alone).
+ *  - a TERMINAL job whose `effectiveTier` is "transient" or "silent" — a
+ *    finished index scan, a finished text generation, a resident model
+ *    load/unload, none of which leave anything to act on.
+ *  A transient/silent row that is still `running` is otherwise unaffected —
+ *  `tier` only ever governs RETENTION (and, for "silent", popping) of a
+ *  TERMINAL row (`JobTier` above), so a running index scan, text generation
+ *  or model load still gets a row here regardless of its declared tier,
+ *  exactly what Activity's Cancel control needs to reach. Reading
+ *  `effectiveTier` rather than the stored `tier` matters here: a producer
+ *  that declared itself transient/silent but ended in `error`/`cancelled`
+ *  still gets a row, because the override already turned it into
+ *  `attention`. */
 export function jobRows(jobs: Job[]): Job[] {
-  return jobs.filter((j) => !isScheduleJob(j));
+  return jobs.filter((j) => {
+    if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
+    return !isTerminal(j) || (effectiveTier(j) !== "transient" && effectiveTier(j) !== "silent");
+  });
 }
 
 export function mergedRows(jobs: Job[]): Job[] {
@@ -236,6 +291,144 @@ export function mergedRows(jobs: Job[]): Job[] {
 export function terminalNotifications(jobs: Job[]): Job[] {
   return terminalJobs(jobRows(mergedRows(jobs)));
 }
+
+// ------------------------------------------------------------------ popups
+//
+// The floating pop-up card (SPEC actionable-notifications, user: "when
+// getting notifications, ensure the latest notification always pops up and
+// auto disappears under 3 seconds. they still stay in the list"). `tier`
+// narrowed to mean retention only (see `JobTier` above) is what makes this
+// possible for `attention`/`trail`/`transient`: every terminal job in one of
+// those three is news worth a card, whether or not it earns a lasting row.
+// `silent` is the one exception — its whole point is to pop NOTHING on a
+// successful finish (a resident model load/unload: the running row already
+// said as much, so "done" is not news).
+
+/** Every terminal job that should pop a card — deliberately NOT `jobRows`
+ *  filtered by `effectiveTier`, since that filter is exactly what would drop
+ *  a `transient` job's pop. `mergedRows` still runs first, for the same
+ *  reason `terminalNotifications` runs it first: a render waiting on a
+ *  shared model load must not pop the load's own id as a second card the
+ *  instant it goes terminal, one poll ahead of the waiter noticing and
+ *  clearing its own `waiting_for`. The `sys:schedule:*` exclusion (D661) is
+ *  independent of tier and applies here exactly as it does in `jobRows` —
+ *  a scheduled message's run is not a job anyone asked to watch.
+ *
+ *  The `silent` exclusion below reads the STORED `job.tier`, gated on
+ *  `state === "done"` specifically — NOT `effectiveTier(j) !== "silent"`.
+ *  A manager process can die mid-report and leave a row stuck `error` while
+ *  its last-written tier is still `silent` (the supervisor's own reporting
+ *  thread is the producer of that report; nothing guarantees its failure
+ *  path gets to restate tier before it dies) — that row must still pop,
+ *  because silence is a property of SUCCESS only, and a failure is always
+ *  news. Reading `effectiveTier` here would already promote that row to
+ *  `attention` and let it through correctly by accident, but it would also
+ *  hide the actual rule being applied: this filter cares about the
+ *  producer's OWN claim on a clean finish, not the derived display tier. */
+export function popupJobs(jobs: Job[]): Job[] {
+  return terminalJobs(mergedRows(jobs))
+    .filter((j) => !j.id.startsWith(SCHEDULE_JOB_PREFIX))
+    .filter((j) => !(j.tier === "silent" && j.state === "done"));
+}
+
+/** One popup tick's candidate key — a terminal EVENT, not a job id.
+ *  `job_id_for(model)` (`fused_render/ai/supervisor.py`) mints one id for a
+ *  resident model's load, its weights-only download and its unload, so the
+ *  same id can go terminal more than once across the popup's lifetime; keying
+ *  "have I popped this?" on the bare id would pop the first of those events
+ *  and then silently swallow every later one landing on the same id while it
+ *  is still in `seen`. `finished_at` changes on every genuine terminal event
+ *  on that id, so the pair is what actually identifies "this particular
+ *  finish", not "this job slot". */
+function popupKey(job: Job): string {
+  return `${job.id}:${job.finished_at ?? ""}`;
+}
+
+/** One popup tick's worth of decision: which job (if any) should pop this
+ *  time, and the `seen` set to carry into the next call.
+ *
+ *  THE FIRST-TICK BACKLOG PROBLEM: a poller's very first read after a page
+ *  load or refresh sees every already-terminal job at once — naively popping
+ *  on "this job is terminal and I haven't popped it yet" would replay the
+ *  whole backlog as a burst of cards the instant the page opens. `isFirstTick`
+ *  is the caller's own flag for "this is the very first call this poller has
+ *  ever made" (a ref initialized to `true` and flipped to `false` right
+ *  after); on that call every current candidate is seeded into the returned
+ *  `seen` set with no popup. This is the frontend twin of `_seen_running` in
+ *  `fused_render/server/routers/index.py` — same shape, same reason: a fact
+ *  this process never watched happen is not news to it.
+ *
+ *  LATEST WINS; NO STACKING — "the latest notification always pops up", not
+ *  a queue of them. When more than one id is new in the same tick, the one
+ *  that pops is whichever has the newest `finished_at`, not whichever
+ *  `list_jobs` happened to return last. `list_jobs` sorts by
+ *  `(started_at, id)` (`fused_render/jobs.py`), so its own tail is only the
+ *  job that STARTED last — a short render that finishes behind an
+ *  already-running model load becomes a fresh candidate in the same tick as
+ *  the load's own completion, and the load, having started second, would win
+ *  the old order-based pick even though the render is what actually just
+ *  finished and is what the user is waiting on.
+ *
+ *  `seen` is REBUILT from this tick's candidate keys every call, exactly like
+ *  `trackSeenIds` above, rather than only ever grown — a `popupKey` is a
+ *  one-shot fact about a single terminal event, so once that event's key is
+ *  no longer among the current candidates (dismissed, cleared, swept, or
+ *  superseded by the same id's NEXT terminal event) it simply falls out and
+ *  never needs forgetting on purpose. */
+export function popupTick(
+  jobs: Job[],
+  seen: ReadonlySet<string>,
+  isFirstTick: boolean,
+): { seen: Set<string>; popped: Job | null } {
+  const next = new Set<string>();
+  let popped: Job | null = null;
+  for (const j of popupJobs(jobs)) {
+    const key = popupKey(j);
+    next.add(key);
+    if (isFirstTick || seen.has(key)) continue;
+    if (popped === null || (j.finished_at ?? 0) > (popped.finished_at ?? 0)) popped = j;
+  }
+  return { seen: next, popped };
+}
+
+// A REAL, server-side dismissal that happened somewhere its own `onPatch`
+// cannot reach the shell's own terminal-jobs list — concretely
+// `platform/ui/JobPopupCard.tsx`, whose reused `JobRow` really does call
+// `dismissFn` (a whole-row click opens and dismisses, same as the panel's own
+// row) but whose `onPatch` only closes THAT card, never touching
+// `App.tsx`'s `terminalJobs` (the state `shell/RepoUpdatesDock.tsx` reads).
+// Left unpatched there, the Notifications panel kept showing the row until
+// its next poll — and a second ✕ press in the meantime could fail against an
+// id the server had already deleted.
+//
+// The module-level notify/subscribe shape `platform/lib/index-freshness.ts`
+// (`noteIndexLifecycle`/`subscribeIndexLifecycle`) and
+// `shell/onboarding/progress.ts` (`noteProgressMayHaveMoved`) already use for
+// exactly this kind of thing: the event's source (`JobPopupCard`, several
+// components below `App`) and its one real consumer (`App`, which owns
+// `terminalJobs`) have no other connection worth threading a prop through.
+const dismissListeners = new Set<(id: string) => void>();
+
+/** Record that `id` was just dismissed for real (its server-side row is
+ *  gone) from somewhere that cannot patch the shell's own terminal-jobs list
+ *  itself. */
+export function noteJobDismissed(id: string): void {
+  for (const fn of dismissListeners) fn(id);
+}
+
+/** Subscribe to real job dismissals `noteJobDismissed` reports. Returns an
+ *  unsubscribe function. */
+export function subscribeJobDismissed(fn: (id: string) => void): () => void {
+  dismissListeners.add(fn);
+  return () => void dismissListeners.delete(fn);
+}
+
+// How long the popup card stays fully visible before its exit animation
+// starts. 2500ms, not the user's own literal "3 seconds": the card shares
+// `lib/toast`'s TOAST_EXIT_MS (150ms) exit transition, so total on-screen
+// time is 2500 + 150 = 2650ms — comfortably under the "under 3 seconds" the
+// user asked for rather than landing right on the edge of it.
+export const JOB_POPUP_VISIBLE_MS = 2500;
 
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
 // Terminal jobs (done/error/cancelled) draw no bar at all — `Bar` in
@@ -551,9 +744,6 @@ export function jobTypeLabel(job: Job): string {
   const verb = leadingVerb(detail) ?? leadingVerb(job.title);
   if (verb) return verb;
   if (job.kind === "download") return "Downloading";
-  // A scheduled Claude run's title is the prompt and its detail the target
-  // path — neither carries a verb — so it names its own kind of work.
-  if (job.id.startsWith(SCHEDULE_JOB_PREFIX)) return "Running";
   return "Working";
 }
 

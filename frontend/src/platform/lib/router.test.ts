@@ -11,7 +11,8 @@ import { installDomShim } from "./testDomShim";
 // installs, rather than a stub hand-rolled per file.
 installDomShim();
 
-const { navigate, rewriteLegacyUrl, withPreviewFlag } = await import("./router");
+const { navigate, navigateToJobPage, isJobPageRoute, rewriteLegacyUrl, withPreviewFlag } =
+  await import("./router");
 const { setResolvedSnapshot } = await import("./snapshot-param");
 const setSnapshotAppDir = (appDir: string | null) =>
   setResolvedSnapshot(appDir ? { sha: "abc1234", dir: "/cache/k/abc1234", app_dir: appDir } : null);
@@ -255,4 +256,87 @@ test("withPreviewFlag stamps the thumbnail param", () => {
   // Idempotent: cards rebuild src every render; accumulating would reload.
   const once = withPreviewFlag("/render?path=x");
   expect(withPreviewFlag(once)).toBe(once);
+});
+
+// Job.page carries either a shell route or an absolute fs path —
+// syntactically indistinguishable, since both start with "/".
+// navigateToJobPage is the one place that turns either shape into an actual
+// navigation, checking a small closed table of the routes a job can
+// legitimately name before falling back to treating the value as an fs path.
+function pushedJobPage(page: string): { url: string; state: unknown } {
+  const hist = globalThis.history as {
+    pushState: (state: unknown, title: string, url: string) => void;
+  };
+  const prevPush = hist.pushState;
+  let url = "";
+  let state: unknown;
+  hist.pushState = (s, _t, u) => {
+    url = u;
+    state = s;
+  };
+  try {
+    navigateToJobPage(page);
+  } finally {
+    hist.pushState = prevPush;
+  }
+  return { url, state };
+}
+
+describe("navigateToJobPage dispatches a Job.page value", () => {
+  test("a known shell route goes through navigateUrl untouched", () => {
+    expect(pushedJobPage("/ai-models/local").url).toBe("/ai-models/local");
+    expect(pushedJobPage("/ai-models/benchmark").url).toBe("/ai-models/benchmark");
+    expect(pushedJobPage("/claude-config").url).toBe("/claude-config");
+    expect(pushedJobPage("/preferences").url).toBe("/preferences");
+    expect(pushedJobPage("/preferences?tab=indexing").url).toBe("/preferences?tab=indexing");
+  });
+
+  test("anything else is an fs path — a directory unless it ends in .htm(l)", () => {
+    const repoRoot = pushedJobPage("/Users/me/Work/widget");
+    expect(repoRoot.url).toBe("/explorer/view/Users/me/Work/widget");
+    expect(repoRoot.state).toEqual({ fsDir: true });
+
+    const page = pushedJobPage("/Users/me/Work/widget/index.html");
+    expect(page.url).toBe("/explorer/view/Users/me/Work/widget/index.html");
+    expect(page.state).toEqual({ fsDir: false });
+  });
+
+  test("a rendered output file paints as a file, not a directory — its own extension is the tell, not just .htm(l)", () => {
+    const png = pushedJobPage("/Users/me/Desktop/render.png");
+    expect(png.state).toEqual({ fsDir: false });
+    const video = pushedJobPage("/Users/me/Desktop/render.mp4");
+    expect(video.state).toEqual({ fsDir: false });
+    // A folder name that happens to contain a dot (a version suffix, say) is
+    // still a directory: the test is on the BASENAME's extension, not on
+    // whether "." appears anywhere in the path.
+    const dotDir = pushedJobPage("/Users/me/Work/widget-v1.2/output");
+    expect(dotDir.state).toEqual({ fsDir: true });
+  });
+
+  test("a dotted folder NAME itself paints as a directory, not a file — the extension list is closed", () => {
+    // "any dot with no further '/' or '.' after it" would call each of these
+    // a file; none of them is one — a domain-style repo root
+    // (github_setup.py), a dotfile-style project directory (envinstall.py's
+    // project_dir), and a versioned folder are all real, legitimate
+    // directory names a producer can hand back as `page`.
+    expect(pushedJobPage("/Users/me/Work/site.com").state).toEqual({ fsDir: true });
+    expect(pushedJobPage("/Users/me/Work/app.v2").state).toEqual({ fsDir: true });
+    expect(pushedJobPage("/Users/me/.config").state).toEqual({ fsDir: true });
+  });
+});
+
+describe("isJobPageRoute", () => {
+  test("is true for every known shell route", () => {
+    expect(isJobPageRoute("/ai-models/local")).toBe(true);
+    expect(isJobPageRoute("/ai-models/benchmark")).toBe(true);
+    expect(isJobPageRoute("/claude-config")).toBe(true);
+    expect(isJobPageRoute("/preferences")).toBe(true);
+    expect(isJobPageRoute("/preferences?tab=indexing")).toBe(true);
+    expect(isJobPageRoute("/tasks")).toBe(true);
+  });
+
+  test("is false for an fs path, even one that looks route-like", () => {
+    expect(isJobPageRoute("/Users/me/Work/widget")).toBe(false);
+    expect(isJobPageRoute("/Users/me/Work/widget/index.html")).toBe(false);
+  });
 });
