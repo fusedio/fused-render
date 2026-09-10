@@ -52,13 +52,47 @@ export function folderToOpen(query: string): string | null {
 // yet) the same way that predicate stays on the safe side when home has
 // not loaded. An already-absolute or drive-letter folder (no leading "~")
 // passes through unchanged, same as `folderToOpen` leaves it.
+//
+// FINDINGS 3 & 4 (code review, 2026-09-10) are the same root cause: this
+// function does not touch the filesystem (that's the whole point of it —
+// see above), so it cannot answer a question that requires walking real
+// directories, and two shapes genuinely require that walk:
+//
+// - A `..` segment (finding 3): `folderToOpen("../*.md")` returns the bare
+//   string `".."`, which is not an fsPath at all — `navigate` has no
+//   current directory to climb it FROM (this function is never even given
+//   one; only `query` and `home`). The server's own base resolution
+//   (`resolve_query`, fused_render/index/query.py) walks a `..` segment
+//   with `_walk_from`, which climbs however many real directories it
+//   actually takes, exactly the computation this function would have to
+//   duplicate — badly, and without seeing the disk — to get right.
+// - A bare, non-`~`, non-drive-letter absolute path (finding 4):
+//   `/Users/*/notes.md` typed on a machine with no `/Users` produces the
+//   guessed folder `/Users`, and `navigate` there lands on a folder that
+//   does not exist — an error listing, and the query is gone. The server
+//   resolves this exact ambiguity by trying the absolute walk first and
+//   falling back to the box's own root when that walk cannot even consume
+//   its first segment (`resolve_query`'s own docstring) — again, a real
+//   filesystem check this function is not in a position to make.
+//
+// Both return null here, same as the `home === undefined` case above:
+// nothing this function can responsibly navigate to yet. The caller
+// (SearchField.tsx) already has a fallback for null — `commitSearch()`,
+// which leaves the box rooted where it is and sends the query text
+// unchanged to the same `resolve_query` that gets both of these right. A
+// `~`-relative folder keeps navigating (unchanged from ITEM 10): it is the
+// one shape this function can expand with no ambiguity and no filesystem
+// access at all, so it stays the one case worth the (already-documented,
+// already-accepted) risk that the named folder itself does not exist yet.
 export function resolveFolderToOpen(query: string, home: string | undefined): string | null {
+  if (query.split("/").includes("..")) return null;
   const folder = folderToOpen(query);
   if (folder === null) return null;
   if (folder === "~" || folder.startsWith("~/")) {
     if (home === undefined) return null;
     return home + folder.slice(1);
   }
+  if (folder.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(folder)) return null;
   return folder;
 }
 

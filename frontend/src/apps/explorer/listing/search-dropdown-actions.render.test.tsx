@@ -338,40 +338,13 @@ describe("ITEM 10 (running-screen review, 2026-09-10): the offer/Enter actually 
   // the URL/breadcrumb never moved off Downloads — commitInPlace used to
   // mean "call commitSearch()", which searches without navigating. Fixed
   // to navigate to `resolveFolderToOpen`'s folder, carrying the query
-  // text unchanged via `navigate(folder, { isDir: true, q })`.
-  test("pressing the action row navigates to the named folder with the query intact", async () => {
-    const renderer = mount("/home/iamsdas/notes.txt");
-    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
-    await focusAndType(renderer, "/mnt/other/*.json");
-
-    const rows = completionRows(renderer);
-    expect(rows.length).toBe(1);
-    await flush(() =>
-      rows[0].props.onMouseDown({ preventDefault: () => {} }),
-    );
-
-    expect(navigateCalls.length).toBe(1);
-    expect(navigateCalls[0].fsPath).toBe("/mnt/other");
-    expect(navigateCalls[0].opts).toEqual({ isDir: true, q: "/mnt/other/*.json" });
-  });
-
-  test("a bare Enter on a gated query (nothing arrowed to) navigates the same way", async () => {
-    const renderer = mount("/home/iamsdas/notes.txt");
-    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
-    await focusAndType(renderer, "/mnt/other/*.json");
-
-    await flush(() =>
-      input(renderer).props.onKeyDown({ key: "Enter", preventDefault: () => {} }),
-    );
-
-    expect(navigateCalls.length).toBe(1);
-    expect(navigateCalls[0].fsPath).toBe("/mnt/other");
-    expect(navigateCalls[0].opts).toEqual({ isDir: true, q: "/mnt/other/*.json" });
-    // The query text in the box is untouched by the navigation itself —
-    // still the full thing the user typed, not rewritten or cleared.
-    expect(input(renderer).props.value).toBe("/mnt/other/*.json");
-  });
-
+  // text unchanged via `navigate(folder, { isDir: true, q })` — but ONLY
+  // for a `~`-relative folder (deterministic string expansion, no
+  // filesystem access needed to get it right). A bare absolute guess like
+  // `/mnt/other` is covered by the NEXT describe block instead: FINDINGS 3
+  // & 4 (code review, 2026-09-10) walked this back for exactly that shape,
+  // since navigating to it can land on a folder that plain string math
+  // guessed and the disk never backed.
   test("a `~`-rooted gated query resolves through home before navigating", async () => {
     // A `~`-rooted query genuinely escapes only when the folder open on
     // screen is NOT itself under home (a query pointing back inside the
@@ -391,6 +364,60 @@ describe("ITEM 10 (running-screen review, 2026-09-10): the offer/Enter actually 
     // expands "~" against the resolved home before navigate() ever sees it.
     expect(navigateCalls[0].fsPath).toBe("/home/iamsdas/other");
     expect(navigateCalls[0].opts).toEqual({ isDir: true, q: "~/other/*.py" });
+  });
+});
+
+// FINDINGS 3 & 4 (code review, 2026-09-10): `resolveFolderToOpen` never
+// touches the filesystem (enter-prompt.ts's own doc comment), so it cannot
+// answer either of these shapes correctly — a `..` segment needs a real
+// walk to know how many directories it actually climbs (finding 3: a bare
+// `folderToOpen("../*.md")` is the literal string "..", not an fsPath), and
+// a bare absolute guess like `/mnt/other` might not exist at all (finding
+// 4's repro: `/Users/*/notes.md` on a machine with no `/Users`). Both used
+// to turn into a `navigate()` straight to that guess — an error listing,
+// with the query gone. Both now return null from `resolveFolderToOpen`,
+// which falls back to `commitSearch()` (the same fallback `home ===
+// undefined` already used) instead of navigating to the guess directly.
+//
+// This harness is `FileSearchField`, not the folder listing itself, so
+// `commitSearch()` opening the gate still produces ONE `navigate()` call —
+// FileSearchField's own hand-off effect (FileSearchField.tsx, just above
+// the `barSlot` line), which fires once `searching && gateOpen` and always
+// targets `parentPath`, the REAL folder already open, carrying the query
+// text unchanged. The point of the fix is what that call targets: the real
+// current folder, not a guess `resolveFolderToOpen` could not verify — the
+// server's own `resolve_query` (fused_render/index/query.py) then walks
+// `..` and falls back to that same folder for an ambiguous absolute path,
+// exactly the way the client cannot.
+describe("FINDINGS 3 & 4 (code review, 2026-09-10): an unresolvable folder guess commits in place instead of navigating to the guess", () => {
+  test("a `..`-escaping query hands off to the REAL current folder, not the literal string \"..\"", async () => {
+    const renderer = mount("/home/iamsdas/Documents/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    await focusAndType(renderer, "../*.md");
+
+    await flush(() =>
+      input(renderer).props.onKeyDown({ key: "Enter", preventDefault: () => {} }),
+    );
+
+    // One hand-off, to the real parent folder — never to ".." itself.
+    expect(navigateCalls.length).toBe(1);
+    expect(navigateCalls[0].fsPath).toBe("/home/iamsdas/Documents");
+    expect(navigateCalls[0].opts).toEqual({ isDir: true, q: "../*.md" });
+  });
+
+  test("a bare absolute guess (no `~`, no drive letter) hands off to the REAL current folder, not the unverified guess", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    await focusAndType(renderer, "/Users/*/notes.md");
+
+    const rows = completionRows(renderer);
+    expect(rows.length).toBe(1);
+    await flush(() => rows[0].props.onMouseDown({ preventDefault: () => {} }));
+
+    // One hand-off, to the real parent folder — never to the guessed "/Users".
+    expect(navigateCalls.length).toBe(1);
+    expect(navigateCalls[0].fsPath).toBe("/home/iamsdas");
+    expect(navigateCalls[0].opts).toEqual({ isDir: true, q: "/Users/*/notes.md" });
   });
 });
 
