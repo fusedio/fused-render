@@ -160,3 +160,29 @@ def test_publish_status_is_an_unguarded_read():
     resp = _client().get("/api/github/publish")
     assert resp.status_code == 200
     assert resp.json()["state"] == "idle"
+
+
+def test_publish_status_does_not_leak_the_repositorys_filesystem_path(
+        tmp_path, monkeypatch):
+    """`_publish_state["root"]` is the realpath'd, containment-checked repo
+    root — real news to `_report_publish` (it is the job row's click
+    destination), but nothing a page reading this ENDPOINT needs, and an
+    absolute filesystem path is not something to hand back over HTTP just
+    because a struct happened to carry one alongside the fields the page
+    actually wants (state/detail/error/url)."""
+    root = _repo_with_a_commit(tmp_path)
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+    monkeypatch.setattr(github_setup, "_run_publish", lambda *a, **k: None)
+
+    started = _client().post("/api/github/publish", headers={"X-Fused": "1"},
+                             json={"root": root, "name": "my-repo",
+                                   "visibility": "private"})
+    assert started.status_code == 200
+    assert "root" not in started.json()
+    assert root not in started.text
+
+    status = _client().get("/api/github/publish")
+    assert status.status_code == 200
+    assert "root" not in status.json()
+    assert root not in status.text

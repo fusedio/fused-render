@@ -908,11 +908,32 @@ def _set_publish(**fields) -> None:
 
 
 def publish_status() -> dict:
-    """The record as the endpoint answers it. `error` is `gh`'s own words —
-    a name collision and an org permission refusal are different, actionable
-    problems, and a generic message would erase the difference."""
+    """The full record, `root` included — for IN-PROCESS callers
+    (`test_github_setup.py`'s own assertions on it) that have a reason to see
+    the resolved repo root. `error` is `gh`'s own words — a name collision and
+    an org permission refusal are different, actionable problems, and a
+    generic message would erase the difference.
+
+    **Not what the HTTP endpoints answer with** — see `public_publish_record`
+    below, which is what `server/routers/github.py` actually returns; calling
+    this directly from a route would hand every page reading it the
+    publish's absolute filesystem path.
+    """
     with _publish_lock:
         return dict(_publish_state)
+
+
+def public_publish_record(record: dict) -> dict:
+    """`record`, minus `root` — what an HTTP caller may see.
+
+    `root` is real news to `_report_publish` (the realpath'd,
+    containment-checked path the published job row's click destination is
+    built from), but a page reading `GET /api/github/publish` — or the
+    record `POST` hands back on starting one — has no use for its own
+    filesystem's absolute path, and no route should be the thing that
+    volunteers it.
+    """
+    return {k: v for k, v in record.items() if k != "root"}
 
 
 def publish_running() -> bool:

@@ -167,7 +167,12 @@ async def api_github_publish(body: dict = Body(...), x_fused: str | None = Heade
     name = str(body.get("name") or "")
     visibility = str(body.get("visibility") or "")
     try:
-        return await run_in_threadpool(github_setup.publish_start, root, name, visibility)
+        record = await run_in_threadpool(github_setup.publish_start, root, name, visibility)
+        # `root` is the realpath'd repo root `publish_start` just resolved —
+        # real news to the job row it opened (its click destination), not to
+        # a page reading this response, whose own absolute filesystem path
+        # it would otherwise be.
+        return github_setup.public_publish_record(record)
     except github_setup.PublishError as e:
         # A refusal with a sentence the modal can show as-is — "this
         # repository already has a remote" is the whole value of the 409,
@@ -177,5 +182,10 @@ async def api_github_publish(body: dict = Body(...), x_fused: str | None = Heade
 
 @router.get("/api/github/publish")
 async def api_github_publish_status():
-    """The current publish record. A read — no guard, no spawn."""
-    return github_setup.publish_status()
+    """The current publish record. A read — no guard, no spawn.
+
+    `public_publish_record` drops `root` — the realpath'd repo root, an
+    absolute filesystem path with no reason to travel over HTTP to a page
+    that already knows its own folder.
+    """
+    return github_setup.public_publish_record(github_setup.publish_status())
