@@ -19,7 +19,14 @@ export interface StatusLineInput {
   folderCount: number;
   truncated: boolean;
   searching: boolean;
-  hits: number;
+  // How many rows are actually reachable for selection — the CAPPED count
+  // the body renders (Listing.tsx's `visibleHits.length`, result-cap.ts's
+  // `capHits`), never the raw match total (`hits.length`). A search can rank
+  // thousands of hits while only ~100 rows are on screen; the search box's
+  // own pinned chip already owns up to that split ("top 100 of 4.9K" —
+  // Listing.tsx's searchCount), so this line's "N of M selected" must not
+  // silently substitute the bigger, off-screen number for M.
+  visibleHits: number;
 }
 
 // en-US thousands separators — "1,000", not "1000" — for the one number here
@@ -36,7 +43,7 @@ export function statusLine({
   folderCount,
   truncated,
   searching,
-  hits,
+  visibleHits,
 }: StatusLineInput): string | null {
   // ITEM 11 (running-screen review, 2026-09-10): the match count used to be
   // reported HERE too — "24 matches" — while the search box's own pinned
@@ -51,7 +58,7 @@ export function statusLine({
   // rows during a search still has something new to say, so that case
   // survives unchanged.
   if (searching) {
-    if (selected > 0) return `${fmt(selected)} of ${fmt(hits)} selected`;
+    if (selected > 0) return `${fmt(selected)} of ${fmt(visibleHits)} selected`;
     return null;
   }
 

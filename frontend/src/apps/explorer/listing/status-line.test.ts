@@ -14,7 +14,7 @@ const base = {
   folderCount: 0,
   truncated: false,
   searching: false,
-  hits: 0,
+  visibleHits: 0,
 };
 
 describe("statusLine", () => {
@@ -68,17 +68,29 @@ describe("statusLine", () => {
   // means "no line", not an empty string one — the caller must not render
   // a footer element at all for this case.
   test("a search running or done, nothing selected: no line — the box's own pin already says this", () => {
-    expect(statusLine({ ...base, searching: true, hits: 24 })).toBeNull();
+    expect(statusLine({ ...base, searching: true, visibleHits: 24 })).toBeNull();
   });
 
   test("a single search hit, nothing selected: still no line", () => {
-    expect(statusLine({ ...base, searching: true, hits: 1 })).toBeNull();
+    expect(statusLine({ ...base, searching: true, visibleHits: 1 })).toBeNull();
   });
 
   test("a search with a selection", () => {
-    expect(statusLine({ ...base, searching: true, hits: 24, selected: 3 })).toBe(
+    expect(statusLine({ ...base, searching: true, visibleHits: 24, selected: 3 })).toBe(
       "3 of 24 selected",
     );
+  });
+
+  // The status line must never claim a selection space larger than what the
+  // body actually rendered. A capped search (result-cap.ts's capHits) can
+  // rank thousands of hits while only ~100 rows are on screen and reachable
+  // by a selection — the search box's own pinned chip already owns up to
+  // that split ("top 100 of 4.9K"), so this line's denominator has to be the
+  // CAPPED, on-screen count, not the raw match total.
+  test("a capped search's denominator is what's on screen, not the raw match total", () => {
+    expect(
+      statusLine({ ...base, searching: true, visibleHits: 100, selected: 3 }),
+    ).toBe("3 of 100 selected");
   });
 
   test("an empty folder", () => {

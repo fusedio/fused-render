@@ -1828,7 +1828,13 @@ export default function Listing({
     folderCount: selectedFolders,
     truncated: state.status === "ok" && state.truncated,
     searching: showsSearchHits,
-    hits: hits.length,
+    // The CAPPED, on-screen count (`visibleHits`, result-cap.ts's capHits),
+    // not the raw match total (`hits.length`): a selection can only ever
+    // include rows the body actually rendered, and the search box's own
+    // pinned chip already owns up to the "top 100 of 4.9K" split when the
+    // cap bites (searchCount above) — this line must not restate the bigger,
+    // unreachable number as the selection's denominator.
+    visibleHits: visibleHits.length,
   });
 
   return (
