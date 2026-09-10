@@ -292,11 +292,44 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * appended the very turn the watch had just streamed a SECOND TIME (Bugbot
    * PR #1075).
    *
-   * Never cleared: an id belongs to one turn, and "this page has shown that
-   * run" cannot stop being true. A transcript replacement re-baselines the
-   * poller anyway, which writes off everything already in the listing.
+   * WRITTEN ON ATTACHMENT, NEVER ON INTENT (batch review F1). The mark used to
+   * go down in `adoptWatch` before `resumeRun` and again at the top of
+   * `resumeAttach` before the probe — which made this loop's own stated
+   * recovery unreachable: `resumeRun` bailing on the send gate is "a lap of
+   * this loop away from trying again", but the next lap hit `shownRuns.has(id)`
+   * and skipped the id for the life of the page. A live run passed over because
+   * a send happened to be in flight, or whose first probe threw, was then never
+   * adopted by the run-dir road at all — only the coarse transcript follower
+   * recovered it, with no streaming chrome and whole-turn granularity, and
+   * `setRunParam(id)` left a stale `?run=` on the URL. So the two early writes
+   * are gone and the mark lands where the run is genuinely ours: past
+   * `resumeAttach`'s `unknown run_id` check (every road on from there either
+   * streams through `pollLoop` or repairs the turn from the probe payload) and
+   * in `pollLoop` itself.
+   *
+   * CLEARED WHEN THE VISIBLE CONVERSATION IS REPLACED (Bugbot 3974975055).
+   * "Never cleared" was wrong for the one gesture PR4 is built around: Back
+   * mid-turn leaves the run going server-side and the session list is supposed
+   * to re-attach to it — but the id was already in here from `pollLoop`, so
+   * `adoptWatch` refused it and the reader got the external "Running outside
+   * this app" line with no stop control and no token count. The set answers "is
+   * this run's turn already ON SCREEN", and a transcript rebuilt from `history`
+   * (or emptied) is precisely the event that makes the answer no. Both roads
+   * that replace it — `newChat` and `openSession` — clear it, and the schedule
+   * poller's baseline is re-armed by the same `transcriptGen` bump.
    */
   const shownRuns = new Set<string>();
+  /**
+   * AND THE SHORT-LIVED HALF: ids a `resumeAttach` is in the middle of claiming.
+   *
+   * The early `shownRuns` write was doing two jobs and only one of them was
+   * wrong. The other is real: while this frame is probing an id, nothing else
+   * may attach to the same run behind it (Bugbot PR #1075 — the schedule poller
+   * asks `hasShownRun` and would otherwise append the turn a second time). A
+   * claim is held for the length of the attach and RELEASED when it ends
+   * without having attached, so the recovery lap finds the id free again.
+   */
+  const claimingRuns = new Set<string>();
   /** Publish the renderer's gate, and only on a real change: it is read in a
    *  layout effect, so a no-op emit is a wasted frame on every poll. */
   const setAdopting = (value: boolean) => {
@@ -2026,6 +2059,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     answeredStates.clear();
     notedStates.clear();
     nullStatePolls.clear();
+    // THE OTHER ROAD THAT REPLACES THE VISIBLE CONVERSATION (Bugbot 3974975055
+    // — see `shownRuns`). The rows about to arrive come from `history`, which
+    // knows nothing of this page's run ids, so every recorded "already shown"
+    // is about a transcript that is being thrown away. Cleared here rather than
+    // relying on the `transcriptGen` bump, because the id an entering reader
+    // most needs re-adopted is the one this frame streamed a moment ago.
+    shownRuns.clear();
     // Published, not just emptied: the hint under the box belongs to the
     // conversation that is leaving.
     clearQueued();
@@ -2207,17 +2247,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
        * the transcript is the blinder fallback and only speaks for the turns no
        * run dir can account for").
        */
-      if (shownRuns.has(id)) {
+      // `claimingRuns` beside it for the OTHER half: an attach already in
+      // flight for this id (the boot's `?run=`, the schedule poller) owns it
+      // until it either attaches or lets go — see the declaration.
+      if (shownRuns.has(id) || claimingRuns.has(id)) {
         setAdopting(false);
         continue;
       }
       setRunParam(id);
-      // MARKED AT THE MOMENT OF ADOPTION, not inside the reconciliation: the
-      // watch owns this id from here on, and a `resumeRun` that bails on the
-      // send gate is a lap of this loop away from trying again — never an
-      // invitation for the schedule poller to attach to the same run behind it
-      // (Bugbot PR #1075).
-      shownRuns.add(id);
       // `quiet` rides through to the reconciliation: the watch may be adopting a
       // turn whose user line this transcript is already showing (the woken run
       // whose first turn this frame streamed) or one it has never shown (a send
@@ -2272,10 +2309,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   async function resumeAttach(runId: string, opts: ResumeOptions): Promise<void> {
     if (sending) return;
-    // Past the gate this run is ours to reconcile, whether it ends up streaming
-    // or being repaired from the probe payload — either way its turn is this
-    // transcript's, and nothing else may attach to it again (Bugbot PR #1075).
-    if (runId) shownRuns.add(runId);
+    // Past the gate this run is ours to TRY, which is not the same as ours to
+    // have shown (batch review F1). A claim keeps every other road off the id
+    // for the length of the attempt (Bugbot PR #1075) and is released in the
+    // `finally` below, so an attempt that ends without attaching — a thrown
+    // probe, a stale id — leaves the run adoptable on the watch's next lap.
+    if (runId) claimingRuns.add(runId);
     const neverShown = !!opts.neverShown;
     const quiet = !!opts.quiet;
     /**
@@ -2341,6 +2380,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
         return;
       }
+      // AND HERE THE RUN IS GENUINELY OURS (batch review F1). Past the stale-id
+      // branch every road on either streams the turn through `pollLoop` or
+      // repairs it from this payload, so the id is one this transcript shows
+      // and the schedule poller must never re-attach to it. Marked at this one
+      // point rather than in each of the branches below, so no reconciliation
+      // road can be added later that forgets to.
+      if (runId) shownRuns.add(runId);
       const poll = probe as PollResponse;
       if (poll.session_id) noteSessionId(String(poll.session_id));
       const probeMsg = stripBlocks(poll.message || "");
@@ -2455,9 +2501,34 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // The run this frame missed still handled its notes, and may have edited
         // the file while we were away (`annResolveSent` / `snapInvalidate`).
         deps.onRunEnded?.();
+        /**
+         * DID THIS REPAIR ACTUALLY PUT ROWS ON SCREEN? (Bugbot 3974939169 and
+         * 3974975062, batch review F9.)
+         *
+         * The nonce below is an UNCONDITIONAL scroll-to-bottom in the renderer,
+         * and it was bumped on one road only — the success one, whether or not
+         * that road appended anything. Both halves of that were wrong:
+         *
+         *  * the error branches append a user line and a failure in one commit
+         *    and then returned WITHOUT bumping, so a reader who had scrolled up
+         *    never saw a failed scheduled or adopted turn land at all;
+         *  * the success branch bumped even when `matches` and `unseen` were
+         *    both false and nothing was added — the `shownAlready` case, or a
+         *    probe with no `probeMsg`. Native reaches that on roads T does not
+         *    (the quiet standing watch after a 5 s `refreshHistory` has already
+         *    drawn the turn), so a reader who had scrolled up was yanked to the
+         *    bottom for no new content.
+         *
+         * So the flag, not the road: every branch that appends says so, and the
+         * nonce is bumped exactly when there is something to scroll to. T's own
+         * call is equally unconditional (T:17851) but cannot reach the no-op
+         * case, so this is parity with its behaviour rather than its spelling.
+         */
+        let appended = false;
         if (poll.error) {
           if (matches || !users.length) {
             addError(poll.error);
+            appended = true;
           } else if (unseen) {
             // The turn is not on screen and never was, so the failure needs its
             // own user line to hang under — otherwise the error reads as
@@ -2475,6 +2546,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // append and neither flag has anything to be quiet about.
             addUser(probeMsg);
             addError(poll.error);
+            appended = true;
           } else if (shownAlready && !errorShown(poll.error)) {
             // THE PROMPT IS UP AND THE FAILURE IS NOT (Bugbot PR #1075, third
             // pass). `unseen` above asks whether the TURN is news, and it is
@@ -2488,12 +2560,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // stops it: if the transcript happened to carry the failure too,
             // the row is there and there is nothing to add.
             addError(poll.error);
+            appended = true;
           }
+          // A FAILED TURN IS NEWS TOO (Bugbot 3974939169): same nonce, same
+          // reason — one commit, no `running` edge to hang a settle-scroll off.
+          if (appended) emit({ repaired: state.repaired + 1 });
           return;
         }
         if (matches) {
           stripAfterLastUser();
           addAssistantFromProbe();
+          appended = true;
         } else if ((!users.length && probeMsg) || unseen) {
           // Appended, never matched: the log is empty, or the turn is genuinely
           // `unseen` — a scheduled send that fired and finished between polls,
@@ -2504,6 +2581,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // duplicate on the other side of it (Bugbot PR #1075).
           addUser(probeMsg);
           addAssistantFromProbe();
+          appended = true;
         }
         // AND THE WINDOW IS NOW ON SCREEN, so the next send's loop does not
         // type it a second time (see `landedWindow`). This is the reload road
@@ -2518,7 +2596,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // back to a run that finished while the frame was away — saw nothing
         // appear at all. The renderer reads this nonce beside its own
         // follow-tail effect.
-        emit({ repaired: state.repaired + 1 });
+        //
+        // Gated on `appended` (see above): a repair that reconciled to "already
+        // on screen" has nothing to scroll TO, and the scroll would only be a
+        // reader losing their place.
+        if (appended) emit({ repaired: state.repaired + 1 });
         return;
       }
       if (matches) {
@@ -2538,9 +2620,27 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // was left looking at a restored transcript with no run and no
       // explanation. T warns in exactly this place (T:17862-17865); a card is
       // the native surface for it, and it supersedes the bare warn.
-      if (!disposed && logGen === gen) reportTrouble(troubleFromError(err));
+      //
+      // ON THE ROADS NOBODY ASKED FOR, IT STAYS A WARN (P4-05, batch review
+      // F2). Same predicate as the `unknown run_id` branch above, and for the
+      // same reason: `quiet` (the standing watch) and `neverShown` (the
+      // schedule poller) are ids that came from `live_run`, not from a reader.
+      // A dropped socket, a server restart, a sleep/wake — any of which make
+      // one `poll` reject — painted a trouble card over a healthy transcript
+      // for somebody who touched nothing, which is the exact symptom P4-05
+      // exists to remove. T only warns here (T:17862-17865), so a warn is also
+      // the parity answer for those two roads.
+      if (!disposed && logGen === gen) {
+        if (!quiet && !neverShown) reportTrouble(troubleFromError(err));
+        else console.warn("re-attach failed:", err instanceof Error ? err.message : err);
+      }
     } finally {
       if (sendSeq === seat) sending = false;
+      // THE CLAIM IS LET GO ON EVERY ROAD OUT (batch review F1). By here the id
+      // is either in `shownRuns` (attached and reconciled) or genuinely free
+      // again — a stale id, a thrown probe, a generation bump — and the watch's
+      // next lap is entitled to try it.
+      if (runId) claimingRuns.delete(runId);
     }
   }
 
@@ -2628,6 +2728,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     answeredStates.clear();
     notedStates.clear();
     nullStatePolls.clear();
+    // THE TRANSCRIPT IS GONE, SO NOTHING IS ON SCREEN ANY MORE (Bugbot
+    // 3974975055 — see `shownRuns`). Back mid-turn is the gesture this whole
+    // feature is built around: the run keeps going server-side and the session
+    // list is meant to re-attach to it, which `adoptWatch` refused while the id
+    // was still recorded here from `pollLoop`.
+    shownRuns.clear();
     clearQueued();
     // Neither of these is a true default worth stamping — a session id is an
     // identifier and `run` is in-flight bookkeeping — so absent stays the
@@ -2673,7 +2779,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     },
     isBusy: () => !!activeRun || sending,
     hasActiveRun: () => !!activeRun,
-    hasShownRun: (runId: string) => shownRuns.has(runId),
+    /** Shown OR being claimed: the schedule poller's question is "may I attach
+     *  to this?", and an attach already in flight is as good an answer as a
+     *  turn already on screen (see `claimingRuns`). */
+    hasShownRun: (runId: string) => shownRuns.has(runId) || claimingRuns.has(runId),
     newChat,
     settleAttachments,
     dispose() {

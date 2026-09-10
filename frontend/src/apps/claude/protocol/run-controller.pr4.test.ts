@@ -783,11 +783,17 @@ describe("a run that finished while the frame was away", () => {
   });
 
   test("A NONCE, not a flag: two repairs are two scrolls", async () => {
+    // TWO DIFFERENT TURNS, because the nonce tracks appended ROWS rather than
+    // trips through the branch (Bugbot 3974975062): the same message twice is
+    // already on screen the second time, and a scroll for no new content is
+    // just a reader losing their place.
     const { controller } = makeController({
-      poll: () => poll({ done: true, message: "again", text: "and again" }),
+      poll: (_f, n) =>
+        poll({ done: true, message: "again " + n, text: "and again " + n }),
     });
     await controller.resumeRun("r-1", { neverShown: true });
     await controller.resumeRun("r-2", { neverShown: true });
+    expect(users(controller).length).toBe(2);
     expect(controller.getState().repaired).toBe(2);
   });
 
@@ -882,4 +888,226 @@ test("isBusy() covers a send INSIDE the gate, which no ChatState field does", as
   expect(s.queued.length).toBe(0);
   // ...and the controller still knows.
   expect(controller.isBusy()).toBe(true);
+});
+
+// ---- the mark goes down on ATTACHMENT, never on intent (batch review F1) ---
+
+describe("shownRuns records what was ATTACHED, not what was attempted", () => {
+  test("A TRANSIENTLY FAILED PROBE IS TRIED AGAIN ON THE NEXT LAP", async () => {
+    // The loop's own recovery was unreachable: the mark went down in
+    // `adoptWatch` before `resumeRun` and again at the top of `resumeAttach`
+    // before the probe, so the next lap hit `shownRuns.has(id)` and skipped the
+    // id for the life of the page — a live run whose first probe threw was
+    // never adopted by the run-dir road at all, and only the coarse transcript
+    // follower recovered it (no streaming chrome, whole-turn granularity).
+    const { controller, agent } = makeController({
+      live_run: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n === 0) throw new Error("socket dropped");
+        return poll({ done: true, message: "from the other tab", text: "its reply" });
+      },
+      history: () => ({ turns: [] }),
+    });
+    await controller.adoptLiveRun("s1", { laps: 2, quiet: true });
+    // Two probes, because the first one's failure did not write the id off.
+    expect(agent.of("poll").length).toBe(2);
+    expect(users(controller).map((t) => t.text)).toEqual(["from the other tab"]);
+    expect(assistants(controller).map((t) => t.text)).toEqual(["its reply"]);
+  });
+
+  test("a STALE id is not marked either: nothing about it is on screen", async () => {
+    // The `unknown run_id` branch is passed BEFORE the mark, and it must be:
+    // nothing was reconciled there, so recording the id would be a claim this
+    // transcript is showing a turn it never saw — and the schedule poller reads
+    // that claim.
+    const { controller } = makeController({
+      poll: () => ({ error: "unknown run_id", done: true }),
+    });
+    await controller.resumeRun("r-dead", { quiet: true });
+    expect(controller.hasShownRun("r-dead")).toBe(false);
+    expect(users(controller).length).toBe(0);
+  });
+
+  test("...while a run genuinely ATTACHED is still refused a second time", async () => {
+    // The half that must not regress: past the stale-id check the run is ours,
+    // so the schedule poller and a later lap both have to be turned away
+    // (Bugbot PR #1075).
+    const { controller, agent } = makeController({
+      live_run: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, message: "once", text: "only once" }),
+      history: () => ({ turns: [] }),
+    });
+    await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(users(controller).map((t) => t.text)).toEqual(["once"]);
+    expect(controller.hasShownRun("r1")).toBe(true);
+    const polls = agent.of("poll").length;
+    await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(agent.of("poll").length).toBe(polls);
+    expect(users(controller).map((t) => t.text)).toEqual(["once"]);
+  });
+
+  test("a claim in flight also answers `hasShownRun`, so nothing attaches behind it", async () => {
+    // What the early write was ALSO doing, and the half that was right: while
+    // this frame is probing an id, the schedule poller must not attach to the
+    // same run behind it (Bugbot PR #1075).
+    let release: (() => void) | null = null;
+    const { controller } = makeController({
+      poll: () =>
+        new Promise((res) => {
+          release = () => res(poll({ done: true, message: "m", text: "t" }));
+        }),
+    });
+    const attaching = controller.resumeRun("r-claimed", { neverShown: true });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(controller.hasShownRun("r-claimed")).toBe(true);
+    release!();
+    await attaching;
+    // And it is a SHOWN run once it lands, not merely a claim.
+    expect(controller.hasShownRun("r-claimed")).toBe(true);
+  });
+
+  test("a probe that THREW lets the claim go", async () => {
+    const { controller } = makeController({
+      poll: () => {
+        throw new Error("socket dropped");
+      },
+    });
+    await controller.resumeRun("r-thrown", { quiet: true });
+    expect(controller.hasShownRun("r-thrown")).toBe(false);
+  });
+});
+
+// ---- Back mid-turn re-attaches (Bugbot 3974975055) ------------------------
+
+describe("a replaced transcript puts every run back in play", () => {
+  test("BACK MID-TURN RE-ATTACHES: `newChat` clears the listing", async () => {
+    // Back is live mid-turn — the run keeps going server-side and the session
+    // list is meant to re-attach to it. With the id still recorded from
+    // `pollLoop`, `adoptWatch` refused it and the reader got only the external
+    // "Running outside this app" line: no stop control, no token count.
+    const { controller } = makeController({
+      start: () => ({ run_id: "r-mine" }),
+      live_host: () => ({ run_id: "" }),
+      poll: () => poll({ done: true, session_id: "s1", message: "go", text: "streamed" }),
+      live_run: () => ({ run_id: "r-mine" }),
+      history: () => ({ turns: [] }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.hasShownRun("r-mine")).toBe(true);
+
+    controller.newChat();
+    expect(controller.hasShownRun("r-mine")).toBe(false);
+    await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    // The turn is back, and by the run-dir road: a real re-attach.
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    expect(assistants(controller).map((t) => t.text)).toEqual(["streamed"]);
+  });
+
+  test("`openSession` clears it too — the rows arriving know no run ids", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r-mine" }),
+      live_host: () => ({ run_id: "" }),
+      poll: () => poll({ done: true, session_id: "s1", message: "go", text: "streamed" }),
+      live_run: () => ({ run_id: "" }),
+      history: () => ({
+        turns: [],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+      }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.hasShownRun("r-mine")).toBe(true);
+    await controller.openSession("s1");
+    expect(controller.hasShownRun("r-mine")).toBe(false);
+  });
+});
+
+// ---- the quiet roads stay quiet when the PROBE ITSELF fails (F2) ----------
+
+describe("a thrown probe is a card only for an id the caller supplied (P4-05)", () => {
+  const thrower = { poll: () => Promise.reject(new Error("server went away")) };
+
+  test("the STANDING WATCH's quiet adoption paints nothing", async () => {
+    const { controller } = makeController(thrower);
+    await controller.resumeRun("r1", { quiet: true });
+    // A dropped socket, a server restart, a sleep/wake — any of which make one
+    // `poll` reject — used to paint a trouble card over a healthy transcript
+    // for a reader who touched nothing. T only warns here (T:17862-17865).
+    expect(controller.getState().trouble).toBe(null);
+  });
+
+  test("the SCHEDULE POLLER's `neverShown` adoption paints nothing", async () => {
+    const { controller } = makeController(thrower);
+    await controller.resumeRun("r1", { neverShown: true });
+    expect(controller.getState().trouble).toBe(null);
+  });
+
+  test("...but BOOT's `?run=` still gets its answer", async () => {
+    // The reader put that id on the URL and is owed an explanation — the same
+    // predicate the `unknown run_id` branch uses, on the adjacent road.
+    const { controller } = makeController(thrower);
+    await controller.resumeRun("r1");
+    expect(controller.getState().trouble?.message).toContain("server went away");
+  });
+});
+
+// ---- the scroll nonce tracks ROWS, not roads (Bugbot 3974939169 / 3974975062)
+
+describe("`repaired` is bumped when a repair actually appended something", () => {
+  test("A NO-OP REPAIR DOES NOT FORCE-SCROLL (3974975062)", async () => {
+    // The 5 s `refreshHistory` has already drawn the turn; the watch then
+    // attaches the same id. Nothing is appended — and the renderer treats the
+    // nonce as an unconditional scroll-to-bottom, so a reader who had scrolled
+    // up was yanked to the bottom for no new content.
+    const { controller } = makeController({
+      history: () => ({
+        turns: [{ role: "user", text: "already here", uuid: "u1" }],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+      }),
+      poll: () => poll({ done: true, message: "already here", text: "reply" }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await controller.openSession("s1");
+    const before = controller.getState().repaired;
+    await controller.resumeRun("r1", { neverShown: true });
+    expect(users(controller).map((t) => t.text)).toEqual(["already here"]);
+    expect(controller.getState().repaired).toBe(before);
+  });
+
+  test("A FAILED REPAIR DOES SCROLL (3974939169)", async () => {
+    // The done-error branch appends a user line and an error in one commit and
+    // then returned before bumping the nonce, so a reader who had scrolled up
+    // never saw a failed scheduled or adopted turn land at all.
+    const { controller } = makeController({
+      history: () => ({
+        turns: [{ role: "user", text: "already here", uuid: "u1" }],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+      }),
+      poll: () => poll({ done: true, error: "the CLI died", message: "already here" }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await controller.openSession("s1");
+    const before = controller.getState().repaired;
+    await controller.resumeRun("r1", { neverShown: true });
+    expect(controller.getState().repaired).toBe(before + 1);
+  });
+
+  test("a failed repair that appended NOTHING does not scroll either", async () => {
+    // The transcript already carries the failure row, so `errorShown` refuses
+    // it and there is nothing new to scroll to.
+    const { controller } = makeController({
+      history: () => ({
+        turns: [
+          { role: "user", text: "already here", uuid: "u1" },
+          { role: "error", text: "the CLI died", uuid: "u2" },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+      }),
+      poll: () => poll({ done: true, error: "the CLI died", message: "already here" }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await controller.openSession("s1");
+    const before = controller.getState().repaired;
+    await controller.resumeRun("r1", { neverShown: true });
+    expect(controller.getState().repaired).toBe(before);
+  });
 });
