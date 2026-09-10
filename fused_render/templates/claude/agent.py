@@ -3559,6 +3559,11 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                     # showing. Nobody requested it and its answer is our JSON,
                     # so it is not part of the conversation. ONLY this exact
                     # name: every other MCP tool is a real call.
+                    # Once per CALL: a finalized assistant row can be written
+                    # twice (the `by_tool_id` guard below exists for that), and
+                    # the notice must not be (Bugbot #1099).
+                    if tool_id and tool_id in stripped:
+                        continue
                     if tool_id:
                         stripped.add(tool_id)
                     # THE NATIVE PAGE WANTS THE READ ON RECORD, IN PLACE

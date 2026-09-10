@@ -791,7 +791,7 @@
 /* The label column, so a two-line description wraps inside the row instead of
    shoving the tick around. `.qbody` (the Other row) is the same box by another
    name; both are the row's one growing child. */
-.chat-root .perm .qopt > span:not(.qtick),
+.chat-root .perm .qopt > span:not(.qtick):not(.qnum),
 .chat-root .perm .qopt .qbody {
   flex: 1 1 auto;
   min-width: 0;
@@ -835,6 +835,12 @@
 }
 .chat-root .perm .qopt:hover:not(:disabled) .qnum {
   color: var(--c-fg);
+}
+/* THE KEYBOARD'S CUE lands on the row, since the control itself is unseen
+   (Bugbot #1099): the same ring the tick used to wear, drawn around the row. */
+.chat-root .perm .qopt:has(.qtick:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--c-accent) 70%, transparent);
+  outline-offset: -2px;
 }
 .chat-root .perm .qopt:has(.qtick[data-checked]) .qnum,
 .chat-root .perm .qopt.qother.typing .qnum {

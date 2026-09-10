@@ -922,3 +922,10 @@ def test_poll_and_history_pass_app_reads_from_the_native_flag(agent, tmp_path):
     assert not any(s["kind"] == "notice" for s in legacy["segments"])
     native = agent._poll("run", app_reads=True)
     assert any(s["kind"] == "notice" for s in native["segments"])
+
+
+def test_a_twice_written_app_state_call_is_one_notice(agent):
+    rows = _app_state_rows(agent)
+    rows.insert(1, rows[0])  # the finalized assistant row, written again
+    segs = agent._segments_from_rows(rows, app_reads=True)
+    assert [s["kind"] for s in segs].count("notice") == 1
