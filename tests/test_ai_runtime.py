@@ -4806,6 +4806,31 @@ def test_a_worker_can_report_to_its_own_reserved_row(client, fake_runner):
         assert refused.status_code == 400, bogus
 
 
+def test_a_worker_rebuilding_a_forgotten_row_restores_its_page_from_the_body(client, fake_runner):
+    """A transcription worker (`faster_whisper`/`mlx_whisper`'s `worker.py`)
+    spreads its row-identity dict — including `page` — into every tick it
+    posts here, but it never carries `X-Fused-Page` (that header only
+    travels with a PAGE's own runtime calls; a worker subprocess has no page
+    context to attach one from). If the row this id names was forgotten
+    (`jobs._sweep` evicted it, or the app restarted) and this tick is what
+    recreates it, `page` has nowhere else to come from — a worker-token
+    request is already fully trusted to write anything else in the body
+    (title, model, kind, ...), so it may supply `page` too."""
+    supervisor.load("org/reports", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/reports")
+    row_id = supervisor.job_id_for("org/reports")
+    jobs.dismiss(row_id)  # forget the row entirely, as an eviction would
+
+    response = client.post(
+        "/api/jobs",
+        json={"id": row_id, "title": "org/reports", "state": "running",
+              "page": "/tmp/my-transcript-app/index.html"},
+        headers={"X-Fused": "1", "X-Fused-Worker": worker.token},
+    )
+    assert response.status_code == 200
+    assert response.json()["page"] == "/tmp/my-transcript-app/index.html"
+
+
 def test_a_stopped_workers_token_stops_working(client, fake_runner):
     # The token is only good while the worker it belongs to is alive.
     supervisor.load("org/expires", registry.TEXT_GENERATION)

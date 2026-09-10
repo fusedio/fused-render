@@ -58,10 +58,11 @@ def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default
                     x_fused_worker: str | None = Header(default=None)):
     """One progress report. Creates the record on the first tick, updates it after.
 
-    The page is taken from the X-Fused-Page header rather than the body: it is
-    the attribution header every runtime call already carries (calls.py), so a
-    report is attributed by the same rule as the call log and a reporter cannot
-    accidentally claim a different page by typing one into its body.
+    The page is taken from the X-Fused-Page header rather than the body FOR A
+    PAGE'S OWN REPORT: it is the attribution header every runtime call already
+    carries (calls.py), so a report is attributed by the same rule as the call
+    log and a page cannot accidentally (or deliberately) claim a different
+    destination by typing one into its body.
 
     **A model worker reports here too** (SPEC §40) — it is the process doing the
     downloading, so it is the only one that knows the byte counts. Its rows live
@@ -70,6 +71,18 @@ def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default
     server generated and passed into that worker's environment, and only an
     exact match against a LIVE worker's token unlocks the prefix. Not a secret
     shared with anything else, and gone the moment the worker stops.
+
+    A worker never carries `X-Fused-Page` — it is a subprocess with no page
+    context to attach one from, unlike the runtime calls the header exists
+    for — so for a WORKER report only, a body-carried `page` is honored as a
+    fallback when no header was sent. This is not the same trust question as
+    the page-vs-body split above: a worker's token already lets it write
+    anything else in the body (title, model, kind, ...), so a `page` it
+    supplies is no more forgeable than those. This is what lets a
+    transcription's row survive being evicted and rebuilt mid-decode: its
+    worker restates the row's full identity, `page` included, on every tick
+    (`ai/supervisor.py`'s `transcribe_row_fields`), and the header-only rule
+    alone would have no way to answer that restated `page` at all.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -83,6 +96,8 @@ def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default
     # X-Fused-* path header; unquote is the identity for a raw ASCII path, so a
     # curl or a test that sends one plain is unaffected.
     page = unquote(x_fused_page) if x_fused_page else ""
+    if not page and is_worker and isinstance(body.get("page"), str):
+        page = body["page"]
     try:
         return jobs_mod.upsert(body, page=page, server=is_worker)
     except jobs_mod.JobError as e:
