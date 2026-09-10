@@ -136,6 +136,33 @@ export function schedIsRepeat(entry: SchedEntry | null | undefined): boolean {
 }
 
 /**
+ * EVERY FIELD THE BANNER DRAWS, and no more (T:17088-17165). T repaints the card
+ * from scratch on every 15 s tick, so an entry edited on the Tasks page shows
+ * its new wording within one interval; a dedupe on `id`/`due`/`state` alone
+ * froze three separate cells against exactly that edit — the `.sb-name`
+ * (`schedMsgLine` reads `message`), and the reason line, the stop button's label
+ * and the refusal wording (all three read repeat-ness, i.e. `template_id` /
+ * `repeats` / the presence of `rule`). `template_id` is compared by VALUE
+ * because `schedStopTarget` posts it: a re-materialised template that keeps its
+ * repeat-ness but changes its id must still reach the cancel endpoint.
+ *
+ * `rule` is compared by PRESENCE only — it is an opaque `unknown` off the wire
+ * and nothing here reads inside it, so a deep compare would be a re-render for
+ * a change no cell can show.
+ */
+export function schedSameRow(a: SchedEntry, b: SchedEntry): boolean {
+  return (
+    a.id === b.id &&
+    a.due === b.due &&
+    a.state === b.state &&
+    a.message === b.message &&
+    a.template_id === b.template_id &&
+    a.repeats === b.repeats &&
+    !!a.rule === !!b.rule
+  );
+}
+
+/**
  * What id, posted to `/api/schedule/cancel`, actually reopens this box
  * (T:17068-17071). For a repeat that is the TEMPLATE — `_materialize` arms the
  * next occurrence the moment this one is skipped, so cancelling the occurrence

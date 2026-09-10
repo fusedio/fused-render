@@ -24,7 +24,7 @@ export type { PillOption, PillSelectProps } from "./PillSelect";
 export { useDismissOnWindow } from "./useDismissOnWindow";
 export type { DismissOnWindowOptions } from "./useDismissOnWindow";
 export { SchedButton } from "./SchedButton";
-export { SchedConfirm } from "./SchedConfirm";
+export { SchedConfirm, SchedConfirmBody } from "./SchedConfirm";
 export {
   draftKey,
   stashDraft,

@@ -15,7 +15,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 // past `installDomShim()` because `@platform/lib/api` reads its environment at
 // module scope.
 import type { ScheduleApi, ScheduleState } from "./useSchedule";
-import type { SchedEntry } from "./scheduled";
+import type { SchedEntry, SchedTask } from "./scheduled";
 import type { ChatController } from "../protocol/controller-api";
 
 const { useSchedule } = await import("./useSchedule");
@@ -78,10 +78,25 @@ interface Harness {
   cancels: string[];
   /** The next cancel's answer, installed by the test. */
   nextCancel(d: { promise: Promise<unknown> }): void;
+  /** How many full `/api/tasks` listings this mount has paid for. */
+  tasksReads(): number;
+  /** What `/api/tasks` answers next. */
+  serveTasks(tasks: SchedTask[]): void;
+  /** Wedge `/api/tasks` open, so the single-flight guard is observable. */
+  holdTasks(): void;
+  /** Let a wedged `/api/tasks` answer. */
+  releaseTasks(): Promise<void>;
 }
 
-async function mount(initial: Entry[], session = "s1"): Promise<Harness> {
+async function mount(
+  initial: Entry[],
+  session = "s1",
+  tasks: SchedTask[] = [],
+): Promise<Harness> {
   let served = initial;
+  let servedTasks: SchedTask[] = tasks;
+  let tasksReads = 0;
+  let taskGate: { promise: Promise<void>; open(): void } | null = null;
   const cancels: string[] = [];
   let pendingCancel: { promise: Promise<unknown> } | null = null;
   let held: Promise<never> | null = null;
@@ -90,7 +105,11 @@ async function mount(initial: Entry[], session = "s1"): Promise<Harness> {
       if (held) await held;
       return { entries: served };
     },
-    getTasks: async () => ({ tasks: [] }),
+    getTasks: async () => {
+      tasksReads += 1;
+      if (taskGate) await taskGate.promise;
+      return { tasks: servedTasks };
+    },
     cancelScheduledMessage: async (id) => {
       cancels.push(id);
       if (!pendingCancel) return undefined;
@@ -152,6 +171,24 @@ async function mount(initial: Entry[], session = "s1"): Promise<Harness> {
     cancels,
     nextCancel(d) {
       pendingCancel = d;
+    },
+    tasksReads: () => tasksReads,
+    serveTasks(tasks: SchedTask[]) {
+      servedTasks = tasks;
+    },
+    holdTasks() {
+      let open!: () => void;
+      const promise = new Promise<void>((res) => {
+        open = res;
+      });
+      taskGate = { promise, open };
+    },
+    async releaseTasks() {
+      const gate = taskGate;
+      taskGate = null;
+      await act(async () => {
+        gate?.open();
+      });
     },
   };
 }
@@ -288,4 +325,101 @@ test("a cancel that outlives its transcript neither unblocks nor refuses", async
   });
   expect(h.state().refused).toBe(false);
   expect(h.state().stopping).toBe(false);
+});
+
+// ── the banner repaints every field the poll can change (G-5) ────────────────
+
+test("a message edited on the Tasks page reaches the banner on the next tick", async () => {
+  const h = await mount([
+    pending("a", "2026-09-09T14:00:00+00:00", { message: "old wording" }),
+  ]);
+  expect(h.state().blockers[0].message).toBe("old wording");
+
+  // Same id, same due, same state — only the words changed. The old dedupe
+  // compared exactly the three fields that did NOT change, so this froze.
+  h.serve([pending("a", "2026-09-09T14:00:00+00:00", { message: "new wording" })]);
+  await h.poll();
+  expect(h.state().blockers[0].message).toBe("new wording");
+});
+
+test("an entry that becomes a repeat re-words the reason line on the next tick", async () => {
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")]);
+  expect(h.state().reason).toBe("Blocked — a scheduled message runs in this chat.");
+
+  h.serve([pending("a", "2026-09-09T14:00:00+00:00", { template_id: "t9" })]);
+  await h.poll();
+  expect(h.state().reason).toBe("Blocked — a repeating message runs in this chat.");
+});
+
+test("an unchanged poll still hands back the very same array", async () => {
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00", { message: "m" })]);
+  const first = h.state().blockers;
+  // A FRESH ARRAY OFF THE WIRE, field for field identical: the whole point of
+  // the dedupe is that this is not a re-render of the composer's column.
+  h.serve([pending("a", "2026-09-09T14:00:00+00:00", { message: "m" })]);
+  await h.poll();
+  expect(h.state().blockers).toBe(first);
+});
+
+// ── the tasks row is read for the BLOCK, once (G-6) ──────────────────────────
+
+test("the landing page pays for no tasks listing at all", async () => {
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")]);
+  expect(h.tasksReads()).toBe(1);
+
+  // Back. `blocked` goes false on this paint with the blockers still in hand —
+  // T reads the listing only `if (blocked)`, so this gesture is free.
+  await h.setSession("");
+  expect(h.state().blocked).toBe(false);
+  expect(h.tasksReads()).toBe(1);
+  await h.poll();
+  expect(h.tasksReads()).toBe(1);
+});
+
+test("one listing per blocking message, however often the poll ticks", async () => {
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")]);
+  expect(h.tasksReads()).toBe(1);
+  await h.poll();
+  await h.poll();
+  expect(h.tasksReads()).toBe(1);
+
+  // A DIFFERENT message at the front is a different row, so it is read.
+  h.serve([pending("b", "2026-09-09T15:00:00+00:00")]);
+  await h.poll();
+  expect(h.tasksReads()).toBe(2);
+});
+
+test("two rapid heads issue one listing, and the head that lost is filled after", async () => {
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")]);
+  // Wedge the NEXT read open, then move the head twice underneath it.
+  h.holdTasks();
+  h.serve([pending("b", "2026-09-09T15:00:00+00:00")]);
+  await h.poll();
+  h.serve([pending("c", "2026-09-09T16:00:00+00:00")]);
+  await h.poll();
+  // "a"'s read landed before the gate went up; "b" and "c" then shared ONE
+  // wedged read rather than issuing two overlapping listings.
+  expect(h.tasksReads()).toBe(2);
+
+  h.serveTasks([{ key: "k", task_id: "TASK-9", messages: [{ entry_id: "c" }] }]);
+  await h.releaseTasks();
+  // The wedged answer belonged to "b", which is no longer the head, so it is
+  // never published against "c" — the guard re-arms instead and reads again for
+  // the id that actually is blocking.
+  expect(h.tasksReads()).toBe(3);
+  expect(h.state().rec?.task_id).toBe("TASK-9");
+});
+
+test("a row belongs to the entry it was read for", async () => {
+  const h = await mount([pending("a", "2026-09-09T14:00:00+00:00")], "s1", [
+    { key: "k", task_id: "TASK-1", messages: [{ entry_id: "a" }] },
+  ]);
+  expect(h.state().rec?.task_id).toBe("TASK-1");
+
+  // A new message at the front: the old number must be gone on THAT PAINT, not
+  // when the replacement listing lands (T:16997-16999).
+  h.holdTasks();
+  h.serve([pending("z", "2026-09-09T18:00:00+00:00")]);
+  await h.poll();
+  expect(h.state().rec).toBe(null);
 });

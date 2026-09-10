@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Popover, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import { SchedConfirm } from "./SchedConfirm";
 import { schedulerUrl, stashDraft } from "./sched-draft";
+import { useDismissOnWindow } from "./useDismissOnWindow";
 
 export interface SchedButtonProps {
   file: string | null;
@@ -119,6 +120,19 @@ export function SchedButton({
     setOpen(false);
     onCancel?.();
   }, [onCancel]);
+
+  /**
+   * THE OTHER HALF OF THE DISMISSAL CONTRACT (T:12146, 12149), and it matters
+   * more here than on any pill: this popover's Continue NAVIGATES AWAY FROM THE
+   * CONVERSATION. An orphaned confirm floating over a pane the reader has since
+   * clicked into is one keypress from leaving the chat — and P4-15 just made
+   * that keypress Enter.
+   *
+   * Closed WITHOUT `onCancel`: a blur is not a reader answering the question,
+   * so there is no focus to hand back to a draft nobody left.
+   */
+  const dismiss = useCallback(() => setOpen(false), []);
+  useDismissOnWindow(open, dismiss);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

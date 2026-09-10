@@ -33,6 +33,10 @@ function fakeScroller() {
     scrollTop: 0,
     scrollHeight: 1000,
     clientHeight: 300,
+    // PR3's receipt-visibility pass samples the port's box on every commit
+    // (`Transcript`'s permissions effect), so a stub scrollport has to answer
+    // geometry as well as the three scroll numbers.
+    getBoundingClientRect: () => ({ top: 0, bottom: 300, left: 0, right: 800, width: 800, height: 300 }),
     addEventListener(type: string, fn: (e: unknown) => void) {
       (listeners[type] ||= []).push(fn);
     },

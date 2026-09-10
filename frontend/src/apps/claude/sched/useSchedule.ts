@@ -17,6 +17,7 @@ import {
   schedBlockReason,
   schedFindTask,
   schedIsRepeat,
+  schedSameRow,
   schedStopTarget,
   SCHEDULE_URL,
   SCHEDULE_VIEW_KEY,
@@ -118,7 +119,17 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   const timers = useRef(opts.timers);
 
   const [blockers, setBlockers] = useState<SchedEntry[]>([]);
-  const [rec, setRec] = useState<SchedTask | null>(null);
+  /**
+   * The `/api/tasks` answer AND the entry id it was read for, in one state cell
+   * — T's `schedTaskRow` + `schedTaskRowFor` pair (T:16997-16999). Held together
+   * because `schedTaskRec` reads them together: a cache belonging to the message
+   * that WAS blocking must not label the one that is, so the row is published
+   * only while its id is still the id at the front of the queue.
+   */
+  const [recRow, setRecRow] = useState<{ id: string; task: SchedTask | null }>({
+    id: "",
+    task: null,
+  });
   /** Keyed by ID, not a class on the button, for the reason the refusal is: the
    *  15 s poll re-renders this card, and an armed button that quietly disarmed
    *  itself a few seconds after the press would be worse than no confirm at all
@@ -153,9 +164,11 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
    * whole column four times a minute for no change at all — and, for a caller
    * whose controller identity is not stable, a render loop.
    *
-   * Compared on WHAT THE BANNER DRAWS — the id order AND each entry's `due`
-   * and `state` — rather than on identity alone. The id order is not enough: a
-   * re-issued `due` would never land at all.
+   * Compared on WHAT THE BANNER DRAWS — the id order AND every field any cell
+   * of the card reads (`schedSameRow`) — rather than on identity alone. The id
+   * order is not enough: a re-issued `due` would never land at all, and neither
+   * would a `message` edited on the Tasks page or an entry that gains or loses
+   * its repeat-ness.
    *
    * AND THE CLOCK IS PUBLISHED REGARDLESS, because the entry is only half of
    * what the row draws: `schedWhenText` crosses from "14:00 today" to "any moment
@@ -169,11 +182,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     if (rows.length) setTick(Date.now());
     setBlockers((prev) => {
       const same =
-        prev.length === rows.length &&
-        prev.every(
-          (e, i) =>
-            e.id === rows[i].id && e.due === rows[i].due && e.state === rows[i].state,
-        );
+        prev.length === rows.length && prev.every((e, i) => schedSameRow(e, rows[i]));
       return same ? prev : rows;
     });
   }, []);
@@ -243,7 +252,7 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     setArmedId("");
     setRefusedId("");
     setStopping(false);
-    setRec(null);
+    setRecRow({ id: "", task: null });
     watcher.resetForNewTranscript();
   }, [watcher]);
 
@@ -261,6 +270,11 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
   // `schedTaskRowFor` cache exists to prevent.
   const nextRef = useRef<SchedEntry | null>(next);
   nextRef.current = next;
+  /** T's `schedTaskRowBusy` (T:17006). ONE listing in flight at a time — and a
+   *  read this refuses is not a read lost: the effect re-arms on the next poll's
+   *  `tick`, exactly as T's re-render does, so the id that lost the race is
+   *  filled a beat later instead of racing the winner to `setRecRow`. */
+  const rowBusy = useRef(false);
   useEffect(() => {
     // A HALF-PRESSED STOP AND A REFUSAL BOTH BELONG TO THE MESSAGE THEY WERE
     // MADE AGAINST (T:17091-17097 on hide, T:17146 when a different entry
@@ -270,25 +284,38 @@ export function useSchedule(opts: UseScheduleOptions): ScheduleState {
     // one direction this control must never be wrong in.
     setArmedId("");
     setRefusedId("");
-    if (!nextId) {
-      setRec(null);
-      return;
-    }
-    let alive = true;
+  }, [nextId]);
+  useEffect(() => {
+    // NEVER BEFORE THE BLOCK (T:17258). What shuts the composer is the
+    // schedule; the listing only decorates the row, so it is read AFTER the
+    // card is on screen and not at all when there is no card — which is what
+    // leaving a blocked chat by Back is: `blocked` goes false on that paint
+    // while the blockers are still in hand, and T spends nothing there.
+    if (!blocked || !nextId) return;
+    // ONE READ PER BLOCKING MESSAGE (T:17006). The 15 s poll re-runs this
+    // effect through `tick`; the id already fetched for is not fetched again.
+    if (rowBusy.current || recRow.id === nextId) return;
+    const id = nextId;
+    rowBusy.current = true;
     void (async () => {
       try {
         const data = await hooks.current.api.getTasks();
-        if (!alive) return;
-        setRec(schedFindTask(data.tasks, nextRef.current, live.current.sessionId));
+        // The entry may have been stopped while this was in flight. T's
+        // `schedTaskRec` throws that answer away by comparing ids at READ time;
+        // storing the id beside the row does the same job here.
+        setRecRow({
+          id,
+          task: schedFindTask(data.tasks, nextRef.current, live.current.sessionId),
+        });
       } catch {
-        // No record of the attempt, so the next blocking entry tries again.
-        if (alive) setRec(null);
+        // No id recorded, so the next poll tries again (T:17002-17004).
+      } finally {
+        rowBusy.current = false;
       }
     })();
-    return () => {
-      alive = false;
-    };
-  }, [nextId]);
+  }, [blocked, nextId, tick, recRow.id]);
+  /** T:16997-16999 — the row is null the moment it stops being THIS entry's. */
+  const rec = recRow.id && recRow.id === nextId ? recRow.task : null;
 
   // ── the layout-shift correction (T:17198-17213) ───────────────────────────
   //
