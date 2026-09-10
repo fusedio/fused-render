@@ -84,3 +84,34 @@ export function nextTab(
   const step = dir === 1 ? 1 : shown.length - 1;
   return shown[(at + step) % shown.length];
 }
+
+/**
+ * WHICH LIST IS SHOWING IS THE BLOCK'S STATE, not the component's (T:18260-18265
+ * — "leaving for a chat and coming back keeps the tab you were on").
+ *
+ * A module-level `let`, which is what T's `listTab` is: `Lists` unmounts the
+ * moment the reader enters a chat, so component state cannot hold this and Back
+ * always returned to "Recent chats". Hoisting it into `ClaudeChat` would not do
+ * either — the mounted chat is remounted by a mode switch, and T's own variable
+ * outlives that too. It lives as long as the page, which is exactly T's scope.
+ *
+ * `computeLists` already falls the selection back to the first filled tab when
+ * the remembered one has since emptied, so a stale name here is never a blank
+ * panel.
+ */
+let rememberedListTab: ListName = "recent";
+
+export function rememberedTab(): ListName {
+  return rememberedListTab;
+}
+
+export function rememberTab(name: ListName): void {
+  rememberedListTab = name;
+}
+
+/** Tests only: put the page's memory back to its boot value. Exported rather
+ *  than reached through the module object so a suite cannot forget which
+ *  variable it is resetting. */
+export function resetRememberedTab(): void {
+  rememberedListTab = "recent";
+}

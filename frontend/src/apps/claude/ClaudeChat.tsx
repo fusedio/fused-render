@@ -2778,6 +2778,7 @@ function ChatBody(props: ChatBodyProps) {
             placeholder={homePlaceholderFor(pane.noun)}
             recent={recent}
             onOpenSession={onOpenSession}
+            listsDisabled={ann.locked}
           />
         )}
         {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat

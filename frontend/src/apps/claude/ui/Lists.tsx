@@ -25,6 +25,9 @@ import {
   computeLists,
   type ListCounts,
   type ListName,
+  nextTab,
+  rememberTab,
+  rememberedTab,
 } from "./lists-visibility";
 import { RecentRow } from "./RecentRow";
 import { sessionTitle } from "./list-rows";
@@ -88,9 +91,18 @@ export function Lists({
   onNavigate,
   disabled,
 }: ListsProps) {
-  // Which list is showing is the BLOCK's state rather than the page's: leaving
-  // for a chat and coming back keeps the tab you were on (T:18260).
-  const [tab, setTab] = useState<ListName>("recent");
+  /**
+   * Which list is showing is the BLOCK's state rather than the page's: leaving
+   * for a chat and coming back keeps the tab you were on (T:18260-18265). This
+   * component unmounts on the way into a chat, so the value lives in
+   * `lists-visibility`'s page-scoped memory and this state only mirrors it —
+   * enough to re-render on a press, never the place the answer is kept.
+   */
+  const [tab, setTabState] = useState<ListName>(rememberedTab);
+  const setTab = useCallback((name: ListName) => {
+    rememberTab(name);
+    setTabState(name);
+  }, []);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const timeline = snaps?.timeline;
@@ -212,6 +224,48 @@ export function Lists({
     ) : null,
   };
 
+  /**
+   * ARROWS SELECT, NOT JUST FOCUS (T:18326-18338, esp. `selectListTab(next.name)`
+   * *and* `focus()` at 18332-18336). Base UI's tabs move focus across the bar on
+   * their own and wrap correctly, but they do not activate on focus, so
+   * `aria-selected` never moved and the visible panel was unchanged — the whole
+   * point of the gesture.
+   *
+   * Written explicitly rather than switched to Base UI's activate-on-focus mode,
+   * because T's rule is not "the focused tab is the selected one": it is "walk
+   * the tabs that are actually ON the bar", and `nextTab` is the function that
+   * already knows which those are.
+   *
+   * BOUND PER TAB, with the tab's own name in the closure — T binds
+   * `tab.onkeydown` on each tab for the same reason: the handler needs to know
+   * where the walk starts from, and reading that back out of the event target's
+   * ancestry is a DOM query for something the render already knew.
+   */
+  const onTabKeys = useCallback(
+    (from: ListName, ev: React.KeyboardEvent<HTMLElement>) => {
+      if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+      const next = nextTab(counts, from, ev.key === "ArrowRight" ? 1 : -1);
+      if (!next) return;
+      // Only once there IS somewhere to go: an arrow on a lone tab is not this
+      // handler's key, and swallowing it would cost the column its scroll.
+      ev.preventDefault();
+      setTab(next);
+      // AND THE FOCUS FOLLOWS THE SELECTION (T:18336). Without it the caret is
+      // left on a tab that is no longer active, so the next arrow walks from
+      // the wrong place — and a screen reader is told about a tab nobody is on.
+      //
+      // Found through the BAR rather than through a ref: the shadcn `TabsTrigger`
+      // wrapper is a plain function component, so a ref handed to it is dropped
+      // with React's own "Function components cannot be given refs" warning. T
+      // reaches its tab by id for the same reason — the node, not a handle.
+      const bar = ev.currentTarget?.parentElement;
+      bar
+        ?.querySelector<HTMLElement>(`[data-list-tab="${next}"]`)
+        ?.focus({ preventScroll: true });
+    },
+    [counts, setTab],
+  );
+
   const order: ListName[] = ["recent", "artifacts", "snaps"];
 
   if (!view.tabbed) {
@@ -257,6 +311,10 @@ export function Lists({
             <TabsTrigger
               key={name}
               value={name}
+              data-list-tab={name}
+              onKeyDown={(ev: React.KeyboardEvent<HTMLElement>) =>
+                onTabKeys(name, ev)
+              }
               className="c-list-tab h-auto flex-none rounded-none border-0 px-0 pt-0 pb-1 text-[11px] font-semibold text-[var(--c-faint)] after:hidden data-active:bg-transparent data-active:text-[var(--c-fg)] data-active:shadow-none"
             >
               {LIST_LABELS[name]}

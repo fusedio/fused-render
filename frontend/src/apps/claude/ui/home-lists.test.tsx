@@ -14,7 +14,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import type { Artifact } from "../protocol/artifacts";
-import type { SnapshotVersion, SnapshotsTimeline } from "../protocol/types";
+import type { SessionRow, SnapshotVersion, SnapshotsTimeline } from "../protocol/types";
 
 // DYNAMIC, after the shim above has run: `Lists` reaches
 // `@platform/lib/router` through the recent rows' link builder, and that module
@@ -28,18 +28,31 @@ const { snapAgo, snapDeltaLabel, snapRuns, snapVersionLabel } = await import(
   "../protocol/snapshots"
 );
 const { Lists } = await import("./Lists");
+type ListsProps = import("./Lists").ListsProps;
+const { nextTab, rememberedTab, resetRememberedTab } = await import(
+  "./lists-visibility"
+);
+const { sessionTitle: rowsSessionTitle } = await import("./list-rows");
+const { sessionTitle: protoSessionTitle } = await import("../protocol/history");
+const { MARKER_JOIN } = await import("../protocol/wire");
 
 const mounted: Array<ReturnType<typeof create>> = [];
-function mount(el: React.ReactElement) {
+function mount(
+  el: React.ReactElement,
+  opts?: Parameters<typeof create>[1],
+) {
   let r!: ReturnType<typeof create>;
   act(() => {
-    r = create(el);
+    r = create(el, opts);
   });
   mounted.push(r);
   return r;
 }
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  // The selected tab is PAGE-scoped by design (T:18260-18265), so it outlives
+  // every renderer in this file and has to be put back by hand.
+  resetRememberedTab();
 });
 
 type Json = ReactTestRendererJSON;
@@ -331,4 +344,244 @@ test("two filled lists earn the tab bar; an empty one earns no tab", () => {
     "Recent chats",
     "Artifacts",
   ]);
+});
+
+// ---- the tab bar's keyboard, its memory, and the gutters under it ----------
+
+/** Two filled lists — the shape every test below needs, and the smallest one
+ *  that earns a bar at all. */
+const TABBED: Omit<ListsProps, "onOpen"> = {
+  file: "/repo/x.py",
+  agentDir: "/tpl",
+  recent: [
+    { id: "s1", preview: "hello", last_used: Date.now() / 1000 } as SessionRow,
+  ],
+  artifacts: ART,
+  snaps: {
+    timeline: timeline([]),
+    failed: false,
+    error: "",
+    reload: () => {},
+    adopt: () => {},
+  },
+};
+
+/** The rendered tabs, with the props the keyboard walk is driven through. */
+function tabs(r: ReturnType<typeof create>) {
+  return r.root
+    .findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        !!(n.props as { "data-list-tab"?: string })["data-list-tab"],
+    )
+    .map((n) => ({
+      name: (n.props as { "data-list-tab": string })["data-list-tab"],
+      selected:
+        (n.props as { "aria-selected"?: unknown })["aria-selected"] === true ||
+        (n.props as { "aria-selected"?: unknown })["aria-selected"] === "true",
+      keydown: (n.props as { onKeyDown(ev: unknown): void }).onKeyDown,
+    }));
+}
+
+/** Which tab the handler moved the caret to, newest last. */
+const focusedTabs: string[] = [];
+
+function arrow(
+  r: ReturnType<typeof create>,
+  from: string,
+  key: "ArrowRight" | "ArrowLeft",
+): { prevented: boolean } {
+  const tab = tabs(r).find((t) => t.name === from);
+  if (!tab) throw new Error("no tab " + from);
+  let prevented = false;
+  act(() =>
+    tab.keydown({
+      key,
+      // Base UI's own tab handler runs alongside ours and reads the node back
+      // off the event, so the synthetic press has to carry a stand-in for it.
+      // Base UI's own tab handler runs alongside ours and reads the node back
+      // off the event; ours walks from the node to the BAR (see Lists.tsx on
+      // why it is not a ref), so the stand-in has to answer both.
+      currentTarget: {
+        getAttribute: () => null,
+        closest: () => null,
+        parentElement: {
+          querySelector: (sel: string) => {
+            const m = /data-list-tab="([^"]+)"/.exec(sel);
+            return m ? { focus: () => focusedTabs.push(m[1]) } : null;
+          },
+        },
+      },
+      target: null,
+      preventDefault: () => {
+        prevented = true;
+      },
+      stopPropagation: () => {},
+    }),
+  );
+  return { prevented };
+}
+
+test("ARROWS SELECT, not just focus, and they wrap over the shown tabs", () => {
+  focusedTabs.length = 0;
+  const r = mount(<Lists {...TABBED} onOpen={() => {}} />);
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("recent");
+
+  // T:18332-18336 calls `selectListTab(next.name)` AND `focus()`. Base UI moves
+  // focus on its own but does not activate on it, so the panel used to stay put.
+  expect(arrow(r, "recent", "ArrowRight").prevented).toBe(true);
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("artifacts");
+  expect(focusedTabs).toEqual(["artifacts"]);
+
+  // WRAPPING: with two of three shown the pair still toggles (T:18330-18331).
+  arrow(r, "artifacts", "ArrowRight");
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("recent");
+  expect(focusedTabs).toEqual(["artifacts", "recent"]);
+
+  // And the other way, from the same place.
+  arrow(r, "recent", "ArrowLeft");
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("artifacts");
+});
+
+test("A HIDDEN TAB IS NOT A STOP: the empty snapshots list is walked past", () => {
+  // `nextTab` is the function that knows which tabs are on the bar, and the
+  // handler defers to it rather than to the DOM's own tab order.
+  const counts = { recent: 2, artifacts: 1, snaps: 0, snapsFailed: false };
+  expect(nextTab(counts, "recent", 1)).toBe("artifacts");
+  expect(nextTab(counts, "artifacts", 1)).toBe("recent");
+  // One tab is no walk at all — and the handler must then leave the key alone,
+  // or the column loses its arrow-scroll.
+  const lone = { recent: 2, artifacts: 0, snaps: 0, snapsFailed: false };
+  expect(nextTab(lone, "recent", 1)).toBe(null);
+});
+
+test("THE SELECTED TAB SURVIVES ENTER-AND-BACK (T:18260-18265)", () => {
+  const first = mount(<Lists {...TABBED} onOpen={() => {}} />);
+  arrow(first, "recent", "ArrowRight");
+  expect(tabs(first).find((t) => t.selected)?.name).toBe("artifacts");
+  // `Lists` unmounts on the way INTO a chat — which is why component state
+  // could never hold this.
+  act(() => first.unmount());
+  mounted.splice(mounted.indexOf(first), 1);
+  expect(rememberedTab()).toBe("artifacts");
+
+  // Back.
+  const back = mount(<Lists {...TABBED} onOpen={() => {}} />);
+  expect(tabs(back).find((t) => t.selected)?.name).toBe("artifacts");
+});
+
+test("a remembered tab whose list has since emptied falls back, never blank", () => {
+  const first = mount(<Lists {...TABBED} onOpen={() => {}} />);
+  arrow(first, "recent", "ArrowRight");
+  act(() => first.unmount());
+  mounted.splice(mounted.indexOf(first), 1);
+
+  // Same page, a target with no published pages: "Artifacts" is remembered but
+  // has no tab, so `computeLists` falls the selection back (T:18293-18317).
+  const bare = mount(
+    <Lists
+      {...TABBED}
+      artifacts={[]}
+      snaps={{
+        timeline: timeline([ver({ id: "v1" })]),
+        failed: false,
+        error: "",
+        reload: () => {},
+        adopt: () => {},
+      }}
+      onOpen={() => {}}
+    />,
+  );
+  const names = tabs(bare).map((t) => t.name);
+  expect(names).not.toContain("artifacts");
+  expect(tabs(bare).find((t) => t.selected)?.name).toBe(names[0]);
+});
+
+test("A MODE HOLDS THE READER: a locked block refuses the rows (P4-23)", () => {
+  // T draws the ways out inert in CSS (`body.annlock #recentlist .chat-row` —
+  // T:1467-1469, native's `.chat-root.annlock` rows in `ann.css`) AND guards
+  // the opener in script, "the keyboard's copy" (T:18181). Native had both
+  // halves and never handed `Home` the prop, so the script half was fed
+  // `undefined` for the life of the view.
+  const opened: string[] = [];
+  const locked = mount(
+    <Lists {...TABBED} onOpen={(id) => opened.push(id)} disabled />,
+  );
+  const row = locked.root.find(
+    (n) =>
+      typeof n.type === "string" &&
+      String((n.props as { className?: string }).className || "").includes(
+        "c-chat-row",
+      ),
+  );
+  act(() => (row.props as { onClick(): void }).onClick());
+  act(() =>
+    (row.props as { onKeyDown(ev: { key: string }): void }).onKeyDown({
+      key: "Enter",
+    }),
+  );
+  expect(opened).toEqual([]);
+
+  // And unlocked it opens on either gesture — so the assertion above is about
+  // the lock and not about a row that never worked.
+  const free = mount(<Lists {...TABBED} onOpen={(id) => opened.push(id)} />);
+  const open = free.root.find(
+    (n) =>
+      typeof n.type === "string" &&
+      String((n.props as { className?: string }).className || "").includes(
+        "c-chat-row",
+      ),
+  );
+  act(() => (open.props as { onClick(): void }).onClick());
+  expect(opened).toEqual(["s1"]);
+});
+
+// ---- the gutters (P4-12) and the property WKWebView ignores (P4-13) --------
+
+const HOME_CSS = await Bun.file(
+  new URL("../styles/home.css", import.meta.url).pathname,
+).text();
+
+test("two panels standing alone get T's 28px between them and 32px below", () => {
+  // T:3357 (`#snaps` 28px top), T:3382 (32px bottom), T:3527 (`#artifacts` no
+  // top gutter of its own — the gap belongs to the PAIR).
+  expect(HOME_CSS).toContain(".c-lists .c-list-panel + .c-list-panel");
+  const pair = /\.c-lists \.c-list-panel \+ \.c-list-panel \{([^}]*)\}/.exec(
+    HOME_CSS,
+  );
+  expect(pair?.[1]).toContain("margin-top: 28px");
+  const last =
+    /\.c-lists:not\(\.is-tabbed\) \.c-list-panel:last-child \{([^}]*)\}/.exec(
+      HOME_CSS,
+    );
+  expect(last?.[1]).toContain("padding-bottom: 32px");
+});
+
+test("NO flex-basis anywhere in home.css — WKWebView ignores it outright", () => {
+  // T:2755-2769 records why, and `composer.css:302-307` spells the same intent
+  // as `width: 100%` for the same reason. A DMG-only defect no browser check
+  // can catch, so it is pinned as a rule assertion instead (P4-13 / B-33).
+  // Comments stripped first: the rule's own note NAMES the property it refuses,
+  // and a grep that cannot tell a declaration from an explanation would make
+  // documenting the ban impossible.
+  const decls = HOME_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(decls).not.toContain("flex-basis");
+  const note = /\.c-snap-note \{([^}]*)\}/.exec(HOME_CSS);
+  expect(note?.[1]).toContain("width: 100%");
+});
+
+test("THE ROWS RENDER THE PROTOCOL'S TITLE, not a second copy of it (P4-04)", () => {
+  // `ui/list-rows.ts` used to spell its own: `MARKER_JOIN = " · "` where both
+  // T:10538 and `wire.ts:58` say `" + "`, invented marker words ("picture",
+  // "comments") instead of the wire's, and an opener table with only the PROSE
+  // openers — so a truncated preview leaked its literal tag as the row title.
+  // That copy was what the live rows AND the snapshot run headings used, while
+  // `protocol/history.ts`'s (which had all three right) was imported by nothing
+  // but its own test (P4-04 / B-30).
+  expect(rowsSessionTitle).toBe(protoSessionTitle);
+  expect(MARKER_JOIN).toBe(" + ");
+  // And the row a truncated pane-shot names is its marker's WORDS, never a tag.
+  expect(rowsSessionTitle({ id: "s1", preview: "<pane-shot>\nThe user att" })).toBe(
+    "pane screenshot",
+  );
 });

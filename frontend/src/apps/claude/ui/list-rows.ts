@@ -1,44 +1,33 @@
 // Row labels and links for the landing page's Recent list — `sessionTitle`,
 // `paneSlashes`, `rowPane`, `ago`, `openPaneChat`'s URL (T:18088-18225).
 //
-// `sessionTitle` reads a preview that may open with a WIRE BLOCK (an app-state
-// snapshot, a pane shot, an annotation bundle); the block grammar itself is
-// `protocol/wire.ts`'s, owned elsewhere, so only the OPENERS this label needs
-// are spelled here (T:18060-18087) and the marker join is theirs.
+// `sessionTitle` is NOT spelled here. It lives in `protocol/history.ts`, which
+// is where the wire's own vocabulary lives — `MARKER_VIEW`, `MARKER_ANN`,
+// `MARKER_JOIN` and `markerWords` all come off `protocol/wire.ts` there — and it
+// is re-exported below so the rows keep importing it from one place.
+//
+// THIS FILE USED TO CARRY A SECOND COPY, and the two had drifted in three ways
+// that all reached the screen (P4-04 / B-30):
+//
+//   * its `MARKER_JOIN` was `" · "` where both T:10538 and `wire.ts:58` say
+//     `" + "`;
+//   * its marker words were invented — `"picture"` and `"comments"` instead of
+//     the wire's `"pane screenshot"` and `"annotations"` — so a wordless send
+//     was labelled in a vocabulary nothing else in the app used;
+//   * and its openers were only the PROSE ones, so it cut nothing at a
+//     surviving TAG. The stored preview is truncated, which means the closing
+//     tag `stripWireBlocks` matched on is usually not in the string at all —
+//     and a truncated preview then showed the literal `<pane-shot>` or
+//     `<live-app-state>` as the row title. That is the exact regression T:18070
+//     documents, and the same string names the snapshot run headings.
+//
+// `protocol/history.ts`'s copy already had all three right and was imported by
+// nothing but its own test, while the live rows rendered this one.
 import { urlForFsPath } from "@platform/lib/router";
+import { sessionTitle } from "../protocol/history";
 import type { SessionRow } from "../protocol/types";
 
-/** T:10527-10538 MARKER_*. */
-const MARKER_JOIN = " · ";
-/** The sentences `formatAnnotations` / the shot receipts always open with, and
- *  the marker that stands in for each once the words are cut (T:18060-18087). */
-const BLOCK_OPENERS: readonly (readonly [string, string])[] = [
-  ["The user attached ", "picture"],
-  ["The user annotated ", "comments"],
-];
-
-/** Everything from `<live-app-state>` on is machinery, not a title. */
-function stripWireBlocks(raw: string): string {
-  return raw
-    .replace(/<(live-app-state|pane-shot|annotations)>[\s\S]*?<\/\1>/g, "")
-    .trim();
-}
-
-/** The row's label: the user's own words, or the markers for what they sent
- *  instead of words, or the session id (T:18088-18102). */
-export function sessionTitle(
-  s: Pick<SessionRow, "preview" | "id"> | null | undefined,
-): string {
-  let text = stripWireBlocks((s && s.preview) || "");
-  const carried: string[] = [];
-  for (const [open, marker] of BLOCK_OPENERS) {
-    const i = text.indexOf(open);
-    if (i === -1) continue;
-    text = text.slice(0, i).trim();
-    if (marker) carried.push(marker);
-  }
-  return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
-}
+export { sessionTitle };
 
 /** Only a DRIVE-LETTER path has its backslashes rewritten: a backslash is a
  *  legal POSIX filename char and must round-trip (T:18104). */
