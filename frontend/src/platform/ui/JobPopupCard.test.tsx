@@ -11,7 +11,7 @@ import type { ReactTestRendererJSON } from "react-test-renderer";
 
 import { installDomShim } from "@platform/lib/testDomShim";
 import type { Job } from "@platform/lib/jobs";
-import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
+import { JOB_POPUP_VISIBLE_MS, subscribeJobDismissed } from "@platform/lib/jobs";
 import { TOAST_EXIT_MS } from "@platform/lib/toast";
 
 installDomShim();
@@ -109,6 +109,39 @@ test("clicking the card (opening it) closes it early, through JobRow's own dismi
   expect(gone).toBe(false); // still in its exit window, not yet fully gone
   const json = renderer!.toJSON() as ReactTestRendererJSON;
   expect(json.props.className).toContain("leaving");
+}, 5000);
+
+test("a row click's real dismiss reaches the panel through noteJobDismissed, not just the card's own leaving state", async () => {
+  const dismissed: string[] = [];
+  const unsubscribe = subscribeJobDismissed((id) => dismissed.push(id));
+  const job: Job = { ...JOB, id: "sys:ai-image:reached", page: "/tmp/out.png" };
+  let renderer: ReturnType<typeof create>;
+  try {
+    await act(async () => {
+      renderer = create(
+        <JobPopupCard
+          job={job}
+          onGone={() => {}}
+          dismissFn={async (id) => ({ dismissed: id })}
+        />,
+      );
+    });
+
+    const root = renderer!.root;
+    const clickable = root.findAll(
+      (node) => typeof node.props.onClick === "function" && node.props.role === "button",
+    );
+    await act(async () => {
+      clickable[0].props.onClick({ preventDefault() {}, stopPropagation() {} });
+    });
+    await act(async () => {
+      await sleep(20);
+    });
+
+    expect(dismissed).toEqual([job.id]);
+  } finally {
+    unsubscribe();
+  }
 }, 5000);
 
 // `globalThis`'s real `addEventListener`/`removeEventListener` (Bun's
@@ -356,31 +389,39 @@ function findAll(node: ReactTestRendererJSON | null, className: string): ReactTe
 
 test("the ✕ only closes the card — it never calls the real, server-side dismiss", async () => {
   let dismissCalls = 0;
+  const dismissed: string[] = [];
+  const unsubscribe = subscribeJobDismissed((id) => dismissed.push(id));
   const job: Job = { ...JOB, page: "/tmp/out.png", tier: "trail" };
   let renderer: ReturnType<typeof create>;
-  await act(async () => {
-    renderer = create(
-      <JobPopupCard
-        job={job}
-        onGone={() => {}}
-        dismissFn={async (id) => {
-          dismissCalls++;
-          return { dismissed: id };
-        }}
-      />,
-    );
-  });
+  try {
+    await act(async () => {
+      renderer = create(
+        <JobPopupCard
+          job={job}
+          onGone={() => {}}
+          dismissFn={async (id) => {
+            dismissCalls++;
+            return { dismissed: id };
+          }}
+        />,
+      );
+    });
 
-  const before = renderer!.toJSON() as ReactTestRendererJSON;
-  const x = findAll(before, "dl-x")[0];
-  expect(x).toBeDefined();
-  act(() => {
-    (x.props as { onClick: () => void }).onClick();
-  });
+    const before = renderer!.toJSON() as ReactTestRendererJSON;
+    const x = findAll(before, "dl-x")[0];
+    expect(x).toBeDefined();
+    act(() => {
+      (x.props as { onClick: () => void }).onClick();
+    });
 
-  // The card starts leaving on its own — no network dismiss behind it, and
-  // no wait needed for one to settle.
-  expect(dismissCalls).toBe(0);
-  const after = renderer!.toJSON() as ReactTestRendererJSON;
-  expect(after.props.className).toContain("leaving");
+    // The card starts leaving on its own — no network dismiss behind it, and
+    // no wait needed for one to settle.
+    expect(dismissCalls).toBe(0);
+    // Nor does the panel hear about a dismissal that never happened.
+    expect(dismissed).toEqual([]);
+    const after = renderer!.toJSON() as ReactTestRendererJSON;
+    expect(after.props.className).toContain("leaving");
+  } finally {
+    unsubscribe();
+  }
 });

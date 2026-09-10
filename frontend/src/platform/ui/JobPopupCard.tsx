@@ -13,7 +13,11 @@
 // CLICKING THE ROW opens `job.page` and dismisses it, exactly as `JobRow`'s
 // own click handler always does — going to look is the acknowledgement, the
 // same rule Notifications itself uses, so the panel row (if this job has
-// one) really does clear.
+// one) really does clear. The card itself has no reach into the shell's own
+// terminal-jobs list, though (App.tsx owns that, several components up), so
+// its `onPatch` also calls `jobs.ts`'s `noteJobDismissed` — the one thing
+// telling the panel this id is really gone, promptly, rather than leaving it
+// there until the next Activity poll happens to notice.
 //
 // THE ✕ ONLY CLOSES THE CARD. It does not touch the panel: swatting away a
 // pop-up is "I saw this, stop showing it to me", not "delete the
@@ -28,7 +32,7 @@
 // effect below for why that never disturbs the press itself.
 import { useEffect, useRef, useState } from "react";
 import { JobRow } from "@platform/ui/DownloadManager";
-import { JOB_POPUP_VISIBLE_MS, type Job } from "@platform/lib/jobs";
+import { JOB_POPUP_VISIBLE_MS, noteJobDismissed, type Job } from "@platform/lib/jobs";
 import { TOAST_EXIT_MS } from "@platform/lib/toast";
 
 const NOOP = () => {};
@@ -159,7 +163,18 @@ export default function JobPopupCard({
       <JobRow
         job={job}
         onChanged={NOOP}
-        onPatch={() => setLeaving(true)}
+        // `onPatch` only ever runs here on `dismiss()`'s success path — a
+        // popup only ever shows a terminal job, so the cancel button (the
+        // only other caller of `onPatch`) never renders on one. Closing
+        // this card is this card's OWN business (`setLeaving`), but the
+        // dismissal itself is real and server-side, and this card has no
+        // reach into the shell's own terminal-jobs list — `noteJobDismissed`
+        // is how that list finds out promptly instead of waiting for its
+        // next poll to notice the row gone.
+        onPatch={() => {
+          setLeaving(true);
+          noteJobDismissed(job.id);
+        }}
         onDismissClick={() => setLeaving(true)}
         cancelFn={cancelFn}
         dismissFn={dismissFn}

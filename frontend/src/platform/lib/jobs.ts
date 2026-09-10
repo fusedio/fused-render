@@ -391,6 +391,38 @@ export function popupTick(
   return { seen: next, popped };
 }
 
+// A REAL, server-side dismissal that happened somewhere its own `onPatch`
+// cannot reach the shell's own terminal-jobs list — concretely
+// `platform/ui/JobPopupCard.tsx`, whose reused `JobRow` really does call
+// `dismissFn` (a whole-row click opens and dismisses, same as the panel's own
+// row) but whose `onPatch` only closes THAT card, never touching
+// `App.tsx`'s `terminalJobs` (the state `shell/RepoUpdatesDock.tsx` reads).
+// Left unpatched there, the Notifications panel kept showing the row until
+// its next poll — and a second ✕ press in the meantime could fail against an
+// id the server had already deleted.
+//
+// The module-level notify/subscribe shape `platform/lib/index-freshness.ts`
+// (`noteIndexLifecycle`/`subscribeIndexLifecycle`) and
+// `shell/onboarding/progress.ts` (`noteProgressMayHaveMoved`) already use for
+// exactly this kind of thing: the event's source (`JobPopupCard`, several
+// components below `App`) and its one real consumer (`App`, which owns
+// `terminalJobs`) have no other connection worth threading a prop through.
+const dismissListeners = new Set<(id: string) => void>();
+
+/** Record that `id` was just dismissed for real (its server-side row is
+ *  gone) from somewhere that cannot patch the shell's own terminal-jobs list
+ *  itself. */
+export function noteJobDismissed(id: string): void {
+  for (const fn of dismissListeners) fn(id);
+}
+
+/** Subscribe to real job dismissals `noteJobDismissed` reports. Returns an
+ *  unsubscribe function. */
+export function subscribeJobDismissed(fn: (id: string) => void): () => void {
+  dismissListeners.add(fn);
+  return () => void dismissListeners.delete(fn);
+}
+
 // How long the popup card stays fully visible before its exit animation
 // starts. 2500ms, not the user's own literal "3 seconds": the card shares
 // `lib/toast`'s TOAST_EXIT_MS (150ms) exit transition, so total on-screen
