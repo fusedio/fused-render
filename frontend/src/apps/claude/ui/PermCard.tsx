@@ -93,7 +93,7 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
     // Enter/Space handlers on cards except the Other textarea" (T:2121-2128) —
     // on the one card whose whole job is to be READ before it is answered, a
     // key that approves is the wrong affordance to invent.
-    <div className={cn("turn", "perm", resolved && "resolved")}>
+    <div className={cn("turn", "perm", resolved && "resolved")} data-perm-id={row.id}>
       <div className="perm-head">
         {/* Past tense once it is history: a card still reading "Claude wants to
             use" above a verdict looks like a prompt that is somehow still

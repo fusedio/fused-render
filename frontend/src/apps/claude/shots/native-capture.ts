@@ -16,8 +16,9 @@
 // paths that were there before.
 import { SHOT_NATIVE_MIN, SHOT_TIMEOUT_MS, type PaneBitmap } from "./types";
 
-/** Set by a 409: "this platform has no still". Remembered, so a page over an
- *  unsupported backend pays the round trip once (T:9790, 9924). */
+/** Set by a 409, or by the boot probe below: "this platform has no still".
+ *  Remembered, so a page over an unsupported backend pays the round trip once
+ *  (T:9790, 9924) — or, with the probe, not even once. */
 let nativeOff = false;
 
 export function isNativeOff(): boolean {
@@ -26,6 +27,32 @@ export function isNativeOff(): boolean {
 
 export function resetNativeOffForTests(): void {
   nativeOff = false;
+}
+
+/**
+ * THE BOOT PROBE'S HALF of the same fact (T:7840-7847): `capture.sources()` is
+ * read once at boot and `shotNativeOff = true` when
+ * `src.screenshot.available === false`, so a platform with no still is known
+ * BEFORE the first attempt rather than after a doomed round trip and a
+ * `console.warn`.
+ *
+ * That round trip was the small cost. The real one is T:7688 — `if (annOn &&
+ * annXO && shotNativeOff) annXOStreamGet()` — because arming a mode over a
+ * cross-origin target is the ONE moment carrying the user activation
+ * `getDisplayMedia` needs. Gated on a `nativeOff` that only a live 409 could
+ * set, that branch read `false` on the first arm, and the later
+ * fire-and-forget capture then asked for a stream with no activation behind
+ * it: the first cross-origin walkthrough silently produced no pictures at all.
+ *
+ * Reads `available === false` and nothing else, exactly as T does — `granted`
+ * is deliberately NOT consulted, since on macOS it is the first shot that
+ * raises the Screen Recording prompt — so an inconclusive probe leaves the
+ * native road open rather than shutting a working feature.
+ */
+export function noteSourcesProbe(
+  sources: { screenshot?: { available?: boolean | null } | null } | null | undefined,
+): void {
+  if (sources?.screenshot?.available === false) nativeOff = true;
 }
 
 /** The attribute the SHELL hides its own overlay chrome on — the same

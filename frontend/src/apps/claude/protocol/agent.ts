@@ -44,10 +44,59 @@ export interface RunOpts {
   /** Supersede channel. `undefined` = the script path; `null` = no channel. */
   key?: string | null;
   signal?: AbortSignal;
+  /** What the chat is open ON (`_file`) — `X-Fused-Target`. The PAGE half is
+   *  derived from the script's own dir, so only this needs handing in. */
+  target?: string | null;
 }
 
 const inflightByKey = new Map<string, AbortController>();
 const superseded = new WeakSet<AbortController>();
+
+// ---- call-log attribution (SPEC CL-5, `fused_render/calls.py`) --------------
+//
+// FLAG-ON, A CHAT'S CALLS WERE ANONYMOUS. `runtime.js` builds these headers
+// (R:1434-1448) off the EMBEDDED PAGE's own URL — `ownQuery("path")` and
+// `ownQuery("_file")` — and the native chat has no such URL, so nothing set
+// them: `fused-render calls`, `--page <chat template>` and the `.calls.jsonl`
+// viewer all showed an empty history for a conversation, and the failed-call
+// digests for the chat went with it. Observability only; no behaviour depends
+// on it, which is exactly why it was easy to lose.
+//
+// The page is the template's own `template.html`, which is what `--page` names
+// and what a reader looking for "the chat's calls" would type.
+
+/** The correlation id, `runtime.js`'s shape (R:1442's `newCallId`). */
+function newCallId(): string {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+}
+
+/**
+ * Ids abandoned since the last call went out, waiting to ride the next one.
+ *
+ * ON THE SUPERSEDING REQUEST, and `calls.py:80-85` explains why that and not a
+ * POST of its own: the superseding request "leaves in the same task as the
+ * abort, so the mark lands before the abandoned call's record is written — a
+ * separate POST measured ~19 ms later, and anything that finished inside that
+ * window was recorded `ok`."
+ */
+let pendingSupersedes: string[] = [];
+
+/** The call id a controller was given, so an abort can name what it cancelled. */
+const callIds = new WeakMap<AbortController, string>();
+
+function takePendingSupersedes(): string {
+  if (!pendingSupersedes.length) return "";
+  const out = pendingSupersedes.join(",");
+  pendingSupersedes = [];
+  return out;
+}
+
+/** Test-only: the queue is page-lifetime state in production. */
+export function resetSupersedesForTests(): void {
+  pendingSupersedes = [];
+}
 
 /** Never settles — the runtime's spelling for "a newer call owns the result". */
 function hang<T>(): Promise<T> {
@@ -58,10 +107,16 @@ function hang<T>(): Promise<T> {
 export async function runScript<T>(py: string, params: Record<string, unknown>, opts: RunOpts = {}): Promise<T> {
   const key = opts.key === undefined ? py : opts.key;
   const controller = new AbortController();
+  const callId = newCallId();
+  callIds.set(controller, callId);
   if (key !== null) {
     const prev = inflightByKey.get(key);
     if (prev) {
       superseded.add(prev);
+      // The abandoned call names itself, so the mark can ride the request that
+      // caused it (see `pendingSupersedes`).
+      const was = callIds.get(prev);
+      if (was) pendingSupersedes.push(was);
       prev.abort();
     }
     inflightByKey.set(key, controller);
@@ -80,7 +135,21 @@ export async function runScript<T>(py: string, params: Record<string, unknown>, 
     if (key !== null && inflightByKey.get(key) === controller) inflightByKey.delete(key);
   };
   try {
-    const data = await runPy(py, params, { signal: controller.signal });
+    const data = await runPy(py, params, {
+      signal: controller.signal,
+      attribution: {
+        // `<templateDir>/template.html` — the page `--page` names, derived from
+        // the script's own dir so every script under a template attributes to
+        // one page rather than to itself.
+        page: py.replace(/\/[^/]+$/, "") + "/template.html",
+        ...(opts.target ? { target: opts.target } : {}),
+        callId,
+        ...(() => {
+          const abandoned = takePendingSupersedes();
+          return abandoned ? { supersedes: abandoned } : {};
+        })(),
+      },
+    });
     cleanup();
     if (superseded.has(controller)) return hang<T>();
     if (data.needs_install) throw new AgentNeedsInstall(data.needs_install, data.error?.message);

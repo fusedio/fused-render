@@ -22,6 +22,17 @@ import type { ParamsStore } from "../params/store";
  */
 export const NARROW_MQ_QUERY = "(max-width: 800px)";
 
+/**
+ * The same 800, as a number, for the road that measures THE CHAT'S OWN BOX
+ * rather than the window (see `boxRef`).
+ *
+ * T:5888-5891's warning about `innerWidth < 800` disagreeing with the media
+ * query is about the WINDOW, where the scrollbar's width is exactly what the
+ * two disagree over. An element's own border box has no such ambiguity: it is
+ * the box the layout rules are about, measured directly.
+ */
+export const NARROW_MAX_PX = 800;
+
 /** Which of the two narrow views is on screen. */
 export type NarrowView = "chat" | "preview";
 
@@ -75,6 +86,24 @@ export interface UseNarrowViewOptions {
    * picture that already exists of a pane that was visible when it was taken.
    */
   onArriveChat?: () => void;
+  /**
+   * THE BOX THE BREAKPOINT IS ABOUT — `.chat-root`.
+   *
+   * Legacy's `@media (max-width: 800px)` (T:3739-3887) was evaluated inside the
+   * chat's OWN IFRAME, so it answered about the panel: a 380px side panel
+   * always matched, whatever the window was doing. Native read
+   * `window.matchMedia` on the top-level window instead, so at a 380px panel in
+   * a 1280px window NOT ONE narrow rule fired — and `pane.css:250-252`'s own
+   * comment says the class approach was chosen *because* "the chat can be
+   * mounted in a PANE narrower than the window, and a media query would then
+   * answer about the wrong box".
+   *
+   * With this ref the breakpoint is a `ResizeObserver` on that box, which is
+   * what the iframe's viewport used to be. Omitted — or on an engine with no
+   * `ResizeObserver` — it falls back to `matchMedia`, which is the old
+   * behaviour and still right whenever the pane fills the window.
+   */
+  boxRef?: { current: HTMLElement | null };
   /** Injected for tests. */
   matchMedia?: (q: string) => MediaQueryList;
   /** Called after every view/breakpoint change. T calls `renderAnn()` twice here
@@ -116,7 +145,15 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
     mq.current = match ? match.call(globalThis, NARROW_MQ_QUERY) : null;
   }
 
+  /** Are we measuring the chat's own box, or the window? Decided once, so the
+   *  two roads below cannot both be live and fight over `narrow`. */
+  const measuresBox =
+    !!opts.boxRef && typeof ResizeObserver === "function" && !opts.matchMedia;
+
   const [narrow, setNarrow] = useState<boolean>(() => !!mq.current?.matches);
+  /** The last value published, read by the observer without re-subscribing. */
+  const narrowNow = useRef(narrow);
+  narrowNow.current = narrow;
   const [param, setParam] = useState<string | undefined>(() => params.get("paneview"));
   /**
    * Crossing DOWN with `paneview` unset: both halves were on screen, and the
@@ -139,6 +176,7 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
   cbs.current = { onArriveChat: opts.onArriveChat, onRemeasure: opts.onRemeasure };
 
   useEffect(() => {
+    if (measuresBox) return; // the observer below owns `narrow`
     const m = mq.current;
     if (!m) return;
     const onChange = () => {
@@ -147,7 +185,52 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
     };
     m.addEventListener("change", onChange);
     return () => m.removeEventListener("change", onChange);
-  }, [noPane, params]);
+  }, [measuresBox, noPane, params]);
+
+  // THE CHAT'S OWN WIDTH, which is what legacy's media query was reading. Same
+  // `crossView` rule as the media road's — crossing DOWN with no `paneview` set
+  // keeps the preview the reader was just looking at on screen — and the same
+  // deliberate absence of a param write for it (a resize is not a navigation).
+  useEffect(() => {
+    if (!measuresBox) return;
+    const el = opts.boxRef?.current;
+    if (!el) return;
+    /** BOOT, and only boot — the same distinction `shown.current !== null` makes
+     *  for the disarm below. A mount that is ALREADY narrow is not a reader
+     *  crossing the breakpoint. */
+    let first = true;
+    const read = (): void => {
+      const w = el.getBoundingClientRect().width;
+      // NOT LAID OUT YET is not "narrow": a zero width during a mount would
+      // otherwise collapse the layout for a frame and then uncollapse it. It is
+      // not a first read either — nothing was measured — so `first` stands.
+      if (!w) return;
+      const next = w <= NARROW_MAX_PX;
+      const boot = first;
+      first = false;
+      if (next === narrowNow.current) return;
+      // `crossView` IS A CROSSING, and the first read is not one (Bugbot, PR
+      // #1074). It keeps on screen the preview a reader "was just looking at",
+      // which presupposes that both halves WERE on screen a moment ago — so on
+      // a boot there is nothing to keep, and the unset-`paneview` default must
+      // stand: CHAT, the conversation, which is the reason the mode exists
+      // (T:8868). Setting it here opened every pane that mounted at or under
+      // 800px inside a wider window on the PREVIEW, with the composer locked
+      // (`composerLocked`) — the exact opposite of the default.
+      if (!boot && next && !noPane && !params.get("paneview")) {
+        crossView.current = "preview";
+      }
+      narrowNow.current = next;
+      setNarrow(next);
+    };
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+    // `opts.boxRef` is a stable ref object from its owner; the callbacks it
+    // guards are read through `narrowNow`/`crossView`, so nothing here wants a
+    // re-subscribe per render.
+  }, [measuresBox, opts.boxRef, noPane, params]);
 
   const view = narrowViewOf(param, crossView.current);
 
@@ -181,7 +264,19 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
     // breakpoint crossing the preview can be showing on `crossView` with the
     // param still absent, and reading the param there would write "preview" over
     // a visible preview — a toggle whose first click does nothing (T:8946-8956).
-    params.set({ paneview: shown.current === "preview" ? "chat" : "preview" }, { history: "replace" });
+    // AND IT PUSHES. T:8978's `fused.params.set("paneview", …)` carries no
+    // override, so the store's once-per-visit push applies and Back undoes a
+    // deliberate flip — the right answer for a click that MOVED THE READER:
+    // the way out of a view they chose to enter is the same gesture as the way
+    // out of anywhere else.
+    //
+    // Bugbot #447's no-history rule was about the RESIZE, not this. A
+    // breakpoint crossing is the layout changing under a reader who did
+    // nothing, and native already keeps that out of the URL entirely — it
+    // rides `crossView` in a ref rather than a param, which is stricter than a
+    // `replace` ever was. Unlike the sibling divergence in `useSplit.ts:126-129`
+    // this one was never recorded as an accepted deviation.
+    params.set({ paneview: shown.current === "preview" ? "chat" : "preview" });
   }, [params]);
 
   return {

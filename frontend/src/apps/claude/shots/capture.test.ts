@@ -257,7 +257,8 @@ describe("capturePane", () => {
       });
       expect(out.blob).toBeNull();
       await new Promise((res) => setTimeout(res, 60));
-      expect(warned).toContain("abandoned capture failed:");
+      // T:11289 verbatim — see the site for why the phrase is contract.
+      expect(warned).toContain("abandoned pane capture failed:");
     } finally {
       console.warn = before;
     }

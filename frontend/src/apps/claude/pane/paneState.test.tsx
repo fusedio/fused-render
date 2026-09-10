@@ -22,7 +22,8 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import type { StatResult } from "@platform/lib/api";
 
-const { usePaneState } = await import("./AppPane");
+const { usePaneState, AppPane } = await import("./AppPane");
+const { createMemoryParamsStore } = await import("../params/store");
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -164,4 +165,79 @@ test("the no-pane latch re-arms with the target, so the next paneless hop still 
     await Promise.resolve();
   });
   expect(last(seen)).toBe(false);
+});
+
+// ---- the left bar's two-pass re-measure (T:5661-5667) ---------------------
+
+test("the bar coming or going re-measures NOW and again on the next frame", async () => {
+  // T:5661-5667 states both reasons at this exact transition: "the bar is a row
+  // ABOVE #leftview, so showing or hiding it changes that box — and the pins
+  // are positioned in #leftview coordinates. Re-measure twice […]: reading a
+  // rect flushes THIS document's layout now, and the framed document only
+  // reflows to the iframe's new height on the next frame."
+  //
+  // One pass alone left the pins the bar's 43px off — for a frame if the framed
+  // document reflowed promptly, and until some unrelated repaint if it did not.
+  const frames: Array<() => void> = [];
+  const realRaf = globalThis.requestAnimationFrame;
+  const realCancel = globalThis.cancelAnimationFrame;
+  let cancelled = 0;
+  (globalThis as { requestAnimationFrame: unknown }).requestAnimationFrame = (
+    cb: () => void,
+  ): number => {
+    frames.push(cb);
+    return frames.length;
+  };
+  (globalThis as { cancelAnimationFrame: unknown }).cancelAnimationFrame = (): void => {
+    cancelled += 1;
+  };
+
+  try {
+    const measures: number[] = [];
+    const params = createMemoryParamsStore();
+    // TWO modes, so `leftBarShown` answers `true` — a one-item picker is chrome
+    // the pane deliberately does not draw.
+    const decision = {
+      src: "/render?path=%2Fw%2Fa.md",
+      leftModes: [
+        { mode: "code", path: "/t/code/template.html", icon: null },
+        { mode: "markdown", path: "/t/markdown/template.html", icon: null },
+      ],
+      paneNoun: "preview" as const,
+    };
+    const pane = {
+      status: "ready" as const,
+      decision,
+      noPane: false,
+      error: null,
+      ready: Promise.resolve(),
+    };
+
+    let r!: ReactTestRenderer;
+    await act(async () => {
+      r = create(
+        createElement(AppPane, {
+          pane: pane as never,
+          params: params as never,
+          file: "/w/a.md",
+          narrowView: null,
+          onRemeasure: () => measures.push(1),
+        }),
+      );
+    });
+
+    // The mount's own pass: one synchronous measure, one frame queued.
+    expect(measures).toHaveLength(1);
+    expect(frames).toHaveLength(1);
+    await act(async () => frames.pop()!());
+    expect(measures).toHaveLength(2);
+
+    // …and the queued frame is CANCELLED on cleanup, so a fast toggle cannot
+    // land a stale second measure after the bar has moved again.
+    await act(async () => r.unmount());
+    expect(cancelled).toBeGreaterThan(0);
+  } finally {
+    globalThis.requestAnimationFrame = realRaf;
+    globalThis.cancelAnimationFrame = realCancel;
+  }
 });

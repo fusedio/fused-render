@@ -214,6 +214,22 @@ export interface ComposerCardProps {
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
+  /**
+   * `annNavLocked` — a comment round or a walkthrough owns this page. T guards
+   * every `.schedbtn` on `schedBlocked() || annNavLocked()` (T:12075, T:12099,
+   * via `querySelectorAll`, so BOTH composers) and T:1470 dims both, because
+   * leaving for `/tasks` mid-round strands the notes.
+   *
+   * Its own prop rather than folded into `blocked`, because the two are scoped
+   * differently: `blocked` is chat-only (T:16851 — the landing card's copy is
+   * never blocked, since there is no session holding queued work), while a
+   * nav lock is about THIS PAGE and so applies to the landing composer too.
+   */
+  navLocked?: boolean;
+  /** Why, for the seat's `title` and accessible name — `NAV_LOCKED_REASON`
+   *  (T:6896). A refusal the reader cannot see the cause of is the failure
+   *  Bugbot #1046 closed on the Back button's twin. */
+  navLockedReason?: string;
   autoFocus?: boolean;
   /** The landing card's kind-dependent placeholder (`homePlaceholderFor`,
    *  T:5392). Unset keeps the markup's own kind-free wording. */
@@ -228,6 +244,38 @@ export interface ComposerCardProps {
   /** The textarea itself, for a host modal's `initialFocus` (TaskPeek, whose
    *  target used to be the iframe element). */
   boxRef?: React.MutableRefObject<HTMLTextAreaElement | null>;
+  /**
+   * T:8505 `annAutoSubmit` — the ONE programmatic send. A spoken walkthrough
+   * ends by seeding the box with what was said before the first click and then
+   * pressing send itself; ✓ Done does the same with no words at all.
+   *
+   * T reaches for `form.requestSubmit()`, which cannot work here: the composer's
+   * text is React state and only this component can read it. So the seat is
+   * handed out instead — filled while this composer is mounted, nulled when it
+   * goes, which is also what makes it honest about WHICH composer is on screen
+   * (home or chat, never both).
+   *
+   * SEEDED, and that is finding 3's whole fix: the caller hands the words IN
+   * (`submitRef.current(intro)`) and they are folded into the box's own text
+   * for this one send. They used to be written through the `restore` seat — a
+   * STATE write — and the send pressed from a `setTimeout(0)`, which could run
+   * before React had applied it: the notes went out with an empty box and the
+   * sentence that introduced them was lost (Bugbot, PR #1074). The answer says
+   * whether the send happened, so a caller whose send was refused can put the
+   * words back in the box instead of dropping them.
+   */
+  submitRef?: React.MutableRefObject<((seed?: string) => boolean) | null>;
+  /**
+   * THE SEND WINDOW'S LATCH, in its two forms.
+   *
+   * `busyRef` is read SYNCHRONOUSLY in `submit`: the parent takes the latch
+   * inside `onSend`, in the same tick as the call below, so a second Enter that
+   * arrives before React has re-rendered still sees it — which is exactly the
+   * race that let two submits into one send window (Bugbot, PR #1074).
+   * `sendBusy` is the same fact as a prop, for the button's `disabled`.
+   */
+  busyRef?: React.MutableRefObject<boolean>;
+  sendBusy?: boolean;
   /** The column whose width the ladder measures against. */
   columnRef?: React.RefObject<HTMLElement | null>;
   /** Chips above the box: attachments (PR2), annotations (PR3). */
@@ -274,10 +322,15 @@ export function ComposerCard({
   attachPending,
   blocked,
   blockedPlaceholder,
+  navLocked,
+  navLockedReason,
   autoFocus,
   placeholder,
   restore,
   boxRef: hostBoxRef,
+  submitRef,
+  busyRef,
+  sendBusy,
   columnRef,
   chips,
   onPaste,
@@ -341,19 +394,31 @@ export function ComposerCard({
 
   // A tray still uploading holds the send back rather than sending half of it.
   const attaching = !!attachPending;
-  const canSend = !attaching && (text.trim().length > 0 || !!hasAttachments);
 
-  const submit = useCallback(() => {
+  const submit = useCallback((seed?: string): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
     // typed line, not a follow-up (T:17871).
-    if (blocked) return;
+    if (blocked) return false;
     // ... nor while a chip is still attaching, on EITHER road: both of them
     // empty the tray, and both would leave the pending files behind. The box
     // KEEPS its words (the `setText("")` below is past this door), so the same
     // Enter a moment later sends the message the user actually wrote.
-    if (attaching) return;
-    const message = text.trim();
-    if (!message && !hasAttachments) return;
+    if (attaching) return false;
+    // ONE SEND AT A TIME. Checked BEFORE the box is cleared, so a keystroke
+    // this refuses costs the user nothing.
+    if (busyRef?.current || sendBusy) return false;
+    // The programmatic send's seed, appended on the `restore` seat's own join
+    // rule (a newline, and only when there is something to join to) — the box
+    // may hold words the walkthrough's intro is being added to.
+    const extra = typeof seed === "string" ? seed.trim() : "";
+    const typed = text.trim();
+    // A BLANK LINE between them, which is T:7391's own join (`v ? v + "\n\n" +
+    // seed : seed`). Not cosmetic: a blank line is the paragraph boundary both
+    // in the outgoing markdown and in the annotation stanza grammar, so a
+    // single newline ran the reader's draft into the walkthrough's intro and
+    // changed what the model reads.
+    const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
+    if (!message && !hasAttachments) return false;
     setText("");
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
@@ -365,7 +430,27 @@ export function ComposerCard({
         permission: controls.permission,
       });
     }
-  }, [blocked, attaching, text, hasAttachments, running, onFollowUp, onSend, controls]);
+    // AND THE CARET GOES BACK IN THE BOX (T:16687 — `scrollBottom();
+    // focusBox(box)` in `sendMessage`'s `finally`). An Enter-send never noticed,
+    // because focus was already there; clicking Send left it on `.c-send`, so
+    // the next keystroke typed nothing and the reader had to click back into a
+    // box they had just used. `preventScroll`, like every other focus call
+    // here: the transcript's own follow effect owns the scroll, and a focus
+    // that also scrolls fights it.
+    boxRef.current?.focus({ preventScroll: true });
+    return true;
+  }, [blocked, attaching, busyRef, sendBusy, text, hasAttachments, running, onFollowUp, onSend, controls, boxRef]);
+
+  // The seat for the programmatic send. In an EFFECT so a render React throws
+  // away (StrictMode's double invoke, a concurrent attempt that loses) cannot
+  // leave its own `submit` installed for the recorder to press.
+  useEffect(() => {
+    if (!submitRef) return;
+    submitRef.current = submit;
+    return () => {
+      if (submitRef.current === submit) submitRef.current = null;
+    };
+  }, [submitRef, submit]);
 
   const onKeyDown = useCallback(
     (ev: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -390,117 +475,193 @@ export function ComposerCard({
   const count = queued?.length ?? 0;
 
   return (
-    <form
-      className="c-composer"
-      onSubmit={(ev) => {
-        ev.preventDefault();
-        // The submit event is the send BUTTON's path (Enter in the box never
-        // reaches here): while a run is live the button is a stop button
-        // (T:17909-17914).
-        if (running) {
-          onStop();
-          return;
-        }
-        submit();
-      }}
-    >
+    <>
+      {/* THE TRAY IS A SIBLING ABOVE THE CARD, NOT A CHILD OF IT (T:4154's
+          `<div class="annchips" id="annchips-chat">` and T:4220's home twin,
+          both preceding the composer box). Rendered inside the form it was
+          enclosed by the card's border and inset by the textarea's 15px gutter
+          — a chip in a box instead of a chip floating above one, 30px narrower
+          (visual pass 2, FIX-16). Nothing below moves: the textarea lands at
+          the same y on both sides either way; what changes is which side of the
+          border the chip is on. */}
       {chips}
-      <textarea
-        ref={boxRef}
-        rows={variant === "home" ? 2 : 1}
-        placeholder={
-          blocked && blockedPlaceholder
-            ? blockedPlaceholder
-            : variant === "home"
-              ? // `homePlaceholderFor` names the KIND once the pane has decided
-                // it ("Ask Claude about this project…"); the markup's own
-                // kind-free wording stands until then (T:5392).
-                placeholder || HOME_PLACEHOLDER
-              : CHAT_PLACEHOLDER
-        }
-        spellCheck={false}
-        disabled={blocked}
-        value={text}
-        onChange={(ev) => {
-          setText(ev.currentTarget.value);
-          grow();
+      <form
+        className="c-composer"
+        onSubmit={(ev) => {
+          ev.preventDefault();
+          // The submit event is the send BUTTON's path (Enter in the box never
+          // reaches here): while a run is live the button is a stop button
+          // (T:17909-17914).
+          if (running) {
+            onStop();
+            return;
+          }
+          submit();
         }}
-        onKeyDown={onKeyDown}
-        {...(onPaste ? { onPaste } : {})}
-      />
-      {count > 0 ? (
-        <div className="c-queued">
-          {count === 1
-            ? "1 follow-up is queued for this turn."
-            : `${count} follow-ups are queued for this turn.`}
+      >
+        <textarea
+          ref={boxRef}
+          rows={variant === "home" ? 2 : 1}
+          placeholder={
+            blocked && blockedPlaceholder
+              ? blockedPlaceholder
+              : variant === "home"
+                ? // `homePlaceholderFor` names the KIND once the pane has decided
+                  // it ("Ask Claude about this project…"); the markup's own
+                  // kind-free wording stands until then (T:5392).
+                  placeholder || HOME_PLACEHOLDER
+                : CHAT_PLACEHOLDER
+          }
+          spellCheck={false}
+          // AND GRAMMARLY OFF, all three spellings, exactly as T:4156-4157 and
+          // T:4227-4228 ship them beside `spellcheck`. Not cosmetic: Grammarly
+          // injects a sibling contenteditable and a floating button INTO this
+          // element's box, and `ui/fit.ts`'s `readRow` prices `row.children` — an
+          // injected node in that chain is precisely the surprise a measured
+          // ladder cannot absorb.
+          data-gramm="false"
+          data-gramm_editor="false"
+          data-enable-grammarly="false"
+          disabled={blocked}
+          value={text}
+          onChange={(ev) => {
+            setText(ev.currentTarget.value);
+            grow();
+          }}
+          onKeyDown={onKeyDown}
+          {...(onPaste ? { onPaste } : {})}
+        />
+        {/* A DIVERGENCE FROM T, RECORDED (visual pass 3, FIX-27). T has no
+            queued line at all: its own queue handling (T:15905-15917) puts the
+            stranded text back INTO the box, so the reader learns about it by
+            finding their words there. This line is kept — a follow-up that has
+            gone somewhere invisible is worse than 24px of composer card — but
+            it is the one thing in this file that adds a box T does not draw
+            (91 → 115 while a follow-up is pending), so it is written down here
+            rather than left for a fourth visual pass to find again. */}
+        {count > 0 ? (
+          <div className="c-queued">
+            {count === 1
+              ? "1 follow-up is queued for this turn."
+              : `${count} follow-ups are queued for this turn.`}
+          </div>
+        ) : null}
+        <div className="c-composer-row" ref={rowRef}>
+          <ModelSelect value={controls.model} onChange={controls.setModel} />
+          <EffortSelect value={controls.effort} onChange={controls.setEffort} />
+          <PermissionSelect
+            value={controls.permission}
+            onChange={controls.setPermission}
+            compact={fit !== "full"}
+          />
+          <span className="c-spacer" />
+          {camera}
+          {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two
+              are the ways this draft leaves the box — now, or as a task
+              (T:4174-4183). The landing card's copy is never blocked. */}
+          <SchedButton
+            file={file}
+            sessionId={sessionId}
+            draft={draft}
+            back={back}
+            // TWO GUARDS WITH DIFFERENT SCOPES, which is what T:12075/12099 read
+            // off `schedBlocked() || annNavLocked()` for every `.schedbtn`:
+            //
+            //   * `blocked` stays CHAT-ONLY (T:16851) — the landing card has no
+            //     session holding queued work, so nothing there is blocked;
+            //   * `navLocked` applies to BOTH, because a comment round owns the
+            //     PAGE. `styles/ann.css`'s `pointer-events: none` stopped the
+            //     mouse on the landing composer, but the button stayed in tab
+            //     order — so a keyboard Enter still opened the confirm and
+            //     Continue still left for `/tasks`, stranding the notes. That is
+            //     the exact failure Bugbot PR #1046 closed, reachable again by
+            //     another road. Disabled for the eye, guarded for the hand.
+            disabled={(variant === "chat" && !!blocked) || !!navLocked}
+            {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
+            onCancel={focusBox}
+            onNavigate={onNavigate}
+          />
+          <button
+            className="c-send"
+            type="submit"
+            aria-label={running ? "Stop" : "Send"}
+            // AND THE SHUTTER WINDOW SAYS SO TOO (Bugbot, PR #1074). With the
+      // `disabled` attribute gone (T:4187), the `title` is the only thing left
+      // that can tell the reader why a press does nothing — and `sendBusy` is
+      // the window that can run to SECONDS on a large pane, where `attaching`
+      // is usually a blink. A control that looks ready and silently refuses is
+      // the one outcome dropping the dim must not buy.
+      title={
+        running
+          ? // T:4187's own string, not the shorter one this shipped with
+            // (visual pass 3, FIX-27). `aria-label` is `Stop` on both sides —
+            // that is the control's NAME — and the tooltip is where legacy says
+            // which stop it is: a turn's, not the recorder's or the app's.
+            "Stop this turn"
+          : attaching
+            ? "Attaching…"
+            : sendBusy
+              ? "Taking the picture…"
+              : "Send"
+      }
+            // T NEVER DISABLES SEND — not for an empty box, not for a pending
+            // scheduled message, not for anything. There is no `.send:disabled`
+            // rule in the whole of T (T:2956-2981), the markup carries no
+            // attribute (T:4187, T:4246) and no line of T's script ever sets one:
+            // `applyComposerBlockState` disables the BOX (T:17218) and the
+            // Schedule pill (T:17238) and leaves this button alone. T has no
+            // `canSend` at all — the name in this app is T:7720's `activeRun ||
+            // !sending`, which is the ANNOTATION send gate, not this button.
+            //
+            // So the refusals all live where T puts them: in the submit handler,
+            // which swallows an empty send, a blocked composer, a chip still
+            // attaching and a capture in flight. The dim bought nothing the
+            // handler was not already doing, it was never reviewed (it appears in
+            // none of PR1-R1..R4 or PR2-R1) and it cost the load-bearing half —
+            // `disabled` also kills the STOP this button becomes mid-run, leaving
+            // a reader no way out of a turn.
+            //
+            // The two transient windows T never had (`attaching`, `sendBusy`) say
+            // so in the `title` instead, which is feedback without a dead door.
+          >
+            {running ? (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden="true"
+              >
+                <rect
+                  x="4"
+                  y="4"
+                  width="8"
+                  height="8"
+                  rx="1.5"
+                  fill="currentColor"
+                />
+              </svg>
+            ) : (
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+          </button>
         </div>
-      ) : null}
-      <div className="c-composer-row" ref={rowRef}>
-        <ModelSelect value={controls.model} onChange={controls.setModel} />
-        <EffortSelect value={controls.effort} onChange={controls.setEffort} />
-        <PermissionSelect
-          value={controls.permission}
-          onChange={controls.setPermission}
-          compact={fit !== "full"}
-        />
-        <span className="c-spacer" />
-        {camera}
-        {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two
-            are the ways this draft leaves the box — now, or as a task
-            (T:4174-4183). The landing card's copy is never blocked. */}
-        <SchedButton
-          file={file}
-          sessionId={sessionId}
-          draft={draft}
-          back={back}
-          disabled={variant === "chat" ? blocked : false}
-          onCancel={focusBox}
-          onNavigate={onNavigate}
-        />
-        <button
-          className="c-send"
-          type="submit"
-          aria-label={running ? "Stop" : "Send"}
-          title={running ? "Stop" : attaching ? "Attaching…" : "Send"}
-          disabled={blocked || (!running && !canSend)}
-        >
-          {running ? (
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <rect
-                x="4"
-                y="4"
-                width="8"
-                height="8"
-                rx="1.5"
-                fill="currentColor"
-              />
-            </svg>
-          ) : (
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          )}
-        </button>
-      </div>
-    </form>
+      </form>
+    </>
   );
 }
 

@@ -18,6 +18,11 @@ export { EffortSelect } from "./EffortSelect";
 export { PermissionSelect } from "./PermissionSelect";
 export { PillSelect } from "./PillSelect";
 export type { PillOption, PillSelectProps } from "./PillSelect";
+/** The window `blur`/`resize` dismissals Base UI does not cover (T:12602,
+ *  T:12605). Exported because three popovers want them and PR4's Schedule seat
+ *  and confirm are two of the three. */
+export { useDismissOnWindow } from "./useDismissOnWindow";
+export type { DismissOnWindowOptions } from "./useDismissOnWindow";
 export { SchedButton } from "./SchedButton";
 export { SchedConfirm } from "./SchedConfirm";
 export {
@@ -139,7 +144,7 @@ export {
   activityDetail,
 } from "./WorkingLine";
 export type { WorkingLineProps, VerbStats } from "./WorkingLine";
-export { TroubleView } from "./TroubleView";
+export { NO_TARGET_SAID, TroubleView } from "./TroubleView";
 export type { TroubleViewProps } from "./TroubleView";
 export {
   CardPolicyProvider,
@@ -164,7 +169,7 @@ export type { AttachIconProps } from "./AttachIcon";
 export type { AnnStripProps } from "./AnnStrip";
 export { useAttachments } from "./useAttachments";
 export { fitStrip, useFitStrip } from "./useFitStrip";
-export { mergeSendOptions } from "./sendMerge";
+export { mergeSendOptions, sendBlocks } from "./sendMerge";
 export type {
   Attachments,
   OutgoingAttachments,
@@ -174,6 +179,7 @@ export {
   ATTACH_API,
   failLabel,
   glyphDoor,
+  liveViewable,
   prunedLabel,
   previewSrcFor,
   receiptFor,

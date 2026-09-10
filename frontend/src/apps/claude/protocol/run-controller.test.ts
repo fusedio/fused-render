@@ -98,7 +98,7 @@ function makeController(
   const stranded: string[][] = [];
   /** Every send that reported itself NOT SENT — the road the composer takes its
    *  words and its pictures back on. */
-  const returned: { text: string; attachments?: unknown[] }[] = [];
+  const returned: { text: string; attachments?: unknown[]; refused?: boolean }[] = [];
   const controller = createChatController({
     ...over,
     file: "/proj/app.py",
@@ -309,11 +309,28 @@ describe("start → poll → done", () => {
     await controller.sendMessage("two", { attachments: shots });
     // Refused, and refused OUT LOUD: the same array the caller handed down, so
     // the map it parked the Attachments under can be unlocked by identity.
-    expect(returned).toEqual([{ text: "two", attachments: shots }]);
+    //
+    // `refused` is the OTHER half of what the caller owes back. This road turned
+    // the message away before `addUser` ever ran, so those words are in no
+    // bubble, no queue and no composer (the box cleared on the keystroke): the
+    // flag is what tells the caller to put them back rather than let them
+    // vanish (Bugbot, PR #1074).
+    expect(returned).toEqual([{ text: "two", attachments: shots, refused: true }]);
     release();
     await first;
     expect(agent.of("start").length).toBe(1);
     expect(users(controller).map((t) => t.text)).toEqual(["one"]);
+  });
+
+  test("a send that REACHED a bubble and then failed is not `refused`", async () => {
+    // The distinction the flag draws: `start` answering `{error}` left the
+    // failure in the transcript, which is where the reader stays to read it —
+    // so the words must NOT also reappear in the box, or a failed send reads as
+    // two messages. Only a pre-flight refusal owes them back.
+    const { controller, returned } = makeController({ start: () => ({ error: "no session" }) });
+    await controller.sendMessage("this one failed");
+    expect(returned).toEqual([{ text: "this one failed" }]);
+    expect(users(controller)).toEqual([]);
   });
 
   test("a send into a DISPOSED controller hands its pictures back", async () => {
@@ -326,8 +343,8 @@ describe("start → poll → done", () => {
     // Both roads, because both refuse before anything is attempted — and on an
     // unmount the hand-back is what releases the blob URLs.
     expect(returned).toEqual([
-      { text: "hi", attachments: shots },
-      { text: "also this", attachments: shots },
+      { text: "hi", attachments: shots, refused: true },
+      { text: "also this", attachments: shots, refused: true },
     ]);
   });
 
@@ -2612,6 +2629,113 @@ describe("ChatState.permissionMode: the mode the RUN is in (T:13884-13886)", () 
   });
 });
 
+// ---- which param writes buy a history entry (P3-15, T:14576-14580) --------
+
+describe("the two \"replace\" writes", () => {
+  /** The memory store keeps the VALUES; this keeps the OPTIONS, which is the
+   *  whole subject here — a write's history mode is invisible in the snapshot
+   *  and is exactly what regressed (a default of "replace" for everything, then
+   *  a "push" on the one write that must not have one). */
+  function recording(initial: Record<string, string> = {}) {
+    const base = createMemoryParamsStore(initial);
+    const writes: { patch: Record<string, unknown>; history?: string }[] = [];
+    const store = {
+      ...base,
+      set(patch: Parameters<typeof base.set>[0], opts?: Parameters<typeof base.set>[1]) {
+        writes.push({ patch: patch as Record<string, unknown>, history: opts?.history });
+        base.set(patch, opts);
+      },
+    };
+    const historyOf = (key: string): (string | undefined)[] =>
+      writes.filter((w) => key in w.patch).map((w) => w.history);
+    return { store, writes, historyOf };
+  }
+
+  test("approving a plan writes the landing mode with \"replace\"", async () => {
+    // T:14580's own reason: the write is a CONSEQUENCE of approving a plan, not
+    // a place anyone navigated to, and it lands behind an await — so the
+    // first-change push would mint an entry whose whole content is the mode the
+    // session has already left, and Back would put "plan" back in the picker
+    // for a session that is no longer planning (re-creating the very loop the
+    // approval write exists to break).
+    const rec = recording({ permission: "plan" });
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        decide: () => ({
+          decided: "pl1",
+          decision: "allow" as const,
+          scope: "once" as const,
+          mode: "" as const,
+          answers: {},
+        }),
+        poll: async (_f, n) => {
+          if (n === 0) return poll({ permissions: [permRow({ id: "pl1", tool: "ExitPlanMode" })] });
+          await controller.decidePlan("pl1", "allow");
+          return poll({ done: true, permissions: [permRow({ id: "pl1", decision: "allow" })] });
+        },
+      },
+      rec.store,
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(rec.historyOf("permission")).toEqual(["replace"]);
+    expect(made.params.get("permission")).toBe("prompt");
+  });
+
+  test("a card's \"let Claude decide from here\" is the same write", async () => {
+    // The twin site (T:13988-13992): the session's mode moved because a
+    // decision landed, so the picker follows a consequence too. The picker's own
+    // dropdown still PUSHES — choosing a mode by hand is a step — which is why
+    // this is per-site and not the store's default.
+    const rec = recording({ permission: "prompt" });
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        decide: () => ({
+          decided: "c1",
+          decision: "allow" as const,
+          scope: "once" as const,
+          mode: "acceptEdits" as const,
+          answers: {},
+        }),
+        poll: async (_f, n) => {
+          if (n === 0) return poll({ permissions: [permRow({ id: "c1" })] });
+          await controller.decidePermission("c1", "allow", "once", "acceptEdits");
+          return poll({ done: true, permissions: [permRow({ id: "c1", decision: "allow" })] });
+        },
+      },
+      rec.store,
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(rec.historyOf("permission")).toEqual(["replace"]);
+    expect(made.params.get("permission")).toBe("acceptEdits");
+  });
+
+  test("and NOTHING else is \"replace\" but `run` (R:1233-1254)", async () => {
+    // The default is runtime.js's own: a bare `set`, so the first change on a
+    // pristine entry pushes. Making "replace" the default here stopped Back
+    // returning to the landing from a chat the reader had just opened.
+    const rec = recording();
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        poll: () => poll({ done: true, session_id: "s99" }),
+      },
+      rec.store,
+    );
+    await made.controller.sendMessage("go");
+    // `run` is in-flight bookkeeping, both ways (T:13036/T:16333).
+    expect(rec.historyOf("run").length).toBeGreaterThan(0);
+    expect(new Set(rec.historyOf("run"))).toEqual(new Set(["replace"]));
+    // The session id is a place: it pushes.
+    expect(rec.historyOf("session_id")).toEqual(["push"]);
+  });
+});
+
 // ---- failures in the log ---------------------------------------------------
 
 describe("addError: the slot AND the row (T:13698)", () => {
@@ -2699,5 +2823,108 @@ describe("trimPermCards", () => {
     const m = cards(PERM_CARD_MAX + 5, () => false);
     trimPermCards(m);
     expect(m.size).toBe(PERM_CARD_MAX + 5);
+  });
+});
+
+// ---- the deferred PR1 items, landed in PR3 --------------------------------
+
+describe("status during the start round-trip (D2, QA PR #1061 — closed as legacy parity)", () => {
+  test("the status stays 'idle' until the run id lands: T flips to Stop in pollLoop (T:16208), never before", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const seen: string[] = [];
+    const { controller } = makeController({
+      start: async () => {
+        await held;
+        return { run_id: "r1" };
+      },
+      poll: (_f, n) =>
+        n === 0 ? poll({ segments: [text("hi")] }) : poll({ done: true, segments: [text("hi")] }),
+    });
+    controller.subscribe(() => seen.push(controller.getState().status));
+    const sent = controller.sendMessage("go");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    // A Stop with no run to stop would be a lie; the composer's send door
+    // (ClaudeChat `dispatchSend`, ClaudeChat.ann.test "only STARTING") is what
+    // keeps a second Enter from vanishing inside this window.
+    expect(controller.getState().status).toBe("idle");
+    expect(seen).not.toContain("starting");
+    release();
+    await sent;
+    expect(controller.getState().status).toBe("idle");
+    expect(seen).toContain("running");
+  });
+});
+
+describe("a follow-up that fails after Back stays quiet (D3, QA PR #1061)", () => {
+  test("no run to attach to, and the reader left during the wait: no trouble card, no hand-back", async () => {
+    const { controller, returned } = makeController({ send: () => ({ sent: true as const }) });
+    const pending = controller.sendFollowUp("nowhere to go");
+    // Back lands while the follow-up is still waiting for a run.
+    controller.newChat();
+    await pending;
+    expect(controller.getState().trouble).toBeNull();
+    expect(controller.getState().turns).toEqual([]);
+    expect(returned.length).toBe(0);
+  });
+
+  test("the inbox refuses after Back: the new transcript is not repainted", async () => {
+    let controller!: ChatController;
+    let releaseSend!: () => void;
+    const held = new Promise<void>((r) => (releaseSend = r));
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: async () => {
+        await held;
+        return { error: "no such run" };
+      },
+      poll: async (_f, n) => {
+        if (n === 0) {
+          void controller.sendFollowUp("late");
+          return poll({ segments: [text("still going")] });
+        }
+        return poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    const run = controller.sendMessage("go");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    controller.newChat(); // Back, with the follow-up's `send` still held
+    releaseSend();
+    await run;
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(controller.getState().trouble).toBeNull();
+    expect(controller.getState().turns).toEqual([]);
+    expect(made.returned.length).toBe(0);
+  });
+
+  test("`send` rejects after Back: same silence", async () => {
+    let controller!: ChatController;
+    let releaseSend!: () => void;
+    const held = new Promise<void>((r) => (releaseSend = r));
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: async () => {
+        await held;
+        throw new Error("network gone");
+      },
+      poll: async (_f, n) => {
+        if (n === 0) {
+          void controller.sendFollowUp("late");
+          return poll({ segments: [text("still going")] });
+        }
+        return poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    const run = controller.sendMessage("go");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    controller.newChat();
+    releaseSend();
+    await run;
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(controller.getState().trouble).toBeNull();
+    expect(controller.getState().turns).toEqual([]);
+    expect(made.returned.length).toBe(0);
   });
 });

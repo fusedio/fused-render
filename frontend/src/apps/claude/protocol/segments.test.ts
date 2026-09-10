@@ -221,3 +221,74 @@ describe("finishedTailText: what typer.finish drains to (T:16336)", () => {
     expect(finishedTailText(null)).toBe("");
   });
 });
+
+describe("an unchanged chip keeps its OBJECT across polls (T:15549-15554)", () => {
+  test("same id, status, output and image count → the identical `seg` reference", () => {
+    // The point is `===`, not deep equality: `ToolChip` is `memo`'d and `seg`
+    // is its only interesting prop, so a fresh object every poll meant a `Write`
+    // chip re-serialised its whole `<pre>` body 2.5×/s for the length of the
+    // turn — with the `JSON.stringify` of its uncapped `content` alongside.
+    const first = reconcileSegments(1, [tool("t1", "running")]);
+    const again = reconcileSegments(1, [tool("t1", "running")], first);
+    expect(again.rows[0]!.seg).toBe(first.rows[0]!.seg);
+  });
+
+  test("`input` is NOT in the identity — T excludes it, and says why", () => {
+    // T: "`input` is deliberately NOT in the key. It cannot change under a live
+    // chip […] and a Write's `content` is uncapped, so keying on it would
+    // re-stringify the whole file being written on every 400 ms poll."
+    const first = reconcileSegments(1, [tool("t1", "running")]);
+    const grown = {
+      ...(tool("t1", "running") as ToolSegment),
+      input: { command: "ls", content: "x".repeat(10000) },
+    };
+    const again = reconcileSegments(1, [grown as Segment], first);
+    expect(again.rows[0]!.seg).toBe(first.rows[0]!.seg);
+  });
+
+  test("a status, output or image-count change DOES take the new object", () => {
+    const first = reconcileSegments(1, [tool("t1", "running")]);
+    for (const changed of [
+      tool("t1", "ok"),
+      tool("t1", "running", "some output"),
+      { ...(tool("t1", "running") as ToolSegment), images: [{ media_type: "image/png", data: "iVBOR" }] } as Segment,
+    ]) {
+      const again = reconcileSegments(1, [changed], first);
+      expect(again.rows[0]!.seg).not.toBe(first.rows[0]!.seg);
+      expect(again.rows[0]!.seg).toBe(changed);
+    }
+  });
+
+  test("a TEXT row always takes the new object — its body IS the content", () => {
+    // "Unchanged" for a growing tail would have to be a deep comparison of the
+    // very string that is growing, which is the opposite of cheap.
+    const first = reconcileSegments(1, [text("hel")]);
+    const again = reconcileSegments(1, [text("hello")], first);
+    expect(again.rows[0]!.seg).not.toBe(first.rows[0]!.seg);
+    // …and an IDENTICAL text row is still a new object: nothing is claimed
+    // about it either way.
+    const same = reconcileSegments(1, [text("hel")], first);
+    expect(same.rows[0]!.seg).not.toBe(first.rows[0]!.seg);
+  });
+
+  test("a different id at the same key is never carried over", () => {
+    const first = reconcileSegments(1, [tool("t1", "running")]);
+    const other = reconcileSegments(1, [tool("t2", "running")], first);
+    expect(other.rows[0]!.seg).not.toBe(first.rows[0]!.seg);
+  });
+
+  test("no `prev` at all behaves exactly as before", () => {
+    const view = reconcileSegments(1, [tool("t1", "ok"), text("tail")]);
+    expect(view.rows).toHaveLength(2);
+    expect(view.rows[0]!.kind).toBe("tool");
+    expect(view.tailText).toBe("tail");
+  });
+
+  test("`pollBody` passes it through", () => {
+    const a = pollBody([tool("t1", "running")], "", 1);
+    const b = pollBody([tool("t1", "running")], "", 1, a.view);
+    expect(a.mode).toBe("segments");
+    expect(b.mode).toBe("segments");
+    expect(b.view!.rows[0]!.seg).toBe(a.view!.rows[0]!.seg);
+  });
+});

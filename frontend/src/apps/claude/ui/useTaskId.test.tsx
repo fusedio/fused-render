@@ -295,3 +295,35 @@ test("the Archive item closes the menu on click, before the call (R2-8)", () => 
   expect(action).toContain("remember(archiveStates, sessionId, wasFiled)");
   expect(action).toContain("setOpen(true)");
 });
+
+// ── P3R1-5: the nav lock reaches the two items that leave this chat ─────────
+//
+// Read off the source for the reason the R2-8 test above is: base-ui mounts no
+// item without a real pointer event. What is pinned is the pair of facts the
+// item is made of — BOTH refusals on `disabled`, and a `title` that names the
+// gesture the reader can actually make.
+test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () => {
+  const src = readFileSync(join(import.meta.dir, "Kebab.tsx"), "utf8");
+  // The prop, and its reason, come in from the chat rather than being imported:
+  // this menu owns no vocabulary of the annotation subsystem's.
+  expect(src).toContain("locked?: boolean");
+  expect(src).toContain("lockedReason?: string");
+  const items = src.split("<DropdownMenuItem").slice(2);
+  expect(items).toHaveLength(2); // Archive and Delete; the terminal item is neither
+  for (const item of items) {
+    const head = item.slice(0, item.indexOf("</DropdownMenuItem>"));
+    // A run is still named first — it is the refusal the reader cannot lift
+    // from here — and the lock is the second answer, never a silent no.
+    expect(head).toContain("disabled={live || locked}");
+    expect(head).toContain(
+      'title={live ? "Stop the run first" : locked ? lockedReason : undefined}',
+    );
+  }
+  // And the chat hands it the lock the rest of the nav already reads
+  // (`annNavLocked`, T:6888) with T's own sentence for it.
+  const chat = readFileSync(join(import.meta.dir, "../ClaudeChat.tsx"), "utf8");
+  const mount = chat.slice(chat.indexOf("<Kebab"));
+  const props = mount.slice(0, mount.indexOf("/>"));
+  expect(props).toContain("locked={ann.locked}");
+  expect(props).toContain("lockedReason={NAV_LOCKED_REASON}");
+});

@@ -8,6 +8,8 @@ import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 const { AttachTray } = await import("./AttachTray");
+const { ShotViewerBody } = await import("./ShotViewer");
+const { liveViewable, receiptViewable, settleReceipts, toViewable } = await import("./attachApi");
 const { useAttachments } = await import("./useAttachments");
 const { ComposerCard } = await import("./Composer");
 const { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_PERMISSION } = await import("./composer-defaults");
@@ -35,6 +37,7 @@ function fakeApi(over: Partial<AttachApi> = {}): { api: AttachApi; spy: Spy } {
       return () => {};
     },
     attachPane: async () => att({ kind: "pane", seat: "pane", thumb: "blob:pane" }),
+    attachOverview: async () => att({ kind: "overview", view: "/shots/overview.png" }),
     attachFiles: async function* (_dir, files) {
       for (const f of files) yield att({ kind: "file", name: f.name, view: "/shots/" + f.name });
     },
@@ -296,6 +299,28 @@ test("the WHOLE chip is the door for a picture and for a file, and a refusal has
   expect(inert.length).toBe(1);
 });
 
+test("the door's SPOKEN name says what is behind it — pixels or details", () => {
+  // T uses two suffixes on purpose: " — open full size" for a THUMBNAIL
+  // (T:7212), " — open details" for the glyph door (T:7158, T:10842). A `.zip`
+  // has no pixels to see full size, so one suffix for both promised something
+  // the viewer cannot deliver. The `title` beside it already split on the same
+  // fact; `ui/Receipts.tsx` was already correct.
+  const root = chipsOf([
+    att({ kind: "pane", thumb: "blob:x" }),
+    att({ kind: "file", name: "rows.csv", size: 2048 }),
+  ]);
+  const doors = root.findAll(
+    (n) => n.type === "button" && String(n.props.className) === "c-chip-door",
+  );
+  expect(String(doors[0]!.props["aria-label"])).toContain(" — open full size");
+  expect(String(doors[0]!.props["aria-label"])).not.toContain("open details");
+  expect(String(doors[1]!.props["aria-label"])).toContain(" — open details");
+  expect(String(doors[1]!.props["aria-label"])).not.toContain("full size");
+  // The title splits the same way, which is what this was made consistent with.
+  expect(String(doors[0]!.props.title)).toContain("full size");
+  expect(String(doors[1]!.props.title)).toBe("Click to see what is attached");
+});
+
 test("NO EMOJI on a chip — the glyph is a lucide icon (P2-7)", () => {
   const root = chipsOf([att({ kind: "file", name: "rows.csv", size: 2048 })]);
   const glyph = root.findByProps({ className: "c-pinlbl" });
@@ -428,12 +453,14 @@ test("the camera seat and the chip row both bump the row's fit revision", () => 
   expect(
     renderer!.root.findAll((n) => n.props.className === "c-viewshot-pill").length,
   ).toBe(1);
-  // Attachments alone make the composer sendable, with no words at all (T:17903).
+  // Attachments alone make the composer sendable, with no words at all (T:17903)
+  // — and Send carries no `disabled` for any of it (T:4187).
   act(() => {
     renderer!.update(card({ hasAttachments: true }));
   });
   const send = renderer!.root.findByProps({ className: "c-send" });
-  expect(send.props.disabled).toBe(false);
+  expect(send.props.disabled).toBeUndefined();
+  expect(send.props.title).toBe("Send");
 });
 
 test("the tray's own record is what a send and an unmount read — not the last render", async () => {
@@ -523,4 +550,67 @@ test("A PLACEHOLDER ALWAYS BECOMES A CHIP, even when the pipeline throws", async
   expect(items[1]!.viewNote).toBe("not attached: it could not be saved (disk full)");
   // And no placeholder is left claiming a file is still on its way.
   expect(items.every((s) => !s.pending)).toBe(true);
+});
+
+// ---- D8: the picture an OPEN viewer is showing ----------------------------
+
+/** The `<img>` the viewer's body is drawing, which is the whole of what the
+ *  user is looking at (`ShotViewerBody` is the seam the chassis' portal cannot
+ *  be mounted through). */
+function picIn(el: React.ReactElement): string {
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(el);
+  });
+  const imgs = r.root.findAllByType("img");
+  return imgs.length ? String(imgs[0]!.props.src ?? "") : "";
+}
+
+test("a viewer open on a pending shot follows it onto disk (D8)", () => {
+  // `viewing` was a frozen COPY of the row it was opened from, and a pending
+  // row's copy carries a `blob:` handle. A receipt clicked before its send's
+  // `start` came back therefore held that handle while the send landed:
+  // `settleReceipts` re-points the rows at the copy on disk and the spent
+  // handles are revoked a commit later, and no store write reaches a snapshot —
+  // so the picture went blank UNDER the user in the one place they had opened it
+  // to look at it.
+  const pic = att({ kind: "pane", view: "/shots/pane.png", thumb: "blob:fused/pane" });
+  // What the chip's own door hands the viewer, and what the viewer keeps.
+  const opened = toViewable(pic);
+  expect(liveViewable(opened, [pic], [])).toEqual(opened);
+  expect(picIn(<ShotViewerBody shot={liveViewable(opened, [pic], [])} paneNoun="preview" />)).toBe(
+    "blob:fused/pane",
+  );
+
+  // THE SEND GOES OUT while it is open: the tray is emptied into `inFlight`, the
+  // receipt goes up under the bubble still drawn with the blob…
+  const receipt: Receipt = { id: pic.id, kind: pic.kind, label: "attached", view: pic.view };
+  const onBubble = { ...receipt, thumb: pic.thumb };
+  expect(picIn(<ShotViewerBody shot={liveViewable(opened, [], [onBubble])} paneNoun="preview" />))
+    .toBe("blob:fused/pane");
+
+  // …and then it LANDS, which is where the snapshot used to die.
+  const settled = settleReceipts([onBubble], [pic]).receipts;
+  const live = liveViewable(opened, [], settled);
+  expect(picIn(<ShotViewerBody shot={live} paneNoun="preview" />)).toBe(
+    "/api/fs/raw?path=" + encodeURIComponent("/shots/pane.png"),
+  );
+  // Not pending any more, so Discard goes with the send: it cannot be un-sent.
+  expect(live?.pending).toBe(false);
+  expect(live).toEqual(receiptViewable(settled[0]!));
+});
+
+test("liveViewable falls back to the snapshot in the window that has neither (D8)", () => {
+  // `take()` has emptied the tray and the bubble is not up yet — the handle is
+  // very much alive there. And a RESTORED turn's receipt never had an id at all,
+  // so there is nothing to look it up by; it is already drawn off disk.
+  const pic = att({ kind: "pane", view: "/shots/pane.png", thumb: "blob:fused/pane" });
+  const opened = toViewable(pic);
+  expect(liveViewable(opened, [], [])).toBe(opened);
+  const restored = receiptViewable({ kind: "pane", label: "attached", view: "/shots/old.png" });
+  expect(liveViewable(restored, [pic], [])).toBe(restored);
+  expect(liveViewable(null, [pic], [])).toBeNull();
+  // And another picture's rows are not this one's answer.
+  const other = att({ kind: "image", view: "/shots/other.png", thumb: "blob:fused/other" });
+  expect(liveViewable(opened, [other], [])).toBe(opened);
 });

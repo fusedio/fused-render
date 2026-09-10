@@ -6,6 +6,9 @@
 // that is visible while the session lasts is provably there when it is reopened.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
@@ -14,6 +17,8 @@ const { Receipts } = await import("./Receipts");
 // document to portal into — the body is the whole content either way.
 const { ShotViewerBody, ShotViewerFooter, shotViewerTitle } = await import("./ShotViewer");
 const { SentPopBody } = await import("./SentPop");
+
+const HERE = dirname(new URL(import.meta.url).pathname);
 const { composeOutgoing, formatAnnotations, paneShotBlock, APP_STATE_TAG } = await import(
   "../protocol/wire"
 );
@@ -399,4 +404,39 @@ test("a picture inside the popup opens the viewer over it (T:1147)", () => {
   expect(shots.length).toBe(1);
   expect(shots[0]!.view).toBe("/shots/20260908-over.png");
   expect(shots[0]!.pending).toBe(false);
+});
+
+
+// ---- the record's own name, spoken (P3-23, T:4405) ------------------------
+//
+// SOURCE-LEVEL, and it has to be: `Modal` portals into `document.body`, and
+// this suite runs under react-test-renderer with a shim whose `document` is not
+// a DOM — `createPortal` refuses it outright ("Target container is not a DOM
+// element"). What can still be pinned is the CONTRACT, which is where the copy
+// loss actually was: the chassis takes the name, and this caller passes the full
+// sentence. The rendered attribute is checked in the browser.
+
+test("SentPop names the dialog in FULL while the bar keeps the short form", () => {
+  // T:4405 `aria-label="What was sent to the agent"` against T:4407's visible
+  // "What was sent". The short form is right on screen, where the receipt the
+  // reader just clicked supplies the rest; spoken on its own it dropped the half
+  // that says WHOSE record this is. The receipt rows that open it were already
+  // saying it in full.
+  const src = readFileSync(join(HERE, "SentPop.tsx"), "utf8");
+  expect(src).toContain('title="What was sent"');
+  expect(src).toContain('ariaLabel="What was sent to the agent"');
+});
+
+test("the Modal chassis takes a name, and without one is byte-identical (flag-off SAFE)", () => {
+  // The prop is additive: with it absent the dialog keeps `aria-labelledby`
+  // pointing at its own `h2`, so every existing caller — and the whole flag-off
+  // shell — renders exactly as before. And the two are MUTUALLY EXCLUSIVE: an
+  // explicit `aria-label` wins over `aria-labelledby`, so setting both would
+  // leave the weaker one dead in the tree.
+  const modal = readFileSync(join(HERE, "..", "..", "..", "platform", "ui", "modal", "Modal.tsx"), "utf8");
+  expect(modal).toContain("ariaLabel?: string;");
+  expect(modal).toContain('{ "aria-label": ariaLabel }');
+  expect(modal).toContain("{ \"aria-labelledby\": titleId }");
+  // No unconditional `aria-labelledby` left behind beside the spread.
+  expect(modal).not.toContain("aria-labelledby={titleId}");
 });

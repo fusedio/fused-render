@@ -91,7 +91,7 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
         : { cls: "", text: "" };
 
   return (
-    <div className={cn("turn", "perm", "plan", resolved && "resolved")}>
+    <div className={cn("turn", "perm", "plan", resolved && "resolved")} data-perm-id={row.id}>
       <div className="perm-head">{resolved ? "Claude had a plan" : "Claude has a plan"}</div>
       {/* The one payload rendered as markdown, through the funnel every reply
           uses; a plan quotes code, so the copy buttons come with it. */}

@@ -13,7 +13,8 @@ import { act, create } from "react-test-renderer";
 
 const { ClaudeChat } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
-const { resetAgentDirCacheForTests } = await import("./protocol/agent");
+const { resetAgentDirCacheForTests, resolveAgentDir } = await import("./protocol/agent");
+const { troubleReport } = await import("@platform/lib/trouble");
 
 /** One `/api/run` call: the script and the action, plus the fields. */
 interface RunCall {
@@ -158,7 +159,14 @@ function hostFrameStub(): () => HTMLIFrameElement | null {
     addEventListener() {},
     removeEventListener() {},
   };
-  const frame = { isConnected: true, contentWindow: win } as unknown as HTMLIFrameElement;
+  // PR3's annotation target `watch`es the frame it is handed (`load` listener,
+  // T:6127), so the stub has to carry a listener surface too.
+  const frame = {
+    isConnected: true,
+    contentWindow: win,
+    addEventListener() {},
+    removeEventListener() {},
+  } as unknown as HTMLIFrameElement;
   return () => frame;
 }
 
@@ -213,6 +221,11 @@ test("a host frame we cannot READ is not a pane (Bugbot #1061)", async () => {
   const crossOrigin = () =>
     ({
       isConnected: true,
+      // PR3's annotation target `watch`es whatever frame it is handed, so the
+      // stub carries a listener surface like the readable one above — the point
+      // of this case is the UNREADABLE document, not a missing element API.
+      addEventListener() {},
+      removeEventListener() {},
       get contentWindow(): never {
         throw new Error("Blocked a frame with origin … from accessing a cross-origin frame.");
       },
@@ -302,38 +315,6 @@ test("the ask is spent ONCE — a host's own re-render cannot send it twice", as
   expect(started().length).toBe(1);
 });
 
-test("a host that DROPS initialAsk mid-wait still sends the ask once (Fix with AI, R4-4)", async () => {
-  // THE BUG THIS PINS. The explorer hosts derive `nativeAsk` at RENDER time
-  // from a ref written in a committed effect, so `initialAsk` is non-null for
-  // exactly ONE of the host's renders and `undefined` on the next — measured
-  // at 32 ms after the delivery remount, well inside the 1.5 s detection wait
-  // the ask boot parks in. With the prop in the boot effect's deps that flip
-  // cancelled the boot, re-armed the latch, and the re-run read `undefined`
-  // and took the "nothing to restore" branch: chat entered, composer live,
-  // prompt never sent.
-  //
-  // The test above re-renders WITH the ask still set, which is why this slipped
-  // through — the drop is the whole defect.
-  holdPrefs = true; // park inside ASK_DETECTION_TIMEOUT_MS
-  const params = createMemoryParamsStore();
-  let r!: ReturnType<typeof create>;
-  await act(async () => {
-    r = create(<ClaudeChat {...baseProps} params={params} initialAsk="fix it" />);
-  });
-  mounted.push(r);
-  expect(started()).toEqual([]); // still waiting on detection
-
-  // The host's one-shot `nativeAsk` flipping to null on its very next render.
-  await act(async () => {
-    r.update(<ClaudeChat {...baseProps} params={params} />);
-  });
-
-  holdPrefs = false; // detection lands
-  await settle(1700);
-  expect(started().length).toBe(1);
-  expect(started()[0].params.message).toContain("fix it");
-});
-
 // ── THE ANNOTATION STRIP FOLLOWS THE TARGET, NOT THE LAYOUT ─────────────────
 //
 // T's `annPollTarget` sets `hidden` on Screenshot/Comment/Annotate off ONE fact
@@ -352,7 +333,7 @@ function byClass(r: ReturnType<typeof create>, cls: string) {
   );
 }
 
-test("a HOSTED chat shows the seats — landing included — because the host has a target", async () => {
+test("a HOSTED chat shows the strip — landing included — because the host has a target", async () => {
   // The bug: `stripShown` read `!chatOnly`, a question about OUR layout, so the
   // sidebar lost the whole row on both views while the app sat on screen in the
   // middle column with its mark on it.
@@ -363,20 +344,26 @@ test("a HOSTED chat shows the seats — landing included — because the host ha
   expect(byClass(r, "c-anntools").length).toBe(1);
   expect(byClass(r, "c-anncta").length).toBe(1);
   const seats = byClass(r, "c-anncta")[0].findAllByType("button");
-  // ONE SEAT IN PR2 (P2-2). Comment and Annotate shipped here disabled and the
-  // owner's rule is that neither is ever drawn dead — T greys one only while the
-  // OTHER mode is armed (T:320-322) — so PR2 draws Screenshot alone and PR3
-  // turns the other two on through `AnnStrip`'s `modes`.
-  expect(seats.length).toBe(1);
+  expect(seats.length).toBe(3);
+  // ALL THREE ARE LIVE (PR3). When this landed, Comment and Annotate were seats
+  // waiting for their handlers and the assertion was that they arrived disabled
+  // rather than absent — the row must not grow two buttons under the reader's
+  // hand. PR3 handed them those handlers, and a hosted mount whose host has
+  // marked its frame is exactly the case they act on, so the row is three
+  // working controls; "absent beats dead" now decides the whole row at once
+  // (`capable`), which the next test pins.
   expect(seats[0].props.disabled).toBe(false);
-  expect(String(seats[0].props.className)).toContain("c-viewshot");
+  expect(seats[1].props.disabled).toBe(false);
+  expect(seats[2].props.disabled).toBe(false);
 });
 
 test("the strip ROW stands even with nothing to photograph — it carries the ⋮", async () => {
   // T's `#anntools` is static markup and holds `← Chats` and `#kebab` as well as
   // the three seats, so a folder listing keeps the row and loses only the
   // buttons (T:526 `body.nopane #kebab { margin-left: auto }` is that state).
-  // Native used to drop the whole row, which took the menu with it (P2-1).
+  // Native used to drop the whole row, which took the menu with it (P2-1) —
+  // and PR3's own copy of these two tests pinned the old behaviour until the
+  // re-stack (2026-09-10).
   const { r } = await mountChat({ annotateTarget: () => null });
   await settle(20);
   expect(byClass(r, "c-anntools").length).toBe(1);
@@ -392,13 +379,334 @@ test("the seats are absent on a chat-only mount with no host getter at all", asy
   expect(byClass(r, "c-anncta").length).toBe(0);
 });
 
-// THE MENU AND THE WAY OUT RIDE THE SAME ONE ROW (P2-1).
-test("the ⋮ is in the strip on the landing, and `← Chats` joins it in a chat", async () => {
-  const { r } = await mountChat({ annotateTarget: hostFrameStub() });
+test("a CONTROLLER REBUILD does not re-send a spent ask (QA #1061)", async () => {
+  // THE PATH THE TWO TESTS ABOVE CANNOT REACH. Both re-render the HOST, which
+  // by construction cannot change the controller's identity — and the controller
+  // is what the boot latch is keyed on (`bootedFor`), deliberately, so a new
+  // target gets its own `openSession`/`resumeRun`. Swap `file` for one whose
+  // `agentDir` is ALREADY in the resolver cache and both halves fire at once:
+  // the controller memo (deps `[agentDir, file, params]`) rebuilds, the boot
+  // re-runs with `bootDispatched` re-armed, and a sticky `askRef` took the
+  // `if (ask)` branch a second time — `params.set({session_id: null, run: null})`
+  // disowning the conversation on screen, and the same "Fix with AI" prompt
+  // fired at the OTHER file.
+  //
+  // The ask is spent on the LATCH now, so the rebuild finds nothing to send.
+  resetAgentDirCacheForTests();
+  // Both targets pre-resolved, so neither swap spends a stat round-trip that
+  // would take `agentDir` back to `undefined` and remount the body.
+  await resolveAgentDir("/w/p");
+  await resolveAgentDir("/w/p/other.html");
+  const params = createMemoryParamsStore();
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<ClaudeChat {...baseProps} params={params} initialAsk="fix it" />);
+  });
+  mounted.push(r);
   await settle(20);
-  const strip = () => byClass(r, "c-anntools")[0];
-  // The landing has no chat to leave, so no back button — and the menu is the
-  // landing's own one item ("New session in terminal", T:13415).
-  expect(strip().findAll((n) => String(n.props.className ?? "") === "c-back").length).toBe(0);
-  expect(strip().findAll((n) => String(n.props.className ?? "").split(/\s+/).includes("c-kebab")).length).toBe(1);
+  expect(started().length).toBe(1);
+  expect(started()[0].params.message).toContain("fix it");
+  const sessionAfterAsk = params.get("session_id");
+
+  // The host swaps the target in place — and, like the real hosts, hands the
+  // one-shot ask over as `undefined` on every render after the delivery.
+  await act(async () => {
+    r.update(<ClaudeChat {...baseProps} file="/w/p/other.html" params={params} />);
+  });
+  await settle(1700);
+
+  // ONE run, still, and it is still the one the reader is looking at.
+  expect(started().length).toBe(1);
+  expect(params.get("session_id")).toBe(sessionAfterAsk);
+  expect(params.get("session_id")).toBeTruthy();
+});
+
+/** The rendered TEXT of every element with exactly this class — flattened off
+ *  the JSON tree rather than read out of `props.children`, so a sentence React
+ *  splits into several nodes still comes back as one string (P3R1-8). */
+function troubleText(r: ReturnType<typeof create>, klass: string): string[] {
+  const out: string[] = [];
+  const text = (n: unknown): string => {
+    if (n === null || n === undefined || typeof n === "boolean") return "";
+    if (typeof n === "string" || typeof n === "number") return String(n);
+    if (Array.isArray(n)) return n.map(text).join("");
+    const node = n as { children?: unknown };
+    return text(node.children ?? "");
+  };
+  const walk = (n: unknown): void => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) {
+      for (const k of n) walk(k);
+      return;
+    }
+    const node = n as { props?: { className?: string }; children?: unknown };
+    if (String(node.props?.className ?? "") === klass) out.push(text(node.children ?? ""));
+    walk(node.children);
+  };
+  walk(r.toJSON());
+  return out;
+}
+
+// ---- the cover over the agentDir stat, and its 8 s backstop (P3-13) --------
+
+test("the template lookup shows the SKELETON, not an empty box", async () => {
+  // This branch used to return a bare `.chat-root` on the argument that "the
+  // host is still holding its own cover over this box (ChatFrame's skeleton)".
+  // True flag-OFF, where the host frames a booting document — but flag-on there
+  // is no frame: `ChatMount`'s `Suspense` fallback covers the CHUNK LOAD and has
+  // already resolved by the time this component runs its own stat. So a first
+  // mount drew an empty box on the host background for the length of one
+  // `/api/fs/stat`, and a cold wall of six cards drew six empty tiles where
+  // legacy drew six skeletons.
+  let release!: (r: Response) => void;
+  (globalThis as { fetch: unknown }).fetch = async (input: unknown): Promise<Response> => {
+    const url = String(typeof input === "string" ? input : (input as { url: string }).url);
+    if (url.startsWith("/api/fs/stat")) {
+      return new Promise<Response>((res) => {
+        release = res;
+      });
+    }
+    if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
+    return jsonRes({});
+  };
+
+  const params = createMemoryParamsStore();
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<ClaudeChat {...baseProps} params={params} />);
+  });
+  mounted.push(r);
+
+  // The SAME node `Suspense` shows and `ChatFrame` holds over a booting frame,
+  // so the two waits read as one wait rather than a skeleton flashing to an
+  // empty box.
+  const roots = r.root.findAll(
+    (n) => typeof n.type === "string" && String((n.props as { className?: string }).className ?? "").includes("chat-frame"),
+  );
+  expect(roots.length).toBeGreaterThan(0);
+  // A skeleton, not a bare plate: the shimmer bars are what makes it a wait.
+  expect(
+    r.root.findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className ?? "").includes("skel"),
+    ).length,
+  ).toBeGreaterThan(0);
+
+  await act(async () => {
+    release(
+      jsonRes({
+        path: "/w/p",
+        is_dir: true,
+        templates: [{ mode: "claude", path: "/w/p/.claude/template.html" }],
+      }),
+    );
+  });
+});
+
+test("a stat that never settles gets an 8 s backstop to the TroubleView", async () => {
+  // Legacy revealed at `CHAT_FRAME_FALLBACK_MS`; without a backstop a stalled
+  // server — or a request the browser never answers — left the box covered for
+  // ever, with no road to the branch that exists to explain exactly this.
+  //
+  // The TIMER is asserted rather than waited out: the real duration is 8 s, and
+  // a suite that actually sleeps it pays that on every run. The firing is then
+  // driven by hand, which also proves the branch it lands on.
+  const { CHAT_FRAME_FALLBACK_MS } = await import("@platform/ui/ChatFrame");
+
+  (globalThis as { fetch: unknown }).fetch = async (input: unknown): Promise<Response> => {
+    const url = String(typeof input === "string" ? input : (input as { url: string }).url);
+    if (url.startsWith("/api/fs/stat")) return new Promise<Response>(() => {});
+    if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
+    return jsonRes({});
+  };
+
+  const G = globalThis as Record<string, unknown>;
+  const realTimeout = G.setTimeout as typeof setTimeout;
+  const armed: Array<{ ms: number; fn: () => void }> = [];
+  G.setTimeout = ((fn: () => void, ms?: number) => {
+    if (ms === CHAT_FRAME_FALLBACK_MS) {
+      armed.push({ ms, fn });
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }
+    return realTimeout(fn, ms);
+  }) as typeof setTimeout;
+
+  let r!: ReturnType<typeof create>;
+  try {
+    const params = createMemoryParamsStore();
+    await act(async () => {
+      r = create(<ClaudeChat {...baseProps} params={params} />);
+    });
+    mounted.push(r);
+
+    // Exactly one backstop, at legacy's own number — one constant, so the two
+    // waits cannot drift apart.
+    expect(armed).toHaveLength(1);
+    expect(armed[0]!.ms).toBe(8000);
+  } finally {
+    G.setTimeout = realTimeout;
+  }
+
+  const trouble = () =>
+    r.root.findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className ?? "").includes("trouble-card"),
+    );
+  // Covered until it fires...
+  expect(trouble()).toHaveLength(0);
+  // ...and the reader is told, instead of watching a skeleton for ever.
+  await act(async () => {
+    armed[0]!.fn();
+  });
+  expect(trouble().length).toBeGreaterThan(0);
+
+  // ── P3R1-8: AND WHAT IT SAYS IS TWO PLAIN SENTENCES ────────────────────
+  //
+  // The stalled stat is the commonest way into this card, and it used to read
+  // "Something went wrong" over a monospace box saying "There is no claude
+  // template for this folder." — a title that says nothing, a sentence about an
+  // internal thing the reader cannot act on, and a claim that is false here:
+  // the folder's template is fine, the request never answered (owner,
+  // 2026-09-10: short and human-readable, one sentence of what happened and one
+  // of what to do).
+  expect(troubleText(r, "trouble-title")).toEqual(["This chat couldn't load."]);
+  expect(troubleText(r, "trouble-explain")).toEqual([
+    "Reload the page, or check that Fused Render is still running.",
+  ]);
+  // NO VERBATIM BOX: there are no machine words behind this failure, and a
+  // monospace plate reading our own sentence back (or "(no message)") reads as
+  // a program having said it.
+  expect(
+    r.root.findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className ?? "").includes("trouble-error"),
+    ),
+  ).toHaveLength(0);
+  // …and nothing in the card names the app's insides.
+  const words = JSON.stringify(r.toJSON());
+  for (const term of ["agentDir", "template.html", "claude template", "stat", "controller"]) {
+    expect(words).not.toContain(term);
+  }
+
+  // R1-4: THE ACTION THE SENTENCE NAMES IS A BUTTON. The explanation asks the
+  // reader to reload the page, and without `onRetry` the card drew no button at
+  // all — so the copy named an action the card did not offer, while the other
+  // boot card (`main.tsx`) has always passed one.
+  const buttons = r.root
+    .findAll((n) => n.type === "button")
+    .map((n) => String((n.props as { children?: unknown }).children ?? ""));
+  expect(buttons).toContain("Reload the page");
+  // The label is the sentence's own word, not the shared "Try again": a stalled
+  // stat is usually a server that has gone away, and re-running the same
+  // request would answer the reader with the same wait.
+  expect(buttons).not.toContain("Try again");
+
+  // R1-3: AND THE CLIPBOARD DOES NOT SAY WHAT THE SCREEN STOPPED SAYING.
+  // `troubleReport` printed `Error:` over "(no message)" for a blank error, so
+  // "Copy the details" handed on the one string P3R1-8 removed — as the only
+  // machine fact in it. A failure with nothing verbatim behind it now reports
+  // no error section at all.
+  const report = troubleReport({ what: "opening the chat on /a/b.py", error: "" });
+  expect(report).not.toContain("(no message)");
+  expect(report).not.toContain("Error:");
+  // What it does carry is what it actually knows.
+  expect(report).toContain("What the app was doing: opening the chat on /a/b.py");
+  expect(report).toContain("Help: ");
+  // A caller WITH bytes is untouched.
+  expect(troubleReport({ what: "x", error: "ENOTFOUND api" })).toContain("Error:\nENOTFOUND api");
+});
+
+// ---- P3R1-8: the OTHER way into the boot card -----------------------------
+
+test("no target at all gets its own two sentences, not the stalled-load ones", async () => {
+  // Two different facts with two different things to do about them, so they are
+  // not folded into one sentence: nothing to open a chat ON is the reader's own
+  // next move, where a stalled load is the app's.
+  const params = createMemoryParamsStore();
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<ClaudeChat {...baseProps} file={null} params={params} />);
+  });
+  mounted.push(r);
+  expect(troubleText(r, "trouble-title")).toEqual(["There's nothing to open a chat on."]);
+  expect(troubleText(r, "trouble-explain")).toEqual([
+    "Open a file or a folder first, then start the chat.",
+  ]);
+  expect(
+    r.root.findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className ?? "").includes("trouble-error"),
+    ),
+  ).toHaveLength(0);
+  // AND NO RETRY BUTTON HERE (R1-4). The stalled load gets one, because
+  // reloading is the thing to do about it; this card's own next move is opening
+  // a file, so a button back to the same empty room would be the same fault the
+  // other card had in reverse — an action the copy never asked for.
+  expect(
+    r.root
+      .findAll((n) => n.type === "button")
+      .map((n) => String((n.props as { children?: unknown }).children ?? "")),
+  ).not.toContain("Reload the page");
+});
+
+
+// ---- the three options the watcher was never handed (P3-19/20/37) ---------
+
+test("the block says APP, the outline goes to a FILE, and its nodes carry a path", async () => {
+  // `createAppStateWatcher` has taken all three options since it was written;
+  // the call site passed NONE, so every default was quietly in force:
+  //
+  //   * P3-20 — the block called the user's running app "the preview" (T:5352-
+  //     5411);
+  //   * P3-37 — the whole outline was INLINED on every send, so the CLI re-read
+  //     it on every later turn (the exact cost T:5177-5218 exists to avoid) and
+  //     it warned `app-state outline kept inline: no screenshot directory` each
+  //     time;
+  //   * P3-19 — no outline node carried a `path`, while the block's own preamble
+  //     tells the model `path` is the same anchorPath the pins use — so a pin
+  //     could not be joined to a node, and D146's single-identifier promise was
+  //     broken from the outline side.
+  const uploads: Array<{ path: string; body: string }> = [];
+  const base = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (
+    input: unknown,
+    init?: { body?: unknown },
+  ): Promise<Response> => {
+    const url = String(typeof input === "string" ? input : (input as { url: string }).url);
+    if (url === "/api/run") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        py: string;
+        params: Record<string, string>;
+      };
+      // The shots dir the outline is offloaded into — the one answer the boot
+      // stub does not give, and the only reason it stayed inline in tests.
+      if (String(body.params?.action) === "shots_dir") {
+        return jsonRes({ ok: true, result: { dir: "/w/p/.fused/shots" } });
+      }
+    }
+    if (url.startsWith("/api/fs/upload")) {
+      uploads.push({ path: url, body: "" });
+      return jsonRes({ ok: true });
+    }
+    return base(input as RequestInfo, init as RequestInit);
+  };
+
+  await mountChat({ initialAsk: "what can you see?", annotateTarget: hostFrameStub() });
+  await settle(30);
+
+  expect(started().length).toBe(1);
+  const message = started()[0].params.message;
+  // The NOUN. A hosted target resolved through `app.py` is an app, and the
+  // preamble now says so.
+  expect(message).toContain("app");
+  expect(message).not.toContain("the preview pane the reader is looking at");
+  // OFFLOADED: a path instead of the outline, and the preamble that tells the
+  // model where to read it.
+  expect(message).toContain("dom_path");
+  expect(message).toContain("The DOM outline is the JSON file at `dom_path`");
+  expect(uploads.length).toBeGreaterThan(0);
 });

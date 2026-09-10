@@ -5,6 +5,7 @@ import {
   HOME_TITLE_STEPS,
   pickHomeTitleStep,
   pickRowFit,
+  readRow,
   rowNeed,
   type RowFit,
   type Seat,
@@ -130,4 +131,89 @@ test("the home title picks the largest step the name fits on (T:12430)", () => {
 
 test("a zero base font falls back to the first step's size", () => {
   expect(pickHomeTitleStep(26, 0, 26)).toBe("");
+});
+
+// ---- readRow: which children hold a seat (T:7570-7576) --------------------
+
+/** A row and its children, as `readRow` reads them: `getComputedStyle` and
+ *  `getBoundingClientRect`. Small enough to build by hand, and the alternative
+ *  is no coverage of `readRow` at all — this suite has no DOM. */
+function fakeRow(
+  kids: Array<{ display?: string; width: number; ml?: number; mr?: number; cls?: string }>,
+  rowBox: { columnGap?: number; paddingLeft?: number; paddingRight?: number } = {},
+) {
+  const styles = new Map<unknown, Record<string, string>>();
+  const row = {
+    children: kids.map((k) => {
+      const el = {
+        getBoundingClientRect: () => ({ width: k.width }),
+        classList: { contains: (c: string) => c === k.cls },
+      };
+      styles.set(el, {
+        display: k.display ?? "flex",
+        marginLeft: String(k.ml ?? 0) + "px",
+        marginRight: String(k.mr ?? 0) + "px",
+      });
+      return el;
+    }),
+  };
+  styles.set(row, {
+    columnGap: String(rowBox.columnGap ?? 6) + "px",
+    paddingLeft: String(rowBox.paddingLeft ?? 0) + "px",
+    paddingRight: String(rowBox.paddingRight ?? 0) + "px",
+  });
+
+  const G = globalThis as Record<string, unknown>;
+  const real = G.getComputedStyle;
+  G.getComputedStyle = (el: unknown) => styles.get(el) ?? {};
+  try {
+    return readRow(row as unknown as HTMLElement);
+  } finally {
+    if (real === undefined) delete G.getComputedStyle;
+    else G.getComputedStyle = real;
+  }
+}
+
+test("a LAID-OUT zero-width child holds no seat, so it pays no gap (T:7570-7576)", () => {
+  // T's own test is `if (!c.offsetWidth) continue; // a hidden child holds no
+  // seat`. Native skipped only `display: none`, so a zero-width child that WAS
+  // laid out still cost a gap and the fold verdict came out a sub-pixel
+  // different right at the boundary.
+  const { box: b, seats } = fakeRow([{ width: 40 }, { width: 0 }, { width: 40 }]);
+  expect(seats[1]!.hidden).toBe(true);
+  expect(seats[1]!.width).toBe(0);
+  // Two seats, ONE gap — not three seats and two gaps.
+  expect(rowNeed(b, seats)).toBe(80 + 6);
+});
+
+test("`display: none` is still its own test, not inferred from the width", () => {
+  // It is the honest read of "not laid out" (T:12246), and a `none` child can
+  // report a non-zero rect in some engines — so the two together cover both
+  // ways a child can be nothing.
+  const { box: b, seats } = fakeRow([
+    { width: 40 },
+    { width: 33, display: "none" },
+    { width: 40 },
+  ]);
+  expect(seats[1]!.hidden).toBe(true);
+  expect(seats[1]!.width).toBe(0);
+  expect(rowNeed(b, seats)).toBe(80 + 6);
+});
+
+test("a real child keeps its fractional width and its margins", () => {
+  // The fractional `getBoundingClientRect().width` stays — it is the more
+  // correct read, and `fit.ts` documents why.
+  const { seats } = fakeRow([{ width: 40.5, ml: 2, mr: 3 }]);
+  expect(seats[0]!.width).toBe(40.5);
+  expect(seats[0]!.marginLeft).toBe(2);
+  expect(seats[0]!.marginRight).toBe(3);
+  expect(seats[0]!.hidden).toBeUndefined();
+});
+
+test("the spacer is still recognised by its class", () => {
+  const { seats } = fakeRow([{ width: 0, cls: "c-spacer" }]);
+  // Zero-width AND a spacer: `hidden` wins, which is the same answer either
+  // way — a spacer charges a seat but no width, and a hidden child charges
+  // neither. The row it is in has other seats to space.
+  expect(seats[0]!.hidden).toBe(true);
 });

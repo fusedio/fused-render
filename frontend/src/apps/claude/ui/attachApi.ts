@@ -16,6 +16,7 @@ import { statPath } from "@platform/lib/api";
 import { paneOfferable, paneSrcFor } from "../pane/paneUrl";
 import {
   attachFiles,
+  attachOverview,
   attachPane,
   attachPaths,
   dragHasAttachment,
@@ -55,6 +56,11 @@ export {
 export interface AttachApi {
   flash: typeof flash;
   attachPane: typeof attachPane;
+  /** PR3's send-time badged overview (`shots/attach.attachOverview`, T:10127).
+   *  In the seam and not imported at the call site for the same reason the other
+   *  eleven are: a send that has to take a picture must be testable without a
+   *  capture engine. */
+  attachOverview: typeof attachOverview;
   attachFiles: typeof attachFiles;
   attachPaths: typeof attachPaths;
   readDirs: typeof readDirs;
@@ -75,6 +81,7 @@ export interface AttachApi {
 export const ATTACH_API: AttachApi = {
   flash,
   attachPane,
+  attachOverview,
   attachFiles,
   attachPaths,
   readDirs,
@@ -160,6 +167,42 @@ export function receiptViewable(r: Receipt): Viewable {
     ...(r.why ? { why: r.why } : {}),
     pending: false,
   };
+}
+
+/**
+ * THE LIVE ROW BEHIND AN OPEN VIEWER (D8).
+ *
+ * A `Viewable` is a COPY, and a pending picture's copy carries a `blob:` handle.
+ * A shot opened before its send came back therefore held that handle while the
+ * send landed: `settleReceipts` re-points the rows at the copy on disk and the
+ * spent handles are revoked a commit later, and no store write reaches a
+ * snapshot — so the picture went blank under the user in the one place they had
+ * opened it to look at it.
+ *
+ * So the snapshot is only ever an ADDRESS. `Viewable.id` is the attachment id
+ * that survives the whole trip — the tray, the send's `inFlight` entry, the
+ * receipt, the settled receipt (`settleReceipts` matches on it for the same
+ * reason) — so the row is looked up FRESH: the tray first, because a pending
+ * picture is the tray's, then the receipts under the sent bubbles.
+ *
+ * THE SNAPSHOT IS THE FALLBACK, for the one window where the picture is in
+ * neither list: `take()` has emptied the tray and the bubble is not up yet.
+ * Its handle is very much alive there, and so is a snapshot with no id at all —
+ * a restored turn's receipt, which never had one.
+ */
+export function liveViewable(
+  snapshot: Viewable | null,
+  items: readonly Attachment[],
+  receipts: readonly Receipt[],
+): Viewable | null {
+  if (!snapshot || !snapshot.id) return snapshot;
+  const id = snapshot.id;
+  const att = items.find((a) => a && a.id === id);
+  if (att) return toViewable(att);
+  const sent = receipts.find((r) => r && r.id === id);
+  // A settled receipt is `pending: false`, so Discard goes away with the send —
+  // which is the truth: it cannot be un-sent (T:4392).
+  return sent ? receiptViewable(sent) : snapshot;
 }
 
 /** T:10891 — an `<img>` that 404s. Said in words rather than left as a broken

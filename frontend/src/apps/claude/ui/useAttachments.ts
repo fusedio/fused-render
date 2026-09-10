@@ -66,8 +66,16 @@ export interface Attachments {
   addPaths(paths: readonly string[]): Promise<void>;
   /** The chip's ✕ and the viewer's Discard (T:10654 `shotDrop`). */
   remove(att: Attachment): void;
-  /** Empty the tray INTO a send. */
-  take(): OutgoingAttachments;
+  /**
+   * Empty the tray INTO a send.
+   *
+   * `lead` rides the same `<pane-shot>` block and the same receipt row the
+   * tray's own pictures do, FIRST in the list, and is not part of `items`:
+   * PR3's badged overview is the page's own picture of a pane that has since
+   * moved on, so a send that never launched must NOT hand it back as a chip the
+   * way it hands back what the user attached (T:16549-16553, 16698-16708).
+   */
+  take(lead?: readonly Attachment[]): OutgoingAttachments;
   /** The send never landed: put them back, prepended. */
   giveBack(items: readonly Attachment[]): void;
 }
@@ -286,23 +294,30 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     [api, commit],
   );
 
-  const take = useCallback((): OutgoingAttachments => {
-    const sending = live.current.filter((s) => !s.pending);
-    // A pending chip is not part of THIS message: its bytes are still on their
-    // way, so it stays in the tray for the next one rather than riding as a
-    // half-attachment.
-    commit((prev) => prev.filter((s) => s.pending));
-    if (!sending.length) return { blocks: [], readDirs: [], receipts: [], items: [] };
-    const block = paneShotBlock(api.toWire(sending), paneNoun);
-    return {
-      blocks: block ? [block] : [],
-      readDirs: shotsDir
-        ? api.readDirs(sending, shotsDir)
-        : api.readDirsFor(agentDir, sending),
-      receipts: sending.map((s) => api.receiptFor(s)),
-      items: sending,
-    };
-  }, [api, agentDir, paneNoun, shotsDir, commit]);
+  const take = useCallback(
+    (lead: readonly Attachment[] = []): OutgoingAttachments => {
+      const mine = live.current.filter((s) => !s.pending);
+      // A pending chip is not part of THIS message: its bytes are still on their
+      // way, so it stays in the tray for the next one rather than riding as a
+      // half-attachment.
+      commit((prev) => prev.filter((s) => s.pending));
+      // FIRST in the list: the overview is the picture the annotations block
+      // tells the model to read (T:16549).
+      const sending = [...lead, ...mine];
+      if (!sending.length) return { blocks: [], readDirs: [], receipts: [], items: [] };
+      const block = paneShotBlock(api.toWire(sending), paneNoun);
+      return {
+        blocks: block ? [block] : [],
+        readDirs: shotsDir
+          ? api.readDirs(sending, shotsDir)
+          : api.readDirsFor(agentDir, sending),
+        receipts: sending.map((s) => api.receiptFor(s)),
+        // The tray's own only: `lead` is nobody's to give back.
+        items: mine,
+      };
+    },
+    [api, agentDir, paneNoun, shotsDir, commit],
+  );
 
   const giveBack = useCallback(
     (back: readonly Attachment[]) => {

@@ -45,6 +45,23 @@ const FOCUSABLE =
 
 export interface ModalProps {
   title: ReactNode;
+  /**
+   * The dialog's ACCESSIBLE NAME, when it is not the visible title.
+   *
+   * The visible bar is often the short form — a heading has the surrounding
+   * page for context, while a spoken dialog name has nothing. T:4405 is the
+   * case this exists for: the record's bar says "What was sent" and its
+   * `aria-label` says "What was sent to the agent", which is the half that says
+   * WHOSE record it is.
+   *
+   * OPTIONAL AND OFF BY DEFAULT: with it absent the dialog keeps
+   * `aria-labelledby` pointing at the `h2`, so every existing caller — and the
+   * whole flag-off shell — renders byte-identical markup. Only a caller that
+   * passes it gets `aria-label` instead, which is the correct precedence (an
+   * explicit `aria-label` wins over `aria-labelledby`, so setting both would
+   * leave the weaker one dead in the tree).
+   */
+  ariaLabel?: string;
   onClose: () => void;
   children: ReactNode;
   // When true, Esc / backdrop / ✕ do NOT close (an action is running that must
@@ -88,6 +105,7 @@ export interface ModalProps {
 
 export function Modal({
   title,
+  ariaLabel,
   onClose,
   children,
   busy = false,
@@ -312,7 +330,13 @@ export function Modal({
         style={dialogStyle}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={titleId}
+        {...(ariaLabel
+          ? // An explicit name WINS over `aria-labelledby`, so the two are
+            // mutually exclusive rather than both set — leaving the heading
+            // reference in place beside an `aria-label` would put a dead
+            // attribute in the tree for the next reader to puzzle over.
+            { "aria-label": ariaLabel }
+          : { "aria-labelledby": titleId })}
         tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
       >

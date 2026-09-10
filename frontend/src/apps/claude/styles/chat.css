@@ -2,8 +2,30 @@
    T:69-101 light) aliased under `.chat-root` with a `--c-` prefix: the old names
    (`--bg`, `--accent`, `--border`, …) collide with tokens.css at different
    values (shell accent is yellow, the chat's is Claude orange). Values verbatim.
-   Theme follows the shell's `data-theme` on <html>; no runtime handshake. */
-.chat-root {
+   Theme follows the shell's `data-theme` on <html>; no runtime handshake.
+
+   `.c-tokens` CARRIES THE SAME BLOCK, for the surfaces that are the chat's but
+   are not INSIDE `.chat-root`: a `Modal` and a Base UI popup portal to
+   `document.body`, so every `--c-*` they asked for fell through to nothing and
+   the delete dialog painted the SHELL's danger ink — `rgb(255,107,107)` against
+   T's `rgb(242,109,109)`, from a token whose value is byte-identical on both
+   sides (visual pass 2, FIX-17). The class is the hook a portaled caller can
+   put on its own dialog; the bridge under it maps the three SHELL tokens a
+   shared dialog paints from onto the chat's values, because a component the
+   Tasks page also renders cannot be re-tokenised globally.
+
+   `.c-overlay` IS THE SAME HOOK UNDER ITS OTHER NAME and is listed here rather
+   than carrying its own copy. `styles/composer.css` used to restate a SUBSET of
+   this palette under it — "only the subset the overlays actually use" — and a
+   subset of a palette in a second place is a palette that drifts: it never
+   received FIX-14's letter-spacing removal, it would not have received FIX-22's
+   card surface, and every token it left out (`--c-card-bg`, `--c-code-*`,
+   `--c-pre-*`, `--c-ok`, `--c-link`, the diff pair, `--c-scrollbar`,
+   `--c-pill-caret`) fell through to nothing on a portaled popup that grew a
+   use for it. One list, three names, no subset. */
+.chat-root,
+.c-tokens,
+.c-overlay {
   color-scheme: dark;
   --c-bg: #191a1e;
   --c-panel: #1e2025;
@@ -22,14 +44,26 @@
   --c-on-accent: #1a1a1a;
   --c-error: #f26d6d;
   --c-ok: #6cc07a;
-  /* CARD SURFACE, its own pair of tokens (#22). A card is the one box in the
-     transcript that has to read as a THING SITTING ON the page — the run is
-     blocked on it — and at `--c-surface` (#26282f against a #191a1e page, ~4%
-     of lightness apart) it read as a slightly different shade of background.
-     Its own tokens rather than a louder `--c-surface`, because that token is
-     also the avatar disc, a chip's open tint, the copy button and the qhead
-     pill, and not one of those wants to get louder (≤5% drift elsewhere). */
-  --c-card-bg: #2e313a;
+  /* CARD SURFACE, its own token, now holding T'S OWN VALUE (visual pass 3,
+     FIX-22 — measured legacy `rgb(38,40,47)` against native's `rgb(46,49,58)`).
+     T:2037 is `.perm { background: var(--surface) }` and nothing else.
+
+     #22's argument for lifting it to `#2e313a` — "at `--c-surface` it read as a
+     slightly different shade of background" — was measured against a #191a1e
+     PAGE, and that was the real defect: a card does not sit on `--c-bg`, it
+     sits on the transcript column, which legacy paints `--panel` (#1e2025) and
+     native painted `--c-bg` behind an open card (FIX-21, the tailpin band).
+     Against #1e2025 T's #26282f is a clear lift and reads exactly as the thing
+     sitting on the page that #22 asked for. Land the ground and the surface has
+     nothing left to compensate for.
+
+     Kept as its OWN token rather than collapsed into `--c-surface`: the same
+     value today, but the card is the one box whose separation is load-bearing
+     (the run is blocked on it), and the avatar disc, a chip's open tint, the
+     copy button and the qhead pill must not have to move with it. Two rules
+     paint a 3px inset ring in this colour to fake a notch out of the card, so
+     they follow the token rather than a literal. */
+  --c-card-bg: #26282f;
   --c-card-bg-2: #383c47;
   --c-card-border: #4e525f;
   --c-code-bg: #2a2c33;
@@ -48,7 +82,9 @@
   --c-pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%239a9fa9" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
 }
 
-:root[data-theme="light"] .chat-root {
+:root[data-theme="light"] .chat-root,
+:root[data-theme="light"] .c-tokens,
+:root[data-theme="light"] .c-overlay {
   color-scheme: light;
   --c-bg: #ffffff;
   --c-panel: #fafafa;
@@ -67,10 +103,11 @@
   --c-on-accent: #ffffff;
   --c-error: #c62828;
   --c-ok: #2e7d32;
-  /* Light theme's page is pure white, so the card goes DOWN rather than up —
-     the same "sitting on the page" separation, read the other way round — and
-     the border does the rest of the work. */
-  --c-card-bg: #f1f2f5;
+  /* Light theme's page is off-white (`--c-panel` #fafafa), so the card still
+     goes DOWN rather than up — the same "sitting on the page" separation read
+     the other way round — and the border does the rest of the work. T:2037's
+     own light value, measured `rgb(244,244,246)` (FIX-22). */
+  --c-card-bg: #f4f4f6;
   --c-card-bg-2: #e4e6ec;
   --c-card-border: #c2c5ce;
   --c-code-bg: #f0f1f3;
@@ -87,6 +124,28 @@
   --c-scrollbar: #cdd0d6;
   --c-handle-hover: #a8adb6;
   --c-pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%2361656c" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+}
+
+/* THE BRIDGE (FIX-17). A dialog the chat opens but does not own — the shared
+   `EraseTaskModal`, which the Tasks page renders too — paints from the shell's
+   own tokens (`--error`, `--fg`, `--fg-muted`), so publishing `--c-*` on the
+   portal is not enough on its own. Only the three the pass measured are
+   remapped, and only under this class: the Tasks page's copy of the same dialog
+   is untouched, which is the whole reason this is a class and not a theme
+   override. `--error-rgb` goes with `--error` because `.btn-danger`'s tint is
+   `rgba(var(--error-rgb), .1)` and half a remap is a colour that disagrees with
+   itself. */
+.c-tokens,
+.c-overlay {
+  --error: var(--c-error);
+  --error-rgb: 242, 109, 109;
+  --fg: var(--c-fg);
+  --fg-muted: var(--c-dim);
+}
+:root[data-theme="light"] .c-tokens,
+:root[data-theme="light"] .c-overlay {
+  /* Light theme's own pair, from the light block above (`--c-error: #c62828`). */
+  --error-rgb: 198, 40, 40;
 }
 
 .chat-root {
@@ -118,16 +177,18 @@
      because this box is mounted inside six different hosts and not one of them
      is going to hand it a reading line-height by accident.
 
-     `letter-spacing: .003em` is the one value that is NOT T's: at 14px in a
-     720px column the system stack sets a hair tight, and the report asked for
-     air. Three thousandths of an em is ~0.04px per character — below the
-     threshold where it reads as tracking, and enough that a full line of prose
-     gains about half a character of width. */
+     NO `letter-spacing`. It carried `.003em` for a while — "the system stack
+     sets a hair tight at 14px in a 720px column" — and that is the one value
+     here that was NOT T's. 0.04px per character is below the threshold where it
+     reads as tracking, but it is not below the threshold where it MOVES a glyph
+     run: it shifted every line of prose sub-pixel and was the single largest
+     term in both transcript pixel diffs (22 of 37 probed elements, ~7% where
+     the body geometry was exact to 0.1px — visual pass 2, FIX-14). Parity wins
+     over the taste call: T sets `normal`, so this sets nothing. */
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
     sans-serif;
   font-size: var(--c-fs-read);
   line-height: var(--c-lh-read);
-  letter-spacing: 0.003em;
   -webkit-font-smoothing: antialiased;
 
   /* The type scale, as tokens, so the compact block below can restate it once
@@ -146,6 +207,35 @@
   --c-lh-read: 1.65;
 }
 
+/* ONE RULE FOR EVERY MONOSPACED GLYPH IN THE CHAT — T:116, verbatim
+   (`code, pre, .mono { font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono",
+   monospace }`), and the single highest-reach finding of visual pass 3
+   (FIX-19).
+
+   T declares it once, globally, beside the prose stack above. This port never
+   did, and no `pre`/`code` rule in `transcript.css` sets `font-family` at all
+   (`.perm pre`, `.toolchip .chip-body pre` and `.assistant pre` each omit it),
+   so the UA's generic `monospace` won: every inline path, every command echo,
+   every card payload and every fenced block in a reply was a different typeface
+   from legacy. Measured on three inline `code` and nine `pre`.
+
+   `.c-tokens` as well as `.chat-root`, because the portaled surfaces (the
+   screenshot viewer, the what-was-sent record) render OUTSIDE the chat's own
+   subtree and the what-was-sent record's whole body is a `pre` — the same scope
+   pair FIX-17 exists for.
+
+   The three element-specific restatements of this stack in `transcript.css`
+   (`.c-session`, `.chip-sub` and its sibling) stay: they were the workaround
+   for this rule's absence, and they are the elements T also names explicitly. */
+.chat-root code,
+.chat-root pre,
+.chat-root .mono,
+.c-tokens code,
+.c-tokens pre,
+.c-tokens .mono {
+  font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+}
+
 /* THE MOUNT BOX (ChatMount's native branch). It stands where the iframe stood
    and takes the whole of the host's box, which every one of the six sites gives
    it as a flex child or a 100%/100% pane. It carries NO host class — those are
@@ -161,15 +251,65 @@
 }
 
 /* THE CHAT COLUMN — T's `#chat`. The transcript, the composer and the footnote
-   stack in it; `min-width: 0` because a flex child's `auto` minimum would let a
-   long code line push the pane off screen (T:2993-3010). */
+   stack in it.
+
+   340px IS T'S FLOOR (T:1261 `#chat { flex: 1; min-width: 340px }`), and it is
+   measured: legacy's chat column reads 340px at every pane from 1056 down to
+   806, where native — carrying `min-width: 0` — read 312.8 / 282.8 / 267.8 /
+   252.8 / 237.8. Below the floor the composer's pills wrap onto two rows, the
+   file path truncates mid-string and every recent-row title loses ~10
+   characters (visual pass 2, FIX-2A).
+
+   The `min-width: 0` this replaces cited T:2993-3010 for "a long code line
+   would push the pane off screen" — a real hazard, but that rule is about the
+   log's own children and it is where the zero belongs (the transcript and the
+   pre boxes already carry it). A column that floors at 340 and children that
+   floor at 0 is T's arrangement exactly.
+
+   The narrow block below clears the floor (`min-width: 0` under `.narrow`,
+   T:3772): a 220px pane must be allowed to be 220px wide, or the column
+   overflows horizontally instead of the layout collapsing to one view. */
 .chat-root .c-chat {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  min-width: 340px;
   min-height: 0;
   position: relative;
+  /* AND THE BACKGROUND, which legacy's `#chat` paints (T:1254-1284) and this
+     did not (FIX-12b). Native sits in the shell rather than in an iframe body,
+     so a transparent panel shows the shell's own ground through: in LIGHT mode
+     legacy reads `#fafafa` and native read white — a flatter, brighter column.
+     In dark mode the two grounds happen to agree, which is why it never showed
+     in the dark screenshots. Decided together with the strip's own band
+     (`.c-anntools`, below) so the two cannot disagree.
+
+     `--c-panel`, which is what T:1263 says (`background: var(--panel)`) and NOT
+     `--bg`: in light theme those are `#fafafa` and `#ffffff`, and `#fafafa` is
+     the number measured on :1777. In dark they are `#1e2025` and `#191a1e`, so
+     the choice shows there too — the column is one step lighter than the ground,
+     which is what makes the pane read as a pane. */
+  background: var(--c-panel);
+  /* T:1254-1284's `#chat` is `overflow: hidden`; this computed `visible`, which
+     lets a tall child paint outside the column instead of being clipped by it.
+     The narrow preview view lifts it back to `visible` on purpose — see that
+     rule's own note. */
+  overflow: hidden;
+  /* NO `container-type` HERE, deliberately — see `home.css`'s landing padding
+     for the arithmetic that replaced it (FIX-2).
+     The container was moved onto this box first, because this IS what the
+     legacy iframe's viewport was. But `container-type: size` implies
+     `contain: size layout`, and both halves bite:
+       * SIZE containment resolves content-based sizing to ZERO, and
+         `.chat-root.narrow.view-preview .c-chat` is `flex: 0 0 auto` — its
+         height comes from the 43px strip, which would have collapsed to
+         nothing;
+       * LAYOUT containment makes this box the containing block for
+         `position: fixed` descendants, so `#annpop.sidebar`'s `top: 51px` and
+         any `inset: 0` scrim would anchor to the column instead of the
+         viewport — a difference that only shows in the card and peek mounts,
+         which is exactly where it would not be noticed.
+     A 6px offset is not worth either. */
 }
 
 /* THE SHARED CONTROL STRIP — T's `#anntools`. A row ABOVE both views, never
@@ -180,15 +320,30 @@
 .chat-root .c-anntools {
   display: flex;
   align-items: center;
-  /* T:3934's own gap between the strip's members. `.c-anncta` keeps its tighter
-     6px between the three seats. */
-  gap: 8px;
+  /* 12px, which is T:169's BASE value for `#anntools` (FIX-6). This said 8px
+     under a comment citing T:3934 — and T:3934 is the NARROW-MEDIA override,
+     not the base rule, so the strip's members sat 4px tight at every width and
+     the CTA group started 8px right of where legacy puts it. `.c-anncta` keeps
+     its own tighter gap between the three seats (T:188, below). */
+  gap: 12px;
   flex-shrink: 0;
   /* T's box for this row: 26px seats in 8px/16px padding (inventory 02 §D). It
      was 6px/10px while this was a strip of its own above the header; it IS the
      header now, so it takes the padding the top bar under it has. */
   padding: 8px 16px;
   border-bottom: 1px solid var(--c-border);
+  /* `--c-panel`, the same token `.c-chat` takes above — and the earlier reading
+     of this ("legacy's transparent strip shows `body`'s `--bg`") was simply
+     wrong, so FIX-11 landed backwards and drew a NEW band (visual pass 2).
+     T:163-172 sets no background on `#anntools`, true — but `#anntools` is a
+     CHILD of `#chat` (T:1254-1284, `background: var(--panel)`), so what shows
+     through it is the column, never the page. Pixel-sampled on :1777 at
+     (1270,60): `rgb(30,32,37)` dark, `#fafafa` light — `--panel` both times,
+     where `--c-bg` painted `rgb(25,26,30)` and a WHITE 43px band across the top
+     of an off-white column. It paints rather than staying transparent because
+     native sits in the shell instead of an iframe body, so there is no `body`
+     of ours behind it; taking the column's own token is what makes the two
+     unable to disagree, which was FIX-12b's stated aim one rule above. */
   background: var(--c-panel);
   min-width: 0;
 }
@@ -212,8 +367,35 @@
    offering one. */
 .chat-root.narrow.view-preview .c-chat {
   flex: 0 0 auto;
+  /* AND THE CLIP IS LIFTED, which is T:3872-3878's own override and its reason:
+     "here #chat IS the strip — a 43px box — and the kebab's popup hangs below
+     it, over the preview. The base clip (sane for a full-height transcript
+     column) cut that popup to a 3px sliver and left the menu painting under the
+     frame. Safe to lift exactly here because every other child of #chat is
+     display:none'd by the rule below — there is nothing else to spill."
+
+     This rule did not need to exist until the base `overflow: hidden` was
+     restored beside T's (FIX-12b): before that the column computed `visible`
+     everywhere, so the lift was accidental rather than absent. Restoring one
+     half of T's pair without the other is what would have made a 43px strip
+     clip its own menu. */
+  overflow: visible;
 }
 .chat-root.narrow.view-preview .c-chat > *:not(.c-anntools) {
+  display: none;
+}
+/* AND BACK GOES WITH THEM (T:3882-3884), whose own comment names this exact
+   case: "#back survived the collapse above only because it moved into
+   #anntools. It stays hidden HERE for the same reason the rest of the chat
+   column is: the chat list it returns to is off screen in this view, so the
+   button would navigate to something the layout cannot show." P2-1 moved Back
+   into the one child the rule above deliberately spares, so this strip was left
+   offering a destination the layout had just taken away.
+
+   A rule rather than a render gate, deliberately: `useFitStrip` measures this
+   row to decide which labels fold, and it should read one stable node set per
+   layout instead of a set that changes under it on a view flip. */
+.chat-root.narrow.view-preview .c-back {
   display: none;
 }
 
@@ -293,7 +475,6 @@
 /* NOT `.chip-marker` any more (R2-7): its box is the chip's own em, so that it
    and `.chip-body`'s indent are one length resolved once — a font-size here put
    them 2.4px apart again. The glyph is scaled instead (styles/transcript.css). */
-.chat-root.chat-compact .turn.user .sentbtn,
 .chat-root.chat-compact .seg-notice-glyph {
   font-size: var(--c-fs-small);
 }
@@ -371,7 +552,16 @@
 .chat-root .c-anncta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  /* 8px, T:188's own number for `#anncta` (FIX-6) — the three seats sat 2px
+     tight, which made the group 4px narrower than legacy's. */
+  gap: 8px;
+  /* AND THE SLACK IS A MARGIN, NOT AN ELEMENT (T's `#anncta { margin-left:
+     auto }`). A spacer `<span>` in the row was a flex ITEM, so it kept its 12px
+     gap even when it collapsed to zero width — which is the Home dress, where
+     the CTA content already fills the content box: everything landed +10.34px
+     right and `⋮` overflowed its 16px padding down to 5.66px. An auto margin
+     contributes exactly 0 when there is no slack to take. */
+  margin-left: auto;
 }
 .chat-root .c-anncta button {
   border: 1px solid var(--c-border);
@@ -404,6 +594,24 @@
   opacity: 0.55;
   cursor: default;
 }
+/* THE RING IS ACCENT, AND THERE IS NO BLUE IN THIS ROW (P3R1-3).
+   T declares no `:focus-visible` for these seats and never needs to: in legacy
+   the seats are only ever focused by the pointer, and Chrome's heuristic draws
+   nothing then. Native's Comment seat DOES come up focus-visible on the first
+   click of a fresh page — measured live on :1915: `outline: rgb(26,169,255) auto
+   5px`, a 5px UA blue ring around a seat whose own accent border and ink had
+   just come on correctly (owner, 2026-09-10: "active Comment seat shows a BLUE
+   ring"). Blue is not in this template's vocabulary at any width or theme, and a
+   ring around the one control that says "a mode is armed" reads as a second,
+   contradicting state.
+   So the ring is declared rather than removed: `outline: none` here would take
+   the keyboard's only marker with it. Accent, 2px, offset 2 — the same ring
+   T:1240/3337/3467 draws on every other focusable seat, and it resolves through
+   `--c-accent` so light and dark are one rule. */
+.chat-root .c-anncta button:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
 /* Stroke glyphs in the button's own ink, so state colours reach them for free;
    `.fill` seats are the solid parts. */
 .chat-root .c-anncta svg {
@@ -435,11 +643,12 @@
 .chat-root .c-anncta .c-lbl {
   display: var(--c-annlbl, inline);
 }
-/* Icon-only, so the seat hugs its glyph instead of keeping a word's padding and
-   an empty gap seat beside it (T:203-213 sizes the seat off its content). */
-.chat-root .c-anntools.tight .c-anncta button {
-  padding: 0 7px;
-}
+/* NO ICON-ONLY PADDING OVERRIDE. T:203-213 gives `#anncta button` `padding: 0
+   10px; height: 26px` and has no `.tight` counterpart at all: legacy's seats
+   measure 36×26 with the words folded away, the group 124px at x=206, where a
+   7px override here read 30×26 and 106px (visual pass 2, FIX-8 — the earlier
+   dismissal read the base rule 56 lines above and never reached this one). The
+   words yield; the seat's box does not. */
 
 /* A picture is being dragged over the column. An INSET ring rather than a
    border or an overlay: a border would resize the column mid-drag (the layout

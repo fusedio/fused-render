@@ -6,42 +6,16 @@
 /* ---- portaled surfaces --------------------------------------------------
    A Popover / DropdownMenu / Dialog popup lands on <body>, OUTSIDE
    .chat-root's cascade, so the `--c-*` aliases it paints with have to be
-   re-anchored. Only the subset the overlays actually use is mirrored here;
-   chat.css stays the source for the whole palette. */
-.c-overlay {
-  --c-bg: #191a1e;
-  --c-panel: #1e2025;
-  --c-surface: #26282f;
-  --c-surface-2: #2d3038;
-  --c-fg: #ececf1;
-  --c-fg-strong: #ffffff;
-  --c-dim: #9a9fa9;
-  --c-faint: #8a8f99;
-  --c-border: #34363e;
-  --c-border-strong: #4a4d57;
-  --c-accent: #d97757;
-  --c-on-accent: #1a1a1a;
-  --c-error: #f26d6d;
-  --c-shadow: rgba(0, 0, 0, 0.4);
-  --c-scrim: rgba(0, 0, 0, 0.62);
-}
-:root[data-theme="light"] .c-overlay {
-  --c-bg: #ffffff;
-  --c-panel: #fafafa;
-  --c-surface: #f4f4f6;
-  --c-surface-2: #ebebef;
-  --c-fg: #1f2023;
-  --c-fg-strong: #000000;
-  --c-dim: #61656c;
-  --c-faint: #676c74;
-  --c-border: #e3e4e8;
-  --c-border-strong: #c9cbd2;
-  --c-accent: #b8542f;
-  --c-on-accent: #ffffff;
-  --c-error: #c62828;
-  --c-shadow: rgba(0, 0, 0, 0.1);
-  --c-scrim: rgba(0, 0, 0, 0.48);
-}
+   re-anchored — and `.c-overlay` is the class that does it.
+
+   THE PALETTE ITSELF IS NO LONGER RESTATED HERE. This block used to carry a
+   hand-picked SUBSET of it ("only the subset the overlays actually use"), which
+   is a second source for values whose whole point is that they are stated once:
+   it missed FIX-14 and it would have missed FIX-22's card surface, and any
+   token it left out simply fell through to nothing the moment a popup grew a
+   use for it. `.c-overlay` now rides `styles/chat.css`'s own `.chat-root,
+   .c-tokens, .c-overlay` list and gets the complete palette, both themes, plus
+   the FIX-17 shell bridge. */
 
 /* ---- the header (T:163-172 + T:1285-1310) -------------------------------
    ONE control row and one identity row, which is T's own shape: `#anntools` (the
@@ -66,6 +40,17 @@
   gap: 10px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--c-border);
+  /* 45px, STATED (FIX-4). Every declaration here is byte-identical to
+     T:1285-1293 and the row still came out 42px, because the height was never
+     one of them: legacy's tallest flex item is the TEXT `✻` (T:4065) at 15px ×
+     1.65 = 24.75px, and native renders the Claude mark as an SVG at `1em` — a
+     15×15 replaced box with no line box — so the tallest item became
+     `.c-tb-title` at 13px × 1.65 = 21.45. The whole transcript then sat 3px
+     high.
+     The mark swap itself is owner-accepted (P2-7), so the fix states the
+     intended ROW HEIGHT as one number rather than reaching for a fake strut —
+     and it survives the next change to the mark. */
+  min-height: 45px;
 }
 .c-topbar .c-spark {
   color: var(--c-accent);
@@ -92,6 +77,17 @@
   font-size: 11px;
   letter-spacing: 0.3px;
   font-variant-numeric: tabular-nums;
+  /* MONOSPACE (FIX-5). Legacy's `#session` carries `class="mono"` (T:4068) and
+     T:116 gives `code, pre, .mono` the mono stack; native renders `.c-session`
+     with no such class and declared no family, so TASK-nnn inherited the system
+     sans from `.chat-root`. Here rather than as a class in `Topbar.tsx`,
+     because a class in markup is a thing a future caller can forget — this is a
+     property of the seat.
+     The stack leads with `ui-monospace`/`SFMono-Regular` and keeps T's own
+     `Menlo` fallback; `styles/transcript.css`'s `.c-mono` and its siblings
+     currently spell it differently, which is worth reconciling in one pass
+     rather than one more site at a time. */
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
 }
 /* "running" at the end of the chat's name — a shimmer through the WORD, not a
    spinner, and the same mark every "running" in this app wears (T:1342-1372).
@@ -163,6 +159,25 @@
 .c-kebab {
   position: relative;
   flex-shrink: 0;
+  /* ONE AUTO MARGIN PER ROW, AND THE KEBAB IS THE FALLBACK OWNER
+     (T:526 `body.nopane #kebab { margin-left: auto }`, Bugbot PR #1074).
+     `.c-anncta`'s own `margin-left: auto` (chat.css) is the row's usual slack
+     source — but `AnnStrip` returns null outright on a mount with nothing to
+     annotate (a folder listing, `nopane`), and that row still draws `← Chats`
+     and `⋮`. With the slack SPACER gone (see ClaudeChat's note at the strip)
+     there was then no auto margin left in the row at all, so the menu sat
+     against the left edge instead of 16px from the right. T ports exactly this
+     pair: the kebab claims the slack when the pane's controls are away. */
+  margin-left: auto;
+}
+/* …and hands it straight back when the CTA group IS in the row, because TWO
+   auto margins split the free space and park the pair mid-strip (T:200 and its
+   `body.nopane` twin T:533 — `#anncta:has(#annbtn:not([hidden])) ~ #kebab {
+   margin-left: 0 }`; Akshil, 2026-08-19: "why is this in the middle?"). A
+   GENERAL sibling, so the mode picker and the view toggle that sit between the
+   two do not break the revocation. */
+.c-anncta ~ .c-kebab {
+  margin-left: 0;
 }
 .c-kebabbtn {
   display: flex;
@@ -256,8 +271,16 @@
 .c-composer:focus-within {
   border-color: var(--c-border-strong);
 }
+/* NO `display` (FIX-3), which is T:2710-2722's own shape: a textarea is
+   `inline-block` by default, so it sits on a LINE BOX whose strut (14px × the
+   root's 1.65 = 23.1px) leaves ~6px of descender space between the box and the
+   pill row under it. `display: block` removed the line box and with it that
+   space, so the whole composer card came out 6px shorter in both Home and the
+   chat — arithmetic: 24 + 29 + 32 = 85 native against legacy's 91.
+
+   `width: 100%` and `resize: none` do the work `block` looked like it was
+   doing; nothing else here depended on it. */
 .c-composer textarea {
-  display: block;
   width: 100%;
   background: transparent;
   border: 0;
@@ -273,8 +296,15 @@
 .c-composer textarea::placeholder {
   color: var(--c-faint);
 }
+/* THE BOX ITSELF SAYS IT IS SHUT (T:1673-1678), with T's own argument: "the
+   banner is at the other end of the pane and a reader who clicks into a dead
+   textarea is owed an answer there." `cursor: default` alone left a blocked
+   composer looking fully live — measured against :1777, which draws `.6` and
+   `not-allowed`. Ships with `.c-schedbtn:disabled` below, or T's documented
+   pairing of the two refusals stays half-drawn. */
 .c-composer textarea:disabled {
-  cursor: default;
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .c-composer-row {
   display: flex;
@@ -365,6 +395,34 @@ select.c-pill {
 .c-pill:disabled {
   opacity: 0.55;
   cursor: default;
+}
+/* THE CALENDAR'S OWN BOX (T:1819-1825). Without the flex chassis and the
+   1.65em floor this button falls back to `.c-pill` as a `display: block` box and
+   comes out 32×27 against T's 32×22 — which also drags the schedule popover
+   2.7px up with it, and that offset was the WHOLE of the popover crop's 9.18%
+   diff (visual pass 2, FIX-15). `min-height` in ems, as T states it, so the
+   floor follows the row's type rather than a literal that stops tracking it. */
+.c-schedbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.65em;
+}
+.c-schedbtn svg {
+  display: block;
+}
+/* THE CALENDAR'S OWN REFUSAL, and T:1826-1837 argues both numbers. `not-allowed`
+   rather than `.c-viewshot`'s `default`, because this and `#box:disabled` "are
+   the SAME refusal and should feel like one" — a task queued from here is input
+   into that pending message's context exactly as a typed reply would be — while
+   the camera's disable is a one-second capture that is nobody's mistake to make.
+   And `.45` rather than the generic pill's `.55`/T's `.6`, because "a 14px
+   monochrome glyph at .6 still reads as a live icon, where a whole greyed
+   textarea does not". Without this rule it inherited `.c-pill:disabled` and read
+   as a generic dimmed pill. */
+.c-schedbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 /* The platform popup a keyboard user still gets should not arrive white. */
 .c-pill option {
@@ -629,6 +687,15 @@ select.c-pill {
   background: var(--c-surface-2);
   border: 1px solid var(--c-border);
   border-radius: 999px;
+  /* THE PILL KEEPS ITS OWN INSET, and the door covers it with negative margins
+     instead — see its rule. It was moved onto `.c-chip-door` at first, and that
+     broke the OTHER kind of chip in the same tray: back then an annotation chip
+     rendered a badge and a words-only button, never a door, so it lost its
+     leading inset entirely and its pin letter clipped against the rounded edge
+     (Bugbot, PR #1074). BOTH kinds render the door now (P3R1-2), so the inset
+     could live on it — but it stays here, where it belongs to the shape rather
+     than to one of the shape's parts, and the ✕ is dressed by the same rule
+     either way. */
   padding: 3px 6px 3px 10px;
   font-size: 12px;
   color: var(--c-fg);
@@ -649,15 +716,44 @@ select.c-pill {
   min-width: 0;
   border: 0;
   background: none;
-  padding: 0;
-  margin: 0;
+  /* THE DOOR COVERS THE PILL'S OWN PADDING (PR2 deferred D9). The full-pill
+     door landed in P2-4, but with `padding: 0` it could not reach the pill's
+     `3px 6px 3px 10px` — so the hit area was ~65% × 73% of a shape whose hover
+     state correctly lit up all of it, and clicks 2px inside the pill's own
+     corner did nothing. An affordance that promises more than the target
+     delivers is worse than a small target honestly drawn.
+
+     PADDING PLUS A MATCHING NEGATIVE MARGIN, rather than taking the inset off
+     the pill: the pill's padding is shared with the annotation chips in the
+     same tray, which render no door at all. So the button grows back OVER the
+     three leading sides and its box now starts at the pill's leading edge and
+     spans its full inner height.
+     The TRAILING side is deliberately untouched — what sits there is the ✕, the
+     door's sibling and a control of its own, and a door reaching under it would
+     be a click that means two things. */
+  padding: 3px 0 3px 10px;
+  margin: -3px 0 -3px -10px;
   font: inherit;
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
+/* `zoom-in` FOR A PICTURE'S DOOR (T:948), `pointer` for a glyph's (T:969's own
+   answer for `.shotdoc`). The viewer it opens still uses `zoom-in`/`zoom-out`
+   (below), so a `pointer` here left the cursor vocabulary disagreeing across
+   the two ends of one gesture — and with 22px to work with, the cursor is very
+   nearly the only thing the thumbnail can say about what the click does. */
+.chat-root .c-annchip .c-chip-door:has(.c-shotthumb) {
+  cursor: zoom-in;
+}
 /* A refusal (and a seat still uploading) has no room behind the door, so it is
-   not one: the plain pill, and the words say why (T:10722-10726). */
+   not one: the plain pill, and the words say why (T:10722-10726).
+
+   AFTER the `zoom-in` rule above and at the same specificity (both resolve to
+   four classes, since `:has()` contributes its argument's), so SOURCE ORDER is
+   what makes this win — a refused picture chip must read `default` rather than
+   offer a zoom into a viewer with nothing behind it. Keep the two adjacent and
+   in this order. */
 .chat-root .c-annchip .c-chip-door.is-inert {
   cursor: default;
 }
@@ -856,9 +952,38 @@ select.c-pill {
   background: var(--c-surface-2);
   cursor: zoom-in;
 }
+/* ACTUAL SIZE MEANS THE BOX IS THE SCROLLER, which is T's own arrangement
+   (`#shotview-box.zoom { overflow: auto }` over a box already bounded at
+   `calc(100vh - 24px)`) and the one this port did not have (visual pass 3,
+   FIX-25).
+
+   Lifting the image's two maxima below is right and was not enough: the box
+   stayed `overflow: visible` and so did everything above it, so a natural-size
+   capture computed its bottom edge 130px past the dialog's and an ancestor
+   simply clipped it — `scrollHeight === clientHeight` on the box, no scroll
+   position anywhere that could reach the rest of the picture, and a
+   `zoom-out` cursor as the only sign anything had happened. The comment below
+   said "the body above is what scrolls"; live, nothing did.
+
+   The BOX and not the body, for two reasons: it is where T puts it, and
+   `ShotViewer`'s un-zoom already resets `boxRef.scrollTop/scrollLeft` — a
+   scroller anywhere else would have left the reader's offset behind on the way
+   back to the fitted view. Both axes, because a natural-size screenshot is
+   wider than the card as well as taller. `overscroll-behavior: contain` so
+   reaching the edge of the picture does not scroll the modal body behind it. */
+.c-shotview-box[data-zoom] {
+  max-height: calc(85vh - 160px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .c-shotview-box[data-zoom] .c-shotview-img {
   max-width: none;
   max-height: none;
+  /* `flex: none` against the box's own `min-height: 0`: the box is a column
+     flex container with a definite max-height now, so a shrinkable image would
+     be squeezed back to the port and the scroller would have nothing to scroll
+     — the fitted view again, wearing the zoomed cursor. */
+  flex: 0 0 auto;
   /* `align-self` is the load-bearing one: the box is a COLUMN flex container, so
      its default `stretch` sizes the image to the container's width on the cross
      axis, and lifting max-width alone left the picture pinned at the box's own

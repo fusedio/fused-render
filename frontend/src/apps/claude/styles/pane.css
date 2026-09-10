@@ -277,6 +277,21 @@
 .chat-root.narrow .c-left {
   min-width: 0;
 }
+/* AND THE CHAT COLUMN'S OWN HALF OF T:3772 — `#chat { min-width: 0; order: -1 }`
+   inside the narrow media block. Only the sibling above was ported, so the DOM
+   order (`.c-left`, `.c-divider`, `.c-chat`) won the column flex and the 43px
+   control strip rendered at the BOTTOM of the screen in the preview view
+   (measured `[44,835,736,43]` in a 900px viewport) — Back to chat, Screenshot,
+   Comment, Annotate and `⋮` under the app instead of over it (visual pass 2,
+   FIX-2B).
+
+   `min-width: 0` is the other half and it is load-bearing now that the wide
+   column floors at 340px (FIX-2A): a 220px pane must be allowed to be 220px,
+   or the column overflows horizontally rather than collapsing to one view. */
+.chat-root.narrow .c-chat {
+  min-width: 0;
+  order: -1;
+}
 
 /* Chat view — the default. The preview column is taken OUT OF FLOW and parked,
    full size, behind the chat rather than `display: none`d, and that is not a
@@ -304,6 +319,18 @@
    worse lie than not offering it (T:3822-3824). */
 .chat-root.narrow.view-chat .c-leftmode {
   display: none;
+}
+/* AND THE SLACK IS SPLIT IN TWO IN THIS VIEW, which is what legacy DRAWS: T
+   gives `#anncta` and `#viewbtn` an auto margin each, so with the picker and
+   the Comment seat gone the spare space divides between them and the seats sit
+   MID-STRIP (measured on :1777 at a 736px pane: `#anncta` x=172.4 with a
+   156.36px auto margin, `#viewbtn` x=548.3 with its own). One auto margin puts
+   the same group at 328.7 — everything else in the row already lands on
+   legacy's pixel (`#viewbtn` 548.3, `⋮` 698), so this is the last one.
+   Scoped to the CHAT view: the preview view orders the toggle first
+   (`.c-viewbtn { order: -1 }`, below) and matches legacy there unaided. */
+.chat-root.narrow.view-chat .c-viewbtn {
+  margin-left: auto;
 }
 /* Preview view: the column owns the screen, and the toggle moves to the row's
    left edge — the way out of a view sits where the way back always sits. Flex

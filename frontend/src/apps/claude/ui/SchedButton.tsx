@@ -24,6 +24,20 @@ export interface SchedButtonProps {
   /** A pending scheduled message shuts this door as well as the composer's
    *  (`schedBlocked`, PR4). Never true for the landing card (T:16851). */
   disabled?: boolean;
+  /**
+   * WHY it is refusing, when the reason is one the reader can act on — the nav
+   * lock's `NAV_LOCKED_REASON` (T:6896's "Finish or discard the notes first").
+   *
+   * Appended to the accessible NAME as well as replacing the `title`, because
+   * `disabled` takes the button out of tab order: a hover-only answer is no
+   * answer for a control the keyboard can no longer land on. The Back button's
+   * twin refusal says the same sentence the same two ways (`ClaudeChat`).
+   *
+   * Absent for the SCHEDULE block, deliberately: that one already has a banner
+   * at the other end of the pane saying what is holding the composer, so the
+   * seat repeating it would be a third copy of one sentence.
+   */
+  disabledReason?: string;
   /** Cancel puts the focus back in the box the draft is in. */
   onCancel?(): void;
   onNavigate?(url: string): void;
@@ -64,6 +78,7 @@ export function SchedButton({
   draft,
   back,
   disabled,
+  disabledReason,
   onCancel,
   onNavigate,
 }: SchedButtonProps) {
@@ -95,8 +110,12 @@ export function SchedButton({
           <button
             type="button"
             className="c-pill c-schedbtn"
-            aria-label="Schedule this as a task"
-            title="Schedule this as a task"
+            aria-label={
+              disabled && disabledReason
+                ? "Schedule this as a task — " + disabledReason
+                : "Schedule this as a task"
+            }
+            title={disabled && disabledReason ? disabledReason : "Schedule this as a task"}
             disabled={disabled}
           >
             <CalendarIcon />

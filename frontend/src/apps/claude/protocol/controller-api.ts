@@ -129,6 +129,12 @@ export type TroubleKind =
   | "engine"
   | "unknown-run"
   | "network"
+  /** ADDED (P3R1-8): the chat could not BOOT — no target, or the folder's
+   *  template never resolved (a stalled `/api/fs/stat`, the 8 s backstop). Its
+   *  own kind because the copy is the only one the reader can act on without
+   *  knowing anything about the app's insides: `ui/TroubleView`'s `SAID` gives
+   *  it two plain sentences and no verbatim block. */
+  | "boot"
   | "generic";
 
 export interface Trouble {
@@ -220,6 +226,32 @@ export interface SendOptions {
    *  controller only carries them onto the bubble — the pipeline builds them,
    *  and the same list goes back to the tray if the send never lands. */
   attachments?: Receipt[];
+  /**
+   * ADDED (PR3): an opaque id for THIS send, minted by the caller and echoed
+   * back verbatim in `onSendReturned`.
+   *
+   * The hand-back used to be attributed by COUNTING: the caller sampled a
+   * "sends returned so far" counter before its send and compared it after. A
+   * second submit inside the first send's window bumped that counter — the
+   * controller refuses a second send out loud, which is a hand-back — and the
+   * FIRST send, already delivered, read the bump as its own failure and rolled
+   * its notes and its overview back (Bugbot, PR #1074). An id per send asks the
+   * question of the right send.
+   */
+  sendId?: string;
+  /**
+   * ADDED (PR3): a user bubble ALREADY on screen that this send's bubble should
+   * ADOPT rather than duplicate.
+   *
+   * A send carrying annotations photographs the pane before it can compose the
+   * wire, and the composer's box is empty from the keystroke: for the width of
+   * that capture the transcript held nothing and the message read as dropped.
+   * So the caller posts the typed words optimistically (`postOptimisticUser`)
+   * and hands the key down here; `addUser` fills that very row in place, so
+   * there is exactly one bubble however slow the capture was. A refused send
+   * drops it (`returnSend`).
+   */
+  optimisticKey?: string;
 }
 
 /**
@@ -245,6 +277,16 @@ export interface ChatController {
 
   /** Start a run (T:16460 sendMessage). Resolves when the run is started or refused. */
   sendMessage(text: string, opts?: SendOptions): Promise<void>;
+  /**
+   * PR3: post the typed words as a user bubble NOW — before a caller's own
+   * async send window (an annotation round's pane capture) — and answer the key
+   * to hand back as `SendOptions.optimisticKey`, which is what makes the real
+   * bubble adopt this row instead of adding a second. Empty text posts nothing
+   * and answers "".
+   */
+  postOptimisticUser(text: string): string;
+  /** Drop an optimistic bubble whose send never reached `sendMessage` at all. */
+  dropOptimisticUser(key: string): void;
   /** Queue/send a follow-up into the live run (T:16024). `opts` ADDED: notes
    *  and pictures fold into a follow-up exactly as into a fresh turn. */
   sendFollowUp(text: string, opts?: SendOptions): Promise<void>;
@@ -373,7 +415,21 @@ export interface ControllerDeps {
    * A DELIVERED follow-up stranded by a stop is not this: `onStranded` hands
    * those words back, and their pictures are already in the agent's hands.
    */
-  onSendReturned?: (info: { text: string; attachments?: Receipt[] }) => void;
+  onSendReturned?: (info: {
+    text: string;
+    attachments?: Receipt[];
+    /** `SendOptions.sendId`, echoed: WHICH send came back (see its own note). */
+    sendId?: string;
+    /**
+     * The send was turned away BEFORE any bubble went up (disposed, the
+     * `sending` gate, nothing to send) — so `text` is not in the transcript,
+     * not in the follow-up queue, and not in the composer's box, which cleared
+     * on the keystroke. The caller owes those words back to the box (Bugbot,
+     * PR #1074). Absent for a send that reached a bubble and then failed: that
+     * one left the failure in the chat, where the reader is.
+     */
+    refused?: boolean;
+  }) => void;
 }
 
 export type { HistoryTurn };
