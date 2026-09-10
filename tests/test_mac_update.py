@@ -494,6 +494,30 @@ def test_a_dev_run_gets_a_check_only_manager_when_asked(monkeypatch):
     assert status["method"] == "none"
 
 
+def test_the_check_only_manager_never_sweeps_the_shared_updates_dir(monkeypatch):
+    # review, PR #1097: one machine-wide dir, shared with the packaged app.
+    manager = mac.UpdateManager(bundle=None, method="none", check_only=True)
+    swept = []
+    monkeypatch.setattr(manager, "_sweep_stale_downloads", lambda: swept.append(1))
+    monkeypatch.setattr(manager, "check", lambda force=False: None)
+    monkeypatch.setattr(mac, "MAC_STARTUP_DELAY_S", 0.0)
+    ticks = []
+
+    def one_tick(seconds):
+        ticks.append(seconds)
+        if len(ticks) >= 2:
+            raise SystemExit  # ends the daemon loop after one check
+    monkeypatch.setattr(mac.time, "sleep", one_tick)
+    monkeypatch.delenv("FUSED_RENDER_NO_AUTO_UPDATE", raising=False)
+    manager.start_auto_checks()
+    import time as _t
+    for _ in range(50):
+        if len(ticks) >= 2:
+            break
+        _t.sleep(0.02)
+    assert swept == []
+
+
 def test_a_packaged_app_never_reads_the_dev_env(monkeypatch):
     monkeypatch.setattr(mac, "_manager", None)
     monkeypatch.setattr(mac, "bundle_path", lambda: "/Applications/FusedRender.app")
@@ -572,12 +596,20 @@ def test_a_failed_check_does_not_start_the_throttle_clock(monkeypatch):
         return {"version": "0.0.1", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""}
 
     monkeypatch.setattr(common, "fetch_manifest", flaky)
+    clock = [1000.0]
+    monkeypatch.setattr(mac.time, "monotonic", lambda: clock[0])
     assert manager.check()["check_error"] == "no route to host"
-    # Non-forced, immediately after: fetched again rather than answered from memory.
+    # Inside the short floor: answered from memory (bounds a focus storm while
+    # offline to one fetch at a time).
+    assert manager.check()["check_error"] == "no route to host"
+    assert len(calls) == 1
+    # Past it — well inside the full minute — fetched again.
+    clock[0] += mac.FAILED_CHECK_GAP_S + 0.1
     status = manager.check()
     assert len(calls) == 2
     assert status["check_error"] is None
-    # ...and a SUCCESSFUL check does start it.
+    # ...and a SUCCESSFUL check arms the full minute.
+    clock[0] += mac.FAILED_CHECK_GAP_S + 0.1
     manager.check()
     assert len(calls) == 2
 

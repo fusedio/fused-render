@@ -120,6 +120,15 @@ DEV_MANAGER_ENV = "FUSED_RENDER_UPDATE_DEV_MANAGER"
 # press inside the gap gets the answer the last fetch left, which is at most
 # a minute old and is what "up to date" meant a moment ago anyway.
 MIN_CHECK_GAP_S = 60.0
+# The floor AFTER A FAILED fetch. Not the full minute — a laptop that just came
+# back online must be able to press "Check for updates" and get a real retry,
+# not the same "Couldn't check" answered from memory for the rest of the minute
+# (bugbot, PR #1097) — but not nothing either: several windows on one server
+# each fire their own check-on-return, and with the floor gone an outage would
+# turn every focus flip into a 15-second manifest fetch (review, PR #1097). Five
+# seconds bounds that to one fetch at a time and is shorter than any human
+# retry.
+FAILED_CHECK_GAP_S = 5.0
 DONE_MESSAGE = "Installed — restart to finish"
 CANCELLED_MESSAGE = "Cancelled"
 _DOWNLOAD_PREFIX = "FusedRender-"
@@ -309,7 +318,11 @@ class UpdateManager:
                     # not the whole auto-check thread. Still only once per
                     # process — the leftovers it clears are a previous
                     # session's.
-                    if not swept:
+                    # NEVER FROM THE CHECK-ONLY MANAGER (review, PR #1097): the
+                    # updates dir is one machine-wide path, shared with the
+                    # packaged app's manager, and a dev run that swept it would
+                    # delete a DMG the real app had just downloaded.
+                    if not swept and not self._check_only:
                         self._sweep_stale_downloads()
                         swept = True
                     # force: this tick IS the cadence, so it must never be
@@ -368,15 +381,13 @@ class UpdateManager:
             logger.info("update check failed: %s", error)
             with self._lock:
                 self._check_error = str(error) or error.__class__.__name__
-                # A failure does not start the MIN_CHECK_GAP_S clock (bugbot, PR
-                # #1097): the gap exists to keep a run of focus flips from
-                # becoming a run of CDN fetches, and a fetch that failed is not
-                # the load it guards against. Left running, the sidebar's row
-                # would come back to "Check for updates" after four seconds,
-                # look pressable, and answer the same "Couldn't check" from
-                # memory for the rest of the minute — to a laptop that had just
-                # come back online.
-                self._last_check_at = None
+                # A failure arms the SHORT floor, not the full minute (see
+                # FAILED_CHECK_GAP_S): a fetch that failed is not the load the
+                # long gap guards against, and the sidebar's row comes back to
+                # "Check for updates" after four seconds looking pressable — it
+                # has to be. Expressed as a back-dated timestamp so the one
+                # comparison above stays the only throttle logic.
+                self._last_check_at = time.monotonic() - (MIN_CHECK_GAP_S - FAILED_CHECK_GAP_S)
             # Keep a previously-found update visible over a transient failure —
             # but re-derive WHICH state from the bundle on disk, exactly like
             # the success path below: a network blip after a completed install
