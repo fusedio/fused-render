@@ -168,11 +168,11 @@ async def api_github_publish(body: dict = Body(...), x_fused: str | None = Heade
     visibility = str(body.get("visibility") or "")
     try:
         record = await run_in_threadpool(github_setup.publish_start, root, name, visibility)
-        # `root` is the realpath'd repo root `publish_start` just resolved —
-        # real news to the job row it opened (its click destination), not to
-        # a page reading this response, whose own absolute filesystem path
-        # it would otherwise be.
-        return github_setup.public_publish_record(record)
+        # `root` in the response is the realpath'd repo root `publish_start`
+        # just resolved. Nothing is withheld from it: this is a local-first
+        # app, and `GET /api/jobs` already hands every page this same path
+        # back verbatim as the published job row's `page`.
+        return record
     except github_setup.PublishError as e:
         # A refusal with a sentence the modal can show as-is — "this
         # repository already has a remote" is the whole value of the 409,
@@ -182,10 +182,7 @@ async def api_github_publish(body: dict = Body(...), x_fused: str | None = Heade
 
 @router.get("/api/github/publish")
 async def api_github_publish_status():
-    """The current publish record. A read — no guard, no spawn.
-
-    `public_publish_record` drops `root` — the realpath'd repo root, an
-    absolute filesystem path with no reason to travel over HTTP to a page
-    that already knows its own folder.
-    """
-    return github_setup.public_publish_record(github_setup.publish_status())
+    """The current publish record, `root` included. A read — no guard, no
+    spawn. See `github_setup.publish_status`'s own docstring for why `root`
+    travels here unredacted."""
+    return github_setup.publish_status()
