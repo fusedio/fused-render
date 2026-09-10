@@ -193,8 +193,11 @@ test("the words render at wide width: Search plus the platform-conditional short
   expect(block).toMatch(/boxWide \?/);
   expect(block).toMatch(/\{"Search"\}/);
   expect(block).toMatch(/<kbd>\{isMac \? "⌘L" : "Ctrl L"\}<\/kbd>/);
-  // The glyph is the OTHER branch, not a second thing beside the words.
-  expect(block.indexOf("{boxWide ?")).toBeLessThan(block.indexOf("<svg"));
+  // The glyph is the OTHER branch, not a second thing beside the words. It
+  // renders through `<SearchGlyph />`, the one magnifier this file draws —
+  // shared with the dropdown's search-action row, so the collapsed button and
+  // the row that runs the search cannot end up wearing two different icons.
+  expect(block.indexOf("{boxWide ?")).toBeLessThan(block.indexOf("<SearchGlyph />"));
   const importAt = LISTING.indexOf('import { isMac } from "@platform/lib/platform";');
   expect(importAt).toBeGreaterThan(-1);
   expect(block).not.toMatch(/navigator/);

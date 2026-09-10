@@ -47,6 +47,7 @@ import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
 import { contractHome } from "@apps/explorer/listing/home-path";
 import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
+import { iconForEntry } from "@platform/ui/FileIcons";
 import { BookmarkStar } from "@apps/explorer/Breadcrumb";
 
 // The search button's own instant tooltip (platform/lib/hints.ts): the
@@ -67,6 +68,29 @@ import { BookmarkStar } from "@apps/explorer/Breadcrumb";
 // `hints.ts` splits a caption whose every line is `token — meaning` into an
 // aligned two-column grid, so the `\n`s and the em dashes below are both
 // load-bearing: they are the row and column separators.
+// The magnifier, drawn once for the two places that need it: the collapsed
+// (icon-only) form of the search button, and the dropdown's search-action
+// row, whose icon slot has to be filled by SOMETHING or the row's label
+// hangs a slot to the left of every folder name under it.
+function SearchGlyph(): JSX.Element {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <line x1="16.5" y1="16.5" x2="21" y2="21" />
+    </svg>
+  );
+}
+
 const SEARCH_GRAMMAR_HINT =
   "report — names containing it, at any depth below\n" +
   "*.pdf — a pattern, at any depth below\n" +
@@ -692,6 +716,9 @@ export function SearchField({
                   }}
                   onMouseEnter={() => setHighlight(0)}
                 >
+                  <span className="listing-completion-icon">
+                    <SearchGlyph />
+                  </span>
                   <span className="listing-completion-name">{affordance.action.label}</span>
                   <span className="listing-completion-hint">↵</span>
                 </div>
@@ -715,9 +742,19 @@ export function SearchField({
                     }}
                     onMouseEnter={() => setHighlight(idx)}
                   >
+                    <span className="listing-completion-icon">
+                      {iconForEntry(item.name, item.is_dir)}
+                    </span>
                     <span className="listing-completion-name">{item.name}</span>
+                    {/* A folder shows no size, exactly as it does in the
+                        listing table below (Listing.tsx's `td.size`). The
+                        word "folder" used to sit here instead, which left
+                        one column carrying two different kinds of fact —
+                        a TYPE on some rows and a SIZE on others — so it
+                        answered no single question. The icon states the
+                        type now, and this column is only ever a size. */}
                     <span className="listing-completion-hint">
-                      {item.is_dir ? "folder" : formatSize(item.size)}
+                      {item.is_dir ? "" : formatSize(item.size)}
                     </span>
                   </div>
                 );
@@ -827,10 +864,7 @@ export function SearchField({
                 <kbd>{isMac ? "⌘L" : "Ctrl L"}</kbd>
               </>
             ) : (
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="11" cy="11" r="7" />
-                <line x1="16.5" y1="16.5" x2="21" y2="21" />
-              </svg>
+              <SearchGlyph />
             )}
           </button>
         )}

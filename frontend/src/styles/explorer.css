@@ -2259,6 +2259,11 @@ table.listing-table tr.skel-row:hover {
   border-radius: 8px;
   box-shadow: 0 8px 28px var(--shadow-lg);
   --completion-panel-pad: 4px;
+  /* The leading icon slot's width and the gap after it, as tokens because
+     `.listing-completion-row`'s left padding subtracts both to keep a
+     suggestion's NAME under the query text (see there). */
+  --completion-icon-w: 16px;
+  --completion-icon-gap: 9px;
   padding: var(--completion-panel-pad);
 }
 
@@ -2315,10 +2320,28 @@ table.listing-table tr.skel-row:hover {
    corner. */
 .listing-completion-row {
   display: flex;
-  align-items: baseline;
-  gap: 9px;
+  /* `center`, not `baseline`: an inline SVG has no baseline of its own to
+     align to, so the icon slot dropped to the bottom of the line box and the
+     glyph sat low against its name. */
+  align-items: center;
+  gap: var(--completion-icon-gap);
+  /* The icon slot, not the name, is what now lives in the gutter
+     `--chip-inset` opens: the name has to stay under the QUERY TEXT it
+     completes, so the row gives back the slot and its gap on top of the
+     panel's own padding. `max()` guards the arithmetic — at today's numbers
+     the three terms come to 24px against a 25px slot, i.e. the icon lands one
+     pixel left of the field's own folder glyph and the name lands on the
+     query text; a future `--chip-inset` smaller than the slot would make this
+     negative, and a negative length invalidates the whole shorthand rather
+     than clamping. */
   padding: var(--completion-row-pad-y) 11px var(--completion-row-pad-y)
-    calc(var(--chip-inset) - var(--completion-panel-pad));
+    max(
+      0px,
+      calc(
+        var(--chip-inset) - var(--completion-panel-pad) -
+          var(--completion-icon-w) - var(--completion-icon-gap)
+      )
+    );
   font-size: 12.5px;
   cursor: default;
   border-radius: 6px;
@@ -2337,6 +2360,10 @@ table.listing-table tr.skel-row:hover {
 .listing-completion-notice {
   color: var(--fg-muted);
   white-space: normal;
+  /* No icon slot of its own, so it pays back what the row above subtracted
+     for one — this sentence starts on the query text, like every name below
+     it. */
+  padding-left: calc(var(--chip-inset) - var(--completion-panel-pad));
 }
 
 /* The mock's `.di.act`: accent-tinted row background plus accent text,
@@ -2346,6 +2373,19 @@ table.listing-table tr.skel-row:hover {
 .listing-completion-row.highlight {
   background: var(--row-bg-active);
   color: var(--accent-soft);
+}
+
+/* The listing table's own icon slot, at the same width and the same gap, so a
+   completion row and the row it will become line up rather than nearly doing
+   so. Fixed width regardless of what it holds — a folder, a typed file glyph,
+   the search action's magnifier — because a slot that sizes to its content
+   makes every name in the list start at a different x. */
+.listing-completion-icon {
+  flex: 0 0 var(--completion-icon-w);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
 }
 
 .listing-completion-name {
