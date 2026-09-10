@@ -436,6 +436,121 @@ never dismissed on open before this fix and still don't, only their explicit
 `frontend/src/platform/ui/JobRow.test.tsx`: new test "a done job whose page
 is an fs path navigates but does NOT dismiss itself")
 
+## Third fix-review round
+
+A fresh brief lettered A-F arrived against the state left by the second
+round above. Item A (Playground text/transcription rows with no
+destination) was dropped mid-task by explicit instruction: `TextStage.tsx`
+sends `history: []` and persists nothing, so a finished text generation has
+no output to open, and a transcription's destination is the transcript
+files it writes under `<home>/ai/transcripts`, not the source media the
+brief had assumed — a follow-on change on this same branch is what decides
+whether those rows get stored at all, and the `JOB_PAGE_ROUTES` additions A
+would have needed come out with it. No edits for A had been started, so
+nothing needed reverting.
+
+### Fix B — a model download and an unload were also hidden by the load's own filter
+
+`isQuietModelLoad` (`frontend/src/platform/lib/jobs.ts`) matched on
+`sys:ai-model:` id prefix plus `state === "done"`. That id family
+(`job_id_for(model)` in `fused_render/ai/supervisor.py`) is shared by three
+different producers reporting through the same row: a resident load
+(`_bring_up`), a weights-only download (`_fetch_only`, reached via
+`download()`), and an unload/eviction (`_remove`). The prefix+state test
+could not tell a load's own finish from a download's or an unload's finish
+on the same id, so a completed download or a completed unload also vanished
+from Notifications — exactly the row Fix B in the prior round meant to
+keep.
+
+Fixed with an explicit field, `Job.quiet`, set only by the report that means
+"a terminal row with nothing to act on": `_bring_up`'s success line now
+passes `quiet=True`. `quiet` is plumbed through `fused_render/jobs.py` the
+same way `waiting_for` already is — a dataclass field, an `upsert()` gate
+restricted to `"quiet" in body and server` so no page-owned report can set
+it, sticky across ticks like every other job field. `isQuietModelLoad` now
+just reads `job.quiet`; no more string/prefix matching. A stale comment
+citing a nonexistent `supervisor._ai_model_job_id` was corrected to the real
+`job_id_for`.
+
+Because `quiet` is sticky and the id is shared, a load's `quiet=True` would
+otherwise leak into the very next unload's or download's row on that same
+id — reintroducing a version of the original bug (an unload or download
+looking finished-and-quiet right after a load). `_remove` and `_fetch_only`
+both now pass `quiet=False` on their own success reports, restating it
+explicitly rather than relying on a fresh row starting `False`, since the
+row is not fresh — it is the same one the load just marked quiet. Pinned
+with dedicated regression tests for all three producers, plus two more
+proving the leak scenario itself (`test_an_unload_clears_quiet_EVEN_THOUGH_the_row_was_just_quiet`,
+`test_a_weights_only_download_clears_quiet_EVEN_THOUGH_the_row_was_just_quiet`
+in `tests/test_ai_runtime.py`).
+
+(`frontend/src/platform/lib/jobs.ts`, `jobs.test.ts`; `fused_render/jobs.py`;
+`fused_render/ai/supervisor.py`; `tests/test_jobs_api.py`,
+`tests/test_ai_runtime.py`)
+
+### Fix C — the dismissal regression test asserted nothing
+
+`JobRow.test.tsx`'s three "must not dismiss" tests (fs-path destination,
+error state, cancelled state) used an `onPatch` that threw, meaning to prove
+the row survives. `dismiss()` swallows its own exceptions in a `catch`, so a
+throwing `onPatch` looks identical to a normal dismiss from the assertion's
+point of view — the test passed whether or not a dismiss happened at all.
+Rewritten to count `dismissFn` calls and assert `dismissCalls === 0`, the
+same shape the sibling "must dismiss" test at the shell-route case already
+used to assert exactly one call. Verified against a real regression: with
+`DownloadManager.tsx`'s `open()` guard temporarily removed, all three failed
+showing `dismissCalls === 1`; restored, all pass.
+
+(`frontend/src/platform/ui/JobRow.test.tsx`)
+
+### Fix D — a render with no caller page and no result path still had nowhere to land
+
+`_start_render`'s success report used `page=page or result.get("path") or
+""`. The failure path two lines away already falls back to `out_dir` when
+neither a caller-supplied page nor a result path is available; the success
+path didn't, so a render that succeeds without either landed on `page=""` —
+back to having no destination, the exact failure mode the rest of this spec
+exists to close. Success now falls back to `out_dir` the same way failure
+does: `page=page or result.get("path") or out_dir or ""`.
+
+(`fused_render/ai/supervisor.py`; `tests/test_ai_runtime.py`)
+
+### Fix E — a quiet row had no way to age out
+
+`_sweep` (`fused_render/jobs.py`) keeps every terminal, non-schedule row
+until its own dismissal clears it — correct for a row a person can see and
+click ✕ on, but a quiet row (Fix B) is never drawn, so nothing can ever
+dismiss it; without a carve-out it would sit in the `MAX_JOBS=64` pool for
+the rest of the process's life. `_sweep`'s existing carve-out for
+`sys:schedule:*` rows — aged out on the same read-gated clock
+(`FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S`) instead of waiting on a
+dismissal that will never come — now also covers `job.quiet`.
+
+`list_jobs` always runs `_sweep` before `mark_read` stamps a row read, so a
+newly-terminal row is guaranteed at least one full read before it can age
+out; this is what lets `fused.ai.models.load(wait=True)`'s `_wait_job` poll
+still observe the row go `done` even though the row is quiet. Pinned
+directly: one test drives a quiet row past both TTLs and confirms it's gone
+from `list_jobs`, a second drives `_wait_job`'s own poll across that same
+row and confirms it still observes `done` before the row disappears.
+
+(`fused_render/jobs.py`; `tests/test_jobs_api.py`)
+
+### Fix F — a dotted folder name painted as a file
+
+`navigateToJobPage`'s directory/file hint used `/\.[^./]+$/` against the
+destination's basename — any trailing dot-plus-non-dot-non-slash counts as
+an extension. That matches real folder names with no extension at all:
+`github_setup.py`'s repo root, `envinstall.py`'s `project_dir`, and
+`_start_render`'s own failure-path `out_dir` can all be dotted (`site.com`,
+`app.v2`) without being files. Tightened to a closed, known list —
+`/\.(html?|png|mp4)$/i`, matching the extensions `routers/ai_runtime.py`
+actually names for its outputs — so a dotted folder name paints as a
+directory again. Added a direct test for `site.com`, `app.v2`, and
+`.config`, verified RED against the old regex before tightening it.
+
+(`frontend/src/platform/lib/router.ts`, `router.test.ts`)
+
 ## Explicitly out of scope (per spec, unchanged)
 
 Toasts, `fused.trackJob` API/no new `Job` field, native OS notifications,
