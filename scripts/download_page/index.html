@@ -879,7 +879,26 @@
   }
   .faq-list { border: 1px solid var(--rule); border-radius: var(--r-sm); overflow: hidden; }
   .faq-item + .faq-item { border-top: 1px solid var(--rule); }
+  .faq-item { transition: background 0.28s var(--ease); }
   .faq-item[open] { background: var(--tile-2); }
+  /* Height animation for native <details>: the UA's content box goes 0fr → 1fr.
+     Browsers without ::details-content simply snap open, as before. */
+  .faq-item::details-content {
+    display: grid; grid-template-rows: 0fr; overflow: hidden;
+    transition: grid-template-rows 0.32s var(--ease), content-visibility 0.32s allow-discrete;
+  }
+  .faq-item[open]::details-content { grid-template-rows: 1fr; }
+  .faq-item .faq-a {
+    min-height: 0; opacity: 0; transform: translateY(-4px);
+    transition: opacity 0.22s var(--ease), transform 0.28s var(--ease);
+  }
+  .faq-item[open] .faq-a { opacity: 1; transform: none; transition-delay: 0.06s; }
+  /* Closing runs in reverse under a class, because the UA hides the content
+     the instant [open] drops; JS removes [open] after the transition. */
+  .faq-item.closing { background: transparent; }
+  .faq-item.closing::details-content { grid-template-rows: 0fr; }
+  .faq-item.closing .faq-a { opacity: 0; transform: translateY(-4px); transition-delay: 0s; }
+  .faq-item.closing .faq-plus::after { transform: translateY(-50%) rotate(90deg); }
   .faq-item summary {
     list-style: none; cursor: pointer;
     display: flex; align-items: center; justify-content: space-between; gap: 20px;
@@ -1571,18 +1590,18 @@
       <h2>Frequently asked questions.</h2>
       <div>
         <div class="faq-list">
-          <details class="faq-item" name="faq">
+          <details class="faq-item">
             <summary>What is Fused Render?<span class="faq-plus" aria-hidden="true"></span></summary>
-            <p>Fused Render is a free, open-source desktop app for your files, your AI
+            <div class="faq-a"><p>Fused Render is a free, open-source desktop app for your files, your AI
             and your apps — all on your own machine. Open any file in one window, run
             AI models locally, and describe an app for Claude Code to build. Nothing
-            leaves your computer: it runs on 127.0.0.1, no account, no cloud.</p>
+            leaves your computer: it runs on 127.0.0.1, no account, no cloud.</p></div>
           </details>
-          <details class="faq-item" name="faq">
+          <details class="faq-item">
             <summary>How do I get started with Fused Render?<span class="faq-plus" aria-hidden="true"></span></summary>
-            <p>Download it below and open the app — there's no sign-up. Point it at a
+            <div class="faq-a"><p>Download it below and open the app — there's no sign-up. Point it at a
             folder to start browsing files, or open the Claude tab and describe what
-            you want built. macOS is the native build; Windows and Linux are in beta.</p>
+            you want built. macOS is the native build; Windows and Linux are in beta.</p></div>
           </details>
         </div>
         <p class="faq-more">Facing some issues? <a href="#troubleshooting">Troubleshoot &rarr;</a></p>
@@ -2202,6 +2221,24 @@
       });
     }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
     els.forEach(function (el) { el.classList.add("fadein"); io.observe(el); });
+  })();
+
+  // FAQ accordion: one open at a time, and closing animates (the UA would
+  // otherwise hide the content the moment [open] drops).
+  (function () {
+    var items = document.querySelectorAll(".faq-item");
+    var reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    function animateClose(d) {
+      if (!d.open || d.classList.contains("closing")) return;
+      d.classList.add("closing");
+      setTimeout(function () { d.classList.remove("closing"); d.open = false; }, reduce ? 0 : 340);
+    }
+    items.forEach(function (d) {
+      d.querySelector("summary").addEventListener("click", function (e) {
+        if (d.open) { e.preventDefault(); animateClose(d); return; }
+        items.forEach(function (o) { if (o !== d) animateClose(o); });
+      });
+    });
   })();
 
   // Troubleshooting master-detail: the app's error screens deep-link with
