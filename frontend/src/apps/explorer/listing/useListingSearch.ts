@@ -593,6 +593,22 @@ export function useListingSearch(
     }, URL_SYNC_MS);
   };
 
+  // Sets the query AND commits it in the same call, for a caller that is
+  // rewriting the box on the user's behalf rather than echoing a keystroke
+  // (the zero-match glob-broadening offer, Listing.tsx). `setQuery` alone
+  // would leave a query whose base escapes `fsPath` sitting behind the
+  // commit gate exactly as it was before this call — a second Enter the user
+  // never gets a chance to press, since nothing after this typed anything.
+  // Setting `committedGate.current` directly, rather than calling
+  // `commitSearch()` afterward, sidesteps `commitSearch`'s own dependence on
+  // the `query` state variable: that read would still see the PRE-update
+  // value until React re-renders, and a value committed against stale text
+  // never matches once the real update lands.
+  const rerunQuery = (value: string) => {
+    setQuery(value);
+    committedGate.current = value.trim();
+  };
+
   // --- what the box hands over -------------------------------------------------
   //
   // The ranked answer is rendered whatever query it answers (see the header),
@@ -762,6 +778,7 @@ export function useListingSearch(
   return {
     query,
     setQuery,
+    rerunQuery,
     q,
     searching,
     // Path vs. Search — see path-shaped-query.ts. The one predicate every
