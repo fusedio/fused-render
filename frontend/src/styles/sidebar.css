@@ -90,13 +90,13 @@
 
 .sidebar-resize-handle:hover::after,
 .sidebar-resize-handle.resizing::after {
-  background: var(--accent);
+  background: var(--seam-hot);
   /* A breath of glow, so a 1px line is still findable on a dark panel edge.
      3px, not more: at 4px the lit band was ~9px wide — wider than the 6px wash
      this replaces, which would have re-thickened the seam it set out to thin.
      The glow eases with the colour (both in the transition above) so it does
      not snap in ahead of the line. */
-  box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
 }
 
 /* While a drag is captured, keep the cursor stable and text unselected

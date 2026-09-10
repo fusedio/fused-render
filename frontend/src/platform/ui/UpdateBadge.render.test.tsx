@@ -193,18 +193,19 @@ test("a server already mid-fetch answers 'checking', and the row waits for the r
   expect(text(find(r.toJSON(), "update-badge-row-check"))).toBe("Up to date · v0.5.22");
 });
 
-test("an update on screen does not blink out while the server's own tick re-checks", async () => {
+test("the badge shows exactly what the wire says — a 'checking' poll is the idle face", async () => {
+  // The server keeps "available" on the wire while its tick re-checks (mac.py
+  // `check()`), so the store holds nothing back: if the wire ever does say
+  // "checking", that is a manager that was idle, and the idle face is right.
   configUpdate = status({ state: "available", latest_version: "9.9.9", check_only: true });
   const r = await mount(<UpdateBadge version="0.5.22" />);
   expect(text(find(r.toJSON(), "update-badge-row"))).toContain("Update available — v9.9.9");
-  // The five-minute tick: the poll now says "checking" for a few seconds.
   configUpdate = status({ state: "checking" });
   await act(async () => {
     pokeUpdateStatus();
   });
   await flush();
-  expect(find(r.toJSON(), "update-badge-row-check")).toBeNull();
-  expect(text(find(r.toJSON(), "update-badge-row"))).toContain("Update available — v9.9.9");
+  expect(find(r.toJSON(), "update-badge-row-check")).not.toBeNull();
 });
 
 test("a failed check says so and does not throw", async () => {

@@ -696,6 +696,22 @@ button.tasks-caret,
    row, and a mark that brightens under the pointer promises a press the row's
    press does not make. The row's own hover is the only hover here. */
 
+/* OPTICALLY CENTRED ON THE WORDS, NOT THE BOX (Akshil, 2026-09-10: "make sure
+   the clock icon is center aligned with the text"). Both title marks are
+   centred on the row's 36px by flex, and the title's 16px line box is too — so
+   glyph centre, box centre and row centre all measure 156px on the same row.
+   But a 13px mixed-case title has its ink below the box's middle: ascenders
+   reach the top, the mass of the word sits around the x-height, and the
+   descender space is empty — the optical centre is ~1px under the geometric
+   one. A 12px glyph centred on the box therefore reads as riding high. One
+   pixel down puts the clock's face and the file's page on the words' own
+   middle. `transform`, not margin: it moves the ink and nothing else — the hit
+   zone, the row height and the flex maths are untouched. */
+.tasks-row-file svg,
+.tasks-row-sched svg {
+  transform: translateY(1px);
+}
+
 /* THE SCHEDULE MARK AFTER THE TITLE (2026-09-10). A task with a run ahead of it
    wears a clock, and the instant lives in the `title` — the same hover habit the
    file mark and the folder chip already answer.

@@ -47,7 +47,7 @@ describe("a draggable seam lights up its hairline, not its hit area", () => {
     // line. The accent goes on a 1px pseudo parked over that border (2px in,
     // because SidebarFrame places the handle at `sidebarWidth - 3`).
     expect(block(SIDEBAR_CSS, ".sidebar-resize-handle:hover::after,\n.sidebar-resize-handle.resizing::after"))
-      .toContain("background: var(--accent)");
+      .toContain("background: var(--seam-hot)");
     const line = block(SIDEBAR_CSS, ".sidebar-resize-handle::after");
     expect(line).toContain("width: 1px");
     expect(line).toContain("left: 2px");
@@ -64,14 +64,14 @@ describe("a draggable seam lights up its hairline, not its hit area", () => {
     expect(EXPLORER_CSS).toContain(".listing-split:has(.listing-divider:hover) .listing-pane-slot::before");
     expect(EXPLORER_CSS).toContain(".listing-split:has(.listing-divider.dragging) .listing-pane-slot::before");
     expect(EXPLORER_CSS).not.toContain(".listing-divider:hover,\n.listing-divider.dragging {");
-    expect(block(EXPLORER_CSS, ".listing-divider")).not.toContain("background: var(--accent)");
+    expect(block(EXPLORER_CSS, ".listing-divider")).not.toContain("background: var(--seam-hot)");
   });
 
   it("keeps the side column's divider and reopen strip 1px on hover", () => {
     expect(block(PREVIEW_CSS, ".preview-side-divider:hover::before,\n.preview-side-divider.dragging::before"))
-      .toContain("background: var(--accent)");
+      .toContain("background: var(--seam-hot)");
     expect(block(PREVIEW_CSS, ".preview-side-reopen::after")).toContain("width: 1px");
-    expect(block(PREVIEW_CSS, ".preview-side-reopen:hover::after")).toContain("background: var(--accent)");
+    expect(block(PREVIEW_CSS, ".preview-side-reopen:hover::after")).toContain("background: var(--seam-hot)");
     // Neither hit box paints any more.
     expect(PREVIEW_CSS).not.toContain(".preview-side-divider:hover,\n.preview-side-divider.dragging {");
     expect(PREVIEW_CSS).not.toContain(".preview-side-reopen:hover::before {");
@@ -94,7 +94,7 @@ describe("a seam's glow is bounded and eases with its colour", () => {
 
   it("blurs no wider than 3px on every seam", () => {
     for (const [css, sel] of RULES) {
-      expect(block(css, sel)).toContain("box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent)");
+      expect(block(css, sel)).toContain("box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent)");
     }
   });
 
@@ -103,6 +103,27 @@ describe("a seam's glow is bounded and eases with its colour", () => {
       const body = block(css, sel);
       expect(body).toContain("background var(--dur-fast) var(--ease-out)");
       expect(body).toContain("box-shadow var(--dur-fast) var(--ease-out)");
+    }
+  });
+});
+
+describe("the seam's hot colour is a token, tuned per theme", () => {
+  const TOKENS_CSS = read("tokens.css");
+  it("is the accent whole on dark and a tint of it on light", () => {
+    // Lime on a dark ground is a thread; the light accent is a dark olive and a
+    // solid 1px of it read as a black rule (Akshil, 2026-09-10).
+    const dark = TOKENS_CSS.slice(0, TOKENS_CSS.indexOf(':root[data-theme="light"]'));
+    const light = TOKENS_CSS.slice(TOKENS_CSS.indexOf(':root[data-theme="light"]'));
+    expect(dark).toContain("--seam-hot: var(--accent);");
+    expect(light).toMatch(/--seam-hot: color-mix\(in srgb, var\(--accent\) \d+%, var\(--bg-alt\)\);/);
+  });
+  it("is what every seam lights up in — no seam reaches for --accent directly", () => {
+    for (const css of [SIDEBAR_CSS, EXPLORER_CSS, PREVIEW_CSS]) {
+      const rules = css.match(/\n\.[^{]*(resize-handle|listing-divider|preview-side-divider|preview-side-reopen)[^{]*\{[^}]*\}/g) ?? [];
+      for (const rule of rules) {
+        const body = rule.replace(/\/\*[\s\S]*?\*\//g, "");
+        expect(body).not.toContain("background: var(--accent)");
+      }
     }
   });
 });

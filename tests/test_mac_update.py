@@ -521,6 +521,43 @@ def test_a_real_manager_reports_check_only_false(monkeypatch):
     assert manager.status()["check_only"] is False
 
 
+def test_a_forced_recheck_keeps_the_update_on_the_wire_and_installable(monkeypatch):
+    # bugbot, PR #1097: the five-minute tick re-checks from "available"; for the
+    # seconds the fetch is out the badge must still say so, and Update must work.
+    manager = _manager(monkeypatch, available="9.9.9")
+    assert manager.check()["state"] == "available"
+    seen = {}
+
+    def slow_fetch(url, **kw):
+        seen["mid"] = manager.status()["state"]
+        # An install begins while the fetch is out — install() is allowed to,
+        # now that the state is not "checking".
+        with manager._lock:
+            manager._state = "installing"
+        return {"version": "9.9.9", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""}
+
+    monkeypatch.setattr(common, "fetch_manifest", slow_fetch)
+    status = manager.check(force=True)
+    assert seen["mid"] == "available"
+    # The tail left the install alone.
+    assert status["state"] == "installing"
+    assert manager._latest["version"] == "9.9.9"
+
+
+def test_only_an_idle_manager_says_checking(monkeypatch):
+    manager = _manager(monkeypatch, available="9.9.9")
+    seen = []
+
+    def peek(url, **kw):
+        seen.append(manager.status()["state"])
+        return {"version": "9.9.9", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""}
+
+    monkeypatch.setattr(common, "fetch_manifest", peek)
+    manager.check()               # from idle: "checking" while the fetch is out
+    manager.check(force=True)     # from available: still "available"
+    assert seen == ["checking", "available"]
+
+
 def test_a_failed_check_does_not_start_the_throttle_clock(monkeypatch):
     # bugbot, PR #1097: the gap guards the CDN against a run of fetches; a fetch
     # that failed is not that load, and a person who just came back online must

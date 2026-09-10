@@ -48,7 +48,6 @@ let lastCheckTriggerAt = Date.now();
 let generation = 0;
 
 function set(next: UpdateStatus | null): void {
-  next = holdThroughCheck(current, next);
   // By VALUE: getConfig() hands back a fresh object every tick, so an identity
   // check never held and every subscriber re-rendered on every poll.
   if (JSON.stringify(next) === JSON.stringify(current)) return;
@@ -56,24 +55,14 @@ function set(next: UpdateStatus | null): void {
   listeners.forEach((fn) => fn());
 }
 
-/**
- * A check in flight does not un-know an update (bugbot, PR #1097). The server's
- * auto tick runs `check(force=True)` from EVERY state, and for the seconds the
- * manifest fetch takes it reports "checking" — which `updateRelevant` rejects,
- * so a poll landing mid-fetch swapped the "Update available" accordion for the
- * idle "Check for updates" row and back. At an hourly tick that was a rare
- * blink; at five minutes it is a habit. So a relevant status is HELD while the
- * next one says "checking": the fetch ends in seconds with the durable answer
- * (available / installed / idle), and that one is taken as usual. Pure, so the
- * rule is testable; `set` is the one place it is applied.
- */
-export function holdThroughCheck(
-  shown: UpdateStatus | null,
-  next: UpdateStatus | null
-): UpdateStatus | null {
-  if (next?.state === "checking" && shown && updateRelevant(shown)) return shown;
-  return next;
-}
+// There is no `holdThroughCheck` here any more (2026-09-10, same day it landed).
+// The server's five-minute tick used to report "checking" from every state for
+// the seconds a fetch took, and this store briefly held a relevant status
+// through it so the accordion would not blink — which then left an Update
+// button on screen that install() refused for those same seconds (bugbot, PR
+// #1097). The fix moved to the server: `check()` only says "checking" when it
+// entered from "idle", and keeps "available"/"installed"/"error" on the wire
+// while it re-checks (update/mac.py). Nothing is held here; the wire is true.
 
 async function poll(): Promise<void> {
   const mine = generation;

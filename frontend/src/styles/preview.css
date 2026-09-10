@@ -308,10 +308,10 @@
 
 .preview-side-divider:hover::before,
 .preview-side-divider.dragging::before {
-  background: var(--accent);
+  background: var(--seam-hot);
   /* A breath of glow, so a 1px line stays findable without becoming a second,
      wider one — 3px, the same figure as the other seams (sidebar.css says why). */
-  box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
 }
 
 /* An iframe is a separate document and would swallow the captured pointer
@@ -374,8 +374,8 @@
 }
 
 .preview-side-reopen:hover::after {
-  background: var(--accent);
-  box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--seam-hot);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
 }
 
 /* WHILE A REOPEN DRAG RUNS. On the root element and not on the strip, because

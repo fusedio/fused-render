@@ -24,6 +24,15 @@
   --bg-alt: #1b1d21;
   --sel: #2b3a52;
   --accent: #E5FF44;
+  /* THE COLOUR A DRAGGABLE SEAM LIGHTS UP IN on hover/drag (sidebar handle,
+     listing divider, side-column divider, reopen edge). Its own token because
+     the accent does not carry the same weight in both themes: lime on a dark
+     ground is a bright thread, but the light theme's accent is a dark olive,
+     and a 1px line of it between two pale panes read as a black rule
+     (Akshil, 2026-09-10: "why is there a black dark line in between?"). Dark
+     keeps the accent whole; light takes it down to a tint of comparable
+     prominence (below). */
+  --seam-hot: var(--accent);
   --error: #ff6b6b;
   --success: #3fb950;
   --warning: #d29922;
@@ -347,6 +356,10 @@
      4.5:1 against both --bg and white, so it works as text, border, fill and
      wash from the one token — no second accent needed. */
   --accent: #5f7300;
+  /* See --seam-hot in :root — the light accent is a dark olive, so a solid
+     1px of it reads as a black rule; 45% into the panel ground is a visible
+     olive thread of the weight the lime has on dark. */
+  --seam-hot: color-mix(in srgb, var(--accent) 45%, var(--bg-alt));
   --error: #c62828;
   --success: #1a7f37;
   --warning: #8f6a10;

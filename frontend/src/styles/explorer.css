@@ -1098,10 +1098,10 @@
    would then own one pixel. One line, two colours. */
 .listing-split:has(.listing-divider:hover) .listing-pane-slot::before,
 .listing-split:has(.listing-divider.dragging) .listing-pane-slot::before {
-  background: var(--accent);
+  background: var(--seam-hot);
   /* A breath of glow, so a 1px line stays findable without becoming a second,
      wider one — 3px, the same figure as the other seams (sidebar.css says why). */
-  box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
 }
 
 /* While the divider drags, the pane's iframe must not swallow the captured

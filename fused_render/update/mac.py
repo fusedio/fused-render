@@ -336,11 +336,10 @@ class UpdateManager:
             if self._state == "installing":
                 return self.status()
             # A NON-FORCED CHECK ONLY EVER LOOKS FROM "IDLE" (bugbot, PR #1078):
-            # the fetch flips state to "checking" for its duration, during which
-            # install() refuses and the badge hides — so a check-on-return while
-            # an update is already offered (or installed, or failed) would take
-            # the answer away for a moment to learn it again. The hourly loop
-            # forces, and is the one that keeps a found version current.
+            # an update already offered, installed or failed is an answer, and a
+            # check-on-return or a press on the sidebar row has nothing to learn
+            # by asking again. The five-minute loop forces, and is the one that
+            # keeps a found version current.
             if not force and self._state != "idle":
                 return self.status()
             if not force and self._last_check_at is not None and (
@@ -350,8 +349,18 @@ class UpdateManager:
                 # which status() still re-derives from the bundle on disk.
                 return self.status()
             self._last_check_at = time.monotonic()
-            self._state = "checking"
-            self._error = None
+            # ONLY AN IDLE MANAGER SAYS "checking" (bugbot, PR #1097). A forced
+            # re-check from "available" used to flip the state to "checking" for
+            # the length of the fetch: the badge lost its accordion for those
+            # seconds every tick, and — once the client learned to hold the
+            # accordion through it — install() silently refused for the same
+            # seconds, because "checking" is not a state it installs from. A
+            # re-check does not un-know the update it is re-checking: the state
+            # it entered from is what the wire says while the fetch is out, and
+            # `during` is what the tail below compares against, so an install
+            # that starts mid-fetch is left alone exactly as before.
+            during = "checking" if self._state == "idle" else self._state
+            self._state = during
         try:
             manifest = common.fetch_manifest(self._manifest_url)
             newer = common.is_newer(manifest["version"], __version__)
@@ -374,7 +383,8 @@ class UpdateManager:
             # must not resurface the install button.
             disk = self._disk_version()
             with self._lock:
-                if self._state == "checking":
+                if self._state == during:
+                    self._error = None
                     if self._latest and disk is not None and not common.is_newer(
                             self._latest["version"], disk):
                         self._state = "installed"
@@ -391,7 +401,11 @@ class UpdateManager:
         disk = self._disk_version()
         with self._lock:
             self._check_error = None
-            if self._state == "checking":
+            # Untouched if anything else moved the state while the fetch was
+            # out — an install that began from "available" (the one case that
+            # used to be impossible, since the state was "checking").
+            if self._state == during:
+                self._error = None
                 if newer and disk is not None and not common.is_newer(
                         manifest["version"], disk):
                     self._latest = manifest

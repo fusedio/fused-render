@@ -6,7 +6,6 @@ import type { UpdateStatus } from "@platform/lib/api";
 import {
   CHECK_RESULT_HOLD_MS,
   checkNowLabel,
-  holdThroughCheck,
   pollDelay,
   shouldCheckOnReturn,
   updateLabel,
@@ -151,29 +150,5 @@ describe("checkNowLabel", () => {
   it("holds an answer long enough to read, not long enough to look stuck", () => {
     expect(CHECK_RESULT_HOLD_MS).toBeGreaterThanOrEqual(3_000);
     expect(CHECK_RESULT_HOLD_MS).toBeLessThanOrEqual(6_000);
-  });
-});
-
-describe("holdThroughCheck", () => {
-  // The server's five-minute tick reports "checking" from every state for the
-  // seconds a fetch takes; a relevant status must not blink out for them.
-  const avail = status({ state: "available", latest_version: "0.5.23" });
-  const checking = status({ state: "checking" });
-
-  it("keeps a relevant status while the next one is only 'checking'", () => {
-    expect(holdThroughCheck(avail, checking)).toBe(avail);
-    expect(holdThroughCheck(status({ state: "installed" }), checking)?.state).toBe("installed");
-    expect(holdThroughCheck(status({ state: "error" }), checking)?.state).toBe("error");
-  });
-
-  it("lets 'checking' through when nothing relevant was shown", () => {
-    expect(holdThroughCheck(status({ state: "idle" }), checking)).toBe(checking);
-    expect(holdThroughCheck(null, checking)).toBe(checking);
-  });
-
-  it("takes every real answer as usual", () => {
-    const idle = status({ state: "idle" });
-    expect(holdThroughCheck(avail, idle)).toBe(idle);
-    expect(holdThroughCheck(avail, null)).toBe(null);
   });
 });
