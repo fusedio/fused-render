@@ -1970,7 +1970,8 @@ table.listing-table tr.skel-row:hover {
    matrix above reserves a FIXED amount of the input's right edge no matter
    how wide the box actually is — at a ~600px box with a wide pin ("31
    matches · not refreshed"), that fixed reservation left a committed query
-   like `~/*/*.zip` clipped to about four visible characters. The rule: the
+   like a two-segment glob ending in `.zip` (e.g. `~`, a wildcard folder, a
+   wildcard filename) clipped to about four visible characters. The rule: the
    query text — what the user actually typed, and may still want to edit —
    always outranks the pin, which is only ever supplementary. When there
    isn't room for both, the pin gives way, one rung at a time, never the

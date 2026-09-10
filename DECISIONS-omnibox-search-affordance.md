@@ -710,3 +710,46 @@ was never a registry entry to restore, since this fix stops writing one.
   rather than running and failing - not a regression this fix introduced
   or could fix without editing the other files, which the task explicitly
   ruled out.
+
+## Build-breaking `*/` inside a CSS comment (2026-09-10)
+
+- `explorer.css`'s "THE DEFECT" comment above the pin-degradation rules
+  quoted a concrete example glob (home dir, wildcard folder, wildcard
+  filename, `.zip`) using literal asterisks. Written that way, the
+  wildcard-then-slash pair reproduced the two-character sequence `*/`,
+  which is CSS's comment terminator - comments don't nest and have no
+  escape, so it closed the block comment right there, mid-sentence.
+  Everything after it on the following lines was then parsed as live CSS,
+  and the apostrophe in "isn't" (a few words later, now outside any
+  comment) opened a string literal that never closed. Vite's build failed
+  with an opaque "Unterminated string" pointing at `shell.css` (the
+  bundled entry point), not at the actual `explorer.css` line - the real
+  location took a grep for the `*/*` byte pattern to find.
+- Fixed by rewriting the example in words ("a two-segment glob ending in
+  `.zip` ... a wildcard folder, a wildcard filename") instead of literal
+  asterisks, so the sequence never appears. The concrete shape of the
+  example is preserved; only the glob syntax itself is spelled out.
+- Why the full frontend suite (4324 tests) and `bun run typecheck` both
+  stayed green on the broken commit: every CSS-text test in this
+  directory (`search-mode-chip`, `search-examples-width`,
+  `search-count-pin-degrade`, etc.) reads `explorer.css` as a string and
+  strips comments with `/\/\*[\s\S]*?\*\//g` before asserting on
+  selectors - a non-greedy regex, which itself stops at the FIRST `*/`,
+  same as the real CSS parser, so it silently "corrected" the malformed
+  file into something that read as valid CSS text and never noticed
+  anything was wrong. `tsc` never parses CSS at all, so typecheck cannot
+  see this class of bug either. Only a real CSS parser - which only
+  `vite`/`@tailwindcss/vite` (via `lightningcss`) run in this pipeline -
+  ever actually hits the syntax error.
+- Added a permanent guard for this class of bug:
+  `frontend/src/apps/explorer/listing/explorer-css-comment-syntax.test.ts`
+  runs `lightningcss`'s own `transform()` (already a project dependency,
+  the same parser tailwindcss v4 uses) directly over `explorer.css` and
+  asserts it doesn't throw - no DOM, no build step, and it reproduces the
+  build failure exactly (verified against the pre-fix comment text before
+  committing the fix). This is different from the file's other CSS tests:
+  they strip comments and assert on declarations; this one only checks
+  the file parses as CSS at all, which is the property that broke.
+- Grepped `tests/` (the Python suite) for the comment text being rewritten
+  and for `explorer.css` generally - no literal assertions on this file's
+  source lines exist there, so nothing else needed updating.
