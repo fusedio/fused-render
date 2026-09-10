@@ -272,6 +272,12 @@ export function SearchField({
         ref={searchBoxRef}
         className={
           "listing-search-box" +
+          // `.search` here (not just on the chip below) is what gives
+          // `--chip-inset` (explorer.css) somewhere to be set per mode: the
+          // crumbs and the input both read it from THIS element, an
+          // ancestor of both, rather than each needing their own copy of
+          // the mode class.
+          (chipIsSearch ? " search" : "") +
           (hasPin ? " has-pin" : "") +
           (widePin ? " wide-pin" : "") +
           (hasClear ? " has-clear" : "")

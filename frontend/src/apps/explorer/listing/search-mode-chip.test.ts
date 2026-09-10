@@ -88,17 +88,47 @@ test("the label reserves no minimum width of its own", () => {
   expect(decls[0]).not.toMatch(/width:/);
 });
 
-// The crumbs/input start is a single fixed offset sized for the chip at its
-// widest ("Search"), so it never shifts when the mode word changes — one
-// value, shared by the two places typed text and the crumbs it stands in
-// for both begin.
-test("the crumbs and the input start at the same fixed offset, sized for the chip's widest state", () => {
+// The crumbs and the input read the SAME custom property for their start
+// offset, so a mismatch between the two (a visible text jump on focus) is
+// structurally impossible — one value, set in one place per mode, read in
+// two.
+test("the crumbs and the input start at the same custom property, not two separately-typed numbers", () => {
   const crumbs = rulesFor(".listing-search-crumbs");
   expect(crumbs.length).toBe(1);
-  expect(crumbs[0]).toMatch(/left:\s*67px/);
+  expect(crumbs[0]).toMatch(/left:\s*var\(--chip-inset\)/);
   const input = rulesFor(".listing-search-input");
   expect(input.length).toBe(1);
-  expect(input[0]).toMatch(/padding:\s*6px 10px 6px 67px/);
+  expect(input[0]).toMatch(/padding:\s*6px 10px 6px var\(--chip-inset\)/);
+});
+
+// The property itself is set PER MODE on the box (the same element the mode
+// class already lives on, in the JSX): "Path" gets its own, narrower
+// clearance, and only `.search` overrides it wider — so "Path"'s shorter
+// word leaves no dead space, and the two never drift apart from having been
+// typed twice.
+test("--chip-inset is set once per mode, on the box, not duplicated at the crumbs/input", () => {
+  const base = rulesFor(".listing-search-box");
+  expect(base.length).toBe(1);
+  expect(base[0]).toMatch(/--chip-inset:\s*55px/);
+  const search = rulesFor(".listing-search-box.search");
+  expect(search.length).toBe(1);
+  expect(search[0]).toMatch(/--chip-inset:\s*67px/);
+  // Neither the crumbs nor the input rule sets the variable itself — they
+  // only read it.
+  const crumbs = rulesFor(".listing-search-crumbs");
+  expect(crumbs[0]).not.toMatch(/--chip-inset:/);
+  const input = rulesFor(".listing-search-input");
+  expect(input[0]).not.toMatch(/--chip-inset:/);
+});
+
+// The box, not just the chip, carries the mode class — `--chip-inset` above
+// needs somewhere to be set per mode, and the box is the common ancestor of
+// both the crumbs and the input, so its own classList is that place.
+test("the box's own classList carries the same chipIsSearch-gated mode class the chip does", () => {
+  const at = LISTING.indexOf('"listing-search-box" +');
+  expect(at).toBeGreaterThan(-1);
+  const block = LISTING.slice(at, LISTING.indexOf("}", at));
+  expect(block).toMatch(/chipIsSearch\s*\?\s*"\s*search"\s*:\s*""/);
 });
 
 // The hint: visible only at rest. `pinnedOpen` goes true the instant the
