@@ -629,10 +629,18 @@ export function JobRow({
   return (
     <NotificationCard
       title={job.title}
-      // Only an fs path is worth showing as attribution text — a shell route
-      // like "/tasks" or "/claude-config" says nothing a hover needs to add,
-      // since the row's title and the click target already say where it goes.
-      titleTooltip={job.page && !isJobPageRoute(job.page) ? job.page : undefined}
+      // One line, ellipsis, never wraps (SPEC actionable-notifications item
+      // 4): a long prompt used to wrap to two lines, halving how many rows
+      // fit in the panel. The full text still has to be reachable somehow,
+      // which is what `titleTooltip` is for now — it used to carry ONLY an
+      // fs path (an attribution a hover needs to add on top of the title),
+      // so a truncated title with no path had no hover text at all. It leads
+      // with the title itself, then appends the path only when it is one
+      // worth showing (a shell route like "/tasks" says nothing new).
+      titleMode="id"
+      titleTooltip={
+        job.page && !isJobPageRoute(job.page) ? `${job.title}\n${job.page}` : job.title
+      }
       stalled={job.stalled}
       trailing={
         fraction !== null && running ? (

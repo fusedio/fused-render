@@ -456,16 +456,27 @@ test("a RUNNING job never opens on click, even when it names a page — only a t
   expect(findAll(root, "dl-row-open")).toHaveLength(0);
 });
 
-test("a page that is a shell route draws no title tooltip — the row's own click already says where it goes", () => {
+test("a page that is a shell route adds nothing past the title itself to the tooltip — the row's own click already says where it goes", () => {
   const root = renderRow({ ...BASE, state: "done", page: "/ai-models/local" });
   const title = findAll(root, "dl-title");
-  expect(title[0].props.title).toBeUndefined();
+  expect(title[0].props.title).toBe(BASE.title);
 });
 
-test("a page that is an fs path draws it as the title tooltip", () => {
+test("a page that is an fs path appends it to the title in the tooltip", () => {
   const root = renderRow({ ...BASE, state: "done", page: "/Users/me/Desktop/render.png" });
   const title = findAll(root, "dl-title");
-  expect(title[0].props.title).toBe("/Users/me/Desktop/render.png");
+  expect(title[0].props.title).toBe(`${BASE.title}\n/Users/me/Desktop/render.png`);
+});
+
+// SPEC actionable-notifications item 4: a row's title never wraps to a
+// second line, so a long prompt does not halve how many rows fit — it is
+// truncated to one line with an ellipsis instead (`titleMode="id"`,
+// NotificationCard.tsx), with the full text still reachable on hover (the
+// tooltip assertions above).
+test("the title renders in one-line-ellipsis mode, not wrapping", () => {
+  const root = renderRow(BASE);
+  const title = findAll(root, "dl-title");
+  expect(title[0].props.className).toContain("dl-title-id");
 });
 
 test("a bare running row's fallback status measures against the caller's clock, not the browser's (C4)", () => {
