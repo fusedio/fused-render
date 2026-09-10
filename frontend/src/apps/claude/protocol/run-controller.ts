@@ -996,7 +996,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         const data = (await run(
           dir,
           "poll",
-          { run_id: runId, file: FILE || "" },
+          { run_id: runId, file: FILE || "", native: "1" },
           // The controller's own lifetime: `dispose` aborts, so an unmounted
           // chat's last poll does not run to completion on its own.
           { key: null, ...(life ? { signal: life.signal } : {}) },
@@ -2090,15 +2090,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (!runId || answeredStates.has(id)) return;
     answeredStates.add(id); // claimed before the await: polls overlap
     trim(answeredStates);
-    // Once per REQUEST, not once per attempt: the claim above is released again
-    // when an attempt fails, and a retry appending another line would make the
-    // log read as several reads of the app for one tool call.
-    if (!notedStates.has(id)) {
-      notedStates.add(id);
-      trim(notedStates);
-      const reason = state.appState.find((r) => r.id === id)?.reason || "";
-      addNote(reason ? "read app state — " + reason : "read app state", "◍");
-    }
+    // NO LINE OF THIS PAGE'S OWN (owner E2E R1, 2026-09-10). T appended a
+    // "read app state" note at the end of the log when it answered — and the
+    // reply kept streaming ABOVE it, so the note trailed the finished answer
+    // like a stuck status, and a reload lost it. agent.py now emits the read
+    // as a notice segment where it happened (`native=1` on poll/history →
+    // `app_reads`), so it streams and restores in place.
     emit({ appState: state.appState.filter((r) => r.id !== id) });
     let res: AppStateResponse | null = null;
     try {
@@ -2418,7 +2415,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // Tagged with this attach's seat so only this attach can let it go.
     if (runId) claimingRuns.set(runId, seat);
     try {
-      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "" }, { key: null })) as
+      let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1" }, { key: null })) as
         | PollResponse
         | { error: string; done: true };
       if (logGen !== gen || disposed) return;
@@ -2433,7 +2430,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         i++
       ) {
         await sleep(UNKNOWN_RUN_RETRY_MS);
-        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "" }, { key: null })) as
+        probe = (await run(dir, "poll", { run_id: runId, file: FILE || "", native: "1" }, { key: null })) as
           | PollResponse
           | { error: string; done: true };
         if (logGen !== gen || disposed) return;
@@ -2766,7 +2763,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       : (run(
           dir,
           "history",
-          { file: FILE || "", session_id: sessionId },
+          { file: FILE || "", session_id: sessionId, native: "1" },
           { key: null },
         ) as Promise<HistoryResponse & { error?: string }>);
 

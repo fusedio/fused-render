@@ -191,7 +191,8 @@ describe("start → poll → done", () => {
       read_dirs: "[]",
     });
     // The poll rides `file` so the agent can refuse another target's run.
-    expect(agent.of("poll")[0].fields).toEqual({ run_id: "r1", file: "/proj/app.py" });
+    // `native: "1"`: app-state reads come back as in-stream notices (agent.py `app_reads`).
+    expect(agent.of("poll")[0].fields).toEqual({ run_id: "r1", file: "/proj/app.py", native: "1" });
 
     const s = controller.getState();
     expect(users(controller).map((t) => t.text)).toEqual(["hi"]);
@@ -2238,7 +2239,9 @@ describe("skills and app_state rows (T:15771-15837)", () => {
       state: '{"url":"/x"}',
     });
     expect(controller.getState().appState).toEqual([]);
-    expect(notes(controller).map((n) => n.text)).toEqual(["read app state — check the console"]);
+    // The page writes NO line of its own any more: agent.py puts the read in
+    // the stream as a notice segment, where it happened (owner E2E R1).
+    expect(notes(controller).map((n) => n.text)).toEqual([]);
   });
 
   test("`waitedOut` flips once the pane has had ~2 s (5 polls) to answer", async () => {
@@ -2279,8 +2282,9 @@ describe("skills and app_state rows (T:15771-15837)", () => {
     controller = made.controller;
     await controller.sendMessage("go");
     expect(made.agent.of("app_state").length).toBe(2);
-    // …and only ONE note, however many attempts it took (T:15797).
-    expect(notes(controller).map((n) => n.text)).toEqual(["read app state"]);
+    // …and no note from the page, however many attempts it took: the read is
+    // agent.py's notice segment now, once, where it happened.
+    expect(notes(controller).map((n) => n.text)).toEqual([]);
   });
 });
 

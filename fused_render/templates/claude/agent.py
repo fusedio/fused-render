@@ -3355,7 +3355,8 @@ def _thinking_delta_text(row) -> str:
     return str(delta.get("thinking") or "")
 
 
-def _segments_from_rows(rows: list, shape: tuple = ()) -> list:
+def _segments_from_rows(rows: list, shape: tuple = (),
+                        app_reads: bool = False) -> list:
     """The ordered transcript of a reply: text, thinking and tool segments.
 
     ONE reader with TWO callers — `_poll` over the live `out.jsonl` and
@@ -3560,6 +3561,26 @@ def _segments_from_rows(rows: list, shape: tuple = ()) -> list:
                     # name: every other MCP tool is a real call.
                     if tool_id:
                         stripped.add(tool_id)
+                    # THE NATIVE PAGE WANTS THE READ ON RECORD, IN PLACE
+                    # (`app_reads`; owner E2E R1, 2026-09-10). The legacy
+                    # template writes its own "read app state" line at answer
+                    # time, at the END of the log — so the reply that kept
+                    # streaming above it left the line trailing the finished
+                    # answer like a stuck status, and a reload lost it (the
+                    # line was never in the transcript). A notice segment here
+                    # sits where the read happened, streams and restores the
+                    # same, and the native page writes no line of its own.
+                    # Legacy callers leave the flag off and see no change.
+                    if app_reads:
+                        tool_input = block.get("input")
+                        reason = ""
+                        if isinstance(tool_input, dict):
+                            reason = str(tool_input.get("reason") or "").strip()
+                        segments.append({
+                            "kind": "notice",
+                            "text": ["read app state — " + reason
+                                     if reason else "read app state"],
+                            "status": "app_state"})
                     continue
                 if tool_id and tool_id in by_tool_id:
                     continue  # the same finalized message written twice
@@ -3760,7 +3781,7 @@ def _is_api_error_row(row: dict) -> bool:
     return isinstance(row, dict) and row.get("isApiErrorMessage") is True
 
 
-def _absorbed_turn_breaks(rows: list) -> list:
+def _absorbed_turn_breaks(rows: list, app_reads: bool = False) -> list:
     """Where a reply ENDED inside this row window because a follow-up had been
     folded into it, as payload offsets a page can slice on.
 
@@ -3830,7 +3851,7 @@ def _absorbed_turn_breaks(rows: list) -> list:
                 # seam — and one of the outstanding follow-ups is now the
                 # message the NEXT span answers.
                 outstanding -= 1
-                _seam(breaks, rows, i + 1, shape)
+                _seam(breaks, rows, i + 1, shape, app_reads)
                 last_result = None
             else:
                 # Not a seam YET. It becomes one if a new user turn shows up
@@ -3880,14 +3901,15 @@ def _absorbed_turn_breaks(rows: list) -> list:
                 # branch exists for (a follow-up the CLI drained straight after
                 # the reply's `result`) has no wake in it by construction.
                 if last_result is not None and prev_main == last_result:
-                    _seam(breaks, rows, i, shape)
+                    _seam(breaks, rows, i, shape, app_reads)
                     last_result = None
             else:
                 outstanding += 1
     return breaks
 
 
-def _seam(breaks: list, rows: list, end: int, shape: tuple) -> None:
+def _seam(breaks: list, rows: list, end: int, shape: tuple,
+          app_reads: bool = False) -> None:
     """Record a seam at `rows[:end]`, as payload offsets.
 
     `end` is EXCLUSIVE, and the two callers pass different things for good
@@ -3901,7 +3923,7 @@ def _seam(breaks: list, rows: list, end: int, shape: tuple) -> None:
     through `_segments_from_rows` with the WINDOW's own gates (`shape`) — so
     they are indices into the exact lists `_poll` returns. See
     `_segments_from_rows`'s note on why the gates travel."""
-    prefix = _segments_from_rows(rows[:end], shape)
+    prefix = _segments_from_rows(rows[:end], shape, app_reads)
     breaks.append({
         "segments": len(prefix),
         "text": sum(len(seg.get("text") or "")
@@ -4103,7 +4125,7 @@ def _cancelled_marker_state(run_dir: str, cursor: int) -> bool:
     return False
 
 
-def _poll(run_id: str, file: str = "") -> dict:
+def _poll(run_id: str, file: str = "", app_reads: bool = False) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
@@ -4645,14 +4667,15 @@ def _poll(run_id: str, file: str = "") -> dict:
                 "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
                 "agent_rows": agent_rows,
             },
-            "segments": [] if echo_pending else _segments_from_rows(parsed),
+            "segments": [] if echo_pending
+            else _segments_from_rows(parsed, app_reads=app_reads),
             # The seams inside this payload where a mid-stream follow-up was
             # absorbed into the reply already streaming — see
             # `_absorbed_turn_breaks`. Empty on every ordinary poll, and empty
             # while `echo_pending` blanks the payload the offsets would index
             # into.
             "turn_breaks": [] if echo_pending
-            else _absorbed_turn_breaks(parsed),
+            else _absorbed_turn_breaks(parsed, app_reads),
             # WHERE THIS WINDOW STARTS, as a byte offset into out.jsonl (the
             # cursor `_read_current_turn` settled on). The page keeps one
             # bubble per reply in the window and has to notice when the cursor
@@ -5269,7 +5292,7 @@ def _transcript_stat(path: str) -> dict:
         return {"path": path, "mtime": 0.0, "size": 0}
 
 
-def _history(file: str, session_id: str) -> dict:
+def _history(file: str, session_id: str, app_reads: bool = False) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
     Resolved ONLY at the target file's own project dir — with copied files
@@ -5329,7 +5352,7 @@ def _history(file: str, session_id: str) -> dict:
         """
         if not stretch:
             return
-        segments = _segments_from_rows(stretch)
+        segments = _segments_from_rows(stretch, app_reads=app_reads)
         del stretch[:]
         if not segments:
             return
@@ -5660,7 +5683,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "", custom: str = "",
-         read_dirs: str = "", path: str = "", queued: str = "") -> dict:
+         read_dirs: str = "", path: str = "", queued: str = "",
+         native: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -5677,7 +5701,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
         # has a page (claude_spawn's record loop).
-        return _poll(run_id, file)
+        return _poll(run_id, file, app_reads=native == "1")
     if action == "decide":
         # `answers` arrives as a JSON string for the same reason `state` does
         # below — params cross into python string-shaped — and is only read for
@@ -5712,7 +5736,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "history":
         if not file:
             return {"error": "missing target file (no _file param?)"}
-        return _history(file, session_id)
+        return _history(file, session_id, app_reads=native == "1")
     if action == "snapshots":
         # `enrich` arrives as a STRING like every other param (the binder is
         # str-shaped), so "" and "0" both mean don't — the boot call sends

@@ -479,7 +479,7 @@ def api_claude_session_summaries():
 
 
 @router.get("/api/claude-sessions/history")
-def api_claude_session_history(file: str, session_id: str):
+def api_claude_session_history(file: str, session_id: str, native: str = ""):
     """The chat's transcript restore, IN PROCESS (owner E2E R1, F5).
 
     The chat used to ask for its history through `/api/run`, which executes
@@ -500,7 +500,9 @@ def api_claude_session_history(file: str, session_id: str):
                             detail="the claude agent module did not load")
     if not file or not session_id:
         raise HTTPException(status_code=400, detail="file and session_id are required")
-    return agent._history(file, session_id)
+    # `native=1`: the React page wants the app-state reads on record as
+    # in-stream notices (agent.py `_segments_from_rows`, `app_reads`).
+    return agent._history(file, session_id, app_reads=native == "1")
 
 
 @router.get("/api/claude-sessions/liveness")

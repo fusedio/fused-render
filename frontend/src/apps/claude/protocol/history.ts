@@ -192,13 +192,13 @@ export async function fetchHistory(
   sessionId: string,
 ): Promise<HistoryResponse & { error?: string }> {
   try {
-    const q = new URLSearchParams({ file, session_id: sessionId });
+    const q = new URLSearchParams({ file, session_id: sessionId, native: "1" });
     return await getJson<HistoryResponse>(`/api/claude-sessions/history?${q}`);
   } catch {
     return (await runAgent(
       agentDir,
       "history",
-      { file, session_id: sessionId },
+      { file, session_id: sessionId, native: "1" },
       { key: null },
     )) as HistoryResponse & { error?: string };
   }

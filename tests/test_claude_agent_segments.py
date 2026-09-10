@@ -856,6 +856,69 @@ def test_the_watermark_is_stat_ed_before_the_rows_are_read(agent):
     the payload does not contain — a turn silently swallowed for good. Taken
     first, a write that lands mid-read costs one redundant re-render."""
     src = open(os.path.join(TEMPLATE_DIR, "agent.py"), encoding="utf-8").read()
-    body = src[src.index("def _history(file: str, session_id: str)"):]
+    body = src[src.index("def _history(file: str, session_id: str, app_reads: bool = False)"):]
     body = body[:body.index("\ndef ")]
     assert body.index("_transcript_stat(path)") < body.index("for line in open(path")
+
+
+def _app_state_rows(agent):
+    """A reply that reads the app once, mid-stream: text, the bridge's own
+    `app_state` tool call with a reason, its result, more text, `result`."""
+    plumbing = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
+    return [
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Looking."},
+            {"type": "tool_use", "id": "t-app", "name": plumbing,
+             "input": {"reason": "Checking whether the banner cleared"}},
+        ]}},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t-app", "content": "{}"},
+        ]}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "It cleared."},
+        ]}},
+        {"type": "result", "subtype": "success", "result": "It cleared."},
+    ]
+
+
+def test_the_app_state_read_is_stripped_for_the_legacy_page(agent):
+    """The template writes its own "read app state" line at answer time, so
+    the bridge's call is not a segment (the pre-existing contract)."""
+    segs = agent._segments_from_rows(_app_state_rows(agent))
+    assert [s["kind"] for s in segs] == ["text", "text"] or \
+        [s["kind"] for s in segs] == ["text"]
+    assert not any(s["kind"] == "notice" for s in segs)
+    assert not any(s["kind"] == "tool" for s in segs)
+
+
+def test_the_app_state_read_is_a_notice_in_place_for_the_native_page(agent):
+    """Owner E2E R1 (2026-09-10): the native page's own end-of-log note trailed
+    the finished reply like a stuck status and was lost on reload. With
+    `app_reads` the read is a notice segment between the prose it interrupted,
+    carrying the tool's reason — same in a live poll and a restored history."""
+    segs = agent._segments_from_rows(_app_state_rows(agent), app_reads=True)
+    kinds = [s["kind"] for s in segs]
+    assert "notice" in kinds
+    note = segs[kinds.index("notice")]
+    assert note["text"] == "read app state — Checking whether the banner cleared"
+    assert note["status"] == "app_state"
+    # In PLACE: prose before it, prose after it, never a tool chip for it.
+    assert kinds.index("notice") > 0
+    assert kinds[-1] == "text"
+    assert "tool" not in kinds
+
+
+def test_the_app_state_read_without_a_reason_is_a_bare_notice(agent):
+    rows = _app_state_rows(agent)
+    rows[0]["message"]["content"][1]["input"] = {}
+    segs = agent._segments_from_rows(rows, app_reads=True)
+    note = next(s for s in segs if s["kind"] == "notice")
+    assert note["text"] == "read app state"
+
+
+def test_poll_and_history_pass_app_reads_from_the_native_flag(agent, tmp_path):
+    rows = _app_state_rows(agent)
+    legacy = _poll_rows(agent, tmp_path, rows)
+    assert not any(s["kind"] == "notice" for s in legacy["segments"])
+    native = agent._poll("run", app_reads=True)
+    assert any(s["kind"] == "notice" for s in native["segments"])

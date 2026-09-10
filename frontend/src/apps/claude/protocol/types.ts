@@ -63,6 +63,9 @@ export interface PollRequest {
   run_id: string;
   /** Rides along so a poll can refuse another target's run (agent.py:5199-5203). */
   file: string;
+  /** `"1"` from the React page: app-state reads come back as in-stream
+   *  notice segments instead of being stripped (agent.py `app_reads`). */
+  native?: string;
 }
 
 /** `decide` for a permission card (T:13979-13996). */
@@ -125,6 +128,9 @@ export interface FileSessionRequest {
   file: string;
   /** Optional for `live_run` (target as a whole), required for the rest. */
   session_id: string;
+  /** `"1"` from the React page (history): app-state reads come back as
+   *  in-stream notice segments (agent.py `app_reads`). */
+  native?: string;
 }
 export interface RunIdRequest {
   run_id: string;
