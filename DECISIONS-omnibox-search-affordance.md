@@ -227,6 +227,135 @@ with exactly this error. Not something a single feature branch should try
 to fix; flagging for the orchestrator's full-suite run rather than chasing
 it here.
 
+## Code review fixes (2026-09-10)
+
+Seven findings came back; 1, 2, 3 and 7 were must-fix. All seven addressed.
+
+**Finding 1 (HIGH) — Tab ran the action row instead of completing a typed
+path.** `completionKeyAction`'s Tab default (nothing arrowed to) was always
+index 0, and once an action row occupied that slot, Tab ran it instead of
+completing the first real folder match — destroying a typed path on every
+keystroke, since `typedAddress` is "missing" for every partial path while
+it's being typed. Fixed by giving `completionKeyAction` a `tabDefaultIndex`
+parameter (default 0 — every existing call site and test unaffected);
+`SearchField.tsx` passes the index of the first real completion whenever
+one exists (`actionRowCount`), falling back to 0 (the action row) only when
+it's the sole row on offer. The action row stays reachable by explicitly
+arrowing to it, unchanged. Pure-function coverage in
+`completion-keys.test.ts` (two new tests: the redirected default, and that
+an EXPLICIT highlight on row 0 still works). A driven, full-stack
+reproduction of the original bug is no longer possible after finding 3
+landed in the same round (see finding 3's own note below) — kept the fix
+anyway, per the finding's explicit "must-fix", as defensive correctness.
+
+**Finding 2 (MEDIUM) — the offer row named the wrong folder.** The
+`commitInPlace: true` row is only reached when `gated` is true, i.e. the
+query's base genuinely differs from the folder on screen — yet its label
+said "Search this folder for …", which searches a DIFFERENT folder than the
+one open. Fixed by reusing `folderToOpen` (now exported from
+`enter-prompt.ts`) to name the real folder, matching the wording the
+retired banner already used verbatim (`Press Enter to open <folder> and
+search`); falls back to the old "this folder" wording only when
+`folderToOpen` has nothing to name (a bare `~`/`/`). `SearchActionRow` grew
+a `label: string` field carrying the row's full, ready-to-render text —
+computed once in `search-action-rows.ts` rather than reconstructed at the
+render layer from `query`+`commitInPlace`, since that reconstruction is
+exactly the logic this finding says was wrong. This also makes
+`folderToOpen` a live import again, resolving finding 6 below without
+further changes.
+
+**Finding 3 (MEDIUM, must-fix) — the not-found report fired on every
+half-typed path.** The missing-path branch's guard (`typedAddress.status
+=== "missing"`) fires for every uncommitted keystroke, not just a dead end
+— `/home/iamsdas/Doc` showed "No such file or folder: Doc" plus a search
+offer sitting right above the live `Documents` completion. Fixed per the
+decided approach (not re-litigated): `searchAffordance` takes a new
+`hasCompletions: boolean` parameter and returns `NOTHING` — suppressing
+BOTH the notice and its search offer, not just the notice text — the moment
+the completion dropdown already has a real match for the same text. No
+Enter/commit requirement introduced (the user has objected twice in this
+project to that shape of fix). Tested both directions in
+`search-action-rows.test.ts` (`hasCompletions suppresses the not-found row
+entirely`) and end-to-end in `search-dropdown-actions.render.test.tsx`
+("a half-typed path WITH a live completion shows no not-found notice" /
+"...with NO completions still shows it").
+
+A consequence worth naming: combined with defect 2's existing fix (glob
+queries never carry folder completions) and this fix (missing-path rows
+now suppress themselves the moment completions exist), an action row and a
+real folder completion can no longer coexist in the dropdown AT ALL — the
+one coexistence scenario decisions.md documented earlier (a missing exact
+name with a same-folder near-match) is exactly the case this finding closes.
+The "arrow-key navigation across the action row" test was rebuilt around
+the lone-action-row case (the gated-glob scenario) since the coexistence
+case it originally exercised no longer occurs; finding 1's own
+`tabDefaultIndex` guard in `SearchField.tsx` is consequently unreachable
+through any live combination of props this component can produce today,
+covered instead by `completion-keys.test.ts`'s direct, differentiating
+unit tests. Left in as defensive correctness (finding 1 was independently
+marked must-fix), not re-litigated.
+
+**Finding 4 (LOW/MEDIUM) — `escapesFsPath` disagreed with the server on
+`/*.csv` and bare `/`.** Read `resolve_query`'s own docstring
+(`fused_render/index/query.py`): a leading `/` is tried as an absolute path
+first, falling back to a depth-1 anchor at the box's own root ONLY when the
+walk can't consume its first segment — which happens unconditionally (no
+filesystem check needed) for a bare `/` and for a `/`-prefixed query whose
+very first segment is itself glob-bearing (`/*.csv`), since `_walk_from`'s
+loop condition already excludes a glob-bearing segment before ever
+checking `os.path.isdir`. Added an `isBareSlash && baseSegments.length ===
+0` check that returns `false` (not escaping) for exactly those two shapes,
+matching the server exactly with no directory access of its own. A literal
+first segment (`/etc/...`) stays gated on purpose — whether the server's
+own fallback fires there depends on real filesystem state this predicate
+cannot see, and the safe side of that ambiguity is the gate, same bias
+`escapesBase` already takes. Added both cases to `query-base.test.ts`.
+
+**Finding 5 (LOW) — `searchAffordance` mixed live and deferred values.**
+`query`/`pristine` were computed from the live `query` prop while `escapes`
+(from `useListingSearch.ts`) is computed off the deferred, debounced `q`
+— the exact same live/deferred mismatch `FileSearchField.tsx`'s own
+pristine guard was already fixed against (its own `isPristineQuery(q, ...)`
+call, not `query`). `SearchField.tsx` gained a new `q: string` prop
+(threaded from both `Listing.tsx` and `FileSearchField.tsx`, which already
+had `q` from `useListingSearch` — `FileSearchField.tsx` just wasn't passing
+it down); `pristine` and the `searchAffordance` call now read `q`, not
+`query`. `query` itself stays live everywhere else (the `<input>`'s own
+`value`, every keystroke handler) — only the affordance calculation needed
+to agree with `escapes` about which render it describes. `isPathQuery`
+stays on the live `query` too, per its own existing doc comment
+(deliberately immediate, not deferred) — untouched, not part of this
+finding.
+
+**Finding 6 (LOW) — `enterPrompt` was dead code.** Confirmed by grep
+(`tests/` has no reference — `test_github_login.py`'s own "Press Enter to
+open github.com..." is an unrelated CLI prompt) that nothing outside its
+own test called `enterPrompt` any more once Listing.tsx's banner was
+removed, and finding 2's fix (reusing `folderToOpen` directly) didn't
+resurrect it. Deleted `enterPrompt` from `enter-prompt.ts` and its own
+`describe` block from `enter-prompt.test.ts`, replaced with direct
+`folderToOpen` coverage (the folder-naming logic `enterPrompt` used to
+wrap) so the behaviour it exercised isn't lost, just no longer tested
+through a deleted wrapper. `pathNotFoundMessage` and `folderToOpen`
+themselves both survive — both have real callers now.
+
+**Finding 7 (test isolation, must-fix) — the hard-constraint test failed
+in a full `bun test` run.** Root cause confirmed exactly as diagnosed:
+`useListingSearch.render.test.ts` (unchanged by this branch) calls
+`mock.module("@platform/lib/router", ...)` with a stub missing `navigate`;
+bun's `mock.module` replaces the module registry for the WHOLE PROCESS, so
+in a full run this file's own `navigate()` call (via `SearchField.tsx`)
+silently bound to `undefined` and did nothing, dropping `pushStateCalls`
+from 1 to 0. Fixed by having THIS file stub `@platform/lib/router` itself,
+completely — every named export the real module has (confirmed against
+the module file itself, not just this file's own current import graph, so
+a future addition elsewhere in the tree doesn't reopen the same crash) —
+and tracking `navigate()`'s own calls directly (`navigateCalls`) rather
+than the real implementation's internal use of `history.pushState`. This
+makes the test's verdict independent of whatever mock.module call ran
+earlier in the process. Verified with two full, unfiltered `bun test` runs
+at the repo's `frontend/` root: 4315 pass, 0 fail, both times.
+
 ## Cannot be verified headlessly
 
 See SPEC-omnibox-search-affordance.md's own "Cannot be verified headlessly"
