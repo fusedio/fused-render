@@ -41,6 +41,7 @@ import { type TypedAddress } from "@apps/explorer/listing/useTypedPathAddress";
 import { type Completion, type CompletionItem } from "@apps/explorer/listing/useCompletion";
 import { completionKeyAction, moveHighlight } from "@apps/explorer/listing/completion-keys";
 import { isExactSingleMatch } from "@apps/explorer/listing/completion-target";
+import { searchAffordance, type SearchActionRow } from "@apps/explorer/listing/search-action-rows";
 import { contractHome } from "@apps/explorer/listing/home-path";
 import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
 import { SEARCH_EXAMPLES, showSearchExamples } from "@apps/explorer/listing/search-examples";
@@ -219,13 +220,42 @@ export function SearchField({
     searchInputRef.current?.focus();
   };
 
+  // SPEC-omnibox-search-affordance.md scope item 4 (variant E): the ONE
+  // pressable search offer the dropdown gets, plus the non-interactive
+  // not-found notice above it for an unresolvable path-shaped query.
+  // `searchAffordance` reads the SAME `isPathQuery`/`typedAddress`/
+  // `searching` this field already has — not a second, parallel notion of
+  // "is this a path" (the hard constraint the spec calls out by name).
+  const affordance = searchAffordance(query, isPathQuery, typedAddress, searching);
+  const hasAction = affordance.action !== null;
+  // Pressing the action row: a bare word commits the query exactly as Enter
+  // already falls through to (decision 4's gate); a path-shaped query that
+  // does not resolve rewrites the box to a plain word instead (see
+  // search-action-rows.ts's own comment on `commitInPlace` for why a
+  // second commit path for THAT case would be a no-op — `isPathQuery`
+  // suppresses the rank request no matter how many times commitSearch()
+  // runs).
+  const runAction = (action: SearchActionRow) => {
+    if (action.commitInPlace) {
+      commitSearch();
+    } else {
+      setQuery(action.query);
+    }
+    searchInputRef.current?.focus();
+  };
+
   const [highlight, setHighlight] = useState(-1);
   // The highlight tracks the CURRENT list by position, not by identity —
   // resets on every list change, to -1 (nothing highlighted), not 0. See
-  // Listing.tsx's own history of this exact effect for why.
+  // Listing.tsx's own history of this exact effect for why. `hasAction` is
+  // part of "the list changed" too: the action row can appear or vanish
+  // (typedAddress settling from "checking" to "missing", say) with neither
+  // `completion.target?.dir` nor `completion.items.length` moving at all,
+  // which would otherwise leave a stale highlight pointing at the wrong row
+  // once the row it named shifts index.
   useEffect(() => {
     setHighlight(-1);
-  }, [completion.target?.dir, completion.items.length]);
+  }, [completion.target?.dir, completion.items.length, hasAction]);
   // Whether the field itself is the thing focused right now — distinct from
   // `pinnedOpen` above, which deliberately OUTLIVES a blur once there is a
   // query. The dropdown needs the opposite: it must close the moment focus
@@ -233,21 +263,29 @@ export function SearchField({
   const [fieldActive, setFieldActive] = useState(false);
   const showCompletion =
     fieldActive &&
-    completion.target !== null &&
-    completion.items.length > 0 &&
-    !isExactSingleMatch(completion.items, completion.target);
+    (hasAction ||
+      (completion.target !== null &&
+        completion.items.length > 0 &&
+        !isExactSingleMatch(completion.items, completion.target)));
   const showExamples = showSearchExamples(fieldActive, query, showCompletion);
+  // The action row, when present, is always the FIRST row (index 0) — the
+  // folder completions that follow it shift up by exactly this many slots.
+  // One number, read everywhere an index has to cross that boundary, so the
+  // arrow-key math and the render below can't drift out of sync with each
+  // other about where the folder rows actually start.
+  const actionRowCount = hasAction ? 1 : 0;
+  const totalRows = actionRowCount + completion.items.length;
 
   const firstRowRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<HTMLDivElement>(null);
   const [rowsMaxHeight, setRowsMaxHeight] = useState<number | undefined>(undefined);
   useLayoutEffect(() => {
-    if (completion.items.length > 5 && firstRowRef.current) {
+    if (totalRows > 5 && firstRowRef.current) {
       setRowsMaxHeight(firstRowRef.current.offsetHeight * 5.5);
     } else {
       setRowsMaxHeight(undefined);
     }
-  }, [completion.items.length, completion.target?.dir, fieldActive]);
+  }, [totalRows, completion.target?.dir, fieldActive]);
   useLayoutEffect(() => {
     if (highlight < 0) return;
     const row = rowsRef.current?.querySelector<HTMLElement>(`[data-idx="${highlight}"]`);
@@ -366,25 +404,37 @@ export function SearchField({
               e.currentTarget.blur();
               return;
             }
+            // `completionKeyAction`/`moveHighlight` stay generic over a row
+            // COUNT and an INDEX into it — they don't know or care what a
+            // row IS, so folding the action row into the same index space
+            // as the folder completions (`totalRows`, above) needs no
+            // change to either. The action row is always index 0 when
+            // present: this is the ONE place that index maps back to a row
+            // to act on, matched by the ONE place the render below builds
+            // the same mapping in the opposite direction.
             const action = completionKeyAction(
               e.key,
               showCompletion,
               highlight,
-              completion.items.length,
+              totalRows,
             );
             if (action.type === "move") {
               e.preventDefault();
-              setHighlight((h) => moveHighlight(h, action.delta, completion.items.length));
+              setHighlight((h) => moveHighlight(h, action.delta, totalRows));
               return;
             }
-            if (action.type === "tab-accept") {
+            if (action.type === "tab-accept" || action.type === "enter-accept") {
               e.preventDefault();
-              acceptCompletion(completion.items[action.index]);
-              return;
-            }
-            if (action.type === "enter-accept") {
-              e.preventDefault();
-              navigateToCompletion(completion.items[action.index]);
+              if (hasAction && action.index === 0) {
+                runAction(affordance.action as SearchActionRow);
+              } else {
+                const item = completion.items[action.index - actionRowCount];
+                if (action.type === "tab-accept") {
+                  acceptCompletion(item);
+                } else {
+                  navigateToCompletion(item);
+                }
+              }
               return;
             }
             if (e.key !== "Enter") return;
@@ -404,6 +454,15 @@ export function SearchField({
         />
         {showExamples && (
           <div className="listing-completion listing-completion-examples" role="listbox">
+            {/* SPEC-omnibox-search-affordance.md scope item 4: the guidance
+                that used to live ONLY in the placeholder (invisible the
+                instant anything is typed) is readable here instead, right
+                alongside the examples it's introducing. The placeholder
+                keeps carrying the same text too — it costs nothing and
+                still serves the emptied-box case. */}
+            <div className="listing-completion-row listing-completion-notice">
+              {boxWide ? HINT_LONG : HINT_SHORT}
+            </div>
             <div className="listing-completion-rows">
               {SEARCH_EXAMPLES.map((ex) => (
                 <div
@@ -425,34 +484,76 @@ export function SearchField({
         )}
         {showCompletion && (
           <div className="listing-completion" role="listbox">
+            {/* SPEC-omnibox-search-affordance.md scope item 4: a path-shaped
+                query that does not resolve gets this warning line above the
+                search offer below — non-interactive (no data-idx, no
+                aria-selected: it is not a row the arrow keys ever land on),
+                reusing the existing pathNotFoundMessage() text
+                (search-action-rows.ts) rather than a rewritten string. */}
+            {affordance.notice && (
+              <div className="listing-completion-row listing-completion-notice">
+                {affordance.notice}
+              </div>
+            )}
             <div
               className="listing-completion-rows"
               ref={rowsRef}
               style={rowsMaxHeight !== undefined ? { maxHeight: rowsMaxHeight } : undefined}
             >
-              {completion.items.map((item, i) => (
+              {/* The one search-offer row this dropdown ever shows, always
+                  first (index 0) — reachable by arrow keys but never the
+                  DEFAULT selection (`highlight` starts at -1, same as every
+                  other row here), so a bare Enter on a path-shaped query
+                  still resolves the path exactly as before and never lands
+                  here by accident. */}
+              {affordance.action && (
                 <div
-                  key={item.path}
-                  ref={i === 0 ? firstRowRef : undefined}
-                  data-idx={i}
+                  ref={firstRowRef}
+                  data-idx={0}
                   role="option"
-                  aria-selected={i === highlight}
+                  aria-selected={0 === highlight}
                   className={
-                    "listing-completion-row" +
-                    (i === highlight ? " highlight" : "")
+                    "listing-completion-row listing-completion-action" +
+                    (0 === highlight ? " highlight" : "")
                   }
                   onMouseDown={(e) => {
                     e.preventDefault();
-                    acceptCompletion(item);
+                    runAction(affordance.action as SearchActionRow);
                   }}
-                  onMouseEnter={() => setHighlight(i)}
+                  onMouseEnter={() => setHighlight(0)}
                 >
-                  <span className="listing-completion-name">{item.name}</span>
-                  <span className="listing-completion-hint">
-                    {item.is_dir ? "folder" : formatSize(item.size)}
+                  <span className="listing-completion-name">
+                    Search this folder for &quot;{affordance.action.query}&quot;
                   </span>
+                  <span className="listing-completion-hint">↵</span>
                 </div>
-              ))}
+              )}
+              {completion.items.map((item, i) => {
+                const idx = actionRowCount + i;
+                return (
+                  <div
+                    key={item.path}
+                    ref={idx === 0 ? firstRowRef : undefined}
+                    data-idx={idx}
+                    role="option"
+                    aria-selected={idx === highlight}
+                    className={
+                      "listing-completion-row" +
+                      (idx === highlight ? " highlight" : "")
+                    }
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      acceptCompletion(item);
+                    }}
+                    onMouseEnter={() => setHighlight(idx)}
+                  >
+                    <span className="listing-completion-name">{item.name}</span>
+                    <span className="listing-completion-hint">
+                      {item.is_dir ? "folder" : formatSize(item.size)}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

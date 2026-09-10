@@ -62,7 +62,6 @@ import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { useTypedPathAddress } from "@apps/explorer/listing/useTypedPathAddress";
 import { useCompletion } from "@apps/explorer/listing/useCompletion";
-import { enterPrompt, pathNotFoundMessage } from "@apps/explorer/listing/enter-prompt";
 import { showingSearchHits } from "@apps/explorer/listing/search-body-mode";
 import { contractHome, useHome } from "@apps/explorer/listing/home-path";
 import { formatElapsed } from "@apps/explorer/lib/home-search";
@@ -280,7 +279,6 @@ export default function Listing({
     reason,
     mode,
     escapes,
-    gateOpen,
     commitSearch,
   } = useListingSearch(fsPath, home, refresh);
 
@@ -1576,48 +1574,15 @@ export default function Listing({
     );
   }
 
-  // A query is typed but not yet committed (decision 4's gate) while the
-  // FOLDER's own rows render above: not a stale search answer to caption —
-  // see `showsSearchHits` — but Enter still needs saying what it will do.
-  // One banner row above the real rows, not a caveat folded into a count
-  // (the user rejected that shape — see DECISIONS-one-field-search.md).
-  //
-  // `!isPathQuery` excludes every uncommitted query this row would otherwise
-  // make a false promise about: a path-shaped query either resolves to a
-  // real address (Enter navigates directly, no commit involved) or it does
-  // not — and either way, no rank request is ever coming for it
-  // (useListingSearch.ts), so "Enter to search" would be a promise this box
-  // cannot keep. The open folder's own path is the narrowest case of this
-  // (Enter there is a no-op too), not a special one of its own any more.
-  //
-  // `pathQueryRefused` (finding 3, code review) is the one case that still
-  // gets a row despite `isPathQuery`: Enter has ALREADY been pressed
-  // (`gateOpen`, decision 4's commit gate — not "not yet committed" any
-  // more) for a path-shaped query that resolved to nothing
-  // (`typedAddress.status === "missing"`). Left out of the exclusion above,
-  // that combination was a silent dead end: no banner (excluded by
-  // `isPathQuery`), no rank request (suppressed by design), and the footer
-  // reporting the folder's own count as if nothing had been asked at all.
-  // `pathNotFoundMessage` is deliberately NOT `enterPrompt` reused: the user
-  // already pressed Enter and got their answer, so this reports the
-  // refusal rather than promising a second Enter will do something.
-  const pathQueryRefused = isPathQuery && gateOpen && typedAddress.status === "missing";
-  if (searching && !showsSearchHits && (!isPathQuery || pathQueryRefused)) {
-    body = (
-      <>
-        <tr>
-          <td colSpan={cols} className="status-message listing-enter-row">
-            {/* Decision 9: what Enter actually does is `typedAddress`'s
-                verdict, not this gate's own idea of it — a resolved real
-                path names itself instead of promising a search Enter will
-                not run. */}
-            {pathQueryRefused ? pathNotFoundMessage(query) : enterPrompt(typedAddress, query)}
-          </td>
-        </tr>
-        {body}
-      </>
-    );
-  }
+  // SPEC-omnibox-search-affordance.md scope item 5: the banner that used to
+  // sit here — "press Enter to open that folder and search" for an
+  // uncommitted path-shaped/escaping query, or the "No such file or
+  // folder" refusal for one already committed and missing — is gone. Both
+  // moved into SearchField.tsx's own completion dropdown as rows
+  // (search-action-rows.ts's `searchAffordance`), which is exactly where
+  // the rest of this spec's guidance is moving TO, not a special case of
+  // its own any more. Removing it also gets the file list its full height
+  // back — the banner pushed every row down by one.
 
   // --- search match count (inline in the search row) ------------------------
   //

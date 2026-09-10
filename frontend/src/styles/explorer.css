@@ -1306,32 +1306,6 @@ table.pane-mini-list td.status-message {
   padding: 14px 10px;
 }
 
-/* The Enter-to-open-and-search row: the one banner in this family that is an
-   instruction rather than a state report, so it gets the app's one accent
-   colour rather than the shared `.status-message` grey. A wash, not a fill —
-   `rgba(var(--accent-rgb), 0.13)` is the same "--bg-alt under the accent
-   0.13 wash" idea `--row-bg-active` names, applied straight to this row's
-   own background rather than baked into a token, since this surface isn't
-   `--bg-alt`. `--accent-soft` on the text keeps it one deliberate accent
-   element instead of grey text sitting on a tinted band. A full `--accent`
-   fill with `--on-accent` text was tried in reasoning and rejected: at that
-   weight the row reads as an error or a system alert, not as "type Enter
-   next" sitting quietly above a normal folder listing.
-
-   This is the ONLY row in the `.status-message` family carrying colour like
-   this — every sibling site (BookmarkOpen's "Opening bookmark…", the
-   truncated/empty states above and below it, `.status-message.error`) is
-   untouched; this rule only ever matches the modifier class below, never
-   the bare class.
-
-   The accent is spent here and nowhere else on this bar: the search field's
-   own focus border stays `--fg-muted` on purpose, so focus and "type Enter
-   to act" never compete for the same colour. */
-.status-message.listing-enter-row {
-  background: rgba(var(--accent-rgb), 0.13);
-  color: var(--accent-soft);
-}
-
 /* Skeleton loading state: shimmering bars shaped like the real listing rows
    (icon + name + size + mtime), plus a full-pane placeholder while a preview
    loads. Token-derived (--bg-alt/--border) so it reads as part of the UI. */
@@ -2092,11 +2066,9 @@ table.listing-table tr.skel-row:hover {
    `.listing-search-input` does, inherited down from `.listing-search-box`
    (this row is a descendant of it, not a sibling — the dropdown portals
    nowhere), so a suggestion name lands directly under the query text it
-   completes. In practice this dropdown only ever renders for a path-shaped
-   query (`completionTarget`'s own shape gate matches `isPathQuery`'s), so
-   this always resolves to the "Path" value — but reading the property
-   rather than that number directly is what keeps the two from being able to
-   drift apart. Right padding stays at 11px. */
+   completes — reading the property rather than a re-typed number is what
+   keeps the two from being able to drift apart. Right padding stays at
+   11px. */
 .listing-completion-row {
   display: flex;
   align-items: baseline;
@@ -2108,6 +2080,18 @@ table.listing-table tr.skel-row:hover {
 
 .listing-completion-row:last-child {
   padding-bottom: 7px;
+}
+
+/* SPEC-omnibox-search-affordance.md scope item 4: a non-interactive line
+   above the real rows — the not-found warning for a path-shaped query that
+   does not resolve, or the guidance sentence the empty/focused examples
+   panel now carries alongside its three examples. Reuses `.listing-
+   completion-row`'s own padding rhythm rather than a second number, but
+   never wears `.highlight` (nothing sets it) and binds no mousedown or
+   mouseenter of its own — it is text, not a row the arrow keys count. */
+.listing-completion-notice {
+  color: var(--fg-muted);
+  white-space: normal;
 }
 
 /* The mock's `.di.act`: accent-tinted row background plus accent text,
