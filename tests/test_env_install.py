@@ -1055,6 +1055,35 @@ def test_the_mirrored_row_points_at_the_app_folder(
     assert row["page"] == canonical_fs_path(str(proj))
 
 
+def test_the_mirrored_row_accepts_a_pathlib_project_dir(monkeypatch):
+    """`envinstall.start` is typed to take a `str`, but `ai/supervisor.py`
+    calls it with `runner.folder`, a `pathlib.Path` — and `_mirror_into_jobs`
+    passes `project_dir` straight through to `canonical_fs_path` uncoerced.
+    A `Path` whose string form is drive-shaped reaches `canonical_fs_path`'s
+    `.replace("\\\\", "/")` call, but `Path.replace` takes one argument (a
+    rename target), not two — a `TypeError` that kills the mirror thread
+    silently before the jobs-dock row is ever created. Coercing to `str`
+    first, like the sibling call sites in `ai/supervisor.py` already do,
+    is what a POSIX test host can still catch this on: a `Path` built from a
+    Windows-shaped string is a `PosixPath` here, not a real `WindowsPath`,
+    but it fails the same `.replace` call the same way."""
+    monkeypatch.setattr(envinstall, "progress", lambda key: {"done": True})
+    captured = []
+    from fused_render import jobs as jobs_mod
+    monkeypatch.setattr(jobs_mod, "upsert",
+                        lambda body, **kw: captured.append(kw) or {})
+    monkeypatch.setattr(jobs_mod, "clear_cancel_requested", lambda job_id: None)
+
+    key = "0123456789abcdef"
+    envinstall._mirror_into_jobs(key, Path(r"C:\Users\runner\app"))
+    deadline = time.monotonic() + 5.0
+    while not captured and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert captured, "the mirror thread never reported (crashed uncoercing the Path?)"
+    assert captured[0].get("page") == "C:/Users/runner/app"
+
+
 def test_the_mirrored_row_canonicalizes_a_windows_shaped_project_dir(monkeypatch):
     """`_mirror_into_jobs` can be handed an OS-native `project_dir` whatever
     the CALLER'S own spelling was — `ai/supervisor.py`'s

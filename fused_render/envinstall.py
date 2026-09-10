@@ -1865,7 +1865,7 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                 # reach here OS-native (backslashed on Windows) depending on
                 # the caller, and a page is compared against the canonical
                 # spelling everywhere else it is stored or read.
-                page=canonical_fs_path(project_dir), server=True,
+                page=canonical_fs_path(str(project_dir)), server=True,
             )
             # A flag a PREVIOUS attempt's dead mirror left set (see the
             # docstring above) belongs to that attempt, not this one — clear
