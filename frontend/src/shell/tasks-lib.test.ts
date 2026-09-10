@@ -8259,6 +8259,14 @@ describe("the schedule mark on a List row", () => {
     expect(scheduledMark(past, NOW)).toBe(null);
   });
 
+  it("is built, and hidden behind one flag (Akshil, 2026-09-11)", () => {
+    // Same arrangement as SHOW_ROW_ACTIONS: everything stays, one constant
+    // decides. Flip it and the row wears the mark again with no other change.
+    expect(VIEWS).toContain("const SHOW_SCHEDULE_MARK: boolean = false;");
+    expect(VIEWS).toContain("{SHOW_SCHEDULE_MARK && sched ? (");
+    expect((VIEWS.match(/SHOW_SCHEDULE_MARK &&/g) ?? []).length).toBe(1);
+  });
+
   it("is a glyph beside the file mark, with the fact in the tooltip", () => {
     const mark = scheduledMark(task({ status: "done", next_run: AHEAD, next_run_entry: "e2" }), NOW)!;
     expect(VIEWS).toContain('className="tasks-row-sched"');

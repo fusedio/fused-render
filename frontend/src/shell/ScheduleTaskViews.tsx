@@ -179,6 +179,13 @@ export type { TaskFilters };
  * change rather than a value change.
  */
 const SHOW_ROW_ACTIONS: boolean = false;
+// THE SCHEDULE MARK IS BUILT AND HIDDEN (Akshil, 2026-09-11: "quick can we hide
+// the task list icon we just added"). Same arrangement as the strip above: the
+// glyph, its handlers, its CSS and tests all stay, and one flag decides whether
+// the row wears it. tasks-lib.scheduledMark is still computed — the tooltip
+// text and the predicate are the part worth keeping warm — so turning it back
+// on is this one line.
+const SHOW_SCHEDULE_MARK: boolean = false;
 
 
 // ---- icons -------------------------------------------------------------------
@@ -2362,7 +2369,7 @@ function TaskNode({
             tooltip) and would otherwise be a second dead pixel-run on the row
             (Akshil, 2026-08-27, about the file icon — same bug, so the same
             three handlers rather than a second answer to it). */}
-        {sched ? (
+        {SHOW_SCHEDULE_MARK && sched ? (
           <span
             className="tasks-row-sched"
             data-hint={sched.title}
