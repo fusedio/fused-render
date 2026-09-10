@@ -799,3 +799,87 @@ describe("a run that finished while the frame was away", () => {
     expect(controller.getState().repaired).toBe(0);
   });
 });
+
+// ---- the writer does not adopt the reply it just streamed -----------------
+
+describe("shownRuns is READ, not only written (Bugbot, PR4 batch)", () => {
+  test("a run this frame streamed is never re-adopted by the watch", async () => {
+    // `noteChatActivity` announces at BOTH turn boundaries, and at the end one
+    // the `busy()` gate is already down — so the tile that ran the turn hears
+    // its own poke, `live_run` still answers the id for a few seconds, and this
+    // frame would re-adopt the reply it just streamed: the done branch strips
+    // and rebuilds the turn, bumps `repaired` (a forced scroll) and takes the
+    // caret back.
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r-mine" }),
+      poll: () => poll({ done: true, session_id: "s1", text: "streamed" }),
+      live_host: () => ({ run_id: "" }),
+      // The run has ended but its dir has not been pruned yet, which is the
+      // whole window.
+      live_run: () => ({ run_id: "r-mine" }),
+      history: () => ({ turns: [] }),
+    });
+    await controller.sendMessage("go");
+    const before = assistants(controller).map((t) => t.text);
+    expect(before).toEqual(["streamed"]);
+    const repairedBefore = controller.getState().repaired;
+    const pollsBefore = agent.of("poll").length;
+
+    // The writer's own poke, which is what the live watch turns into a tick.
+    const liveBefore = agent.of("live_run").length;
+    await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+
+    // THE LOOKUP REALLY HAPPENED — so this is the `shownRuns` skip and not some
+    // earlier gate quietly making the test pass.
+    expect(agent.of("live_run").length).toBe(liveBefore + 1);
+    // Nothing was re-resumed: no extra probe, no rebuilt turn, no scroll.
+    expect(agent.of("poll").length).toBe(pollsBefore);
+    expect(assistants(controller).map((t) => t.text)).toEqual(before);
+    expect(controller.getState().repaired).toBe(repairedBefore);
+  });
+
+  test("...but a run THIS FRAME NEVER SHOWED is still adopted", async () => {
+    // The turn made in another tab — the whole point of the standing watch.
+    const { controller } = makeController({
+      live_run: () => ({ run_id: "r-theirs" }),
+      poll: () => poll({ done: true, message: "from the other tab", text: "its reply" }),
+      history: () => ({ turns: [] }),
+    });
+    await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(users(controller).map((t) => t.text)).toEqual(["from the other tab"]);
+    expect(assistants(controller).map((t) => t.text)).toEqual(["its reply"]);
+  });
+});
+
+// ---- the half of "in flight" that ChatState cannot see --------------------
+
+test("isBusy() covers a send INSIDE the gate, which no ChatState field does", async () => {
+  // `leftLive` (P4-21) is answered from the Back gesture, and the window the
+  // two write-covering reads exist for is exactly a send that has entered the
+  // gate with no run id yet: `status` is not "running", `runId` is null and
+  // `queued` is empty, so every ChatState reading of "in flight" says no
+  // (Bugbot, this batch).
+  const agent = fakeAgent({
+    defaults: () => ({}),
+    live_host: () => ({ run_id: "" }),
+    // The spawn never answers, so the controller is parked inside `sending`.
+    start: () => new Promise(() => {}),
+  });
+  const controller = createChatController({
+    file: "/proj/app.py",
+    agentDir: "/tpl/claude",
+    params: createMemoryParamsStore(),
+    run: agent.run,
+    sleep: () => Promise.resolve(),
+    now: () => 1_000,
+  });
+  void controller.sendMessage("go");
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+
+  const s = controller.getState();
+  expect(s.status).not.toBe("running");
+  expect(s.runId).toBeFalsy();
+  expect(s.queued.length).toBe(0);
+  // ...and the controller still knows.
+  expect(controller.isBusy()).toBe(true);
+});

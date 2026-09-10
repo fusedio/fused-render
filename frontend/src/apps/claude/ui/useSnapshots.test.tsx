@@ -52,6 +52,7 @@ afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
   resetSnapshotCacheForTests();
   reads.length = 0;
+  fileGate = null;
   answer = () => Promise.resolve(timeline("h1"));
 });
 
@@ -59,8 +60,16 @@ afterEach(() => {
 const reads: string[] = [];
 let answer: () => Promise<SnapshotsTimeline> = () =>
   Promise.resolve(timeline("h1"));
+let fileGate: (() => void) | null = null;
 const deps = {
-  isFile: () => Promise.resolve(true),
+  isFile: () => {
+    if (fileGate) {
+      return new Promise<boolean>((res) => {
+        fileGate = () => res(true);
+      });
+    }
+    return Promise.resolve(true);
+  },
   load: (_dir: string, file: string) => {
     reads.push(file);
     return answer();
@@ -197,4 +206,35 @@ test("A FAILURE IS AN ANSWER for the ordering's purposes", async () => {
   const h = await mount(0);
   expect(h.state().failed).toBe(true);
   expect(h.state().settled).toBe(true);
+});
+
+test("SETTLED GOES FALSE BEFORE THE FILENESS STAT, not after it", async () => {
+  // The stat is an await, and `settled` is what releases the artifacts index
+  // (`useLandingReads`). Reset only on the far side of it, a target switch
+  // carried the previous file's `true` across the whole wait and the last of
+  // the three reads went first (Bugbot, this batch).
+  const first = await mount(0);
+  expect(first.state().settled).toBe(true);
+  first.unmount();
+
+  // A second target, with the stat wedged open.
+  fileGate = () => {};
+  let out: import("./useSnapshots").SnapshotsState | null = null;
+  function Probe() {
+    out = useSnapshots("/tpl", "/repo/other.py", 0, deps as never, true);
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  await act(async () => {
+    r = create(createElement(Probe));
+  });
+  mounted.push(r);
+  for (let i = 0; i < 3; i++) await act(async () => {});
+  // Mid-stat: nothing may be released.
+  expect(out!.settled).toBe(false);
+  const open = fileGate;
+  fileGate = null;
+  await act(async () => open?.());
+  for (let i = 0; i < 4; i++) await act(async () => {});
+  expect(out!.settled).toBe(true);
 });

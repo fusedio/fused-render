@@ -2185,6 +2185,32 @@ export function createChatController(deps: ControllerDeps): ChatController {
         continue;
       }
       if (sending) continue;
+      /**
+       * A RUN THIS FRAME ALREADY STREAMED IS NOT ADOPTED AGAIN (Bugbot, this
+       * batch). `shownRuns` was being WRITTEN here and never read, which left
+       * the half of its own contract undone — "a streamed run is attached,
+       * never re-resumed".
+       *
+       * The window is real and now reliably reachable: `noteChatActivity`
+       * announces at both turn boundaries, and at the END one the `busy()` gate
+       * is already down, so the tile that ran the turn hears its own poke,
+       * `live_run` still answers the id for a few seconds, and this frame
+       * re-adopts the reply it just streamed — the done branch strips and
+       * rebuilds the turn, bumps `repaired` (a forced scroll) and takes the
+       * caret back. The 5 s interval could already hit the same window; the
+       * in-document poke (P4-06) only made it certain.
+       *
+       * `continue`, not `return`: the remaining laps of the open-a-chat window
+       * should go on looking for a DIFFERENT id, and the transcript follower
+       * below is the coarser fallback for any tail this skips — which is exactly
+       * the division of labour `tick` is built on ("run dirs first, always …
+       * the transcript is the blinder fallback and only speaks for the turns no
+       * run dir can account for").
+       */
+      if (shownRuns.has(id)) {
+        setAdopting(false);
+        continue;
+      }
       setRunParam(id);
       // MARKED AT THE MOMENT OF ADOPTION, not inside the reconciliation: the
       // watch owns this id from here on, and a `resumeRun` that bails on the

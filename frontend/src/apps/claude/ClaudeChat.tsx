@@ -2066,9 +2066,18 @@ function ChatBody(props: ChatBodyProps) {
     resetCardPolicy(cardPolicy);
     // WAS THERE A TURN IN FLIGHT? Asked before `newChat` empties the state that
     // knows. A queued send counts: its transcript write has not happened yet
-    // either.
+    // either — and so does a send that is INSIDE the `sending` gate with no run
+    // id yet, which is the exact window these extra looks exist to cover (a
+    // brand-new session's transcript appears only once the CLI has written its
+    // first rows). `isBusy()` is `activeRun || sending`, which is the half
+    // `ChatState` cannot see (Bugbot, this batch).
     const s = controller.getState();
-    setLeftLive(s.status === "running" || !!s.runId || s.queued.length > 0);
+    setLeftLive(
+      controller.isBusy() ||
+        s.status === "running" ||
+        !!s.runId ||
+        s.queued.length > 0,
+    );
     // AND A FRESH SCHEDULE. `newChat` puts `transcriptGen` back to 0, and the
     // reset effect below skips gen 0 by construction (a mount must not
     // re-baseline the poller) — so Back alone left the block that belonged to
