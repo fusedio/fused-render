@@ -26,21 +26,28 @@ export type JobKind = "download" | "task";
 // "server" — this app owns the process and really stops it.
 export type JobOwner = "page" | "server";
 
-// Which of the three notification tiers a row belongs to (SPEC
-// actionable-notifications). `tier` governs RETENTION ONLY — whether a
-// terminal row is KEPT once it lands, not whether the user is shown
-// anything: every terminal job pops its own card in the floating column
-// (jobs.ts `popupJobs`/`popupTick`, `platform/ui/JobPopupCard.tsx`)
-// regardless of tier, `transient` included. What tier decides is what
-// happens AFTER the pop:
+// Which of the four notification tiers a row belongs to (SPEC
+// actionable-notifications). `tier` governs RETENTION, and, for "silent"
+// alone, whether the row pops a card in the floating column at all
+// (`popupJobs`/`popupTick`, `platform/ui/JobPopupCard.tsx`) — every other
+// tier still pops on its way to terminal, `transient` included; what a
+// non-silent tier decides is what happens AFTER that pop:
 //   "attention"  — kept in the panel until dismissed, and drawn there
 //                  without the panel having to be opened.
 //   "trail"      — kept in the panel until dismissed.
 //   "transient"  — kept nowhere; its card is the only trace it leaves.
+//   "silent"     — kept nowhere AND pops nothing: a producer declares this
+//                  when finishing is not news (a resident model load/unload
+//                  is the shipped example — the running row was already
+//                  visible, and turning "done" says nothing new). Silence
+//                  is a property of SUCCESS only — `effectiveTier` still
+//                  promotes an `error`/`cancelled` row to "attention"
+//                  regardless of the declared tier, so a silent job that
+//                  fails is always news.
 // "trail" is the default on the server (`fused_render/jobs.py`'s `Job.tier`)
 // on purpose: a producer that sets nothing behaves exactly like every row
 // did before this field existed.
-export type JobTier = "attention" | "trail" | "transient";
+export type JobTier = "attention" | "trail" | "transient" | "silent";
 
 export interface Job {
   id: string;
@@ -97,7 +104,7 @@ export interface Job {
   // model load (`fused_render/ai/supervisor.py` `_wait_ready`'s merge). See
   // `mergedRows` below for what the manager does with it.
   waiting_for: string;
-  // Which of the three tiers this row belongs to (see `JobTier` above) —
+  // Which of the four tiers this row belongs to (see `JobTier` above) —
   // chosen by the PRODUCER, server-side only. Sticky across ticks on one id
   // like every other field: `job_id_for(model)` (`ai/supervisor.py`) is
   // shared by a resident load, a weights-only download and an unload, so
@@ -211,11 +218,12 @@ export const AI_MODEL_JOB_PREFIX = "sys:ai-model:";
  *  The one override: a terminal job in `error` or `cancelled` is always
  *  `attention`, regardless of what its producer declared. A failed run is
  *  news even for a producer that otherwise declares itself `transient` (a
- *  scheduled run, an index scan, a text generation, a resident model load)
- *  — the thing that makes those tiers correct on SUCCESS (nothing survives
- *  it) is exactly what is no longer true on a failure: the user did not get
- *  what they asked for, which is always worth a look. A `done` row, or a
- *  still-running one, is unaffected and reads its stored tier as-is.
+ *  scheduled run, an index scan, a text generation) or `silent` (a resident
+ *  model load/unload) — the thing that makes those tiers correct on SUCCESS
+ *  (nothing survives it, or nothing about finishing is news) is exactly what
+ *  is no longer true on a failure: the user did not get what they asked for,
+ *  which is always worth a look. A `done` row, or a still-running one, is
+ *  unaffected and reads its stored tier as-is.
  *
  *  Mirrors `effective_tier` in `fused_render/jobs.py` — keep the two in
  *  step. */
@@ -230,21 +238,22 @@ export function effectiveTier(job: Job): JobTier {
  *    something I even want in the activity" — an explicit product decision,
  *    not a consequence of its declared tier, so it is checked by id prefix
  *    rather than by `effectiveTier` alone).
- *  - a TERMINAL job whose `effectiveTier` is "transient" — a model load's
- *    own success, a finished index scan, a finished text generation, none of
- *    which leave anything to act on.
- *  A transient row that is still `running` is otherwise unaffected — `tier`
- *  only ever governs RETENTION of a terminal row (`JobTier` above), so a
- *  running index scan or text generation still gets a row here regardless of
- *  its declared tier, exactly what Activity's Cancel control needs to reach.
- *  Reading `effectiveTier` rather than the stored `tier` matters here: a
- *  producer that declared itself transient but ended in `error`/`cancelled`
+ *  - a TERMINAL job whose `effectiveTier` is "transient" or "silent" — a
+ *    finished index scan, a finished text generation, a resident model
+ *    load/unload, none of which leave anything to act on.
+ *  A transient/silent row that is still `running` is otherwise unaffected —
+ *  `tier` only ever governs RETENTION (and, for "silent", popping) of a
+ *  TERMINAL row (`JobTier` above), so a running index scan, text generation
+ *  or model load still gets a row here regardless of its declared tier,
+ *  exactly what Activity's Cancel control needs to reach. Reading
+ *  `effectiveTier` rather than the stored `tier` matters here: a producer
+ *  that declared itself transient/silent but ended in `error`/`cancelled`
  *  still gets a row, because the override already turned it into
  *  `attention`. */
 export function jobRows(jobs: Job[]): Job[] {
   return jobs.filter((j) => {
     if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
-    return !isTerminal(j) || effectiveTier(j) !== "transient";
+    return !isTerminal(j) || (effectiveTier(j) !== "transient" && effectiveTier(j) !== "silent");
   });
 }
 
@@ -279,8 +288,11 @@ export function terminalNotifications(jobs: Job[]): Job[] {
 // getting notifications, ensure the latest notification always pops up and
 // auto disappears under 3 seconds. they still stay in the list"). `tier`
 // narrowed to mean retention only (see `JobTier` above) is what makes this
-// possible: every terminal job is news worth a card, whether or not it earns
-// a lasting row.
+// possible for `attention`/`trail`/`transient`: every terminal job in one of
+// those three is news worth a card, whether or not it earns a lasting row.
+// `silent` is the one exception — its whole point is to pop NOTHING on a
+// successful finish (a resident model load/unload: the running row already
+// said as much, so "done" is not news).
 
 /** Every terminal job that should pop a card — deliberately NOT `jobRows`
  *  filtered by `effectiveTier`, since that filter is exactly what would drop
@@ -290,9 +302,23 @@ export function terminalNotifications(jobs: Job[]): Job[] {
  *  instant it goes terminal, one poll ahead of the waiter noticing and
  *  clearing its own `waiting_for`. The `sys:schedule:*` exclusion (D661) is
  *  independent of tier and applies here exactly as it does in `jobRows` —
- *  a scheduled message's run is not a job anyone asked to watch. */
+ *  a scheduled message's run is not a job anyone asked to watch.
+ *
+ *  The `silent` exclusion below reads the STORED `job.tier`, gated on
+ *  `state === "done"` specifically — NOT `effectiveTier(j) !== "silent"`.
+ *  A manager process can die mid-report and leave a row stuck `error` while
+ *  its last-written tier is still `silent` (the supervisor's own reporting
+ *  thread is the producer of that report; nothing guarantees its failure
+ *  path gets to restate tier before it dies) — that row must still pop,
+ *  because silence is a property of SUCCESS only, and a failure is always
+ *  news. Reading `effectiveTier` here would already promote that row to
+ *  `attention` and let it through correctly by accident, but it would also
+ *  hide the actual rule being applied: this filter cares about the
+ *  producer's OWN claim on a clean finish, not the derived display tier. */
 export function popupJobs(jobs: Job[]): Job[] {
-  return terminalJobs(mergedRows(jobs)).filter((j) => !j.id.startsWith(SCHEDULE_JOB_PREFIX));
+  return terminalJobs(mergedRows(jobs))
+    .filter((j) => !j.id.startsWith(SCHEDULE_JOB_PREFIX))
+    .filter((j) => !(j.tier === "silent" && j.state === "done"));
 }
 
 /** One popup tick's candidate key — a terminal EVENT, not a job id.

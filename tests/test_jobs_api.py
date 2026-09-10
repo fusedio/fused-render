@@ -566,6 +566,56 @@ def test_a_failed_scheduled_run_still_ages_out_on_the_read_gated_clock():
     assert later == set(), "a failed scheduled run ages out — no surface ever draws it"
 
 
+def test_a_silent_row_ages_out_on_the_read_gated_clock_like_a_spent_transient_one():
+    """A silent row (a resident model load/unload's own success report,
+    `tier=jobs.SILENT`) pops no card at all and draws nowhere — an even
+    stronger case than `TRANSIENT` for the same read-gated age-out
+    `_sweep` already gives a spent transient success, so it gets the exact
+    same carve-out rather than surviving for the process's lifetime."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "done",
+                 "tier": jobs.SILENT}, now=1000.0, server=True)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {"sys:ai-model:x"}
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == set(), "a silent row ages out, unlike an ordinary terminal row"
+
+
+def test_a_failed_silent_model_load_survives_well_past_finished_ttl_after_being_read():
+    """Silence is a property of SUCCESS only. A `sys:ai-model:*` row that
+    ends in `error` is promoted to `attention` by `effective_tier`/
+    `effectiveTier` regardless of the STORED `tier` it declares — a
+    manager process dying mid-report can leave `silent` sitting on a row
+    that then goes `error` without ever restating its own tier — so it must
+    still pop and still be kept until dismissed, exactly like a failed
+    `TRANSIENT` row, not aged out on the read-gated clock `_sweep` only
+    applies to a SUCCESSFUL silent/transient report."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "error",
+                 "tier": jobs.SILENT}, now=1000.0, server=True)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {"sys:ai-model:x"}, "still shown while it exists"
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == {"sys:ai-model:x"}, (
+        "a failed silent load is drawn and dismissable, so it is kept "
+        "until dismissed, not aged out on the read-gated clock"
+    )
+
+
+def test_a_running_silent_job_still_appears_in_list_jobs():
+    """`SILENT` governs retention/popping of a TERMINAL row only — a still
+    RUNNING silent job (a resident load or unload in progress) is unaffected
+    and keeps its ordinary Activity row, exactly as `jobRows` on the
+    frontend leaves a running row alone regardless of tier."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "running",
+                 "tier": jobs.SILENT}, now=1000.0, server=True)
+
+    rows = {r["id"] for r in jobs.list_jobs(now=1000.0)}
+    assert rows == {"sys:ai-model:x"}
+
+
 def test_a_wait_job_poll_still_observes_a_transient_row_go_done_before_it_ages_out():
     """`fused.ai.models.load(wait=True)`'s `_wait_job` poll reads the row via
     `list_jobs(mark_read=True)` — the same call that starts the read-gated

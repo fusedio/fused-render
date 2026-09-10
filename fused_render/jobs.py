@@ -68,22 +68,32 @@ STATES = (RUNNING, WAITING) + TERMINAL_STATES
 # spinner. Kept a small closed set so the UI never has to guess.
 KINDS = ("download", "task")
 
-# The three notification tiers a producer picks for its own row (SPEC
-# actionable-notifications). This governs RETENTION ONLY — whether a
-# terminal row is KEPT once it lands, never whether the user is shown
-# anything: every terminal job pops its own card in the frontend's floating
-# column regardless of tier (frontend/src/platform/lib/jobs.ts `popupJobs`),
-# `transient` included. What the tier decides is what happens AFTER the pop:
+# The four notification tiers a producer picks for its own row (SPEC
+# actionable-notifications). This governs both RETENTION (whether a
+# terminal row is KEPT once it lands) and, for "silent" alone, whether the
+# frontend's floating column pops a card for it at all
+# (frontend/src/platform/lib/jobs.ts `popupJobs`) — every other tier still
+# pops on its way to terminal, `transient` included; what a non-silent tier
+# decides is what happens AFTER that pop:
 #   "attention"  — kept in the panel until dismissed, and drawn there
 #                  without the panel having to be opened.
 #   "trail"      — kept in the panel until dismissed.
 #   "transient"  — kept nowhere; its card is the only trace it leaves.
+#   "silent"     — kept nowhere AND pops nothing: a producer declares this
+#                  when finishing is not news (a resident model load/unload,
+#                  say — the running row was already visible, and turning
+#                  "done" says nothing new). Silence is a property of
+#                  SUCCESS only: `effective_tier`/`effectiveTier` still
+#                  promotes an `error`/`cancelled` row to "attention"
+#                  regardless of the declared tier, so a silent job that
+#                  fails is always news and still pops and sticks around.
 # "trail" is the default on purpose: a producer that sets nothing behaves
 # exactly like every row did before this field existed.
 ATTENTION = "attention"
 TRAIL = "trail"
 TRANSIENT = "transient"
-TIERS = (ATTENTION, TRAIL, TRANSIENT)
+SILENT = "silent"
+TIERS = (ATTENTION, TRAIL, TRANSIENT, SILENT)
 
 # Whether `total` is the WHOLE download or one phase of it (SPEC AI-5n, D498).
 # "phase" is the default a bare `download_snapshot` reporter has always sent
@@ -323,7 +333,7 @@ class Job:
     # THEN fails is not left invisible — D266's guarantee that both rows can
     # show a real failure only holds if the merge does not outlive the wait.
     waiting_for: str = ""
-    # Which of the three tiers this row belongs to — see `TIERS` above.
+    # Which of the four tiers this row belongs to — see `TIERS` above.
     # Chosen by the PRODUCER, because only the producer knows whether the
     # event it is reporting left anything behind. SERVER-ONLY (see `upsert`'s
     # `server` gate below), for the same reason `waiting_for` is: a page
@@ -831,22 +841,26 @@ def _sweep(now: float) -> None:
       clock every terminal row had before D663, unconditionally on id alone
       — not on tier, not on outcome.
 
-    - **Every other row whose STORED `job.tier` is `TRANSIENT` ages out
-      only once its state is `done`.** Every producer besides the scheduler
-      IS drawn somewhere the moment it lands in a terminal state — a
-      resident model load and an index scan surface in Notifications
-      (`terminalNotifications`), a text/image/video generation surfaces in
-      Activity while running and, on a failure, in Notifications too — so a
-      failed transient row is not an orphan the way a scheduled tick is: it
-      is a row someone can see, with a working ✕, describing exactly why
-      their request did not come back with what they asked for. Ageing that
-      out on the same read-gated clock a `done` row uses would forget a
+    - **Every other row whose STORED `job.tier` is `TRANSIENT` OR `SILENT`
+      ages out only once its state is `done`.** Every producer besides the
+      scheduler IS drawn somewhere the moment it lands in a non-silent
+      terminal state — a resident model load and an index scan surface in
+      Notifications (`terminalNotifications`), a text/image/video
+      generation surfaces in Activity while running and, on a failure, in
+      Notifications too — so a failed transient/silent row is not an orphan
+      the way a scheduled tick is: it is a row someone can see, with a
+      working ✕, describing exactly why their request did not come back
+      with what they asked for (a `SILENT` producer's own failure is
+      promoted to `attention` by `effective_tier` well before it ever
+      reaches this branch — see below — so the only `SILENT` rows this
+      branch ever sees in a terminal state are `done` ones). Ageing that out
+      on the same read-gated clock a `done` row uses would forget a
       resident model's failed load, a failed index scan, or a failed text
       generation a few seconds after the next poll stamps `first_read_at` —
       the vanishing-row bug D663 already settled against, reintroduced under
-      a different gate. A `TRANSIENT` producer only earns age-out on
-      SUCCESS, because success is what leaves nothing behind to look at; a
-      failure is attention, and stays until an explicit dismiss like any
+      a different gate. A `TRANSIENT`/`SILENT` producer only earns age-out
+      on SUCCESS, because success is what leaves nothing behind to look at;
+      a failure is attention, and stays until an explicit dismiss like any
       other row a surface can show.
 
     Both halves read the STORED `job.tier`/id, never `effective_tier` —
@@ -898,7 +912,9 @@ def _sweep(now: float) -> None:
             # instead of waiting on a dismiss nobody can send — see this
             # function's own docstring for why each is scoped the way it is:
             unattended_per_tick = job_id.startswith(SCHEDULE_JOB_PREFIX)
-            spent_transient = job.tier == TRANSIENT and job.state == "done"
+            spent_transient = (
+                job.tier in (TRANSIENT, SILENT) and job.state == "done"
+            )
             if unattended_per_tick or spent_transient:
                 if job.first_read_at is not None:
                     if (now - job.first_read_at) > FINISHED_TTL_S:

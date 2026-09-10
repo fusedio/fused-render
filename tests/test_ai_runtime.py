@@ -2969,17 +2969,18 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
     assert described["totalResidentBytes"] == 1234
 
 
-def test_a_resident_load_reports_its_row_transient(fake_runner):
+def test_a_resident_load_reports_its_row_silent(fake_runner):
     """A resident load's own success report (`_bring_up`) sets
-    `tier=jobs.TRANSIENT` — the row it already showed as "loading" says
-    nothing new by turning "done", so the manager should draw no
-    Notification for it once finished."""
+    `tier=jobs.SILENT` — a successful model load raises no notification at
+    all (the user's own call: loading a model is not news), so the row it
+    already showed as "loading" turning "done" pops nothing and keeps no
+    row."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
     assert row["state"] == "done"
-    assert row["tier"] == jobs.TRANSIENT
+    assert row["tier"] == jobs.SILENT
 
 
 def test_a_weights_only_download_reports_its_row_trail(fake_runner):
@@ -2995,16 +2996,16 @@ def test_a_weights_only_download_reports_its_row_trail(fake_runner):
     assert row["tier"] == jobs.TRAIL
 
 
-def test_a_weights_only_download_does_not_inherit_a_loads_transient_tier(fake_runner):
+def test_a_weights_only_download_does_not_inherit_a_loads_silent_tier(fake_runner):
     """`_fetch_only`'s `job` is `job_id_for(model)` too — the exact row a
-    resident load of the SAME model already reported `tier=jobs.TRANSIENT`
+    resident load of the SAME model already reported `tier=jobs.SILENT`
     through. A download finishing afterwards must not inherit that stale
     tier — it restates its own `tier=jobs.TRAIL` explicitly."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")
     before = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert before["tier"] == jobs.TRANSIENT
+    assert before["tier"] == jobs.SILENT
 
     jobs.upsert({"id": job, "kind": "download", "state": "running"}, server=True)
     supervisor._fetch_only(fake_runner, "org/small", job)
@@ -3013,10 +3014,11 @@ def test_a_weights_only_download_does_not_inherit_a_loads_transient_tier(fake_ru
         "the download's own report must not inherit the load's transient tier"
 
 
-def test_an_unload_reports_its_row_transient(fake_runner):
+def test_an_unload_reports_its_row_silent(fake_runner):
     """An unload/eviction (`_remove`) frees memory but writes nothing a click
     could open — nobody asked for this row and nothing survives it, so it
-    reports `tier=jobs.TRANSIENT` like the load it is undoing."""
+    reports `tier=jobs.SILENT` like the load it is undoing: unloading a
+    model raises no notification at all, same as loading one."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")
@@ -3024,14 +3026,14 @@ def test_an_unload_reports_its_row_transient(fake_runner):
     supervisor._remove([worker], "evicted to free memory")
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
     assert row["state"] == "done"
-    assert row["tier"] == jobs.TRANSIENT
+    assert row["tier"] == jobs.SILENT
 
 
 def test_an_unload_does_not_inherit_a_downloads_trail_tier(fake_runner):
     """`job_id_for(model)` is shared by all three of a resident load, a
-    weights-only download and an unload. A load leaves this id `TRANSIENT`;
+    weights-only download and an unload. A load leaves this id `SILENT`;
     a download on the SAME id then flips it to `TRAIL`; an unload right
-    after must not inherit that `TRAIL` — it restates `tier=jobs.TRANSIENT`
+    after must not inherit that `TRAIL` — it restates `tier=jobs.SILENT`
     explicitly, proving the download's tier does not leak forward into the
     unload's own, unrelated, terminal report."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
@@ -3046,7 +3048,7 @@ def test_an_unload_does_not_inherit_a_downloads_trail_tier(fake_runner):
     worker = next(w for w in supervisor._workers.values() if w.model == "org/small")
     supervisor._remove([worker], "evicted to free memory")
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert row["tier"] == jobs.TRANSIENT, \
+    assert row["tier"] == jobs.SILENT, \
         "the unload's own report must not inherit the download's trail tier"
 
 
@@ -3056,7 +3058,7 @@ def test_a_resident_loads_opening_report_does_not_inherit_a_downloads_trail_tier
     before `_bring_up` even starts its thread — shares `job_id_for(model)`
     with a weights-only download of the same model. If that download ran
     last, the row already sits at `tier=jobs.TRAIL`; a fresh resident load
-    must restate its own `tier=jobs.TRANSIENT` on that very first report, not
+    must restate its own `tier=jobs.SILENT` on that very first report, not
     run the whole load under the stale `TRAIL` a previous producer left
     behind (`Job.tier`'s own comment: every producer restates tier on every
     report; it never relies on what an earlier one left).
@@ -3080,22 +3082,22 @@ def test_a_resident_loads_opening_report_does_not_inherit_a_downloads_trail_tier
     supervisor.load("org/small", registry.TEXT_GENERATION)
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
     assert row["state"] == "running"
-    assert row["tier"] == jobs.TRANSIENT, \
+    assert row["tier"] == jobs.SILENT, \
         "the new load's opening report must not run under the download's stale trail tier"
     _wait_ready("org/small")
 
 
-def test_a_weights_only_downloads_opening_report_does_not_inherit_a_loads_transient_tier(fake_runner):
+def test_a_weights_only_downloads_opening_report_does_not_inherit_a_loads_silent_tier(fake_runner):
     """The mirror of the resident-load case: `load(weights_only=True)`'s
     opening `state="running"` report also shares `job_id_for(model)`, and
     must restate its own `tier=jobs.TRAIL` right away rather than running
-    under a stale `TRANSIENT` a prior resident load (or unload) left on the
+    under a stale `SILENT` a prior resident load (or unload) left on the
     row."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")
     before = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert before["tier"] == jobs.TRANSIENT
+    assert before["tier"] == jobs.SILENT
 
     supervisor.unload("org/small")
 
@@ -4144,25 +4146,25 @@ def test_a_download_that_throws_reports_the_failure_too(fake_runner, monkeypatch
     assert supervisor.describe()["downloading"] == []
 
 
-def test_a_failed_resident_load_restates_trail_tier_instead_of_inheriting_transient(
+def test_a_failed_resident_load_restates_trail_tier_instead_of_inheriting_silent(
         fake_runner, monkeypatch):
     """`_bring_up`'s `cancelled`/`error` terminal reports now restate
     `tier=jobs.TRAIL` explicitly, the same discipline its own success report
-    already follows (`tier=jobs.TRANSIENT`) and `Job.tier`'s own comment
+    already follows (`tier=jobs.SILENT`) and `Job.tier`'s own comment
     requires of every producer on `job_id_for(model)` — a shared id a
     resident load, a weights-only download, and an unload all report
     through. Without the restatement, a load that fails right after an
     unload of the SAME model would run its failure report under the
-    unload's stale `TRANSIENT`, and `_sweep` would then age the failed row
+    unload's stale `SILENT`, and `_sweep` would then age the failed row
     out on the read-gated clock a few seconds after the next poll — exactly
     the vanishing-row bug a failed load must not have: it left a reason to
-    look, so it declares `TRAIL`, not `TRANSIENT`."""
+    look, so it declares `TRAIL`, not `SILENT`."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")
     supervisor.unload("org/small")
     before = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert before["tier"] == jobs.TRANSIENT, "the unload's own report, sticky until restated"
+    assert before["tier"] == jobs.SILENT, "the unload's own report, sticky until restated"
 
     def boom(runner, worker, job):
         raise RuntimeError("uv is on fire")
@@ -4176,7 +4178,7 @@ def test_a_failed_resident_load_restates_trail_tier_instead_of_inheriting_transi
         "a failed load must restate its own tier, not inherit the unload's transient one"
 
 
-def test_a_cancelled_resident_load_restates_trail_tier_instead_of_inheriting_transient(
+def test_a_cancelled_resident_load_restates_trail_tier_instead_of_inheriting_silent(
         fake_runner, monkeypatch):
     """The cancellation twin of the test above: `_bring_up`'s `cancelled`
     report restates `tier=jobs.TRAIL` too, not only its `error` report."""
@@ -4186,7 +4188,7 @@ def test_a_cancelled_resident_load_restates_trail_tier_instead_of_inheriting_tra
     job = supervisor.job_id_for("org/small")
     supervisor.unload("org/small")
     before = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert before["tier"] == jobs.TRANSIENT
+    assert before["tier"] == jobs.SILENT
 
     supervisor.load("org/small", registry.TEXT_GENERATION)
     jobs.request_cancel(job)
@@ -4197,7 +4199,7 @@ def test_a_cancelled_resident_load_restates_trail_tier_instead_of_inheriting_tra
         "a cancelled load must restate its own tier, not inherit the unload's transient one"
 
 
-def test_a_failed_weights_only_download_keeps_trail_tier_instead_of_inheriting_transient(
+def test_a_failed_weights_only_download_keeps_trail_tier_instead_of_inheriting_silent(
         fake_runner, monkeypatch):
     """`_fetch_only`'s two failure-shaped terminal reports — the busy-wait
     loop's own `cancelled` report and the outer `except` block's
@@ -4213,7 +4215,7 @@ def test_a_failed_weights_only_download_keeps_trail_tier_instead_of_inheriting_t
     job = supervisor.job_id_for("org/small")
     supervisor.unload("org/small")
     before = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert before["tier"] == jobs.TRANSIENT
+    assert before["tier"] == jobs.SILENT
 
     def boom(runner, worker, job):
         raise RuntimeError("the installer never started")

@@ -1260,3 +1260,79 @@ Scoped runs, all green: `bun test` across `jobs.test.ts`,
 `ActivityDock.test.tsx`, `RepoUpdatesDock.test.tsx` — 218 pass, 0 fail. Did
 not run the full frontend or Python suite, and did not run a repo-wide
 `tsc --noEmit` — both left to the orchestrator, per brief.
+
+## Ninth round — a fourth tier, `silent`, for model load/unload
+
+"lets not have a notification for model loading at all" — the seventh
+round's "every terminal job pops" rule was correct for every producer it
+covered, but wrong for a resident model load and unload specifically: the
+running row already told the user a model was loading, and a floating card
+saying "done" a moment later is not news, it is noise on every load and
+unload of the session. `TRANSIENT` could not express this — it still pops,
+by the seventh round's own design — so a fourth tier, `SILENT`, is added
+rather than overloading `TRANSIENT`'s meaning: kept nowhere, same as
+`TRANSIENT`, AND pops nothing, which no existing tier does.
+
+`fused_render/jobs.py` gains `SILENT = "silent"` in `TIERS`, and `_sweep`'s
+`spent_transient` local is broadened to `job.tier in (TRANSIENT, SILENT)
+and job.state == "done"` — a silent row ages out on the exact same
+read-gated clock a spent transient row already does; nothing about
+retention needed a new code path, only a wider tier check. The three sites
+sharing `job_id_for(model)` in `ai/supervisor.py` (`_start_resident`'s
+opening report, `_bring_up`'s success report, `_remove`'s unload report)
+move from `tier=jobs.TRANSIENT` to `tier=jobs.SILENT`; each one's own
+comment already existed to explain why it restates its own tier rather than
+inheriting a sibling event's — those comments are reworded to name `SILENT`
+in place of `TRANSIENT`, reasoning otherwise unchanged. `_bring_up`'s
+`error`/`cancelled` reports and `load(weights_only=True)`'s download report
+are untouched at `tier=jobs.TRAIL`: a failed load is always news, and a
+weights-only download wrote real bytes to disk regardless of what a load or
+unload of the same model reported before it.
+
+Frontend mirrors this exactly. `JobTier` gains `"silent"`. `jobRows` now
+excludes a terminal row whose `effectiveTier` is `"transient"` OR
+`"silent"` — a running silent job is unaffected, same as running transient.
+`popupJobs` is the one place `silent` does something `transient` does not:
+it now filters out a job whose STORED `tier === "silent"` AND `state ===
+"done"`, gated on the raw stored fields rather than `effectiveTier`, on
+purpose — `effectiveTier(j) !== "silent"` would happen to work for the
+failure case by accident (the override already turns a failed silent job
+into `"attention"`) but would obscure the actual rule: silence is a
+property of a clean SUCCESS only. A manager process that dies mid-report
+can leave a row stuck `error` with its last-written tier still `silent` (no
+guarantee the failure path gets to restate `TRAIL` before the process that
+was going to write it is gone) — gating on `state === "done"` specifically
+means that row still pops, because a failure is always news even when the
+tier on record says "silent."
+
+Every comment in the seventh round's diff asserting "every terminal job
+pops its own card... regardless of tier" was corrected, in both
+`fused_render/jobs.py` (the `TIERS` block and `Job.tier`'s own doc) and
+`frontend/src/platform/lib/jobs.ts` (the `JobTier` doc, `jobRows`'s doc,
+and the popup section's header comment) — the claim is now scoped to
+`attention`/`trail`/`transient`, with `silent` named as the one exception
+that pops nothing on success. `jobRows`'s doc comment also stopped citing
+"a resident model load" as an example of a transient-that-pops, since a
+resident model load is now the shipped example of `silent`, not
+`transient`.
+
+Test-first: `tests/test_ai_runtime.py`'s existing nine tier-assertion tests
+covering `_start_resident`/`_bring_up`/`_remove` were updated to assert
+`jobs.SILENT` (renamed where their names said "transient") and confirmed to
+fail with `AttributeError: module 'fused_render.jobs' has no attribute
+'SILENT'` before `SILENT` was added. Three new tests in `test_jobs_api.py`
+cover `_sweep`/`list_jobs` directly: a silent `done` row ages out on the
+read-gated clock, a silent `error` row survives well past `FINISHED_TTL_S`
+until dismissed, and a running silent job still appears in `list_jobs`.
+`jobs.test.ts` gained matching coverage: a done silent job pops nothing, an
+error job whose stored tier is still `"silent"` still pops, a running
+silent job still gets a row from `jobRows`, and a terminal silent job gets
+none; the existing model-load fixtures that used `tier: "transient"` as a
+stand-in were updated to `tier: "silent"` to match what the real producer
+now sends, since they were describing model-load behavior specifically,
+not tier mechanics in the abstract.
+
+Scoped runs, all green: `uv run pytest tests/test_ai_runtime.py
+tests/test_ai_supervisor_job_page.py tests/test_jobs_api.py` — 624 pass, 1
+skipped, 0 fail. `bun test src/platform/lib/jobs.test.ts` — 80 pass, 0
+fail.

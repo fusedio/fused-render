@@ -1232,7 +1232,7 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                     # window between becoming ready and someone asking —
                     # which is exactly the window a slow bring-up ate.
                     worker.last_activity = time.monotonic()
-                    _report(job, state="done", detail="Model loaded", tier=jobs.TRANSIENT)
+                    _report(job, state="done", detail="Model loaded", tier=jobs.SILENT)
                     return
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
@@ -1260,13 +1260,13 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 del _workers[worker.capability]
         _terminate(worker)
         # `tier=jobs.TRAIL`, restated explicitly the same way the success
-        # report above restates `TRANSIENT`: `job_id_for(model)` is shared
+        # report above restates `SILENT`: `job_id_for(model)` is shared
         # with `_fetch_only`'s download and `_remove`'s unload, so this
         # report cannot lean on whatever an earlier one left on the id (see
         # `Job.tier`'s own comment). A failed load left a reason to look —
         # the resident row now says why the model isn't there — so it
-        # declares `TRAIL`, not `TRANSIENT`: nothing about a failure here
-        # leaves nothing to look at.
+        # declares `TRAIL`, not `SILENT`: a failure is always news, even
+        # when a successful load/unload of the same model raises none.
         if message == "cancelled":
             _report(job, state="cancelled", tier=jobs.TRAIL)
         else:
@@ -1477,16 +1477,17 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             with _lock:
                 _draining.pop(current.token, None)
 
-    # `tier=jobs.TRANSIENT` restated explicitly: `job` is `job_id_for(model)`,
+    # `tier=jobs.SILENT` restated explicitly: `job` is `job_id_for(model)`,
     # the same row a weights-only download or an unload of this model reports
     # through, and `Job.tier` sticks until a report says otherwise (`upsert`'s
     # `"tier" in body` gate) — without restating it here, a load started right
     # after a download runs its entire "running" phase under that download's
-    # stale `TRAIL`, not the `TRANSIENT` this row's own success (`_bring_up`)
-    # and failure both already declare.
+    # stale `TRAIL`, not the `SILENT` this row's own success (`_bring_up`)
+    # declares (its failure restates `TRAIL` instead — a failure is always
+    # news, even though loading successfully raises none).
     _report(job, title=model, model=model, state="running", kind="download",
             cancellable=True, detail="Preparing…", done=None, total=None,
-            tier=jobs.TRANSIENT)
+            tier=jobs.SILENT)
     threading.Thread(target=_bring_up, args=(runner, worker, job),
                      name=f"ai-load-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": worker.state}, worker
@@ -1518,7 +1519,7 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
         _downloads[model] = {"model": model, "capability": capability,
                              "jobId": job, "startedAt": time.time()}
     # `tier=jobs.TRAIL` restated explicitly, for the same reason the resident
-    # load's own opening report above restates `TRANSIENT`: this row may still
+    # load's own opening report above restates `SILENT`: this row may still
     # carry a stale tier from an earlier load or unload of the same model.
     _report(job, title=model, model=model, state="running", kind="download",
             cancellable=True, unit="bytes", detail="Preparing…", done=None,
@@ -1826,16 +1827,16 @@ def _remove(targets: list[Worker], reason: str) -> None:
     race: `_terminate`'s I/O and `_report`'s job-row write."""
     for worker in targets:
         _terminate(worker)
-        # `tier=jobs.TRANSIENT` restated explicitly, not left to default:
-        # this id is the same row `_bring_up`'s success report already set
-        # `tier=jobs.TRANSIENT` on, and `Job.tier` sticks until a later
-        # report says otherwise (see `upsert`'s `"tier" in body` gate) — the
+        # `tier=jobs.SILENT` restated explicitly, not left to default: this
+        # id is the same row `_bring_up`'s success report already set
+        # `tier=jobs.SILENT` on, and `Job.tier` sticks until a later report
+        # says otherwise (see `upsert`'s `"tier" in body` gate) — the
         # explicit restatement is what stops a WEIGHTS DOWNLOAD's `TRAIL` on
         # this same id from leaking into the next unload's row. Nobody asked
         # for this row and nothing survives it: unloading frees memory, it
-        # does not write anything a click could open, so this is transient
-        # like the load it is undoing, not real news in its own right.
-        _report(job_id_for(worker.model), state="done", detail=reason, tier=jobs.TRANSIENT)
+        # does not write anything a click could open, so it raises no
+        # notification at all, like the load it is undoing.
+        _report(job_id_for(worker.model), state="done", detail=reason, tier=jobs.SILENT)
 
 
 def unload(model: str | None = None, capability: str | None = None,

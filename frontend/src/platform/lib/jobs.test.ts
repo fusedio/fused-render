@@ -458,17 +458,26 @@ test("a scheduled run's job is excluded from Activity in every state, not only w
 // Notification once it succeeds — a live watcher (`_wait_ready`'s row-merge,
 // `fused.ai.models.load(wait=True)`) only ever reads it while it is RUNNING,
 // so nothing downstream needs the terminal row to survive. `job.tier` (set
-// server-side, only by the load's own success report) is what says so — NOT
-// the id prefix plus `state === "done"` alone, because `job_id_for(model)`
-// is the SAME id a weights-only download or an unload of that model reports
+// server-side, only by the load's own success report, to `"silent"` — the
+// user's own call: loading a model is not news) is what says so — NOT the
+// id prefix plus `state === "done"` alone, because `job_id_for(model)` is
+// the SAME id a weights-only download or an unload of that model reports
 // through, and both of those are real news (see the two tests below).
 test("a model load's row disappears from Notifications once it succeeds", () => {
-  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", tier: "transient" })];
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", tier: "silent" })];
   expect(jobRows(jobs)).toEqual([]);
 });
 
 test("a model load's row still shows while it is running", () => {
   const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "running" })];
+  expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
+});
+
+// Same rule, exercised on the running form of `silent` too — `tier` only
+// ever governs a TERMINAL row (`JobTier`'s own doc comment), so a running
+// silent load still shows, Cancel included.
+test("a running model load stays visible even though it will report silent — a running row is never filtered, only a terminal one", () => {
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "running", tier: "silent" })];
   expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
 });
 
@@ -490,14 +499,13 @@ test("a running text generation stays visible even when it declares transient", 
   expect(jobRows(jobs).map((j) => j.id)).toEqual(["ai-text:1"]);
 });
 
-// `effectiveTier`'s override: a load that declares itself transient but
-// ends in error/cancelled is treated as attention, not transient, so it
-// still gets a row — a failed load is exactly the kind of news the override
-// exists for.
+// `effectiveTier`'s override: a load that declares itself silent but ends in
+// error/cancelled is treated as attention, not silent, so it still gets a
+// row — a failed load is exactly the kind of news the override exists for.
 test("a failed or cancelled model load's row still shows", () => {
   const jobs = [
-    job({ id: "sys:ai-model:org/fake-model", state: "error", tier: "transient" }),
-    job({ id: "sys:ai-model:org/other-model", state: "cancelled", tier: "transient" }),
+    job({ id: "sys:ai-model:org/fake-model", state: "error", tier: "silent" }),
+    job({ id: "sys:ai-model:org/other-model", state: "cancelled", tier: "silent" }),
   ];
   expect(jobRows(jobs).map((j) => j.id)).toEqual([
     "sys:ai-model:org/fake-model",
@@ -509,19 +517,20 @@ test("a failed or cancelled model load's row still shows", () => {
 // alone would also have matched a finished weights-only DOWNLOAD and an
 // unload/eviction — both report through the exact same `sys:ai-model:` id
 // family (`job_id_for(model)`), and neither is a resident load succeeding.
-// `tier` defaults to "trail", so a row that never had it set to "transient"
-// by the server always shows, regardless of id or state.
-test("a finished DOWNLOAD sharing the model-load id family still shows — only a resident load is transient", () => {
+// `tier` defaults to "trail", so a row that never had it set to "silent" by
+// the server always shows, regardless of id or state.
+test("a finished DOWNLOAD sharing the model-load id family still shows — only a resident load is silent", () => {
   const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", kind: "download" })];
   expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
 });
 
 test("an unload's finished row still shows, even sharing the model-load id family", () => {
   const jobs = [
-    job({ id: "sys:ai-model:org/fake-model", state: "done", detail: "Unloaded", tier: "transient" }),
+    job({ id: "sys:ai-model:org/fake-model", state: "done", detail: "Unloaded", tier: "silent" }),
   ];
-  // An unload declares `tier: "transient"` too (nothing survives it either),
-  // so it drops out of Notifications just like the load it undoes.
+  // An unload declares `tier: "silent"` too (nothing survives it either, and
+  // unloading is no more news than the load it undoes), so it drops out of
+  // Notifications just like the load.
   expect(jobRows(jobs)).toEqual([]);
 });
 
@@ -533,12 +542,22 @@ test("effectiveTier overrides a declared-transient row that ends in error", () =
   expect(effectiveTier(j)).toBe("attention");
 });
 
+test("effectiveTier overrides a declared-silent row that ends in error", () => {
+  const j = job({ state: "error", tier: "silent" });
+  expect(j.tier).toBe("silent");
+  expect(effectiveTier(j)).toBe("attention");
+});
+
 test("effectiveTier overrides a declared-transient row that is cancelled", () => {
   expect(effectiveTier(job({ state: "cancelled", tier: "transient" }))).toBe("attention");
 });
 
 test("effectiveTier leaves a done transient row alone", () => {
   expect(effectiveTier(job({ state: "done", tier: "transient" }))).toBe("transient");
+});
+
+test("effectiveTier leaves a done silent row alone", () => {
+  expect(effectiveTier(job({ state: "done", tier: "silent" }))).toBe("silent");
 });
 
 test("effectiveTier leaves a running row's declared tier alone", () => {
@@ -578,10 +597,14 @@ test("a job parked on a question says Waiting whatever its title", () => {
 // ------------------------------------------------------------------ popups
 //
 // The floating pop-up card (SPEC actionable-notifications, "the latest
-// notification always pops up"): `tier` now governs RETENTION only (whether
-// a row survives in the panel), never whether a terminal job is shown at
-// all, so `popupJobs` reads none of it — a `transient` job pops exactly like
-// an `attention`/`trail` one.
+// notification always pops up"): `tier` governs RETENTION for
+// `attention`/`trail`/`transient` only (whether a row survives in the
+// panel), never whether a terminal job is shown at all, so `popupJobs`
+// reads none of that for those three — a `transient` job pops exactly like
+// an `attention`/`trail` one. `silent` is the one tier that also suppresses
+// the pop itself on a clean finish (a resident model load/unload: the
+// running row already said as much, so "done" is not news) — see the
+// dedicated tests below for the gate on stored `tier` + `state === "done"`.
 
 test("popupJobs pops every terminal job regardless of tier, transient included", () => {
   const jobs = [
@@ -590,6 +613,24 @@ test("popupJobs pops every terminal job regardless of tier, transient included",
     job({ id: "c", state: "running", tier: "attention" }),
   ];
   expect(popupJobs(jobs).map((j) => j.id)).toEqual(["a", "b"]);
+});
+
+test("popupJobs pops nothing for a silent job that finishes done", () => {
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", tier: "silent" })];
+  expect(popupJobs(jobs)).toEqual([]);
+});
+
+// Silence is a property of SUCCESS only. A silent job's row can end up
+// `error` while its last-written STORED tier is still `silent` — a manager
+// process dying mid-report is exactly the case where the failure path never
+// gets to restate `tier=jobs.TRAIL` the way `_bring_up`'s own error branch
+// normally does — so `popupJobs` must still pop it. The filter is written
+// against `state === "done"`, not `effectiveTier(j) !== "silent"`, precisely
+// so this case (stored tier still "silent", state "error") is not
+// mistakenly treated as the done-and-silent case it is gating against.
+test("popupJobs still pops an error job whose stored tier is still silent", () => {
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "error", tier: "silent" })];
+  expect(popupJobs(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
 });
 
 test("popupJobs excludes a scheduled run's own job by id, same as jobRows (D661)", () => {
