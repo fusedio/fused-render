@@ -45,6 +45,7 @@ import zipfile
 from typing import Optional
 
 from fused_render import jobs
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import storage
 
@@ -893,8 +894,10 @@ def _report_publish(snapshot: dict) -> None:
         # This row's destination is the repository it publishes, not a page
         # — `_resolve_repo_root`'s own containment-checked, realpath'd root,
         # set once at claim time (below), never the raw string a page
-        # happened to send.
-        }, page=snapshot.get("root") or "", server=True)
+        # happened to send. Canonical (forward-slash) form: `os.path.realpath`
+        # comes back backslashed on Windows, and a page is compared against
+        # the canonical spelling everywhere else it is stored or read.
+        }, page=canonical_fs_path(snapshot.get("root") or ""), server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the publish
         logger.debug("could not report the gh publish job")
 

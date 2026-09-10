@@ -1004,8 +1004,11 @@ def test_the_reported_publish_job_points_at_the_repo_root(tmp_path, monkeypatch)
     # macOS) — the reported destination is the realpath'd containment-
     # checked root `_resolve_repo_root` already resolved, same as
     # `_has_commits`/`_has_remote` operate on, not the raw string the page
-    # sent.
-    assert captured.get("page") == github_setup._resolve_repo_root(root)
+    # sent. Canonical (forward-slash) form: `_resolve_repo_root` comes back
+    # backslashed on Windows, and a page is compared against the canonical
+    # spelling everywhere else it is stored or read.
+    assert captured.get("page") == github_setup.canonical_fs_path(
+        github_setup._resolve_repo_root(root))
 
 
 def test_a_second_publish_is_refused_rather_than_queued(tmp_path, monkeypatch):
