@@ -1663,12 +1663,26 @@ export default function Listing({
     searchCount !== null;
 
   // Whether the status strip should read as a search's own line ("N
-  // matches") rather than the folder's own item count. A path-shaped query
-  // never gets an answer (useListingSearch.ts's `isPathQuery` gate — the open
-  // folder's own path is just the narrowest case of this) — reporting "0
-  // matches" under a folder that plainly has rows would blame the search for
-  // something it was never asked to answer.
-  const showsSearchFooter = searching && !isPathQuery;
+  // matches") rather than the folder's own item count. Reuses
+  // `showsSearchHits` (search-body-mode.ts's `showingSearchHits`) — the same
+  // notion the BODY already uses to choose search-hit rows over the
+  // folder's own — rather than a second, parallel predicate the SPEC
+  // explicitly warns against. That covers a path-shaped query (never gets
+  // an answer at all — useListingSearch.ts's `isPathQuery` gate) exactly
+  // the same way it already had to for the body's own row choice (see that
+  // flag's own comment above): reporting "0 matches" under a folder that
+  // plainly has rows would blame the search for something it was never
+  // asked to answer.
+  //
+  // ITEM 6 (running-screen review, 2026-09-10): `searching` alone (the old
+  // condition) is true the instant a query is GATED too — typed but
+  // awaiting Enter because it escapes the folder open on screen
+  // (`escapesFsPath`) — which showed "0 matches" over the very folder the
+  // dropdown's own offer row was naming, for a search that had not run.
+  // `showsSearchHits` is false for exactly that case (`awaitingCommit`),
+  // so the footer now falls back to the folder's own item count while
+  // gated, same as it already did for a path-shaped query.
+  const showsSearchFooter = showsSearchHits;
 
   // The status strip's inputs. A search hit carries no size (the comment on
   // its row explains why), so the byte sum is only ever taken over the plain
