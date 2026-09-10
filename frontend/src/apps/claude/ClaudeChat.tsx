@@ -2775,6 +2775,12 @@ function ChatBody(props: ChatBodyProps) {
               // part company for the width of an Esc'd transcription.
               armed={ann.armed}
               capturing={attach.capturing}
+              // ALL THREE SEATS END IN THE COMPOSER, and a pending scheduled
+              // message has it shut (P4R1-2): a picture lands as a chip above
+              // the box, a comment round and a walkthrough send their notes
+              // through it. The banner right below says why, so the seats carry
+              // no second wording of it.
+              blocked={sched.blocked}
               onScreenshot={() => void attach.capture()}
               onComment={ann.onCommentSeat}
               recSeat={
@@ -2782,6 +2788,7 @@ function ChatBody(props: ChatBodyProps) {
                   rec={recSnap}
                   shown={micShown}
                   commentArmed={ann.mode === "comment"}
+                  blocked={sched.blocked}
                   // NO SECOND TRASH IN THE STRIP. Discard moved off the strip
                   // and onto the bar over the app on 2026-09-06 (T:6240-6248,
                   // inventory 02 §I), so the strip carries only Screenshot ·

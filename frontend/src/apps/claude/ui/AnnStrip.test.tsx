@@ -185,3 +185,29 @@ test("`armed` defaults to `mode !== \"off\"` for a host that hands us only a mod
   expect(draw({ mode: "comment" }).comment!["aria-pressed"]).toBe("true");
   expect(draw({ mode: "off" }).comment!["aria-pressed"]).toBe("false");
 });
+
+test("A PENDING SCHEDULED MESSAGE TAKES ALL THREE SEATS, disabled and not hidden (P4R1-2)", () => {
+  // All three end in the composer — the picture lands as a chip above the box,
+  // a comment round and a walkthrough both send their notes through it — and
+  // the block has that box shut. A live seat here gathers work with nowhere to
+  // go (Akshil, 2026-09-10).
+  const shut = draw({ blocked: true });
+  expect(shut.camera!.disabled).toBe(true);
+  expect(shut.camera!["aria-disabled"]).toBe("true");
+  expect(shut.comment!.disabled).toBe(true);
+  expect(shut.comment!["aria-disabled"]).toBe("true");
+  // DISABLED, NOT HIDDEN. "Absent beats dead" is the rule for a seat with no
+  // PANE to act on — a permanent fact about the host. A block is a wait, and a
+  // row that loses three buttons and grows them back moves under the reader's
+  // hand.
+  expect(shut.buttons.length).toBe(draw({}).buttons.length);
+  // ...and the seats say nothing new: the banner directly below the strip
+  // carries the reason, and a second wording of it here would be two answers to
+  // one question.
+  expect(shut.camera!.title).toBe(draw({}).camera!.title);
+  expect(shut.comment!["aria-label"]).toBe(draw({}).comment!["aria-label"]);
+  // Nothing blocking leaves every seat exactly as PR3 has it.
+  const open = draw({});
+  expect(open.camera!.disabled).toBe(false);
+  expect(open.comment!.disabled).toBe(false);
+});
