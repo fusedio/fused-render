@@ -3126,6 +3126,11 @@ export function cardsForTasks(
   const seen = new Set<string>();
   const all: Task[] = [];
   for (const task of sortByLane(tasks, now)) {
+    // NOT YET DUE IS NOT A CARD (Akshil, 2026-09-10, E2E R1): an upcoming
+    // task has no chat to show, so its tile was a sentence in a frame — the
+    // Calendar and the List are where a future run is read. The wall shows
+    // work that has happened or is happening.
+    if (task.status === "upcoming") continue;
     const id = cardKey(task);
     if (seen.has(id)) continue;
     seen.add(id);

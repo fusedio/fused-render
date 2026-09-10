@@ -375,6 +375,25 @@
    The head's hover doors are outside the body and keep working. */
 .task-card--door {
   cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background-color 120ms ease;
+}
+/* SAY IT IS A DOOR (Akshil, 2026-09-10: "I don't know if the card is clickable
+   or not"). The same wash the head already wears on hover, over the whole
+   card, plus the border and shadow one step up — the row-hover language every
+   list on this page speaks, so a reader who has hovered a List row knows what
+   this means. The transition is 120ms, under the threshold reduced-motion
+   guidance treats as motion, so no media query is needed (this sheet keeps
+   to container queries by rule). */
+.task-card--door:hover {
+  background: color-mix(in srgb, var(--fg) 5%, var(--tasks-card-bg));
+  border-color: color-mix(in srgb, var(--fg) 22%, var(--border));
+  box-shadow: 0 2px 8px var(--shadow-sm);
+}
+.task-card--door:hover .task-card-body {
+  background: color-mix(in srgb, var(--fg) 3%, var(--bg));
 }
 .task-card--door .task-card-body {
   pointer-events: none;
