@@ -273,8 +273,15 @@
 .c-composer textarea::placeholder {
   color: var(--c-faint);
 }
+/* THE BOX ITSELF SAYS IT IS SHUT (T:1673-1678), with T's own argument: "the
+   banner is at the other end of the pane and a reader who clicks into a dead
+   textarea is owed an answer there." `cursor: default` alone left a blocked
+   composer looking fully live — measured against :1777, which draws `.6` and
+   `not-allowed`. Ships with `.c-schedbtn:disabled` below, or T's documented
+   pairing of the two refusals stays half-drawn. */
 .c-composer textarea:disabled {
-  cursor: default;
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .c-composer-row {
   display: flex;
@@ -365,6 +372,19 @@ select.c-pill {
 .c-pill:disabled {
   opacity: 0.55;
   cursor: default;
+}
+/* THE CALENDAR'S OWN REFUSAL, and T:1826-1837 argues both numbers. `not-allowed`
+   rather than `.c-viewshot`'s `default`, because this and `#box:disabled` "are
+   the SAME refusal and should feel like one" — a task queued from here is input
+   into that pending message's context exactly as a typed reply would be — while
+   the camera's disable is a one-second capture that is nobody's mistake to make.
+   And `.45` rather than the generic pill's `.55`/T's `.6`, because "a 14px
+   monochrome glyph at .6 still reads as a live icon, where a whole greyed
+   textarea does not". Without this rule it inherited `.c-pill:disabled` and read
+   as a generic dimmed pill. */
+.c-schedbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 /* The platform popup a keyboard user still gets should not arrive white. */
 .c-pill option {
@@ -629,7 +649,11 @@ select.c-pill {
   background: var(--c-surface-2);
   border: 1px solid var(--c-border);
   border-radius: 999px;
-  padding: 3px 6px 3px 10px;
+  /* NO PADDING OF ITS OWN on the leading three sides: it moved onto the door
+     (below), which is the only way a button can cover it. The trailing 6px
+     stays here, because what sits there is the ✕ — the door's sibling, not part
+     of it. See the door's rule for why this matters. */
+  padding: 0 6px 0 0;
   font-size: 12px;
   color: var(--c-fg);
   transition:
@@ -649,15 +673,38 @@ select.c-pill {
   min-width: 0;
   border: 0;
   background: none;
-  padding: 0;
+  /* THE PILL'S OWN PADDING, MOVED HERE (PR2 deferred D9). The full-pill door
+     landed in P2-4, but with `padding: 0` it could not reach the pill's
+     `3px 6px 3px 10px` — so the hit area was ~65% × 73% of a shape whose hover
+     state correctly lit up all of it, and clicks 2px inside the pill's own
+     corner did nothing. An affordance that promises more than the target
+     delivers is worse than a small target honestly drawn.
+
+     The pill keeps only its trailing 6px, so the door's box now runs from the
+     pill's leading edge to the ✕. */
+  padding: 3px 0 3px 10px;
   margin: 0;
   font: inherit;
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
+/* `zoom-in` FOR A PICTURE'S DOOR (T:948), `pointer` for a glyph's (T:969's own
+   answer for `.shotdoc`). The viewer it opens still uses `zoom-in`/`zoom-out`
+   (below), so a `pointer` here left the cursor vocabulary disagreeing across
+   the two ends of one gesture — and with 22px to work with, the cursor is very
+   nearly the only thing the thumbnail can say about what the click does. */
+.chat-root .c-annchip .c-chip-door:has(.c-shotthumb) {
+  cursor: zoom-in;
+}
 /* A refusal (and a seat still uploading) has no room behind the door, so it is
-   not one: the plain pill, and the words say why (T:10722-10726). */
+   not one: the plain pill, and the words say why (T:10722-10726).
+
+   AFTER the `zoom-in` rule above and at the same specificity (both resolve to
+   four classes, since `:has()` contributes its argument's), so SOURCE ORDER is
+   what makes this win — a refused picture chip must read `default` rather than
+   offer a zoom into a viewer with nothing behind it. Keep the two adjacent and
+   in this order. */
 .chat-root .c-annchip .c-chip-door.is-inert {
   cursor: default;
 }

@@ -249,7 +249,11 @@ test("the programmatic send takes its words as an ARGUMENT, never through the bo
   expect(c.sent.map((s) => s.text)).toEqual(["walk me through the header"]);
 });
 
-test("a seeded send JOINS what the reader had already typed", () => {
+test("a seeded send JOINS what the reader had already typed, with a BLANK LINE", () => {
+  // T:7391's own join — `el.value = v ? v + "\n\n" + seed : seed`. A blank line
+  // is the paragraph boundary both in the outgoing markdown and in the
+  // annotation stanza grammar, so a single newline ran the reader's draft into
+  // the walkthrough's intro and changed what the model reads.
   const seat: Seat = { current: null };
   const c = mount({ submitRef: seat });
   c.type("here is the task");
@@ -257,9 +261,21 @@ test("a seeded send JOINS what the reader had already typed", () => {
     seat.current!("and here is the walkthrough");
   });
   expect(c.sent.map((s) => s.text)).toEqual([
-    "here is the task\nand here is the walkthrough",
+    "here is the task\n\nand here is the walkthrough",
   ]);
   expect(c.box().props.value).toBe("");
+});
+
+test("trailing whitespace in the draft does not become a THIRD newline", () => {
+  const seat: Seat = { current: null };
+  const c = mount({ submitRef: seat });
+  c.type("here is the task   \n\n  ");
+  act(() => {
+    seat.current!("and here is the walkthrough");
+  });
+  expect(c.sent.map((s) => s.text)).toEqual([
+    "here is the task\n\nand here is the walkthrough",
+  ]);
 });
 
 test("the seat with NO seed is ✓ Done: notes alone, and a refusal says so", () => {
@@ -314,4 +330,140 @@ test("a latched composer dims Send — but never disarms Stop", () => {
   const live = mount({ sendBusy: true, status: "running" });
   expect(send(live).props["aria-label"]).toBe("Stop");
   expect(send(live).props.disabled).toBe(false);
+});
+
+// ---- the caret goes back in the box (T:16687) ------------------------------
+
+test("clicking Send puts focus back in the textarea", () => {
+  // T:16687 — `scrollBottom(); focusBox(box)` in `sendMessage`'s `finally`. An
+  // Enter-send never noticed, because focus was already there; clicking Send
+  // left it on `.c-send`, so the next keystroke typed nothing and the reader
+  // had to click back into a box they had just used.
+  //
+  // `createNodeMock` is how a ref reaches a real object under
+  // react-test-renderer, which builds no host nodes of its own.
+  const focused: Array<Record<string, unknown> | undefined> = [];
+  const node = {
+    focus: (opts?: Record<string, unknown>) => focused.push(opts),
+    // `grow()` reads these on every keystroke.
+    style: {} as Record<string, string>,
+    scrollHeight: 20,
+  };
+  const boxRef = { current: null as unknown };
+  // A non-null ref anywhere in this tree wakes the measured ladders, and they
+  // read `getComputedStyle` — which this suite has no CSSOM for. A stub is
+  // enough: nothing here asserts a measurement.
+  const G = globalThis as Record<string, unknown>;
+  const realCS = G.getComputedStyle;
+  G.getComputedStyle = () => ({
+    paddingTop: "0px",
+    paddingBottom: "0px",
+    lineHeight: "16px",
+    paddingLeft: "0px",
+    paddingRight: "0px",
+    columnGap: "6px",
+    marginLeft: "0px",
+    marginRight: "0px",
+    display: "flex",
+  });
+  let renderer!: ReactTestRenderer;
+  try {
+  act(() => {
+    renderer = create(
+      <ComposerCard
+        variant="chat"
+        file="/p/app.py"
+        sessionId=""
+        controls={controls}
+        status="idle"
+        back="/explorer/view/p"
+        boxRef={boxRef as never}
+        onSend={() => {}}
+        onFollowUp={() => {}}
+        onStop={() => {}}
+      />,
+      // ONLY the textarea: mocking every host node would give `rowRef` a
+      // non-null element and wake the fit ladder, which reads
+      // `getComputedStyle` — and this suite has no CSSOM.
+      { createNodeMock: (el) => (el.type === "textarea" ? node : null) },
+    );
+  });
+  const root = renderer.root;
+  act(() => {
+    root.findByType("textarea").props.onChange({ currentTarget: { value: "hello" } });
+  });
+  expect(focused).toHaveLength(0);
+
+  act(() => {
+    root.findByType("form").props.onSubmit({ preventDefault() {} });
+  });
+
+  // Once, and with `preventScroll` — the transcript's own follow effect owns
+  // the scroll, and a focus that also scrolls fights it.
+  expect(focused).toHaveLength(1);
+  expect(focused[0]).toEqual({ preventScroll: true });
+  } finally {
+    if (realCS === undefined) delete G.getComputedStyle;
+    else G.getComputedStyle = realCS;
+  }
+});
+
+// ---- the two guards on the Schedule seat, and the one NOT on Send ----------
+
+test("a nav lock disables the Schedule seat in BOTH composers, with the reason", () => {
+  // T:12075/12099 guard every `.schedbtn` on `schedBlocked() || annNavLocked()`
+  // via `querySelectorAll`. `pointer-events: none` stopped the mouse but left
+  // the button in tab order, so a keyboard Enter still opened the confirm and
+  // Continue still left for `/tasks`, stranding the notes — the exact failure
+  // Bugbot PR #1046 closed, reachable again by another road.
+  const REASON = "Finish or discard the notes first";
+  for (const variant of ["chat", "home"] as const) {
+    const c = mount({ variant, navLocked: true, navLockedReason: REASON });
+    const seat = c.root
+      .findAllByType("button")
+      .find((b) => String(b.props.className ?? "").includes("c-schedbtn"))!;
+    expect(seat.props.disabled).toBe(true);
+    expect(seat.props.title).toBe(REASON);
+    expect(String(seat.props["aria-label"])).toContain(REASON);
+  }
+});
+
+test("the SCHEDULE block is chat-only, as T:16851 has it", () => {
+  const seatOf = (c: ReturnType<typeof mount>) =>
+    c.root
+      .findAllByType("button")
+      .find((b) => String(b.props.className ?? "").includes("c-schedbtn"))!;
+  // A landing card has no session holding queued work, so nothing there is
+  // blocked...
+  expect(seatOf(mount({ variant: "home", blocked: true })).props.disabled).toBe(false);
+  // ...while the chat's own seat is.
+  expect(seatOf(mount({ variant: "chat", blocked: true })).props.disabled).toBe(true);
+});
+
+test("Send is NEVER disabled by the block (T:17193-17195, T:4187)", () => {
+  // The send door already refuses a blocked composer at `submit`'s first guard,
+  // so the dim bought nothing — and cost the load-bearing half: `disabled` also
+  // kills the STOP this button becomes mid-run, and a reader who cannot stop a
+  // turn has no way out of it.
+  const send = (c: ReturnType<typeof mount>) =>
+    c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
+  expect(send(mount({ blocked: true, hasAttachments: true })).props.disabled).toBe(false);
+  // And mid-run it is the Stop, live.
+  const running = mount({ blocked: true, status: "running" });
+  expect(send(running).props.disabled).toBe(false);
+  expect(send(running).props["aria-label"]).toBe("Stop");
+});
+
+// ---- the textarea's own attributes ----------------------------------------
+
+test("the box opts out of Grammarly, all three spellings (T:4156-4157)", () => {
+  // Not cosmetic: Grammarly injects a sibling contenteditable and a floating
+  // button INTO this element's box, and `ui/fit.ts`'s `readRow` prices
+  // `row.children` — an injected node in that chain is exactly the surprise a
+  // measured ladder cannot absorb.
+  const box = mount().box();
+  expect(box.props.spellCheck).toBe(false);
+  expect(box.props["data-gramm"]).toBe("false");
+  expect(box.props["data-gramm_editor"]).toBe("false");
+  expect(box.props["data-enable-grammarly"]).toBe("false");
 });

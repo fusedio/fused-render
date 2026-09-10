@@ -2078,6 +2078,12 @@ function ChatBody(props: ChatBodyProps) {
       back: currentUrl(),
       onNavigate,
       boxRef,
+      // The nav lock reaches BOTH composers' Schedule seats (T:12075/12099
+      // guard every `.schedbtn`), unlike the schedule block, which is
+      // chat-only. `styles/ann.css` already dims them; this is the guard for
+      // the hand — and the keyboard, which `pointer-events: none` never stopped.
+      navLocked: ann.locked,
+      navLockedReason: NAV_LOCKED_REASON,
       // Pictures — and NOTES — alone are sendable, with no words at all
       // (T:17903, and ✓ Done's whole gesture: a round of comments IS the
       // message).
@@ -2173,6 +2179,10 @@ function ChatBody(props: ChatBodyProps) {
       // settles its wordless marks are not sendable, so the Send affordance has
       // to be recomputed when the mode moves and not only when the chips do.
       ann.mode,
+      // The Schedule seat's guard reads it, so the card has to be rebuilt when
+      // the lock moves — otherwise the seat stays live through the whole of an
+      // armed round.
+      ann.locked,
       ann.editNote,
       ann.removeNote,
     ],

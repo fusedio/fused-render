@@ -299,6 +299,28 @@ test("the WHOLE chip is the door for a picture and for a file, and a refusal has
   expect(inert.length).toBe(1);
 });
 
+test("the door's SPOKEN name says what is behind it — pixels or details", () => {
+  // T uses two suffixes on purpose: " — open full size" for a THUMBNAIL
+  // (T:7212), " — open details" for the glyph door (T:7158, T:10842). A `.zip`
+  // has no pixels to see full size, so one suffix for both promised something
+  // the viewer cannot deliver. The `title` beside it already split on the same
+  // fact; `ui/Receipts.tsx` was already correct.
+  const root = chipsOf([
+    att({ kind: "pane", thumb: "blob:x" }),
+    att({ kind: "file", name: "rows.csv", size: 2048 }),
+  ]);
+  const doors = root.findAll(
+    (n) => n.type === "button" && String(n.props.className) === "c-chip-door",
+  );
+  expect(String(doors[0]!.props["aria-label"])).toContain(" — open full size");
+  expect(String(doors[0]!.props["aria-label"])).not.toContain("open details");
+  expect(String(doors[1]!.props["aria-label"])).toContain(" — open details");
+  expect(String(doors[1]!.props["aria-label"])).not.toContain("full size");
+  // The title splits the same way, which is what this was made consistent with.
+  expect(String(doors[0]!.props.title)).toContain("full size");
+  expect(String(doors[1]!.props.title)).toBe("Click to see what is attached");
+});
+
 test("NO EMOJI on a chip — the glyph is a lucide icon (P2-7)", () => {
   const root = chipsOf([att({ kind: "file", name: "rows.csv", size: 2048 })]);
   const glyph = root.findByProps({ className: "c-pinlbl" });

@@ -214,6 +214,22 @@ export interface ComposerCardProps {
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
+  /**
+   * `annNavLocked` — a comment round or a walkthrough owns this page. T guards
+   * every `.schedbtn` on `schedBlocked() || annNavLocked()` (T:12075, T:12099,
+   * via `querySelectorAll`, so BOTH composers) and T:1470 dims both, because
+   * leaving for `/tasks` mid-round strands the notes.
+   *
+   * Its own prop rather than folded into `blocked`, because the two are scoped
+   * differently: `blocked` is chat-only (T:16851 — the landing card's copy is
+   * never blocked, since there is no session holding queued work), while a
+   * nav lock is about THIS PAGE and so applies to the landing composer too.
+   */
+  navLocked?: boolean;
+  /** Why, for the seat's `title` and accessible name — `NAV_LOCKED_REASON`
+   *  (T:6896). A refusal the reader cannot see the cause of is the failure
+   *  Bugbot #1046 closed on the Back button's twin. */
+  navLockedReason?: string;
   autoFocus?: boolean;
   /** The landing card's kind-dependent placeholder (`homePlaceholderFor`,
    *  T:5392). Unset keeps the markup's own kind-free wording. */
@@ -306,6 +322,8 @@ export function ComposerCard({
   attachPending,
   blocked,
   blockedPlaceholder,
+  navLocked,
+  navLockedReason,
   autoFocus,
   placeholder,
   restore,
@@ -395,7 +413,12 @@ export function ComposerCard({
     // may hold words the walkthrough's intro is being added to.
     const extra = typeof seed === "string" ? seed.trim() : "";
     const typed = text.trim();
-    const message = extra ? (typed ? typed.replace(/\s*$/, "\n") + extra : extra) : typed;
+    // A BLANK LINE between them, which is T:7391's own join (`v ? v + "\n\n" +
+    // seed : seed`). Not cosmetic: a blank line is the paragraph boundary both
+    // in the outgoing markdown and in the annotation stanza grammar, so a
+    // single newline ran the reader's draft into the walkthrough's intro and
+    // changed what the model reads.
+    const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
     if (!message && !hasAttachments) return false;
     setText("");
     // A live run gets this message DIRECTLY instead of parking it in a
@@ -408,8 +431,16 @@ export function ComposerCard({
         permission: controls.permission,
       });
     }
+    // AND THE CARET GOES BACK IN THE BOX (T:16687 — `scrollBottom();
+    // focusBox(box)` in `sendMessage`'s `finally`). An Enter-send never noticed,
+    // because focus was already there; clicking Send left it on `.c-send`, so
+    // the next keystroke typed nothing and the reader had to click back into a
+    // box they had just used. `preventScroll`, like every other focus call
+    // here: the transcript's own follow effect owns the scroll, and a focus
+    // that also scrolls fights it.
+    boxRef.current?.focus({ preventScroll: true });
     return true;
-  }, [blocked, attaching, busyRef, sendBusy, text, hasAttachments, running, onFollowUp, onSend, controls]);
+  }, [blocked, attaching, busyRef, sendBusy, text, hasAttachments, running, onFollowUp, onSend, controls, boxRef]);
 
   // The seat for the programmatic send. In an EFFECT so a render React throws
   // away (StrictMode's double invoke, a concurrent attempt that loses) cannot
@@ -474,6 +505,15 @@ export function ComposerCard({
               : CHAT_PLACEHOLDER
         }
         spellCheck={false}
+        // AND GRAMMARLY OFF, all three spellings, exactly as T:4156-4157 and
+        // T:4227-4228 ship them beside `spellcheck`. Not cosmetic: Grammarly
+        // injects a sibling contenteditable and a floating button INTO this
+        // element's box, and `ui/fit.ts`'s `readRow` prices `row.children` — an
+        // injected node in that chain is precisely the surprise a measured
+        // ladder cannot absorb.
+        data-gramm="false"
+        data-gramm_editor="false"
+        data-enable-grammarly="false"
         disabled={blocked}
         value={text}
         onChange={(ev) => {
@@ -508,7 +548,20 @@ export function ComposerCard({
           sessionId={sessionId}
           draft={draft}
           back={back}
-          disabled={variant === "chat" ? blocked : false}
+          // TWO GUARDS WITH DIFFERENT SCOPES, which is what T:12075/12099 read
+          // off `schedBlocked() || annNavLocked()` for every `.schedbtn`:
+          //
+          //   * `blocked` stays CHAT-ONLY (T:16851) — the landing card has no
+          //     session holding queued work, so nothing there is blocked;
+          //   * `navLocked` applies to BOTH, because a comment round owns the
+          //     PAGE. `styles/ann.css`'s `pointer-events: none` stopped the
+          //     mouse on the landing composer, but the button stayed in tab
+          //     order — so a keyboard Enter still opened the confirm and
+          //     Continue still left for `/tasks`, stranding the notes. That is
+          //     the exact failure Bugbot PR #1046 closed, reachable again by
+          //     another road. Disabled for the eye, guarded for the hand.
+          disabled={(variant === "chat" && !!blocked) || !!navLocked}
+          {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
           onCancel={focusBox}
           onNavigate={onNavigate}
         />
@@ -517,7 +570,14 @@ export function ComposerCard({
           type="submit"
           aria-label={running ? "Stop" : "Send"}
           title={running ? "Stop" : attaching ? "Attaching…" : "Send"}
-          disabled={blocked || (!running && (!canSend || !!sendBusy))}
+          // T NEVER DISABLES SEND (T:17193-17195, T:4187), and `blocked` here
+          // was the one thing that did. The send door already refuses a blocked
+          // composer at `submit`'s first guard, so the dim bought nothing and
+          // cost the load-bearing half: `disabled` also kills the STOP this
+          // button becomes mid-run, and a reader who cannot stop a turn has no
+          // way out of it. `canSend`/`sendBusy` stay — those are "there is
+          // nothing to send yet", which is a different sentence.
+          disabled={!running && (!canSend || !!sendBusy)}
         >
           {running ? (
             <svg

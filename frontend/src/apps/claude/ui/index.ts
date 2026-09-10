@@ -18,6 +18,11 @@ export { EffortSelect } from "./EffortSelect";
 export { PermissionSelect } from "./PermissionSelect";
 export { PillSelect } from "./PillSelect";
 export type { PillOption, PillSelectProps } from "./PillSelect";
+/** The window `blur`/`resize` dismissals Base UI does not cover (T:12602,
+ *  T:12605). Exported because three popovers want them and PR4's Schedule seat
+ *  and confirm are two of the three. */
+export { useDismissOnWindow } from "./useDismissOnWindow";
+export type { DismissOnWindowOptions } from "./useDismissOnWindow";
 export { SchedButton } from "./SchedButton";
 export { SchedConfirm } from "./SchedConfirm";
 export {
