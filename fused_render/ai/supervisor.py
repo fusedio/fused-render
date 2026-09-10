@@ -55,6 +55,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
 
 logger = logging.getLogger(__name__)
@@ -1584,7 +1585,12 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     # call this row traces back to). The output path the route already picked
     # (`request["out"]`) is the only destination available in that case, so it
     # becomes one: the file itself once it exists, its folder if it never did.
-    out_dir = os.path.dirname(str(request.get("out") or "")) or None
+    #
+    # Canonical (forward-slash) form, like every other fs path this API hands
+    # a page — `os.path.dirname` comes back backslashed on Windows, and a page
+    # is compared against the canonical spelling everywhere else it is stored
+    # or read (`ai_runtime.canonical_fs_path`, `X-Fused-Page`, `/view` URLs).
+    out_dir = canonical_fs_path(os.path.dirname(str(request.get("out") or ""))) or None
 
     def run() -> None:
         try:
@@ -1596,9 +1602,14 @@ def _start_render(capability: str, model: str, request: dict, job: str,
             else:
                 _report(job, state="error", message=message, page=page or out_dir or "")
             return
+        # `result["path"]` is the worker's own field, written with `os.path` on
+        # its side of the boundary — canonicalized here for the same reason
+        # `out_dir` is, so a Windows worker's spelling still matches the one
+        # `/api/ai/image`'s and `/api/ai/video`'s own `path` reply carries.
+        done_page = canonical_fs_path(str(result.get("path"))) if result.get("path") else ""
         _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
                 detail=f"Saved {os.path.basename(result.get('path') or noun)}",
-                page=page or result.get("path") or out_dir or "")
+                page=page or done_page or out_dir or "")
 
     threading.Thread(target=run, name=thread_name, daemon=True).start()
 

@@ -5264,6 +5264,28 @@ def test_an_image_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done(
     assert finished["page"] == started["path"]
 
 
+def test_an_image_result_path_that_comes_back_windows_shaped_still_lands_canonical(
+        fake_image_runner, monkeypatch, tmp_path):
+    """The worker's own `result["path"]` is built with `os.path` on its side
+    of the boundary, so on Windows it comes back backslashed — this is
+    reproducible on any host by having the (fake) worker hand back a
+    Windows-shaped string directly, independent of the test host's own OS.
+    The row's `page` must still be the canonical (forward-slash) spelling the
+    rest of the app treats a filesystem path as, the same one `/api/ai/image`
+    hands back as `path` — never the raw spelling the render happened to
+    report."""
+    def windows_shaped(model, request, job):
+        return {"steps": 1, "path": r"C:\Users\runner\out\one.png"}
+
+    monkeypatch.setattr(supervisor, "generate_image", windows_shaped)
+    job = supervisor.image_job_id("windows-shaped")
+    supervisor.start_image("org/fake-image", {"prompt": "x", "out": str(tmp_path / "one.png")},
+                           job)
+    row = _row(job)
+    assert row["state"] == "done"
+    assert row["page"] == "C:/Users/runner/out/one.png"
+
+
 def test_a_caller_supplied_page_still_wins_once_the_image_is_done(
         client, fake_image_runner):
     """An app that raised the render keeps opening that app — the output
@@ -5291,7 +5313,7 @@ def test_a_failed_image_render_with_no_caller_page_points_at_its_output_folder(
     supervisor.start_image("org/fake-image", {"prompt": "x", "out": str(out)}, job)
     row = _row(job)
     assert row["state"] == "error"
-    assert row["page"] == str(out.parent)
+    assert row["page"] == ai_runtime.canonical_fs_path(str(out.parent))
 
 
 def test_a_successful_image_render_with_no_caller_page_and_no_result_path_falls_back_to_the_output_folder(
@@ -5310,7 +5332,7 @@ def test_a_successful_image_render_with_no_caller_page_and_no_result_path_falls_
     supervisor.start_image("org/fake-image", {"prompt": "x", "out": str(out)}, job)
     row = _row(job)
     assert row["state"] == "done"
-    assert row["page"] == str(out.parent)
+    assert row["page"] == ai_runtime.canonical_fs_path(str(out.parent))
 
 
 def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
@@ -7403,6 +7425,23 @@ def test_a_video_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done(
     assert finished["page"] == started["path"]
 
 
+def test_a_video_result_path_that_comes_back_windows_shaped_still_lands_canonical(
+        fake_video_runner, monkeypatch, tmp_path):
+    """See the image twin of this test — `_start_render` is shared, so the
+    same Windows-shaped `result["path"]` has to canonicalize the same way for
+    a video render."""
+    def windows_shaped(model, request, job):
+        return {"steps": 1, "path": r"C:\Users\runner\out\one.mp4"}
+
+    monkeypatch.setattr(supervisor, "generate_video", windows_shaped)
+    job = supervisor.video_job_id("windows-shaped")
+    supervisor.start_video("org/fake-video", {"prompt": "x", "out": str(tmp_path / "one.mp4")},
+                           job)
+    row = _row(job)
+    assert row["state"] == "done"
+    assert row["page"] == "C:/Users/runner/out/one.mp4"
+
+
 def test_a_failed_video_render_with_no_caller_page_points_at_its_output_folder(
         fake_video_runner, monkeypatch, tmp_path):
     def boom(model, request, job):
@@ -7415,7 +7454,7 @@ def test_a_failed_video_render_with_no_caller_page_points_at_its_output_folder(
     supervisor.start_video("org/fake-video", {"prompt": "x", "out": str(out)}, job)
     row = _row(job)
     assert row["state"] == "error"
-    assert row["page"] == str(out.parent)
+    assert row["page"] == ai_runtime.canonical_fs_path(str(out.parent))
 
 
 # -- transcription (SPEC §40) ---------------------------------------------------
