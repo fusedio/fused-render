@@ -810,6 +810,40 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.map((t) => !!t.streaming)).toEqual([false, false]);
   });
 
+  // Bugbot #1099. The continuity read cannot see a follow-up reply that merely
+  // EXTENDS the previous one: "OK" then "OK, done" keeps the seam count, the
+  // segment count and the prefix. agent.py now reports where the window starts
+  // (`window`, the poll cursor); that offset moving is the step itself.
+  test("a follow-up reply that extends the previous text still opens its own bubble (window)", async () => {
+    let controller!: ChatController;
+    const A = text("OK");
+    const B = text("OK, done");
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A], text: A.text, window: 0 });
+        if (n === 1) {
+          await controller.sendFollowUp("do it again");
+          return poll({ segments: [], text: "", window: 0 });
+        }
+        // Echo and A's `result` landed in the gap; the cursor stepped to B.
+        if (n === 2) return poll({ segments: [B], text: B.text, window: 480 });
+        return poll({ done: true, segments: [B], text: B.text, window: 480 });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("say OK");
+    const reply = assistants(controller);
+    expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([[A.text], [B.text]]);
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+  });
+
   // ── owner feedback R4-3 ──────────────────────────────────────────────────
   //
   // "Sometimes when I reply, it re-streams the previous message's response, and

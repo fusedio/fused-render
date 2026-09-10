@@ -934,6 +934,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
      *  test: a window only ever GROWS, so a payload that does not start with
      *  the last one is a window that moved. */
     let prevFullText = "";
+    /** The previous non-blank poll's window start (`poll.window`), when the
+     *  agent reports one: the cursor itself, and the one read that needs no
+     *  inference. */
+    let prevWindow: number | null = null;
     let seenFollowupSeq = followupSeq;
     /**
      * HOW MANY SEAMS ARE STILL OWED — a COUNT, not a flag (Bugbot PR #1061).
@@ -1089,7 +1093,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // an extra bubble; a miss costs a reply.
           const moved =
             prevFullText.length > 0 && fullText.length > 0 && !fullText.startsWith(prevFullText);
-          if (lost > 0 || shrank || moved) {
+          // THE CURSOR ITSELF, when agent.py says where the window starts
+          // (Bugbot #1099): a follow-up reply that merely EXTENDS the one
+          // before it ("OK" → "OK, done") keeps the seam count, the segment
+          // count AND the prefix, so none of the three reads above can see
+          // the step. The offset moving is the step, no inference needed.
+          const slid =
+            typeof poll.window === "number" && prevWindow !== null && poll.window !== prevWindow;
+          if (lost > 0 || shrank || moved || slid) {
             // A LOST seam count is how many steps happened, so it settles that
             // many of the outstanding ones; a bare shrink is one step, and the
             // rest stay owed. Never below zero: a shrink for an unrelated
@@ -1107,6 +1118,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           prevTextLen = fullText.length;
           prevBreaks = reported.length;
           prevFullText = fullText;
+          if (typeof poll.window === "number") prevWindow = poll.window;
         }
 
         // THE SPANS THIS LOOP DID NOT SEND, taken as the base — see

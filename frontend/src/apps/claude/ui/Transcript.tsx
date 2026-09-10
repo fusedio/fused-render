@@ -406,15 +406,17 @@ export const Transcript = memo(function Transcript({
   const spend = useRef(onAnchorSpent);
   spend.current = onAnchorSpent;
   useEffect(() => {
-    // `transcriptGen === 0` is a history load that has not STARTED yet — the
-    // first render, before the host's boot effect flips `historyLoading` on.
-    // Spending the anchor there landed it on an empty log every time a task
-    // page opened from a message link (owner E2E R1, F2).
+    // AN EMPTY LOG THAT HAS NOT LOADED YET IS NOT A TRANSCRIPT TO SPEND ON.
+    // `transcriptGen === 0` with no turns is the first render, before the
+    // host's boot effect flips `historyLoading` on: spending the anchor there
+    // landed it on an empty log every time a task page opened from a message
+    // link (owner E2E R1, F2). A conversation started with Send never bumps
+    // the generation but HAS turns, so it is not held back (Bugbot #1099).
     if (
       !msgAnchor ||
       anchorSpent.current === msgAnchor ||
       state.historyLoading ||
-      state.transcriptGen === 0
+      (state.transcriptGen === 0 && state.turns.length === 0)
     )
       return;
     // Spent on the first transcript it is offered, landed or not: left armed, a
@@ -430,7 +432,7 @@ export const Transcript = memo(function Transcript({
     scrollToAnchor(el, still);
     stopSettle.current = settleAnchor(wrap, el, still);
     setFlare(msgAnchor);
-  }, [msgAnchor, state.historyLoading]);
+  }, [msgAnchor, state.historyLoading, state.transcriptGen, state.turns.length]);
   // The flare's own effect, keyed on the flare: one timer per halo, torn down
   // only when the halo it belongs to goes.
   useEffect(() => {

@@ -383,6 +383,11 @@ export interface PollResponse {
   tasks_pending: boolean;
   activity: Activity;
   segments: Segment[];
+  /** Byte offset in out.jsonl where this payload's window starts — the poll
+   *  cursor. A change while a follow-up is outstanding IS the cursor stepping
+   *  past its seam (agent.py `_poll`, Bugbot #1099). Absent on an older
+   *  agent.py. */
+  window?: number;
   /**
    * Where a mid-stream follow-up was ABSORBED into the reply already streaming
    * (agent.py `_absorbed_turn_breaks`). One entry per seam, in file order,

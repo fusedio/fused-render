@@ -4652,7 +4652,17 @@ def _poll(run_id: str, file: str = "") -> dict:
             # while `echo_pending` blanks the payload the offsets would index
             # into.
             "turn_breaks": [] if echo_pending
-            else _absorbed_turn_breaks(parsed)}
+            else _absorbed_turn_breaks(parsed),
+            # WHERE THIS WINDOW STARTS, as a byte offset into out.jsonl (the
+            # cursor `_read_current_turn` settled on). The page keeps one
+            # bubble per reply in the window and has to notice when the cursor
+            # steps past an absorbed follow-up, because the poll after that
+            # step carries only the newer reply with no seam left to place it.
+            # It used to infer the step from the payload (a seam lost, a size
+            # that shrank, text that no longer continues) — and a follow-up
+            # reply that merely EXTENDS the previous one ("OK" → "OK, done")
+            # defeats all three (Bugbot #1099). The offset is the fact itself.
+            "window": scan_cursor}
 
 
 # ------------------------------------------------------- sessions & history
