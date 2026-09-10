@@ -29,8 +29,11 @@ A release is: bump `__version__`, land that bump on `main` **through a PR**, the
    before continuing. If `git status --porcelain` prints anything, stop and
    resolve it first.
 
-2. **Pick the new version.** Read the current value and the latest tag; choose the next semver:
+2. **Pick the new version.** Fetch tags first — a stale local tag list can hide a
+   version someone else already published since your last fetch. Then read the
+   current value and the latest tag and choose the next semver:
    ```bash
+   git fetch origin --tags
    grep __version__ fused_render/__init__.py
    git tag --sort=-creatordate | head -1
    ```
@@ -68,21 +71,35 @@ A release is: bump `__version__`, land that bump on `main` **through a PR**, the
    grep __version__ fused_render/__init__.py   # confirm it reads X.Y.Z
    ```
 
-7. **Tag** — annotated, name is `v` + the exact version:
+7. **Re-verify the version right before tagging.** Steps 2-6 take real time (PR
+   review, CI, the merge itself) — long enough for someone else to have published
+   a release in the meantime. The version you picked in step 2 may no longer be
+   the next version, or its tag may already exist. Re-fetch and check again,
+   immediately before creating the tag — do not rely on the step-2 check alone:
+   ```bash
+   git fetch origin --tags
+   git tag --sort=-creatordate | head -1   # must still be older than vX.Y.Z
+   git rev-parse vX.Y.Z 2>/dev/null && echo "TAG ALREADY EXISTS — STOP, do not reuse it"
+   ```
+   If the latest tag is now `vX.Y.Z` or newer, or `vX.Y.Z` already exists, someone
+   else released first: do not tag. Pick a fresh next version, bump it (new
+   branch + PR, back to step 3), and only tag once this check comes back clean.
+
+8. **Tag** — annotated, name is `v` + the exact version:
    ```bash
    git tag -a vX.Y.Z -m "vX.Y.Z"
    ```
 
-8. **Push the tag.** This is the release trigger:
+9. **Push the tag.** This is the release trigger:
    ```bash
    git push origin vX.Y.Z
    ```
 
-9. **Verify** the release workflow started, then clean up the branch:
-   ```bash
-   gh run list --workflow=release.yml --limit 3
-   git branch -d bump-X.Y.Z && git push origin --delete bump-X.Y.Z
-   ```
+10. **Verify** the release workflow started, then clean up the branch:
+    ```bash
+    gh run list --workflow=release.yml --limit 3
+    git branch -d bump-X.Y.Z && git push origin --delete bump-X.Y.Z
+    ```
 
 ## Quick Reference
 
@@ -112,3 +129,8 @@ A release is: bump `__version__`, land that bump on `main` **through a PR**, the
 - **Reusing an existing tag.** Tags are immutable releases; pick an unused version. Check `git tag` first.
 - **Skipping `git pull`.** Tagging a stale local `main` builds and ships an old
   commit. Always pull (steps 1 and 6) so the tag points at the true latest.
+- **Trusting the step-2 version check all the way to tag time.** The version was
+  "next" when you picked it, but PR review + CI take time — another release can
+  land in that window, making your chosen version stale or its tag already taken.
+  Re-fetch tags and re-check immediately before tagging (step 7), not just once
+  at the start.
