@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 const strip = (raw: string): string => raw.replace(/\/\*[\s\S]*?\*\//g, "");
 const ANN = strip(readFileSync(new URL("./ann.css", import.meta.url), "utf8"));
 const CHAT = strip(readFileSync(new URL("./chat.css", import.meta.url), "utf8"));
+const COMPOSER = strip(readFileSync(new URL("./composer.css", import.meta.url), "utf8"));
 
 /** Every rule whose selector list carries `selector` as a WHOLE selector,
  *  whitespace flattened. Exact rather than substring, for `refusal.test.ts`'s
@@ -112,4 +113,28 @@ test("the picker's slide is T's 10px, in and out", () => {
   );
   // …and the reduced-motion opt-out is still there (T's own).
   expect(ANN).toContain("prefers-reduced-motion");
+});
+
+// ── the kebab's right-hand anchor (T:200, T:526, T:533) ────────────────────
+
+test("the kebab owns the row's auto margin, and gives it back to the CTA group", () => {
+  // Bugbot, PR #1074. `.c-anncta { margin-left: auto }` replaced a slack
+  // SPACER element (FIX-6B), which was right for the dressed strip and wrong
+  // for the mounts where `AnnStrip` returns null altogether — a folder listing
+  // with no annotate target still draws `← Chats` and `⋮`, and with no spacer
+  // and no CTA group there was no auto margin left in the row at all, so the
+  // menu sat against the LEFT edge. T ports the pair, not just the half:
+  // `body.nopane #kebab { margin-left: auto }` (T:526) with
+  // `#anncta:has(#annbtn:not([hidden])) ~ #kebab { margin-left: 0 }` (T:200,
+  // and its `body.nopane` twin at T:533), because two auto margins split the
+  // slack and park the pair mid-strip.
+  expect(one(COMPOSER, ".c-kebab")).toContain("margin-left: auto");
+  expect(one(COMPOSER, ".c-anncta ~ .c-kebab")).toContain("margin-left: 0");
+  // The group's own auto margin is the one the revocation defers to, so the two
+  // sheets have to keep agreeing about which element holds it.
+  expect(rules(CHAT, ".chat-root .c-anncta").join(" ")).toContain("margin-left: auto");
+  // And the spacer is a `flex: 1` item, never a second auto-margin owner: a
+  // flex ITEM keeps its 12px gap even at zero width, which is the +10.34px
+  // FIX-6B measured on the strip it was taken out of.
+  expect(one(COMPOSER, ".c-hdr-slack")).not.toContain("margin-left");
 });

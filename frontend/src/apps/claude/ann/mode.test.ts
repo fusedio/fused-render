@@ -28,6 +28,10 @@ interface Rig {
   /** Whatever the recorder module would do on a stop: flags down BEFORE the
    *  await, the settle's status up, the nav lock claimed (T:8111-8170). */
   beginSettle(): void;
+  /** THE LAG WINDOW: the recorder's own flags move (`recording()` down,
+   *  `settling()` up) and the React effect that echoes them into `setPhase` has
+   *  NOT run yet. One commit wide in the app; a whole test here. */
+  beginSettleUnechoed(): void;
   finishSettle(to: "off" | "transcribing"): void;
   capable: { value: boolean };
   canSend: { value: boolean };
@@ -109,6 +113,10 @@ function rig(opts: { params?: Record<string, string>; capable?: boolean } = {}):
       rec.phase = "settling";
       machine.setBusyHold(true);
       machine.setPhase("settling");
+    },
+    beginSettleUnechoed() {
+      rec.on = false;
+      rec.phase = "settling";
     },
     finishSettle(to) {
       if (to === "transcribing") {
@@ -421,6 +429,67 @@ describe("§D — the settle refuses to be thrown away", () => {
     r.machine.discard();
     expect(r.store.list()).toHaveLength(1);
     expect(modeOf(r)).toBe("settling");
+  });
+
+  // ── the settle read off the RECORDER, not off the echo (Bugbot, PR #1074) ──
+  //
+  // `setPhase` is fed by a React effect over `recSnap`, so between the
+  // recorder's flags moving and that effect running there is one commit in
+  // which `recording()` is already false and `phase` is still null. Every one
+  // of these four assertions FAILED in that window before `settlePhase()`: the
+  // machine fell back to `comment` and the typed round's doors opened on a
+  // walkthrough's marks.
+
+  test("the unechoed settle still reads as a settle, not as comment", () => {
+    const r = rig();
+    r.machine.set(true);
+    r.rec.on = true;
+    r.beginSettleUnechoed();
+    expect(modeOf(r)).toBe("settling");
+    expect(walkthroughOwns(modeOf(r))).toBe(true);
+    // …and the echo, when it lands, is the FINER answer and takes over.
+    r.machine.setPhase("transcribing");
+    expect(modeOf(r)).toBe("transcribing");
+  });
+
+  test("the trash in the unechoed settle does NOT throw the recording's marks", () => {
+    const r = rig();
+    r.machine.set(true);
+    r.store.add({ content: "a mark", createdAt: 6000 });
+    r.rec.on = true;
+    r.beginSettleUnechoed();
+    r.machine.discard();
+    // THE DEFECT: `notesDiscard` used to delete the round and disarm here,
+    // while the transcription it never asked to stop went on to land and
+    // auto-send words with nothing left to anchor them to.
+    expect(r.store.list()).toHaveLength(1);
+    expect(r.rec.discarded).toBe(0);
+    expect(r.machine.armed()).toBe(true);
+    expect(modeOf(r)).toBe("settling");
+  });
+
+  test("✓ Done refuses in the unechoed settle, and the nav lock holds", async () => {
+    const r = rig();
+    r.machine.set(true);
+    r.store.add({ content: "a mark", createdAt: 6000 });
+    r.rec.on = true;
+    r.machine.setBusyHold(true);
+    r.beginSettleUnechoed();
+    // The lock is the MODE's claim and `hold` is only half of it: the other
+    // half used to be the stale `phase`, so the lock dropped in this window too.
+    expect(r.machine.locked()).toBe(true);
+    await r.machine.done();
+    expect(r.log).not.toContain("submit");
+    expect(r.machine.armed()).toBe(true);
+  });
+
+  test("arriving at the narrow chat view disarms in the unechoed settle too", () => {
+    const r = rig();
+    r.machine.set(true);
+    r.rec.on = true;
+    r.beginSettleUnechoed();
+    r.machine.arriveNarrowChat();
+    expect(r.machine.armed()).toBe(false);
   });
 
   test("Esc through the settle only LEAVES the mode — and releases the nav lock", () => {

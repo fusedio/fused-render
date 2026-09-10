@@ -140,13 +140,43 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
   let doneBusy = false;
   const subs = new Set<(m: AnnMode) => void>();
 
+  /**
+   * THE SETTLE, READ OFF THE RECORDER AND ONLY THEN OFF THE ECHO
+   * (Bugbot, PR #1074).
+   *
+   * `phase` is a COPY: `ClaudeChat`'s effect writes it from `recSnap` after the
+   * recorder's own flag has already moved. So for the width of one React commit
+   * — `recording()` down, the effect not yet run — every direct caller of
+   * `mode()` read `comment`, and in that window the bar's trash took the typed
+   * round's exit: `notesDiscard` saw `phase === null`, DELETED the marks and
+   * never asked the recorder to stop, so the transcription it left running
+   * could still land and auto-send words with nothing to anchor them to. The
+   * same window let ✓ Done through (`walkthroughOwns`) and dropped the nav
+   * lock's hold.
+   *
+   * `settling()` is the recorder's own synchronous answer (T:8114 — stopping,
+   * transcribing or discarding in flight), so it closes the window in the one
+   * place all four readers already come through. The echo still WINS when it is
+   * there, because it is the finer of the two: it can say `transcribing` where
+   * `settling()` only says "busy". Conversely a `phase` left standing after the
+   * recorder has gone quiet keeps its word until the effect clears it — the lag
+   * in that direction is a face held one frame too long, not a destructive door
+   * opened one frame too early.
+   */
+  const settlePhase = (): "settling" | "transcribing" | null => {
+    if (phase) return phase;
+    const r = rec();
+    return r && r.settling() ? "settling" : null;
+  };
+
   const mode = (): AnnMode => {
     const r = rec();
     if (r && r.recording()) return "recording";
-    if (phase) return phase;
+    const p = settlePhase();
+    if (p) return p;
     return on ? "comment" : "off";
   };
-  const locked = () => on || (hold && phase !== null);
+  const locked = () => on || (hold && settlePhase() !== null);
   let lastAnnounced: AnnMode | null = null;
   const announce = () => {
     const m = mode();
@@ -218,7 +248,11 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
     // flag is already down through Stopping…/Transcribing…, and the marks are
     // the recording's, waiting for words — not a typed round to throw away.
     const r = rec();
-    if ((r && r.recording()) || !on || phase !== null) return;
+    // `settlePhase`, NOT `phase`: the recorder's flag is already down through
+    // Stopping…/Transcribing… and the echo arrives a commit later, so reading
+    // the copy here left one frame in which this door threw the RECORDING's
+    // marks away as a typed round's (Bugbot, PR #1074).
+    if ((r && r.recording()) || !on || settlePhase() !== null) return;
     deps.closeComposer();
     deps.store.discardRound();
     set(false);
@@ -242,7 +276,7 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
    *  two still only LEAVE the mode — which releases the nav lock. */
   function escape(): void {
     const r = rec();
-    if ((r && r.recording()) || phase !== null) {
+    if ((r && r.recording()) || settlePhase() !== null) {
       set(false);
       return;
     }
@@ -334,7 +368,7 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
       // there is no frame to point at, and leaving the mode armed behind a hidden
       // toggle would keep the frame's capture-phase click swallower live over a
       // document the user cannot see, in a state its own view cannot undo.
-      if (on || phase !== null) set(false);
+      if (on || settlePhase() !== null) set(false);
     },
     targetGone() {
       // `set` refuses (`capable()` is false now) AFTER setting `on` false, which

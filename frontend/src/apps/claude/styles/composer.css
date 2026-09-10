@@ -185,6 +185,25 @@
 .c-kebab {
   position: relative;
   flex-shrink: 0;
+  /* ONE AUTO MARGIN PER ROW, AND THE KEBAB IS THE FALLBACK OWNER
+     (T:526 `body.nopane #kebab { margin-left: auto }`, Bugbot PR #1074).
+     `.c-anncta`'s own `margin-left: auto` (chat.css) is the row's usual slack
+     source — but `AnnStrip` returns null outright on a mount with nothing to
+     annotate (a folder listing, `nopane`), and that row still draws `← Chats`
+     and `⋮`. With the slack SPACER gone (see ClaudeChat's note at the strip)
+     there was then no auto margin left in the row at all, so the menu sat
+     against the left edge instead of 16px from the right. T ports exactly this
+     pair: the kebab claims the slack when the pane's controls are away. */
+  margin-left: auto;
+}
+/* …and hands it straight back when the CTA group IS in the row, because TWO
+   auto margins split the free space and park the pair mid-strip (T:200 and its
+   `body.nopane` twin T:533 — `#anncta:has(#annbtn:not([hidden])) ~ #kebab {
+   margin-left: 0 }`; Akshil, 2026-08-19: "why is this in the middle?"). A
+   GENERAL sibling, so the mode picker and the view toggle that sit between the
+   two do not break the revocation. */
+.c-anncta ~ .c-kebab {
+  margin-left: 0;
 }
 .c-kebabbtn {
   display: flex;
