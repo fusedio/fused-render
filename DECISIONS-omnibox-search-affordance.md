@@ -356,6 +356,73 @@ makes the test's verdict independent of whatever mock.module call ran
 earlier in the process. Verified with two full, unfiltered `bun test` runs
 at the repo's `frontend/` root: 4315 pass, 0 fail, both times.
 
+## Three user-reported defects, running-screen review (2026-09-10)
+
+**Item 1 — one arrow keypress moved both the dropdown highlight and the
+listing selection behind it.** Confirmed the diagnosis exactly as given:
+`useListingSelection.ts`'s document-level keydown listener is bubble-phase
+(`document.addEventListener("keydown", onKeyDown)`, not capture), and
+`SearchField.tsx`'s own `onKeyDown` never stopped the same ArrowUp/Down
+from continuing to bubble past it. Fixed with `e.stopPropagation()` in the
+one branch that fires only while the dropdown is open and navigable
+(`action.type === "move"`, gated by `completionKeyAction`'s own
+`showCompletion` check) — when the dropdown is closed that branch is never
+reached, so the preserved behaviour (arrows drive the listing from the
+search box or nothing focused) is untouched. Checked both capture-phase
+listeners the task named, `usePaneFocusGuard.ts` and `listing/row-drag.ts`:
+both register on `keydown` with capture `true`, but the former only acts on
+`Tab` and the latter only on keys during an active row-drag (its own
+`onKeyDown`, unrelated to arrows) — neither interferes with this fix, and
+neither would have run before this stopPropagation anyway (capture fires
+BEFORE bubble, and this fix is a bubble-phase stop, so it couldn't have
+raced them even if they did handle arrows). No second "dropdown open" flag
+threaded into `useListingSelection` — the fix lives entirely in
+`SearchField.tsx`.
+
+**Item 2 — the clear button left the box half-open.** Confirmed:
+`clearSearchQuery` only called `setQuery("")`/`setPinnedOpen(false)`, and
+the clear button's own `onMouseDown` calls `preventDefault()` (needed so
+the browser's native mousedown-blur doesn't fire before the click
+completes and steal the click), which meant the field never actually
+blurred and `fieldActive` stayed true — an empty query is pristine by
+definition, so `showSearchExamples(fieldActive, pristine)` stayed
+satisfied. Fixed by having `clearSearchQuery` itself set `fieldActive`
+false directly (same pattern `navigateToCompletion` already uses) and call
+`searchInputRef.current?.blur()` — Escape's own separate
+`e.currentTarget.blur()` call is now redundant and removed, so Escape and
+the clear button share the exact one teardown path rather than the clear
+button lacking half of what Escape already did. `search-clear-button.test.ts`
+previously asserted the OLD behaviour ("never blurs") as intentional —
+updated in place, plus a new driven test in
+`search-dropdown-actions.render.test.tsx` confirming the dropdown actually
+closes and DOM focus actually leaves on a real click.
+
+**Item 3 — the two dropdown surfaces' vertical rhythm.** Read the actual
+CSS before touching anything: the folder-completion rows, the not-found
+notice, the search-action row and the teaching-example rows already ALL
+render the one `.listing-completion-row` class (confirmed by grep across
+`SearchField.tsx`), so they were already sharing a single padding
+declaration (`padding: 4px 11px 4px var(--chip-inset)`) rather than two
+separately-typed numbers — there was no second rule set to have drifted
+from the first at the CSS level. The two-line, stacked layout the examples
+rows use (`.listing-completion-example { flex-direction: column; gap: 2px;
+}`, one line for the pattern, one for its sentence) makes them taller than
+a single-line folder-completion row even at identical padding, which is
+almost certainly what read as "more generous" on the running screen the
+user compared them on. Per the task's explicit instruction (take the
+padding FROM the examples panel, onto the completion rows, via one shared
+value the same way `--chip-inset` already works) rather than re-litigating
+which surface should move: extracted the existing 4px into a new
+`--completion-row-pad-y` custom property (defined alongside `--chip-inset`
+on `.listing-search-box`, inherited the same way) and raised it to 6px —
+this could not be "given the examples panel's OWN number" since both
+surfaces already read the same number; 6px is a judgment call for what
+"more generous" means now that the value has a name, not a value copied
+from a second rule that turned out not to exist. **This needs a human's
+eyes on the actual running screen to confirm 6px is the right amount** —
+it was chosen without one, since the two surfaces' padding was never
+actually divergent in the committed CSS to begin with.
+
 ## Cannot be verified headlessly
 
 See SPEC-omnibox-search-affordance.md's own "Cannot be verified headlessly"

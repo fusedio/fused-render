@@ -1594,13 +1594,29 @@ table.listing-table tr.skel-row:hover {
    old text-derived number — the whitespace bug #1091 (`worktree-omnibox-
    chip-padding`) exists to fix, reintroduced.
 
-   8px (the chip's own left inset) + 12px (its glyph) + 8px clearance = 28px. */
+   8px (the chip's own left inset) + 12px (its glyph) + 8px clearance = 28px.
+
+   `--completion-row-pad-y` is the same idea on the OTHER axis. The
+   dropdown's folder-completion rows and the teaching-examples rows both
+   render `.listing-completion-row` (below) and so already shared one rule
+   — but that rule spent its vertical padding as a bare number, not a
+   token, which is exactly the shape that let `--chip-inset` itself drift
+   into two values before scope item 2 of this spec collapsed it back to
+   one. Pulled out here, next to `--chip-inset`, before that has a chance
+   to happen on this axis too — one named value a future change reads and
+   writes in one place, rather than a number someone has to remember lives
+   in a shared rule at all. Bumped from 4px to 6px on a running-screen
+   comparison: the user preferred the examples panel's more generous feel,
+   so the shared value moves to match it rather than the tighter one the
+   plain folder-completion rows had been sitting at before either surface
+   had a name for this number. */
 .listing-search-box {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
   container-type: inline-size;
   --chip-inset: 28px;
+  --completion-row-pad-y: 6px;
 }
 
 /* The mode chip: the field's leading readout, always rendered (Listing.tsx
@@ -2085,12 +2101,17 @@ table.listing-table tr.skel-row:hover {
    nowhere), so a suggestion name lands directly under the query text it
    completes — reading the property rather than a re-typed number is what
    keeps the two from being able to drift apart. Right padding stays at
-   11px. */
+   11px. Top/bottom padding reads `--completion-row-pad-y` the same way —
+   this ONE rule is what both the folder-completion rows and the teaching-
+   examples rows below (`.listing-completion-example`) render through, so
+   there was never a second rule set to drift; the token exists so the
+   number itself can't silently diverge from `--chip-inset`'s own pattern
+   the next time either surface changes. */
 .listing-completion-row {
   display: flex;
   align-items: baseline;
   gap: 9px;
-  padding: 4px 11px 4px var(--chip-inset);
+  padding: var(--completion-row-pad-y) 11px var(--completion-row-pad-y) var(--chip-inset);
   font-size: 12.5px;
   cursor: default;
 }
