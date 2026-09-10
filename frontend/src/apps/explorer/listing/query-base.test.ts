@@ -53,6 +53,19 @@ describe("escapesFsPath", () => {
     expect(escapesFsPath(query, FS_PATH, HOME)).toBe(false);
   });
 
+  // FINDING 4 (code review, 2026-09-10): the server's own leading-slash rule
+  // (resolve_query's docstring, fused_render/index/query.py) anchors these
+  // two shapes at the box's own root unconditionally — the walk from "/"
+  // never even advances past its first segment, filesystem or no filesystem
+  // — so this predicate can match the server exactly here with no directory
+  // check of its own.
+  test.each([
+    ["/*.csv"],
+    ["/"],
+  ])("%s never advances past root — the server's own depth-1/bare-root fallback, not an escape", (query) => {
+    expect(escapesFsPath(query, FS_PATH, HOME)).toBe(false);
+  });
+
   test.each([
     ["/etc/*/x.conf"],
     ["/Users/iamsdas2"], // segment comparison, not a string prefix

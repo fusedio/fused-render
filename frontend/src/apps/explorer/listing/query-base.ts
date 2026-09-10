@@ -68,6 +68,23 @@ export function escapesFsPath(
   // treating it as escaping matches `escapesBase`'s own existing verdict.)
   if (query.split("/").includes("..")) return true;
 
+  // FINDING 4 (code review, 2026-09-10): a leading "/" is genuinely
+  // ambiguous, and the server (`resolve_query`'s own docstring,
+  // fused_render/index/query.py) resolves that ambiguity by trying the
+  // whole thing as an absolute path first, falling back to a depth-1
+  // anchor at the box's own root ONLY when that walk cannot even consume
+  // its first segment (`_walk_from`'s `advanced` flag false — no real
+  // directory backs it, or the first segment is itself glob-bearing).
+  // `/*.csv` and a bare `/` both hit that fallback unconditionally — the
+  // walk never even enters its loop — so this predicate can match the
+  // server exactly for THOSE two shapes with no filesystem access of its
+  // own. A literal first segment (`/etc/...`) is left on the gated side:
+  // whether the server's fallback fires there depends on whether that
+  // directory actually exists, which this predicate cannot check, and the
+  // safe side of an unresolvable ambiguity is the gate (same bias
+  // `escapesBase` already takes for every leading "/").
+  const isBareSlash = query.startsWith("/") && !DRIVE_ABS.test(query);
+
   let abs: string;
   if (query === "~" || query.startsWith("~/")) {
     // Home not resolved yet: nothing to compare against, so stay on the
@@ -91,6 +108,14 @@ export function escapesFsPath(
   const segments = abs.split("/").filter(Boolean);
   const globIdx = segments.findIndex((s) => /[*?]/.test(s));
   const baseSegments = globIdx === -1 ? segments : segments.slice(0, globIdx);
+
+  // The bare-slash fallback above, made concrete: zero base segments means
+  // the walk from "/" never advanced past root at all — a bare `/` (no
+  // segments) or a `/`-prefixed query whose very first segment already
+  // carries the glob (`/*.csv`). Both are certain, not a guess, so this
+  // resolves to the box's own root — not an escape — exactly like the
+  // equivalent query with the leading "/" dropped.
+  if (isBareSlash && baseSegments.length === 0) return false;
 
   // "Inside, or exactly, the folder being searched": every segment of
   // `fsPath` has to appear, in order, at the START of the query's base — a
