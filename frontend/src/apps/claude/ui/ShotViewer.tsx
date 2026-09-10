@@ -258,7 +258,9 @@ export function ShotViewer(props: ShotViewerProps) {
       // form, and `deploy-body`'s descendant `button`/`p` skins would re-style a
       // surface that arrives already designed (D489).
       plainBody
-      dialogClassName="c-shotview-modal"
+      // `c-tokens` rides with it (FIX-17): the dialog portals to
+      // `document.body`, where no `--c-*` resolves — `styles/chat.css`.
+      dialogClassName="c-shotview-modal c-tokens"
       footer={<ShotViewerFooter {...props} />}
     >
       {/* `c-overlay` re-anchors the chat's `--c-*` aliases: the dialog is

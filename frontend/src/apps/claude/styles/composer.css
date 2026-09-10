@@ -403,6 +403,21 @@ select.c-pill {
   opacity: 0.55;
   cursor: default;
 }
+/* THE CALENDAR'S OWN BOX (T:1819-1825). Without the flex chassis and the
+   1.65em floor this button falls back to `.c-pill` as a `display: block` box and
+   comes out 32×27 against T's 32×22 — which also drags the schedule popover
+   2.7px up with it, and that offset was the WHOLE of the popover crop's 9.18%
+   diff (visual pass 2, FIX-15). `min-height` in ems, as T states it, so the
+   floor follows the row's type rather than a literal that stops tracking it. */
+.c-schedbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.65em;
+}
+.c-schedbtn svg {
+  display: block;
+}
 /* THE CALENDAR'S OWN REFUSAL, and T:1826-1837 argues both numbers. `not-allowed`
    rather than `.c-viewshot`'s `default`, because this and `#box:disabled` "are
    the SAME refusal and should feel like one" — a task queued from here is input

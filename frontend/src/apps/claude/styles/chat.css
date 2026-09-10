@@ -2,8 +2,19 @@
    T:69-101 light) aliased under `.chat-root` with a `--c-` prefix: the old names
    (`--bg`, `--accent`, `--border`, …) collide with tokens.css at different
    values (shell accent is yellow, the chat's is Claude orange). Values verbatim.
-   Theme follows the shell's `data-theme` on <html>; no runtime handshake. */
-.chat-root {
+   Theme follows the shell's `data-theme` on <html>; no runtime handshake.
+
+   `.c-tokens` CARRIES THE SAME BLOCK, for the surfaces that are the chat's but
+   are not INSIDE `.chat-root`: a `Modal` and a Base UI popup portal to
+   `document.body`, so every `--c-*` they asked for fell through to nothing and
+   the delete dialog painted the SHELL's danger ink — `rgb(255,107,107)` against
+   T's `rgb(242,109,109)`, from a token whose value is byte-identical on both
+   sides (visual pass 2, FIX-17). The class is the hook a portaled caller can
+   put on its own dialog; the bridge under it maps the three SHELL tokens a
+   shared dialog paints from onto the chat's values, because a component the
+   Tasks page also renders cannot be re-tokenised globally. */
+.chat-root,
+.c-tokens {
   color-scheme: dark;
   --c-bg: #191a1e;
   --c-panel: #1e2025;
@@ -48,7 +59,8 @@
   --c-pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%239a9fa9" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
 }
 
-:root[data-theme="light"] .chat-root {
+:root[data-theme="light"] .chat-root,
+:root[data-theme="light"] .c-tokens {
   color-scheme: light;
   --c-bg: #ffffff;
   --c-panel: #fafafa;
@@ -89,6 +101,26 @@
   --c-pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%2361656c" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
 }
 
+/* THE BRIDGE (FIX-17). A dialog the chat opens but does not own — the shared
+   `EraseTaskModal`, which the Tasks page renders too — paints from the shell's
+   own tokens (`--error`, `--fg`, `--fg-muted`), so publishing `--c-*` on the
+   portal is not enough on its own. Only the three the pass measured are
+   remapped, and only under this class: the Tasks page's copy of the same dialog
+   is untouched, which is the whole reason this is a class and not a theme
+   override. `--error-rgb` goes with `--error` because `.btn-danger`'s tint is
+   `rgba(var(--error-rgb), .1)` and half a remap is a colour that disagrees with
+   itself. */
+.c-tokens {
+  --error: var(--c-error);
+  --error-rgb: 242, 109, 109;
+  --fg: var(--c-fg);
+  --fg-muted: var(--c-dim);
+}
+:root[data-theme="light"] .c-tokens {
+  /* Light theme's own pair, from the light block above (`--c-error: #c62828`). */
+  --error-rgb: 198, 40, 40;
+}
+
 .chat-root {
   position: relative;
   /* THE SPLIT'S OWN AXIS (T:119-139 `#wrap`): a row of [left pane | divider |
@@ -118,16 +150,18 @@
      because this box is mounted inside six different hosts and not one of them
      is going to hand it a reading line-height by accident.
 
-     `letter-spacing: .003em` is the one value that is NOT T's: at 14px in a
-     720px column the system stack sets a hair tight, and the report asked for
-     air. Three thousandths of an em is ~0.04px per character — below the
-     threshold where it reads as tracking, and enough that a full line of prose
-     gains about half a character of width. */
+     NO `letter-spacing`. It carried `.003em` for a while — "the system stack
+     sets a hair tight at 14px in a 720px column" — and that is the one value
+     here that was NOT T's. 0.04px per character is below the threshold where it
+     reads as tracking, but it is not below the threshold where it MOVES a glyph
+     run: it shifted every line of prose sub-pixel and was the single largest
+     term in both transcript pixel diffs (22 of 37 probed elements, ~7% where
+     the body geometry was exact to 0.1px — visual pass 2, FIX-14). Parity wins
+     over the taste call: T sets `normal`, so this sets nothing. */
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
     sans-serif;
   font-size: var(--c-fs-read);
   line-height: var(--c-lh-read);
-  letter-spacing: 0.003em;
   -webkit-font-smoothing: antialiased;
 
   /* The type scale, as tokens, so the compact block below can restate it once
@@ -161,13 +195,29 @@
 }
 
 /* THE CHAT COLUMN — T's `#chat`. The transcript, the composer and the footnote
-   stack in it; `min-width: 0` because a flex child's `auto` minimum would let a
-   long code line push the pane off screen (T:2993-3010). */
+   stack in it.
+
+   340px IS T'S FLOOR (T:1261 `#chat { flex: 1; min-width: 340px }`), and it is
+   measured: legacy's chat column reads 340px at every pane from 1056 down to
+   806, where native — carrying `min-width: 0` — read 312.8 / 282.8 / 267.8 /
+   252.8 / 237.8. Below the floor the composer's pills wrap onto two rows, the
+   file path truncates mid-string and every recent-row title loses ~10
+   characters (visual pass 2, FIX-2A).
+
+   The `min-width: 0` this replaces cited T:2993-3010 for "a long code line
+   would push the pane off screen" — a real hazard, but that rule is about the
+   log's own children and it is where the zero belongs (the transcript and the
+   pre boxes already carry it). A column that floors at 340 and children that
+   floor at 0 is T's arrangement exactly.
+
+   The narrow block below clears the floor (`min-width: 0` under `.narrow`,
+   T:3772): a 220px pane must be allowed to be 220px wide, or the column
+   overflows horizontally instead of the layout collapsing to one view. */
 .chat-root .c-chat {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  min-width: 340px;
   min-height: 0;
   position: relative;
   /* AND THE BACKGROUND, which legacy's `#chat` paints (T:1254-1284) and this
@@ -226,13 +276,19 @@
      header now, so it takes the padding the top bar under it has. */
   padding: 8px 16px;
   border-bottom: 1px solid var(--c-border);
-  /* `--c-bg`, not `--c-panel` (FIX-11). T:163-172 sets NO background on
-     `#anntools`, so the strip shows `body`'s own `--bg` through — and
-     `--c-panel` is one step lighter (#1e2025 against #191a1e), which drew a
-     faint but real band across the top of the chat that legacy never had. It
-     paints rather than staying transparent because native sits in the shell
-     instead of an iframe body, so there is no `body` of ours behind it. */
-  background: var(--c-bg);
+  /* `--c-panel`, the same token `.c-chat` takes above — and the earlier reading
+     of this ("legacy's transparent strip shows `body`'s `--bg`") was simply
+     wrong, so FIX-11 landed backwards and drew a NEW band (visual pass 2).
+     T:163-172 sets no background on `#anntools`, true — but `#anntools` is a
+     CHILD of `#chat` (T:1254-1284, `background: var(--panel)`), so what shows
+     through it is the column, never the page. Pixel-sampled on :1777 at
+     (1270,60): `rgb(30,32,37)` dark, `#fafafa` light — `--panel` both times,
+     where `--c-bg` painted `rgb(25,26,30)` and a WHITE 43px band across the top
+     of an off-white column. It paints rather than staying transparent because
+     native sits in the shell instead of an iframe body, so there is no `body`
+     of ours behind it; taking the column's own token is what makes the two
+     unable to disagree, which was FIX-12b's stated aim one rule above. */
+  background: var(--c-panel);
   min-width: 0;
 }
 
@@ -444,6 +500,13 @@
   /* 8px, T:188's own number for `#anncta` (FIX-6) — the three seats sat 2px
      tight, which made the group 4px narrower than legacy's. */
   gap: 8px;
+  /* AND THE SLACK IS A MARGIN, NOT AN ELEMENT (T's `#anncta { margin-left:
+     auto }`). A spacer `<span>` in the row was a flex ITEM, so it kept its 12px
+     gap even when it collapsed to zero width — which is the Home dress, where
+     the CTA content already fills the content box: everything landed +10.34px
+     right and `⋮` overflowed its 16px padding down to 5.66px. An auto margin
+     contributes exactly 0 when there is no slack to take. */
+  margin-left: auto;
 }
 .chat-root .c-anncta button {
   border: 1px solid var(--c-border);
@@ -507,11 +570,12 @@
 .chat-root .c-anncta .c-lbl {
   display: var(--c-annlbl, inline);
 }
-/* Icon-only, so the seat hugs its glyph instead of keeping a word's padding and
-   an empty gap seat beside it (T:203-213 sizes the seat off its content). */
-.chat-root .c-anntools.tight .c-anncta button {
-  padding: 0 7px;
-}
+/* NO ICON-ONLY PADDING OVERRIDE. T:203-213 gives `#anncta button` `padding: 0
+   10px; height: 26px` and has no `.tight` counterpart at all: legacy's seats
+   measure 36×26 with the words folded away, the group 124px at x=206, where a
+   7px override here read 30×26 and 106px (visual pass 2, FIX-8 — the earlier
+   dismissal read the base rule 56 lines above and never reached this one). The
+   words yield; the seat's box does not. */
 
 /* A picture is being dragged over the column. An INSET ring rather than a
    border or an overlay: a border would resize the column mid-drag (the layout

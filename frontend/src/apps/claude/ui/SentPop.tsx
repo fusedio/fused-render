@@ -190,6 +190,9 @@ export function SentPop({ open, onClose, ...body }: SentPopProps) {
       // half that says WHOSE record this is. The receipt rows that open it were
       // already saying it in full (`ui/Receipts.tsx`).
       ariaLabel="What was sent to the agent"
+      // The chat's token scope, on a dialog that portals to
+      // `document.body` (FIX-17) — see `styles/chat.css`'s `.c-tokens`.
+      dialogClassName="c-tokens"
       onClose={onClose}
       footer={
         <button type="button" className="btn btn-secondary" onClick={onClose}>

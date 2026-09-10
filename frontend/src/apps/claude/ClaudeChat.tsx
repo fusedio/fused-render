@@ -2432,24 +2432,37 @@ function ChatBody(props: ChatBodyProps) {
                 ← Chats
               </button>
             ) : null}
-            {/* ONE auto margin in the row: everything before it sits left, the
-                seats and the ⋮ ride the right-hand end together (T:255-262). */}
-            <span className="c-hdr-slack" />
+            {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
+                `margin-left: auto` (T:255-262, chat.css), which is not the same
+                thing: a spacer is a flex ITEM, so it kept its 12px gap even
+                after collapsing to zero width — and on the landing the seats
+                already fill the content box, so the whole group sat +10.34px
+                right of legacy's and `⋮` overflowed its 16px padding down to
+                5.66px (visual pass 2, FIX-6B). An auto margin contributes 0
+                when there is no slack. `.c-hdr-slack` itself stays for the
+                composer row that still uses it. */}
             <AnnStrip
               paneNoun={pane.paneNoun}
               // The row itself follows the ANNOTATE TARGET — ours or the
               // host's — because all three seats act on it
               // (`enterNoPane`'s step 6 note).
               shown={annTarget}
-              // The camera photographs the pane, so it alone goes when the pane
-              // is not on screen: the narrow CHAT view parks OUR preview off
-              // screen (T:3823 `body.view-chat .viewshot`). Only ours — a
-              // hosted mount's target is the host's own column, which that view
-              // does not move, so the flag is about `paneShown` and not about
-              // the breakpoint alone.
-              cameraShown={!(paneShown && narrowView.narrow && narrowView.view === "chat")}
-              // AND THE COMMENT SEAT GOES WITH IT in that same view (T:3822
-              // `body.view-chat #annbtn { display: none }`): the pane the
+              // NO CAMERA GATE — T RENDERS THIS SEAT IN THE NARROW CHAT VIEW,
+              // and the owner's rule is identical UX (visual pass 2, FIX-18).
+              // T:3823's `body.view-chat .viewshot { display: none }` has
+              // specificity 0,2,1 and LOSES to `#anncta button`, so it never
+              // fires: measured live at a 736px pane, `#viewshot` computes
+              // `display: flex` and 106px. T's own comment above that rule
+              // argues the seat should go ("a view that shows no preview offers
+              // no features OF the preview") — but the argument is not what
+              // legacy draws, and the pane is parked rather than unmounted here
+              // (`pane.css`: `visibility: hidden` keeps a real viewport), so
+              // the photograph it takes is a real one. `AnnStrip` keeps
+              // `cameraShown` for the hosts that do have nothing to shoot.
+              // THE COMMENT SEAT, THOUGH, DOES GO in that view (T:3822
+              // `body.view-chat #annbtn { display: none }` — specificity 0,2,1
+              // against `#annbtn`'s own 1,0,0, so unlike its neighbour above
+              // this one WINS and legacy hides it too): the pane the
               // clicks would land on is parked off screen, so there is nothing
               // to arm against — and arming anyway put the framed document's
               // capture-phase click swallower live over an invisible pane.

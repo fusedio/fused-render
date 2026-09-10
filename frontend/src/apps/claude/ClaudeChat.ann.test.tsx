@@ -947,8 +947,12 @@ test("the narrow CHAT view takes the Comment seat away, and Preview gives it bac
     await act(async () => params.set({ paneview: "chat" }));
     await settle();
     expect(byClass(r, "c-annbtn")).toHaveLength(0);
-    expect(byClass(r, "c-viewshot")).toHaveLength(0);
-    // The walkthrough seat is NOT taken away with them.
+    // THE CAMERA STAYS (visual pass 2, FIX-18): T:3823's own rule loses on
+    // specificity and legacy renders `#viewshot` here — measured live, 106px at
+    // a 736px pane — and the owner's rule is identical UX. The pane is parked,
+    // not unmounted, so the picture it takes is real.
+    expect(byClass(r, "c-viewshot")).toHaveLength(1);
+    // The walkthrough seat is NOT taken away either.
     expect(byClass(r, "c-annrec").length).toBeGreaterThan(0);
 
     await act(async () => params.set({ paneview: "preview" }));

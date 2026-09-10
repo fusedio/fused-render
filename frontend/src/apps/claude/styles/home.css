@@ -181,6 +181,23 @@
 .c-lists.is-tabbed .c-list-panel {
   margin-top: 0;
 }
+/* T:105-116'S READING PAIR, RE-ASSERTED BELOW THE SHADCN `TabsContent`.
+   `tabs.tsx` dresses the panel with Tailwind's `text-sm`, whose line-height is a
+   UNITLESS 1.42857 — so it cascades into every row and every title inside the
+   tabbed list and nothing under it inherits the chat's own 1.65: `.c-chat-row`
+   measured 40px against T's 43, `.c-row-title` 18.57 against 21.45, and the
+   drift accumulated down the list (−90px over 30 rows). Only the TABBED dress
+   is affected, which is the side panel — the split mount's untabbed list has no
+   `TabsContent` and measured 51px pitch on both sides.
+
+   Tokens, not literals, so the compact cut (chat.css's `--c-fs-read`
+   override) still reaches it. `.chat-root` is in the chain so this outranks the
+   utility layer — the same lever FIX-7 used — and `tabs.tsx` itself is left
+   alone: four other call sites depend on that `text-sm`. */
+.chat-root .c-lists .c-list-panel {
+  font-size: var(--c-fs-read);
+  line-height: var(--c-lh-read);
+}
 .c-head {
   color: var(--c-faint);
   font-size: 11px;

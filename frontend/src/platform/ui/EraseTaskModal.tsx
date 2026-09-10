@@ -32,6 +32,7 @@ export function EraseTaskModal({
   task,
   onClose,
   onDone,
+  dialogClassName,
 }: {
   /** What is about to go. Named in the title, because the id is the thing the
    *  reader recognises and the title is where they look for it.
@@ -42,6 +43,15 @@ export function EraseTaskModal({
    *  fabricate one (Akshil, 2026-09-08). */
   task: Pick<Task, "key" | "task_id">;
   onClose: () => void;
+  /** An extra class for the dialog box, passed straight through to `Modal`.
+   *
+   *  OPTIONAL AND OFF BY DEFAULT, so every existing caller renders
+   *  byte-identical markup. It exists for the native chat, which opens this
+   *  dialog from inside its own token scope but portals it to `document.body`:
+   *  without a hook the dialog painted the shell's danger ink where the chat
+   *  (and the template it ports) paints its own, from tokens whose values are
+   *  identical (`styles/chat.css`'s `.c-tokens`). */
+  dialogClassName?: string;
   /** The server said yes. The caller re-reads its list and raises the toast —
    *  the row this dialog was opened from is about to leave the page, so the
    *  sentence about it cannot live on the row (Bugbot, 2026-08-18). */
@@ -74,6 +84,7 @@ export function EraseTaskModal({
       title={`Delete ${task.task_id}?`}
       busy={busy}
       onClose={onClose}
+      {...(dialogClassName ? { dialogClassName } : {})}
       footer={
         <>
           <button type="button" className="btn btn-secondary" disabled={busy} onClick={onClose}>

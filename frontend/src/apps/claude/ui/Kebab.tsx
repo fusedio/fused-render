@@ -535,6 +535,16 @@ export function Kebab({
       {erasing ? (
         <EraseTaskModal
           task={{ key: sessionId, task_id: taskIds.get(sessionId) || "this task" }}
+          // THE CHAT'S TOKENS, ON A DIALOG THAT PORTALS OUT OF THE CHAT
+          // (FIX-17). This is the same component the Tasks page renders, so it
+          // paints from the SHELL's `--error`/`--fg`/`--fg-muted` — and outside
+          // `.chat-root` there is nothing to say the chat's values instead: the
+          // danger ink read `rgb(255,107,107)` where the template reads
+          // `rgb(242,109,109)`, from tokens that are byte-identical on both
+          // sides. `.c-tokens` publishes the chat's block plus a three-token
+          // bridge (`styles/chat.css`); the Tasks page's copy passes nothing
+          // and is untouched.
+          dialogClassName="c-tokens"
           onClose={() => {
             setErasing(false);
             // Opened from a menu item rather than a trigger, so nothing gives
