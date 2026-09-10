@@ -2521,6 +2521,12 @@ function ChatBody(props: ChatBodyProps) {
               running={running}
               landing={!inChat}
               onErased={onErased}
+              // PR3: Archive and Delete both carry the reader off this chat,
+              // and a comment round or a walkthrough is about the app beside it
+              // — the same nav lock that greys ← Chats and every recent row
+              // (`annNavLocked`, T:6888/18181/18779).
+              locked={ann.locked}
+              lockedReason={NAV_LOCKED_REASON}
             />
           </div>
         ) : null}

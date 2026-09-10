@@ -126,23 +126,11 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* "what was sent": an affordance on the bubble, not a row of its own. */
-.chat-root .turn.user .sentbtn {
-  margin-top: 4px;
-  padding: 0;
-  font: inherit;
-  font-size: 11px;
-  color: var(--c-faint);
-  background: none;
-  border: 0;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease-out;
-}
-.chat-root .turn.user:hover .sentbtn,
-.chat-root .turn.user .sentbtn:focus-visible {
-  opacity: 1;
-}
+/* NO "what was sent" HOVER CONTROL (P3R1-7). There was a `.sentbtn` here — an
+   11px faint line under the bubble that faded in on hover — and it is gone with
+   the button: T has no such control, and the receipt lines under a turn
+   (`button.attach` below, `.annsum-row`, `.annsum-pane`) are the one door into
+   the panel, each carrying T's own title (T:11059, T:11072). */
 .chat-root .turn.assistant {
   display: flex;
   gap: 10px;

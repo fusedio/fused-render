@@ -91,14 +91,20 @@ test("at rest: the mic, the resting word, and the resting name (T:3995, 8422)", 
   expect(words).toBe("Annotate");
 });
 
-test("recording: ■ plus the clock, named for the STOP, with the trash beside it", () => {
+test("recording: the MIC, still worded, drawn active — the ■ is the bar's (P3R1-4)", () => {
+  // OWNER DECISION over T's own clock face (2026-09-10): the seat keeps the mic
+  // and the word "Annotate" and simply goes accent, exactly as the Comment seat
+  // does. It used to swap in a ■, which made the row's one live control look
+  // like a different control, and the ■ that ends a walkthrough is already on
+  // the bar over the app. `#annreclbl` rides along and the stylesheet hides it
+  // outside `.busy` (T:310), so the clock on screen is the bar's.
   const { seats, words, fired } = draw(snap("recording", { status: "0:12 · 3", marks: 3 }));
   expect(seats).toHaveLength(2);
   expect(seats[0]["aria-label"]).toBe("Stop the recording");
   expect(seats[0].title).toBe("Recording — click to stop · Esc also stops it");
   expect(seats[0]["aria-pressed"]).toBe("true");
   expect(seats[0].className).toContain("on");
-  expect(words).toBe("0:12 · 3");
+  expect(words).toBe("Annotate|0:12 · 3");
   expect(seats[1]["aria-label"]).toBe("Discard the recording");
   expect(seats[1].title).toBe("Discard the recording — nothing is transcribed or sent");
   (seats[0].onClick as () => void)();
@@ -192,7 +198,7 @@ test("`discardable={false}` leaves the strip with ONE seat while recording", () 
   });
   expect(seats).toHaveLength(1);
   expect(seats[0]["aria-label"]).toBe("Stop the recording");
-  expect(words).toBe("0:12 · 3");
+  expect(words).toBe("Annotate|0:12 · 3");
   // The default is unchanged for whoever still wants both.
   expect(draw(snap("recording"), { discardable: true }).seats).toHaveLength(2);
 });

@@ -445,19 +445,11 @@
   display: none;
 }
 
-/* The chip's words are a BUTTON (a door to the editor), not a span with an
-   onclick: it is announced, focusable and Enter-able. Dressed as the text it
-   replaces, so the row still reads as one pill (T:6996's `cursor: pointer`). */
-.chat-root .c-annchip .c-annchip-txt {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
-  text-align: left;
-}
+/* NOTHING HERE DRESSES THE PENDING NOTE'S CHIP ANY MORE (P3R1-2). It used to
+   carry a `.c-annchip-txt` reset for a words-only door of its own; the chip now
+   renders the attachment chip's `.c-chip-door` + `.c-pinlbl` + `.c-txt` +
+   `.c-chip-x` shape exactly, so `styles/composer.css`'s one chip block dresses
+   both kinds and the pill they are supposed to share cannot drift. */
 
 /* ONE SEAT, ONE FACE (T:296). Both spare glyphs and the spare word are baked
    into the markup and NEITHER IS EVER SHOWN: T's whole rule is the single

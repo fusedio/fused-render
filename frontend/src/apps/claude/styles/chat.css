@@ -475,7 +475,6 @@
 /* NOT `.chip-marker` any more (R2-7): its box is the chip's own em, so that it
    and `.chip-body`'s indent are one length resolved once — a font-size here put
    them 2.4px apart again. The glyph is scaled instead (styles/transcript.css). */
-.chat-root.chat-compact .turn.user .sentbtn,
 .chat-root.chat-compact .seg-notice-glyph {
   font-size: var(--c-fs-small);
 }
@@ -594,6 +593,24 @@
 .chat-root .c-anncta button:disabled {
   opacity: 0.55;
   cursor: default;
+}
+/* THE RING IS ACCENT, AND THERE IS NO BLUE IN THIS ROW (P3R1-3).
+   T declares no `:focus-visible` for these seats and never needs to: in legacy
+   the seats are only ever focused by the pointer, and Chrome's heuristic draws
+   nothing then. Native's Comment seat DOES come up focus-visible on the first
+   click of a fresh page — measured live on :1915: `outline: rgb(26,169,255) auto
+   5px`, a 5px UA blue ring around a seat whose own accent border and ink had
+   just come on correctly (owner, 2026-09-10: "active Comment seat shows a BLUE
+   ring"). Blue is not in this template's vocabulary at any width or theme, and a
+   ring around the one control that says "a mode is armed" reads as a second,
+   contradicting state.
+   So the ring is declared rather than removed: `outline: none` here would take
+   the keyboard's only marker with it. Accent, 2px, offset 2 — the same ring
+   T:1240/3337/3467 draws on every other focusable seat, and it resolves through
+   `--c-accent` so light and dark are one rule. */
+.chat-root .c-anncta button:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
 }
 /* Stroke glyphs in the button's own ink, so state colours reach them for free;
    `.fill` seats are the solid parts. */

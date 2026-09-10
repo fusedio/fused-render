@@ -11,6 +11,13 @@
 // or the row measures the folded width and never unfolds), an unmeasurable row
 // gets no verdict at all (the first-frame flash), and re-seating the observers
 // on the same row leaves one set behind and not two.
+//
+// P3R1-1 adds the two properties the owner's divider drag was missing, and they
+// are the ones a width SEQUENCE proves rather than a single call: the natural
+// width is measured once per content generation (so a drag writes nothing per
+// frame — the flicker), and `.tight` is never on while the words fit (so the
+// strip cannot get stuck folded with room to spare). The hysteresis is spent on
+// the fold and never on the return, which is what makes those two compatible.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { installDomShim } from "@platform/lib/testDomShim";
 
@@ -19,7 +26,9 @@ installDomShim();
 import { createElement } from "react";
 import { act, create } from "react-test-renderer";
 
-const { fitStrip, useFitStrip } = await import("./useFitStrip");
+const { createStripFit, FIT_HYSTERESIS, fitStrip, useFitStrip } = await import(
+  "./useFitStrip"
+);
 
 // ── the fake row ────────────────────────────────────────────────────────────
 // Only the four members `fitStrip` and the observer seating touch: the class
@@ -62,7 +71,7 @@ function needing(px: number): { need: (row: HTMLElement) => number; calls: boole
 describe("fitStrip — the verdict (T:7566)", () => {
   test("what the content needs does not fit: `.tight` goes on", () => {
     const row = new Row();
-    row.clientWidth = 308;
+    row.clientWidth = 300;
     fitStrip(el(row), () => 308.3);
     expect(row.tight).toBe(true);
   });
@@ -82,6 +91,28 @@ describe("fitStrip — the verdict (T:7566)", () => {
     row.clientWidth = 300;
     fitStrip(el(row), () => 300);
     expect(row.tight).toBe(false);
+  });
+
+  test("THE BAND IS SPENT ON THE FOLD, never on the return (P3R1-1)", () => {
+    // Over by less than the hysteresis is not over enough to fold: this is the
+    // 2px of headroom the live strip sits on (380px of row, a 378px need), and
+    // it is what made the words flip on every jitter of a divider drag.
+    const wobble = new Row();
+    wobble.clientWidth = 300;
+    fitStrip(el(wobble), () => 300 + FIT_HYSTERESIS);
+    expect(wobble.tight).toBe(false);
+    // Past it, it folds.
+    const over = new Row();
+    over.clientWidth = 300;
+    fitStrip(el(over), () => 300 + FIT_HYSTERESIS + 0.5);
+    expect(over.tight).toBe(true);
+    // And a FOLDED row unfolds the moment the words fit AT ALL — the band buys
+    // no delay on the way back, so `.tight` never outlives its overflow.
+    const back = new Row();
+    back.clientWidth = 300;
+    back.classes.add("tight");
+    fitStrip(el(back), () => 300);
+    expect(back.tight).toBe(false);
   });
 
   test("MEASURED WITH THE WORDS ON — `need` is asked with `.tight` off", () => {
@@ -127,6 +158,96 @@ describe("fitStrip — the verdict (T:7566)", () => {
     expect(() => fitStrip(null, need)).not.toThrow();
     expect(() => fitStrip(undefined, need)).not.toThrow();
     expect(calls).toEqual([]);
+  });
+});
+
+// ── the cached natural width, and the width sequence (P3R1-1) ───────────────
+
+describe("createStripFit — the natural width is measured ONCE", () => {
+  test("a whole drag costs ONE measurement, and writes nothing per frame", () => {
+    // The bug this pins: the old decider took `.tight` off, measured, and put
+    // it back on EVERY ResizeObserver delivery — a DOM write per frame of a
+    // divider drag, which is what painted the labels in and out.
+    const row = new Row();
+    const { need, calls } = needing(320);
+    const fit = createStripFit(need);
+    row.clientWidth = 400;
+    fit.run(el(row));
+    expect(calls).toHaveLength(1);
+    for (const w of [396, 390, 380, 360, 340, 330, 320, 300, 340, 400]) {
+      row.clientWidth = w;
+      fit.run(el(row));
+    }
+    // Still one: the natural width is a property of the CONTENT, so the box
+    // moving is not a reason to ask again.
+    expect(calls).toHaveLength(1);
+    expect(fit.natural()).toBe(320);
+  });
+
+  test("wide → narrow → wide → jitter: the verdict is stable and correct", () => {
+    const row = new Row();
+    const fit = createStripFit(() => 320);
+    const seen: [number, boolean][] = [];
+    // 320 of content: the fold lands below 320 - FIT_HYSTERESIS, the unfold at
+    // 320 exactly.
+    const seq = [
+      480, 420, 360, 330, 324, 323, 316, 300, 280, 300, 316, 320, 324, 360, 420, 480,
+      // …and the jitter a real divider delivers, ±2px across the boundary.
+      322, 318, 320, 322, 318, 320,
+    ];
+    for (const w of seq) {
+      row.clientWidth = w;
+      fit.run(el(row));
+      seen.push([w, row.tight]);
+    }
+    // THE INVARIANT: never folded while the words fit.
+    for (const [w, tight] of seen) if (tight) expect(w).toBeLessThan(320);
+    // …and never left unfolded once it is clearly over.
+    for (const [w, tight] of seen) if (w < 320 - FIT_HYSTERESIS) expect(tight).toBe(true);
+    // The tail is the jitter, all of it at or above 320: the words are back and
+    // they STAY back — no flip anywhere in it (the "stays collapsed even with
+    // room" half of the report).
+    expect(seen.slice(-6).map(([, t]) => t)).toEqual([false, false, false, false, false, false]);
+    // One transition down and one back up across the whole sweep, and that is
+    // all: 22 widths, two changes of mind.
+    const flips = seen.filter(([, t], i) => i > 0 && t !== seen[i - 1][1]).length;
+    expect(flips).toBe(2);
+  });
+
+  test("the content changing is what re-measures — nothing else does", () => {
+    const row = new Row();
+    let want = 320;
+    const asked: number[] = [];
+    const fit = createStripFit(() => {
+      asked.push(want);
+      return want;
+    });
+    row.clientWidth = 400;
+    fit.run(el(row));
+    expect(row.tight).toBe(false);
+    // A label grows past the box. Without the invalidation the strip would go
+    // on believing the old, narrower content.
+    want = 460;
+    fit.run(el(row));
+    expect(row.tight).toBe(false);
+    fit.invalidate();
+    fit.run(el(row));
+    expect(row.tight).toBe(true);
+    expect(asked).toEqual([320, 460]);
+  });
+
+  test("the probe puts `.tight` BACK before measuring a folded row", () => {
+    // The measurement is a probe, not a state change: a folded row is asked
+    // what it needs unfolded and is handed back exactly as it was, so the
+    // verdict below it is the only thing that can move the class.
+    const row = new Row();
+    row.clientWidth = 200;
+    row.classes.add("tight");
+    const fit = createStripFit((r) => ((r as unknown as Row).tight ? 120 : 320));
+    fit.run(el(row));
+    // Measured unfolded (320, not the folded 120) → still does not fit → stays.
+    expect(fit.natural()).toBe(320);
+    expect(row.tight).toBe(true);
   });
 });
 

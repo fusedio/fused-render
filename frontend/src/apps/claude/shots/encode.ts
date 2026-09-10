@@ -217,11 +217,28 @@ async function ladder(
   return { blob: null, dead: false };
 }
 
-/** A labeled badge in CANVAS pixel space — legible however small the picture
- *  ends up, unlike an overlay the picture cannot carry. White ring under a red
- *  disc so it reads on light and dark app backgrounds alike; the LETTER is the
- *  payload, the same string the annotation's `label` carries on the wire
- *  (T:8009). */
+/**
+ * A labeled badge in CANVAS pixel space — legible however small the picture ends
+ * up, unlike an overlay the picture cannot carry. White ring around the disc so
+ * it reads on light and dark app backgrounds alike; the LETTER is the payload,
+ * the same string the annotation's `label` carries on the wire (T:8009).
+ *
+ * THE DISC IS THE PIN'S OWN ACCENT (P3R1-6, owner 2026-09-10), where T burns
+ * `#ff2d55`. T's argument for the red was findability on any background, and the
+ * white ring is what actually delivers that — what the red cost was recognition:
+ * the reader drops an accent pin on the app and then sees a red disc in the
+ * receipt, and has to work out that the two are the same mark (owner's question,
+ * P3R1-6: "pins burned into the overview look different from the pins dropped in
+ * the app"). So the disc takes `.annpin`'s literal `#d97757` — the same value
+ * `ANN_LAYER_CSS` hardcodes for the on-screen pin, for the same reason it does:
+ * this is a canvas in someone else's document and there is no token here to
+ * read. The ring and the white letter are unchanged.
+ */
+/** The burned badge's disc, and the on-screen pin's background — one value, so
+ *  the mark the reader drops and the mark the agent receives are the same mark
+ *  (P3R1-6). */
+export const ANN_BADGE_FILL = "#d97757";
+
 export function drawBadge(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -232,7 +249,8 @@ export function drawBadge(
   ctx.save();
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fillStyle = "#ff2d55";
+  // `.annpin`'s background (ann/layer.ts), not a token: see the note above.
+  ctx.fillStyle = ANN_BADGE_FILL;
   ctx.fill();
   ctx.lineWidth = 2.5;
   ctx.strokeStyle = "#fff";

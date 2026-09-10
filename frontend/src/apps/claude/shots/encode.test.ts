@@ -192,3 +192,29 @@ describe("encodeBadged", () => {
     expect(badges).toBe(6);
   });
 });
+
+// ── P3R1-6: the burned badge and the on-screen pin are ONE mark ─────────────
+//
+// The reader drops an accent pin on the app; the receipt shows them the picture
+// the agent got. Those two marks describing one note must not be two colours —
+// which is what T's `#ff2d55` disc against an accent pin made them (owner's
+// question, P3R1-6, answered as a CHANGE 2026-09-10). Three files hold the value
+// and none of them can read a token (a canvas, someone else's document, and this
+// page's own sheet), so the guard is that they agree.
+test("the burned disc is the pin's accent, in all three places it is written", async () => {
+  const { ANN_BADGE_FILL } = await import("./encode");
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const here = import.meta.dir;
+  expect(ANN_BADGE_FILL).toBe("#d97757");
+  // The pin drawn INTO the target document, which has never heard of this
+  // page's palette either (ann/layer.ts's literal).
+  const layer = readFileSync(join(here, "../ann/layer.ts"), "utf8");
+  const pin = layer.slice(layer.indexOf(".annpin {"));
+  expect(pin.slice(0, pin.indexOf('", '))).toContain("background: " + ANN_BADGE_FILL);
+  // …and the token the pin uses in OUR document, which is the same colour.
+  const sheet = readFileSync(join(here, "../styles/chat.css"), "utf8");
+  expect(sheet).toContain("--c-accent: " + ANN_BADGE_FILL);
+  // T's red is gone from the drawing.
+  expect(readFileSync(join(here, "encode.ts"), "utf8")).not.toContain('"#ff2d55"');
+});

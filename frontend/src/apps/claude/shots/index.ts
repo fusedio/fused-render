@@ -50,6 +50,7 @@ export {
   dataUrl,
   encode,
   encodeBadged,
+  ANN_BADGE_FILL,
   drawBadge,
   fit,
   loadImage,

@@ -609,14 +609,32 @@ test("a point note rides the attachment tray as a chip, and its ✕ takes it bac
     (n) => typeof n.type === "string" && n.props.className === "c-pinlbl",
   )[0]!;
   expect(String(label.props.children)).toBe("⌖A");
+  // THE ATTACHMENT CHIP'S PILL, DOWN TO THE MARKUP (P3R1-2): one `.c-chip-door`
+  // button carrying the glyph slot and the words, with `.c-chip-x` as its only
+  // sibling — so `styles/composer.css`'s one chip block dresses both kinds and
+  // the ✕ is the same borderless hover control on each.
+  const door = chips[0]!.findAll(
+    (n) => typeof n.type === "string" && n.props.className === "c-chip-door",
+  );
+  expect(door).toHaveLength(1);
+  expect(door[0]!.type).toBe("button");
+  expect(
+    door[0]!.findAll((n) => typeof n.type === "string" && n.props.className === "c-pinlbl"),
+  ).toHaveLength(1);
+  expect(
+    door[0]!.findAll((n) => typeof n.type === "string" && n.props.className === "c-txt"),
+  ).toHaveLength(1);
+  expect(door[0]!.props.title).toBe("make this bigger — click to edit");
   // Notes alone are sendable, with no words at all (T:17903) — which is what ✓
   // Done's whole gesture is.
   expect(r.root.findByType("form")).toBeTruthy();
 
-  // The ✕ (T:7009).
+  // The ✕ (T:7009) — the attachment chip's `.c-chip-x`, which is the pill both
+  // kinds of chip now share down to the markup (P3R1-2).
   const drop = chips[0]!.findAll(
-    (n) => typeof n.type === "string" && n.props["aria-label"] === "Remove annotation",
+    (n) => typeof n.type === "string" && n.props.className === "c-chip-x",
   )[0]!;
+  expect(drop.props["aria-label"]).toBe("Remove note A");
   await act(async () => drop.props.onClick());
   await settle();
   expect(annChips(r)).toHaveLength(0);

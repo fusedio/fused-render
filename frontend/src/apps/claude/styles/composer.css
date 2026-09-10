@@ -687,12 +687,15 @@ select.c-pill {
   background: var(--c-surface-2);
   border: 1px solid var(--c-border);
   border-radius: 999px;
-  /* THE PILL KEEPS ITS OWN INSET. It was moved onto `.c-chip-door` at first,
-     and that broke the OTHER kind of chip in the same tray: an annotation chip
-     renders a badge and `.c-annchip-txt`, never a door, so it lost its leading
-     inset entirely and its pin letter clipped against the rounded edge
-     (Bugbot, PR #1074). The door covers this padding with negative margins
-     instead — see its rule. */
+  /* THE PILL KEEPS ITS OWN INSET, and the door covers it with negative margins
+     instead — see its rule. It was moved onto `.c-chip-door` at first, and that
+     broke the OTHER kind of chip in the same tray: back then an annotation chip
+     rendered a badge and a words-only button, never a door, so it lost its
+     leading inset entirely and its pin letter clipped against the rounded edge
+     (Bugbot, PR #1074). BOTH kinds render the door now (P3R1-2), so the inset
+     could live on it — but it stays here, where it belongs to the shape rather
+     than to one of the shape's parts, and the ✕ is dressed by the same rule
+     either way. */
   padding: 3px 6px 3px 10px;
   font-size: 12px;
   color: var(--c-fg);

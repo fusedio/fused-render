@@ -11,8 +11,10 @@
 // transcription ever started (T:8167-8177).
 //
 // Every string here is T's, verbatim, with its line. The GLYPHS are T's too
-// (T:3995 mic, T:6225 ■, T:6244 trash) so the seat is the right width the
-// moment it comes alive.
+// (T:3995 mic, T:6244 trash) so the seat is the right width the moment it comes
+// alive — and the seat's glyph is the MIC in all four faces (P3R1-4): T:3995
+// bakes one `<svg class="rec-mic">` into `#annrec` and no rule anywhere swaps
+// it, so the recording is drawn as an ACTIVE seat, never as a different one.
 //
 // Presentational only: no store, no capture, no timers. `ann/rec.ts` owns the
 // state and the clock; the AnnBar passes a snapshot and three callbacks.
@@ -48,12 +50,6 @@ const MicGlyph = () => (
     <rect x="6" y="1.5" width="4" height="7.5" rx="2" />
     <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0" />
     <line x1="8" y1="12" x2="8" y2="14.5" />
-  </svg>
-);
-
-const StopGlyph = () => (
-  <svg className="c-rec-stop" viewBox="0 0 16 16" aria-hidden="true">
-    <rect x="4" y="4" width="8" height="8" rx="1.5" />
   </svg>
 );
 
@@ -115,11 +111,21 @@ export function RecControls({
         disabled={inert}
         onClick={live ? onEnd : onBegin}
       >
-        {live ? <StopGlyph /> : <MicGlyph />}
-        {/* The resting word, hidden by the stylesheet through a settle
-            (`#anncta.busy #annrec .rec-word`, T:312) — the status takes the
-            space. */}
-        {!live && !rec.busy ? <span className="c-lbl c-rec-word">Annotate</span> : null}
+        {/* THE MIC, IN EVERY STATE — T:3993-3995 bakes exactly one glyph into
+            this seat and the stylesheet never swaps it. The port grew a ■ for
+            the recording, and the owner took it back out (2026-09-10, P3R1-4):
+            the seat shows ACTIVE the way the Comment seat does — accent ink and
+            border off `.on` — and the ■ that ENDS a walkthrough lives on the bar
+            over the app, where every other exit from a mode lives. One control
+            with one drawing; a seat that re-glyphs also re-widths, and this row
+            is right-anchored beside the ⋮ (T:7689). */}
+        <MicGlyph />
+        {/* The resting word, hidden by the stylesheet only through a settle
+            (`#anncta.busy #annrec .rec-word`, T:312) — there the status takes
+            the space. Through the RECORDING it stays: T hides `#annreclbl`
+            outside `.busy` (T:310), so the seat reads "🎙 Annotate" in accent
+            and the clock is the bar's. */}
+        {!rec.busy ? <span className="c-lbl c-rec-word">Annotate</span> : null}
         {/* ONE label for the clock and the three settle tenses, because they
             are one fact in different tenses and `#annreclbl` is one node
             (T:3995, 7797-7803). Empty at rest, and empty renders nothing —
