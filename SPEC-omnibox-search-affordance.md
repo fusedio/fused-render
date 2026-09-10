@@ -1,7 +1,9 @@
 # SPEC: omnibox search affordance (E+F)
 
-Branch: `worktree-omnibox-search-affordance`, **stacked on** `worktree-omnibox-chip-padding`
-(PR #1091). Base that PR, not main. The user explicitly asked for a stacked PR.
+Branch: `worktree-omnibox-search-affordance`. `worktree-omnibox-chip-padding`
+(PR #1091) has since merged to main — this is now a regular PR against main,
+not a stacked one. (It was stacked when this file was first written; that line
+is stale, not this one.)
 
 ## The problem this solves
 
@@ -51,19 +53,43 @@ if nothing else uses it.
 Recompute the value for the icon-only chip. Do not leave the old text-derived
 number in place - that is the whitespace bug #1091 exists to fix, reintroduced.
 
-### 3. Search becomes a button (variant F)
+### 3. Search becomes a button (variant F) - REVISED, words stay
+
+**Revised on a running-screen review**: the user compared an icon-only
+magnifier button against the original "Search ⌘L" text and preferred the
+words. Do not rebuild the icon-only version from this line - the reasoning
+below is the FINAL shape.
 
 The `.listing-search-shortcut-hint` idle text ("Search ⌘L") becomes a real
-pressable magnifier button, on the same chassis as the neighbouring `⋮` button
-so the two read as siblings. A magnifier is the most recognisable icon in
-software and it works for someone who never learns the shortcut.
+pressable button, on the same `bar-ctl` chassis family the neighbouring `⋮`
+trigger rides, with the words **as its content** - not a glyph, and not a
+bespoke outlined pill (that reproduces the original complaint this whole
+branch exists to fix: four things on one line in four disagreeing styles).
+The defect was never the words; it was that they wore no chassis and caught
+no click.
 
-- The `⌘L / Ctrl L` shortcut moves into its **tooltip**, where it costs no
-  space. Tooltip copy: `Search this folder` plus the shortcut.
+- The visible label is "Search" plus the platform-conditional shortcut
+  (⌘L / Ctrl L), exactly as the original hint rendered it. The shortcut does
+  **not** move into the tooltip. Tooltip copy is `Search this folder`.
+- At narrow widths, text costs space a glyph doesn't. Reuse
+  `SearchField.tsx`'s existing `HINT_WIDE_PX` measurement (already driving the
+  `HINT_LONG`/`HINT_SHORT` placeholder switch) rather than a second
+  breakpoint: at or above the threshold, render the words; below it, collapse
+  to the bare magnifier glyph (the one prior icon-only work already built -
+  keep it, demoted to this narrow-width fallback rather than discarded).
+- The accessible name (`aria-label`) must include **both** "Search" and the
+  shortcut in **both** forms, wide and collapsed - in the collapsed form that
+  is the only place the shortcut appears at all, so it is load-bearing there.
 - Pressing it must do what `⌘L` does today. Find that existing handler and reuse
   it - do not write a second path to the same behaviour.
 - Keep the platform-conditional shortcut label that the existing hint renders
   (⌘ vs Ctrl); do not hardcode one.
+- Item 1 (the icon-only left chip) is unchanged, and that pairing is now the
+  reason this design works: an icon on the left carries the mode, words on the
+  right carry the action, and the "two magnifiers" risk this spec originally
+  flagged as its riskiest unverifiable detail (Cannot Be Verified Headlessly,
+  below) simply stops existing - there is only ever one magnifier glyph
+  rendered at a time.
 
 ### 4. The dropdown does the telling (variant E)
 
@@ -183,10 +209,18 @@ New coverage worth having:
 ## Cannot be verified headlessly - report these back, do not claim them
 
 Layout, hover and both themes need a human on a running screen:
-- the two magnifiers problem: once searching, the left glyph shows the mode and
-  the right button offers the action. The right one must read as switched-on
-  rather than as a second copy of the left. **This is the detail most worth
-  looking at on a real screen.**
+- ~~the two magnifiers problem~~ - RESOLVED by item 3's revision: the left
+  chip stayed icon-only and the right button's words came back, so there is
+  only ever one magnifier glyph on screen at a time (the right button's own
+  narrow-width fallback). Still worth a glance at the exact width where the
+  button collapses to that glyph, alongside the left chip, in case the pairing
+  reads oddly for a moment right at the threshold.
 - no horizontal jump when the mode flips, or on focus/blur;
-- the magnifier button sitting as a sibling of `⋮`, in light and dark;
-- the dropdown's action row against a long query and a narrow window.
+- the search button (words form) sitting as a sibling of `⋮`/`★`, in light and
+  dark, and the wrap/clip behaviour of "Search ⌘L" right around
+  `HINT_WIDE_PX`;
+- the dropdown's action row against a long query and a narrow window;
+- the teaching panel's derived examples reading naturally for a real folder's
+  actual extension mix, and the panel's precedence over completions on a
+  pristine, pre-filled path not looking like a bug (it hides the folder's own
+  children the completion dropdown would otherwise offer).
