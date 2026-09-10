@@ -1175,6 +1175,8 @@
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
     *, *::before, *::after { animation: none !important; transition: none !important; }
+    /* Separate rule: an unknown pseudo would invalidate the list above. */
+    .faq-item::details-content { transition: none !important; }
     .btn:hover, .os:hover { transform: none; }
   }
 
