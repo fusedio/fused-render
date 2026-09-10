@@ -52,6 +52,23 @@ export interface SchedTask {
 
 /** T:16749. */
 export const SCHEDULE_POLL_MS = 15000;
+/**
+ * AND THE FAST ONE, WHILE THE COMPOSER IS SHUT (FIX-D, P4R1-3).
+ *
+ * The block is a pure `state === "pending"` filter, so it is always CORRECT and
+ * up to one interval STALE — and a scheduled haiku turn measured at 8 seconds
+ * end to end fits inside a 15 s interval with room to spare. What the reader
+ * saw was a dead composer for 8-16 seconds after the work had visibly
+ * finished, which reads as "a done entry still blocks" (diagnosis §2.3,
+ * measured on legacy identically).
+ *
+ * So the poll asks oftener for exactly as long as this chat is unusable, and
+ * goes back to 15 s the moment it is not. Bounded by construction: the fast
+ * rate only ever runs while there IS a blocker, which is a state the reader is
+ * waiting to leave — and an open composer's column still re-renders four times
+ * a minute at most, which is the whole point of `absorb`'s dedupe.
+ */
+export const SCHEDULE_POLL_BLOCKED_MS = 3000;
 /** T:17038 — the shell's own remembered-view row, written so the Tasks page
  *  opens on the calendar. `Scheduled.tsx` reads this preference on mount and
  *  has no URL param for it, so writing it is the same gesture as pressing that
@@ -279,19 +296,72 @@ export function schedFindTask(
   return byMessage;
 }
 
-/** What the ring and the right-hand cell say, from the listing row (or from
- *  nothing at all — an unreadable listing costs the number and the state, never
- *  the row and never the block). `failed` is a boolean beside `status`, and it
- *  wins the LABEL and the hue both (T:17123-17131). */
-export function schedRowState(rec: SchedTask | null | undefined): {
+/**
+ * What the ring and the right-hand cell say — ABOUT THE ENTRY THIS BANNER IS
+ * DRAWING, not about the task that holds it (FIX-B, P4R1-3).
+ *
+ * T read the state straight off `rec.status` (T:17122-17123), and `rec` is the
+ * `/api/tasks` row for the WHOLE task. A task holding a finished run and a
+ * future pending message answers `done` — legitimately, and
+ * `routers/tasks.py`'s `_message_verdict` docstring defends that choice for the
+ * Tasks board ("unread OUTPUT sitting in it"). It is simply not a sentence
+ * about the blocker: the banner captioned a shut composer "Done · 13:26 today"
+ * while the message it named had not run yet, five reproductions on both
+ * stacks. `SB_STATES`'s own comment already asserted the thing the line below
+ * it broke — "every entry this banner can be looking at is PENDING".
+ *
+ * So the ENTRY answers when it can. A pending entry is Upcoming whatever the
+ * enclosing task's lane says; one whose run is away (`sent` — the window
+ * between firing and the block lifting) is In Progress, which is the Tasks
+ * page's own word for running. The listing row is the FALLBACK, kept whole for
+ * a caller with no entry in hand and for a state this bundle does not know —
+ * and `rec.failed` may only win there, because a pending entry cannot be the
+ * failure a task-level flag is reporting.
+ *
+ * An unreadable listing still costs the number and the state and never the row
+ * or the block.
+ */
+export function schedRowState(
+  rec: SchedTask | null | undefined,
+  entry?: SchedEntry | null,
+): {
   state: string;
   label: string;
 } {
+  const own = String((entry && entry.state) || "");
+  if (own === "pending") return { state: "upcoming", label: SB_STATES.upcoming };
+  if (own === "sent" || own === "running") {
+    return { state: "in_progress", label: SB_STATES.in_progress };
+  }
   const state = rec && rec.status && SB_STATES[rec.status] ? rec.status : "upcoming";
   return {
     state: rec && rec.failed ? "failed" : state,
     label: rec && rec.failed ? "Failed" : SB_STATES[state],
   };
+}
+
+/**
+ * WHAT IS COMING, in the row's name cell (FIX-C, P4R1-3).
+ *
+ * T named the row `rec.title` first (T:17130) — the CONVERSATION's title, taken
+ * from some older message — and the banner exists to answer a narrower
+ * question: what is the message that is about to run? The blocker's own words
+ * are already in hand. So the entry's message wins, and `rec.title` is the
+ * fallback for an entry that carries none of its own; `schedMsgLine`'s "A
+ * scheduled message" is the last resort, as it always was.
+ *
+ * (The dots a reader reported here were not masking and not empty — the task's
+ * title is literally ". . . . . . . . . . . . . . .", typed. Reading the
+ * message instead is what makes that row show the reader their OWN pending
+ * prompt rather than an unrelated old title.)
+ */
+export function schedRowName(
+  entry: SchedEntry | null | undefined,
+  rec?: SchedTask | null,
+): string {
+  if (!entry) return "";
+  const own = String(entry.message || "").replace(/\s+/g, " ").trim();
+  return own || (rec && rec.title) || schedMsgLine(entry);
 }
 
 /** T:17140-17143 — a refused cancel, keyed to the ENTRY so the reconciling poll
@@ -379,6 +449,21 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
   const noted = new Set<string>();
   let baselined = false;
   let stopped = false;
+  /** Set by `start`, so a tick can ask for the OTHER rate — see `publish`. Null
+   *  for a watcher nobody started (or one already stopped): `tick` is public and
+   *  `resetForNewTranscript` calls it, and neither may arm a timer. */
+  let rearm: ((ms: number) => void) | null = null;
+
+  /**
+   * THE ONE PLACE THE BLOCKERS LEAVE (FIX-D). Publishing the list and choosing
+   * the poll's rate are the same decision made twice otherwise, and the failing
+   * road publishes `[]` too — a schedule that cannot be read blocks nothing, so
+   * it must also not leave this page polling three times a second forever.
+   */
+  function publish(rows: SchedEntry[]): void {
+    deps.onBlockers(rows);
+    rearm?.(rows.length ? SCHEDULE_POLL_BLOCKED_MS : SCHEDULE_POLL_MS);
+  }
 
   async function tick(): Promise<void> {
     if (stopped) return;
@@ -388,7 +473,7 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
       if (!data) throw new Error("no schedule");
     } catch {
       // Fail OPEN, both halves: no turn to attach and no block to impose.
-      deps.onBlockers([]);
+      publish([]);
       return;
     }
     if (stopped) return;
@@ -396,7 +481,7 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     // The block is a fact about the SCHEDULE, not about what this frame has
     // rendered — so it is applied before the home-view return and before the
     // baseline (T:17391-17394).
-    deps.onBlockers(schedPendingHere(entries, deps.sessionId()));
+    publish(schedPendingHere(entries, deps.sessionId()));
     if (!deps.inChat()) return;
     const fired = entries.filter((e) => e && e.target === deps.file && e.run_id);
     // The FIRST pass is a silent baseline: every run already recorded happened
@@ -456,7 +541,7 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     // it rather than hanging over the next one for up to a poll interval.
     // Unblocking is the safe direction to be briefly wrong in, and the poll
     // fired underneath re-establishes it for this session immediately.
-    deps.onBlockers([]);
+    publish([]);
     void tick();
   }
 
@@ -464,13 +549,30 @@ export function createScheduleWatcher(deps: ScheduleWatcherDeps): ScheduleWatche
     tick,
     start() {
       stopped = false;
-      void tick();
       const every = deps.setInterval || ((fn, ms) => setInterval(fn, ms));
       const clear = deps.clearInterval || ((h) => clearInterval(h as never));
-      const handle = every(() => void tick(), SCHEDULE_POLL_MS);
+      let handle: unknown = null;
+      /** The rate CURRENTLY armed, so a tick that publishes the same-shaped
+       *  answer as the last one does not tear the interval down and put an
+       *  identical one back up four times a minute. */
+      let armed = 0;
+      const arm = (ms: number) => {
+        if (handle !== null && armed === ms) return;
+        if (handle !== null) clear(handle);
+        armed = ms;
+        handle = every(() => void tick(), ms);
+      };
+      rearm = arm;
+      // The SLOW rate first: the first tick has not answered yet, and a page
+      // that arrives on an open composer must not spend the fast rate finding
+      // out. That tick then re-arms within milliseconds if this chat is blocked.
+      arm(SCHEDULE_POLL_MS);
+      void tick();
       return () => {
         stopped = true;
-        clear(handle);
+        rearm = null;
+        if (handle !== null) clear(handle);
+        handle = null;
       };
     },
     resetForNewTranscript,

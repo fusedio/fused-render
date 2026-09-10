@@ -9,11 +9,14 @@ import {
   NOTE_FOREIGN,
   NOTE_OURS,
   SB_STATES,
+  SCHEDULE_POLL_BLOCKED_MS,
+  SCHEDULE_POLL_MS,
   schedDayGap,
   schedFindTask,
   schedIsRepeat,
   schedMsgLine,
   schedPendingHere,
+  schedRowName,
   schedRowState,
   schedStopTarget,
   schedWhenText,
@@ -191,6 +194,52 @@ describe("the row's name and state", () => {
       state: "failed",
       label: "Failed",
     });
+  });
+
+  test("THE ENTRY IS THE SUBJECT: a pending blocker is Upcoming inside a done task", () => {
+    // P4R1-3, five reproductions on both stacks: `/api/tasks` answers `done` for
+    // a task holding a finished run AND a future pending message — correct for
+    // the board, and a false caption over a composer the pending message is
+    // holding shut ("Done · 13:26 today").
+    expect(schedRowState({ key: "k", status: "done", failed: false }, { id: "e1", state: "pending" })).toEqual({
+      state: "upcoming",
+      label: "Upcoming",
+    });
+    // ...and `failed` on the TASK cannot be reported as this entry's verdict:
+    // a pending entry has no verdict to be a failure.
+    expect(schedRowState({ key: "k", status: "done", failed: true }, { id: "e1", state: "pending" })).toEqual({
+      state: "upcoming",
+      label: "Upcoming",
+    });
+    // A fired entry — the window between the run going away and the block
+    // lifting — is the Tasks page's own word for running.
+    expect(schedRowState({ key: "k", status: "done" }, { id: "e1", state: "sent" })).toEqual({
+      state: "in_progress",
+      label: SB_STATES.in_progress,
+    });
+    // No entry, or a state this bundle does not know: the listing row, whole.
+    expect(schedRowState({ key: "k", status: "done", failed: true }, null)).toEqual({
+      state: "failed",
+      label: "Failed",
+    });
+    expect(schedRowState({ key: "k", status: "done" }, { id: "e1", state: "wat" })).toEqual({
+      state: "done",
+      label: SB_STATES.done,
+    });
+  });
+
+  test("the row names the MESSAGE that is coming, and the title only in its absence", () => {
+    // FIX-C: `rec.title` names the CONVERSATION, from some older message. The
+    // banner's question is "what is about to run?".
+    expect(schedRowName({ id: "e1", message: "run the report" }, { key: "k", title: "Nightly tidy" })).toBe(
+      "run the report",
+    );
+    // Collapsed the way `schedMsgLine` collapses it — the cell is one line.
+    expect(schedRowName({ id: "e1", message: "  two\n\nlines  " }, null)).toBe("two lines");
+    // No message of its own: the title, then the last resort.
+    expect(schedRowName({ id: "e1" }, { key: "k", title: "Nightly tidy" })).toBe("Nightly tidy");
+    expect(schedRowName({ id: "e1", message: "   " }, { key: "k" })).toBe("A scheduled message");
+    expect(schedRowName(null)).toBe("");
   });
 });
 
@@ -379,5 +428,108 @@ describe("pollScheduledRuns", () => {
     await Promise.resolve();
     expect(h.watcher.attached.has("r-new")).toBe(true);
     expect(h.resumed).toEqual(["r-new"]);
+  });
+});
+
+describe("the poll's two rates (FIX-D)", () => {
+  /** The `setInterval` seam, recorded: `armed` is the sequence of intervals the
+   *  watcher has asked for, in order, and `fire` runs whichever is current. */
+  function timed(feed: SchedEntry[][], fails?: () => boolean) {
+    const armed: number[] = [];
+    const cleared: unknown[] = [];
+    const live: { fn: (() => void) | null } = { fn: null };
+    let pass = 0;
+    const watcher = createScheduleWatcher({
+      file: "/proj",
+      fetchSchedule: () =>
+        fails?.()
+          ? Promise.reject(new Error("offline"))
+          : Promise.resolve({ entries: feed[Math.min(pass++, feed.length - 1)] || [] }),
+      sessionId: () => "s1",
+      inChat: () => true,
+      busy: () => false,
+      onBlockers: () => {},
+      addNote: () => {},
+      setRunParam: () => {},
+      resumeRun: () => Promise.resolve(),
+      shownRun: () => false,
+      setInterval: (fn, ms) => {
+        armed.push(ms);
+        live.fn = fn;
+        return armed.length;
+      },
+      clearInterval: (h) => cleared.push(h),
+    });
+    return { watcher, armed, cleared, fire: () => live.fn?.() };
+  }
+
+  const settle = async () => {
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+  };
+  const blocker = (id: string) => entry({ id, session_id: "s1", due: "2099-01-01T09:00:00Z" });
+
+  test("the SLOW rate is armed first, so an open composer never pays for the fast one", async () => {
+    const t = timed([[]]);
+    t.watcher.start();
+    await settle();
+    // One interval, at 15 s, and no tear-down: the answer never changed shape.
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS]);
+    expect(t.cleared).toEqual([]);
+  });
+
+  test("a blocker switches the interval to the fast rate, and letting go switches it back", async () => {
+    // Blocked, then blocked again (same shape — no churn), then clear.
+    const t = timed([[blocker("e1")], [blocker("e1")], []]);
+    t.watcher.start();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
+    // The rate ALREADY armed is not torn down and put back up on every tick.
+    t.fire();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
+    // ...and the tick that publishes an empty list goes back to 15 s.
+    t.fire();
+    await settle();
+    expect(t.armed).toEqual([
+      SCHEDULE_POLL_MS,
+      SCHEDULE_POLL_BLOCKED_MS,
+      SCHEDULE_POLL_MS,
+    ]);
+    // Two switches, two timers cleared — never a second live interval.
+    expect(t.cleared.length).toBe(2);
+  });
+
+  test("A SCHEDULE THAT CANNOT BE READ BLOCKS NOTHING, and does not leave the fast rate on", async () => {
+    let fail = false;
+    const t = timed([[blocker("e1")]], () => fail);
+    t.watcher.start();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
+    // Failing open publishes `[]` — so the rate has to come back down with it,
+    // or an offline page polls three times a second for the life of the tab.
+    fail = true;
+    t.fire();
+    await settle();
+    expect(t.armed).toEqual([
+      SCHEDULE_POLL_MS,
+      SCHEDULE_POLL_BLOCKED_MS,
+      SCHEDULE_POLL_MS,
+    ]);
+  });
+
+  test("a bare tick arms nothing at all, and the stop stops the switching too", async () => {
+    // `tick` is public and `resetForNewTranscript` calls it; neither may put a
+    // timer up behind a watcher nobody started, or after the stop.
+    const t = timed([[blocker("e1")]]);
+    await t.watcher.tick();
+    await settle();
+    expect(t.armed).toEqual([]);
+    const stop = t.watcher.start();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
+    stop();
+    await t.watcher.tick();
+    await settle();
+    expect(t.armed).toEqual([SCHEDULE_POLL_MS, SCHEDULE_POLL_BLOCKED_MS]);
   });
 });

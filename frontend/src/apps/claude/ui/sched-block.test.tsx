@@ -523,3 +523,43 @@ test("A HALF-PRESSED STOP DIES WITH ITS ENTRY (T:17091-17097, 17146)", async () 
   expect(m.api.blocked).toBe(false);
   expect(m.api.armed).toBe(false);
 });
+
+test("THE BANNER DESCRIBES THE ENTRY, NOT THE TASK — a pending blocker inside a done task", async () => {
+  // P4R1-3, measured five times on both stacks: `/api/tasks` reports `done` for
+  // a task that holds a finished run AND a future pending message. True of the
+  // board, false as a caption over the composer that message is holding shut —
+  // the reader saw "Done · 13:26 today" above a dead box. And the name cell read
+  // the CONVERSATION's title (the reported dots are literally the task's title,
+  // typed) rather than the message that is coming.
+  cancelled.length = 0;
+  entries = [
+    {
+      id: "e9",
+      state: "pending",
+      session_id: "s1",
+      due: "2099-01-01T09:00:00Z",
+      message: "QA test scheduled message A1",
+    },
+  ];
+  tasks = [
+    {
+      key: "s1",
+      task_id: "TASK-104",
+      title: ". . . . . . . . . . . . . . .",
+      status: "done",
+      failed: false,
+    },
+  ];
+  const m = mount();
+  await flush();
+  expect(texts(m.tree, "sb-meta")[0].startsWith("Upcoming · ")).toBe(true);
+  expect(texts(m.tree, "sb-name")).toEqual(["QA test scheduled message A1"]);
+  // The number still comes from the listing — it is the one thing only
+  // `/api/tasks` hands out.
+  expect(texts(m.tree, "sb-id")).toEqual(["TASK-104"]);
+  // ...and the ring wears the ENTRY's state, so the hue and the word agree.
+  const ring = m.tree.root.find(
+    (n) => typeof n.type === "string" && String(n.props.className || "").startsWith("sb-ring"),
+  );
+  expect(ring.props.className).toBe("sb-ring sb-ring--upcoming");
+});

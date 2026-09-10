@@ -21,8 +21,8 @@ import { useCallback, useEffect, useRef } from "react";
 import "../styles/sched.css";
 import {
   schedIsRepeat,
-  schedMsgLine,
   schedRefusalNote,
+  schedRowName,
   schedRowState,
   schedRowTitle,
   schedStopLabel,
@@ -91,12 +91,19 @@ export function SchedBlock({
   }, []);
 
   const repeat = next ? schedIsRepeat(next) : false;
-  const { state, label } = schedRowState(rec);
+  /** THE ENTRY, NOT THE TASK. `rec` is the row for the whole task and answers
+   *  `done` for a task holding a finished run and a future pending message —
+   *  which is a true sentence about the board and a false one about the message
+   *  holding this box shut (FIX-B). */
+  const { state, label } = schedRowState(rec, next);
   /** ONE POLL, ONE READ. `tick` moving is both the re-render and the clock the
    *  cell is read against; `Date.now()` is the fallback for a caller that hands
    *  no poll in (and for the render that precedes the first one). */
   const when = next ? schedWhenText(next.due, new Date(tick || Date.now())) : "";
-  const name = next ? (rec && rec.title) || schedMsgLine(next) : "";
+  /** The MESSAGE that is coming, and only then the conversation's title — the
+   *  banner's question is "what is about to run?" and the blocker's own words
+   *  answer it (FIX-C). */
+  const name = schedRowName(next, rec);
 
   /**
    * A TITLE BELONGS TO THE TEXT THAT WAS MEASURED (T:17161-17163). T drops it on
