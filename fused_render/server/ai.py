@@ -1737,16 +1737,20 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         # requests the Claude tier — the Playground, Claude annotations, and
         # any future caller alike — so no single hardcoded label would be
         # honest for all of them. `jobs.origin_for_page` resolves each
-        # caller's own `page` to its own name; `page or "/claude-config"`
-        # matches the same fallback `_report_remote` applies to the row's
-        # `page` field below (Claude Code's settings page is where this
-        # relay runs with no caller of its own), which conveniently also
-        # resolves through the shell-route half of `origin_for_page` to
-        # "Claude setup" — the one shell surface this relay has when no page
+        # caller's own `page` to its own name; the empty-page case is NOT
+        # `/claude-config` here (that fallback is for the row's `page`
+        # field below — the destination a click should open, which is
+        # defensible even with no caller) but `default="Playground"`, the
+        # same default `_start_render`/`text_row_fields` use: the one caller
+        # that reaches this relay with no `X-Fused-Page` at all is the AI
+        # Models Playground itself (it runs in the shell, not inside a page
+        # iframe — `_ai_relay`'s own docstring says so), never Claude Code's
+        # settings page, so attributing the empty case to "Claude setup"
+        # would caption a Playground generation as if the settings page had
         # raised it.
         _report_remote(title=title[:80], model=model, state="running", kind="task",
                        cancellable=False, detail=_REMOTE_ROW_DETAIL,
-                       origin=jobs.origin_for_page(page or "/claude-config"))
+                       origin=jobs.origin_for_page(page, default="Playground"))
 
     def _finish_remote_job() -> None:
         """Success only: drop the row immediately rather than leaving it at
