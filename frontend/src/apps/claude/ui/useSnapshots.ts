@@ -14,7 +14,13 @@
 // disagree with the rest of the page and nothing new has to be threaded through
 // the chat.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isFileTarget, loadSnapshots } from "../protocol/snapshots";
+import {
+  cacheSnapshots,
+  cachedSnapshots,
+  invalidateSnapshots,
+  isFileTarget,
+  loadSnapshots,
+} from "../protocol/snapshots";
 import type { SnapshotsTimeline } from "../protocol/types";
 
 export interface SnapshotsState {
@@ -48,6 +54,17 @@ export function useSnapshots(
    * mounted gets a live re-read out of the same knob.
    */
   invalidation?: unknown,
+  /**
+   * The two calls, injectable — and injectable rather than module-mocked for the
+   * reason `useSchedule`'s three are: `bun test` runs every suite in ONE
+   * process, so a `mock.module("../protocol/snapshots", …)` replaces that module
+   * for every suite loaded AFTER it (and an ESM namespace object is frozen
+   * besides, so patch-and-restore is not open either).
+   */
+  deps?: {
+    load?: typeof loadSnapshots;
+    isFile?: typeof isFileTarget;
+  },
 ): SnapshotsState {
   const [timeline, setTimeline] = useState<SnapshotsTimeline | null | undefined>(
     undefined,
@@ -58,6 +75,22 @@ export function useSnapshots(
   // A repaint from a write must not be undone by a read that was already in
   // flight when it landed.
   const gen = useRef(0);
+  /** Read by `adopt`, which is a callback and must not be rebuilt for a new
+   *  invalidation value (the rows close over it). */
+  const invRef = useRef(invalidation);
+  invRef.current = invalidation;
+  /** Read at CALL time so a caller passing a fresh object each render cannot
+   *  re-run the read (the effect's deps are the target and the two nonces). */
+  const hooks = useRef({
+    load: deps?.load ?? loadSnapshots,
+    isFile: deps?.isFile ?? isFileTarget,
+  });
+  hooks.current = {
+    load: deps?.load ?? loadSnapshots,
+    isFile: deps?.isFile ?? isFileTarget,
+  };
+  const fileRef = useRef(file);
+  fileRef.current = file;
 
   useEffect(() => {
     gen.current += 1;
@@ -69,19 +102,41 @@ export function useSnapshots(
     }
     let live = true;
     void (async () => {
-      if (!(await isFileTarget(file))) {
+      if (!(await hooks.current.isFile(file))) {
         if (live && gen.current === mine) setTimeline(undefined);
         return;
       }
       if (!live || gen.current !== mine) return;
+      // ALREADY READ ONCE ON THIS PAGE: repaint what we have rather than spend
+      // the round trip again (T:19105-19107). This is the whole of P4-22 — the
+      // hook is inside `Home`, which unmounts on the way into a chat, so
+      // without a page-scoped cache every Back re-read the timeline.
+      //
+      // NOT a read-through-and-refresh: T does not re-read either, and a
+      // background read landing under a reader who is mid-expansion would move
+      // the rows out from under them. The two things that DO make it stale —
+      // a finished turn and a write — both go through the cache's own key or
+      // through `reload`.
+      const hit = cachedSnapshots(file, invalidation);
+      if (hit) {
+        setTimeline(hit);
+        setFailed(false);
+        setError("");
+        return;
+      }
       // Mounted and reading: the panel shows standalone so the note has
       // somewhere to be, and earns no tab yet.
       setTimeline(null);
       setFailed(false);
       setError("");
       try {
-        const out = await loadSnapshots(agentDir, file);
+        const out = await hooks.current.load(agentDir, file);
         if (!live || gen.current !== mine) return;
+        // Cached even when a newer generation is about to replace it? No — the
+        // guard above already returned. A FAILED read caches nothing, so the
+        // retry and the next landing ask again rather than leaving the section
+        // stuck on the failure for the life of the page (T:19044-19047).
+        cacheSnapshots(file, invalidation, out);
         setTimeline(out);
         setFailed(false);
       } catch (err) {
@@ -102,9 +157,20 @@ export function useSnapshots(
     };
   }, [agentDir, file, nonce, invalidation]);
 
-  const reload = useCallback(() => setNonce((n) => n + 1), []);
+  /** The heading's retry, and the way a revert repaints when it has no timeline
+   *  of its own to hand back. Drops the cached entry FIRST: a retry that read
+   *  the cache back would be a control that does nothing. */
+  const reload = useCallback(() => {
+    if (fileRef.current) invalidateSnapshots(fileRef.current);
+    setNonce((n) => n + 1);
+  }, []);
   const adopt = useCallback((next: SnapshotsTimeline) => {
     gen.current += 1;
+    // A WRITE'S OWN ANSWER IS THE FRESHEST THERE IS (T:19042-19043 — "snapGoBack
+    // repaints from the post-revert timeline the write itself returned"), so it
+    // becomes the cache rather than invalidating it: the next landing repaints
+    // the post-revert chain without a round trip.
+    if (fileRef.current) cacheSnapshots(fileRef.current, invRef.current, next);
     setTimeline(next);
     setFailed(false);
     setError("");

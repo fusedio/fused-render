@@ -177,3 +177,99 @@ test("A TICK THAT BEAT THE SESSION ID is replayed when the id lands", async () =
   await settle();
   expect(reads).toBe(1);
 });
+
+// ── the two lifecycle rules (P4-01, P4-02) ──────────────────────────────────
+
+/** A store driven with an `inChat` that the test can move. */
+function crossing(startInChat: boolean, sid = "s1") {
+  let api: ArtStripStore | null = null;
+  let inChat = startInChat;
+  let session = sid;
+  const H = () => {
+    api = useArtStrip("/tpl", "/proj", session, read, inChat);
+    return null;
+  };
+  let tree: ReactTestRenderer;
+  act(() => {
+    tree = create(createElement(H));
+  });
+  return {
+    get: () => api!,
+    async set(next: { inChat?: boolean; sessionId?: string }) {
+      if (next.inChat !== undefined) inChat = next.inChat;
+      if (next.sessionId !== undefined) session = next.sessionId;
+      await act(async () => {
+        tree!.update(createElement(H));
+      });
+      await settle();
+    },
+  };
+}
+
+test("A REOPENED CHAT READS ITS OWN STRIP (P4-01)", async () => {
+  reads = 0;
+  rows = [{ remote_url: "https://x.test/a", title: "A" }];
+  // Landing first: no conversation, so nothing to read for.
+  const c = crossing(false);
+  await settle();
+  expect(reads).toBe(0);
+
+  // A recent-row click, a deep link, a reload: the session arrives with the
+  // chat and no run is in flight, so T's boot resume branch is the only thing
+  // that ever reads here (T:19273, 19282, 18604).
+  await c.set({ inChat: true });
+  expect(reads).toBe(1);
+  expect(c.get().items.map((a) => a.remote_url)).toEqual(["https://x.test/a"]);
+
+  // IDEMPOTENT: a re-render that changes neither fact reads nothing more.
+  await c.set({});
+  expect(reads).toBe(1);
+});
+
+test("a chat mounted straight into a session reads on its first paint", async () => {
+  reads = 0;
+  rows = [{ remote_url: "https://x.test/a", title: "A" }];
+  const c = crossing(true);
+  await settle();
+  expect(reads).toBe(1);
+  expect(c.get().items.length).toBe(1);
+});
+
+test("THE STRIP IS EMPTIED ON BOTH CROSSINGS (P4-02)", async () => {
+  reads = 0;
+  rows = [{ remote_url: "https://x.test/a", title: "A" }];
+  const c = crossing(true);
+  await settle();
+  expect(c.get().items.length).toBe(1);
+
+  // Back: the chips belonged to the conversation being left (T:13075, 13093).
+  rows = [];
+  await c.set({ inChat: false });
+  expect(c.get().items).toEqual([]);
+
+  // A LANDING WITH ROWS IN THE MAP, then in again: T clears in `enterChat` too
+  // — "a new chat must not inherit them (nor a late poll's leftovers)"
+  // (T:13079-13087). Native cleared only on the way out, so the previous
+  // conversation's rows painted for the tick before the new read landed.
+  rows = [{ remote_url: "https://x.test/old", title: "Old" }];
+  await c.set({ inChat: true });
+  // The read that follows the clear is this session's own, so what is on screen
+  // is never the OTHER chat's list — and the clear happened first.
+  expect(c.get().items.map((a) => a.remote_url)).toEqual(["https://x.test/old"]);
+
+  rows = [];
+  await c.set({ inChat: false });
+  await c.set({ inChat: true, sessionId: "s2" });
+  // s2 published nothing: the strip is s2's, empty, not s1's leftovers.
+  expect(c.get().items).toEqual([]);
+});
+
+test("a chat with no session reads nothing, whichever side it is on", async () => {
+  reads = 0;
+  rows = [{ remote_url: "https://x.test/a", title: "A" }];
+  const c = crossing(true, "");
+  await settle();
+  // Nothing has been written to look for (and `owed` will pay when an id lands).
+  expect(reads).toBe(0);
+  expect(c.get().items).toEqual([]);
+});

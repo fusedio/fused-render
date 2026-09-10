@@ -73,6 +73,14 @@ export function useArtStrip(
   /** The transcript read, injectable so a suite drives the strip without
    *  replacing a module for every suite that loads after it. */
   read: typeof pollArtifacts = pollArtifacts,
+  /**
+   * Is a conversation on screen? The strip's two LIFECYCLE rules are the hook's
+   * own rather than the caller's, because both of them are statements about the
+   * strip and neither is a statement about the chat: see the effects at the end.
+   * `undefined` opts out of both — a caller that never says is a caller with no
+   * landing page to cross to.
+   */
+  inChat?: boolean,
 ): ArtStripStore {
   const chips = useRef(new Map<string, Artifact>());
   const [items, setItems] = useState<Artifact[]>([]);
@@ -144,6 +152,45 @@ export function useArtStrip(
     chips.current.clear();
     setItems([]);
   }, []);
+
+  /**
+   * THE STRIP BELONGS TO ONE CONVERSATION, and it is emptied by CROSSING
+   * between the landing and a chat — both edges, not one (P4-02).
+   *
+   * T clears in `backToHome` (T:13075, 13093: "the chips belonged to the
+   * conversation being left") AND in `enterChat` (T:13079-13087: "chips from
+   * the previous chat are hidden on the home screen but still in the map — a
+   * new chat must not inherit them (nor a late poll's leftovers)"). Native
+   * cleared only on the way out, so entering a chat could paint the previous
+   * conversation's rows for the tick before the session-keyed read replaced
+   * them.
+   *
+   * A no-op when there is nothing in the Map, so the mount that opens on the
+   * landing page costs no render.
+   */
+  useEffect(() => {
+    if (inChat === undefined) return;
+    clear();
+  }, [inChat, clear]);
+
+  /**
+   * A REOPENED CHAT READS ITS OWN STRIP (P4-01).
+   *
+   * T calls `pollArtifacts()` in the boot resume branch (T:19273, 19282)
+   * precisely because "a resumed conversation with nothing in flight never
+   * reaches that loop" (T:18604). Native's only tick sources were the run loop
+   * and a run ending, so re-opening a session that had published pages — a deep
+   * link, a reload, a recent-row click — showed no chips at all until a NEW turn
+   * ran.
+   *
+   * Declared AFTER the clear above so the two fire in that order on the
+   * entering edge, and idempotent either way: `busy`, the `owed` flag and the
+   * signature guard already make a repeat poll free.
+   */
+  useEffect(() => {
+    if (!inChat || !sessionId) return;
+    poll();
+  }, [inChat, sessionId, poll]);
 
   return { items, poll, clear };
 }

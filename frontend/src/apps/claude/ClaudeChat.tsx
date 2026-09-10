@@ -2296,17 +2296,17 @@ function ChatBody(props: ChatBodyProps) {
     schedReset.current();
   }, [transcriptGen]);
 
-  const art = useArtStrip(agentDir ?? null, file, state.sessionId ?? "");
+  /** `inChat` is the fifth argument because the strip's two lifecycle rules —
+   *  emptied on BOTH crossings, read on the way into a chat (P4-01/P4-02) — are
+   *  facts about the strip, and the hook is where they can be tested. */
+  const art = useArtStrip(
+    agentDir ?? null,
+    file,
+    state.sessionId ?? "",
+    undefined,
+    inChat,
+  );
   artTick.current = art.poll;
-  /** T:13093/13075 `clearArtStrip` — a different conversation's pages are not
-   *  this one's, so the strip is emptied by LEAVING rather than by a turn
-   *  ending. */
-  const artClear = useRef(art.clear);
-  artClear.current = art.clear;
-  useEffect(() => {
-    if (!inChat) artClear.current();
-  }, [inChat]);
-
   const [snapNonce, setSnapNonce] = useState(0);
   snapInvalidate.current = () => setSnapNonce((n) => n + 1);
 

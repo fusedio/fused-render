@@ -139,6 +139,58 @@ export function resetSnapshotTargetCacheForTests(): void {
   fileness.clear();
 }
 
+/**
+ * THE TIMELINE IS CACHED FOR THE LIFE OF THE PAGE (T:19040-19047, 19105-19107).
+ *
+ * "The target file never changes under it — so returning from a chat repaints
+ * rather than refetching. What invalidates that cache is a WRITE: `snapGoBack`
+ * repaints from the post-revert timeline the write itself returned, and a
+ * finished turn drops it (`snapInvalidate`). A failed read caches nothing, so
+ * the retry on the heading (and the next landing) asks again rather than leaving
+ * the section stuck on the failure for the life of the page."
+ *
+ * Natively the panel's hook lives inside `Home`, which UNMOUNTS on the way into
+ * a chat — so component state cannot be the cache and every Back spent the round
+ * trip again. It lives here instead, at page scope, which is where T's
+ * `snapLoaded`/`snapTimeline` pair lives.
+ *
+ * KEYED ON THE INVALIDATION VALUE as well as the file, and that is the load-
+ * bearing half: `snapInvalidate` bumps a counter in the CHAT (which survives),
+ * so by the time the panel remounts there is nothing left to compare a "has this
+ * gone stale?" flag against. Storing the invalidation the entry was read under
+ * turns that into a question the cache can answer on its own, on any mount.
+ */
+const timelines = new Map<string, { inv: unknown; timeline: SnapshotsTimeline }>();
+
+/** The cached timeline for this file, but only if it was read under the same
+ *  invalidation value the caller is asking under. */
+export function cachedSnapshots(
+  file: string,
+  invalidation: unknown,
+): SnapshotsTimeline | null {
+  const hit = timelines.get(file);
+  return hit && hit.inv === invalidation ? hit.timeline : null;
+}
+
+export function cacheSnapshots(
+  file: string,
+  invalidation: unknown,
+  timeline: SnapshotsTimeline,
+): void {
+  timelines.set(file, { inv: invalidation, timeline });
+}
+
+/** What the heading's retry spends, and what a revert's own repaint replaces. */
+export function invalidateSnapshots(file: string): void {
+  timelines.delete(file);
+}
+
+/** Test seam, beside `resetSnapshotTargetCacheForTests` — page scope means one
+ *  suite's timeline is visible to the next one in the same process. */
+export function resetSnapshotCacheForTests(): void {
+  timelines.clear();
+}
+
 /** T:19124 `loadSnapshots`. Neither knob — see the module note. */
 export async function loadSnapshots(
   agentDir: string,
