@@ -169,14 +169,17 @@ def test_install_retry_allowed_from_error(monkeypatch):
     assert manager.status()["state"] == "installed"
 
 
-def test_install_rechecks_and_installs_a_version_published_since_the_last_check(monkeypatch):
+def test_install_defers_when_a_newer_version_appears_during_the_recheck(monkeypatch):
     """`_latest` is set by whichever periodic check last ran and can be up to
     CHECK_INTERVAL_S (5 min) stale. If a newer release was published in that
-    window, install() must hand _install_dmg the fresh manifest, not the
-    cached one from the last check()."""
+    window, silently installing it instead of the version that was on
+    screen when Install was clicked would retarget the button out from
+    under the user — its own kind of dishonest wire status. install() must
+    instead surface the refreshed version and wait for a fresh click before
+    starting anything."""
     manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
     monkeypatch.setattr(mac, "__version__", "0.4.10")
-    versions = iter(["9.9.9", "9.9.10"])
+    versions = iter(["9.9.9", "9.9.10", "9.9.10"])
 
     def fetch(url, **kwargs):
         return {"schema": 1, "version": next(versions), "url": "https://x/y.dmg",
@@ -188,10 +191,17 @@ def test_install_rechecks_and_installs_a_version_published_since_the_last_check(
 
     done = []
     monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    status = manager.install()
+    assert manager._install_thread is None
+    assert done == []
+    assert status["state"] == "available"
+    assert status["latest_version"] == "9.9.10"
+
+    # The refreshed version is what a second click commits to — it matches
+    # what the recheck now finds, so this one proceeds.
     manager.install()
     manager._install_thread.join(timeout=5)
     assert done and done[0]["version"] == "9.9.10"
-    assert manager.status()["latest_version"] == "9.9.10"
 
 
 def test_install_rechecks_even_when_the_next_auto_tick_is_long_overdue(monkeypatch):
@@ -217,11 +227,12 @@ def test_install_rechecks_even_when_the_next_auto_tick_is_long_overdue(monkeypat
     # well past both gaps so a non-forced check would have refused to fetch.
     manager._last_check_at = time.monotonic() - 10 * common.CHECK_INTERVAL_S
 
-    done = []
-    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
-    manager.install()
-    manager._install_thread.join(timeout=5)
-    assert done and done[0]["version"] == "9.9.10"
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: None)
+    status = manager.install()
+    # The overdue recheck still ran and found a newer version — surfaced,
+    # not installed outright, same as the deferred case above.
+    assert manager._install_thread is None
+    assert status["latest_version"] == "9.9.10"
 
 
 def test_install_does_not_hit_the_network_when_there_is_nothing_to_install(monkeypatch):

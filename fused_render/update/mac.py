@@ -462,14 +462,27 @@ class UpdateManager:
 
         `_latest` can be up to CHECK_INTERVAL_S (5 min) stale — it was set by
         whichever periodic check last ran, and a newer version can have been
-        published since. Force a fresh check first so an install always
-        starts from the actual latest manifest, not a cached one: a failed
-        fetch here falls back to the last known-good `_latest` (see check()),
-        so this never makes an install worse, only fresher when it can be.
-        Only worth the round trip when there is something to install at all —
+        published since. Force a fresh check first so an install never runs
+        against a version that has already been superseded: a failed fetch
+        here falls back to the last known-good `_latest` (see check()), so
+        this never makes an install worse, only fresher when it can be. Only
+        worth the round trip when there is something to install at all —
         skipped from "idle"/"checking"/"installing", which refuse below
-        regardless of what a re-check would say."""
+        regardless of what a re-check would say.
+
+        If that re-check turns up a DIFFERENT version from the one that was
+        on screen the moment this was called, do not install it out from
+        under the click: the button the user pressed said "Update to
+        v<requested>", and quietly swapping in v<something else> — even a
+        newer one — is its own kind of dishonest wire status, the same
+        family of bug the manager otherwise goes out of its way to avoid
+        (`_check_error`, `check_only`, etc. all exist so this state machine
+        never tells the UI something that isn't true). Instead this leaves
+        `_latest`/state exactly as the re-check just set them ("available"
+        with the refreshed version) and returns without installing — the
+        badge now shows the new version, and a second click commits to it."""
         with self._lock:
+            requested_version = self._latest["version"] if self._latest else None
             worth_rechecking = (self._latest is not None
                                and self._state in ("available", "error"))
         if worth_rechecking:
@@ -478,6 +491,12 @@ class UpdateManager:
             if self._state == "installing":
                 return self.status()
             if self._latest is None or self._state not in ("available", "error"):
+                return self.status()
+            if self._latest["version"] != requested_version:
+                logger.info(
+                    "update install deferred: re-check found v%s, not the v%s "
+                    "that was on screen when install() was called",
+                    self._latest["version"], requested_version)
                 return self.status()
             # The dev-run manager (DEV_MANAGER_ENV) has no bundle to swap.
             # Refused here rather than left to fail inside the worker thread,
