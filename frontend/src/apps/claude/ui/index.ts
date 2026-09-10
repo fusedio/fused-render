@@ -24,7 +24,7 @@ export type { PillOption, PillSelectProps } from "./PillSelect";
 export { useDismissOnWindow } from "./useDismissOnWindow";
 export type { DismissOnWindowOptions } from "./useDismissOnWindow";
 export { SchedButton } from "./SchedButton";
-export { SchedConfirm } from "./SchedConfirm";
+export { SchedConfirm, SchedConfirmBody } from "./SchedConfirm";
 export {
   draftKey,
   stashDraft,
@@ -51,9 +51,14 @@ export { ArtifactRow } from "./ArtifactRow";
 export type { ArtifactRowProps } from "./ArtifactRow";
 export { SnapRow } from "./SnapRow";
 export type { SnapRowProps } from "./SnapRow";
+export { SchedBlock } from "./SchedBlock";
+export type { SchedBlockProps } from "./SchedBlock";
+export { ArtStrip, useArtStrip } from "./ArtStrip";
+export type { ArtStripProps, ArtStripStore } from "./ArtStrip";
 export { Snapshots } from "./Snapshots";
 export type { SnapshotsProps } from "./Snapshots";
 export { useArtifacts } from "./useArtifacts";
+export { useRepairScroll } from "./useRepairScroll";
 export { useSnapshots } from "./useSnapshots";
 export type { SnapshotsState } from "./useSnapshots";
 export {

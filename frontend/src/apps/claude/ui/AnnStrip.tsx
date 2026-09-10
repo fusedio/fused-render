@@ -83,6 +83,22 @@ export interface AnnStripProps {
    *  the guard in the handler is the belt to that braces — a keyboard user can
    *  still reach a control a poll has not caught up with (T:11265). */
   capturing: boolean;
+  /**
+   * A PENDING SCHEDULED MESSAGE HOLDS THIS CHAT (P4R1-2, Akshil, 2026-09-10:
+   * "Screenshot/Comment/Annotate seats disabled too while blocked").
+   *
+   * All three seats END IN THE COMPOSER — a picture lands as a chip above the
+   * box, a comment round and a walkthrough both send their notes through it —
+   * and the composer is shut for as long as the block holds. So a live seat here
+   * is an invitation to gather work that has nowhere to go; the reason is on the
+   * banner directly below, which is why these carry no second wording of it.
+   *
+   * DISABLED, not hidden. "Absent beats dead" is this file's rule for a seat
+   * with no PANE to act on (`shown`, `capable`) — a permanent fact about the
+   * host. A block is a wait, measured in minutes, and a row that loses three
+   * buttons and grows them back is a row that moved under the reader's hand.
+   */
+  blocked?: boolean;
   onScreenshot(): void;
   /** T:6122 `annCapable` — nothing to annotate: all three seats go, the camera
    *  included, because the pane it would photograph is the pane there is none
@@ -120,6 +136,7 @@ export function AnnStrip({
   paneNoun,
   shown,
   capturing,
+  blocked = false,
   onScreenshot,
   cameraShown = true,
   commentShown = true,
@@ -171,8 +188,8 @@ export function AnnStrip({
         className="c-viewshot"
         aria-label={shotLabelFor(paneNoun)}
         title={shotLabelFor(paneNoun)}
-        aria-disabled={aria.screenshot ? "true" : "false"}
-        disabled={capturing || aria.screenshot}
+        aria-disabled={aria.screenshot || blocked ? "true" : "false"}
+        disabled={capturing || aria.screenshot || blocked}
         onClick={onScreenshot}
       >
         <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -191,9 +208,9 @@ export function AnnStrip({
         className={"c-annbtn" + (armed ? " on" : "")}
         aria-pressed={armed ? "true" : "false"}
         aria-label={seat.label}
-        aria-disabled={aria.comment ? "true" : "false"}
+        aria-disabled={aria.comment || blocked ? "true" : "false"}
         title={seat.title}
-        disabled={!onComment || aria.comment}
+        disabled={!onComment || aria.comment || blocked}
         onClick={onComment}
       >
         {/* Both glyphs and both words are in the markup and NEITHER SPARE IS

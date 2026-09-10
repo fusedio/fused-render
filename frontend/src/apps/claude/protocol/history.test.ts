@@ -130,6 +130,31 @@ describe("sessionTitle (T:18088)", () => {
     expect(sessionTitle({ id: "s1", preview })).toBe("centre this");
   });
 
+  test("a TRUNCATED <annotations> tag is cut too, and never leaks as the title", () => {
+    // The tagged shape is what the wire writes TODAY (`stripAnnBlock` keeps the
+    // legacy preamble only for old transcripts), and the opener table had only
+    // the preamble — so a preview truncated inside the tag showed the literal
+    // `<annotations>` as the row's title, and named the snapshot run heading
+    // with it. Exactly the regression T:18070 documents (P4-04).
+    const preview = "<annotations>\nThe user annotated 2 el";
+    expect(sessionTitle({ id: "s1", preview })).toBe("annotations");
+    expect(sessionTitle({ id: "s1", preview })).not.toContain("<");
+  });
+
+  test("a truncated app-state block is machinery, so the id stands in", () => {
+    // `<live-app-state>` carries no marker at all — it is not something the
+    // user sent, it is what the page was doing — so there is nothing to name
+    // the row with and the id is the honest answer.
+    expect(sessionTitle({ id: "s7", preview: "<live-app-state>\n{\"route\"" })).toBe("s7");
+  });
+
+  test("ONE marker each, however many openers matched", () => {
+    // The tagged block and its legacy preamble both carry `MARKER_ANN`, and a
+    // title reading "annotations + annotations" is the wrong kind of wrong.
+    const preview = "<annotations>\nThe user annotated 2 el";
+    expect(sessionTitle({ id: "s1", preview })).toBe("annotations");
+  });
+
   test("never blank: the id is the last resort", () => {
     expect(sessionTitle({ id: "sess-9", preview: "" })).toBe("sess-9");
     expect(sessionTitle(null)).toBe("");

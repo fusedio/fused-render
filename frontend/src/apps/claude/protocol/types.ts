@@ -312,7 +312,18 @@ export interface SkillRow {
 
 // ---- poll (agent.py:3799; full return 4288-4316) -------------------------
 
-export type Phase = "thinking" | "composing" | "tooling" | "requesting" | "retrying" | "awaiting";
+/** `"external"` is not agent.py's — it is the page's own, written by
+ *  `setExternalWorking` for a turn running in someone else's process
+ *  (T:17721). The working line branches on `Working.external` for its verb, so
+ *  this only has to be a phase the union admits. */
+export type Phase =
+  | "thinking"
+  | "composing"
+  | "tooling"
+  | "requesting"
+  | "retrying"
+  | "awaiting"
+  | "external";
 
 export interface RetryInfo {
   attempt: number;

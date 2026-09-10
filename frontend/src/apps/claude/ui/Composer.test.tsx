@@ -3,7 +3,7 @@ installDomShim();
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
-const { ComposerCard, CHAT_PLACEHOLDER, HOME_PLACEHOLDER } =
+const { ComposerCard, BLOCKED_SEND_TITLE, CHAT_PLACEHOLDER, HOME_PLACEHOLDER } =
   await import("./Composer");
 const { DEFAULT_EFFORT, DEFAULT_MODEL, DEFAULT_PERMISSION } =
   await import("./composer-defaults");
@@ -193,25 +193,37 @@ test("the submit button is the ONLY way to stop: it is a stop square while live"
   expect(live.sent).toEqual([]);
 });
 
-test("send is NEVER disabled — nothing to send, blocked, attaching or busy (T:4187)", () => {
-  // The DELETED test's subject, with T's expectation. `.c-send` carries no
-  // `disabled` at all: not for an empty box, not for a pending scheduled
-  // message, not through either transient window. T has no `.send:disabled`
-  // rule (T:2956-2981), no attribute in the markup (T:4187, T:4246) and no
-  // script line that sets one — `applyComposerBlockState` reaches the box
-  // (T:17218) and the Schedule pill (T:17238) and stops there. T has no
-  // `canSend` either: that name is T:7720's annotation send gate.
+test("send is disabled ONLY by the schedule block — never for empty, attaching or busy (T:4187)", () => {
+  // The DELETED test's subject, with T's expectation, and the ONE exception the
+  // owner added on top of it (P4R1-2, 2026-09-10). `.c-send` carries no
+  // `disabled` for an empty box and none through either transient window: T has
+  // no `.send:disabled` rule (T:2956-2981), no attribute in the markup (T:4187,
+  // T:4246) and no script line that sets one — `applyComposerBlockState`
+  // reaches the box (T:17218) and the Schedule pill (T:17238) and stops there.
+  // T has no `canSend` either: that name is T:7720's annotation send gate.
+  //
+  // The block is different in kind: not transient, not about this draft, and
+  // already explained by a banner over the box.
   const send = (c: ReturnType<typeof mount>) =>
     c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
   for (const props of [
     {},
-    { blocked: true },
     { hasAttachments: true, attachPending: true },
     { sendBusy: true, hasAttachments: true },
+    // Mid-run the button IS the Stop, and a block may never take it.
     { status: "running" as const, blocked: true },
+    // The landing card has no session for a message to be pending in.
+    { variant: "home" as const, blocked: true },
   ]) {
     expect(send(mount(props)).props.disabled).toBeUndefined();
   }
+  // ...and the block, which does — with the reason on the tooltip, since a
+  // disabled control is out of tab order and the attribute cannot speak.
+  const shut = send(mount({ blocked: true, blockedReason: "TASK-3 runs at 09:00" }));
+  expect(shut.props.disabled).toBe(true);
+  expect(shut.props.title).toBe("TASK-3 runs at 09:00");
+  // No reason handed in is still not a dead control with nothing to say.
+  expect(send(mount({ blocked: true })).props.title).toBe(BLOCKED_SEND_TITLE);
   // …and every one of those refusals is still MADE, in `submit`: an empty box
   // with nothing typed, and a worded send through either door that is shut.
   const empty = mount();
@@ -277,6 +289,44 @@ test("a blocked composer takes no input by any path (T:17871)", () => {
   c.type("sneak this in");
   c.press("Enter");
   expect(c.sent).toEqual([]);
+});
+
+test("A BLOCK NEVER TAKES STOP: the button still ends a live turn (T:17193-17195)", () => {
+  // The block is the PENDENCY of a scheduled message, not the run — and a
+  // pending message landing while an interactive turn streams must not strand
+  // the user with a reply they cannot end. `disabled` may only ever suppress
+  // the SEND half of this one button.
+  const c = mount({
+    status: "running",
+    blocked: true,
+    blockedPlaceholder: "TASK-3 runs at 09:00",
+  });
+  const stop = c.root
+    .findAllByType("button")
+    .find((b) => b.props.className === "c-send")!;
+  expect(stop.props["aria-label"]).toBe("Stop");
+  // No attribute at all, not `false`: PR3 removed `disabled` from this button
+  // outright (T:4187), so there is nothing here to be false — and the owner's
+  // P4R1-2 clause is `!running`, so a streaming turn keeps its way out.
+  expect(stop.props.disabled).toBeUndefined();
+  expect(stop.props.title).toBe("Stop this turn");
+  c.submitForm();
+  expect(c.stops()).toBe(1);
+  // ...and the send half is still shut: the box is dead and nothing leaves it.
+  expect(c.sent).toEqual([]);
+  expect(c.followups).toEqual([]);
+  // IDLE AND BLOCKED, the button is the Send and the Send is off (P4R1-2). The
+  // handler's guard stays where it was — the attribute is the reader's signal,
+  // not the enforcement.
+  const idle = mount({ blocked: true });
+  const send = idle.root
+    .findAllByType("button")
+    .find((b) => b.props.className === "c-send")!;
+  expect(send.props["aria-label"]).toBe("Send");
+  expect(send.props.disabled).toBe(true);
+  idle.type("sneak this in");
+  idle.submitForm();
+  expect(idle.sent).toEqual([]);
 });
 
 test("queued follow-ups are named under the box, singular and plural", () => {
@@ -511,18 +561,60 @@ test("the SCHEDULE block is chat-only, as T:16851 has it", () => {
   expect(seatOf(mount({ variant: "chat", blocked: true })).props.disabled).toBe(true);
 });
 
-test("Send is NEVER disabled by the block (T:17193-17195, T:4187)", () => {
-  // The send door already refuses a blocked composer at `submit`'s first guard,
-  // so the dim bought nothing — and cost the load-bearing half: `disabled` also
-  // kills the STOP this button becomes mid-run, and a reader who cannot stop a
-  // turn has no way out of it.
+test("the seat's reason: the nav lock outranks the block, and the block is the fallback", () => {
+  // ONE sentence with one author (T:17232-17250) — a reader refused by the
+  // button reads the same words as the banner six pixels above it. Two guards
+  // can be up at once, and then the reason has to pick: the nav lock is the
+  // one the reader can act on (finish the notes), while the block lifts on its
+  // own clock, so the lock speaks first.
+  const NAV = "Finish or discard the notes first";
+  const BLOCK = "TASK-3 runs at 09:00";
+  const seatOf = (c: ReturnType<typeof mount>) =>
+    c.root
+      .findAllByType("button")
+      .find((b) => String(b.props.className ?? "").includes("c-schedbtn"))!;
+
+  const both = seatOf(
+    mount({ blocked: true, blockedReason: BLOCK, navLocked: true, navLockedReason: NAV }),
+  );
+  expect(both.props.title).toBe(NAV);
+
+  // The block alone, and the banner's own sentence is what the seat says.
+  const blocked = seatOf(mount({ blocked: true, blockedReason: BLOCK }));
+  expect(blocked.props.disabled).toBe(true);
+  expect(blocked.props.title).toBe(BLOCK);
+  expect(String(blocked.props["aria-label"])).toContain(BLOCK);
+
+  // ...and never on the landing card, whose seat is not blocked at all, so
+  // there is no refusal for a reason to explain.
+  const home = seatOf(mount({ variant: "home", blocked: true, blockedReason: BLOCK }));
+  expect(home.props.disabled).toBe(false);
+  expect(home.props.title).not.toBe(BLOCK);
+});
+
+test("THE BLOCK TAKES SEND AND NEVER STOP (P4R1-2, T:17193-17195)", () => {
+  // The owner reversed the dim for this ONE refusal (2026-09-10: "Send DISABLED
+  // … Stop stays live if a run is streaming"). An orange button that swallows
+  // the press is the wrong answer for a wait measured in minutes and explained
+  // by a banner six pixels above the box — and the load-bearing half is kept
+  // exactly: `disabled` also kills the STOP this button becomes mid-run, and a
+  // reader who cannot stop a turn has no way out of it.
   const send = (c: ReturnType<typeof mount>) =>
     c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
-  expect(send(mount({ blocked: true, hasAttachments: true })).props.disabled).toBeUndefined();
+  expect(send(mount({ blocked: true, hasAttachments: true })).props.disabled).toBe(true);
   // And mid-run it is the Stop, live.
   const running = mount({ blocked: true, status: "running" });
   expect(send(running).props.disabled).toBeUndefined();
   expect(send(running).props["aria-label"]).toBe("Stop");
+  // The handler's own guard is untouched: the attribute is a signal, never the
+  // enforcement (a keyboard road, a stale render, `submitRef`'s programmatic
+  // send all still land on it).
+  const c = mount({ blocked: true });
+  c.type("sneak this in");
+  c.press("Enter");
+  c.submitForm();
+  expect(c.sent).toEqual([]);
+  expect(c.followups).toEqual([]);
 });
 
 // ---- the textarea's own attributes ----------------------------------------

@@ -35,12 +35,14 @@ import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { runAgent } from "./agent";
 import type {
+  AdoptOptions,
   AssistantTurn,
   ChatController,
   ChatState,
   ControllerDeps,
   ErrorTurn,
   NoteTurn,
+  ResumeOptions,
   RunStatus,
   SendOptions,
   Trouble,
@@ -72,7 +74,7 @@ import type {
   StartResponse,
   SwitchableMode,
 } from "./types";
-import { composeBlocks, composeOutgoing, stripBlocks } from "./wire";
+import { composeBlocks, composeOutgoing, isMarkerOnly, stripBlocks } from "./wire";
 /** PR2: the attachment pipeline's receipt row — carried, never built here. */
 import type { Receipt } from "../shots/types";
 
@@ -200,6 +202,8 @@ function emptyState(file: string | null): ChatState {
     adopting: false,
     transcript: null,
     ownRunEndedAt: 0,
+    repaired: 0,
+    transcriptGen: 0,
     rev: 0,
   };
 }
@@ -274,6 +278,69 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  one-watch-at-a-time latch and stays set for as long as the adopted run
    *  does, while the published flag clears at its first poll. */
   let adopting = false;
+  /**
+   * EVERY RUN ID THIS CONTROLLER HAS TAKEN RESPONSIBILITY FOR — a send of its
+   * own, a `run` param it re-attached to, a turn the standing watch adopted.
+   * It is the SCHEDULE_ATTACHED question (T:16746-16765) asked of the party
+   * that actually renders turns, rather than of a poller's private bookkeeping.
+   *
+   * It exists because PR4's two watchers read different clocks: the standing
+   * watch looks every 5 s, the schedule poll every 15. A fired scheduled run is
+   * therefore usually ADOPTED FIRST, and `busy()` then holds the poller at its
+   * live-turn guard with the entry left deliberately unmarked — so once the
+   * turn ended, the next tick `resumeRun`'d that same id with `neverShown` and
+   * appended the very turn the watch had just streamed a SECOND TIME (Bugbot
+   * PR #1075).
+   *
+   * WRITTEN ON ATTACHMENT, NEVER ON INTENT (batch review F1). The mark used to
+   * go down in `adoptWatch` before `resumeRun` and again at the top of
+   * `resumeAttach` before the probe — which made this loop's own stated
+   * recovery unreachable: `resumeRun` bailing on the send gate is "a lap of
+   * this loop away from trying again", but the next lap hit `shownRuns.has(id)`
+   * and skipped the id for the life of the page. A live run passed over because
+   * a send happened to be in flight, or whose first probe threw, was then never
+   * adopted by the run-dir road at all — only the coarse transcript follower
+   * recovered it, with no streaming chrome and whole-turn granularity, and
+   * `setRunParam(id)` left a stale `?run=` on the URL. So the two early writes
+   * are gone and the mark lands where the run is genuinely ours: past
+   * `resumeAttach`'s `unknown run_id` check (every road on from there either
+   * streams through `pollLoop` or repairs the turn from the probe payload) and
+   * in `pollLoop` itself.
+   *
+   * CLEARED WHEN THE VISIBLE CONVERSATION IS REPLACED (Bugbot 3974975055).
+   * "Never cleared" was wrong for the one gesture PR4 is built around: Back
+   * mid-turn leaves the run going server-side and the session list is supposed
+   * to re-attach to it — but the id was already in here from `pollLoop`, so
+   * `adoptWatch` refused it and the reader got the external "Running outside
+   * this app" line with no stop control and no token count. The set answers "is
+   * this run's turn already ON SCREEN", and a transcript rebuilt from `history`
+   * (or emptied) is precisely the event that makes the answer no. Both roads
+   * that replace it — `newChat` and `openSession` — clear it, and the schedule
+   * poller's baseline is re-armed by the same `transcriptGen` bump.
+   */
+  const shownRuns = new Set<string>();
+  /**
+   * AND THE SHORT-LIVED HALF: ids a `resumeAttach` is in the middle of claiming.
+   *
+   * The early `shownRuns` write was doing two jobs and only one of them was
+   * wrong. The other is real: while this frame is probing an id, nothing else
+   * may attach to the same run behind it (Bugbot PR #1075 — the schedule poller
+   * asks `hasShownRun` and would otherwise append the turn a second time). A
+   * claim is held for the length of the attach and RELEASED when it ends
+   * without having attached, so the recovery lap finds the id free again.
+   *
+   * THE VALUE IS THE ATTACH'S SEAT, and both halves of that matter (Bugbot
+   * 3975433059). `newChat`/`openSession` clear the claims along with
+   * `shownRuns`: an attach whose transcript has been replaced is abandoned — it
+   * will bail on its own generation check — and leaving its id claimed meant
+   * Back during an adopted, scheduled or `?run=` attach kept that run
+   * unadoptable until the probe returned, or for the rest of the page if the
+   * poll hung. But a cleared claim can be RE-TAKEN by the watch's next lap
+   * before the abandoned attach's `finally` runs, so the release is conditional
+   * on still holding the seat it took — otherwise the old attach's exit would
+   * quietly let go of the new one's claim.
+   */
+  const claimingRuns = new Map<string, number>();
   /** Publish the renderer's gate, and only on a real change: it is read in a
    *  layout effect, so a no-op emit is a wasted frame on every poll. */
   const setAdopting = (value: boolean) => {
@@ -762,7 +829,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // This run is now the one the stop button aims at. Set here, the one place a
     // run is ever in flight, which covers a re-attached run for free.
     activeRun = runId;
+    // And it is a run this page has SHOWN — the schedule poller must never
+    // re-attach to it once it ends (Bugbot PR #1075).
+    if (runId) shownRuns.add(runId);
     activeSeat = seat;
+    // WHICH TRANSCRIPT THIS LOOP IS WRITING INTO, for the `ownRunEndedAt` stamp
+    // in the `finally`. `logGen` alone cannot answer it: `openSession` replaces
+    // the visible conversation WITHOUT bumping the generation (it holds the
+    // `sending` gate instead), so this counter is the only thing that moves.
+    const tGen = state.transcriptGen;
     workingStartedAt = now();
     setRunningUi(true);
     setStats(0, "thinking", null, null);
@@ -1214,12 +1289,26 @@ export function createChatController(deps: ControllerDeps): ChatController {
         activeRun = null;
         activeSeat = 0;
         activeTurnKey = null;
-        // T:16411 `ownRunEndedAt` — when THIS frame's own run ended, so PR4's
-        // transcript follower can tell rows this page just wrote from somebody
-        // else's turn arriving over the top of them (D415).
-        emit({ ownRunEndedAt: now() });
         setRunningUi(false);
       }
+      // T:16411 `ownRunEndedAt` — when THIS frame's own run ended, so PR4's
+      // transcript follower can tell rows this page just wrote from somebody
+      // else's turn arriving over the top of them (D415). TURN BOUNDARY EITHER
+      // WAY, exactly like `noteChatActivity` below and for the same reason: a
+      // superseded loop still wrote rows into this transcript, and a stamp
+      // older than those rows lets `followDecision`'s own-echo guard read this
+      // page's own turn back as somebody else's.
+      //
+      // GUARDED ON THE TRANSCRIPT, not on the seat. The stamp is a fact about
+      // ROWS — "this frame wrote the tail of the conversation on screen" — so
+      // a loop whose conversation is GONE has nothing to say about the one that
+      // replaced it, and saying it anyway made the next session inherit the
+      // previous turn's stamp: `newChat` cleared it and the abandoned loop's
+      // late `finally` wrote "now" back over the fresh state, while
+      // `openSession` never cleared it at all (Bugbot, PR #1075). Then
+      // `followDecision`'s own-echo rule reads somebody else's rows in the NEW
+      // chat as this page's own and suppresses the refresh they should trigger.
+      if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
       // Nothing is "queued for this turn" once the turn is over: the CLI drains
       // its queue as part of the run, so whatever is still listed here has
       // either been answered above or died with the process. Guarded on
@@ -1981,6 +2070,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     answeredStates.clear();
     notedStates.clear();
     nullStatePolls.clear();
+    // THE OTHER ROAD THAT REPLACES THE VISIBLE CONVERSATION (Bugbot 3974975055
+    // — see `shownRuns`). The rows about to arrive come from `history`, which
+    // knows nothing of this page's run ids, so every recorded "already shown"
+    // is about a transcript that is being thrown away. Cleared here rather than
+    // relying on the `transcriptGen` bump, because the id an entering reader
+    // most needs re-adopted is the one this frame streamed a moment ago.
+    shownRuns.clear();
+    claimingRuns.clear();
     // Published, not just emptied: the hint under the box belongs to the
     // conversation that is leaving.
     clearQueued();
@@ -1988,6 +2085,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     emit({
       sessionId,
       historyLoading: true,
+      // THE VISIBLE CONVERSATION IS BEING REPLACED, and this counter is how the
+      // React side hears about it — T calls `scheduleResetForNewTranscript()`
+      // here, in `loadHistory`'s non-refresh branch and nowhere else (T:18000).
+      // A counter rather than the session id: the id also changes when the
+      // FIRST poll of a brand-new chat reports one (`noteSessionId`), mid-run,
+      // and a reset there re-arms the schedule baseline so the next tick
+      // silently writes off a scheduled run that fired in the window.
+      transcriptGen: state.transcriptGen + 1,
       // Set HERE rather than in `adoptLiveRun`, which this function only
       // reaches after the history round-trip: the gate has to be up before the
       // first frame, or the transcript paints once without the card and the
@@ -2001,6 +2106,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // A restored conversation has no live run, so the picker's param is the
       // only honest answer until the next poll reports one.
       permissionMode: curPermissionMode(),
+      // AND NO RUN OF OURS HAS ENDED IN IT. The stamp belongs to the
+      // conversation that is leaving; carried across, it tells the live-watch
+      // follower that this page wrote the tail of a transcript it has never
+      // written a row into, and the own-echo guard then swallows the first
+      // outside turn to arrive (Bugbot, PR #1075). `newChat` clears it through
+      // `emptyState`; this is the other way a transcript is replaced.
+      ownRunEndedAt: 0,
     });
     try {
       const res = (await run(
@@ -2065,7 +2177,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * rendered: a missing working line is a smaller lie than a run adopted onto
    * a conversation this is no longer showing.
    */
-  async function adoptLiveRun(sessionId: string): Promise<void> {
+  async function adoptLiveRun(sessionId: string, opts: AdoptOptions = {}): Promise<void> {
     if (disposed) return;
     // ONE WATCH AT A TIME. `openSession` starts one for every restore and the
     // boot starts one for the path where `openSession` bailed on the gate, so
@@ -2075,7 +2187,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     adopting = true;
     const gen = logGen;
     try {
-      await adoptWatch(sessionId, gen);
+      await adoptWatch(sessionId, gen, opts);
     } finally {
       adopting = false;
       // THE BACKSTOP, not the ordinary road. Every early exit lands here — a
@@ -2087,8 +2199,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
     }
   }
 
-  async function adoptWatch(sessionId: string, gen: number): Promise<void> {
-    for (let tries = 0; tries < ADOPT_LAPS; tries++) {
+  async function adoptWatch(
+    sessionId: string,
+    gen: number,
+    opts: AdoptOptions,
+  ): Promise<void> {
+    // ONE LAP is the STANDING WATCH's posture (T:17615): it is re-armed every
+    // 5 s and by three events of its own, so laps here would only duplicate a
+    // timer that already exists. The open-a-chat window keeps all eight.
+    const laps = Math.max(1, opts.laps ?? ADOPT_LAPS);
+    for (let tries = 0; tries < laps; tries++) {
       if (tries) await sleep(POLL_MS);
       if (logGen !== gen || disposed) return;
       if (activeRun) return;
@@ -2117,8 +2237,41 @@ export function createChatController(deps: ControllerDeps): ChatController {
         continue;
       }
       if (sending) continue;
+      /**
+       * A RUN THIS FRAME ALREADY STREAMED IS NOT ADOPTED AGAIN (Bugbot, this
+       * batch). `shownRuns` was being WRITTEN here and never read, which left
+       * the half of its own contract undone — "a streamed run is attached,
+       * never re-resumed".
+       *
+       * The window is real and now reliably reachable: `noteChatActivity`
+       * announces at both turn boundaries, and at the END one the `busy()` gate
+       * is already down, so the tile that ran the turn hears its own poke,
+       * `live_run` still answers the id for a few seconds, and this frame
+       * re-adopts the reply it just streamed — the done branch strips and
+       * rebuilds the turn, bumps `repaired` (a forced scroll) and takes the
+       * caret back. The 5 s interval could already hit the same window; the
+       * in-document poke (P4-06) only made it certain.
+       *
+       * `continue`, not `return`: the remaining laps of the open-a-chat window
+       * should go on looking for a DIFFERENT id, and the transcript follower
+       * below is the coarser fallback for any tail this skips — which is exactly
+       * the division of labour `tick` is built on ("run dirs first, always …
+       * the transcript is the blinder fallback and only speaks for the turns no
+       * run dir can account for").
+       */
+      // `claimingRuns` beside it for the OTHER half: an attach already in
+      // flight for this id (the boot's `?run=`, the schedule poller) owns it
+      // until it either attaches or lets go — see the declaration.
+      if (shownRuns.has(id) || claimingRuns.has(id)) {
+        setAdopting(false);
+        continue;
+      }
       setRunParam(id);
-      await resumeRun(id);
+      // `quiet` rides through to the reconciliation: the watch may be adopting a
+      // turn whose user line this transcript is already showing (the woken run
+      // whose first turn this frame streamed) or one it has never shown (a send
+      // made in another tab). Only `resumeRun` can tell those apart.
+      await resumeRun(id, { quiet: !!opts.quiet });
       // `resumeRun` resolves at the END of the turn, so a completed call means
       // the run was handled — its own done branch cleared the param. The one
       // call that resolves with the param still reading `id` is a bail on a
@@ -2128,20 +2281,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
   }
 
   /**
-   * Re-attach to a run id from the URL — PR1's SUBSET (design.md §8: live-run
-   * adoption is PR4). It does the three things a boot needs: retry a run dir
-   * that is not visible yet, write off a stale param, and either repair a
-   * finished turn from the probe payload or stream a live one.
+   * Re-attach to a run id — a `run` param at boot, a run the standing watch
+   * found, a scheduled message that just fired. It retries a run dir that is
+   * not visible yet, writes off a stale param, and either repairs a finished
+   * turn from the probe payload or streams a live one.
    *
-   * DEFERRED to PR4 (T:17798-17862): `matches` / partial-row stripping,
-   * `neverShown`, `quiet`, and the transcript-follower's `onScreen` test — all
-   * of which exist to reconcile a run this frame never started against turns
-   * history already restored.
+   * PR4 completes it (T:17798-17862): `matches` / partial-row stripping,
+   * `neverShown`, and the follower's `quiet` / `onScreen` test — all of which
+   * exist to reconcile a run this frame never started against turns history
+   * already restored.
    */
-  async function resumeRun(runId: string): Promise<void> {
+  async function resumeRun(runId: string, opts: ResumeOptions = {}): Promise<void> {
     if (disposed) return;
     try {
-      await resumeAttach(runId);
+      await resumeAttach(runId, opts);
     } finally {
       // THE ADOPTION GATE COMES DOWN ON EVERY ROAD OUT OF HERE (Bugbot PR
       // #1061). `openSession` raises `adopting` before the first frame, and on
@@ -2157,14 +2310,51 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // the ordinary live road (where the first poll already cleared it) pays
       // nothing here.
       setAdopting(false);
+      // AND THE CARET GOES BACK IN THE BOX, on every road out (T:17866 —
+      // `focusBox(box)` in T's own `finally`). Boot's `?run=` was covered
+      // incidentally by the composer's `autoFocus`; an adoption mid-session and
+      // a scheduled attach were not, and a reader who was handed a streaming
+      // reply then had to click to answer it (P4-17).
+      if (!disposed) deps.focusComposer?.();
     }
   }
 
-  async function resumeAttach(runId: string): Promise<void> {
+  async function resumeAttach(runId: string, opts: ResumeOptions): Promise<void> {
     if (sending) return;
+    const neverShown = !!opts.neverShown;
+    const quiet = !!opts.quiet;
+    /**
+     * OPT-IN, AND ONLY BOOT OPTS IN (T:17749, 17776-17786). PR1 retried
+     * unconditionally, which is right for the case the retry exists for — "a
+     * frame handed a run id by its EMBEDDER can boot before the freshly created
+     * run dir is visible to the agent" — and wrong for the two roads that
+     * arrive here with an id nobody typed: the standing watch and the schedule
+     * poller. Those ids come from `live_run`, so a "not visible yet" answer is
+     * not a race with a spawn, it is a run that has since been PRUNED — and
+     * waiting it out cost 5 × 700 ms inside the `sending` gate, during which
+     * the composer refuses a send and the watch cannot lap.
+     *
+     * Keyed on the flags those roads already carry (`quiet` from `adoptWatch`,
+     * `neverShown` from the scheduled attach), so nothing new has to be
+     * threaded and an explicit `retryUnknown` still wins either way. Boot's
+     * `?run=` carries neither flag and keeps the retry (P4-18).
+     */
+    const retryUnknown = opts.retryUnknown ?? !(quiet || neverShown);
     sending = true;
     const seat = ++sendSeq;
     const gen = logGen;
+    /** WHICH TRANSCRIPT THIS ATTACH IS WRITING INTO, for the `ownRunEndedAt`
+     *  stamp below — the same guard `pollLoop` takes, for the same reason: the
+     *  stamp is a fact about ROWS, so an attach whose conversation is gone has
+     *  nothing to say about the one that replaced it. */
+    const tGen = state.transcriptGen;
+    // Past the gate this run is ours to TRY, which is not the same as ours to
+    // have shown (batch review F1). The claim keeps every other road off the id
+    // for the length of the attempt (Bugbot PR #1075) and is released in the
+    // `finally` below, so an attempt that ends without attaching — a thrown
+    // probe, a stale id — leaves the run adoptable on the watch's next lap.
+    // Tagged with this attach's seat so only this attach can let it go.
+    if (runId) claimingRuns.set(runId, seat);
     try {
       let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "" }, { key: null })) as
         | PollResponse
@@ -2175,7 +2365,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // A few short retries tell the two apart (T:17777-17787).
       for (
         let i = 0;
-        i < UNKNOWN_RUN_RETRIES && (probe as { error?: string }).error === "unknown run_id";
+        retryUnknown &&
+        i < UNKNOWN_RUN_RETRIES &&
+        (probe as { error?: string }).error === "unknown run_id";
         i++
       ) {
         await sleep(UNKNOWN_RUN_RETRY_MS);
@@ -2185,35 +2377,129 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (logGen !== gen || disposed) return;
       }
       if (isUnknownRun((probe as { error?: string }).error)) {
-        // Stale param — nothing to attach to (T:17788-17796).
+        // Stale param — nothing to attach to (T:17788-17796). NOT `onRunEnded`:
+        // no run of this frame's ended here, so the checkpoint chain is exactly
+        // as fresh as it was. T's own branch calls `annResolveSent()` and
+        // nothing else (T:17792 vs 17812-17814); the annotations still have to
+        // be handed back, because a bookmarked mid-run URL is the one road on
+        // which they would otherwise be stranded `sent` forever.
         clearRunParam();
-        reportTrouble(troubleOf("unknown-run", String((probe as { error?: string }).error)));
+        deps.onRunAbandoned?.();
+        // A CARD ONLY FOR AN ID THE CALLER SUPPLIED (T:17787-17795, P4-05). The
+        // card is right for a bookmarked mid-run URL — the reader put that id
+        // there and is owed an answer about it. The same road is taken by the
+        // standing watch and the schedule poller, whose ids come from
+        // `live_run`: the run ends and its dir is pruned before the probe
+        // lands, and a reader who touched NOTHING got "That turn is no longer
+        // running" over a healthy transcript. T recovered from those in
+        // silence, and the flags those roads already carry are the difference.
+        if (!quiet && !neverShown) {
+          reportTrouble(troubleOf("unknown-run", String((probe as { error?: string }).error)));
+        }
         return;
       }
+      // AND HERE THE RUN IS GENUINELY OURS (batch review F1). Past the stale-id
+      // branch every road on either streams the turn through `pollLoop` or
+      // repairs it from this payload, so the id is one this transcript shows
+      // and the schedule poller must never re-attach to it. Marked at this one
+      // point rather than in each of the branches below, so no reconciliation
+      // road can be added later that forgets to.
+      if (runId) shownRuns.add(runId);
       const poll = probe as PollResponse;
       if (poll.session_id) noteSessionId(String(poll.session_id));
-      if (poll.done) {
-        // Run finished with no frame attached: repair what the restored
-        // transcript can provably be missing (T:17812-17855).
-        clearRunParam();
-        if (poll.error) {
-          addError(poll.error);
-          return;
+      const probeMsg = stripBlocks(poll.message || "");
+      const users = state.turns.filter((t): t is UserTurn => t.role === "user");
+      const lastUser = users.length ? users[users.length - 1] : null;
+      /**
+       * IS THE LAST BUBBLE THIS RUN'S OWN LINE? (T:17809-17810.)
+       *
+       * A marker-only message never counts as a match: every such send collapses
+       * to the same text, so it cannot identify a specific turn — and a false
+       * match trims another turn's assistant rows. Worst case for refusing is a
+       * duplicated marker row, which is harmless by comparison.
+       *
+       * `neverShown` first: with it, identical text is a COINCIDENCE (the same
+       * prompt sent twice), never this run's own line, so no match is legitimate.
+       */
+      const matches =
+        !neverShown && !!lastUser && !isMarkerOnly(probeMsg) && lastUser.text === probeMsg;
+      /**
+       * `matches` asks the question of the LAST bubble only, because it also
+       * decides whether to STRIP rows. `onScreen` only decides whether to PRINT,
+       * so it may look at the whole transcript — and a message the user sent
+       * twice reads as already-shown and prints nothing, which is the safe
+       * direction and the same coincidence `matches` refuses to resolve
+       * (T:17765-17766).
+       */
+      const onScreen = (msg: string) => !!msg && users.some((u) => u.text === msg);
+      /**
+       * IS THIS RUN'S TURN NEWS TO THIS TRANSCRIPT? (Bugbot PR #1075, second
+       * pass.)
+       *
+       * `neverShown` is the CALLER'S BELIEF, not a fact about the log: the
+       * schedule poller sets it for any id missing from `shownRuns`, and the
+       * standing watch's own `refreshHistory` can have pulled that very turn in
+       * from the transcript without ever touching `shownRuns` — `history` rows
+       * carry no run id (`HistoryUserTurn` is text + uuid), so there is nothing
+       * for a refresh to record. A short scheduled run therefore lands on
+       * screen at the 5 s refresh and is attached again at the 15 s tick.
+       *
+       * So `neverShown` takes the SAME `onScreen` test the `quiet` follower
+       * takes: append only what the transcript is not already showing. The two
+       * flags differ in what they claim (a turn this frame never rendered vs. a
+       * turn made in another tab), never in that question.
+       */
+      const unseen = (neverShown || quiet) && !!probeMsg && !onScreen(probeMsg);
+      /** Already on screen and the caller is one of the two that must not
+       *  double it up: print no USER LINE at all (the failure below is a
+       *  separate question — see `errorShown`). */
+      const shownAlready = (neverShown || quiet) && onScreen(probeMsg);
+      /**
+       * IS THIS FAILURE ALREADY IN THE TRANSCRIPT? (Bugbot PR #1075, third
+       * pass.)
+       *
+       * The prompt and the failure arrive on screen by DIFFERENT roads, so
+       * "the turn is already shown" cannot answer for both: `refreshHistory`
+       * renders whatever rows the transcript file holds, while `poll.error` is
+       * the RUN DIR's verdict — a CLI that died before it could write a row
+       * leaves the prompt on screen and no failure anywhere. Asking the log
+       * for the error text itself is therefore the only test that tells the
+       * two apart, and it is exact: `historyToTurns` maps a transcript
+       * `error` row to `text` verbatim, the same string `addError` would
+       * classify.
+       */
+      const errorShown = (msg: string) =>
+        !!msg && state.turns.some((t) => t.role === "error" && t.text === msg);
+      /** Drop the partial assistant rows under a matched user line: `pollLoop`
+       *  re-streams the whole turn, and the done branch re-renders it from the
+       *  probe payload (T:17831 / 17857). */
+      const stripAfterLastUser = () => {
+        if (!lastUser) return;
+        const cut = state.turns.findIndex((t) => t.key === lastUser.key);
+        if (cut >= 0 && cut < state.turns.length - 1) {
+          emit({ turns: state.turns.slice(0, cut + 1) });
         }
-        // SEAMS APPLY TO A REPAIR TOO. A run that absorbed a follow-up and
-        // then finished with no frame attached is TWO replies in one window
+      };
+      /** The assistant rows the probe payload carries. A `poll` response holds
+       *  the turn's SEGMENTS too, so a run that finished while this frame was
+       *  away keeps its whole tool timeline rather than losing it until the next
+       *  history restore (T:17827-17835). */
+      const probeSpans = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
+      const probeSegs = Array.isArray(poll.segments) ? poll.segments : [];
+      const probeText = poll.text || "";
+      const addAssistantFromProbe = () => {
+        // SEAMS APPLY TO A REPAIR TOO. A run that absorbed a follow-up and then
+        // finished with no frame attached is TWO replies in one window
         // (`turn_breaks`), and one `pollBody` over the lot merged them into a
         // single bubble — the same defect `pollLoop`'s own done branch already
-        // slices for.
-        const spans = Array.isArray(poll.turn_breaks) ? poll.turn_breaks : [];
-        const allSegs = Array.isArray(poll.segments) ? poll.segments : [];
-        const allText = poll.text || "";
-        for (let j = 0; j <= spans.length; j++) {
-          const from = j === 0 ? { segments: 0, text: 0 } : spans[j - 1]!;
-          const to = j < spans.length ? spans[j]! : null;
+        // slices for. Sliced HERE rather than at the call sites so every repair
+        // road (matched, appended, watched) gets it the once.
+        for (let j = 0; j <= probeSpans.length; j++) {
+          const from = j === 0 ? { segments: 0, text: 0 } : probeSpans[j - 1]!;
+          const to = j < probeSpans.length ? probeSpans[j]! : null;
           const view = pollBody(
-            to ? allSegs.slice(from.segments, to.segments) : allSegs.slice(from.segments),
-            to ? allText.slice(from.text, to.text) : allText.slice(from.text),
+            to ? probeSegs.slice(from.segments, to.segments) : probeSegs.slice(from.segments),
+            to ? probeText.slice(from.text, to.text) : probeText.slice(from.text),
             ++cardSeq,
           );
           if (view.mode === "empty") continue;
@@ -2225,26 +2511,244 @@ export function createChatController(deps: ControllerDeps): ChatController {
             ...(j > 0 ? { followup: j } : {}),
           });
         }
+      };
+      if (poll.done) {
+        // Run finished with no frame attached: repair only what the restored
+        // transcript can provably be missing (T:17812-17855).
+        clearRunParam();
+        /**
+         * AND THE REPAIR IS A TURN BOUNDARY THIS FRAME OWNS (Bugbot 3975677791).
+         *
+         * `pollLoop`'s `finally` stamps `ownRunEndedAt` and this road never did
+         * — so a run reconciled here left the watermark at whatever it was
+         * before (0 on a fresh mount), and `followDecision`'s own-echo guard
+         * (`probe.mtime > ownEnd`) then read the rows THIS repair had just
+         * accounted for as somebody else's turn and raised the external working
+         * line over them. Same guard as `pollLoop`'s, and stamped on every exit
+         * from this branch: the error roads append rows too, and a repair that
+         * reconciled to "already on screen" has still just established that the
+         * run is over.
+         */
+        const stampOwnEnd = () => {
+          if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
+        };
+        // The run this frame missed still handled its notes, and may have edited
+        // the file while we were away (`annResolveSent` / `snapInvalidate`).
+        deps.onRunEnded?.();
+        /**
+         * DID THIS REPAIR ACTUALLY PUT ROWS ON SCREEN? (Bugbot 3974939169 and
+         * 3974975062, batch review F9.)
+         *
+         * The nonce below is an UNCONDITIONAL scroll-to-bottom in the renderer,
+         * and it was bumped on one road only — the success one, whether or not
+         * that road appended anything. Both halves of that were wrong:
+         *
+         *  * the error branches append a user line and a failure in one commit
+         *    and then returned WITHOUT bumping, so a reader who had scrolled up
+         *    never saw a failed scheduled or adopted turn land at all;
+         *  * the success branch bumped even when `matches` and `unseen` were
+         *    both false and nothing was added — the `shownAlready` case, or a
+         *    probe with no `probeMsg`. Native reaches that on roads T does not
+         *    (the quiet standing watch after a 5 s `refreshHistory` has already
+         *    drawn the turn), so a reader who had scrolled up was yanked to the
+         *    bottom for no new content.
+         *
+         * So the flag, not the road: every branch that appends says so, and the
+         * nonce is bumped exactly when there is something to scroll to. T's own
+         * call is equally unconditional (T:17851) but cannot reach the no-op
+         * case, so this is parity with its behaviour rather than its spelling.
+         */
+        let appended = false;
+        if (poll.error) {
+          if (matches || !users.length) {
+            addError(poll.error);
+            appended = true;
+          } else if (unseen) {
+            // The turn is not on screen and never was, so the failure needs its
+            // own user line to hang under — otherwise the error reads as
+            // belonging to whatever the reader last said.
+            //
+            // `quiet && !onScreen` IS THE SAME CASE AS THE SUCCESS PATH BELOW
+            // (Bugbot PR #1075): the standing watch adopts `quiet: true`, so a
+            // turn made in another tab that FAILED took neither this branch nor
+            // that one and was discarded outright — while its succeeding twin
+            // was appended. A failed turn is news in exactly the same way.
+            //
+            // Gated on `probeMsg` (inside `unseen`), mirroring the success
+            // branch: the message is the whole of the evidence about what this
+            // transcript is already showing, so with none there is no turn to
+            // append and neither flag has anything to be quiet about.
+            addUser(probeMsg);
+            addError(poll.error);
+            appended = true;
+          } else if (shownAlready && !errorShown(poll.error)) {
+            // THE PROMPT IS UP AND THE FAILURE IS NOT (Bugbot PR #1075, third
+            // pass). `unseen` above asks whether the TURN is news, and it is
+            // the wrong question for a failed run: the two-clock race this
+            // code already guards for successful turns — the 5 s
+            // `refreshHistory` pulls the prompt in from the transcript, the
+            // 15 s watch then attaches the same id — leaves a scheduled or
+            // adopted run's error with nowhere to go, because the turn no
+            // longer counts as unseen. So the failure is printed on its own,
+            // under the line that is already there, and only `errorShown`
+            // stops it: if the transcript happened to carry the failure too,
+            // the row is there and there is nothing to add.
+            addError(poll.error);
+            appended = true;
+          }
+          // A FAILED TURN IS NEWS TOO (Bugbot 3974939169): same nonce, same
+          // reason — one commit, no `running` edge to hang a settle-scroll off.
+          if (appended) emit({ repaired: state.repaired + 1 });
+          stampOwnEnd();
+          return;
+        }
+        if (matches) {
+          stripAfterLastUser();
+          addAssistantFromProbe();
+          appended = true;
+        } else if ((!users.length && probeMsg) || unseen) {
+          // Appended, never matched: the log is empty, or the turn is genuinely
+          // `unseen` — a scheduled send that fired and finished between polls,
+          // or a turn made in another tab this transcript has never shown. A
+          // SHORT turn is over before the watch's first look, and dropping it
+          // silently was the whole of the second tab's remaining complaint
+          // (D415); appending one the refresh had already pulled in was the
+          // duplicate on the other side of it (Bugbot PR #1075).
+          addUser(probeMsg);
+          addAssistantFromProbe();
+          appended = true;
+        }
         // AND THE WINDOW IS NOW ON SCREEN, so the next send's loop does not
         // type it a second time (see `landedWindow`). This is the reload road
         // into exactly the R4-3 shape: a finished run, repaired here, then a
         // follow-up into the host that is still holding it open.
-        landedWindow = { runId, segments: allSegs.length, text: allText };
+        landedWindow = { runId, segments: probeSegs.length, text: probeText };
+        // A REPAIR IS NEWS THAT HAS TO BE SCROLLED TO (T:17851, P4-10). T calls
+        // `scrollBottom()` here unconditionally, and the reason it must be
+        // unconditional is that a repair has no `running` → `idle` edge for the
+        // settle-scroll to hang off: it appends a whole turn in one commit. So
+        // a reader who had scrolled up — which is exactly the reader who came
+        // back to a run that finished while the frame was away — saw nothing
+        // appear at all. The renderer reads this nonce beside its own
+        // follow-tail effect.
+        //
+        // Gated on `appended` (see above): a repair that reconciled to "already
+        // on screen" has nothing to scroll TO, and the scroll would only be a
+        // reader losing their place.
+        if (appended) emit({ repaired: state.repaired + 1 });
+        stampOwnEnd();
         return;
+      }
+      if (matches) {
+        // In flight and this turn's user line is on screen: keep it, drop the
+        // partial assistant rows.
+        stripAfterLastUser();
+      } else if (probeMsg && !shownAlready) {
+        addUser(probeMsg);
       }
       sending = false; // pollLoop is not gated on it, and follow-ups need it free
       await pollLoop(runId, gen);
     } catch (err) {
       // A THROWN PROBE IS A TROUBLE CARD, not an unhandled rejection. Every
-      // road in here is reached as a bare `void` (the boot's, `adoptWatch`'s),
-      // so without this a re-attach that failed — the server gone between
-      // mount and the probe — died silently and the reader was left looking at
-      // a restored transcript with no run and no explanation. T warns in
-      // exactly this place (T:17862); a card is the native surface for it.
-      if (!disposed && logGen === gen) reportTrouble(troubleFromError(err));
+      // road in here is reached as a bare `void` (the boot's, `adoptWatch`'s,
+      // the schedule watcher's), so without this a re-attach that failed — the
+      // server gone between mount and the probe — died silently and the reader
+      // was left looking at a restored transcript with no run and no
+      // explanation. T warns in exactly this place (T:17862-17865); a card is
+      // the native surface for it, and it supersedes the bare warn.
+      //
+      // ON THE ROADS NOBODY ASKED FOR, IT STAYS A WARN (P4-05, batch review
+      // F2). Same predicate as the `unknown run_id` branch above, and for the
+      // same reason: `quiet` (the standing watch) and `neverShown` (the
+      // schedule poller) are ids that came from `live_run`, not from a reader.
+      // A dropped socket, a server restart, a sleep/wake — any of which make
+      // one `poll` reject — painted a trouble card over a healthy transcript
+      // for somebody who touched nothing, which is the exact symptom P4-05
+      // exists to remove. T only warns here (T:17862-17865), so a warn is also
+      // the parity answer for those two roads.
+      if (!disposed && logGen === gen) {
+        if (!quiet && !neverShown) reportTrouble(troubleFromError(err));
+        else console.warn("re-attach failed:", err instanceof Error ? err.message : err);
+      }
     } finally {
       if (sendSeq === seat) sending = false;
+      // THE CLAIM IS LET GO ON EVERY ROAD OUT (batch review F1). By here the id
+      // is either in `shownRuns` (attached and reconciled) or genuinely free
+      // again — a stale id, a thrown probe, a generation bump — and the watch's
+      // next lap is entitled to try it.
+      //
+      // ...but only if it is still OURS (Bugbot 3975433059): a Back in the
+      // middle of this attach cleared the claims, and the lap that followed may
+      // already have taken a fresh claim on the same id.
+      if (runId && claimingRuns.get(runId) === seat) claimingRuns.delete(runId);
     }
+  }
+
+  // ---- the transcript follower's two half-methods (PR4, D415) -------------
+
+  /**
+   * REFRESH MODE (T:17972-17987): re-ask what the conversation IS. No skeleton,
+   * no scroll reset, no card wipe, no `session_id` write — the page does not
+   * decide what is new, and `history` is the one party that knows where the turn
+   * boundaries are.
+   *
+   * Gated on the same two facts every follower read is: a live run owns the
+   * transcript, and a send in flight is about to add to it.
+   */
+  async function refreshHistory(sessionId: string): Promise<void> {
+    if (disposed || !sessionId) return;
+    if (activeRun || sending) return;
+    const gen = logGen;
+    try {
+      const res = (await run(
+        dir,
+        "history",
+        { file: FILE || "", session_id: sessionId },
+        { key: null },
+      )) as HistoryResponse & { error?: string };
+      if (logGen !== gen || disposed) return;
+      // A run that attached across the await owns the log now; its stream is
+      // fresher than this answer.
+      if (activeRun || sending) return;
+      if (res.error) throw new Error(res.error);
+      // NOTHING IS RECORDED IN `shownRuns` HERE: a `history` row is text plus a
+      // transcript `uuid` (`HistoryUserTurn`) and carries no run id, so a
+      // refresh cannot say WHICH runs it just rendered. The duplicate-attach
+      // guard therefore lives on the other side, in `resumeAttach`'s `unseen`
+      // test, which asks the rendered transcript itself (Bugbot PR #1075).
+      //
+      // THE WATERMARK IS WRITTEN ONLY WHEN THE ANSWER CARRIES ONE
+      // (T:17663-17665 `noteTranscript`): a history answer with no stat leaves
+      // the mark exactly as it rendered. Publish `null` instead and
+      // `followTranscript` bails at "no render to compare against" for the rest
+      // of the session — the standing watch goes deaf on the very refresh it
+      // just performed.
+      emit({
+        turns: historyToTurns(res),
+        ...(res.transcript && res.transcript.path ? { transcript: res.transcript } : {}),
+      });
+    } catch (err) {
+      // The transcript stays exactly as it rendered. The watermark is NOT
+      // advanced, so the next lap tries again.
+      if (typeof console !== "undefined") {
+        console.warn("history refresh failed:", err instanceof Error ? err.message : err);
+      }
+    }
+  }
+
+  /** T:17715-17732 `setExternalWorking`. Idempotent, and it never speaks over a
+   *  run this frame owns: that line is the real one, with a stop button and a
+   *  token count this one cannot honestly offer. */
+  function setExternalWorking(on: boolean): void {
+    if (disposed) return;
+    if (on) {
+      if (activeRun || sending) return;
+      if (state.working && state.working.external) return;
+      workingStartedAt = now();
+      setStats(0, "external", null, null, true);
+      return;
+    }
+    if (state.working && state.working.external) emit({ working: null });
   }
 
   // ---- back to home (T:12972-13077) --------------------------------------
@@ -2264,6 +2768,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
     answeredStates.clear();
     notedStates.clear();
     nullStatePolls.clear();
+    // THE TRANSCRIPT IS GONE, SO NOTHING IS ON SCREEN ANY MORE (Bugbot
+    // 3974975055 — see `shownRuns`). Back mid-turn is the gesture this whole
+    // feature is built around: the run keeps going server-side and the session
+    // list is meant to re-attach to it, which `adoptWatch` refused while the id
+    // was still recorded here from `pollLoop`.
+    shownRuns.clear();
+    // And the CLAIMS with them (Bugbot 3975433059): an attach whose transcript
+    // has been replaced is abandoned, and a claim it never gets to release
+    // would keep its run unadoptable for the rest of the page.
+    claimingRuns.clear();
     clearQueued();
     // Neither of these is a true default worth stamping — a session id is an
     // identifier and `run` is in-flight bookkeeping — so absent stays the
@@ -2302,6 +2816,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
     openSession,
     resumeRun,
     adoptLiveRun,
+    refreshHistory,
+    setExternalWorking,
+    addNote: (text: string, glyph: NoteTurn["glyph"] = "\u25f7") => {
+      addNote(text, glyph);
+    },
+    isBusy: () => !!activeRun || sending,
+    hasActiveRun: () => !!activeRun,
+    /** Shown OR being claimed: the schedule poller's question is "may I attach
+     *  to this?", and an attach already in flight is as good an answer as a
+     *  turn already on screen (see `claimingRuns`). */
+    hasShownRun: (runId: string) => shownRuns.has(runId) || claimingRuns.has(runId),
     newChat,
     settleAttachments,
     dispose() {

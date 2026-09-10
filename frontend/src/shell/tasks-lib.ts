@@ -2934,13 +2934,98 @@ export interface TaskCardSet {
   hidden: number;
 }
 
-/** What a Cards-view pane says when there is no frame to draw (TaskCards).
- *  `folderMissing` is a folder the server answered 404 for: nothing will ever
- *  be framed for it, and "Starting…" would be a promise the card cannot keep
- *  (Akshil, 2026-09-06: "some cards are stuck at starting"). */
-export function emptyPaneText(task: Pick<Task, "status">, folderMissing: boolean): string {
+/**
+ * What a Cards-view pane says when there is no frame to draw (TaskCards).
+ *
+ * `folderMissing` is a folder the server answered 404 for: nothing will ever be
+ * framed for it, and "Starting…" would be a promise the card cannot keep
+ * (Akshil, 2026-09-06: "some cards are stuck at starting").
+ *
+ * AND THE SAME PROMISE IS BROKEN FROM THE OTHER SIDE. "Starting…" is only
+ * honest while a run is IN FLIGHT — the window between "claimed and sent" and
+ * "we know which chat that is", which the card's own comment calls "a few
+ * seconds to a few minutes long". A task that has SETTLED (blocked / done /
+ * archived) with no session never recorded one and never will: `schedule.py`'s
+ * `_turn_tick` writes `claude_session_id` on the first watcher tick that
+ * reports one, so a child that dies before its first status line leaves it
+ * empty for good. That row is then unreachable from every session-keyed
+ * surface, the explorer does not list it (it lists transcripts), and the card
+ * spun on "Starting…" for a run that ended a day earlier (P4R1-1, diagnosis
+ * FIX-A). Nothing will ever be framed here — the same fact `folderMissing`
+ * carries, arrived at from the other side — so it says so instead.
+ *
+ * `failed` picks WHICH sentence: a run that broke says it broke, and the card
+ * paints it in the error colour. A settled row that simply has no chat on file
+ * (a done entry whose session was never written) is not an error and does not
+ * wear one.
+ */
+export function emptyPaneText(
+  task: EmptyPaneTask,
+  folderMissing: boolean,
+): string {
   if (folderMissing) return "Folder no longer exists";
-  return taskColumn(task) === "upcoming" ? "Not started yet" : "Starting…";
+  if (task.status === "upcoming") return "Not started yet";
+  if (isSettledLane(task.status)) {
+    if (task.failed) return "The run failed before it started a chat";
+    // ASK THE ROW, NOT ONLY THE LANE (L1). `tasks.py:_status` ranks
+    // `if filed: return "archived"` above `_waiting`'s `upcoming`, so filing a
+    // task whose message has not run takes it OUT of the lane the test above
+    // keys on — and the settled sentence would then assert a run happened for a
+    // message still sitting in the future. A row holding a pending message has
+    // one thing that has not run, whatever lane it was filed into.
+    if (hasPendingMessage(task)) return "Not started yet";
+    return "No chat was recorded for this run";
+  }
+  return "Starting…";
+}
+
+/** The lanes where "nothing will ever be framed here" is a FACT and not a
+ *  guess, named one by one (L2).
+ *
+ *  It was an exclusion, and it was read off `taskColumn` — two mistakes in the
+ *  same line. `statusColumn` floors every status this bundle does not know into
+ *  `"done"`, so a lane a future server adds that MEANS in-flight ("resuming",
+ *  say) was BOTH outside the two names the exclusion spared and flattened into
+ *  one that is settled — and the card told the reader no chat was ever recorded
+ *  for a run happening as they read it. Hence the RAW status: the flooring is
+ *  right for a board that must file every row into one of six columns, and
+ *  wrong for a question whose honest answer about an unrecognised lane is "I
+ *  don't know". An unknown lane falls through to "Starting…", which is what
+ *  this card said before FIX-A and is wrong only in being optimistic.
+ *
+ *  One list, asked in both directions, so the sentence and the error colour
+ *  cannot disagree about which lanes are settled. */
+const SETTLED_LANES = new Set<string>(["blocked", "done", "archived"]);
+
+function isSettledLane(status: string): boolean {
+  return SETTLED_LANES.has(status);
+}
+
+/** What the two empty-pane readings need of a row: its status, its verdict, and
+ *  whether anything on it has yet to run. */
+type EmptyPaneTask = Pick<Task, "status" | "failed"> & Pick<Partial<Task>, "messages">;
+
+/** Does this row still hold a message that HAS NOT RUN — the question that
+ *  separates "nothing was recorded" from "nothing has happened yet".
+ *
+ *  The listing window (`PREVIEW_MESSAGES`, the three newest) is all there is to
+ *  ask, and that is enough for the case this exists for: a task whose ONLY
+ *  message is the pending entry cannot have it pushed out of a window of
+ *  three. A busier row that has genuinely recorded runs has a session, and a
+ *  row with a session never draws this pane at all. */
+function hasPendingMessage(task: EmptyPaneTask): boolean {
+  return (task.messages ?? []).some((m) => m.state === "pending");
+}
+
+/** Whether the sentence `emptyPaneText` answers with is a FAILURE — the one the
+ *  card draws in the error colour, beside "Folder no longer exists". Kept here,
+ *  next to the sentence it describes, so the class and the words cannot drift:
+ *  the view asks one question of one module rather than re-deriving the lane. */
+export function emptyPaneFailed(task: EmptyPaneTask, folderMissing: boolean): boolean {
+  if (folderMissing) return true;
+  // The same whitelist the sentence uses, over the same raw status (L2), so the
+  // colour can never outrun the words.
+  return !!task.failed && isSettledLane(task.status);
 }
 
 /**

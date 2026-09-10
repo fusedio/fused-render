@@ -202,3 +202,18 @@ test("`discardable={false}` leaves the strip with ONE seat while recording", () 
   // The default is unchanged for whoever still wants both.
   expect(draw(snap("recording"), { discardable: true }).seats).toHaveLength(2);
 });
+
+test("a schedule block makes the mic inert, but never mid-recording (P4R1-2)", () => {
+  // The walkthrough's notes go out through the composer, which the block has
+  // shut — so a fresh start is refused for the wait. NOT the stop: a block
+  // landing while the mic is live may not take away the only control that ends
+  // it, the same rule the composer's Stop follows (T:17193-17195).
+  const rest = draw(snap("off"), { blocked: true }).seats[0]!;
+  expect(rest.disabled).toBe(true);
+  expect(rest["aria-disabled"]).toBe("true");
+  const live = draw(snap("recording"), { blocked: true }).seats[0]!;
+  expect(live.disabled).toBe(false);
+  expect(live["aria-pressed"]).toBe("true");
+  // Unblocked, the seat is exactly as PR3 has it.
+  expect(draw(snap("off")).seats[0]!.disabled).toBe(false);
+});

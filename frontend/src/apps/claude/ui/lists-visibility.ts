@@ -84,3 +84,49 @@ export function nextTab(
   const step = dir === 1 ? 1 : shown.length - 1;
   return shown[(at + step) % shown.length];
 }
+
+/**
+ * WHICH LIST IS SHOWING IS THE BLOCK'S STATE, not the component's (T:18260-18265
+ * — "leaving for a chat and coming back keeps the tab you were on").
+ *
+ * A module-level `let`, which is what T's `listTab` is: `Lists` unmounts the
+ * moment the reader enters a chat, so component state cannot hold this and Back
+ * always returned to "Recent chats". Hoisting it into `ClaudeChat` would not do
+ * either — the mounted chat is remounted by a mode switch, and T's own variable
+ * outlives that too. It lives as long as the page, which is exactly T's scope.
+ *
+ * `computeLists` already falls the selection back to the first filled tab when
+ * the remembered one has since emptied, so a stale name here is never a blank
+ * panel.
+ *
+ * KEYED ON THE TARGET, not one variable for the document (batch review F3). A
+ * bare `let` was right for T, whose scope is one page = one target, and wrong
+ * here for the reason P4-06 exists: native renders the cards wall, Peek and the
+ * split pane in ONE document, so a single variable meant picking "Artifacts" in
+ * one tile changed what a DIFFERENT tile showed on its next landing — and the
+ * memory also survived a target change, which T's `listTab` could not. The key
+ * is `agentDir + file`, the shape `useArtifacts` and the snapshots cache both
+ * use. `computeLists` still saves an emptied tab from being a blank panel; it
+ * cannot save it from being the wrong one.
+ */
+const rememberedListTabs = new Map<string, ListName>();
+
+/** The one spelling of the key, so the two accessors cannot disagree. */
+export function listTabKey(agentDir: string | null, file: string | null): string {
+  return (agentDir ?? "") + "\u0000" + (file ?? "");
+}
+
+export function rememberedTab(key: string): ListName {
+  return rememberedListTabs.get(key) ?? "recent";
+}
+
+export function rememberTab(key: string, name: ListName): void {
+  rememberedListTabs.set(key, name);
+}
+
+/** Tests only: put the page's memory back to its boot value. Exported rather
+ *  than reached through the module object so a suite cannot forget which
+ *  variable it is resetting. */
+export function resetRememberedTab(): void {
+  rememberedListTabs.clear();
+}
