@@ -29,7 +29,7 @@ const { snapAgo, snapDeltaLabel, snapRuns, snapVersionLabel } = await import(
 );
 const { Lists } = await import("./Lists");
 type ListsProps = import("./Lists").ListsProps;
-const { nextTab, rememberedTab, resetRememberedTab } = await import(
+const { listTabKey, nextTab, rememberedTab, resetRememberedTab } = await import(
   "./lists-visibility"
 );
 const { sessionTitle: rowsSessionTitle } = await import("./list-rows");
@@ -394,10 +394,11 @@ function arrow(
   r: ReturnType<typeof create>,
   from: string,
   key: "ArrowRight" | "ArrowLeft",
-): { prevented: boolean } {
+): { prevented: boolean; stopped: boolean } {
   const tab = tabs(r).find((t) => t.name === from);
   if (!tab) throw new Error("no tab " + from);
   let prevented = false;
+  let stopped = false;
   act(() =>
     tab.keydown({
       key,
@@ -420,10 +421,12 @@ function arrow(
       preventDefault: () => {
         prevented = true;
       },
-      stopPropagation: () => {},
+      stopPropagation: () => {
+        stopped = true;
+      },
     }),
   );
-  return { prevented };
+  return { prevented, stopped };
 }
 
 test("ARROWS SELECT, not just focus, and they wrap over the shown tabs", () => {
@@ -467,11 +470,121 @@ test("THE SELECTED TAB SURVIVES ENTER-AND-BACK (T:18260-18265)", () => {
   // could never hold this.
   act(() => first.unmount());
   mounted.splice(mounted.indexOf(first), 1);
-  expect(rememberedTab()).toBe("artifacts");
+  expect(rememberedTab(listTabKey("/tpl", "/repo/x.py"))).toBe("artifacts");
 
   // Back.
   const back = mount(<Lists {...TABBED} onOpen={() => {}} />);
   expect(tabs(back).find((t) => t.selected)?.name).toBe("artifacts");
+});
+
+// THE MEMORY IS PER TARGET, not one variable for the document (batch review
+// F3). P4-06's own premise is that native renders the cards wall, Peek and the
+// split pane in ONE document, so a module-level `let` meant picking "Artifacts"
+// in one tile changed what a DIFFERENT tile showed on its next landing — and it
+// survived a target change too, which T's `listTab` (one page = one target)
+// could not.
+test("THE TAB MEMORY IS KEYED ON THE TARGET: another file answers for itself", () => {
+  const a = mount(<Lists {...TABBED} onOpen={() => {}} />);
+  arrow(a, "recent", "ArrowRight");
+  expect(tabs(a).find((t) => t.selected)?.name).toBe("artifacts");
+
+  // A SECOND TILE, same document, a different file. It has never been touched,
+  // so it lands on "Recent chats" — the tile above must not have moved it.
+  const b = mount(<Lists {...TABBED} file="/repo/other.py" onOpen={() => {}} />);
+  expect(tabs(b).find((t) => t.selected)?.name).toBe("recent");
+  // And the first tile is undisturbed by the second one mounting.
+  expect(tabs(a).find((t) => t.selected)?.name).toBe("artifacts");
+
+  // Each key holds its own answer.
+  expect(rememberedTab(listTabKey("/tpl", "/repo/x.py"))).toBe("artifacts");
+  expect(rememberedTab(listTabKey("/tpl", "/repo/other.py"))).toBe("recent");
+  // The agent dir is half the key as well, so the same file under a second
+  // template folder is a second memory.
+  expect(rememberedTab(listTabKey("/tpl2", "/repo/x.py"))).toBe("recent");
+});
+
+test("a target CHANGE under one mount reads that target's own tab back", () => {
+  const r = mount(<Lists {...TABBED} onOpen={() => {}} />);
+  arrow(r, "recent", "ArrowRight");
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("artifacts");
+
+  // T's variable could not do this: its scope is one page = one target, so a
+  // target switch had nothing to carry across. Ours had one variable and
+  // carried the wrong answer over.
+  act(() => r.update(<Lists {...TABBED} file="/repo/other.py" onOpen={() => {}} />));
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("recent");
+  // Back to the first target and its own selection returns.
+  act(() => r.update(<Lists {...TABBED} onOpen={() => {}} />));
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("artifacts");
+});
+
+// A LOCKED BLOCK LOCKS THE ARROWS TOO (P4-23, batch review F7). The rows already
+// refused activation; the arrows still moved `aria-selected` and swapped the
+// visible panel, which is the same navigation by the keyboard — "the keyboard's
+// copy" is exactly what P4-23 was filed to guard.
+test("A LOCKED BLOCK REFUSES THE ARROW WALK (P4-23)", () => {
+  const r = mount(<Lists {...TABBED} onOpen={() => {}} disabled />);
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("recent");
+
+  const press = arrow(r, "recent", "ArrowRight");
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("recent");
+  // Refused BEFORE the key test, so a locked bar swallows nothing: the column
+  // keeps its arrow-scroll while the mode holds the reader.
+  expect(press.prevented).toBe(false);
+  expect(press.stopped).toBe(false);
+  // And nothing was written to the page's memory either.
+  expect(rememberedTab(listTabKey("/tpl", "/repo/x.py"))).toBe("recent");
+
+  // The lock lifting gives the gesture straight back.
+  act(() => r.update(<Lists {...TABBED} onOpen={() => {}} />));
+  arrow(r, "recent", "ArrowRight");
+  expect(tabs(r).find((t) => t.selected)?.name).toBe("artifacts");
+});
+
+// AND BASE UI'S OWN HANDLER IS TOLD TO STAY OUT (batch review F8). Its
+// roving-focus arrow handler is bound on the SAME tab and does not promise to
+// honour `defaultPrevented`, so without `stopPropagation` the press moved focus
+// twice — ours to `next`, theirs one further — and the selected tab came apart
+// from the focused one. The co-bound handler below stands in for Base UI's: it
+// is what a real listener on the same node would do, and the contract pinned is
+// that ours stops the event reaching it. (Base UI's real handler is browser
+// verified; nothing in this runtime can mount it.)
+test("THE ARROW STOPS PROPAGATING so Base UI does not walk it a second time", () => {
+  focusedTabs.length = 0;
+  const r = mount(<Lists {...TABBED} onOpen={() => {}} />);
+  const press = arrow(r, "recent", "ArrowRight");
+  expect(press.prevented).toBe(true);
+  expect(press.stopped).toBe(true);
+  // One move, not two.
+  expect(focusedTabs).toEqual(["artifacts"]);
+
+  // What `stopped` buys, spelled as the sibling listener it is for: a handler on
+  // the same node only runs while the event is still propagating.
+  const sibling: string[] = [];
+  let propagating = true;
+  const ours = tabs(r).find((t) => t.name === "artifacts")!.keydown;
+  act(() =>
+    ours({
+      key: "ArrowRight",
+      currentTarget: {
+        getAttribute: () => null,
+        closest: () => null,
+        parentElement: {
+          querySelector: (sel: string) => {
+            const m = /data-list-tab="([^"]+)"/.exec(sel);
+            return m ? { focus: () => focusedTabs.push(m[1]) } : null;
+          },
+        },
+      },
+      target: null,
+      preventDefault: () => {},
+      stopPropagation: () => {
+        propagating = false;
+      },
+    }),
+  );
+  if (propagating) sibling.push("baseui-moved-focus-again");
+  expect(sibling).toEqual([]);
 });
 
 test("a remembered tab whose list has since emptied falls back, never blank", () => {

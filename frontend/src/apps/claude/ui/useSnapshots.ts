@@ -108,6 +108,10 @@ export function useSnapshots(
   };
   const fileRef = useRef(file);
   fileRef.current = file;
+  /** The other half of the cache key (batch review F4) — `reload` and `adopt`
+   *  are callbacks with empty dep arrays, so both halves ride a ref. */
+  const dirRef = useRef(agentDir);
+  dirRef.current = agentDir;
 
   useEffect(() => {
     gen.current += 1;
@@ -151,7 +155,7 @@ export function useSnapshots(
       // the rows out from under them. The two things that DO make it stale —
       // a finished turn and a write — both go through the cache's own key or
       // through `reload`.
-      const hit = cachedSnapshots(file, invalidation);
+      const hit = cachedSnapshots(agentDir, file, invalidation);
       if (hit) {
         setTimeline(hit);
         setFailed(false);
@@ -171,7 +175,7 @@ export function useSnapshots(
         // guard above already returned. A FAILED read caches nothing, so the
         // retry and the next landing ask again rather than leaving the section
         // stuck on the failure for the life of the page (T:19044-19047).
-        cacheSnapshots(file, invalidation, out);
+        cacheSnapshots(agentDir, file, invalidation, out);
         setTimeline(out);
         setFailed(false);
         setSettled(true);
@@ -200,7 +204,7 @@ export function useSnapshots(
    *  of its own to hand back. Drops the cached entry FIRST: a retry that read
    *  the cache back would be a control that does nothing. */
   const reload = useCallback(() => {
-    if (fileRef.current) invalidateSnapshots(fileRef.current);
+    if (dirRef.current && fileRef.current) invalidateSnapshots(dirRef.current, fileRef.current);
     setNonce((n) => n + 1);
   }, []);
   const adopt = useCallback((next: SnapshotsTimeline) => {
@@ -209,7 +213,9 @@ export function useSnapshots(
     // repaints from the post-revert timeline the write itself returned"), so it
     // becomes the cache rather than invalidating it: the next landing repaints
     // the post-revert chain without a round trip.
-    if (fileRef.current) cacheSnapshots(fileRef.current, invRef.current, next);
+    if (dirRef.current && fileRef.current) {
+      cacheSnapshots(dirRef.current, fileRef.current, invRef.current, next);
+    }
     setTimeline(next);
     setFailed(false);
     setError("");

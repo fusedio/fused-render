@@ -159,30 +159,42 @@ export function resetSnapshotTargetCacheForTests(): void {
  * so by the time the panel remounts there is nothing left to compare a "has this
  * gone stale?" flag against. Storing the invalidation the entry was read under
  * turns that into a question the cache can answer on its own, on any mount.
+ *
+ * AND ON THE AGENT DIR TOO (batch review F4). `loadSnapshots` is a function of
+ * BOTH arguments — the template folder holding `agent.py` decides which store
+ * answers — so a key of `file` alone let two chats on the same file with
+ * different template folders repaint each other's chain with no read of their
+ * own, and `invalidateSnapshots(file)` dropped every folder's entry for it. The
+ * composite key is the shape `useArtifacts` already uses.
  */
 const timelines = new Map<string, { inv: unknown; timeline: SnapshotsTimeline }>();
 
-/** The cached timeline for this file, but only if it was read under the same
+/** The one spelling of the key, so the four accessors cannot disagree. */
+const cacheKey = (agentDir: string, file: string) => agentDir + " " + file;
+
+/** The cached timeline for this target, but only if it was read under the same
  *  invalidation value the caller is asking under. */
 export function cachedSnapshots(
+  agentDir: string,
   file: string,
   invalidation: unknown,
 ): SnapshotsTimeline | null {
-  const hit = timelines.get(file);
+  const hit = timelines.get(cacheKey(agentDir, file));
   return hit && hit.inv === invalidation ? hit.timeline : null;
 }
 
 export function cacheSnapshots(
+  agentDir: string,
   file: string,
   invalidation: unknown,
   timeline: SnapshotsTimeline,
 ): void {
-  timelines.set(file, { inv: invalidation, timeline });
+  timelines.set(cacheKey(agentDir, file), { inv: invalidation, timeline });
 }
 
 /** What the heading's retry spends, and what a revert's own repaint replaces. */
-export function invalidateSnapshots(file: string): void {
-  timelines.delete(file);
+export function invalidateSnapshots(agentDir: string, file: string): void {
+  timelines.delete(cacheKey(agentDir, file));
 }
 
 /** Test seam, beside `resetSnapshotTargetCacheForTests` — page scope means one

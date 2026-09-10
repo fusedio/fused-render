@@ -52,12 +52,15 @@ afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
   resetSnapshotCacheForTests();
   reads.length = 0;
+  readTargets.length = 0;
   fileGate = null;
   answer = () => Promise.resolve(timeline("h1"));
 });
 
 /** Every `loadSnapshots` this file's mounts have paid for. */
 const reads: string[] = [];
+/** The same reads with their agent dir, for the composite-key test. */
+const readTargets: string[] = [];
 let answer: () => Promise<SnapshotsTimeline> = () =>
   Promise.resolve(timeline("h1"));
 let fileGate: (() => void) | null = null;
@@ -70,8 +73,9 @@ const deps = {
     }
     return Promise.resolve(true);
   },
-  load: (_dir: string, file: string) => {
+  load: (dir: string, file: string) => {
     reads.push(file);
+    readTargets.push(dir + " " + file);
     return answer();
   },
 };
@@ -85,10 +89,11 @@ async function mount(
   invalidation: unknown = 0,
   enabled = true,
   file: string = FILE,
+  agentDir = "/tpl",
 ): Promise<Harness> {
   let out: import("./useSnapshots").SnapshotsState | null = null;
   function Probe() {
-    out = useSnapshots("/tpl", file, invalidation, deps as never, enabled);
+    out = useSnapshots(agentDir, file, invalidation, deps as never, enabled);
     return null;
   }
   let r!: ReactTestRenderer;
@@ -141,7 +146,7 @@ test("A FAILED READ CACHES NOTHING (T:19044-19047)", async () => {
   const h = await mount(0);
   expect(h.state().failed).toBe(true);
   expect(h.state().error).toContain("store unreadable");
-  expect(cachedSnapshots(FILE, 0)).toBe(null);
+  expect(cachedSnapshots("/tpl", FILE, 0)).toBe(null);
 
   // So the next landing asks again rather than leaving the section stuck on the
   // failure for the life of the page.
@@ -171,7 +176,7 @@ test("A WRITE'S OWN ANSWER BECOMES THE CACHE (T:19042-19043)", async () => {
   // Not merely invalidated: the next landing repaints the post-revert chain
   // without a round trip, which is what "repaints from the timeline the write
   // itself returned" means past the end of that render.
-  expect(cachedSnapshots(FILE, 0)?.hash).toBe("post-revert");
+  expect(cachedSnapshots("/tpl", FILE, 0)?.hash).toBe("post-revert");
   h.unmount();
   const back = await mount(0);
   expect(reads.length).toBe(1);
@@ -180,8 +185,42 @@ test("A WRITE'S OWN ANSWER BECOMES THE CACHE (T:19042-19043)", async () => {
 
 test("the cache is keyed on the FILE as well: another target reads its own", async () => {
   await mount(0);
-  expect(cachedSnapshots(FILE, 0)?.hash).toBe("h1");
-  expect(cachedSnapshots("/repo/other.py", 0)).toBe(null);
+  expect(cachedSnapshots("/tpl", FILE, 0)?.hash).toBe("h1");
+  expect(cachedSnapshots("/tpl", "/repo/other.py", 0)).toBe(null);
+});
+
+// AND ON THE AGENT DIR (batch review F4). `loadSnapshots(agentDir, file)` is a
+// function of BOTH, so a key of `file` alone let two chats on the same file
+// with different template folders repaint each other's chain with no read.
+test("the cache is keyed on the AGENT DIR too: a second folder reads its own", async () => {
+  const first = await mount(0);
+  expect(first.state().timeline?.hash).toBe("h1");
+  expect(readTargets).toEqual(["/tpl " + FILE]);
+
+  // Same file, a DIFFERENT template folder — which is a different store, so it
+  // must not be handed the first folder's answer.
+  first.unmount();
+  answer = () => Promise.resolve(timeline("other-folder"));
+  const second = await mount(0, true, FILE, "/tpl2");
+  expect(readTargets).toEqual(["/tpl " + FILE, "/tpl2 " + FILE]);
+  expect(second.state().timeline?.hash).toBe("other-folder");
+  // And neither entry has displaced the other.
+  expect(cachedSnapshots("/tpl", FILE, 0)?.hash).toBe("h1");
+  expect(cachedSnapshots("/tpl2", FILE, 0)?.hash).toBe("other-folder");
+});
+
+test("a RETRY drops only its own folder's entry", async () => {
+  await mount(0);
+  mounted.splice(0).forEach((r) => act(() => r.unmount()));
+  answer = () => Promise.resolve(timeline("second"));
+  const second = await mount(0, true, FILE, "/tpl2");
+  // `invalidateSnapshots(file)` used to clear every folder's entry for the
+  // file, so one panel's retry spent the other panel's cache.
+  answer = () => Promise.resolve(timeline("retried"));
+  await act(async () => second.state().reload());
+  for (let i = 0; i < 4; i++) await act(async () => {});
+  expect(second.state().timeline?.hash).toBe("retried");
+  expect(cachedSnapshots("/tpl", FILE, 0)?.hash).toBe("h1");
 });
 
 // ── the gate `useLandingReads` holds it behind (P4-14) ──────────────────────

@@ -25,6 +25,7 @@ import {
   computeLists,
   type ListCounts,
   type ListName,
+  listTabKey,
   nextTab,
   rememberTab,
   rememberedTab,
@@ -97,12 +98,29 @@ export function Lists({
    * component unmounts on the way into a chat, so the value lives in
    * `lists-visibility`'s page-scoped memory and this state only mirrors it —
    * enough to re-render on a press, never the place the answer is kept.
+   *
+   * KEYED ON THIS MOUNT'S TARGET (batch review F3): the memory is per
+   * `agentDir + file`, so two wall tiles on different files no longer answer
+   * for each other, and a target change reads its OWN remembered tab back
+   * rather than carrying the previous file's across. The key change is adopted
+   * during render — the documented shape for "adjust state when a prop changes"
+   * — so the first paint after a target switch is already on the right panel
+   * instead of flashing the old one for a frame.
    */
-  const [tab, setTabState] = useState<ListName>(rememberedTab);
-  const setTab = useCallback((name: ListName) => {
-    rememberTab(name);
-    setTabState(name);
-  }, []);
+  const memoKey = listTabKey(agentDir ?? null, file);
+  const [tab, setTabState] = useState<ListName>(() => rememberedTab(memoKey));
+  const seenKey = useRef(memoKey);
+  if (seenKey.current !== memoKey) {
+    seenKey.current = memoKey;
+    setTabState(rememberedTab(memoKey));
+  }
+  const setTab = useCallback(
+    (name: ListName) => {
+      rememberTab(memoKey, name);
+      setTabState(name);
+    },
+    [memoKey],
+  );
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const timeline = snaps?.timeline;
@@ -243,12 +261,27 @@ export function Lists({
    */
   const onTabKeys = useCallback(
     (from: ListName, ev: React.KeyboardEvent<HTMLElement>) => {
+      // A LOCKED WALL LOCKS THE KEYBOARD PATH TOO (P4-23, batch review F7).
+      // With `listsDisabled` the rows already refuse activation, but the arrows
+      // still moved `aria-selected` and swapped the visible panel — which is
+      // the same navigation by another gesture, and the gesture P4-23 was filed
+      // to guard. Refused before the key test, so nothing about a locked bar
+      // is preventDefault'ed either.
+      if (disabled) return;
       if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
       const next = nextTab(counts, from, ev.key === "ArrowRight" ? 1 : -1);
       if (!next) return;
       // Only once there IS somewhere to go: an arrow on a lone tab is not this
       // handler's key, and swallowing it would cost the column its scroll.
       ev.preventDefault();
+      // AND BASE UI'S OWN ROVING-FOCUS HANDLER IS NOT ALSO RUN (batch review
+      // F8). It is bound on this same tab and does not promise to honour
+      // `defaultPrevented`, so without this the press moved focus TWICE — ours
+      // to `next`, theirs one further along — and the selected tab and the
+      // focused tab came apart on the first arrow. Ours is the walk that knows
+      // which tabs are actually on the bar (`nextTab`), so it is the one that
+      // should win.
+      ev.stopPropagation();
       setTab(next);
       // AND THE FOCUS FOLLOWS THE SELECTION (T:18336). Without it the caret is
       // left on a tab that is no longer active, so the next arrow walks from
@@ -263,7 +296,7 @@ export function Lists({
         ?.querySelector<HTMLElement>(`[data-list-tab="${next}"]`)
         ?.focus({ preventScroll: true });
     },
-    [counts, setTab],
+    [counts, setTab, disabled],
   );
 
   const order: ListName[] = ["recent", "artifacts", "snaps"];
