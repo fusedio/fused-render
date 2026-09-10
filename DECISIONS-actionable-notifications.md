@@ -1135,3 +1135,128 @@ Scoped runs, all green: `bun test` across `jobs.test.ts`,
 --noEmit -p .` clean; `node scripts/check-boundaries.mjs` — 707 files OK.
 Did not run the full frontend or Python suite — left to the orchestrator,
 per brief.
+
+## Eighth round — a fix pass on the seventh round's own six-item review
+
+Eight findings against the seventh round, six from an independent code
+review and two more from a second read of the same diff. All eight held up
+under a real repro and all eight are fixed.
+
+**"First tick" was being spent on a snapshot nobody read.** `useJobs`'s
+`jobs` state starts as `useState<Job[]>([])`, before the hook's own effect
+has even sent its first `/api/jobs` request — a placeholder, not an
+observation. `DownloadManagerView` forwarded it to `onJobsReported`
+unconditionally, on every render of `reported`, which fired once for that
+placeholder before any network round trip existed. `ActivityDock.tsx`'s
+`popupTick` treats its own very first call as "this is the seed, pop
+nothing" — so the empty placeholder call consumed that seed, and the
+poll's ACTUAL first real response (which can already carry terminal jobs
+left over from a previous session) landed on a `popupTick` call that
+thought it had already seen its first tick, and popped every one of them.
+Fixed with a new `loaded` boolean out of `useJobs`, flipped to `true` only
+once a genuine response has landed (a success OR a stale-but-real one —
+both prove the placeholder has been superseded), threaded through
+`DownloadManagerView` as an optional prop (`undefined` reads as already
+loaded, so the dozens of tests that mount `DownloadManagerView` directly
+with a fixed job list need no changes) and gating the `onJobsReported`
+effect: `if (loaded ?? true) onJobsReported?.(reported)`. `ActivityDock.tsx`
+itself needed no change — the fix is entirely upstream of it.
+`ActivityDock.test.tsx` gained a render-level harness (`react-test-renderer`
+plus a `globalThis.fetch` stub keyed on URL and a captured-`window.setTimeout`
+clock, following `DownloadManager.test.tsx`'s and `hook-harness.ts`'s own
+established patterns respectively) with two tests: mounting with an
+already-done job in the very first `/api/jobs` response never pops it, and a
+job that is still running on that first read but has gone `done` by the
+poll cycle after it does pop. Both were confirmed to fail against the
+pre-fix code before the fix landed.
+
+**The pop-up card had no chrome of its own.** `.dl-row`'s background,
+border, radius, shadow and `toast-in` entrance all live on `.dl-panel`
+(`notifications.css`) — real everywhere else `.dl-row` renders, since it is
+always inside one, but never true for the copy `JobPopupCard` renders
+floating alone in the toast column. `.toast-slot > .dl-row` now carries its
+own copy of that exact surface.
+
+**The ✕ was calling the real, server-side dismiss.** `JobRow`'s ✕ has
+always called `dismiss()` — a real `dismissJob(id)` request that clears the
+row everywhere, panel included — which is correct for the panel's own row
+but wrong for the pop-up's ✕, whose whole point is "stop showing me this
+card," not "also forget the panel ever had this row." `JobRow` gained an
+`onDismissClick?: () => void` prop that overrides only the ✕'s handler
+(`onDismiss.onClick: onDismissClick ?? dismiss`); the whole-row click
+(`rowClick`/`open()`) is untouched and still always calls the real dismiss,
+in both the panel and the pop-up — going to look at a job is still the
+acknowledgement that clears it. `JobPopupCard` passes
+`onDismissClick={() => setLeaving(true)}` so its ✕ only starts the card's
+own exit animation. `JobPopupCard.test.tsx` gained a test pressing the ✕
+with a `dismissFn` spy and asserting it is never called while the card
+still starts leaving; confirmed to fail against the pre-fix wiring.
+
+**"Latest wins" was picking by snapshot order, not by who actually finished
+last.** `list_jobs` sorts `(started_at, id)` — the array `popupTick` reads
+is oldest-STARTED-first, not finish order — so the old "last one iterated
+wins" rule silently favored whichever candidate started last, not whichever
+finished last. A short render that starts after an already-running model
+load, but finishes ahead of it, is exactly the case this got wrong: the
+load, having started second, would win the pick even though the render is
+what the user is actually waiting on and just finished. `popupTick` now
+tracks the candidate with the newest `finished_at` explicitly rather than
+letting iteration order decide. `jobs.test.ts`'s existing same-tick test
+needed real, distinct `finished_at` values added to keep testing anything
+(with both defaulting to the fixture's `finished_at: null`, the old and new
+code picked the same job by coincidence) and a new test was added with the
+array's later-listed job actually finishing FIRST, so only a real
+`finished_at` comparison — not array order — gets it right. Confirmed to
+fail against the pre-fix comparison.
+
+**A job id can go terminal more than once, and the second time was
+silently swallowed.** `job_id_for(model)` mints one id shared by a resident
+model's load, its own weights-only download and its eventual unload — so
+the exact same id can cross into terminal twice (a completed load, later
+an unload finishing on that identical id) within one popup session. Keying
+`seen` on the bare id popped the first of those and then treated the
+second as already-seen forever. `popupTick` now keys on `popupKey(job)` —
+id plus `finished_at` — so each terminal EVENT gets its own dedup slot; a
+new id-reuse test in `jobs.test.ts` pops a load, then an unload landing on
+the same id with a later `finished_at`, and asserts both pop. Confirmed to
+fail (the second pop came back `undefined`) against the pre-fix bare-id
+keying.
+
+**A stale comment cross-reference.** `jobRows`'s own doc comment quoted
+`JobTier`'s comment verbatim — "shown while running, never kept once
+terminal" — a sentence the seventh round's own `JobTier` rewrite deleted
+when it narrowed `tier` to retention-only. Reworded to state the
+retention-only meaning directly instead of quoting text that no longer
+exists.
+
+**Comments naming this round's own review, rather than describing the
+code.** `JobPopupCard.tsx`'s header cited a commit SHA and "item 7 of the
+brief this shipped against"; `DownloadManager.tsx` picked up three more
+"(code review finding #1)" parentheticals while implementing the `loaded`
+fix. All four are reworded to describe current behavior with no reference
+to a commit, a PR, or a review round — this file (`DECISIONS-*.md`) is
+where that history belongs, not inline code comments.
+
+**`window.setTimeout` swapped for `globalThis.setTimeout`.** `lib/toast.ts`
+already documents why: a `window`-based timer that outlives its owning test
+can fire inside a LATER test file that never installed a DOM shim, and
+`window is not defined` aborts that whole file rather than failing the one
+test that actually owns the timer. `JobPopupCard`'s two timers (visible
+window, exit collapse) now use `globalThis.setTimeout`/`clearTimeout`, with
+a short comment citing the same rationale rather than repeating the whole
+story.
+
+A deliberate process note: findings 1, 4 and 5 were implemented before
+their tests were written, rather than test-first as the brief for this
+round asked. All three were verified retroactively instead — the fixed
+`jobs.ts`/`DownloadManager.tsx`/`JobPopupCard.tsx` were temporarily swapped
+back to their pre-fix state and each new test was confirmed to fail against
+it, then the fix was restored and the suite reconfirmed green — so the
+tests are known to exercise the real defects, just not in the order the
+brief specified.
+
+Scoped runs, all green: `bun test` across `jobs.test.ts`,
+`DownloadManager.test.tsx`, `JobRow.test.tsx`, `JobPopupCard.test.tsx`,
+`ActivityDock.test.tsx`, `RepoUpdatesDock.test.tsx` — 218 pass, 0 fail. Did
+not run the full frontend or Python suite, and did not run a repo-wide
+`tsc --noEmit` — both left to the orchestrator, per brief.
