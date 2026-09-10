@@ -1701,13 +1701,24 @@ def transcribe_row_fields(title: str, model: str = "", page: str = "") -> dict:
     transcribe stage AND `apps/claude/ann/transcribe.ts`'s annotation
     transcription both build a request through this same row shape
     (`start_transcribe`, `apple/speech.py`'s `start`), so a single hardcoded
-    label would be right for one and wrong for the other — but both callers
-    DO have their own real `page` (they run inside a page, not the shell),
-    so deriving from it, with no fallback default, gives each caller its own
-    honest caption for free.
+    label would be right for one and wrong for the other. The annotation
+    caller runs inside a page and has a real `page` to derive from; the
+    Playground's transcribe stage runs in the shell like every other
+    Playground stage and sends none — `test_the_worker_is_given_the_row_
+    identity_to_restate` pins exactly that case (`"page": "", "origin": ""`).
+    With no default to fall back on for that caller, `origin` is left out of
+    this dict ENTIRELY when there is nothing real to derive, rather than
+    written as `""` — a worker's restate tick (this dict spread straight
+    into its `report` body) is a `"origin" in body and server` write in
+    `jobs.upsert`, so a present-but-empty key would blank an origin an
+    earlier report on the same row already set, every single tick.
     """
-    return {"title": title, "model": model, "kind": "task", "cancellable": True,
-            "unit": "s", "page": page, "origin": jobs.origin_for_page(page)}
+    fields = {"title": title, "model": model, "kind": "task",
+              "cancellable": True, "unit": "s", "page": page}
+    origin = jobs.origin_for_page(page)
+    if origin:
+        fields["origin"] = origin
+    return fields
 
 
 def _transcribe_row(title: str, detail: str, model: str = "", page: str = "") -> dict:

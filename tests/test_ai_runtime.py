@@ -7948,9 +7948,38 @@ def test_the_worker_is_given_the_row_identity_to_restate(
     started = _post_transcribe(client, path=recording).json()
     _wait_job(started["jobId"])
 
+    # No "origin" key at all — the Playground's transcribe stage (this
+    # fixture's caller) sends no page, so there is nothing real to derive,
+    # and a present-but-empty key would blank any origin an earlier report
+    # on this same row already set (see `transcribe_row_fields`'s docstring).
     assert seen["row"] == {"title": os.path.basename(recording), "model": "org/fake-whisper",
-                           "kind": "task", "cancellable": True, "unit": "s", "page": "",
-                           "origin": ""}
+                           "kind": "task", "cancellable": True, "unit": "s", "page": ""}
+
+
+def test_transcribe_row_fields_omits_origin_entirely_with_no_page():
+    """No `"origin"` key at all when `page` is empty — a present-but-empty
+    value would be gated straight into `job.origin` by `jobs.upsert`'s
+    `"origin" in body and server` check the next time this dict is spread
+    into a worker's restate tick, blanking a caption an earlier report on
+    the same row already set."""
+    fields = supervisor.transcribe_row_fields("f.wav", "org/fake-whisper", "")
+    assert "origin" not in fields
+
+
+def test_a_workers_restate_does_not_blank_an_origin_the_opening_report_set():
+    """`origin` is sticky, same as every other field `jobs.upsert` gates on
+    `server=True` — a worker's restate tick (this row-identity dict spread
+    into its report body) must not overwrite an origin an earlier report
+    already derived just because THIS caller (the Playground's transcribe
+    stage, with no page of its own) has nothing real to say about it."""
+    job_id = jobs.SERVER_ID_PREFIX + "ai-transcribe-race"
+    jobs.upsert({"id": job_id, "title": "t", "state": "running"},
+                origin="Claude annotation", server=True)
+    assert jobs.list_jobs()[0]["origin"] == "Claude annotation"
+
+    fields = supervisor.transcribe_row_fields("f.wav", "org/fake-whisper", "")
+    jobs.upsert({"id": job_id, **fields, "state": "running"}, server=True)
+    assert jobs.list_jobs()[0]["origin"] == "Claude annotation"
 
 
 def test_the_terminal_report_can_rebuild_an_evicted_row(
