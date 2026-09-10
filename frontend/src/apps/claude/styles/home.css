@@ -178,7 +178,25 @@
 .c-lists.is-tabbed .c-head:not(:has(> *:not(.c-head-label))) {
   display: none;
 }
-.c-lists.is-tabbed .c-list-panel {
+/* THE GUTTERS BETWEEN SECTIONS THAT STAND ALONE. Untabbed, each list wears its
+   own heading and two of them can be on screen together, so they need the 28px
+   T gave `#snaps` (T:3357) between them and the 32px of air below the last one
+   (T:3382) — without which the two panels sat flush against each other and
+   against the bottom of the column. `#artifacts` had no top gutter of its own
+   (T:3527) precisely because the gap belongs to the PAIR, which is why this is
+   an adjacent-sibling rule rather than a margin on every panel. */
+.c-lists .c-list-panel + .c-list-panel {
+  margin-top: 28px;
+}
+.c-lists:not(.is-tabbed) .c-list-panel:last-child {
+  padding-bottom: 32px;
+}
+/* Behind a tab the panel starts where the other two do: the gutter belongs to
+   the block, not to each list inside it (T:3353). One panel is on screen at a
+   time here, so the sibling rule above can never fire — spelled anyway, so the
+   tabbed dress does not depend on that. */
+.c-lists.is-tabbed .c-list-panel,
+.c-lists.is-tabbed .c-list-panel + .c-list-panel {
   margin-top: 0;
 }
 /* T:105-116'S READING PAIR, RE-ASSERTED BELOW THE SHADCN `TabsContent`.
@@ -622,9 +640,15 @@
 .c-snap-no:hover {
   background: var(--c-surface-2);
 }
+/* ON ITS OWN LINE — `width: 100%` and not `flex-basis`, which WKWebView
+   ignores outright (T:2755-2769, and `composer.css:302-307` spells the same
+   intent the same way for the same reason). In the DMG the note would otherwise
+   sit inline on the button row instead of wrapping under it, and the browser
+   would never show it. */
 .c-snap-note {
   color: var(--c-faint);
-  flex-basis: 100%;
+  flex: 0 0 auto;
+  width: 100%;
 }
 .c-snap-err {
   color: var(--c-error);

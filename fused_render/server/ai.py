@@ -9,6 +9,8 @@ import tempfile
 import threading
 import time
 import uuid
+from urllib.parse import unquote
+
 from fastapi import APIRouter, Body, Header, Request
 from fastapi.responses import (
     FileResponse,
@@ -1031,7 +1033,7 @@ def _local_usage(event: dict) -> dict:
 
 
 def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
-                 body: dict, warnings: list | None = None):
+                 body: dict, warnings: list | None = None, page: str = ""):
     """One completion from a model resident on THIS machine (SPEC §40).
 
     Same wire shape as the Claude path, deliberately: `{ok, result:{text, model,
@@ -1043,6 +1045,9 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     A model that is not resident answers **409 with the job id of the load this
     call just started** — see `supervisor.generate_text`. That is a real state,
     not an error to swallow: the page can show the download it just caused.
+
+    `page` is the calling page (`/api/ai`'s `X-Fused-Page`), threaded into
+    the row this call opens below — the destination a click on it goes to.
     """
     from fused_render.ai import supervisor
 
@@ -1108,7 +1113,7 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     # and it is the caller that mints ids for the other kinds too
     # (`image_job_id`, `transcribe_job_id`).
     job = supervisor.text_job_id(uuid.uuid4().hex)
-    row = supervisor.text_row_fields(_text_title(prompt, model), model)
+    row = supervisor.text_row_fields(_text_title(prompt, model), model, page)
 
     def tick(**over) -> None:
         """One report, always restating the row's full identity — a row can
@@ -1308,7 +1313,7 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     return StreamingResponse(lines(), media_type="application/x-ndjson")
 
 
-async def _ai_relay(body: dict, session: "_AiSession | None" = None):
+async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str = ""):
     """Validate an /api/ai body and run one claude CLI completion.
 
     Module-level (not a closure) so tests can drive it directly and mock the
@@ -1326,7 +1331,16 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
     lock acquire and every configure/_discard call below) is what keeps one
     request pinned to one session even if another app build reassigns the
     global while this request is in flight. Callers with no app handle
-    (direct module-level calls, tests) fall back to `_AI_SESSION`."""
+    (direct module-level calls, tests) fall back to `_AI_SESSION`.
+
+    `page` is the calling page (`X-Fused-Page`, read and unquoted by
+    `api_ai` the same way `routers/jobs.py` and `routers/capture.py` do) —
+    threaded to whichever tier answers, so its own Activity row knows where
+    a click on it should go. The Claude tier falls back to `/claude-config`
+    when there is none: unlike local/apple, that row has no other page a
+    caller reliably supplies (a direct module-level call, or a test, may
+    never set `X-Fused-Page` at all), and Claude Code's settings page is
+    where that model is configured."""
     # The envelope is CLOSED, checked before any field (D413's rule, D633):
     # a page that mistyped an option learns about the option it does not
     # have, not about the field it also got wrong — and never watches a
@@ -1543,7 +1557,7 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
                     "the larger model); use a local vision model instead",
                     status=400)
         return await asyncio.to_thread(
-            _apple_relay, model, prompt, system_prompt, bool(stream), body, warnings)
+            _apple_relay, model, prompt, system_prompt, bool(stream), body, warnings, page)
     if provider == "local" or (provider is None and _is_local_model(model)):
         if effort is not None:
             warnings.append(_unsupported(
@@ -1589,7 +1603,7 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
         # that long. (The StreamingResponse it returns is fine — Starlette
         # iterates a sync generator in a threadpool of its own.)
         return await asyncio.to_thread(
-            _local_relay, model, prompt, system_prompt, bool(stream), body, warnings)
+            _local_relay, model, prompt, system_prompt, bool(stream), body, warnings, page)
 
     # Refused rather than dropped. The Claude path is one `claude -p` invocation
     # with no conversation to resume, so honouring history would mean inventing
@@ -1698,7 +1712,12 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
                 return
             _remote_job_closed = True
         try:
-            jobs.upsert({"id": _remote_job, **fields}, server=True)
+            # `page or "/claude-config"`: the calling page if `_ai_relay` was
+            # given one, else Claude Code's settings page — see `_ai_relay`'s
+            # own docstring for why this tier falls back rather than leaving
+            # the row with nowhere to go.
+            jobs.upsert({"id": _remote_job, **fields},
+                       page=page or "/claude-config", server=True)
         except Exception:  # noqa: BLE001 — reporting is never authoritative
             pass
 
@@ -1713,8 +1732,25 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None):
         # only "Claude — remote", which is the one thing this row exists to
         # say that a local row's detail never does.
         title = str(prompt or model).strip() or model
+        # `origin` is derived, not a literal: `_ai_relay` is the generic
+        # remote-Claude path for `/api/ai`, reachable from any page that
+        # requests the Claude tier — the Playground, Claude annotations, and
+        # any future caller alike — so no single hardcoded label would be
+        # honest for all of them. `jobs.origin_for_page` resolves each
+        # caller's own `page` to its own name; the empty-page case is NOT
+        # `/claude-config` here (that fallback is for the row's `page`
+        # field below — the destination a click should open, which is
+        # defensible even with no caller) but `default="Playground"`, the
+        # same default `_start_render`/`text_row_fields` use: the one caller
+        # that reaches this relay with no `X-Fused-Page` at all is the AI
+        # Models Playground itself (it runs in the shell, not inside a page
+        # iframe — `_ai_relay`'s own docstring says so), never Claude Code's
+        # settings page, so attributing the empty case to "Claude setup"
+        # would caption a Playground generation as if the settings page had
+        # raised it.
         _report_remote(title=title[:80], model=model, state="running", kind="task",
-                       cancellable=False, detail=_REMOTE_ROW_DETAIL)
+                       cancellable=False, detail=_REMOTE_ROW_DETAIL,
+                       origin=jobs.origin_for_page(page, default="Playground"))
 
     def _finish_remote_job() -> None:
         """Success only: drop the row immediately rather than leaving it at
@@ -2007,13 +2043,14 @@ _APPLE_ROW_DETAIL = "Apple on-device model…"
 
 
 def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
-                 body: dict, warnings: list | None = None):
+                 body: dict, warnings: list | None = None, page: str = ""):
     """One completion from Apple's on-device model (D700), via the helper.
 
     `_local_relay`'s shape on purpose — same wire (`{ok, result}` or NDJSON
     chunks closed by a `done` carrying `result`), same Activity row lifecycle,
     same 409 for a model that is not ready — so a page that swaps
-    `model: "mlx-community/…"` for `provider: "apple"` changes nothing else.
+    `model: "mlx-community/…"` for `provider: "apple"` changes nothing else,
+    including `page`, the calling page's own `X-Fused-Page`.
 
     Differences that are the framework's, not this relay's: `usage` is null
     on macOS 26 (the API reports no token counts until 27), and a guardrail
@@ -2052,7 +2089,7 @@ def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     request = {k: v for k, v in request.items() if v is not None}
 
     job = supervisor.text_job_id(uuid.uuid4().hex)
-    row = supervisor.text_row_fields(_text_title(prompt, model), model)
+    row = supervisor.text_row_fields(_text_title(prompt, model), model, page)
 
     def tick(**over) -> None:
         supervisor._report(job, **row, **over)
@@ -2327,7 +2364,8 @@ async def shutdown_ai_session(app=None):
 
 @router.post("/api/ai")
 async def api_ai(request: Request, body: dict = Body(...),
-                 x_fused: str | None = Header(default=None)):
+                 x_fused: str | None = Header(default=None),
+                 x_fused_page: str | None = Header(default=None)):
     # fused.ai.text() — validation and the claude CLI hop live in _ai_relay
     # (module-level so tests can drive it with the subprocess mocked).
     # `request.app.state.ai_session` is THIS app's own session, stashed by
@@ -2337,7 +2375,8 @@ async def api_ai(request: Request, body: dict = Body(...),
     if guard is not None:
         return guard
     session = getattr(request.app.state, "ai_session", None)
-    return await _ai_relay(body, session=session)
+    page = unquote(x_fused_page) if x_fused_page else ""
+    return await _ai_relay(body, session=session, page=page)
 
 
 @router.get("/api/ai/metrics")

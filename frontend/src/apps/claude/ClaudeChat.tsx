@@ -93,6 +93,7 @@ import {
 } from "./pane";
 import {
   AnnStrip,
+  ArtStrip,
   AttachTray,
   Kebab,
   CardPolicyProvider,
@@ -102,6 +103,7 @@ import {
   openCardIds,
   resetCardPolicy,
   liveViewable,
+  SchedBlock,
   SentPop,
   settleReceipts,
   ShotViewer,
@@ -112,14 +114,19 @@ import {
   ATTACH_API,
   mergeSendOptions,
   sendBlocks,
+  useArtStrip,
   useAttachments,
   useFitStrip,
   useComposerDefaults,
   useRecentSessions,
+  useRepairScroll,
   useTaskId,
   type TranscriptTail,
   type Viewable,
 } from "./ui";
+import { useSchedule } from "./sched/useSchedule";
+import { createLiveWatch } from "./live/watch";
+import { getClaudeSessionLiveness } from "@platform/lib/api";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -662,6 +669,11 @@ function ChatBody(props: ChatBodyProps) {
   // run loop.
   const liveModel = useRef("");
   const liveEffort = useRef("");
+  /** PR4's run-clock seats, filled below once the stores that answer them
+   *  exist. Refs for the reason every other send-time read here is one: the
+   *  controller closes over them and is built first. */
+  const artTick = useRef<(() => void) | null>(null);
+  const snapInvalidate = useRef<(() => void) | null>(null);
   /**
    * PR2's two send-time refs, declared HERE because the controller closes over
    * them and is built before the tray below exists.
@@ -812,15 +824,47 @@ function ChatBody(props: ChatBodyProps) {
         // restart the run loop.
         appStateBlock: () =>
           appFrame() ? watcher.blockForSend() : Promise.resolve(""),
-        // PR4 hangs the artifacts read and the snapshot invalidation here
-        // (T:16229, 16321-16330); the ticks already run on T's clock.
-        onArtifactsTick: () => {},
+        // PR4's two run-clock hooks. Both go through refs: the controller is
+        // built before the strip's store and the landing's counter exist, and
+        // rebuilding it for either would restart the run loop (T:16229,
+        // 16321-16330).
+        onArtifactsTick: () => artTick.current?.(),
         // T:10608/16341 — the run this turn started is over, so the annotations
         // it carried are HANDLED: drop them. Even on error, deliberately (T's
         // own note): an errored run may not have acted on them, but they were
         // already stamped `sent` and folded into the transcript — re-annotating
         // is one click, silently re-sending is not.
-        onRunEnded: () => annRef.current?.resolveSent(),
+        onRunEnded: () => {
+          annRef.current?.resolveSent();
+          // T:19078 `snapInvalidate` — the turn that just ended may have edited
+          // the file, so the checkpoint chain the landing drew is stale. The
+          // panel is unmounted while a chat is on screen, so what survives the
+          // round trip is the FACT of a run ending, counted here and handed to
+          // `useSnapshots` as its invalidation key.
+          snapInvalidate.current?.();
+        },
+        // T:17792 — a stale `run` param is not a turn ending: the annotations
+        // still have to come back (this is the one road on which they would be
+        // stranded `sent` forever), but nothing ran, so the checkpoint chain
+        // the landing drew is exactly as fresh as it was.
+        onRunAbandoned: () => {
+          annRef.current?.resolveSent();
+        },
+        /**
+         * T:17866 — the caret goes back in the box at the end of EVERY
+         * re-attach: a boot `?run=`, an adoption by the standing watch, a
+         * scheduled message's attach (P4-17). `autoFocus` covered boot
+         * incidentally; a mid-session adoption left a reader who had just been
+         * handed a streaming reply having to click to answer it.
+         *
+         * `preventScroll`, like every other focus in this view: the composer is
+         * pinned to the bottom of a scrolling transcript and taking the caret
+         * must not move what the reader is looking at — which also means this
+         * does not fight the repair's own scroll-to-bottom beside it.
+         */
+        focusComposer: () => {
+          boxRef.current?.focus({ preventScroll: true });
+        },
         // The agent saw none of it, so the pictures come back to the tray —
         // never revoked on this road, because those very thumbnails are what the
         // returned chips show (T:16693-16720).
@@ -1338,6 +1382,19 @@ function ChatBody(props: ChatBodyProps) {
   // branch means restarting the 1.5 s detection wait and never sending at all.
   const onReadyRef = useRef(props.onReady);
   onReadyRef.current = props.onReady;
+  /**
+   * Is the boot's landing branch the one waiting on the ready signal? Written
+   * by the boot effect, read by the effect further down: `markReady` is
+   * idempotent, so this is only ever about which FACT the signal is waiting
+   * for, never about firing it twice.
+   *
+   * STATE AND NOT A REF, deliberately. A ref would be written in a commit of
+   * its own and the waiting effect would only run again if `recent` happened to
+   * change afterwards — so a landing whose list had ALREADY answered by the
+   * time the boot's async branch got here would never fire at all, and the host
+   * would leave the pane covered. Setting state wakes the effect.
+   */
+  const [landingReady, setLandingReady] = useState(false);
   const markReady = useCallback(() => {
     if (readySent.current) return;
     readySent.current = true;
@@ -1468,9 +1525,14 @@ function ChatBody(props: ChatBodyProps) {
           void controller.adoptLiveRun(sessionId);
         }
       } else {
-        // Nothing to restore. The landing paints its card and Recent's skeleton
-        // on this very render, so it is ready now (T:19291-19296).
-        markReady();
+        // NOTHING TO RESTORE, BUT SOMETHING TO WAIT FOR (T:19282-19291, P4-14).
+        //
+        // T fires `markChatReady()` AFTER `await loadRecent()`, and the host
+        // uncovers the pane on that signal — so firing it on this render shows
+        // a landing whose one list is still a skeleton, which is the state the
+        // read is about to replace. The wait is owned by the effect below,
+        // which fires it on the first non-null `recent`; nothing is done here.
+        setLandingReady(true);
       }
     })();
     return () => {
@@ -1682,7 +1744,55 @@ function ChatBody(props: ChatBodyProps) {
   const [sent, setSent] = useState<UserTurn | null>(null);
   // The landing's list only: a chat on screen has no lists, and the long-poll
   // behind it should not run for one that is not showing them (T:18339).
-  const recent = useRecentSessions(inChat ? null : agentDir, file);
+  /**
+   * T's `leftLive` (T:13066-13071, P4-21). Set by the gesture that LEAVES a
+   * chat, read by the landing's list subscription: the two extra `sessions`
+   * looks after landing exist to cover the CLI's first transcript write, and
+   * only a chat abandoned mid-turn has such a write to race. A cold landing
+   * boot was spending them for nothing.
+   *
+   * State and not a ref, because the value has to reach the subscription's
+   * render — and it is written in the same gesture that flips `inChat`, so it
+   * is there on the paint the landing arrives on.
+   *
+   * Declared HERE, ahead of the list it feeds; `onBack` (which writes it) is
+   * declared with the other gestures further down.
+   */
+  const [leftLive, setLeftLive] = useState(false);
+  const recent = useRecentSessions(
+    inChat ? null : agentDir,
+    file,
+    undefined,
+    leftLive,
+  );
+  /** ONE TRIP'S WORTH. T's `leftLive` is a local in its Back handler, so it is
+   *  spent by the landing it was set for; here it has to be cleared by hand, or
+   *  every later cold landing of this page's life would go on paying for the
+   *  two write-covering reads. Cleared on the way INTO a chat, which is after
+   *  the landing that used it and before the next Back that may set it again. */
+  useEffect(() => {
+    if (inChat) setLeftLive(false);
+  }, [inChat]);
+  /**
+   * THE LANDING IS READY WHEN ITS LIST HAS ANSWERED (T:19282-19291, P4-14).
+   *
+   * `markReady` is what the host uncovers the pane on, and T fires it after
+   * `await loadRecent()` for exactly that reason. Idempotent, so a boot that
+   * already fired it on another branch pays nothing here.
+   *
+   * AND NEVER WAITS FOR A LIST THAT WILL NOT COME. Two roads reach that: a
+   * target with no `agentDir` (which never subscribes), and a reader who enters
+   * a chat before the first read lands — a recent row clicked on the skeleton,
+   * or a deep link resolving late. `useRecentSessions` is handed a null
+   * `agentDir` while in a chat, so `recent` would sit at `null` for ever and
+   * the pane would stay covered for the life of the page. Entering a chat is
+   * itself a reason to uncover it, and a target with no list has answered "no
+   * list" — so both count.
+   */
+  useEffect(() => {
+    if (!landingReady) return;
+    if (recent !== null || inChat || !agentDir) markReady();
+  }, [landingReady, recent, inChat, agentDir, markReady]);
 
   /**
    * WHAT THE TRAY PUTS ON THE WIRE, on both send roads: the `<pane-shot>` block,
@@ -1943,11 +2053,39 @@ function ChatBody(props: ChatBodyProps) {
     [dispatchSend, defaults.model, defaults.effort, defaults.permission],
   );
   const onStop = useCallback(() => void controller.stopRun(), [controller]);
+  /**
+   * `sched.reset` — declared HERE, ahead of the hook that fills it, because
+   * `onBack` is one of its two callers and is itself declared before the PR4
+   * block below. A ref rather than the value: both callers are gestures, so
+   * they read it when pressed and neither needs re-binding for a new identity.
+   */
+  const schedReset = useRef<() => void>(() => {});
   const onBack = useCallback(() => {
     // A fresh transcript is a fresh card policy: an override from the
     // conversation that WAS on screen must not leak a card open in one the user
     // has never touched (ui/cardPolicy.ts).
     resetCardPolicy(cardPolicy);
+    // WAS THERE A TURN IN FLIGHT? Asked before `newChat` empties the state that
+    // knows. A queued send counts: its transcript write has not happened yet
+    // either — and so does a send that is INSIDE the `sending` gate with no run
+    // id yet, which is the exact window these extra looks exist to cover (a
+    // brand-new session's transcript appears only once the CLI has written its
+    // first rows). `isBusy()` is `activeRun || sending`, which is the half
+    // `ChatState` cannot see (Bugbot, this batch).
+    const s = controller.getState();
+    setLeftLive(
+      controller.isBusy() ||
+        s.status === "running" ||
+        !!s.runId ||
+        s.queued.length > 0,
+    );
+    // AND A FRESH SCHEDULE. `newChat` puts `transcriptGen` back to 0, and the
+    // reset effect below skips gen 0 by construction (a mount must not
+    // re-baseline the poller) — so Back alone left the block that belonged to
+    // the conversation just closed standing over the landing composer until the
+    // next 15 s tick. Called directly, the way `openSession` gets it from the
+    // generation bump (Bugbot PR #1075).
+    schedReset.current();
     controller.newChat();
     setEntered(false);
     // AND THE STRANDED TEXT GOES WITH THE CONVERSATION IT WAS TYPED IN. It was
@@ -1984,6 +2122,12 @@ function ChatBody(props: ChatBodyProps) {
     const log = rootRef.current?.querySelector(".chat-logwrap");
     if (log) log.scrollTop = log.scrollHeight;
   }, [settled]);
+
+  // AND UNCONDITIONALLY AFTER A REPAIR (T:17851, P4-10) — the rule, and why it
+  // has to be unconditional, live in `useRepairScroll`. Extracted so the
+  // renderer half of P4-10 has a suite of its own (batch review, test gap 1):
+  // the controller bumps the nonce, and this is what the nonce is FOR.
+  useRepairScroll(state.repaired, rootRef);
 
   const controls = useMemo(
     () => ({
@@ -2196,6 +2340,106 @@ function ChatBody(props: ChatBodyProps) {
     return liveViewable(viewing, attach.items, sent);
   }, [viewing, attach.items, state.turns]);
 
+  // ── PR4: scheduled runs, the standing watch, the artifact strip ───────────
+
+  /**
+   * T:17198-17213 — a bottom-pinned transcript is put back at the bottom when
+   * the banner appears, because the banner SHRINKS the scrollport.
+   *
+   * ONLY A PINNED ONE. This used to write `scrollTop = scrollHeight` off a raw
+   * `.chat-logwrap` lookup, which jumped a reader who had scrolled up to the
+   * latest turn the moment a pending message landed (Bugbot, PR #1075). T
+   * calls `followBottom()` here, not `scrollBottom()`, and that function is
+   * the follow FLAG's — so the port asks the flag too, through the handle the
+   * scrollport lends out (`Transcript`'s `followRef`).
+   *
+   * The flag, not a geometry read taken here: this banner shrinks the
+   * scrollport as it appears, so by the time an effect could measure, the gap
+   * to the tail has crossed any threshold because the VIEWPORT moved and not
+   * because the reader did (T:17211-17213). A flag survives a resize.
+   */
+  const transcriptFollow = useRef<(() => void) | null>(null);
+  const followBottom = useCallback(() => {
+    transcriptFollow.current?.();
+  }, []);
+
+  const sched = useSchedule({
+    controller,
+    file,
+    sessionId: state.sessionId ?? "",
+    inChat,
+    navLocked: ann.locked,
+    followBottom,
+    onNavigate,
+    // T:17437 — `history: "replace"`: a fired scheduled run is not a place
+    // anyone navigated to, so re-attaching from it must buy no Back entry.
+    setRunParam: (runId) => params.set({ run: runId }, { history: "replace" }),
+  });
+  /**
+   * T:16776/18000 — the block and both attach sets belong to the conversation
+   * that WAS on screen, so a REPLACED transcript takes them with it.
+   *
+   * KEYED ON THE REPLACEMENT, not on the session id. T calls
+   * `scheduleResetForNewTranscript()` from `loadHistory`'s non-refresh branch
+   * and from nowhere else, and `openSession` is this port's only such branch.
+   * The id is a different fact: it also changes on MOUNT (a second
+   * `/api/schedule` fetch racing the one `watcher.start()` already issues) and
+   * when the first poll of a brand-new chat reports one, MID-RUN — where the
+   * reset re-arms `baselined = false` and the next tick then silently baselines
+   * away a scheduled run that fired in that window, which is the exact failure
+   * T's "at LOAD, not one interval later" note exists to prevent.
+   *
+   * `transcriptGen` starts at 0, so the mount is skipped by construction.
+   */
+  schedReset.current = sched.reset;
+  const transcriptGen = state.transcriptGen;
+  useEffect(() => {
+    if (!transcriptGen) return;
+    schedReset.current();
+  }, [transcriptGen]);
+
+  /** `inChat` is the fifth argument because the strip's two lifecycle rules —
+   *  emptied on BOTH crossings, read on the way into a chat (P4-01/P4-02) — are
+   *  facts about the strip, and the hook is where they can be tested. */
+  const art = useArtStrip(
+    agentDir ?? null,
+    file,
+    state.sessionId ?? "",
+    undefined,
+    inChat,
+  );
+  artTick.current = art.poll;
+  const [snapNonce, setSnapNonce] = useState(0);
+  snapInvalidate.current = () => setSnapNonce((n) => n + 1);
+
+  /**
+   * THE STANDING LIVE WATCH (D415). Armed for the life of a chat that has a
+   * session, disarmed on the way home — the landing page has no conversation to
+   * adopt a turn into, and `live_run` with no session matches on the target
+   * alone, which would drag another chat's run onto this screen.
+   *
+   * `ownRunEndedAt` is milliseconds in `ChatState` (the controller's own clock)
+   * and EPOCH SECONDS in the follower's rule, because that is the unit
+   * `os.stat` reports. Converted here, at the seam, rather than in either.
+   */
+  useEffect(() => {
+    if (!inChat || !state.sessionId) return;
+    const watch = createLiveWatch({
+      sessionId: () => controller.getState().sessionId ?? "",
+      busy: () => controller.isBusy(),
+      // The NARROW one, for the external line's OFF edge only (T:17709).
+      hasActiveRun: () => controller.hasActiveRun(),
+      adopt: (id) => controller.adoptLiveRun(id, { laps: 1, quiet: true }),
+      transcriptMark: () => controller.getState().transcript,
+      ownRunEndedAt: () => controller.getState().ownRunEndedAt / 1000,
+      liveness: (path) => getClaudeSessionLiveness(path),
+      refreshHistory: (id) => controller.refreshHistory(id),
+      setExternalWorking: (on) => controller.setExternalWorking(on),
+      activityKey: CHAT_ACTIVITY_KEY,
+    });
+    return watch.start();
+  }, [controller, inChat, state.sessionId]);
+
   const card = useMemo(
     () => ({
       file,
@@ -2293,6 +2537,14 @@ function ChatBody(props: ChatBodyProps) {
       // (its MutationObserver watches the rows' subtree), and the footnote's
       // two-line budget is measured in the same pass (T:12455-12474).
       fitRevision: attach.items.length + ann.chips.length,
+      // The composer closes for as long as the schedule holds a pending message
+      // for this session — box AND calendar, off the SAME answer (T:17217-17246).
+      // The SEND button is deliberately left alone: while a run is live it is
+      // the STOP button, and a chat that cannot stop its own running turn is a
+      // worse state than the one this feature prevents.
+      blocked: sched.blocked,
+      blockedPlaceholder: sched.placeholder,
+      blockedReason: sched.reason,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
@@ -2337,9 +2589,28 @@ function ChatBody(props: ChatBodyProps) {
       ann.locked,
       ann.editNote,
       ann.removeNote,
+      sched.blocked,
+      sched.placeholder,
+      sched.reason,
     ],
   );
-  const onAnchorSpent = useCallback(() => params.set({ msg: null }), [params]);
+  /**
+   * THE SPENT ANCHOR IS REMOVED WITH `replace` (T:12978-12984, P4-20).
+   *
+   * T argues it: "arriving on the message is not a place anyone navigated to
+   * twice, and a Back that re-fired the flare would be a history entry nobody
+   * made. Left behind it would also re-scroll a reload the reader has since
+   * scrolled away from."
+   *
+   * A bare `set` reaches the replace path only while no gesture has happened on
+   * the document (`params/store.ts:292`), which is not guaranteed here at all:
+   * the anchor is spent when the turn it names is on screen, which is usually
+   * after the reader has clicked something.
+   */
+  const onAnchorSpent = useCallback(
+    () => params.set({ msg: null }, { history: "replace" }),
+    [params],
+  );
 
   // The task number this session is (`#session`, T:12696 showSession). Read here
   // rather than inside the topbar so the landing's kebab and the erase dialog
@@ -2504,6 +2775,12 @@ function ChatBody(props: ChatBodyProps) {
               // part company for the width of an Esc'd transcription.
               armed={ann.armed}
               capturing={attach.capturing}
+              // ALL THREE SEATS END IN THE COMPOSER, and a pending scheduled
+              // message has it shut (P4R1-2): a picture lands as a chip above
+              // the box, a comment round and a walkthrough send their notes
+              // through it. The banner right below says why, so the seats carry
+              // no second wording of it.
+              blocked={sched.blocked}
               onScreenshot={() => void attach.capture()}
               onComment={ann.onCommentSeat}
               recSeat={
@@ -2511,6 +2788,7 @@ function ChatBody(props: ChatBodyProps) {
                   rec={recSnap}
                   shown={micShown}
                   commentArmed={ann.mode === "comment"}
+                  blocked={sched.blocked}
                   // NO SECOND TRASH IN THE STRIP. Discard moved off the strip
                   // and onto the bar over the app on 2026-09-06 (T:6240-6248,
                   // inventory 02 §I), so the strip carries only Screenshot ·
@@ -2569,6 +2847,7 @@ function ChatBody(props: ChatBodyProps) {
               />
             ) : null}
             <Transcript
+              followRef={transcriptFollow}
               state={state}
               actions={actions}
               liveMode={state.permissionMode}
@@ -2581,20 +2860,49 @@ function ChatBody(props: ChatBodyProps) {
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
             />
+            {/* DIRECTLY ABOVE THE COMPOSER and kept by BOTH host cuts, which is
+                T's own arrangement: `body.chat-compact` and `body.chat-peek`
+                take the topbar, the strip, the box and the footnote and leave
+                this (T:1412-1438). A compact tile whose chat is shut has to be
+                able to say so — it is the only thing in that tile that explains
+                why the wall's own composer refuses. */}
+            <SchedBlock
+              blockers={sched.blockers}
+              rec={sched.rec}
+              armed={sched.armed}
+              refused={sched.refused}
+              stopping={sched.stopping}
+              tick={sched.tick}
+              onStop={sched.onStop}
+              onRow={sched.onRow}
+              cardRef={sched.cardRef}
+            />
             {/* A card is READ, not typed into: compact is the one cut that takes
                 the composer away, which is the whole difference from peek
-                (T:1412-1422). */}
-            {!compact ? <Composer {...card} footnote={footnoteFor(pane.noun)} /> : null}
+                (T:1412-1422). The strip rides INSIDE the composer's own block
+                (between the box and the footnote, T:4203) when there is one,
+                and stands alone in the compact tile that has none. */}
+            {!compact ? (
+              <Composer
+                {...card}
+                footnote={footnoteFor(pane.noun)}
+                artStrip={<ArtStrip items={art.items} />}
+              />
+            ) : (
+              <ArtStrip items={art.items} />
+            )}
           </>
         ) : (
           <Home
             agentDir={agentDir}
+            snapInvalidation={snapNonce}
             {...card}
             name={name}
             {...(file ? { path: file } : {})}
             placeholder={homePlaceholderFor(pane.noun)}
             recent={recent}
             onOpenSession={onOpenSession}
+            listsDisabled={ann.locked}
           />
         )}
         {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat

@@ -311,14 +311,18 @@ describe("replies that outlive what they were asked for", () => {
 });
 
 describe("an answer served from the memo", () => {
-  test("is captioned by the generation it was FETCHED under", async () => {
+  test("stays captioned by the index it was fetched under, not by unrelated dir-watch churn since", async () => {
     const box = await search("alpha");
     await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("alpha.md")], total: 1 })));
     expect(box.current().behind).toBe(false);
 
+    // A dir-watch bump — the folder rerenders with a new `refresh` value,
+    // same `lifecycle` — is background churn under the tree, not a claim
+    // that the INDEX this answer came from has moved. It must not taint
+    // this answer, memoized or not.
     box.rerender("/d", 2);
     await flush(() => {});
-    expect(box.current().behind).toBe(true);
+    expect(box.current().behind).toBe(false);
 
     await flush(() => box.current().setQuery("zeta"));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
@@ -331,7 +335,9 @@ describe("an answer served from the memo", () => {
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls.length).toBe(asked); // answered from memory
     expect(box.current().displayHits.map((h) => h.entry.rel)).toEqual(["alpha.md"]);
-    expect(box.current().behind).toBe(true);
+    // Still not behind: the memoized answer's own lifecycle still matches —
+    // the refresh churn above never touched it.
+    expect(box.current().behind).toBe(false);
     box.unmount();
   });
 });
@@ -353,8 +359,8 @@ describe("behind requires an actual answer, not just a generation mismatch", () 
   });
 });
 
-describe("a dir-watch bump while searching: the deferral itself is the caveat", () => {
-  test("no re-ask is scheduled, so the caveat still has to show on its own", async () => {
+describe("a dir-watch bump while searching: background churn, not a caveat", () => {
+  test("no re-ask is scheduled, and none of this is captioned — nothing about the index moved", async () => {
     const box = await search("widget");
     await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("widget.md")], total: 1 })));
     expect(box.current().behind).toBe(false);
@@ -362,22 +368,24 @@ describe("a dir-watch bump while searching: the deferral itself is the caveat", 
     // A dir-watch refresh (listing/revalidate's `shouldReconcile`) is
     // deliberately NOT a reason to re-ask while a search is active — the
     // fetch effect keys on `pinned`, not `gen`, so this alone never
-    // reschedules anything.
+    // reschedules anything. It is also not a reason to caption the answer
+    // "not refreshed": `refresh` moves on every filesystem event anywhere
+    // under the folder (a churny root's Library/, logs, the index worker's
+    // own writes), which says nothing about whether the ranked index this
+    // query was answered from has changed at all — only `lifecycle` does
+    // (see `a completed scan`, below).
     box.rerender("/d", 1);
     await flush(() => {});
-    expect(box.current().behind).toBe(true);
+    expect(box.current().behind).toBe(false);
     expect(rankCalls).toHaveLength(1);
     expect(box.current().requestComing).toBe(false);
-    // Nothing is coming, so the caveat has to carry the whole claim on its
-    // own — this is the genuine "not refreshed" case, not the round-trip gap
-    // the fix above closes.
     expect(
       searchCaveat(null, {
         behind: box.current().behind,
         pending: box.current().requestComing,
         rescanPending: false,
       }),
-    ).not.toBeNull();
+    ).toBeNull();
     box.unmount();
   });
 });
@@ -504,6 +512,29 @@ describe("decision 4: a query that escapes the box root waits for Enter", () => 
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
     expect(rankCalls[1].q).toBe("~/a/*.pyc");
+    box.unmount();
+  });
+
+  test("rerunQuery on a query already sitting in the box (uncommitted) still opens the gate and fires", async () => {
+    // The offer row this rerunQuery serves — "Search this folder for
+    // <query>" (search-action-rows.ts) — reruns the EXACT text already
+    // typed: an escaping query whose gate never opened because nothing was
+    // ever committed for it. `setQuery` here is a no-op (the text is
+    // unchanged, so React never re-renders and `q` never moves), which
+    // means opening `committedGate` is the ONLY dependency-list change this
+    // call could possibly produce. If `rerunQuery` does not also bump
+    // `gateNonce` the way `commitSearch` does, the fetch effect has nothing
+    // in its dependency array telling it to re-run, and the gate opens onto
+    // a request that never gets asked for.
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("~/a/*.py"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+
+    await flush(() => box.current().rerunQuery("~/a/*.py"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].q).toBe("~/a/*.py");
     box.unmount();
   });
 });

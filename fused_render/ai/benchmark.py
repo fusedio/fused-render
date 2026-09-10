@@ -501,7 +501,7 @@ class _MeasurementRow:
     """
 
     def __init__(self, model: str, capability: str) -> None:
-        self._job = jobs.SERVER_ID_PREFIX + "ai-benchmark-" + uuid.uuid4().hex
+        self._job = supervisor.BENCHMARK_JOB_PREFIX + uuid.uuid4().hex
         self._capability = capability
         self._title = _bench_job_title(model)
         self._cancellable = capability in _CANCELLABLE_CAPABILITIES
@@ -525,9 +525,12 @@ class _MeasurementRow:
             self._detail = detail
 
     def start(self) -> None:
+        # `origin="Benchmark"` restated only here, at open — sticky like
+        # every other field `upsert` keeps, so `_poll_once`'s restatements
+        # below need not repeat it.
         supervisor._report(self._job, title=self._title, state="running",
                            kind="task", cancellable=self._cancellable,
-                           detail=self._detail)
+                           detail=self._detail, origin="Benchmark")
         self._sent = self._detail
         self._thread = threading.Thread(
             target=self._watch, daemon=True, name="ai-benchmark-row")
@@ -958,10 +961,11 @@ def _unwatched_job() -> str:
 
     Fresh per call, so two concurrent benchmarks cannot alias.
     """
-    # `jobs.SERVER_ID_PREFIX`, never the literal: the reserved prefix is what
-    # makes a row unwritable by a page, and it is minted in one place for the
-    # same reason every other `sys:` id in the app is.
-    return jobs.SERVER_ID_PREFIX + "ai-benchmark-unwatched-" + secrets.token_hex(6)
+    # `supervisor.BENCHMARK_JOB_PREFIX`, never the literal: the reserved
+    # prefix is what makes a row unwritable by a page (and what `_job_page`
+    # recognizes to send it to the Benchmark page), and it is minted in one
+    # place for the same reason every other `sys:` id in the app is.
+    return supervisor.BENCHMARK_JOB_PREFIX + "unwatched-" + secrets.token_hex(6)
 
 
 def _close_any_row(job: str, failure: BaseException | None = None) -> None:

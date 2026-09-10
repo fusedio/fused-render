@@ -37,6 +37,11 @@ import { takeDraft } from "./sched-draft";
 export const CHAT_PLACEHOLDER = "Reply to Claude…";
 export const HOME_PLACEHOLDER = "Ask Claude…";
 
+/** The disabled Send's tooltip when the caller hands no reason (P4R1-2). The
+ *  real sentence is `schedBlockReason`'s, threaded through `blockedReason`; this
+ *  is the floor, so a dead control is never a dead control with nothing to say. */
+export const BLOCKED_SEND_TITLE = "Waiting on a scheduled message";
+
 /** The footnote's two sentences. The text lives HERE and nowhere else, and the
  *  second one is the half a narrow column drops (T:4213, 12382-12392). */
 export const FOOTNOTE_LEAD = "Claude can read and edit files here.";
@@ -214,6 +219,10 @@ export interface ComposerCardProps {
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
+  /** WHY the box is shut, for the calendar button's tooltip and spoken name —
+   *  ONE sentence with one author, so a reader refused by the button reads the
+   *  same words as the card six pixels above it (T:17232-17250). */
+  blockedReason?: string;
   /**
    * `annNavLocked` — a comment round or a walkthrough owns this page. T guards
    * every `.schedbtn` on `schedBlocked() || annNavLocked()` (T:12075, T:12099,
@@ -322,6 +331,7 @@ export function ComposerCard({
   attachPending,
   blocked,
   blockedPlaceholder,
+  blockedReason,
   navLocked,
   navLockedReason,
   autoFocus,
@@ -394,6 +404,15 @@ export function ComposerCard({
 
   // A tray still uploading holds the send back rather than sending half of it.
   const attaching = !!attachPending;
+  /**
+   * THE ONE THING THAT DISABLES SEND, and it took an owner decision to put it
+   * there (P4R1-2). `blocked` is chat-only for the same reason the box's own
+   * `disabled` is — the landing card has no session for a message to be pending
+   * IN (T:16851) — and `!running` is the half that must never be dropped: while
+   * a turn streams this button IS the Stop, and a chat that cannot end its own
+   * running turn is a worse state than the pollution the block prevents.
+   */
+  const sendBlocked = variant === "chat" && !!blocked && !running;
 
   const submit = useCallback((seed?: string): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
@@ -576,8 +595,16 @@ export function ComposerCard({
             //     Continue still left for `/tasks`, stranding the notes. That is
             //     the exact failure Bugbot PR #1046 closed, reachable again by
             //     another road. Disabled for the eye, guarded for the hand.
+            //
+            // The block reads the SAME `blocked` the box does — never a second
+            // read of the schedule, because a parallel notion of "is this session
+            // blocked" is two answers to one question (T:17233-17236).
             disabled={(variant === "chat" && !!blocked) || !!navLocked}
-            {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
+            {...(navLocked && navLockedReason
+              ? { disabledReason: navLockedReason }
+              : variant === "chat" && blocked && blockedReason
+                ? { disabledReason: blockedReason }
+                : {})}
             onCancel={focusBox}
             onNavigate={onNavigate}
           />
@@ -598,11 +625,16 @@ export function ComposerCard({
             // that is the control's NAME — and the tooltip is where legacy says
             // which stop it is: a turn's, not the recorder's or the app's.
             "Stop this turn"
-          : attaching
-            ? "Attaching…"
-            : sendBusy
-              ? "Taking the picture…"
-              : "Send"
+          : sendBlocked
+            ? // THE REASON, verbatim — the same sentence the banner shows and
+              // the calendar button carries, so a reader refused here reads the
+              // words they have already read six pixels above (T:17232-17250).
+              blockedReason || BLOCKED_SEND_TITLE
+            : attaching
+              ? "Attaching…"
+              : sendBusy
+                ? "Taking the picture…"
+                : "Send"
       }
             // T NEVER DISABLES SEND — not for an empty box, not for a pending
             // scheduled message, not for anything. There is no `.send:disabled`
@@ -623,6 +655,26 @@ export function ComposerCard({
             //
             // The two transient windows T never had (`attaching`, `sendBusy`) say
             // so in the `title` instead, which is feedback without a dead door.
+            //
+            // ...WITH ONE OWNER-DECIDED EXCEPTION, AND IT IS THE SCHEDULE BLOCK
+            // (P4R1-2, Akshil, 2026-09-10: Send should be disabled, and the
+            // strip's three seats with it). The block is unlike every refusal
+            // above it: not transient, not about this draft, and already
+            // explained by a banner directly over the box — so an orange button
+            // that swallows the press is the one case where the dim tells the
+            // reader something the handler cannot. The rest of the rule stands
+            // untouched: nothing here is disabled for an empty box, a chip still
+            // attaching or a capture in flight.
+            //
+            // AND NEVER THE STOP. `!running` is load-bearing: a pending message
+            // landing while an interactive turn streams must not strand the
+            // reader with a reply they cannot end (T:17193-17195).
+            // NO ATTRIBUTE TO BE FALSE. Spread rather than `disabled={x}`, so
+            // every state but the block leaves this button exactly as PR3 has
+            // it — `props.disabled === undefined`, which is what T's markup
+            // carries and what this app's own suites read (P4 batch, "Send
+            // carries no attribute to be false").
+            {...(sendBlocked ? { disabled: true } : {})}
           >
             {running ? (
               <svg
@@ -671,11 +723,17 @@ export type ComposerProps = Omit<ComposerCardProps, "variant"> & {
   /** The target's kind, as `setTargetNoun` writes it — "files here" by
    *  default, which is the kind-FREE wording the markup ships (T:4205-4213). */
   footnote?: string;
+  /**
+   * The live artifact strip's seat, and it is HERE because T puts it here: below
+   * the composer and above the footnote (T:4203), so a page appearing never
+   * moves the box the user is typing into.
+   */
+  artStrip?: ReactNode;
 };
 
 /** The chat view's composer: the card, plus the footnote whose second sentence
  *  a narrow column drops. */
-export function Composer({ footnote, ...card }: ComposerProps) {
+export function Composer({ footnote, artStrip, ...card }: ComposerProps) {
   const footRef = useRef<HTMLDivElement | null>(null);
   const lead = footnote ?? FOOTNOTE_LEAD;
   useFootnoteFit(footRef, lead);
@@ -684,6 +742,7 @@ export function Composer({ footnote, ...card }: ComposerProps) {
       <div className="c-composer-chat">
         <ComposerCard {...card} variant="chat" />
       </div>
+      {artStrip}
       <div className="c-footnote" ref={footRef}>
         {lead}
         <span className="c-fn-more">{FOOTNOTE_TAIL}</span>

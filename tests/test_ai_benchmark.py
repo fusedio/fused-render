@@ -922,6 +922,7 @@ def test_a_run_opens_a_row_titled_distinctly_from_the_load_row(bench, monkeypatc
     assert rows[0]["title"] != "some/text-model"
     assert rows[0]["state"] == "done"
     assert rows[0]["cancellable"] is True
+    assert rows[0]["origin"] == "Benchmark"
 
 
 def test_a_cold_run_opens_no_row_until_loading_ends(bench, monkeypatch):

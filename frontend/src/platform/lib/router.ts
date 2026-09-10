@@ -532,3 +532,67 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
 export function currentUrl(): string {
   return location.pathname + location.search;
 }
+
+// A Job's `page` (fused_render/jobs.py) is where clicking this row in
+// Notifications should go, and it comes in two shapes a caller cannot tell
+// apart by looking: an absolute fs path (the vast majority — a page-raised
+// job's own X-Fused-Page, or a server producer's repo root/output folder) or
+// one of a handful of SHELL ROUTES a few server producers name directly (the
+// AI Models page for a model load, Claude Code's settings page for an
+// install, Preferences' Indexing tab for a re-index run). Both start with
+// "/", so there is no syntactic tell.
+//
+// THE FIX IS A CLOSED TABLE, not a heuristic: every route a producer may set
+// is known in advance, so checking exact membership here is no different
+// from LEGACY_SENTINELS above — a route this table has not caught up to is a
+// one-line fix, not a guess this function has to make correctly forever.
+// Everything else is treated as an fs path, opened as a directory unless it
+// names an .html/.htm file — the same test the GitHub-publish repo-root case
+// and an ordinary page both pass.
+// This same closed set keys `_ORIGIN_BY_ROUTE` in `fused_render/jobs.py`,
+// which `origin_for_page` reads to name a page-owned job's `origin` caption
+// from its own X-Fused-Page header — kept there rather than duplicated as a
+// second table; a route added here needs a matching entry there to get a
+// label.
+const JOB_PAGE_ROUTES: ReadonlySet<string> = new Set([
+  "/ai-models/local",
+  "/ai-models/benchmark",
+  "/claude-config",
+  "/preferences",
+  "/preferences?tab=indexing",
+  "/tasks",
+]);
+
+export function navigateToJobPage(page: string): void {
+  if (JOB_PAGE_ROUTES.has(page)) {
+    navigateUrl(page);
+    return;
+  }
+  // The paint hint only: is this an fs path that names a FILE (an .html view,
+  // a rendered .png/.mp4) or a directory? A rendered output's own path is now
+  // a real destination (an image/video job with no X-Fused-Page opens the
+  // file itself), so the old `/\.html?$/i` test — which called every non-html
+  // path a directory, .png included — is wrong for it.
+  //
+  // A CLOSED LIST, not "any dot with no further '/' or '.' after it" — that
+  // looser test paints a real dotted FOLDER name as a file (`site.com`,
+  // `app.v2`, `.config`; the same shape `github_setup.py`'s repo root,
+  // `envinstall.py`'s `project_dir`, and `_start_render`'s failure `out_dir`
+  // can all legitimately be), which is a new wrong answer where the old
+  // `.html?` test happened to be right. Only the extensions a real producer
+  // is known to write get to say "file": `.html`/`.htm` (a page's own
+  // X-Fused-Page) and `.png`/`.mp4` (an image/video render's output path,
+  // `routers/ai_runtime.py`). Anything else is painted as a directory —
+  // cosmetic either way, so the safe default when in doubt.
+  const base = page.slice(page.lastIndexOf("/") + 1);
+  const KNOWN_FILE_EXTENSIONS = /\.(html?|png|mp4)$/i;
+  navigate(page, { isDir: !KNOWN_FILE_EXTENSIONS.test(base) });
+}
+
+// Whether `page` is one of the shell routes above rather than an fs path —
+// the one thing a caller displaying `job.page` as text (a tooltip, say)
+// cannot tell on its own, since both shapes start with "/". `JOB_PAGE_ROUTES`
+// itself stays unexported: this is the one question about it a caller needs.
+export function isJobPageRoute(page: string): boolean {
+  return JOB_PAGE_ROUTES.has(page);
+}

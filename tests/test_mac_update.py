@@ -699,6 +699,10 @@ def test_install_opens_a_cancellable_download_row_for_the_version(monkeypatch, t
     assert row["detail"] == "Downloading"
     assert row["message"] == ""
     assert row["cancellable"] is True
+    # No dedicated update page or Preferences tab exists to point at — the
+    # update surface (UpdateBadge.tsx, ServerStatusBanner.tsx) is sidebar
+    # chrome on every route, so /preferences is the fallback.
+    assert row["page"] == "/preferences"
     gate.set()
     manager._install_thread.join(timeout=5)
 

@@ -111,6 +111,8 @@ function state(over: Partial<ChatState> = {}): ChatState {
     adopting: false,
     transcript: null,
     ownRunEndedAt: 0,
+    repaired: 0,
+    transcriptGen: 0,
     rev: 1,
     ...over,
   };

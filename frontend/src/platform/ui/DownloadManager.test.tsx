@@ -21,15 +21,22 @@
 import { describe, expect, it, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
-import {
-  DownloadManagerView,
-  engineLabel,
-  engineDetail,
-  engineKind,
-  type EnginesSlot,
-} from "@platform/ui/DownloadManager";
+// DownloadManager.tsx now imports router.ts (a terminal row's rowClick
+// dispatches through `navigateToJobPage`), which reads `location` at module
+// scope (`IS_EMBED`) — this file otherwise renders with no DOM at all, so
+// the shim has to land before the import, via a dynamic import exactly like
+// router.test.ts's own (see testDomShim.ts's header for why every suite
+// that needs this shares the one shim rather than hand-rolling its own
+// globals).
+import { installDomShim } from "@platform/lib/testDomShim";
+import type { EnginesSlot } from "@platform/ui/DownloadManager";
 import { engineDuration, jobAmount, type Job } from "@platform/lib/jobs";
 import type { RunningEngine } from "@platform/lib/api";
+
+installDomShim();
+const { DownloadManagerView, engineLabel, engineDetail, engineKind, useJobs } = await import(
+  "@platform/ui/DownloadManager"
+);
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -63,6 +70,7 @@ const BASE: Job = {
   unit: "",
   message: "",
   page: "",
+  origin: "",
   owner: "server",
   cancellable: true,
   cancel_requested: false,
@@ -71,6 +79,7 @@ const BASE: Job = {
   finished_at: 0,
   stalled: false,
   waiting_for: "",
+  tier: "trail",
 };
 
 
@@ -195,12 +204,17 @@ test("a done job and a failed job together leave this section with nothing to dr
 
 test("a scheduled run's own job never draws a row here, in any state (D661)", () => {
   // D661 (user: "a task is not something I even want in the activity. that
-  // was added unintentionally"): `jobRows` now excludes every `sys:schedule:*`
-  // job unconditionally, so a scheduled run's own row cannot appear here no
-  // matter what state it is in — there is no more "exempt only while running"
-  // carve-out.
-  const scheduleDone: Job = { ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest" };
-  const scheduleRunning: Job = { ...BASE, id: "sys:schedule:entry-2", state: "running" };
+  // was added unintentionally"): `schedule.py`'s `_report` declares
+  // `tier: "transient"` on every tick, and `jobRows` excludes any row whose
+  // `effectiveTier` is transient, so a scheduled run's own row cannot appear
+  // here no matter what state it is in — there is no more "exempt only
+  // while running" carve-out.
+  const scheduleDone: Job = {
+    ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest", tier: "transient",
+  };
+  const scheduleRunning: Job = {
+    ...BASE, id: "sys:schedule:entry-2", state: "running", tier: "transient",
+  };
   const tree = renderCard([scheduleDone, scheduleRunning]);
   expect(findAll(tree, "dl-row")).toHaveLength(0);
 });
@@ -372,6 +386,7 @@ test("the toggle is a real button even with a lone job to fold, a scheduled run 
     id: "sys:schedule:entry-1",
     state: "running",
     stalled: false,
+    tier: "transient",
   };
   const running: Job = { ...BASE, id: "sys:ai-image:running", state: "running", stalled: false };
   const tree = renderCard([liveSchedule, running]);
@@ -1082,4 +1097,119 @@ test("2+ jobs draws the numeral and a fill that is the MEAN of the running fract
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Activity");
   expect(numeral(tree)).toBe("2");
   expect(progressFillWidth(tree)).toBe("65%");
+});
+
+// ---------------------------------------------- useJobs' `loaded` gate
+//
+// `useJobs` is exported purely for this suite (see its own comment) so the
+// hook can be driven directly, the same split `JobRow`/`retiredEngines`
+// already use elsewhere. `globalThis.fetch` is stubbed directly rather than
+// `mock.module`d for the reason this file's own header gives; `window`'s
+// timers are captured (and restored) the same way ActivityDock.test.tsx's
+// own `captureTimers` is, scoped to just this describe block.
+describe("useJobs' loaded gate: a stale response is not a first real read", () => {
+  type JobsState = {
+    jobs: Job[];
+    now: number;
+    loaded: boolean;
+    refresh: () => void;
+    patch: (fn: (jobs: Job[]) => Job[]) => void;
+  };
+
+  function JobsHarness({ onState }: { onState: (s: JobsState) => void }) {
+    const state = useJobs() as unknown as JobsState;
+    onState(state);
+    return null;
+  }
+
+  function captureTimers(): { fireAll: () => void; restore: () => void } {
+    const pending = new Map<number, () => void>();
+    let nextId = 1;
+    const win = (globalThis as Record<string, unknown>).window as Record<string, unknown>;
+    const realSetTimeout = win.setTimeout;
+    const realClearTimeout = win.clearTimeout;
+    win.setTimeout = ((fn: () => void) => {
+      const id = nextId++;
+      pending.set(id, fn);
+      return id;
+    }) as typeof globalThis.setTimeout;
+    win.clearTimeout = ((id: number) => void pending.delete(id)) as typeof globalThis.clearTimeout;
+    return {
+      fireAll: () => {
+        const due = [...pending.values()];
+        pending.clear();
+        for (const fn of due) fn();
+      },
+      restore: () => {
+        win.setTimeout = realSetTimeout;
+        win.clearTimeout = realClearTimeout;
+      },
+    };
+  }
+
+  function okResponse(data: unknown): Response {
+    return { ok: true, status: 200, json: async () => data } as unknown as Response;
+  }
+
+  async function flush(): Promise<void> {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  test("a patch that bumps the epoch before the first poll lands leaves loaded false", async () => {
+    const timers = captureTimers();
+    const realFetch = globalThis.fetch;
+    let resolveFirst!: (r: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls === 1) return firstResponse;
+      return okResponse({ jobs: [{ ...BASE, id: "old", state: "done" }], now: Date.now() / 1000 });
+    }) as unknown as typeof fetch;
+
+    let latest!: JobsState;
+    try {
+      await act(async () => {
+        create(<JobsHarness onState={(s) => (latest = s)} />);
+      });
+      // The first /api/jobs read is still in flight (`firstResponse` has not
+      // resolved). A patch — the same call a dismiss/cancel/clear issues —
+      // bumps the epoch before that read lands, which is what makes the
+      // response about to arrive a STALE one.
+      await act(async () => {
+        latest.patch((jobs) => jobs);
+      });
+      // Let the now-stale first response land.
+      await act(async () => {
+        resolveFirst(okResponse({ jobs: [], now: Date.now() / 1000 }));
+      });
+      await flush();
+
+      // A stale response is real, but it was dropped without ever touching
+      // `jobs` — `jobs` is still the placeholder, so `loaded` must still be
+      // false, or a consumer gated on it (DownloadManagerView's
+      // `onJobsReported` effect) forwards that placeholder as though it were
+      // a genuine first read.
+      expect(latest.loaded).toBe(false);
+      expect(latest.jobs).toEqual([]);
+
+      // The idle-cadence poll the stale response scheduled is the one that
+      // actually paints something for the first time — loaded must flip
+      // true on THAT read.
+      timers.fireAll();
+      await flush();
+      expect(latest.loaded).toBe(true);
+      expect(latest.jobs.map((j) => j.id)).toEqual(["old"]);
+    } finally {
+      globalThis.fetch = realFetch;
+      timers.restore();
+    }
+  });
 });

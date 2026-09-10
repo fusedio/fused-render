@@ -35,6 +35,11 @@ export interface RecControlsProps {
   /** `annOn && !annRecOn` — a TYPED comment mode is armed, so the mic is inert:
    *  one mode at a time, leave it first (2026-09-06, T:8329-8331). */
   commentArmed?: boolean;
+  /** A pending scheduled message holds this chat, so the composer a walkthrough
+   *  would send its notes through is shut (P4R1-2). Inert for the wait, never
+   *  MID-RECORDING: a block landing while the mic is live may not take away the
+   *  only control that ends it — the same rule the composer's Stop follows. */
+  blocked?: boolean;
   /** Whether to draw the trash beside the stop. The bar hides itself through
    *  Stopping…/Transcribing… (`annBarPaint`'s busy gate, T:6233-6235), so the
    *  recording's waiting marks can never be thrown from here — which is why
@@ -78,6 +83,7 @@ export function RecControls({
   rec,
   shown = true,
   commentArmed = false,
+  blocked = false,
   discardable = true,
   onBegin,
   onEnd,
@@ -98,7 +104,8 @@ export function RecControls({
     rec.state === "starting" ||
     rec.state === "cancelling" ||
     rec.busy ||
-    (!live && commentArmed);
+    (!live && commentArmed) ||
+    (!live && blocked);
   return (
     <>
       <button

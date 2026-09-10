@@ -596,6 +596,27 @@ def test_a_clean_install_finishes_and_installs_the_binary(tmp_path, monkeypatch)
         assert os.access(dest, os.X_OK)
 
 
+def test_the_reported_install_job_points_at_preferences(tmp_path, monkeypatch):
+    """SPEC-actionable-notifications.md: no repo root applies to this job,
+    and there is no dedicated GitHub-settings tab — /preferences is the most
+    defensible destination available."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    captured = {}
+    monkeypatch.setattr(github_setup.jobs, "upsert",
+                        lambda body, **kw: captured.update(kw))
+    _run_install(monkeypatch)
+    assert captured.get("page") == "/preferences"
+
+
+def test_the_reported_install_job_carries_an_explicit_origin(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    captured = {}
+    monkeypatch.setattr(github_setup.jobs, "upsert",
+                        lambda body, **kw: captured.update(body))
+    _run_install(monkeypatch)
+    assert captured.get("origin") == "GitHub"
+
+
 def test_a_found_binary_with_no_probed_version_is_still_a_success(tmp_path, monkeypatch):
     """`probe_version` returns None (not "") for a `--version` spawn that
     timed out or exited non-zero — the binary is genuinely installed and
@@ -965,6 +986,60 @@ def test_a_successful_publish_records_the_repo_url(tmp_path, monkeypatch):
     rec = github_setup.publish_status()
     assert rec["state"] == "done"
     assert rec["detail"] == "https://github.com/octocat/my-repo"
+
+
+def test_the_reported_publish_job_points_at_the_repo_root(tmp_path, monkeypatch):
+    """SPEC-actionable-notifications.md: `PUBLISH_JOB_ID`'s row has to open
+    the repository it just published, not merely say what it was."""
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+
+    def fake_run(cmd):
+        return type("R", (), {"returncode": 0,
+                              "stdout": "https://github.com/octocat/my-repo\n",
+                              "stderr": ""})()
+
+    monkeypatch.setattr(github_setup, "_spawn_gh_repo_create", fake_run)
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: _fake_thread_class(run_worker=True)(**kw))
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+
+    captured = {}
+    monkeypatch.setattr(github_setup.jobs, "upsert",
+                        lambda body, **kw: captured.update(kw))
+
+    github_setup.publish_start(root, "my-repo", "public")
+    # `root` may reach here through a symlink (tmp_path often does, on
+    # macOS) — the reported destination is the realpath'd containment-
+    # checked root `_resolve_repo_root` already resolved, same as
+    # `_has_commits`/`_has_remote` operate on, not the raw string the page
+    # sent. Canonical (forward-slash) form: `_resolve_repo_root` comes back
+    # backslashed on Windows, and a page is compared against the canonical
+    # spelling everywhere else it is stored or read.
+    assert captured.get("page") == github_setup.canonical_fs_path(
+        github_setup._resolve_repo_root(root))
+
+
+def test_the_reported_publish_job_carries_an_explicit_origin(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+
+    def fake_run(cmd):
+        return type("R", (), {"returncode": 0,
+                              "stdout": "https://github.com/octocat/my-repo\n",
+                              "stderr": ""})()
+
+    monkeypatch.setattr(github_setup, "_spawn_gh_repo_create", fake_run)
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: _fake_thread_class(run_worker=True)(**kw))
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+
+    captured = {}
+    monkeypatch.setattr(github_setup.jobs, "upsert",
+                        lambda body, **kw: captured.update(body))
+
+    github_setup.publish_start(root, "my-repo", "public")
+    assert captured.get("origin") == "GitHub"
 
 
 def test_a_second_publish_is_refused_rather_than_queued(tmp_path, monkeypatch):

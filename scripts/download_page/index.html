@@ -569,6 +569,7 @@
     border: 1px solid var(--warn-edge); background: var(--warn-wash);
     font-size: var(--t-xs); line-height: 1.5; color: var(--ink-2);
   }
+  .dl-list-note[hidden] { display: none; }
   .dl-list-note svg { width: 14px; height: 14px; flex: none; color: var(--warn); margin-top: 0.2em; }
   .dl-list-note b { color: var(--ink); font-weight: 620; }
   .dl-others { position: relative; }
@@ -589,6 +590,12 @@
   .dl-list a:hover { background: rgba(243, 242, 237, 0.05); color: var(--ink); }
   .dl-list .nm { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; }
   .dl-list .nm svg { width: 13px; height: 13px; color: var(--ink-3); }
+  .dl-beta {
+    padding: 1px 6px; border-radius: 99px;
+    border: 1px solid var(--accent-edge); background: var(--accent-wash);
+    font-size: 9px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--accent-text); white-space: nowrap;
+  }
   .dl-list .sub { color: var(--ink-4); }
   .version { display: block; margin-top: 6px; font-size: var(--t-xs); color: var(--ink-4);
              font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; }
@@ -1550,14 +1557,14 @@
                   <span class="sub">Apple silicon &middot; .dmg</span>
                 </a>
                 <a id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-windows"/></svg>Windows</span>
+                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-windows"/></svg>Windows<span class="dl-beta">Beta</span></span>
                   <span class="sub">64-bit installer &middot; .exe</span>
                 </a>
                 <a id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linux"/></svg>Linux</span>
+                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linux"/></svg>Linux<span class="dl-beta">Beta</span></span>
                   <span class="sub">AppImage</span>
                 </a>
-                <p class="dl-list-note"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span><b>Built for macOS.</b> Windows &amp; Linux are best effort:
+                <p class="dl-list-note" id="dl-list-note" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span><b>Built for macOS.</b> Windows &amp; Linux are best effort:
                 there may be missing features and rough edges.</span></p>
               </div>
             </details>
@@ -1754,6 +1761,9 @@
       note.hidden = false;
       if (spec) spec.hidden = true;
     }
+    // Same rule for the static note inside the "Other platforms" list.
+    var listNote = document.getElementById("dl-list-note");
+    if (listNote) listNote.hidden = (visitorOS === "mac");
   }
   syncCta();
 

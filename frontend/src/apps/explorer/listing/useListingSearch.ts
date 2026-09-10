@@ -28,10 +28,14 @@
 // screen, dimmed and captioned, until the next answer lands.
 //
 // Neither the ranked answer nor the scan poll re-fetches on background churn.
-// A dir-watch event or a scan completing elsewhere is RECORDED, and the
-// results stay put — dimmed and captioned "not refreshed" — until a boundary
-// where a repaint costs the user nothing: the search ending, or a change this
-// app itself made. See listing/revalidate.
+// A dir-watch event elsewhere under the folder is RECORDED, and the results
+// stay put — silently, since nothing about the index this query was answered
+// from has moved — until a boundary where a repaint costs the user nothing:
+// the search ending, or a change this app itself made. See listing/revalidate.
+// A completed scan is different: the fetch effect re-asks for it directly
+// (its key includes the index lifecycle count), so it is what "not
+// refreshed" actually describes — an answer whose index has since moved and
+// has not yet been repainted over it.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { indexRank, requestFolderScan } from "@platform/lib/api";
 import type { IndexRankResult, RankReason } from "@platform/lib/api";
@@ -42,7 +46,7 @@ import {
   subscribeFsMutations,
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
-import { escapesBase } from "@apps/explorer/listing/query-base";
+import { escapesFsPath } from "@apps/explorer/listing/query-base";
 import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
 import { navHintQCommitted, replaceSearch } from "@platform/lib/router";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
@@ -79,6 +83,19 @@ interface RankAnswer {
    * moved said "current" over rows that were not.
    */
   gen: number;
+  /**
+   * The index lifecycle count (lib/index-freshness) this answer was fetched
+   * under — a scan completing or the index being rebuilt, as opposed to
+   * `gen` above, which also moves on every dir-watch event anywhere under
+   * the folder. `generationBehind` (below) keys off THIS, not `gen`: a scan
+   * actually finishing is answered by the fetch effect re-asking (its key
+   * includes `lifecycle` directly) almost as soon as it happens, but a bare
+   * dir-watch bump is background churn the search is designed to ignore
+   * (listing/revalidate) — captioning it "not refreshed" told the user their
+   * on-screen answer was suspect when nothing about the index, or this
+   * query's answer, had actually moved.
+   */
+  lifecycle: number;
   hits: SearchHit[];
   truncated: boolean;
   total: number;
@@ -156,14 +173,24 @@ export function useListingSearch(
   // this instead, never the raw flag.
   const runsSearch = searching && !isPathQuery;
 
-  // A query whose base can differ from the folder being searched — a leading
-  // "~", a leading "/", a drive letter, or a ".." segment — waits for an
-  // explicit commit (Enter, via `commitSearch`) rather than live-filtering:
-  // that base can walk arbitrarily far from the open folder, which is the
-  // "thousands of folders searched per keystroke" case a half-typed one would
-  // otherwise produce. A glob anchored at the box root, like "*/*.json",
-  // never leaves the folder being searched and live-filters like plain text.
-  const escapes = escapesBase(q);
+  // A query whose base genuinely differs from the folder being searched
+  // waits for an explicit commit (Enter, via `commitSearch`) rather than
+  // live-filtering: that base can walk arbitrarily far from the open
+  // folder, which is the "thousands of folders searched per keystroke" case
+  // a half-typed one would otherwise produce. A glob anchored at the box
+  // root, like "*/*.json", never leaves the folder being searched and
+  // live-filters like plain text — and NEITHER does an absolute/tilde query
+  // that resolves right back inside `fsPath` (SPEC-omnibox-search-
+  // affordance.md correction, 2026-09-10): the box always arrives pre-filled
+  // with `fsPath`'s own absolute path, so appending a pattern to what's
+  // already there is the single most natural gesture here, and it should
+  // live-filter exactly like the equivalent relative query, not wait for
+  // Enter. `escapesFsPath` (query-base.ts) is the fsPath-aware predicate
+  // this needs — `escapesBase` alone can't tell a same-subtree absolute
+  // path from a genuinely different one with no `fsPath` to compare against,
+  // and it stays as it is for `isPathQuery` (path-shaped-query.ts), which
+  // asks a different question and would regress if it changed meaning.
+  const escapes = escapesFsPath(q, fsPath, home);
   // The specific query text Enter was last pressed for. A ref, not state: it
   // must not itself cause a render, only unlock the fetch effect below (which
   // re-runs on `gateNonce`).
@@ -188,8 +215,15 @@ export function useListingSearch(
   );
   const [gateNonce, setGateNonce] = useState(0);
   const gateOpen = !escapes || committedGate.current === q;
-  const commitSearch = () => {
-    const live = query.trim();
+  // `overrideValue` lets `rerunQuery` (below) share this exact commit path —
+  // gate write and nonce bump together, exactly once — instead of reading
+  // `query` (live state) the way a plain Enter press does. `query` is a
+  // closure over the PRE-update value until React re-renders, so a caller
+  // that just rewrote the box's text on the user's behalf (rather than
+  // echoing a keystroke) would have this function commit against what was
+  // in the box a moment ago, not what it just set it to.
+  const commitSearch = (overrideValue?: string) => {
+    const live = (overrideValue ?? query).trim();
     if (committedGate.current === live) return;
     committedGate.current = live;
     setGateNonce((n) => n + 1);
@@ -284,11 +318,15 @@ export function useListingSearch(
   // caption is about THIS answer rather than about a counter that has since
   // moved.
   const answerGen = useRef(gen);
+  // The index lifecycle count the answer on screen was fetched under — see
+  // `RankAnswer.lifecycle`'s own comment for why this, and not `answerGen`
+  // above, is what `generationBehind` actually keys off.
+  const answerLifecycle = useRef(lifecycle);
   // Whether an answer has EVER been recorded for the current search episode —
   // set at the same two places `answerGen.current` is (a memo hit, a fetch
   // landing), cleared wherever the answer itself is cleared. `generationBehind`
-  // below needs this: `answerGen.current` starts equal to `gen` at mount, but
-  // a later bump (of `gen`, for reasons that have nothing to do with this
+  // below needs this: `answerLifecycle.current` starts equal to `lifecycle` at
+  // mount, but a later bump (for reasons that have nothing to do with this
   // search) makes them differ even when no answer was ever fetched — and "not
   // refreshed" is a claim about an EXISTING answer, meaningless with none on
   // screen.
@@ -299,6 +337,10 @@ export function useListingSearch(
   // exists to refuse.
   const genRef = useRef(gen);
   genRef.current = gen;
+  // Same reasoning, for the lifecycle half of `gen` alone — see
+  // `RankAnswer.lifecycle`.
+  const lifecycleRef = useRef(lifecycle);
+  lifecycleRef.current = lifecycle;
   // The index MOVING makes every remembered answer suspect at once — that is
   // the memo's whole coherence story (platform/lib/instant-search). Only the
   // memo goes here: the rows on screen stay, and are replaced when the re-ask
@@ -415,6 +457,7 @@ export function useListingSearch(
       // The rows come back with their own generation, so the caption is about
       // THESE rows rather than about the last request that happened to run.
       answerGen.current = remembered.gen;
+      answerLifecycle.current = remembered.lifecycle;
       answered.current = true;
       setAnswer(remembered);
       setFailure("");
@@ -457,10 +500,12 @@ export function useListingSearch(
           const step = applyStep(res, epoch);
           answerSeq.current += 1;
           answerGen.current = genRef.current;
+          answerLifecycle.current = lifecycleRef.current;
           answered.current = true;
           const next: RankAnswer = {
             query: q,
             gen: genRef.current,
+            lifecycle: lifecycleRef.current,
             hits: hitsFromRank(res.hits, q, res.mode),
             truncated: res.truncated,
             total: res.total,
@@ -583,6 +628,30 @@ export function useListingSearch(
     }, URL_SYNC_MS);
   };
 
+  // Sets the query AND commits it in the same call, for a caller that is
+  // rewriting the box on the user's behalf rather than echoing a keystroke
+  // (the zero-match glob-broadening offer, and the dropdown's "search this
+  // folder for <query>" action row — both Listing.tsx). `setQuery` alone
+  // would leave a query whose base escapes `fsPath` sitting behind the
+  // commit gate exactly as it was before this call — a second Enter the user
+  // never gets a chance to press, since nothing after this typed anything.
+  //
+  // Goes through `commitSearch`, passing `value` as its override rather than
+  // letting it read the (still stale) `query` state, so the gate write and
+  // the `gateNonce` bump it also does happen together, exactly once, on the
+  // one path every other commit already uses. Skipping the nonce bump here
+  // was the actual bug this comment used to paper over: when `value` is the
+  // exact text already sitting in the box — the offer row's own case,
+  // rerunning verbatim what the user typed but never committed — `setQuery`
+  // is a no-op (React bails on an unchanged string) and nothing else in the
+  // fetch effect's dependency list moves either, so opening the gate with no
+  // nonce bump left the effect with no signal to re-run and the request
+  // never went out.
+  const rerunQuery = (value: string) => {
+    setQuery(value);
+    commitSearch(value);
+  };
+
   // --- what the box hands over -------------------------------------------------
   //
   // The ranked answer is rendered whatever query it answers (see the header),
@@ -653,10 +722,12 @@ export function useListingSearch(
   // to.
   const mode = answer?.mode ?? "substring";
 
-  // The rendered rows: the top of the ranking only for a substring answer; a
-  // glob answer's cap is the fetch limit alone (listing/result-cap), so every
-  // fetched hit renders. This is also what keyboard nav and auto-select walk,
-  // so they never address a row that is not on screen.
+  // The rendered rows: the top SEARCH_RESULT_CAP, for either query shape
+  // (listing/result-cap) — a glob's matches are all equally relevant, but a
+  // broad enough pattern can still return thousands of them, which is the
+  // same "too many rows for a screen" problem the substring cap already
+  // solves. This is also what keyboard nav and auto-select walk, so they
+  // never address a row that is not on screen.
   const visibleHits = useMemo(() => capHits(displayHits, mode), [displayHits, mode]);
 
   // How many ranked matches the cap is hiding — the counter reports the true
@@ -703,13 +774,18 @@ export function useListingSearch(
   // in a moment — so a scan running for a minute is deliberately NOT one of
   // them; it has the "indexing…" caveat instead.
   const isStale = deferredStale || progress.inFlight;
-  // Being a generation behind is NOT momentary: the folder or the index moved
-  // and this search deliberately did not follow, and it will stay that way
-  // until a real boundary (listing/revalidate). Requires `answered.current`:
-  // with no answer ever recorded for this search, `answerGen.current` and
-  // `gen` differing says nothing about staleness — there is no existing
-  // answer for "not refreshed" to describe.
-  const generationBehind = searching && answered.current && answerGen.current !== gen;
+  // Keyed on `lifecycle`, not the combined `gen` (refresh + lifecycle):
+  // `gen` also moves on every dir-watch event anywhere under the folder — a
+  // churny root's own Library/, logs, the index worker's own writes — and
+  // none of those says anything about whether THIS query's answer is out of
+  // date, only that something, somewhere under the tree, changed. A lifecycle
+  // bump is the one that means the index itself moved, and it is answered by
+  // the fetch effect re-asking (its own key includes `lifecycle`) about as
+  // soon as it happens, so this is rarely observed true for long. Requires
+  // `answered.current`: with no answer ever recorded for this search,
+  // `answerLifecycle.current` and `lifecycle` differing says nothing about
+  // staleness — there is no existing answer for "not refreshed" to describe.
+  const generationBehind = searching && answered.current && answerLifecycle.current !== lifecycle;
 
   // A settled failure with rows still on screen: the last request for the
   // CURRENT query errored, so `hits` is whatever an earlier query answered,
@@ -750,6 +826,7 @@ export function useListingSearch(
   return {
     query,
     setQuery,
+    rerunQuery,
     q,
     searching,
     // Path vs. Search — see path-shaped-query.ts. The one predicate every

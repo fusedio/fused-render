@@ -106,8 +106,13 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
 const BLOCK_OPENERS: [string, string][] = [
   ["<" + APP_STATE_TAG + ">", ""],
   ["<" + PANE_SHOT_TAG + ">", MARKER_VIEW],
-  // Tag-less by construction (see stripAnnBlock) — matched on the one sentence
-  // formatAnnotations always opens with.
+  // TAGGED FIRST, THEN THE PREAMBLE — `stripAnnBlock` recognises both shapes
+  // "forever" (wire.ts:410) and so must this: today's annotation bundle IS
+  // wrapped in `<annotations>`, and a preview truncated inside one leaked the
+  // literal tag as the row's title until this line existed.
+  ["<" + ANN_TAG + ">", MARKER_ANN],
+  // The legacy, tag-less shape — matched on the one sentence formatAnnotations
+  // always opens with.
   ["The user annotated ", MARKER_ANN],
 ];
 
@@ -127,7 +132,11 @@ export function sessionTitle(s: Pick<SessionRow, "id" | "preview"> | null | unde
     const i = text.indexOf(open);
     if (i === -1) continue;
     text = text.slice(0, i).trim();
-    if (marker) carried.push(marker);
+    // ONCE EACH. Two openers map to `MARKER_ANN` (the tagged block and its
+    // legacy preamble) and a preview can only ever be cut at one of them, but a
+    // title reading "annotations + annotations" is the wrong kind of wrong to
+    // leave to that argument.
+    if (marker && carried.indexOf(marker) === -1) carried.push(marker);
   }
   return markerWords(text || carried.join(MARKER_JOIN)) || (s && s.id) || "";
 }

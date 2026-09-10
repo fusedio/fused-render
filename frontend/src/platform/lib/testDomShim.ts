@@ -21,6 +21,7 @@ export function installDomShim(): void {
     window?: unknown;
     Element?: unknown;
     HTMLElement?: unknown;
+    HTMLIFrameElement?: unknown;
     requestAnimationFrame?: unknown;
     cancelAnimationFrame?: unknown;
     document?: unknown;
@@ -32,6 +33,12 @@ export function installDomShim(): void {
   // objects, so the class only has to EXIST.
   g.Element ??= class Element {};
   g.HTMLElement ??= class HTMLElement extends (g.Element as new () => object) {};
+  // JobPopupCard's outside-blur detection narrows on
+  // `document.activeElement instanceof HTMLIFrameElement` — a real
+  // constructor an actual `<iframe>` node satisfies in the browser, so the
+  // stand-in only has to be a class a test can `new` up to fake one focused.
+  g.HTMLIFrameElement ??=
+    class HTMLIFrameElement extends (g.HTMLElement as new () => object) {};
   // Base UI schedules its transition bookkeeping on a frame. There are no frames
   // here, so the next macrotask is the honest stand-in: the callback runs, once,
   // and `act` can flush it.
@@ -47,6 +54,7 @@ export function installDomShim(): void {
   // path, not the one a test should silently take.
   g.document ??= {
     hidden: false,
+    activeElement: null,
     addEventListener() {},
     removeEventListener() {},
     querySelector: () => null,

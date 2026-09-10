@@ -5,8 +5,7 @@ import "../styles/home.css";
 import type { SessionRow } from "../protocol/types";
 import { HomeCard, type HomeCardProps } from "./HomeCard";
 import { Lists } from "./Lists";
-import { useArtifacts } from "./useArtifacts";
-import { useSnapshots } from "./useSnapshots";
+import { useLandingReads } from "./useLandingReads";
 
 export interface HomeProps extends HomeCardProps {
   recent: SessionRow[] | null;
@@ -17,6 +16,10 @@ export interface HomeProps extends HomeCardProps {
   /** The chat's template folder: the terminal hand-off in the landing kebab,
    *  and the `agent.py` behind the artifacts and snapshots reads below. */
   agentDir?: string | null;
+  /** T:19078 `snapInvalidate` — bumped by the chat every time a run ends, so a
+   *  turn that edited the file leaves a stale checkpoint chain behind it rather
+   *  than a cached one (`useSnapshots`'s third argument). */
+  snapInvalidation?: unknown;
 }
 
 export function Home({
@@ -24,6 +27,7 @@ export function Home({
   onOpenSession,
   listsDisabled,
   agentDir,
+  snapInvalidation,
   ...cardProps
 }: HomeProps) {
   // BOTH READS LIVE HERE, not threaded down from the chat: they are the landing
@@ -31,8 +35,16 @@ export function Home({
   // / `mountSnapshots` are called from boot AND from Back), and a mount of this
   // component is exactly that path. Nothing in the transcript wants either
   // answer, so nothing above needs to hold them.
-  const artifacts = useArtifacts(agentDir ?? null, cardProps.file);
-  const snaps = useSnapshots(agentDir ?? null, cardProps.file);
+  //
+  // ONE ORDERING OWNER over the two of them (P4-14): T runs the three landing
+  // reads in a stated sequence and native had fired them as independent effects
+  // on one commit. `useLandingReads` is that sequence — see its module note.
+  const { artifacts, snaps } = useLandingReads(
+    agentDir ?? null,
+    cardProps.file,
+    recent,
+    snapInvalidation,
+  );
 
   return (
     <div className="c-home">

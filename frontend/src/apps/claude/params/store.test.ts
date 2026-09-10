@@ -220,6 +220,31 @@ describe("createUrlParamsStore", () => {
     expect(f.env.history.state).toBe(null); // and the entry stays pristine
   });
 
+  test("A SPENT ANCHOR MUST BE REMOVED WITH `replace` (T:12978-12984, P4-20)", () => {
+    // The call site's reason, pinned here because the store is where the two
+    // roads differ. T: "arriving on the message is not a place anyone navigated
+    // to twice, and a Back that re-fired the flare would be a history entry
+    // nobody made. Left behind it would also re-scroll a reload the reader has
+    // since scrolled away from."
+    //
+    // A bare `set` reaches the replace path only while no gesture has happened
+    // — and `msg` is spent when the turn it names is ON SCREEN, which is
+    // normally after the reader has clicked something.
+    const bare = fakeEnv("/x?msg=u1");
+    const bareStore = mountedStore(bare.env);
+    bare.gesture();
+    bareStore.set({ msg: null });
+    expect(bare.writes.some((w) => w.kind === "push")).toBe(true);
+
+    const asked = fakeEnv("/x?msg=u1");
+    const askedStore = mountedStore(asked.env);
+    asked.gesture();
+    askedStore.set({ msg: null }, { history: "replace" });
+    asked.tick(HISTORY_MIN_INTERVAL_MS);
+    expect(asked.writes.every((w) => w.kind === "replace")).toBe(true);
+    expect(asked.url()).toBe("/x");
+  });
+
   test("the _layout span is preserved raw and last (D51)", () => {
     const f = fakeEnv("/x?_layout=(row(a)(b))&a=1");
     const store = mountedStore(f.env);

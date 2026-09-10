@@ -2836,6 +2836,34 @@ export function getHomeClaudeSessionFolders(
   );
 }
 
+// -- One transcript's liveness (GET /api/claude-sessions/liveness) ------------
+// `(mtime, size, running)` for ONE transcript file — the cheapest possible "has
+// this conversation moved, and is it moving right now?" (D415, and
+// claude_sessions.py's own docstring for why the PATH is the parameter).
+//
+// The native chat's standing live watch is the only caller: a turn driven from
+// OUTSIDE this app (an interactive `claude` in a terminal, a `claude --resume`)
+// creates no run dir, so `live_run` is blind to it by construction and the pair
+// below is the only reason the chat has to re-render. `running` is the
+// transcript's LAST MESSAGE, not the 45 s activity window the Inbox badge uses.
+//
+// A transcript that is not there yet answers `exists: false` rather than 404 —
+// a chat can be open on a session whose first turn is still being written.
+export interface ClaudeSessionLiveness {
+  exists: boolean;
+  mtime: number;
+  size: number;
+  running: boolean;
+}
+
+export function getClaudeSessionLiveness(
+  path: string,
+): Promise<ClaudeSessionLiveness> {
+  return getJson<ClaudeSessionLiveness>(
+    `/api/claude-sessions/liveness?path=${encodeURIComponent(path)}`,
+  );
+}
+
 // -- Claude sessions, one row each (GET /api/claude-sessions/summaries) --------
 // Every Claude Code session on this machine, for the Schedule page's task views
 // (shell/ScheduleTaskViews.tsx). A scheduled task and a chat are the same kind

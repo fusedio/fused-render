@@ -18,7 +18,16 @@
 //     output arrives, a code block growing as the highlighter runs, a picture
 //     that only takes up room once it loads — so a ResizeObserver answers all
 //     of them with the one flag.
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { cn } from "@platform/lib/utils";
@@ -74,6 +83,22 @@ export interface TranscriptProps {
   paneNoun?: string;
   /** What the app was doing, for a trouble card's report. */
   what?: string;
+  /**
+   * THE FOLLOW FLAG, LENT OUT (T:12758, T:17211-17213).
+   *
+   * A caller outside this file that wants the tail re-pinned must go through
+   * the same `followBottom` every write site in here goes through, or it
+   * re-introduces the bug the flag exists to prevent: writing `scrollTop =
+   * scrollHeight` off a raw `.chat-logwrap` lookup yanks a reader who has
+   * scrolled up. The schedule banner is the one such caller (it SHRINKS the
+   * scrollport as it appears, so it has to correct a pinned log), and it
+   * cannot read the pinned-ness itself either — geometry is wrong here in both
+   * directions, which is why this is a flag and not a threshold.
+   *
+   * Filled with the flag-guarded `followBottom` while the scrollport is
+   * mounted, `null` when it is not.
+   */
+  followRef?: MutableRefObject<(() => void) | null>;
 }
 
 export const Transcript = memo(function Transcript({
@@ -88,6 +113,7 @@ export const Transcript = memo(function Transcript({
   onOpenShot,
   paneNoun,
   what,
+  followRef,
 }: TranscriptProps) {
   const port = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLDivElement>(null);
@@ -137,6 +163,9 @@ export const Transcript = memo(function Transcript({
     const followBottom = () => {
       if (followTail.current) wrap.scrollTop = wrap.scrollHeight;
     };
+    // Lent to the schedule banner, which must ask the flag rather than write
+    // `scrollTop` itself (see `followRef`).
+    if (followRef) followRef.current = followBottom;
     wrap.addEventListener("wheel", onWheel, { passive: true });
     wrap.addEventListener("touchstart", onTouchStart, { passive: true });
     wrap.addEventListener("touchmove", onTouchMove, { passive: true });
@@ -158,8 +187,9 @@ export const Transcript = memo(function Transcript({
       wrap.removeEventListener("scroll", onScroll);
       wrap.removeEventListener("load", followBottom, true);
       grown?.disconnect();
+      if (followRef) followRef.current = null;
     };
-  }, []);
+  }, [followRef]);
 
   // A new turn is the reader asking for the tail again: sending re-arms the
   // follow that scrolling up turned off, so the answer to what they just asked

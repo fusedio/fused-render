@@ -4,7 +4,15 @@
    itself — the column owns placement and stacking, which is the whole point of
    folding the old bottom-centre toast host and the separately-pinned server
    card into it. pointer-events: none on the column so its empty region never
-   swallows clicks on the view beneath; each entry takes them back. */
+   swallows clicks on the view beneath; each entry takes them back.
+
+   The column also owns ONE shared WIDTH, not just a cap: a `max-width` alone
+   is only a ceiling, and `align-items: flex-end` shrink-wraps each entry to
+   its own content underneath it — a short caption sat at `.dl-row`'s 238px
+   floor while a long title stretched toward the 360px ceiling, so the stack
+   read as a ragged pile of different-sized cards rather than one system. A
+   real `width` plus `align-items: stretch` makes every entry the same size
+   regardless of what it says, which is what "one surface" actually requires. */
 .notif-host {
   position: fixed;
   right: 16px;
@@ -12,9 +20,9 @@
   z-index: 2000;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 8px;
-  max-width: min(360px, calc(100vw - 32px));
+  width: min(360px, calc(100vw - 32px));
   pointer-events: none;
 }
 
@@ -34,7 +42,7 @@
 .toast-slot {
   display: grid;
   grid-template-rows: 1fr;
-  max-width: 100%;
+  width: 100%;
   transition:
     grid-template-rows var(--dur-med) var(--ease-out),
     margin-bottom var(--dur-med) var(--ease-out);
@@ -43,6 +51,27 @@
 .toast-slot > .toast {
   min-height: 0;
   overflow: hidden;
+}
+
+/* The job pop-up card (platform/ui/JobPopupCard.tsx) rides the same
+   `.toast-slot` collapse — it renders `.dl-row` (NotificationCard's own root
+   class), not `.toast`, so it needs the same min-height/overflow rule to
+   actually shrink rather than just clip visually as the grid track closes.
+   Everywhere else `.dl-row` lives inside a `.dl-panel`, which is what
+   supplies its background/border/shadow/radius and its `toast-in` entrance —
+   a `.dl-row` floating alone in the notification column has no such
+   ancestor, so it gets its own copy of that same surface here rather than
+   rendering as bare, unboxed text over whatever the page underneath happens
+   to show. */
+.toast-slot > .dl-row {
+  min-height: 0;
+  overflow: hidden;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: toast-in var(--dur-med) var(--ease-out);
 }
 
 .toast-slot.leaving {
@@ -926,6 +955,22 @@
    token and wrapping one mid-word reads worse than truncating it; at full panel
    width it now almost never reaches that. Full id stays on hover. */
 .dl-model {
+  margin-bottom: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* Who raised this row (`Job.origin`, JobRow's `.dl-origin`) — "Playground",
+   "Local models", "Benchmark". Same treatment as `.dl-model` right above
+   (11px, `--fg-muted`, one line, ellipsised) since both are dimmed
+   attribution captions on their own line, never competing with the head or
+   the status line for width. Absent entirely when `job.origin` is "" —
+   `NotificationCard` renders no element for it at all, so this rule never
+   needs to account for an empty line taking up the margin below. */
+.dl-origin {
   margin-bottom: 5px;
   overflow: hidden;
   text-overflow: ellipsis;

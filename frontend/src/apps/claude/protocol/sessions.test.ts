@@ -274,7 +274,14 @@ describe("subscribeRecent — the push side (R3-1)", () => {
   test("two more looks a few seconds apart cover the CLI's transcript write", async () => {
     const p = pushEnv([{ sessions: [] }, { sessions: [row("a")] }]);
     const seen: (SessionRow[] | null)[] = [];
-    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), p.env);
+    // `coverWrite` — T's `leftLive`. The looks are for a chat left MID-TURN.
+    const off = subscribeRecent(
+      "/tpl",
+      "/proj/app.py",
+      (r) => seen.push(r),
+      p.env,
+      true,
+    );
     await settle();
     // T's own schedule, from its Back handler (T:13066).
     expect(p.timers.map((t) => t.ms)).toEqual([2500, 6000]);
@@ -282,6 +289,21 @@ describe("subscribeRecent — the push side (R3-1)", () => {
     await settle();
     off();
     expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a"]);
+  });
+
+  test("A COLD LANDING SCHEDULES NEITHER (T:13066, P4-21)", async () => {
+    // T gates them on `leftLive` because their whole purpose is covering the
+    // CLI's first transcript write for a chat abandoned mid-turn. PR4 shipped
+    // them unconditionally, so every cold landing boot spent two extra
+    // `sessions` reads for a write that had already happened.
+    const p = pushEnv([{ sessions: [row("a")] }]);
+    const seen: (SessionRow[] | null)[] = [];
+    const off = subscribeRecent("/tpl", "/proj/app.py", (r) => seen.push(r), p.env);
+    await settle();
+    expect(p.timers.map((t) => t.ms)).toEqual([]);
+    // One read, and the rows are up: the list is what it honestly is.
+    expect(seen[seen.length - 1]?.map((s) => s.id)).toEqual(["a"]);
+    off();
   });
 
   test("unsubscribing takes the listeners AND the pending retries with it", async () => {

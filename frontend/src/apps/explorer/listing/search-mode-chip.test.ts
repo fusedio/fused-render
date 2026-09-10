@@ -3,6 +3,12 @@
 // read SearchField.tsx and explorer.css as text — the box's own markup, and
 // both hosts (Listing.tsx over a folder, FileSearchField.tsx over a plain
 // file) render this same component rather than each carrying a copy.
+//
+// SPEC-omnibox-search-affordance.md, scope item 1: the chip lost its word.
+// The 12px glyph alone carries the mode now — these tests assert the glyph
+// is still there, that a screen reader still gets a spoken label the
+// visible word used to carry, and that `--chip-inset` (scope item 2) no
+// longer varies by mode now that both states render the same glyph width.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -76,12 +82,23 @@ test("the chip's mode is isPathQuery layered under the existing searching gate, 
   expect(FILE_HOST).not.toMatch(/isPathShapedQuery\(/);
 });
 
-test("the chip renders both words, gated on the same variable that colors it", () => {
+// The visible word is gone (scope item 1) — the chip renders only the
+// glyph, `aria-hidden`, plus a screen-reader-only label carrying the word
+// that used to be visible. Removing the word without the spoken label would
+// leave a screen reader announcing nothing at all for the mode.
+test("the chip has no visible word, but still carries a spoken mode label", () => {
   const at = LISTING.indexOf('className={"listing-search-mode"');
   expect(at).toBeGreaterThan(-1);
-  const block = LISTING.slice(at, LISTING.indexOf("</span>", LISTING.indexOf("listing-search-mode-label", at)));
+  const block = LISTING.slice(at, LISTING.indexOf("</span>\n", LISTING.indexOf("sr-only", at)) + 8);
+  // No bare "Search"/"Path" text node sitting directly in the chip's markup
+  // outside of the sr-only span (the sr-only span itself is expected to
+  // carry exactly this word, so the check has to exclude it).
+  const srOnlyAt = block.indexOf("sr-only");
+  expect(srOnlyAt).toBeGreaterThan(-1);
+  const beforeSrOnly = block.slice(0, srOnlyAt);
+  expect(beforeSrOnly).not.toMatch(/>\s*Search\s*</);
+  expect(beforeSrOnly).not.toMatch(/>\s*Path\s*</);
   expect(block).toMatch(/chipIsSearch\s*\?\s*"Search"\s*:\s*"Path"/);
-  expect(block).toMatch(/chipIsSearch\s*\?\s*"\s*search"\s*:\s*""/);
 });
 
 // A readout, not a control: pointer-events: none (click lands on the input
@@ -106,21 +123,9 @@ test("the search state alone takes the accent; the path state stays muted", () =
   expect(searchState[0]).toMatch(/color:\s*var\(--accent\)/);
 });
 
-// The label carries no reserved width of its own — a fixed-width label
-// would leave dead space after the shorter word ("Path") that the crumbs'
-// own start position (below) does not need, since that position is already
-// pinned by its own fixed offset regardless of which word the chip shows.
-test("the label reserves no minimum width of its own", () => {
-  const decls = rulesFor(".listing-search-mode-label");
-  expect(decls.length).toBe(1);
-  expect(decls[0]).not.toMatch(/min-width/);
-  expect(decls[0]).not.toMatch(/width:/);
-});
-
 // The crumbs and the input read the SAME custom property for their start
 // offset, so a mismatch between the two (a visible text jump on focus) is
-// structurally impossible — one value, set in one place per mode, read in
-// two.
+// structurally impossible — one value, set in one place, read in two.
 test("the crumbs and the input start at the same custom property, not two separately-typed numbers", () => {
   const crumbs = rulesFor(".listing-search-crumbs");
   expect(crumbs.length).toBe(1);
@@ -130,18 +135,16 @@ test("the crumbs and the input start at the same custom property, not two separa
   expect(input[0]).toMatch(/padding:\s*6px 10px 6px var\(--chip-inset\)/);
 });
 
-// The property itself is set PER MODE on the box (the same element the mode
-// class already lives on, in the JSX): "Path" gets its own, narrower
-// clearance, and only `.search` overrides it wider — so "Path"'s shorter
-// word leaves no dead space, and the two never drift apart from having been
-// typed twice.
-test("--chip-inset is set once per mode, on the box, not duplicated at the crumbs/input", () => {
+// Scope item 2: an icon-only chip is the same width in both modes, so
+// `--chip-inset` collapses to one value instead of varying per mode — the
+// per-mode override (`.listing-search-box.search`) is now dead and must be
+// gone, not just unused.
+test("--chip-inset is a single value now that both modes render the same glyph width", () => {
   const base = rulesFor(".listing-search-box");
   expect(base.length).toBe(1);
-  expect(base[0]).toMatch(/--chip-inset:\s*55px/);
-  const search = rulesFor(".listing-search-box.search");
-  expect(search.length).toBe(1);
-  expect(search[0]).toMatch(/--chip-inset:\s*67px/);
+  expect(base[0]).toMatch(/--chip-inset:\s*\d+px/);
+  expect(rulesFor(".listing-search-box.search").length).toBe(0);
+  expect(CSS).not.toMatch(/\.listing-search-box\.search\s*\{/);
   // Neither the crumbs nor the input rule sets the variable itself — they
   // only read it.
   const crumbs = rulesFor(".listing-search-crumbs");
@@ -150,75 +153,101 @@ test("--chip-inset is set once per mode, on the box, not duplicated at the crumb
   expect(input[0]).not.toMatch(/--chip-inset:/);
 });
 
-// The box, not just the chip, carries the mode class — `--chip-inset` above
-// needs somewhere to be set per mode, and the box is the common ancestor of
-// both the crumbs and the input, so its own classList is that place.
-test("the box's own classList carries the same chipIsSearch-gated mode class the chip does", () => {
+// The box no longer needs its own copy of the mode class — nothing left
+// reads `--chip-inset` per mode, and no other rule keys off
+// `.listing-search-box.search` (asserted above), so the box's classList
+// carries no mode modifier of its own any more.
+test("the box's own classList no longer carries a chipIsSearch-gated mode class", () => {
   const at = LISTING.indexOf('"listing-search-box" +');
   expect(at).toBeGreaterThan(-1);
-  const block = LISTING.slice(at, LISTING.indexOf("}", at));
-  expect(block).toMatch(/chipIsSearch\s*\?\s*"\s*search"\s*:\s*""/);
+  const block = LISTING.slice(at, LISTING.indexOf("(hasPin", at));
+  expect(block).not.toMatch(/\(chipIsSearch \? " search" : ""\)/);
 });
 
-// The hint: visible only at rest. `pinnedOpen` goes true the instant the
-// field takes focus, so gating on `!pinnedOpen` is what makes it vanish on
-// focus, not a blur listener of its own. `!hasClear` keeps it out of the
-// way of the still-present clear button in the blurred-with-a-committed-
-// query ("unpin") state.
-test("the hint is gone the instant the field takes focus, and while a query is still there to clear", () => {
-  const at = LISTING.indexOf('className="listing-search-shortcut-hint"');
+// Scope item 3, revised (user preference on a running screen): the words
+// stay — "Search ⌘L" was never the defect, an unclickable pill wearing no
+// chassis was. It is a real button now, on the same `bar-ctl` family the
+// neighbouring `⋮` trigger rides, no longer a decoration a press falls
+// through, and no longer visible once a query has committed.
+test("the hint is a real button now, gone the instant the field takes focus, and while a query is still there to clear", () => {
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
   expect(at).toBeGreaterThan(-1);
   const before = LISTING.slice(Math.max(0, at - 200), at);
   expect(before).toMatch(/!pinnedOpen\s*&&\s*!hasClear\s*&&\s*\(/);
+  const openTagAt = LISTING.lastIndexOf("<", at);
+  expect(LISTING.slice(openTagAt, openTagAt + 7)).toBe("<button");
+  const block = LISTING.slice(at, at + 700);
+  expect(block).toMatch(/"listing-search-shortcut-hint bar-ctl"/);
 });
 
-// The label is platform-dependent, drawn from the app's one detection
-// (`isMac`, @platform/lib/platform) rather than a fresh `navigator` check —
-// the chord itself is `isMod(e) && e.key.toLowerCase() === "l"`
-// (Breadcrumb.tsx).
-test("the hint's label comes from the app's one platform detection, not a fresh navigator check", () => {
-  const at = LISTING.indexOf('<span className="listing-search-shortcut-hint"');
+// The words render at wide width — "Search" as plain text plus the
+// platform-conditional shortcut in its key-cap. `boxWide` (the SAME
+// measurement the placeholder's own long/short switch already uses)
+// collapses this to the bare magnifier at narrow widths, where the
+// accessible name (below) becomes the only place the shortcut still
+// appears.
+test("the words render at wide width: Search plus the platform-conditional shortcut", () => {
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
   expect(at).toBeGreaterThan(-1);
-  const block = LISTING.slice(at, at + 300);
-  expect(block).toMatch(/isMac\s*\?\s*"⌘L"\s*:\s*"Ctrl L"/);
+  const block = LISTING.slice(at, at + 1100);
+  expect(block).toMatch(/boxWide \?/);
+  expect(block).toMatch(/\{"Search"\}/);
+  expect(block).toMatch(/<kbd>\{isMac \? "⌘L" : "Ctrl L"\}<\/kbd>/);
+  // The glyph is the OTHER branch, not a second thing beside the words. It
+  // renders through `<SearchGlyph />`, the one magnifier this file draws —
+  // shared with the dropdown's search-action row, so the collapsed button and
+  // the row that runs the search cannot end up wearing two different icons.
+  expect(block.indexOf("{boxWide ?")).toBeLessThan(block.indexOf("<SearchGlyph />"));
   const importAt = LISTING.indexOf('import { isMac } from "@platform/lib/platform";');
   expect(importAt).toBeGreaterThan(-1);
   expect(block).not.toMatch(/navigator/);
 });
 
-// The app's own key-cap vocabulary (preferences.css's `.fh-ai-hint kbd`),
-// not an invented style.
-test("the hint's key cap matches the app's existing kbd vocabulary", () => {
-  const decls = rulesFor(".listing-search-shortcut-hint kbd");
-  expect(decls.length).toBe(1);
-  expect(decls[0]).toMatch(/padding:\s*0 4px/);
-  expect(decls[0]).toMatch(/border:\s*1px solid var\(--border\)/);
-  expect(decls[0]).toMatch(/border-radius:\s*4px/);
-  expect(decls[0]).toMatch(/background:\s*var\(--bg-alt\)/);
+// The accessible name (aria-label) carries the shortcut in BOTH the wide
+// and the collapsed form — in the collapsed form it is the only place the
+// shortcut still appears at all, so it can't be conditional on `boxWide`.
+test("the accessible name includes Search and the shortcut regardless of width", () => {
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
+  const block = LISTING.slice(at, at + 700);
+  expect(block).toMatch(/aria-label=\{`Search this folder \(\$\{isMac \? "⌘L" : "Ctrl L"\}\)`\}/);
+});
+
+// Pressing it must do what ⌘L already does — reusing `requestSearchFocus`
+// (listing/search-focus.ts), the exact call Breadcrumb.tsx's own ⌘L
+// listener makes, rather than a second path to the same behaviour.
+test("the button reuses requestSearchFocus, not a second focus/expand path", () => {
+  const importAt = LISTING.indexOf(
+    'import { requestSearchFocus, subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";',
+  );
+  expect(importAt).toBeGreaterThan(-1);
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
+  const block = LISTING.slice(at, at + 700);
+  expect(block).toMatch(/requestSearchFocus\(/);
 });
 
 // Absent, not clipped, at a narrow width: a CSS container query on the box
 // itself, not a measured ref — the branch already shipped a bug of exactly
 // that shape (a useLayoutEffect([]) that froze on a null ref).
-test("the hint disappears at a narrow box width via a container query, not a measured ref", () => {
+test("the button disappears at a narrow box width via a container query, not a measured ref", () => {
   const boxDecls = rulesFor(".listing-search-box");
   expect(boxDecls.length).toBe(1);
   expect(boxDecls[0]).toMatch(/container-type:\s*inline-size/);
-  const containerAt = CSS.indexOf("@container (max-width: 360px)");
-  expect(containerAt).toBeGreaterThan(-1);
+  // FINDING 2 (code review, 2026-09-10): not 360px — that used to sit ABOVE
+  // `boxWide`'s own 340px threshold, hiding the button at every width its
+  // collapsed-glyph branch could ever render at (see
+  // search-shortcut-collapse.test.ts). The hide breakpoint now sits below
+  // 340px instead, so the wide label, the glyph, and hidden each get a real
+  // width span.
+  const containerRe = /@container \(max-width: (\d+)px\) \{\s*\.listing-search-shortcut-hint \{/;
+  const m = CSS.match(containerRe);
+  expect(m, "no @container rule hiding .listing-search-shortcut-hint").not.toBeNull();
+  expect(Number(m![1])).toBeLessThan(340);
+  const containerAt = CSS.indexOf(m![0]);
   const block = CSS.slice(containerAt, containerAt + 200);
   expect(block).toMatch(/\.listing-search-shortcut-hint\s*\{[\s\S]*display:\s*none/);
-  // The hint itself carries no width measurement of its own — no ref, no
+  // The button itself carries no width measurement of its own — no ref, no
   // ResizeObserver — anywhere near its markup.
-  const hintAt = LISTING.indexOf('className="listing-search-shortcut-hint"');
+  const hintAt = LISTING.indexOf('className={"listing-search-shortcut-hint');
   const nearby = LISTING.slice(Math.max(0, hintAt - 300), hintAt + 300);
   expect(nearby).not.toMatch(/useLayoutEffect|ResizeObserver|useWidthThresholdRef/);
-});
-
-test("the hint is a decoration: pointer-events none", () => {
-  // Two exact matches: the base rule and the narrow-width override nested
-  // under the container query; the base rule comes first in the file.
-  const decls = rulesFor(".listing-search-shortcut-hint");
-  expect(decls.length).toBe(2);
-  expect(decls[0]).toMatch(/pointer-events:\s*none/);
 });

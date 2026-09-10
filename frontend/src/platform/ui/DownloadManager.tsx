@@ -75,6 +75,7 @@
 // "Cancelling…" until the work actually stops, rather than lying about it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStatusChip } from "@platform/lib/statusChip";
+import { navigateToJobPage, isJobPageRoute } from "@platform/lib/router";
 import StatusChip from "@platform/ui/StatusChip";
 import NotificationCard from "@platform/ui/NotificationCard";
 import {
@@ -127,7 +128,11 @@ import type { RunningEngine } from "@platform/lib/api";
 // to POLL_IDLE_MS later. It is only an optimisation: a reporter with no JS (a
 // Python worker) writes no ping, so the idle poll below is the floor that
 // guarantees the row shows up either way.
-function useJobs(): {
+// Exported purely so DownloadManager.test.tsx (the "loaded" suite) can
+// drive it directly, the way ActivityDock.tsx exports `retiredEngines` for
+// its own test — the default-exported `DownloadManager` below is otherwise
+// the only caller.
+export function useJobs(): {
   jobs: Job[];
   /** The SERVER's clock at the last successful read (`JobsSnapshot.now`) —
    *  what `jobDetail` measures a running job's age against (C4 fix), never
@@ -135,11 +140,26 @@ function useJobs(): {
    *  drawn before the first response lands still gets a plausible age
    *  rather than measuring against zero. */
   now: number;
+  /** Whether a real `/api/jobs` response has actually been PAINTED at least
+   *  once. `jobs` starts `[]` at mount, before any network round trip has
+   *  happened — that empty array is a placeholder, not an observation, and a
+   *  consumer that cannot tell the two apart (the pop-up's first-tick
+   *  seeding, below and in `ActivityDock.tsx`) mistakes it for "the poll's
+   *  first real read came back empty" and treats every job the ACTUAL first
+   *  read finds already terminal as brand new. Flips once, on the first
+   *  response that lands AND is applied to `jobs` — a stale response (`poll`'s
+   *  `at !== epochRef.current` branch) is real but is deliberately dropped
+   *  without touching `jobs`, so it must not flip this either, or `reported`
+   *  is still the placeholder the moment a consumer is told it is loaded.
+   *  Never flips back once true: a later fetch failure leaves the last real
+   *  snapshot on screen, which is still a real snapshot. */
+  loaded: boolean;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 } {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [now, setNow] = useState<number>(() => Date.now() / 1000);
+  const [loaded, setLoaded] = useState(false);
   // Read by the scheduler without re-arming it: the poll loop re-reads the
   // cadence after every response, so `jobs` must not be in its dependency list
   // or every tick would tear the timer down and build a new one.
@@ -202,11 +222,18 @@ function useJobs(): {
         if (at === epochRef.current) {
           setJobs(snapshot.jobs);
           setNow(snapshot.now);
+          setLoaded(true);
           scheduleFor(snapshot.jobs);
         } else {
           // Stale. Dropped rather than painted; `queued` is set (the mutation
           // asked for a read while this one was in flight), so the fresh read
-          // is already on its way.
+          // is already on its way. `loaded` does NOT flip here: this response
+          // never touched `jobs`, which is still whatever it was before (the
+          // `[]` placeholder, on the very first poll) — flipping `loaded` off
+          // a response that changed nothing is what used to let a consumer
+          // gated on it (`DownloadManagerView`'s `onJobsReported` effect)
+          // forward that untouched placeholder as though it were a genuine
+          // first read.
           scheduleFor(jobsRef.current);
         }
       } catch {
@@ -258,7 +285,7 @@ function useJobs(): {
     setJobs(fn);
   }, []);
 
-  return { jobs, now, refresh, patch };
+  return { jobs, now, loaded, refresh, patch };
 }
 
 /** `NotificationCard`'s `progress`: `undefined` draws no bar, `null` draws
@@ -440,6 +467,7 @@ export function JobRow({
   onPatch,
   cancelFn = cancelJob,
   dismissFn = dismissJob,
+  onDismissClick,
   now = Date.now() / 1000,
 }: {
   job: Job;
@@ -453,6 +481,13 @@ export function JobRow({
    *  `@platform/lib/api`, which this module itself calls into). */
   cancelFn?: (id: string) => Promise<Job>;
   dismissFn?: (id: string) => Promise<{ dismissed: string }>;
+  /** Overrides what the ✕ specifically does, leaving the whole-row click
+   *  (`rowClick`/`open` below) on the real, server-side `dismiss()`
+   *  regardless. `platform/ui/JobPopupCard.tsx` is the one caller that needs
+   *  this: its ✕ is read as "hide this card", not "clear the panel's row",
+   *  so it must not call `dismissFn` at all — every other caller omits this
+   *  and gets the ordinary ✕ that really dismisses the row. */
+  onDismissClick?: () => void;
   /** The SERVER's clock (`JobsSnapshot.now`), threaded down from `useJobs`
    *  for `jobDetail`'s fallback below (C4 fix). Defaults to the browser's
    *  clock only for callers that genuinely have no server read to give —
@@ -566,6 +601,23 @@ export function JobRow({
     }
   };
 
+  // A TERMINAL row with somewhere to go OPENS on click: `job.page` is where
+  // clicking this row goes, and `navigateToJobPage` is the one place that
+  // turns either shape it can hold — an fs path or one of a handful of shell
+  // routes — into a real navigation. Gated on `isTerminal`, not just `page`
+  // truthiness, because `JobRow` is also `DownloadManagerView`'s own
+  // in-flight-jobs row, and a RUNNING job must never open — only a job that
+  // has already reached Notifications gets a whole-row click at all.
+  //
+  // OPENING A ROW ALWAYS DISMISSES IT, reusing the exact `dismiss()` above —
+  // done, error or cancelled, fs path or shell route alike: going to look IS
+  // the acknowledgement, so the row has done its job the moment it's opened.
+  const canOpen = isTerminal(job) && !!job.page;
+  const open = () => {
+    navigateToJobPage(job.page);
+    void dismiss();
+  };
+
   // NO EXEMPTION FOR "done" HERE (C1 fix): `JobRow` is reused verbatim by
   // `RepoUpdatesDock.tsx` to draw every terminal job — done, error and
   // cancelled alike — in Notifications, and a `done` job returning null left
@@ -601,7 +653,18 @@ export function JobRow({
   return (
     <NotificationCard
       title={job.title}
-      titleTooltip={job.page || undefined}
+      // One line, ellipsis, never wraps (SPEC actionable-notifications item
+      // 4): a long prompt used to wrap to two lines, halving how many rows
+      // fit in the panel. The full text still has to be reachable somehow,
+      // which is what `titleTooltip` is for now — it used to carry ONLY an
+      // fs path (an attribution a hover needs to add on top of the title),
+      // so a truncated title with no path had no hover text at all. It leads
+      // with the title itself, then appends the path only when it is one
+      // worth showing (a shell route like "/tasks" says nothing new).
+      titleMode="id"
+      titleTooltip={
+        job.page && !isJobPageRoute(job.page) ? `${job.title}\n${job.page}` : job.title
+      }
       stalled={job.stalled}
       trailing={
         fraction !== null && running ? (
@@ -622,7 +685,7 @@ export function JobRow({
       onDismiss={
         canDismiss
           ? {
-              onClick: dismiss,
+              onClick: onDismissClick ?? dismiss,
               disabled: busy,
               title: "Dismiss",
               ariaLabel: `Dismiss ${job.title}`,
@@ -631,9 +694,15 @@ export function JobRow({
       }
       secondary={showModel ? repoName(job.model) : undefined}
       secondaryTooltip={showModel ? job.model : undefined}
+      // `job.origin` — a caption naming who raised this row ("Playground",
+      // "Local models", ...). "" draws nothing, same rule `showModel` above
+      // follows for `job.model`: a caption with nothing to say is no
+      // element, never an empty one.
+      caption={job.origin || undefined}
       progress={jobProgress(job)}
       terminal={isTerminal(job) ? (job.state as "done" | "error" | "cancelled") : undefined}
       status={statusLine || undefined}
+      rowClick={canOpen ? { onClick: open, title: `Open ${job.title}` } : undefined}
     />
   );
 }
@@ -654,6 +723,7 @@ export function DownloadManagerView({
   refresh,
   patch,
   now,
+  loaded,
 }: {
   reported: Job[];
   /** The SERVER's clock (`JobsSnapshot.now`) as of `reported` — threaded down
@@ -684,6 +754,13 @@ export function DownloadManagerView({
   onJobsReported?: (jobs: Job[]) => void;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
+  /** Whether `reported` is a genuine response rather than `useJobs`'s pre-fetch
+   *  placeholder. Omitted (`undefined`) by every test that mounts this view
+   *  directly with a fixed job list — those callers never go through
+   *  `useJobs` at all, so their `reported` is already real and is treated as
+   *  loaded from the first render. A real caller (`DownloadManager` below)
+   *  always passes it explicitly. */
+  loaded?: boolean;
 }) {
   // Hover previews, click pins, nothing auto-opens — `lib/statusChip.ts`.
   // `initialCollapsed` is a test seam: false mounts the panel already pinned.
@@ -695,9 +772,20 @@ export function DownloadManagerView({
   // body: it can set state in a parent, and doing that while rendering is what
   // React warns about. Keyed on the array identity, which changes exactly once
   // per response or per local patch.
+  //
+  // GATED ON `loaded`: `useJobs` mounts with `reported = []` before its first
+  // fetch has even gone out, and calling `onJobsReported([])` for that
+  // placeholder is what let a page load replay
+  // its whole terminal backlog as a burst of pop-up cards — the consumer
+  // downstream (`ActivityDock.tsx`'s `popupTick`) treats its very first call
+  // as "seed silently, nothing here is new", so spending that seed on an
+  // empty snapshot that was never actually read left the true first read
+  // looking like a second, later tick full of brand-new terminal jobs. Not
+  // "skip an empty `reported`" — an empty snapshot the poll actually observed
+  // is exactly as real as a non-empty one and must still be forwarded.
   useEffect(() => {
-    onJobsReported?.(reported);
-  }, [onJobsReported, reported]);
+    if (loaded ?? true) onJobsReported?.(reported);
+  }, [onJobsReported, reported, loaded]);
   // Everything the poll returned MINUS a scheduled run's own job (`jobRows`,
   // never drawn here — user: "a task is not something I even want in the
   // activity") MINUS every terminal job (`inFlightJobs` — D586, broadened:
@@ -889,7 +977,7 @@ export default function DownloadManager({
   engines?: EnginesSlot;
   onJobsReported?: (jobs: Job[]) => void;
 }) {
-  const { jobs: reported, now, refresh, patch } = useJobs();
+  const { jobs: reported, now, loaded, refresh, patch } = useJobs();
   return (
     <DownloadManagerView
       reported={reported}
@@ -898,6 +986,7 @@ export default function DownloadManager({
       refresh={refresh}
       patch={patch}
       now={now}
+      loaded={loaded}
     />
   );
 }

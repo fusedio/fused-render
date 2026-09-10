@@ -2335,7 +2335,11 @@ describe("openSession / resumeRun / newChat", () => {
             segments: [],
           };
         }
-        return poll({ done: true, segments: [text("re-attached")] });
+        // A `message` is not decoration here: PR4's repair renders the turn T
+        // renders — the user line the run was started with, and the assistant
+        // rows under it — and T draws NOTHING for a done probe that reports no
+        // message at all (T:17836-17849).
+        return poll({ done: true, message: "pick it back up", segments: [text("re-attached")] });
       },
     });
     await controller.resumeRun("r-embedded");
@@ -2439,7 +2443,13 @@ describe("openSession / resumeRun / newChat", () => {
 
   test("resumeRun repairs a run that finished while the frame was away", async () => {
     const { controller, params } = makeController({
-      poll: () => poll({ done: true, segments: [text("finished offscreen")], text: "finished offscreen" }),
+      poll: () =>
+        poll({
+          done: true,
+          message: "do the thing",
+          segments: [text("finished offscreen")],
+          text: "finished offscreen",
+        }),
     });
     await controller.resumeRun("r1");
     expect(assistants(controller).map((t) => t.text)).toEqual(["finished offscreen"]);

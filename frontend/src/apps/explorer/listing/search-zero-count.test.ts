@@ -53,6 +53,28 @@ test("zero hits still take the plural branch, not a bespoke zero case", () => {
   expect(LISTING).toMatch(/match\$\{hits\.length === 1 \? "" : "es"\}/);
 });
 
+// ITEM 6 (running-screen review, 2026-09-10): the footer used to key on
+// raw `searching`, which is true the instant a query is GATED — typed but
+// awaiting Enter because it escapes the folder open on screen — showing
+// "0 matches" over a folder search never actually ran against. Fixed by
+// feeding `statusLine` (and the byte-sum gate) `showsSearchHits` — the SAME
+// notion the body already uses to choose search-hit rows over the folder's
+// own (`showingSearchHits` above) — rather than a second, parallel
+// predicate. ITEM 11 (same review) later removed the one-line
+// `showsSearchFooter` alias entirely once it became a pure rename of
+// `showsSearchHits` with nothing of its own left to say — both items'
+// fixes now live directly on `showsSearchHits`'s two call sites.
+test("the footer's search/folder switch reads showsSearchHits directly, not a second gate", () => {
+  const byteSumAt = LISTING.indexOf("if (!showsSearchHits) {");
+  expect(byteSumAt).toBeGreaterThan(-1);
+  const statusLineAt = LISTING.indexOf("searching: showsSearchHits,");
+  expect(statusLineAt).toBeGreaterThan(-1);
+  // Guards against regressing to the old, narrower gate these fixes
+  // replaced, under either name.
+  expect(LISTING).not.toMatch(/searching:\s*searching\s*&&\s*!isPathQuery/);
+  expect(LISTING).not.toMatch(/showsSearchFooter\s*=\s*searching\s*&&\s*!isPathQuery/);
+});
+
 test("the open-folder query still shows no chip: showsSearchHits stays false while uncommitted", () => {
   // A field holding the open folder's own path is an uncommitted query the
   // same way any other escaping query is (decision 4's Enter gate) — the
