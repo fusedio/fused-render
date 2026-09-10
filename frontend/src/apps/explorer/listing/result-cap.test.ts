@@ -84,7 +84,11 @@ test("the cap is confined to the SEARCH path", () => {
   const listing = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
   const hook = readFileSync(join(import.meta.dir, "useListingSearch.ts"), "utf8");
   expect(listing).not.toContain("SEARCH_RESULT_CAP");
-  expect(listing).not.toContain("capHits");
+  // The CALL, not the bare name, the same form the hook check below uses: the
+  // rule is that the host never applies the cap itself, and a comment there
+  // naming the helper its `visibleHits` came from is that rule being explained
+  // rather than broken.
+  expect(listing).not.toContain("capHits(");
   const capLines = hook.split("\n").filter((l) => l.includes("capHits("));
   expect(capLines).toHaveLength(1);
   expect(capLines[0]).toContain("displayHits");
