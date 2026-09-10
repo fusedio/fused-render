@@ -849,6 +849,21 @@ function ChatBody(props: ChatBodyProps) {
         onRunAbandoned: () => {
           annRef.current?.resolveSent();
         },
+        /**
+         * T:17866 — the caret goes back in the box at the end of EVERY
+         * re-attach: a boot `?run=`, an adoption by the standing watch, a
+         * scheduled message's attach (P4-17). `autoFocus` covered boot
+         * incidentally; a mid-session adoption left a reader who had just been
+         * handed a streaming reply having to click to answer it.
+         *
+         * `preventScroll`, like every other focus in this view: the composer is
+         * pinned to the bottom of a scrolling transcript and taking the caret
+         * must not move what the reader is looking at — which also means this
+         * does not fight the repair's own scroll-to-bottom beside it.
+         */
+        focusComposer: () => {
+          boxRef.current?.focus({ preventScroll: true });
+        },
         // The agent saw none of it, so the pictures come back to the tray —
         // never revoked on this road, because those very thumbnails are what the
         // returned chips show (T:16693-16720).
@@ -2026,6 +2041,28 @@ function ChatBody(props: ChatBodyProps) {
     const log = rootRef.current?.querySelector(".chat-logwrap");
     if (log) log.scrollTop = log.scrollHeight;
   }, [settled]);
+
+  /**
+   * AND UNCONDITIONALLY AFTER A REPAIR (T:17851, P4-10).
+   *
+   * A run that finished while the frame was away appends a whole turn in one
+   * commit — there is no `running` → `idle` edge for the effect above to hang
+   * off, and the follow-tail rule beside the transcript only pins a reader who
+   * is already at the bottom. So the reader this case is ABOUT — one who had
+   * scrolled up and came back — saw nothing appear. T scrolls to it whatever
+   * the reader was doing, and so does this.
+   *
+   * Keyed on the nonce and not on a boolean, so two repairs in a row are two
+   * scrolls; skipped on the mount's initial 0, which is not a repair.
+   */
+  const repaired = state.repaired;
+  const seenRepairs = useRef(repaired);
+  useEffect(() => {
+    if (seenRepairs.current === repaired) return;
+    seenRepairs.current = repaired;
+    const log = rootRef.current?.querySelector(".chat-logwrap");
+    if (log) log.scrollTop = log.scrollHeight;
+  }, [repaired]);
 
   const controls = useMemo(
     () => ({

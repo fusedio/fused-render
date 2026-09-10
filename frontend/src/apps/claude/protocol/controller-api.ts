@@ -211,6 +211,18 @@ export interface ChatState {
    *  somebody else's turn arriving over the top of them. */
   ownRunEndedAt: number;
   /**
+   * ADDED (PR4, P4-10): how many turns have been REPAIRED into this transcript
+   * from a probe payload — a run that finished while no frame was attached.
+   *
+   * T scrolls to a repaired turn UNCONDITIONALLY (T:17851 `scrollBottom()` at
+   * the end of the done branch), and it has to: the repair appends a whole turn
+   * with no `running` → `idle` edge for the settle-scroll to hang off, so a
+   * reader who had scrolled up saw nothing appear at all. A nonce rather than a
+   * boolean, because two repairs in a row are two scrolls and a flag that is
+   * already `true` emits nothing.
+   */
+  repaired: number;
+  /**
    * ADDED (PR4): how many times the VISIBLE CONVERSATION has been replaced —
    * bumped by `openSession` and by nothing else, which is where T calls
    * `scheduleResetForNewTranscript()` (T:18000, `loadHistory` non-refresh).
@@ -309,7 +321,10 @@ export interface AdoptOptions {
  *
  *  `retryUnknown`: a frame handed a run id by its EMBEDDER can boot before the
  *  freshly created run dir is visible to the agent — a race, not a stale
- *  bookmark. Defaults TRUE, which is what PR1 shipped unconditionally. */
+ *  bookmark. OPT-IN, and only boot opts in (T:17749): unset, it follows
+ *  `!(quiet || neverShown)`, because an id that came from `live_run` rather than
+ *  from a caller is not racing a spawn — it has been pruned, and the wait is 5 ×
+ *  700 ms spent inside the `sending` gate for nothing (P4-18). */
 export interface ResumeOptions {
   neverShown?: boolean;
   quiet?: boolean;
@@ -489,6 +504,19 @@ export interface ControllerDeps {
    *  snapshot chain is as fresh as it was. What DOES have to happen is the
    *  annotation hand-back, which is all T's own branch does (T:17792). */
   onRunAbandoned?: () => void;
+  /**
+   * ADDED (PR4, P4-17): put the caret back in the composer at the end of a
+   * re-attach — T's `focusBox(box)` in `resumeRun`'s own `finally` (T:17866),
+   * which runs on every road: a boot `?run=`, an adoption by the standing
+   * watch, a scheduled message's attach. Native focused only from `autoFocus`
+   * at mount, so boot-with-`run` was covered incidentally and a mid-session
+   * adoption was not.
+   *
+   * A dep rather than a `ChatState` field because it is an ACTION with no
+   * lasting truth behind it: a nonce would have to be spent, and a spent nonce
+   * is a second piece of state for a gesture that is over.
+   */
+  focusComposer?: () => void;
   /**
    * ADDED: the `<live-app-state>` block for THIS send, or `""` when there is
    * nothing to say (no pane, or a pane that has told us nothing).

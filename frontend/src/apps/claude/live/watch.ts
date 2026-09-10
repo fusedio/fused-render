@@ -37,6 +37,7 @@
 // Hidden tabs give up the interval deliberately: chrome nobody is looking at is
 // worth nothing, the storage poke still reaches them, and becoming visible laps
 // at once.
+import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import type { TranscriptStat } from "../protocol/types";
 
 /** T:17601. */
@@ -117,6 +118,23 @@ export interface LiveWatchDeps {
   setExternalWorking(on: boolean): void;
   /** The `storage` key `stampChatActivity` writes (T:16435). */
   activityKey: string;
+  /**
+   * THE SAME NEWS, THROWN OVER A WALL INSIDE ONE DOCUMENT (P4-06 / C G-2).
+   *
+   * T's cards and Peek were separate iframe DOCUMENTS, so a turn started in one
+   * stamped `localStorage` and every sibling's `storage` listener fired within
+   * a millisecond (T:17578-17584, 17739-17741). Native renders the cards wall,
+   * Peek and the split pane in ONE document — and `storage` never fires in the
+   * document that wrote it, so the sibling mounts lost that poke entirely and a
+   * run started in tile A was adopted by tile B only on the 5 s interval.
+   *
+   * `run-controller.ts`'s `noteChatActivity` already dispatches
+   * `TASKS_CHANGED_EVENT` on the window at both turn boundaries — the shell's
+   * tasks store is its other listener — so this listens for it beside
+   * `storage`. The WRITER does not re-tick itself: the existing `busy()` gate
+   * is what stops that, exactly as it does for the interval.
+   */
+  localEvent?: string | null;
   /** Injectable for tests. */
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
@@ -224,6 +242,12 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
         // mirror, the shell's own stores) is not news about a turn.
         if (ev.key === deps.activityKey) void tick();
       };
+      /** The in-document twin of `onStorage` — see `deps.localEvent`. Unkeyed
+       *  because the event NAME is the key: unlike `storage`, nothing else is
+       *  delivered on it. */
+      const onLocal = () => void tick();
+      const localEvent =
+        deps.localEvent !== undefined ? deps.localEvent : TASKS_CHANGED_EVENT;
       const onVisible = () => {
         if (!hidden()) void tick();
       };
@@ -241,12 +265,14 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
             ? (document as unknown as EventTargetLike)
             : null;
       win?.addEventListener("storage", onStorage as (ev: never) => void);
+      if (localEvent) win?.addEventListener(localEvent, onLocal as (ev: never) => void);
       doc?.addEventListener("visibilitychange", onVisible as (ev: never) => void);
       win?.addEventListener("focus", onFocus as (ev: never) => void);
       return () => {
         stopped = true;
         clear(handle);
         win?.removeEventListener("storage", onStorage as (ev: never) => void);
+        if (localEvent) win?.removeEventListener(localEvent, onLocal as (ev: never) => void);
         doc?.removeEventListener("visibilitychange", onVisible as (ev: never) => void);
         win?.removeEventListener("focus", onFocus as (ev: never) => void);
       };

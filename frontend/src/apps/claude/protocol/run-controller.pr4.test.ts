@@ -133,6 +133,74 @@ describe("the run-clock hooks", () => {
     await controller.resumeRun("r-dead", { retryUnknown: false });
     expect(agent.of("poll").length).toBe(1);
   });
+
+  test("BOOT KEEPS THE CARD; the adoption roads recover in silence (P4-05)", async () => {
+    // The card is right for a bookmarked mid-run URL — the reader put that id
+    // there. The same road is taken by the standing watch and the schedule
+    // poller, whose ids come from `live_run`: the run ends and its dir is
+    // pruned before the probe lands, and a reader who touched NOTHING got
+    // "That turn is no longer running" over a healthy transcript. T recovered
+    // from those in silence (T:17787-17795).
+    const boot = makeController({ poll: () => ({ error: "unknown run_id", done: true }) });
+    await boot.controller.resumeRun("r-dead", { retryUnknown: false });
+    expect(boot.controller.getState().trouble?.kind).toBe("unknown-run");
+
+    const watched = makeController({ poll: () => ({ error: "unknown run_id", done: true }) });
+    await watched.controller.resumeRun("r-dead", { quiet: true });
+    expect(watched.controller.getState().trouble).toBe(null);
+    // The notes still come back, and no run is claimed to have ended.
+    expect(watched.abandoned.length).toBe(1);
+    expect(watched.ended.length).toBe(0);
+
+    const scheduled = makeController({ poll: () => ({ error: "unknown run_id", done: true }) });
+    await scheduled.controller.resumeRun("r-dead", { neverShown: true });
+    expect(scheduled.controller.getState().trouble).toBe(null);
+    expect(scheduled.abandoned.length).toBe(1);
+  });
+
+  test("THE RETRY IS OPT-IN, and only boot opts in (P4-18)", async () => {
+    // T:17749, 17776-17786. The five 700 ms waits exist for one case — "a frame
+    // handed a run id by its EMBEDDER can boot before the freshly created run
+    // dir is visible to the agent" — and they are spent inside the `sending`
+    // gate, where the composer refuses a send and the watch cannot lap.
+    const boot = makeController({ poll: () => ({ error: "unknown run_id", done: true }) });
+    await boot.controller.resumeRun("r-boot");
+    expect(boot.agent.of("poll").length).toBe(1 + 5);
+
+    const watched = makeController({ poll: () => ({ error: "unknown run_id", done: true }) });
+    await watched.controller.resumeRun("r-watched", { quiet: true });
+    expect(watched.agent.of("poll").length).toBe(1);
+
+    const scheduled = makeController({ poll: () => ({ error: "unknown run_id", done: true }) });
+    await scheduled.controller.resumeRun("r-sched", { neverShown: true });
+    expect(scheduled.agent.of("poll").length).toBe(1);
+
+    // AN EXPLICIT FLAG STILL WINS, in both directions.
+    const forced = makeController({ poll: () => ({ error: "unknown run_id", done: true }) });
+    await forced.controller.resumeRun("r-forced", { quiet: true, retryUnknown: true });
+    expect(forced.agent.of("poll").length).toBe(1 + 5);
+  });
+
+  test("THE CARET GOES BACK IN THE BOX on every re-attach road (T:17866, P4-17)", async () => {
+    const focused: number[] = [];
+    const agent = fakeAgent({ poll: () => ({ error: "unknown run_id", done: true }) });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      agentDir: "/tpl/claude",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      focusComposer: () => focused.push(1),
+    });
+    // The stale-param road — the one that never reaches the poll loop at all,
+    // and the one T's `finally` exists to cover.
+    await controller.resumeRun("r-dead", { retryUnknown: false });
+    expect(focused.length).toBe(1);
+    // An adoption mid-session is the case `autoFocus` never covered.
+    await controller.resumeRun("r-dead2", { quiet: true });
+    expect(focused.length).toBe(2);
+  });
 });
 
 // ---- resumeRun's three postures --------------------------------------------
@@ -687,5 +755,47 @@ describe("adoptLiveRun's laps", () => {
     await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
     // Printed nothing over the line it is already showing.
     expect(users(controller).map((t) => t.text)).toEqual(["already here"]);
+  });
+});
+
+// ---- a repaired turn is scrolled to (P4-10) --------------------------------
+
+describe("a run that finished while the frame was away", () => {
+  test("A REPAIR BUMPS `repaired`, so the renderer can scroll to it (T:17851)", async () => {
+    // A repair appends a whole turn in ONE commit: there is no `running` →
+    // `idle` edge for the settle-scroll to hang off, and the follow-tail rule
+    // only pins a reader already at the bottom. So the reader this case is
+    // ABOUT — one who scrolled up and came back — saw nothing appear. T scrolls
+    // unconditionally; the nonce is how the renderer is told to.
+    const { controller } = makeController({
+      poll: () =>
+        poll({
+          done: true,
+          message: "what changed?",
+          text: "these three files",
+          segments: [text("these three files")],
+        }),
+    });
+    expect(controller.getState().repaired).toBe(0);
+    await controller.resumeRun("r-done", { neverShown: true });
+    expect(controller.getState().repaired).toBe(1);
+    expect(assistants(controller).map((t) => t.text)).toEqual(["these three files"]);
+  });
+
+  test("A NONCE, not a flag: two repairs are two scrolls", async () => {
+    const { controller } = makeController({
+      poll: () => poll({ done: true, message: "again", text: "and again" }),
+    });
+    await controller.resumeRun("r-1", { neverShown: true });
+    await controller.resumeRun("r-2", { neverShown: true });
+    expect(controller.getState().repaired).toBe(2);
+  });
+
+  test("a STALE id repairs nothing, so nothing is scrolled to", async () => {
+    const { controller } = makeController({
+      poll: () => ({ error: "unknown run_id", done: true }),
+    });
+    await controller.resumeRun("r-dead", { quiet: true });
+    expect(controller.getState().repaired).toBe(0);
   });
 });

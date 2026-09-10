@@ -202,6 +202,7 @@ function emptyState(file: string | null): ChatState {
     adopting: false,
     transcript: null,
     ownRunEndedAt: 0,
+    repaired: 0,
     transcriptGen: 0,
     rev: 0,
   };
@@ -2234,6 +2235,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // the ordinary live road (where the first poll already cleared it) pays
       // nothing here.
       setAdopting(false);
+      // AND THE CARET GOES BACK IN THE BOX, on every road out (T:17866 —
+      // `focusBox(box)` in T's own `finally`). Boot's `?run=` was covered
+      // incidentally by the composer's `autoFocus`; an adoption mid-session and
+      // a scheduled attach were not, and a reader who was handed a streaming
+      // reply then had to click to answer it (P4-17).
+      if (!disposed) deps.focusComposer?.();
     }
   }
 
@@ -2245,9 +2252,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (runId) shownRuns.add(runId);
     const neverShown = !!opts.neverShown;
     const quiet = !!opts.quiet;
-    // Defaults TRUE: PR1 retried unconditionally, and the embedder race it
-    // exists for is real on every boot path that carries a `run` param.
-    const retryUnknown = opts.retryUnknown !== false;
+    /**
+     * OPT-IN, AND ONLY BOOT OPTS IN (T:17749, 17776-17786). PR1 retried
+     * unconditionally, which is right for the case the retry exists for — "a
+     * frame handed a run id by its EMBEDDER can boot before the freshly created
+     * run dir is visible to the agent" — and wrong for the two roads that
+     * arrive here with an id nobody typed: the standing watch and the schedule
+     * poller. Those ids come from `live_run`, so a "not visible yet" answer is
+     * not a race with a spawn, it is a run that has since been PRUNED — and
+     * waiting it out cost 5 × 700 ms inside the `sending` gate, during which
+     * the composer refuses a send and the watch cannot lap.
+     *
+     * Keyed on the flags those roads already carry (`quiet` from `adoptWatch`,
+     * `neverShown` from the scheduled attach), so nothing new has to be
+     * threaded and an explicit `retryUnknown` still wins either way. Boot's
+     * `?run=` carries neither flag and keeps the retry (P4-18).
+     */
+    const retryUnknown = opts.retryUnknown ?? !(quiet || neverShown);
     sending = true;
     const seat = ++sendSeq;
     const gen = logGen;
@@ -2281,7 +2302,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // which they would otherwise be stranded `sent` forever.
         clearRunParam();
         deps.onRunAbandoned?.();
-        reportTrouble(troubleOf("unknown-run", String((probe as { error?: string }).error)));
+        // A CARD ONLY FOR AN ID THE CALLER SUPPLIED (T:17787-17795, P4-05). The
+        // card is right for a bookmarked mid-run URL — the reader put that id
+        // there and is owed an answer about it. The same road is taken by the
+        // standing watch and the schedule poller, whose ids come from
+        // `live_run`: the run ends and its dir is pruned before the probe
+        // lands, and a reader who touched NOTHING got "That turn is no longer
+        // running" over a healthy transcript. T recovered from those in
+        // silence, and the flags those roads already carry are the difference.
+        if (!quiet && !neverShown) {
+          reportTrouble(troubleOf("unknown-run", String((probe as { error?: string }).error)));
+        }
         return;
       }
       const poll = probe as PollResponse;
@@ -2453,6 +2484,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // into exactly the R4-3 shape: a finished run, repaired here, then a
         // follow-up into the host that is still holding it open.
         landedWindow = { runId, segments: probeSegs.length, text: probeText };
+        // A REPAIR IS NEWS THAT HAS TO BE SCROLLED TO (T:17851, P4-10). T calls
+        // `scrollBottom()` here unconditionally, and the reason it must be
+        // unconditional is that a repair has no `running` → `idle` edge for the
+        // settle-scroll to hang off: it appends a whole turn in one commit. So
+        // a reader who had scrolled up — which is exactly the reader who came
+        // back to a run that finished while the frame was away — saw nothing
+        // appear at all. The renderer reads this nonce beside its own
+        // follow-tail effect.
+        emit({ repaired: state.repaired + 1 });
         return;
       }
       if (matches) {

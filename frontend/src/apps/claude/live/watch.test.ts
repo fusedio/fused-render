@@ -4,6 +4,7 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { describe, expect, test } from "bun:test";
+import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { createLiveWatch, followDecision, LIVE_WATCH_MS } from "./watch";
 import type { TranscriptStat } from "../protocol/types";
 
@@ -385,4 +386,83 @@ test("THE OFF EDGE ASKS ABOUT THE RUN, NOT THE SEND (T:17709)", async () => {
   }, owned);
   await b.watch.tick();
   expect(owned).toEqual([]);
+});
+
+// ── the in-document poke (P4-06) ─────────────────────────────────────────────
+
+describe("the sibling poke inside one document", () => {
+  test("TASKS_CHANGED_EVENT on the window ticks the watch", async () => {
+    const r = rig();
+    const stop = r.watch.start();
+    // T's cards/peek were separate DOCUMENTS, so a turn started in one stamped
+    // localStorage and every sibling's `storage` listener fired within a
+    // millisecond (T:17578-17584, 17739-17741). Native renders the cards wall,
+    // Peek and the split pane in ONE document, where `storage` never fires in
+    // the writing document — so tile B adopted tile A's run only on the 5 s
+    // interval.
+    r.fire("win:" + TASKS_CHANGED_EVENT);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(r.state.adopts).toEqual(["s1"]);
+    stop();
+  });
+
+  test("the listener comes off with the disarm, like the other three", async () => {
+    const r = rig();
+    const stop = r.watch.start();
+    expect(r.listeners["win:" + TASKS_CHANGED_EVENT]?.length).toBe(1);
+    stop();
+    expect(r.listeners["win:" + TASKS_CHANGED_EVENT]?.length).toBe(0);
+    // And a poke after the disarm is not a lap.
+    r.fire("win:" + TASKS_CHANGED_EVENT);
+    await Promise.resolve();
+    expect(r.state.adopts).toEqual([]);
+  });
+
+  test("THE WRITER DOES NOT RE-TICK ITSELF — the existing busy() gate is what stops it", async () => {
+    // `run-controller.ts`'s `noteChatActivity` dispatches this at both turn
+    // boundaries, so the tile that STARTED the run hears its own poke. Nothing
+    // new guards that: a run of this frame's is `busy`, and `busy` already
+    // refuses the interval for the same reason.
+    const r = rig({ busy: true });
+    const stop = r.watch.start();
+    r.fire("win:" + TASKS_CHANGED_EVENT);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(r.state.adopts).toEqual([]);
+    expect(r.state.refreshes).toEqual([]);
+    stop();
+  });
+
+  test("`localEvent: null` opts a caller out entirely", async () => {
+    // A host that pokes some other way, or a suite that wants only the three
+    // DOM triggers. `undefined` is the default and IS the event.
+    const listeners: Record<string, unknown[]> = {};
+    const watch = createLiveWatch({
+      sessionId: () => "s1",
+      busy: () => false,
+      adopt: () => Promise.resolve(),
+      transcriptMark: () => mark(),
+      ownRunEndedAt: () => 0,
+      liveness: () => Promise.resolve({ exists: true, mtime: 1, size: 1, running: false }),
+      refreshHistory: () => Promise.resolve(),
+      setExternalWorking: () => {},
+      activityKey: "k",
+      localEvent: null,
+      setInterval: () => 1,
+      clearInterval: () => {},
+      win: {
+        addEventListener(type: string, fn: (ev: never) => void) {
+          (listeners[type] ||= []).push(fn);
+        },
+        removeEventListener() {},
+      },
+      doc: { addEventListener() {}, removeEventListener() {} },
+    });
+    const stop = watch.start();
+    expect(listeners[TASKS_CHANGED_EVENT]).toBeUndefined();
+    expect(listeners["storage"]?.length).toBe(1);
+    stop();
+  });
 });
