@@ -30,6 +30,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
+const { NAV_LOCKED_REASON } = await import("./ann");
 const { ATTACH_API } = await import("./ui/attachApi");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests } = await import("./protocol/agent");
@@ -520,6 +521,41 @@ test("arming Comment presses the seat and LOCKS the chat", async () => {
   expect(byClass(r, "c-viewshot")[0]!.props["aria-disabled"]).toBe("true");
 });
 
+test("the locked ← Chats SAYS WHY, in the title and in its accessible name", async () => {
+  // T:6896 writes exactly this sentence onto `#back.title` while the lock holds
+  // and clears it on unlock. It goes into the accessible NAME too, because
+  // `disabled` takes the button out of tab order — a hover-only answer is no
+  // answer for a control the keyboard can no longer land on, and a dead way out
+  // that will not say why is the worst of the refusal faces.
+  //
+  // Back is only in the strip once there is a chat to leave, so this sends
+  // first (the landing has no way back).
+  const { r } = await mountChat();
+  await typeInBox(r, "hello");
+  await pressEnterInBox(r);
+  await settle();
+
+  const back = () => byClass(r, "c-back")[0]!;
+  expect(back().props.disabled).toBe(false);
+  expect(back().props.title).toBeUndefined();
+  expect(back().props["aria-label"]).toBe("Back to chats");
+
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+
+  expect(back().props.disabled).toBe(true);
+  expect(back().props.title).toBe(NAV_LOCKED_REASON);
+  expect(String(back().props["aria-label"])).toContain(NAV_LOCKED_REASON);
+  expect(String(back().props["aria-label"])).toContain("Back to chats");
+
+  // …and it is given back, sentence and all, when the mode goes.
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  expect(back().props.disabled).toBe(false);
+  expect(back().props.title).toBeUndefined();
+  expect(back().props["aria-label"]).toBe("Back to chats");
+});
+
 // ---- a note becomes a chip in the tray's own row --------------------------
 
 test("a point note rides the attachment tray as a chip, and its ✕ takes it back off", async () => {
@@ -792,8 +828,43 @@ test("arriving in the narrow CHAT view disarms the mode", async () => {
     await act(async () => params.set({ paneview: "chat" }));
     await settle();
 
-    expect(commentSeat(r).props["aria-pressed"]).toBe("false");
+    // The mode is off — and the SEAT ITSELF is gone (T:3822 `body.view-chat
+    // #annbtn { display: none }`), which is the stronger half of the same rule:
+    // the disarm-on-arrival covers only arriving, so absence is what stops a
+    // FRESH arm afterwards, keyboard included.
+    expect(byClass(r, "c-annbtn")).toHaveLength(0);
+    expect(annotationsForTests()!.armed).toBe(false);
     expect(rootClass(r)).not.toContain("annlock");
+  } finally {
+    win.matchMedia = realMatch;
+  }
+});
+
+test("the narrow CHAT view takes the Comment seat away, and Preview gives it back", async () => {
+  // T:3822/3823 hide the two seats whose pane is parked off screen there — the
+  // camera has nothing to photograph, Comment has nothing to pin onto — while
+  // Annotate stays, because a spoken walkthrough is about the app the reader is
+  // describing rather than about what is on screen at the moment.
+  const win = globalThis.window as unknown as Record<string, unknown>;
+  const realMatch = win.matchMedia;
+  win.matchMedia = () => ({
+    matches: true,
+    addEventListener() {},
+    removeEventListener() {},
+  });
+  try {
+    const { r, params } = await mountChat();
+    await act(async () => params.set({ paneview: "chat" }));
+    await settle();
+    expect(byClass(r, "c-annbtn")).toHaveLength(0);
+    expect(byClass(r, "c-viewshot")).toHaveLength(0);
+    // The walkthrough seat is NOT taken away with them.
+    expect(byClass(r, "c-annrec").length).toBeGreaterThan(0);
+
+    await act(async () => params.set({ paneview: "preview" }));
+    await settle();
+    expect(byClass(r, "c-annbtn")).toHaveLength(1);
+    expect(byClass(r, "c-viewshot")).toHaveLength(1);
   } finally {
     win.matchMedia = realMatch;
   }

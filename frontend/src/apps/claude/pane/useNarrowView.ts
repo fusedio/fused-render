@@ -181,7 +181,19 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
     // breakpoint crossing the preview can be showing on `crossView` with the
     // param still absent, and reading the param there would write "preview" over
     // a visible preview — a toggle whose first click does nothing (T:8946-8956).
-    params.set({ paneview: shown.current === "preview" ? "chat" : "preview" }, { history: "replace" });
+    // AND IT PUSHES. T:8978's `fused.params.set("paneview", …)` carries no
+    // override, so the store's once-per-visit push applies and Back undoes a
+    // deliberate flip — the right answer for a click that MOVED THE READER:
+    // the way out of a view they chose to enter is the same gesture as the way
+    // out of anywhere else.
+    //
+    // Bugbot #447's no-history rule was about the RESIZE, not this. A
+    // breakpoint crossing is the layout changing under a reader who did
+    // nothing, and native already keeps that out of the URL entirely — it
+    // rides `crossView` in a ref rather than a param, which is stricter than a
+    // `replace` ever was. Unlike the sibling divergence in `useSplit.ts:126-129`
+    // this one was never recorded as an accepted deviation.
+    params.set({ paneview: shown.current === "preview" ? "chat" : "preview" });
   }, [params]);
 
   return {

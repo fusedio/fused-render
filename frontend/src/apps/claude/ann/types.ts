@@ -150,6 +150,17 @@ export const ANN_ARMED_TITLE =
   " tool says (Alt overrides for one click, empty space is always a spot)" +
   " · click this button to send the notes and finish, Esc cancels";
 
+/** T:6896 — WHY a locked way-out refuses, verbatim: `annNavLock` writes this
+ *  onto `#back`'s `title` while the lock holds and clears it on unlock.
+ *
+ *  ONE exported constant rather than a literal at each writer, because there
+ *  are several — the Back button, the Schedule seat, and any recent row a
+ *  future lock covers — and a dead control that will not say why is the worst
+ *  of the refusal faces. `disabled` also takes a button OUT of tab order, so
+ *  the reason has to reach the accessible NAME as well: a `title` alone is a
+ *  hover-only answer for a control the keyboard can no longer land on. */
+export const NAV_LOCKED_REASON = "Finish or discard the notes first";
+
 /** T:6491 — the layer host's marker attribute. One `closest()` tells the app's
  *  own handlers that an event landed on our layer rather than on the app. */
 export const ANN_LAYER_MARK = "data-fused-annotate";

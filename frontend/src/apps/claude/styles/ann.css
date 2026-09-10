@@ -331,16 +331,19 @@
 .chat-root #anntool.out {
   animation: c-annkitout 0.15s ease forwards;
 }
+/* 10px, T:353-356's own number: "its seat's WIDTH lands instantly — nothing
+   else may move — and the glyphs glide the last 10px into place". Duration,
+   easing, the `forwards` fill and the reduced-motion opt-out all match T. */
 @keyframes c-annkitin {
   from {
     opacity: 0;
-    transform: translateX(6px);
+    transform: translateX(10px);
   }
 }
 @keyframes c-annkitout {
   to {
     opacity: 0;
-    transform: translateX(6px);
+    transform: translateX(10px);
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -456,42 +459,32 @@
   text-align: left;
 }
 
-/* ONE SEAT, TWO FACES (T:297). Both glyphs and both words are baked into the
-   markup and the stylesheet picks one — a seat whose glyph is swapped in JS
-   re-lays the row out on every transition (T:3992) — so the rest state is the
-   bubble plus "Comment" and the armed comment round is the check plus "Done".
+/* ONE SEAT, ONE FACE (T:296). Both spare glyphs and the spare word are baked
+   into the markup and NEITHER IS EVER SHOWN: T's whole rule is the single
+   `#annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none }`
+   with no `.on` override anywhere in the sheet — live-confirmed against :1777.
 
-   `display: none` on the resting half is what was MISSING, not the swap: the
-   two words rendered side by side as "Comment Done" on the hosted strip and in
-   the narrow bottom row (QA round 2, item 2). It read as one concatenated label
-   on first paint of a primary control.
+   This used to carry four more rules that swapped the bubble + "Comment" for a
+   check + "Done" on `.c-annbtn.on`, which is exactly what T:7689 forbids and
+   says why: "a label that changes width makes the whole right-anchored row
+   shuffle on every toggle, and one mode wearing two names reads as two
+   features". Since P2-1 moved this strip into the header row beside the kebab,
+   that shuffle also walks the ⋮ right edge on every arm — the cost T avoided,
+   paid twice. The accent fill (`.c-anncta button.on`, above) is the mode's one
+   on-screen signal; the way OUT is the bar's ✓ over the app.
 
-   The armed word goes back through the SAME token every other label reads
-   (`--c-annlbl`, chat.css), so a tight strip drops it with the rest instead of
-   winning a specificity war against the collapse.
+   The seat's `aria-label`/`title` still become "Done — send the notes and
+   finish commenting" while armed (`ui/AnnStrip.tsx`) — that IS T's behaviour
+   (T:7695 `annBtnName`): the spoken name changes, the drawn one does not.
 
-   `.c-anncta` IS IN EVERY CHAIN HERE for one reason: `.chat-root .c-anncta
-   .c-lbl { display: var(--c-annlbl, inline) }` (chat.css) is three classes and
-   comes later in the cascade, so the three-class `.chat-root .c-annbtn
-   .c-done-word` this used to be LOST to it — measured: the hosted strip showed
-   "Comment Done" while this very rule said `display: none`. Four classes wins
-   without `!important`. */
+   `.c-anncta` is in the chain because `.chat-root .c-anncta .c-lbl { display:
+   var(--c-annlbl, inline) }` (chat.css) is three classes and comes later in the
+   cascade, so a three-class `.chat-root .c-annbtn .c-done-word` LOST to it —
+   measured: the hosted strip showed "Comment Done" while this very rule said
+   `display: none`. Four classes wins without `!important`. */
 .chat-root .c-anncta .c-annbtn .c-cmt-done,
 .chat-root .c-anncta .c-annbtn .c-done-word {
   display: none;
-}
-/* Only for a COMMENT round: through a walkthrough (and its Stopping…/
-   Transcribing… settle) the seat is armed but resting — the Annotate seat
-   carries the status and the stop is the bar's ■ — so it keeps its own name. */
-.chat-root .c-anncta:not(.busy):not(:has(.c-annrec.on)) .c-annbtn.on .c-cmt-bubble,
-.chat-root .c-anncta:not(.busy):not(:has(.c-annrec.on)) .c-annbtn.on .c-cmt-word {
-  display: none;
-}
-.chat-root .c-anncta:not(.busy):not(:has(.c-annrec.on)) .c-annbtn.on .c-cmt-done {
-  display: block;
-}
-.chat-root .c-anncta:not(.busy):not(:has(.c-annrec.on)) .c-annbtn.on .c-done-word {
-  display: var(--c-annlbl, inline);
 }
 /* ONE ACTIVE SEAT (T:303): while a walkthrough records — and through
    Stopping…/Transcribing…, when the mic's `.on` is down but the mode is still

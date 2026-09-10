@@ -10,16 +10,22 @@
 // WHERE the group lives is a layout question and the answer is the pane's
 // (`pickerHost`, pane/LeftModePicker): the strip is the one row BOTH narrow views
 // keep, and the wide layout's chat column keeps it too — so the group renders
-// once, in the chat column's strip, and the narrow chat view HIDES the camera
-// (T:3823 `body.view-chat .viewshot`) because the pane it photographs is not on
-// screen there.
+// once, in the chat column's strip, and the narrow CHAT view hides the two seats
+// whose pane is parked off screen there: the camera (T:3823 `body.view-chat
+// .viewshot`, nothing to photograph) and Comment (T:3822 `body.view-chat #annbtn`,
+// nothing to pin onto). Annotate stays — a spoken walkthrough is about the app
+// the reader is describing, not about what is currently on screen.
 //
 // PR3 gave Comment and Annotate their handlers. Three rules that are the whole
 // of this file's own behaviour:
 //
-//   * ONE SEAT, THREE FACES for Comment (T:7695 `annBtnName`): the bubble arms
-//     it, ✓ Done sends the round, and while a walkthrough records it is neither —
-//     the stop is the bar's ■, not a neighbouring seat.
+//   * ONE SEAT, THREE SPOKEN NAMES for Comment and exactly ONE DRAWING
+//     (T:7695 `annBtnName`): the `aria-label`/`title` become the arm, the ✓ Done
+//     that sends the round, and the resting name a walkthrough leaves it with —
+//     while the glyph and the visible word never change, because a seat that
+//     re-widths shuffles this whole right-anchored row on every toggle (T:7689).
+//     The accent fill says armed; the way OUT is the bar's ■/✓, never a
+//     neighbouring seat.
 //   * ABSENT BEATS DEAD: with nothing to annotate all three seats are HIDDEN,
 //     not disabled (T:238-241, 8447) — a dead row of three is worse than a row
 //     that is not there.
@@ -36,7 +42,12 @@ import {
   seatsAria,
   type AnnMode,
 } from "../ann";
-import { annotateLabelFor, shotLabelFor, type PaneNoun } from "../pane/paneUrl";
+import {
+  annIdleTitleFor,
+  annotateLabelFor,
+  shotLabelFor,
+  type PaneNoun,
+} from "../pane/paneUrl";
 
 export interface AnnStripProps {
   /** "preview" for a file target, "app" for a project — every label names it. */
@@ -54,6 +65,20 @@ export interface AnnStripProps {
    * narrow rules never hide.
    */
   cameraShown?: boolean;
+  /**
+   * Whether the pane the COMMENT seat pins onto is on screen. T's narrow rule
+   * is the camera's twin — `body.view-chat #annbtn { display: none }` (T:3822)
+   * — and for the same reason read one step further: with the preview parked off
+   * screen there is nothing to arm against, and arming anyway puts the framed
+   * document's capture-phase click swallower live over a pane the reader cannot
+   * see. `useNarrowView`'s `onArriveChat` disarms on ARRIVAL; only absence
+   * stops a FRESH arm afterwards, keyboard included.
+   *
+   * A prop rather than a CSS rule because this file owns which seats show, and
+   * `useFitStrip` then measures a node set that is stable for the layout it is
+   * folding.
+   */
+  commentShown?: boolean;
   /** A capture is in flight (`shotBusy`): the button says so by going inert, and
    *  the guard in the handler is the belt to that braces — a keyboard user can
    *  still reach a control a poll has not caught up with (T:11265). */
@@ -66,6 +91,10 @@ export interface AnnStripProps {
   capable?: boolean;
   /** The mode machine's one value (`useAnnotations().mode`). */
   mode?: AnnMode;
+  /** `annOn` (`useAnnotations().armed`) — the reader's mode, as against the
+   *  recorder's phase. Defaults to `mode !== "off"`, which is right in every
+   *  state but an Esc'd settle; see the derivation in the body. */
+  armed?: boolean;
   /** T:8329 — the Comment seat: arm from rest, ✓ Done while armed, inert while a
    *  walkthrough records. Absent → the seat renders disabled, which is the shape
    *  a host without the subsystem gets. */
@@ -93,29 +122,46 @@ export function AnnStrip({
   capturing,
   onScreenshot,
   cameraShown = true,
+  commentShown = true,
   capable = true,
   mode = "off",
+  armed: armedProp,
   onComment,
   recSeat,
 }: AnnStripProps) {
   if (!shown || !capable) return null;
-  const aria = seatsAria(mode);
-  const armed = mode !== "off";
+  // `annOn`, which is NOT `mode !== "off"` in one window: Esc during
+  // Stopping…/Transcribing… takes the reader out of the mode while the recorder
+  // goes on settling, so `mode` still reads "transcribing". T:7653-7660 hangs
+  // `.on`, `aria-pressed` and `disabled` off `annOn` for exactly that reason —
+  // the seat belongs to the reader's mode, not to the recorder's phase. The
+  // fallback keeps a host that hands us only a mode on the old derivation.
+  const armed = armedProp ?? mode !== "off";
+  const aria = seatsAria(mode, armed);
   // T:7673 / 7701 — the seat's NAME, and while a walkthrough owns the mode the
   // recorder's own two names for it (`rec.ts`), so "one mode at a time" is
   // written once. The visible WORD is the static "Comment" in every state: a
   // label that changes width makes the whole right-anchored row shuffle on
   // every toggle (T:7689).
+  //
+  // The recorder's two names are gated on `armed` for the same reason as the
+  // rest: once the reader has Esc'd out, the settle is the ANNOTATE seat's
+  // status to carry and this seat is idle again, so it says so (T:7660's
+  // `annSetMode(false)` restores `annIdleTitle()` there).
   const seat =
-    mode === "recording"
+    armed && mode === "recording"
       ? COMMENT_SEAT_WHILE_RECORDING
-      : mode === "settling" || mode === "transcribing"
+      : armed && (mode === "settling" || mode === "transcribing")
         ? COMMENT_SEAT_WHILE_SETTLING
-        : mode === "comment"
+        : armed && mode === "comment"
           ? { label: "Done — send the notes and finish commenting", title: ANN_ARMED_TITLE }
           : {
               label: annotateLabelFor(paneNoun),
-              title: "Comment on the " + paneNoun + ", then send the notes to Claude",
+              // The shared helper, not a literal: T extracted `annIdleTitle`
+              // (T:7505-7508) precisely because two writers spelled this
+              // sentence out and the first disarm threw the kind-correct noun
+              // away. Its armed twin is already an export; this one now is too.
+              title: annIdleTitleFor(paneNoun),
             };
   return (
     <div className={ctaClass(mode)}>
@@ -139,6 +185,7 @@ export function AnnStrip({
         <span className="c-lbl">Screenshot</span>
       </button>
       ) : null}
+      {commentShown ? (
       <button
         type="button"
         className={"c-annbtn" + (armed ? " on" : "")}
@@ -149,10 +196,15 @@ export function AnnStrip({
         disabled={!onComment || aria.comment}
         onClick={onComment}
       >
-        {/* All three glyphs are in the markup and the stylesheet picks one off
-            `.on` / the row's `:has(.c-annrec.on)`, exactly as T does: a seat
-            whose glyph is swapped in JS re-lays the row out on every transition
-            (T:3992). */}
+        {/* Both glyphs and both words are in the markup and NEITHER SPARE IS
+            EVER SHOWN — T:296 hides the check and "Done" with no `.on`
+            override anywhere, because a seat whose glyph or label is swapped
+            re-lays the row out on every transition (T:3992, T:7689), and this
+            row is right-anchored beside the ⋮. The seat's SPOKEN name does
+            change (`seat.label` above, T:7695 `annBtnName`); its drawing does
+            not, and the accent fill is the mode's one visible signal. The
+            spare nodes stay for T's own reason: baked-in markup the stylesheet
+            picks from, never a JS glyph swap. */}
         <svg className="c-cmt-bubble" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z" />
         </svg>
@@ -162,6 +214,7 @@ export function AnnStrip({
         <span className="c-lbl c-cmt-word">Comment</span>
         <span className="c-lbl c-done-word">Done</span>
       </button>
+      ) : null}
       {recSeat ?? (
         // The shape a host without the recorder gets. The seat is in the row in
         // every state (Akshil, 2026-09-06), so it renders dead rather than

@@ -21,6 +21,7 @@ export {
   ANN_TARGET_MARK,
   ANN_TARGET_POLL_MS,
   ANN_XO_SCROLL,
+  NAV_LOCKED_REASON,
 } from "./types";
 
 export {

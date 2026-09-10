@@ -121,8 +121,14 @@ export interface PaneSrcFlags {
 
 function withFlags(src: string, flags: PaneSrcFlags | undefined): string {
   let out = src;
-  if (flags?.noFocus) out = withNoFocus(out);
+  // `_preview` BEFORE `_nofocus`, which is the order T spells at its one site
+  // that emits both: `paneSrcFor(t, path, remote) + "&_preview=1&_nofocus=1"`
+  // (T:10717). Nothing reads either flag positionally, so this is literal
+  // parity and not behaviour — but the inventory pins these URLs as an EXACT
+  // shape, and a snapshot test or a log grep written to T's spelling misses on
+  // a src that reads `&_nofocus=1&_preview=1`.
   if (flags?.preview) out = withPreviewFlag(out);
+  if (flags?.noFocus) out = withNoFocus(out);
   if (flags?.noOpen && !/[?&]_noopen=1(&|$)/.test(out)) {
     out += (out.includes("?") ? "&" : "?") + "_noopen=1";
   }
@@ -281,6 +287,21 @@ export function footnoteFor(noun: TargetNoun): string {
  *  overwrites the Done face (Bugbot PR #665). */
 export function annotateLabelFor(paneNoun: PaneNoun): string {
   return "Comment on the " + paneNoun;
+}
+
+/** The IDLE Comment seat's TOOLTIP (T:7505-7508 `annIdleTitle`), beside its
+ *  spoken name above because the two are the same fact about the same noun.
+ *
+ *  T extracted this into a function *because* the literal had two writers —
+ *  `applyPaneNoun`, when the target's kind resolves, and `annSetMode`, on every
+ *  disarm — and the first toggle-off threw away the kind-correct noun the
+ *  former had just written. React re-derives it from `paneNoun` on every
+ *  render, so that live bug cannot come back here; the helper exists so a
+ *  second writer cannot re-open the drift T closed by hand, and so the armed
+ *  sentence (`ANN_ARMED_TITLE`, ann/types) and the idle one sit at one
+ *  altitude instead of one being an export and the other a literal in JSX. */
+export function annIdleTitleFor(paneNoun: PaneNoun): string {
+  return "Comment on the " + paneNoun + ", then send the notes to Claude";
 }
 
 /** The screenshot button's one sentence, leading with the VERB (T:5382-5386). */

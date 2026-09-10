@@ -484,7 +484,25 @@ export function AppPane({
   const remeasure = useRef(onRemeasure);
   remeasure.current = onRemeasure;
   useEffect(() => {
+    // TWICE, and T:5661-5667 gives both reasons at this exact transition: "the
+    // bar is a row ABOVE #leftview, so showing or hiding it changes that box —
+    // and the pins are positioned in #leftview coordinates. Re-measure twice
+    // […]: reading a rect flushes THIS document's layout now, and the framed
+    // document only reflows to the iframe's new height on the next frame."
+    //
+    // One pass alone left the pins sitting the bar's 43px off — for a frame if
+    // the framed document reflowed promptly, and until some unrelated repaint
+    // if it did not. Same now+rAF shape as `useNarrowView`'s view-flip effect,
+    // and cancelled on cleanup so a fast toggle cannot land a stale second
+    // measure after the bar has moved again.
     remeasure.current?.();
+    const raf =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(() => remeasure.current?.())
+        : null;
+    return () => {
+      if (raf !== null) cancelAnimationFrame(raf);
+    };
   }, [showBar]);
 
   // Step 6 of enterNoPane: the column and its controls are simply not rendered.

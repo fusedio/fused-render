@@ -99,6 +99,15 @@ export interface UseAnnotationsOptions {
 export interface AnnotationsApi {
   annotations: readonly Annotation[];
   mode: AnnMode;
+  /**
+   * T:6543 `annOn` — armed, and nothing else. NOT `mode !== "off"`: those two
+   * agree everywhere except the settle, where a walkthrough that is still
+   * transcribing keeps `mode` at "transcribing" after Esc has already taken
+   * the reader out of the mode. Whoever draws the Comment seat wants THIS bit
+   * (T:7653-7660 toggles `.on`, `aria-pressed` and `disabled` off `annOn`),
+   * and whoever asks "is a walkthrough still working" wants `mode`.
+   */
+  armed: boolean;
   tool: AnnTool;
   /** T:6864 `annNavLocked`. */
   locked: boolean;
@@ -197,6 +206,9 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
 
   const [list, setList] = useState<readonly Annotation[]>(() => store.list());
   const [mode, setMode] = useState<AnnMode>("off");
+  /** `annOn` on its own, because `mode` cannot always answer for it — see the
+   *  `onLock` handler below for the one window where the two disagree. */
+  const [armed, setArmed] = useState(false);
   const [tool, setToolState] = useState<AnnTool>("element");
   const [locked, setLocked] = useState(false);
   const [capable, setCapable] = useState(true);
@@ -449,6 +461,19 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
       render: () => renderRef.current(),
       onLock: (l) => {
         setLocked(l);
+        // AND `annOn` ITSELF, off the same signal. `mode()` collapses "armed"
+        // and "a walkthrough is settling" into one value, and the two come
+        // apart in exactly one window: Esc during Stopping…/Transcribing…
+        // disarms (`escape` → `set(false)`) while the recorder keeps settling,
+        // so `mode()` still reads "transcribing" and `announce()` sees no
+        // change to publish. Every reader that asked `mode !== "off"` then
+        // believed a mode the user had already left.
+        //
+        // This handler is the right seam for it: `set()` always ends in
+        // `deps.onLock(locked())` and `relock()` re-asserts it on every
+        // repaint, so `armed` cannot drift from the machine the way a second
+        // subscription keyed on the mode would.
+        setArmed(machineRef.current?.armed() ?? false);
         liveOpts.current.onLock?.(l);
       },
       onToolVisible: (show) => (show ? doors.current.show() : doors.current.hide()),
@@ -816,6 +841,7 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
   return {
     annotations: list,
     mode,
+    armed,
     tool,
     locked,
     capable,
@@ -957,22 +983,37 @@ export function recClockText(elapsedMs: number, marks: number): string {
  *  follows the same two state classes the stylesheet dims by (Akshil,
  *  2026-09-06). Exported for the integrator, since the seats are `ui/AnnStrip`'s
  *  and this hook does not own them. */
-export function seatsAria(mode: AnnMode): {
+export function seatsAria(
+  mode: AnnMode,
+  /** `annOn`. Defaults to `mode !== "off"`, which is right for every state but
+   *  the Esc'd settle — see the `comment` seat's reasoning below. */
+  annOn: boolean = mode !== "off",
+): {
   comment: boolean;
   annotate: boolean;
   screenshot: boolean;
 } {
   const recording = mode === "recording";
-  const armed = mode !== "off";
-  // THE WALKTHROUGH OWNS THE SEAT UNTIL ITS WORDS LAND (Bugbot, PR #1074).
-  // `recording` alone was the whole test, so through Stopping…/Transcribing…
-  // the seat came back to life wearing the `.on` ✓ Done face — and a click
-  // there ran `done()`: it auto-submitted the walkthrough's wordless stamped
-  // marks and disarmed the mode mid-transcription, so the transcript landed on
-  // notes that had already been sent empty. Every state but `off` and `comment`
-  // is the recorder's, start window and settle alike, and the seat is inert for
-  // all of them (`COMMENT_SEAT_WHILE_SETTLING` already NAMES it that way — this
-  // is the other half of the same fact).
-  const owned = walkthroughOwns(mode);
+  const armed = annOn;
+  // THE WALKTHROUGH OWNS THE SEAT UNTIL ITS WORDS LAND (Bugbot, PR #1074) —
+  // BUT ONLY WHILE THE READER IS STILL IN THE MODE.
+  //
+  // `recording` alone was the first test, and it was too loose: through
+  // Stopping…/Transcribing… the seat came back to life wearing the `.on` ✓ Done
+  // face, and a click there ran `done()` — auto-submitting the walkthrough's
+  // wordless stamped marks and disarming mid-transcription, so the transcript
+  // landed on notes already sent empty. `walkthroughOwns(mode)` alone is too
+  // tight: it also covers the settle the reader has ALREADY LEFT with Esc,
+  // where T:7656-7660 is explicit that the seat comes back — "Esc during a
+  // transcription disarms HERE, and a seat left disabled until annRecEnd's
+  // finally would block exactly the re-arm the epoch guard is written to
+  // protect."
+  //
+  // Both facts hold at once when the test is "the settle still OWNS the mode",
+  // which is the walkthrough's phase AND `annOn`. Armed + settling → inert, and
+  // the ✓ Done click that broke things is unreachable. Disarmed + settling →
+  // live, and the click ARMS A NEW ROUND rather than finishing the old one,
+  // which is precisely what the epoch guard in `end()` exists to keep safe.
+  const owned = walkthroughOwns(mode) && armed;
   return { comment: owned, annotate: armed && !recording, screenshot: armed };
 }

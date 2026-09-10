@@ -180,3 +180,19 @@ test("a dismissed start being put back down is inert too — `begin()` refuses f
   expect(words).toBe("Annotate");
   expect(commentSeatName(snap("cancelling"))).toBeNull();
 });
+
+test("`discardable={false}` leaves the strip with ONE seat while recording", () => {
+  // Discard moved off the strip and onto the bar over the app on 2026-09-06
+  // (T:6240-6248): the strip is Screenshot · Comment · Annotate in every state.
+  // The branch stays for a host with no bar to put a trash on, but the chat's
+  // own mount passes `false`, because two identical destructive controls on
+  // screen at once is that decision undone.
+  const { seats, words } = draw(snap("recording", { status: "0:12 · 3", marks: 3 }), {
+    discardable: false,
+  });
+  expect(seats).toHaveLength(1);
+  expect(seats[0]["aria-label"]).toBe("Stop the recording");
+  expect(words).toBe("0:12 · 3");
+  // The default is unchanged for whoever still wants both.
+  expect(draw(snap("recording"), { discardable: true }).seats).toHaveLength(2);
+});

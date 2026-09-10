@@ -51,6 +51,7 @@ import {
   AnnPopover,
   createRecorder,
   isSendableNow,
+  NAV_LOCKED_REASON,
   recClockText,
   RecControls,
   transcribe,
@@ -2246,7 +2247,17 @@ function ChatBody(props: ChatBodyProps) {
               <button
                 type="button"
                 className="c-back"
-                aria-label="Back to chats"
+                // AND WHY, while it is locked (T:6896 writes exactly this
+                // sentence onto `#back.title` and clears it on unlock). It goes
+                // into the accessible NAME as well as the `title`, because
+                // `disabled` takes the button out of tab order: a hover-only
+                // answer is no answer for a control the keyboard cannot land
+                // on, and a dead way-out that will not say why is the one
+                // refusal face worth spelling twice.
+                aria-label={
+                  ann.locked ? "Back to chats — " + NAV_LOCKED_REASON : "Back to chats"
+                }
+                title={ann.locked ? NAV_LOCKED_REASON : undefined}
                 // PR3: locked while a comment round or a walkthrough owns the
                 // page (`useAnnotations().locked`) — leaving mid-round would
                 // orphan the notes. Main moved Back from the top bar into this
@@ -2274,8 +2285,23 @@ function ChatBody(props: ChatBodyProps) {
               // does not move, so the flag is about `paneShown` and not about
               // the breakpoint alone.
               cameraShown={!(paneShown && narrowView.narrow && narrowView.view === "chat")}
+              // AND THE COMMENT SEAT GOES WITH IT in that same view (T:3822
+              // `body.view-chat #annbtn { display: none }`): the pane the
+              // clicks would land on is parked off screen, so there is nothing
+              // to arm against — and arming anyway put the framed document's
+              // capture-phase click swallower live over an invisible pane.
+              // `useNarrowView`'s `onArriveChat` disarms on ARRIVAL only, and
+              // nothing stopped a fresh arm afterwards. Same expression as the
+              // camera's, deliberately: it is the same fact about the same
+              // pane, and a prop rather than a CSS rule so `useFitStrip` keeps
+              // reading a stable node set.
+              commentShown={!(paneShown && narrowView.narrow && narrowView.view === "chat")}
               capable={ann.capable}
               mode={ann.mode}
+              // `annOn` beside the mode, because the seat follows the READER's
+              // mode and the mode value follows the RECORDER's phase — and they
+              // part company for the width of an Esc'd transcription.
+              armed={ann.armed}
               capturing={attach.capturing}
               onScreenshot={() => void attach.capture()}
               onComment={ann.onCommentSeat}
@@ -2284,6 +2310,15 @@ function ChatBody(props: ChatBodyProps) {
                   rec={recSnap}
                   shown={micShown}
                   commentArmed={ann.mode === "comment"}
+                  // NO SECOND TRASH IN THE STRIP. Discard moved off the strip
+                  // and onto the bar over the app on 2026-09-06 (T:6240-6248,
+                  // inventory 02 §I), so the strip carries only Screenshot ·
+                  // Comment · Annotate in every state. `RecControls` still
+                  // knows how to draw its own trash — a host that has no bar to
+                  // put one on can ask for it — but this mount has
+                  // `ann/AnnBar`'s, and two identical destructive controls on
+                  // screen at once is the decision undone.
+                  discardable={false}
                   onBegin={() => void recorder.begin()}
                   onEnd={() => void recorder.end()}
                   onDiscard={() => void recorder.discard()}

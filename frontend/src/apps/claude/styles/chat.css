@@ -216,6 +216,20 @@
 .chat-root.narrow.view-preview .c-chat > *:not(.c-anntools) {
   display: none;
 }
+/* AND BACK GOES WITH THEM (T:3882-3884), whose own comment names this exact
+   case: "#back survived the collapse above only because it moved into
+   #anntools. It stays hidden HERE for the same reason the rest of the chat
+   column is: the chat list it returns to is off screen in this view, so the
+   button would navigate to something the layout cannot show." P2-1 moved Back
+   into the one child the rule above deliberately spares, so this strip was left
+   offering a destination the layout had just taken away.
+
+   A rule rather than a render gate, deliberately: `useFitStrip` measures this
+   row to decide which labels fold, and it should read one stable node set per
+   layout instead of a set that changes under it on a view flip. */
+.chat-root.narrow.view-preview .c-back {
+  display: none;
+}
 
 /* ---- host cuts (T:1412-1438) ------------------------------------------------
    All three are host FACTS, decided when the mount was built, and all three are
