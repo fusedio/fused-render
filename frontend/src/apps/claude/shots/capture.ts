@@ -230,7 +230,12 @@ function race(
       }
     },
     (err: unknown) => {
-      if (abandoned) console.warn("abandoned capture failed:", err);
+      // "abandoned PANE capture failed", T:11289's exact phrase. Console-only,
+      // but the port treats these sentences as contract — inventory 03 §L pins
+      // `"overview screenshot skipped:"` in this file's own test for the same
+      // reason: a phrase is what anyone debugging greps for, and a dropped word
+      // is a grep that silently finds nothing.
+      if (abandoned) console.warn("abandoned pane capture failed:", err);
     },
   );
   return Promise.race([capture, budget])

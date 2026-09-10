@@ -2104,8 +2104,9 @@ function ChatBody(props: ChatBodyProps) {
     // What makes the cursor say "copy" rather than show the forbidden sign.
     ev.dataTransfer.dropEffect = "copy";
   }, []);
-  // NO `dragHasAttachment` GUARD HERE, unlike its three neighbours (T:11770
-  // guards nothing either): several engines expose no `types` at all on
+  // NO `dragHasAttachment` GUARD HERE, unlike its three neighbours — AND
+  // UNLIKE T, which does guard this one (T:11771). A DELIBERATE divergence and
+  // the better answer: several engines expose no `types` at all on
   // `dragleave` — it is the one drag event whose DataTransfer is deliberately
   // protected — so a guarded leave never fired, the depth never came back down,
   // and the accent ring stayed on the column until the next drop. An extra

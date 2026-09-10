@@ -14,7 +14,9 @@ import {
   MARKER_FILE,
   MARKER_IMG,
   MARKER_JOIN,
+  MARKER_SIGIL,
   MARKER_VIEW,
+  MARKERS,
   markerWord,
   markerWords,
   paneShotBlock,
@@ -324,5 +326,53 @@ describe("a stanza with no descriptive bits does not round-trip — same as T", 
     expect(annotationsIn(block)).toEqual([]);
     // stripBlocks still peels it: the strip matches the TAG, not the stanza.
     expect(stripBlocks(block + "\n\nhi")).toBe("hi");
+  });
+});
+
+// ---- ONE marker vocabulary (B-30's wire half) ------------------------------
+//
+// There are two spellings of this vocabulary in the tree and the LIVE Recent
+// list renders the wrong one: `ui/list-rows.ts` declares its own
+// `MARKER_JOIN = " · "` under a comment citing T:10527-10538 — where both T and
+// this module say `" + "` — and invents `"picture"`/`"comments"` for
+// `MARKER_VIEW`/`MARKER_ANN`, so a wordless send appears in Recent as
+// `picture · comments` where T shows `🖼 pane screenshot + 📌 annotations`
+// (lucide glyphs here, P2-7). `protocol/history.ts` is the copy that DOES import
+// the real markers and run `markerWords` — and it is imported by nothing but its
+// own test.
+//
+// `ui/list-rows.ts`, `ui/RecentRow.tsx` and `ui/Lists.tsx` are PR4's files, so
+// the CONSUMER is PR4's fix (its own item, merged with audit C's G-8: delete
+// list-rows' copies and re-export `history.ts`'s `sessionTitle`). What belongs
+// here is the contract that fix imports against — nothing tested `list-rows`'s
+// copy against this one, which is exactly the drift D146's "duplicated wire
+// rules get tests" exists to catch.
+describe("the marker vocabulary is this module's, and nobody else's", () => {
+  test("the join is T:10538's `\" + \"`", () => {
+    expect(MARKER_JOIN).toBe(" + ");
+  });
+
+  test("each marker's WORDS name the thing, not a category", () => {
+    // The words T:10527-10537 uses. The emoji are replaced by lucide icons
+    // (P2-7, pinned by `ui/no-emoji.test.ts`); the words are not.
+    expect(MARKER_ANN).toContain("annotations");
+    expect(MARKER_VIEW).toContain("pane screenshot");
+    // …and NOT the inventions the Recent list renders today.
+    expect(MARKERS.join(MARKER_JOIN)).not.toContain("picture");
+    expect(MARKERS.join(MARKER_JOIN)).not.toContain("comments");
+  });
+
+  test("a send carrying BOTH blocks reads as T spells it", () => {
+    // The row a wordless "screenshot + notes" send should produce, which is
+    // what a consumer joining these must come out with.
+    const both = [MARKER_ANN, MARKER_VIEW].join(MARKER_JOIN);
+    expect(markerWords(both)).toBe("annotations + pane screenshot");
+    // The sigil is STRIPPED by `markerWords` — a label is words, not wire.
+    expect(markerWords(both)).not.toContain(MARKER_SIGIL);
+  });
+
+  test("`markerWords` is the one door from wire to label", () => {
+    expect(markerWords(MARKER_VIEW)).toBe("pane screenshot");
+    expect(markerWords("just words")).toBe("just words");
   });
 });
