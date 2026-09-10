@@ -119,6 +119,7 @@ import {
   useFitStrip,
   useComposerDefaults,
   useRecentSessions,
+  useRepairScroll,
   useTaskId,
   type TranscriptTail,
   type Viewable,
@@ -2122,27 +2123,11 @@ function ChatBody(props: ChatBodyProps) {
     if (log) log.scrollTop = log.scrollHeight;
   }, [settled]);
 
-  /**
-   * AND UNCONDITIONALLY AFTER A REPAIR (T:17851, P4-10).
-   *
-   * A run that finished while the frame was away appends a whole turn in one
-   * commit — there is no `running` → `idle` edge for the effect above to hang
-   * off, and the follow-tail rule beside the transcript only pins a reader who
-   * is already at the bottom. So the reader this case is ABOUT — one who had
-   * scrolled up and came back — saw nothing appear. T scrolls to it whatever
-   * the reader was doing, and so does this.
-   *
-   * Keyed on the nonce and not on a boolean, so two repairs in a row are two
-   * scrolls; skipped on the mount's initial 0, which is not a repair.
-   */
-  const repaired = state.repaired;
-  const seenRepairs = useRef(repaired);
-  useEffect(() => {
-    if (seenRepairs.current === repaired) return;
-    seenRepairs.current = repaired;
-    const log = rootRef.current?.querySelector(".chat-logwrap");
-    if (log) log.scrollTop = log.scrollHeight;
-  }, [repaired]);
+  // AND UNCONDITIONALLY AFTER A REPAIR (T:17851, P4-10) — the rule, and why it
+  // has to be unconditional, live in `useRepairScroll`. Extracted so the
+  // renderer half of P4-10 has a suite of its own (batch review, test gap 1):
+  // the controller bumps the nonce, and this is what the nonce is FOR.
+  useRepairScroll(state.repaired, rootRef);
 
   const controls = useMemo(
     () => ({
@@ -2604,7 +2589,6 @@ function ChatBody(props: ChatBodyProps) {
       ann.locked,
       ann.editNote,
       ann.removeNote,
-      ann.locked,
       sched.blocked,
       sched.placeholder,
       sched.reason,

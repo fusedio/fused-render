@@ -122,3 +122,84 @@ test("lastErrorKey names the row the trouble card is already reporting", () => {
   expect(lastErrorKey([turns[0]])).toBeNull();
   expect(lastErrorKey([])).toBeNull();
 });
+
+// ── AND THE TAIL A REPAIR LEAVES BEHIND (P4-10, renderer half) ─────────────
+//
+// The controller bumps `repaired` when a run that finished while the frame was
+// away appends its turn; this is what the nonce is FOR. `follow.test.tsx` pins
+// the OPPOSITE rule for the banner (a scrolled-up reader is not jumped), so
+// nothing pinned this one until the effect moved out of `ClaudeChat`.
+const { useRepairScroll } = await import("./useRepairScroll");
+
+function fakeLog() {
+  return { scrollTop: 0, scrollHeight: 1000 };
+}
+
+/** Drives the hook the way the chat does: one nonce prop, one root ref. */
+function repairHarness(start = 0) {
+  const log = fakeLog();
+  const rootRef = { current: { querySelector: () => log } };
+  let r!: ReturnType<typeof create>;
+  function Probe({ repaired }: { repaired: number }) {
+    useRepairScroll(repaired, rootRef);
+    return null;
+  }
+  act(() => {
+    r = create(<Probe repaired={start} />);
+  });
+  mounted.push(r);
+  return {
+    log,
+    bump(to: number) {
+      act(() => r.update(<Probe repaired={to} />));
+    },
+  };
+}
+
+test("A REPAIR SCROLLS TO THE TAIL whatever the reader was doing (T:17851)", () => {
+  const h = repairHarness(0);
+  // A reader who had scrolled up — which is exactly the reader this case is
+  // about, one who came back to a run that finished while the frame was away.
+  h.log.scrollTop = 200;
+  h.bump(1);
+  expect(h.log.scrollTop).toBe(1000);
+});
+
+test("A NONCE, NOT A FLAG: two repairs are two scrolls", () => {
+  const h = repairHarness(0);
+  h.bump(1);
+  expect(h.log.scrollTop).toBe(1000);
+  h.log.scrollTop = 40;
+  h.bump(2);
+  expect(h.log.scrollTop).toBe(1000);
+});
+
+test("a re-render at the SAME nonce is not a repair", () => {
+  const h = repairHarness(0);
+  h.bump(1);
+  h.log.scrollTop = 40;
+  h.bump(1);
+  expect(h.log.scrollTop).toBe(40);
+});
+
+test("the MOUNT's own value is not a repair either", () => {
+  // A remount over a controller that has already repaired three turns arrives
+  // with a nonce of 3, and that is not a repair this reader watched happen.
+  const h = repairHarness(3);
+  expect(h.log.scrollTop).toBe(0);
+  h.bump(4);
+  expect(h.log.scrollTop).toBe(1000);
+});
+
+test("no scrollport is no crash: the effect is a no-op before the first paint", () => {
+  function Probe({ repaired }: { repaired: number }) {
+    useRepairScroll(repaired, { current: null });
+    return null;
+  }
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<Probe repaired={0} />);
+  });
+  mounted.push(r);
+  expect(() => act(() => r.update(<Probe repaired={1} />))).not.toThrow();
+});

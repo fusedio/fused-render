@@ -66,10 +66,21 @@ export function useArtifacts(
     // The previous answer for THIS target stands while the fresh one is in
     // flight; a target we have never read is the only `null` (see above).
     setRows(lastRows.get(seat) ?? null);
-    void read(agentDir, file).then((out) => {
-      lastRows.set(seat, out);
-      if (live) setRows(out);
-    });
+    void read(agentDir, file)
+      .then((out) => {
+        lastRows.set(seat, out);
+        if (live) setRows(out);
+      })
+      // AND IT FAILS OPEN, QUIETLY (batch review F5). This is the one read that
+      // leaves the machine, so a rejection is ordinary — and without a `.catch`
+      // it was an unhandled promise rejection, next to `useSnapshots` and
+      // `subscribeRecent` which both answer for their own failures. Nothing is
+      // published, so the remembered rows and the tab bar's count stay at
+      // whatever they last honestly were; the next landing asks again. T fails
+      // open here too — its `pollArtifacts` has no error branch at all.
+      .catch((err: unknown) => {
+        console.warn("artifacts failed:", err instanceof Error ? err.message : err);
+      });
     return () => {
       live = false;
     };

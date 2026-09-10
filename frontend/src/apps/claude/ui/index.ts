@@ -58,6 +58,7 @@ export type { ArtStripProps, ArtStripStore } from "./ArtStrip";
 export { Snapshots } from "./Snapshots";
 export type { SnapshotsProps } from "./Snapshots";
 export { useArtifacts } from "./useArtifacts";
+export { useRepairScroll } from "./useRepairScroll";
 export { useSnapshots } from "./useSnapshots";
 export type { SnapshotsState } from "./useSnapshots";
 export {

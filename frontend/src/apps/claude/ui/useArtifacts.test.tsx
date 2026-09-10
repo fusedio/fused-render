@@ -23,9 +23,12 @@ const { useArtifacts, resetArtifactsMemoryForTests } = await import(
 
 const reads: string[] = [];
 let answer: Artifact[] = [];
+/** Set to make the read REJECT — the index is the one call that leaves the
+ *  machine, so a failure is ordinary rather than exceptional. */
+let reject: Error | null = null;
 const read = (_dir: string, file: string | null) => {
   reads.push(file ?? "");
-  return Promise.resolve(answer);
+  return reject ? Promise.reject(reject) : Promise.resolve(answer);
 };
 
 const mounted: ReactTestRenderer[] = [];
@@ -34,6 +37,7 @@ afterEach(() => {
   resetArtifactsMemoryForTests();
   reads.length = 0;
   answer = [];
+  reject = null;
 });
 
 async function mount(file: string | null) {
@@ -106,4 +110,41 @@ test("an emptied list really empties: `[]` replaces the remembered rows", async 
   // Held through the read, then honestly replaced — the section goes away.
   expect(back.seen[0]?.length).toBe(1);
   expect(back.rows()).toEqual([]);
+});
+
+// ── AND A FAILED READ FAILS OPEN, QUIETLY (batch review F5) ────────────────
+//
+// `void read(...).then(...)` had no `.catch`, so a rejection was an unhandled
+// promise rejection — next to `useSnapshots` and `subscribeRecent`, which both
+// answer for their own failures. T fails open here too: its `pollArtifacts` has
+// no error branch at all.
+
+test("A REJECTED READ IS NOT AN UNHANDLED REJECTION", async () => {
+  reject = new Error("index unreachable");
+  const h = await mount("/repo/x.py");
+  // Nothing published, so boot's honest `null` stands.
+  expect(h.rows()).toBe(null);
+  expect(reads.length).toBe(1);
+});
+
+test("a failure leaves the REMEMBERED rows standing", async () => {
+  answer = A;
+  const first = await mount("/repo/x.py");
+  expect(first.rows()?.length).toBe(1);
+  first.unmount();
+
+  // Back onto the landing, and this time the index is unreachable. The tab bar
+  // keeps the count it last honestly had rather than blinking to nothing.
+  reject = new Error("index unreachable");
+  const back = await mount("/repo/x.py");
+  expect(reads.length).toBe(2);
+  expect(back.rows()?.length).toBe(1);
+  expect(back.seen[0]?.length).toBe(1);
+
+  // And the next landing asks again — a failure caches nothing of its own.
+  back.unmount();
+  reject = null;
+  const again = await mount("/repo/x.py");
+  expect(reads.length).toBe(3);
+  expect(again.rows()?.length).toBe(1);
 });
