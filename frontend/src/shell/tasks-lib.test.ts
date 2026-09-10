@@ -86,6 +86,7 @@ import {
   projectOptions,
   relativeWhen,
   ranOffSchedule,
+  scheduledMark,
   readKey,
   settleMarkAllRead,
   resendTarget,
@@ -2303,10 +2304,15 @@ describe("the unread mark", () => {
     const stripped = TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
     expect(stripped).not.toContain(".tasks-rail");
     expect(stripped).not.toContain(".tasks-msg-kind");
-    // The two glyphs it drew are gone from the file as well, rather than left as
-    // unused constants for the next reader to wonder about.
-    expect(VIEWS).not.toContain("const ICON_CLOCK");
+    // ICON_CHAT, the speech bubble it drew, is gone from the file as well rather
+    // than left as an unused constant for the next reader to wonder about.
     expect(VIEWS).not.toContain("const ICON_CHAT");
+    // ICON_CLOCK IS BACK (2026-09-10) and this test still holds, because the
+    // fact above is about the MESSAGE row: the clock is drawn on the TASK row
+    // now, where it says the task has a run booked (tasks-lib.scheduledMark)
+    // and nothing else on the line states it. No message row wears it.
+    const msgRow = thread.slice(0, thread.indexOf("{why && <p"));
+    expect(msgRow).not.toContain("{ICON_CLOCK}");
     // The body is the row's ink and carries the row's caption (`data-hint`), so
     // the element opens with an attribute now rather than closing immediately.
     expect(thread).toMatch(
@@ -8112,6 +8118,98 @@ describe("the file mark after a task's title", () => {
     const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1");
+  });
+});
+
+describe("the schedule mark on a List row", () => {
+  const AHEAD = Math.floor(NOW / 1000) + 3600;
+  const ROW = VIEWS.slice(
+    VIEWS.indexOf('className={"tasks-row"'),
+    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+  );
+
+  it("marks a task with a run ahead of it, and names the instant", () => {
+    const t = task({ status: "done", next_run: AHEAD, next_run_entry: "e2" });
+    const mark = scheduledMark(t, NOW)!;
+    expect(mark.at).toBe(AHEAD);
+    // The word first, so a bare glyph is decodable by hovering it, then the
+    // exact instant — the shape every other tooltip on this row has.
+    expect(mark.title).toContain("Scheduled");
+    expect(mark.title).toContain(messageStamp(AHEAD));
+  });
+
+  it("marks an Upcoming row too — the row the next-run CHIP stays quiet on", () => {
+    // Which is the whole reason the mark is not drawn inside that chip:
+    // nextRunChip is null on Upcoming, whose own time already IS the next run,
+    // and those are the most scheduled rows on the page.
+    const t = upcoming([AHEAD]);
+    expect(nextRunChip(t, NOW)).toBe(null);
+    expect(scheduledMark(t, NOW)?.at).toBe(AHEAD);
+  });
+
+  it("says nothing about a task with no run ahead, or one already due", () => {
+    // The same test nextRunChip applies, deliberately: two marks on one row
+    // must not disagree about whether a run is coming. An overdue pending is
+    // not what the task does NEXT — it is work the Upcoming lane surfaces.
+    expect(scheduledMark(task({ status: "done" }), NOW)).toBe(null);
+    const past = task({
+      status: "done",
+      next_run: Math.floor(NOW / 1000) - 60,
+      next_run_entry: "e2",
+    });
+    expect(scheduledMark(past, NOW)).toBe(null);
+  });
+
+  it("is a glyph beside the file mark, with the fact in the tooltip", () => {
+    const mark = scheduledMark(task({ status: "done", next_run: AHEAD, next_run_entry: "e2" }), NOW)!;
+    expect(VIEWS).toContain('className="tasks-row-sched"');
+    expect(VIEWS).toContain("{ICON_CLOCK}");
+    expect(VIEWS).toContain("data-hint={sched.title}");
+    // …and read out to anything that cannot see the clock — as prose, without
+    // the hint's middle dot, which AT either names or drops.
+    expect(VIEWS).toContain("aria-label={sched.label}");
+    expect(mark.label).toBe(`Scheduled, next run ${messageStamp(AHEAD)}`);
+    expect(mark.label).not.toContain("·");
+    // The pair's order: what the task is about, then how it is run.
+    expect(ROW.indexOf('className="tasks-row-file"')).toBeLessThan(
+      ROW.indexOf('className="tasks-row-sched"'),
+    );
+    expect(ROW.indexOf('className="tasks-row-sched"')).toBeLessThan(
+      ROW.indexOf('className="tasks-grow"'),
+    );
+  });
+
+  it("spends the row's own gesture, so it is not a dead run of pixels", () => {
+    // The mark sits above `.tasks-rowlink` for its tooltip, which is exactly
+    // what made the file icon unclickable (Akshil, 2026-08-27). Same three
+    // handlers here, not a second answer to the same bug.
+    const mark = ROW.slice(ROW.indexOf('className="tasks-row-sched"'));
+    const body = mark.slice(0, mark.indexOf("{ICON_CLOCK}"));
+    expect(body).toContain("if (opensElsewhere(e)) {");
+    expect(body).toContain("activate();");
+    expect(body).toContain("onAuxClick");
+    expect(body).toContain("if (e.button === 1 && href) e.preventDefault();");
+  });
+
+  it("wears the file mark's own box, declaration for declaration", () => {
+    // The two are one pair of captions on the title; a second set of numbers
+    // for the second glyph is how a pair drifts apart.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-sched {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    // Above the stretched link, or it never receives the pointer at all.
+    expect(body).toContain("position: relative");
+    expect(body).toContain("z-index: 2");
+    // Not what gives way when a long title runs out of room.
+    expect(body).toContain("flex: 0 0 auto");
+    // Full-height hit zone, every pixel of it given back.
+    expect(body).toContain("align-self: stretch");
+    expect(body).toContain("padding-block: var(--tasks-row-pad-y)");
+    expect(body).toContain("margin-block: calc(var(--tasks-row-pad-y) * -1)");
+    // Pulled toward the group it belongs to, by one full row gap.
+    expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1)");
+    // And no cursor of its own: a mark that announces a press the row's press
+    // does not make looks broken (the file mark's rule, same argument).
+    expect(body).not.toContain("cursor:");
   });
 });
 

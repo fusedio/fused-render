@@ -238,26 +238,80 @@
    `.preview-body` is restructured when the sidebar opens — the content iframe is
    never re-parented, and so never reloaded.
 
-   The divider is the listing's, to the pixel (.listing-divider): a 5px
+   The divider is the listing's in size and gesture (.listing-divider): a 5px
    transparent strip with negative margins so the handle overhangs both
-   neighbours, painting the hairline only on hover/drag. Two draggable seams in
-   one app must not feel like two different controls. */
+   neighbours. Two draggable seams in one app must not feel like two different
+   controls. Where the two now part company — this one is POSITIONED and draws
+   the seam itself; the listing's recolours the pane slot's — is written out
+   below. */
 .preview-side-divider {
   flex: 0 0 5px;
   cursor: col-resize;
   background: transparent;
   margin: 0 -2px;
-  z-index: 2;
+  /* 3, NOT 2 (review, 2026-09-10): the chat's pinned tail card
+     (`.chat-tailpin.is-pinned`, apps/claude/styles/transcript.css) is sticky at
+     z-index 2 with an opaque ground, and nothing between it and the root is a
+     stacking context — so at 2 the two tie and tree order hands the pixel to the
+     column, which is DOM-later. The seam lost its bottom segment whenever a
+     permission ask was pinned. 3 clears that and stays under the chat's
+     transient popovers (`.annbar .tip` at 4, `#annpop` at 5), which are the
+     things that SHOULD pass over a 1px line. */
+  z-index: 3;
+  /* Anchors the seam below — the hairline is drawn from here, not from the
+     column, so nothing rendered inside the column can paint over it.
+
+     THIS ALSO CHANGES WHO IS HIT, not only who paints: unpositioned, this box
+     lost its right-hand 2px overhang to the positioned, DOM-later column, so the
+     drag target was really 3px. Positioned, it wins all 5 — the column's
+     leftmost 2px now show `col-resize` and take a wheel to the nearest scroller
+     rather than to the chat log. That is the overhang the negative margins were
+     written for in the first place; the header's 10px padding keeps every
+     control clear of it. */
+  position: relative;
   /* The drag is pointer-captured; without this, touch scrolling fights it. */
   touch-action: none;
 }
 
-/* Accent on hover/drag — matches .listing-divider and the left sidebar's
-   resize handle (.sidebar-resize-handle, sidebar.css). */
-.preview-side-divider:hover,
-.preview-side-divider.dragging {
+/* THE SEAM ITSELF, and it lives here rather than on the column (2026-09-10).
+   It used to be `.preview-side::before`, a pseudo *inside* the column, and the
+   native chat then covered it: `.chat-root` and `.c-chat` are `position:
+   relative` with an opaque `--c-panel` ground, so they paint after a z-index:auto
+   pseudo that comes earlier in the DOM and the panel lost its left border on the
+   flag-on path only (the legacy iframe is a static box, so it painted *under*
+   the line and the border showed). Drawn from the divider, the line is outside
+   the column entirely and sits at z-index 3 (the divider's; see that rule for
+   why 3), above every z-index:auto box the column paints and above its pinned
+   tail card — so no ground inside it can cover the seam again.
+
+   3px IN: the divider's negative margins pull the column 2px back over this
+   element, so the column's left edge is at this box's left + 3, which is where
+   the border has always been drawn.
+
+   ACCENT ON HOVER/DRAG, and only on this 1px (Akshil, 2026-09-10 — the seams
+   read "a bit thick"). The rule used to paint the divider's whole 5px hit box,
+   so the seam ballooned from a hairline to a 5px accent bar under the cursor.
+   One line, two colours — the same arrangement .listing-divider now has. */
+.preview-side-divider::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.preview-side-divider:hover::before,
+.preview-side-divider.dragging::before {
   background: var(--accent);
-  opacity: 0.35;
+  /* A breath of glow, so a 1px line stays findable without becoming a second,
+     wider one — 3px, the same figure as the other seams (sidebar.css says why). */
+  box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 /* An iframe is a separate document and would swallow the captured pointer
@@ -298,12 +352,30 @@
   touch-action: none;
 }
 
-/* The same accent wash every other draggable seam wears on hover
-   (.sidebar-resize-handle, .listing-divider, .preview-side-divider) — which is
-   the only announcement this one makes. */
-.preview-side-reopen:hover::before {
+/* The same announcement every other draggable seam makes on hover
+   (.sidebar-resize-handle, .listing-divider, .preview-side-divider): a 1px
+   accent line, drawn on a SECOND pseudo because ::before above is the 6px hit
+   strip and painting it was what made the seam read thick (Akshil,
+   2026-09-10). This edge has no hairline at rest — there is no column behind it
+   yet — so the line is the whole of the hover state, at the right edge where
+   the column will come back from. */
+.preview-side-reopen::after {
+  content: "";
+  position: absolute;
+  top: var(--topbar-h);
+  bottom: 0;
+  right: 0;
+  width: 1px;
+  background: transparent;
+  pointer-events: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.preview-side-reopen:hover::after {
   background: var(--accent);
-  opacity: 0.35;
+  box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 /* WHILE A REOPEN DRAG RUNS. On the root element and not on the strip, because
@@ -329,7 +401,11 @@ html.side-reopening iframe {
    where the listing's pane is a fraction. The min-width is the same floor the
    drag clamps to, and backstops a window resize that narrows the row under an
    already-sized column.
-   `position: relative` anchors the seam below. */
+   `position: relative` used to anchor the column's own seam; the seam moved to
+   the divider (below) and nothing in this file positions against the column any
+   more. Kept anyway: what the column frames (the chat, a template) may, and
+   taking a containing block away from content this file does not own is not a
+   change to make from here. */
 .preview-side {
   flex: 0 0 auto;
   min-width: 380px;
@@ -340,23 +416,34 @@ html.side-reopening iframe {
   position: relative;
 }
 
-/* The seam between the two columns — full height, the listing pane's rule
-   (.listing-pane-slot::before), for the reason written out there: a seam that
-   stopped at the header left its top segment a different color from the run
-   below it (the file view's left column is content, not a matching bg-alt
-   strip), so the line reads broken. One continuous hairline instead.
-   The drag target is untouched — the divider is a separate full-height flex
-   item, transparent until hover. */
-.preview-side::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--border);
-  pointer-events: none;
-}
+/* NO `isolation: isolate` HERE, considered and rejected (2026-09-10). A stacking
+   context keeps the geometry of the chat's `position: fixed` overlays — that is
+   not what it changes. What it changes is RANK: `#annpop.sidebar` (ann.css,
+   z-index 40, fixed, spanning nearly the window in the narrow layout) would have
+   its 40 scoped to this column, and the column as a whole — z-index auto, so 0
+   in .stat-split — would then lose to the middle pane's shown frame
+   (`.preview-frames iframe.is-shown`, z-index 1 further up this file). The
+   popover would paint behind the pane it is meant to cover. The seam does not
+   need isolation: it is drawn from the divider at z-index 3, above every
+   z-index:auto box inside this column (`.chat-root`, `.c-chat`) — the boxes
+   whose opaque ground was covering the old pseudo — and above the pinned tail
+   card at 2. A transient popover passing over a 1px line is not the bug that was
+   reported. */
+
+/* THE SEAM IS THE DIVIDER'S (2026-09-10), see .preview-side-divider::before.
+   It was drawn here — `.preview-side::before`, a hairline inside the column —
+   and the native chat's own `position: relative` boxes painted over it, so the
+   flag-on path had no left border at all (Akshil: "the right side panel border
+   with new native beta chat is missing border on left like other panels have").
+   A line owned by the element that also owns the drag is one thing to reason
+   about: at z-index 3 it outranks anything the column paints from a
+   z-index:auto box, which is what the chat's grounds are, and the one sticky
+   card the chat pins at 2.
+
+   It is still a single continuous hairline, header row included, for the reason
+   the listing pane writes out (.listing-pane-slot::before): a seam that stops at
+   the header leaves its top segment a different colour from the run below it,
+   and the line reads broken. */
 
 /* The column's own top strip, and it must match the crumb bar across the seam
    the way the listing pane's header does (.pane-header, explorer.css): same

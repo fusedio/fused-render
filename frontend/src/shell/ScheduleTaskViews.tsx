@@ -93,6 +93,7 @@ import {
   parseListMemory,
   projectOptions,
   relativeWhen,
+  scheduledMark,
   settleMarkAllRead,
   spansProjects,
   taskColumn,
@@ -218,6 +219,25 @@ const ICON_FILE = icon(
 // from. Removed at Akshil's request: it is a third glyph on a 12.5px line whose
 // first two already carry the state and the id, and nothing on the page acts on
 // the distinction. `.tasks-msg-kind` went from tasks.css with it.
+//
+// THE CLOCK BELOW IS NOT THAT CLOCK, and the difference is the whole reason it is
+// allowed back on the page. That one sat on every MESSAGE row and said which kind
+// each message was — a distinction the row's other two glyphs already carried.
+// This one sits on the TASK row and says the task has a run booked
+// (tasks-lib.scheduledMark), which nothing else on that line states: the "next
+// 2h" chip is absent on exactly the rows whose own time already IS the next run,
+// and a time in the last column is not a mark a list can be scanned by.
+/** A schedule, for a task with a run ahead of it.
+ *
+ *  lucide `clock`, at the file mark's 12px and drawn beside it: the two are the
+ *  same kind of statement about the task — what it is about, and that it runs by
+ *  itself — so they read as one pair of captions on the title rather than as two
+ *  unrelated symbols. Boxy is not on offer here (a clock is a circle), but the
+ *  stroke, the size and the muted register are the file mark's exactly. */
+const ICON_CLOCK = icon(
+  <><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 16 14" /></>,
+  12,
+);
 const ICON_OPEN = icon(
   <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>, 13);
@@ -1696,6 +1716,10 @@ function TaskNode({
   const when = taskWhen(task);
   // The run still to come, when the row's own time is not already it.
   const soon = nextRunChip(task);
+  // ...and that there IS one at all — the mark beside the file glyph, drawn on
+  // every row with a run ahead of it including the Upcoming ones the chip stays
+  // quiet on. tasks-lib.scheduledMark owns the test and the tooltip.
+  const sched = scheduledMark(task);
   // ...and the one word a settled lane cannot say: that the last run was
   // STOPPED rather than finished (tasks-lib.outcomeTag).
   const outcome = outcomeTag(task);
@@ -2322,6 +2346,45 @@ function TaskNode({
             }}
           >
             {ICON_FILE}
+          </span>
+        ) : null}
+
+        {/* THE SCHEDULE MARK, next to the file mark and for the reason that one
+            is there: both answer "what kind of task is this" about the title
+            they sit against, so they belong in one pair of captions rather than
+            at opposite ends of the row (Akshil, 2026-09-10, on the List view).
+            tasks-lib.scheduledMark decides it — a run strictly ahead, the same
+            test nextRunChip applies, so the glyph and the chip cannot disagree
+            about whether one is coming.
+
+            A PRESS HERE IS A PRESS ON THE ROW, exactly as on the file mark
+            above: the mark sits over the stretched link (`z-index: 2`, for its
+            tooltip) and would otherwise be a second dead pixel-run on the row
+            (Akshil, 2026-08-27, about the file icon — same bug, so the same
+            three handlers rather than a second answer to it). */}
+        {sched ? (
+          <span
+            className="tasks-row-sched"
+            data-hint={sched.title}
+            aria-label={sched.label}
+            onClick={(e) => {
+              if (!href) return;
+              if (opensElsewhere(e)) {
+                window.open(href, "_blank", "noopener");
+                return;
+              }
+              activate();
+            }}
+            onAuxClick={(e) => {
+              if (e.button !== 1 || !href) return;
+              e.preventDefault();
+              window.open(href, "_blank", "noopener");
+            }}
+            onMouseDown={(e) => {
+              if (e.button === 1 && href) e.preventDefault();
+            }}
+          >
+            {ICON_CLOCK}
           </span>
         ) : null}
 

@@ -3096,6 +3096,58 @@ export function nextRunChip(task: Task, now: number = Date.now()): NextRunChip |
   };
 }
 
+// ---- "and this one is on a schedule" ----------------------------------------
+// The chip above says WHEN the next run is, and only on the rows whose own time
+// is not already that run. What no row said at all is the plainer fact one step
+// up from it: this task has a run booked. That is what a reader scanning a
+// hundred rows for "which of these fire by themselves" is asking, and reading it
+// off a time in the last column means reading every last column.
+//
+// So the List wears a glyph for it (Akshil, 2026-09-10: "for scheduled tasks in
+// the list view, let's show a icon that shows it's scheduled"), beside the file
+// mark, in the slot that already answers "what kind of task is this".
+//
+// A FUTURE RUN is the test, not "has a schedule entry": a task whose every
+// occurrence has fired is not scheduled any more, and a pending run whose time
+// has gone by is overdue work the Upcoming lane surfaces — neither is news about
+// what this task does next. Same rule as nextRunChip, deliberately: two marks on
+// one row must not disagree about whether a run is coming.
+//
+// NOT a second clock on the message rows inside the thread. That pair
+// (ICON_CLOCK/ICON_CHAT, ScheduleTaskViews) was pulled on 2026-08-18 for being a
+// third glyph on a 12.5px line whose first two already carried the state and the
+// id. This is one glyph on the TASK row, where nothing else states it.
+
+export interface ScheduledMark {
+  /** Epoch seconds of the run that makes this task scheduled. */
+  at: number;
+  /** The tooltip: the fact, and exactly when. */
+  title: string;
+  /** The same fact as prose, for anything that cannot see the glyph — no
+   *  middle dot, which a screen reader either names or drops. The file mark
+   *  splits its two strings the same way (path in the hint, sentence in the
+   *  label). */
+  label: string;
+}
+
+/**
+ * Whether this task has a run ahead of it, and the instant it is.
+ *
+ * `nextRunAt` is the source — the row's own `next_run` where the server named
+ * one, the window's earliest pending where it did not — so the mark, the chip
+ * and the Upcoming lane's order are all reading the same field.
+ */
+export function scheduledMark(task: Task, now: number = Date.now()): ScheduledMark | null {
+  const at = nextRunAt(task);
+  if (at === null || at * 1000 <= now) return null;
+  const stamp = messageStamp(at);
+  return {
+    at,
+    title: `Scheduled · next run ${stamp}`,
+    label: `Scheduled, next run ${stamp}`,
+  };
+}
+
 // ---- "and that one was stopped" ----------------------------------------------
 // A run the user STOPPED settles in Done, which is the right lane — the stop was
 // asked for, so it is an outcome and not a fault, and a red mark would ask the

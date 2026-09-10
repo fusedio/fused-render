@@ -61,10 +61,42 @@
   z-index: 10;
 }
 
-.sidebar-resize-handle:hover,
-.sidebar-resize-handle.resizing {
+/* WHAT LIGHTS UP IS THE HAIRLINE, NOT THE HIT BOX (Akshil, 2026-09-10: the
+   seams read "a bit thick"). The 6px above is a target for the pointer, and
+   painting the whole of it turned a 1px seam into a 6px accent wash the moment
+   the cursor crossed it — the divider appeared to grow six-fold on hover, which
+   is the thickness that was being complained about. So the handle draws a 1px
+   line of its own, parked exactly over #sidebar's border-right (the component
+   places the handle at `sidebarWidth - 3`, so that border is 2px in), and only
+   that line takes the accent. The hit area itself never paints.
+
+   Same treatment, same offsets in kind, on every other seam in the app
+   (.listing-divider, .preview-side-divider, .preview-side-reopen). */
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: transparent;
+  /* Inert to the pointer like the other three hairlines — the host is the drag
+     target and a pseudo would only ever dispatch to it anyway. */
+  pointer-events: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle.resizing::after {
   background: var(--accent);
-  opacity: 0.35;
+  /* A breath of glow, so a 1px line is still findable on a dark panel edge.
+     3px, not more: at 4px the lit band was ~9px wide — wider than the 6px wash
+     this replaces, which would have re-thickened the seam it set out to thin.
+     The glow eases with the colour (both in the transition above) so it does
+     not snap in ahead of the line. */
+  box-shadow: 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 /* While a drag is captured, keep the cursor stable and text unselected

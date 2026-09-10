@@ -696,6 +696,38 @@ button.tasks-caret,
    row, and a mark that brightens under the pointer promises a press the row's
    press does not make. The row's own hover is the only hover here. */
 
+/* THE SCHEDULE MARK AFTER THE TITLE (2026-09-10). A task with a run ahead of it
+   wears a clock, and the instant lives in the `title` — the same hover habit the
+   file mark and the folder chip already answer.
+
+   EVERY DECLARATION HERE IS THE FILE MARK'S, deliberately: the two are one pair
+   of captions on the title (what this task is about, and that it runs by
+   itself), and a second set of numbers for the second glyph is how a pair starts
+   drifting apart. So the same `z-index: 2` over `.tasks-rowlink`, the same
+   `flex: 0 0 auto` so the mark is not what gives way to a long title, the same
+   full-height hit zone paid for with matching negative margins, the same muted
+   register, and the same one-gap pull toward the group it belongs to.
+
+   It FOLLOWS the file mark rather than leading it: the file is what the task is
+   about and the schedule is how it is run, and a row that reads title, subject,
+   then habit is the order the sentence is already in. */
+.tasks-row-sched {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-left: calc(var(--tasks-row-gap) * -1);
+  color: var(--fg-muted);
+  opacity: 0.75;
+  align-self: stretch;
+  padding-block: var(--tasks-row-pad-y);
+  margin-block: calc(var(--tasks-row-pad-y) * -1);
+  padding-right: 4px;
+  padding-left: 4px;
+  margin-right: -4px;
+}
+
 /* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
    folder, so on the List the chip is a real <button> — and it has to look like
    one only when pointed at: a permanent box on every row would be a column of
