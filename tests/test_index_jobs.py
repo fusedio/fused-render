@@ -23,10 +23,12 @@ from fused_render.server.routers import index as index_router
 def _reset():
     jobs.reset()
     index_router._mirrored_terminal.clear()
+    index_router._seen_running.clear()
     index_router._index_job_wake.clear()
     yield
     jobs.reset()
     index_router._mirrored_terminal.clear()
+    index_router._seen_running.clear()
     index_router._index_job_wake.clear()
 
 
@@ -116,6 +118,38 @@ def test_run_going_cancelled_writes_terminal_state(monkeypatch):
     _tick(monkeypatch, [_run("r1", running=False, cancelled=True)])
     row = jobs.list_jobs()[0]
     assert row["state"] == "cancelled"
+
+
+def test_a_run_already_done_before_this_process_started_draws_no_row(monkeypatch):
+    """`list_runs` reads run directories off disk (KEEP_RUNS=20), so a run
+    that finished in an earlier process is still there on this process's
+    very first tick — nothing here ever watched it happen. Mirroring it now
+    would manufacture a notification for a run this session never saw run."""
+    _tick(monkeypatch, [_run("r1", running=False, summary={"files": 12})])
+    assert jobs.list_jobs() == []
+
+
+def test_a_run_already_errored_before_this_process_started_draws_no_row(monkeypatch):
+    """Same as the done case above, but for the specific shape that used to
+    resurrect as a permanent Notification: a worker that died mid-scan in an
+    earlier process, surfaced by `_with_liveness` as a synthetic 'no activity'
+    error on the very first tick that ever reads its run directory."""
+    _tick(monkeypatch, [_run(
+        "r1", running=False,
+        error="the scan worker died without finishing (no activity for 300s)")])
+    assert jobs.list_jobs() == []
+
+
+def test_a_run_seen_running_by_this_process_still_draws_its_terminal_row(monkeypatch):
+    """The carve-out above must not swallow a run that genuinely ran during
+    this process's own lifetime — only a run never witnessed as live here is
+    suppressed."""
+    _tick(monkeypatch, [_run("r1", running=True)])
+    _tick(monkeypatch, [_run(
+        "r1", running=False,
+        error="the scan worker died without finishing (no activity for 300s)")])
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
 
 
 def test_terminal_state_is_written_exactly_once(monkeypatch):

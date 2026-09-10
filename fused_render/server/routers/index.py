@@ -619,7 +619,36 @@ def _display_root(root: str) -> str:
 # minted once per `runner.start` (a timestamp plus a random suffix) and is
 # never reused, and a process restart — which empties this set — is also what
 # empties the job registry itself (jobs.py carries no state across restarts).
+#
+# Also the destination for a run this process is choosing NOT to mirror at
+# all (see `_seen_running` below) — either way, once a run_id lands here,
+# `_mirror_one_run_job` never looks at it again.
 _mirrored_terminal: set = set()
+
+# run_ids this process has itself observed `running`. `list_runs` reads run
+# directories off DISK (KEEP_RUNS=20), so on a fresh process's very first
+# tick it can just as easily hand back a run that finished — successfully,
+# or abandoned by a worker that died — in an EARLIER process as one this
+# process is actually doing right now. Nothing in this session watched that
+# earlier run happen, so mirroring its terminal state into a job the moment
+# it is first read back is manufacturing a notification for something
+# nobody here ever saw start: an abandoned pre-restart scan reports itself
+# via `_with_liveness` as a synthetic "died without finishing" error on
+# every such first read, forever (module-local `_mirrored_terminal` is empty
+# again after every restart), which is exactly how a quit-or-killed scan from
+# a previous session turns into a permanent "Indexing files" failure that
+# resurrects at every launch.
+#
+# The fix reads liveness itself as the signal, not a wall clock: a run only
+# gets mirrored into a job at all once THIS process has actually seen it
+# `running`. A run that is already terminal the very first time this process
+# reads it is skipped outright (added straight to `_mirrored_terminal`, no
+# `jobs.upsert` call, no row ever created) — its run may be perfectly real,
+# but it is not news to a session that never watched it. A run seen running
+# here — including one a previous process started that is still genuinely
+# scanning when this process boots — is mirrored normally and, once it goes
+# terminal, gets its terminal row exactly as before.
+_seen_running: set = set()
 
 
 # Phases in which `files + reused` has nothing to do with `prev_total` yet:
@@ -655,6 +684,14 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
     if job_id in _mirrored_terminal:
         return False
     running = bool(run.get("running"))
+    if running:
+        _seen_running.add(job_id)
+    elif job_id not in _seen_running:
+        # Never seen live in THIS process — see `_seen_running`'s own
+        # comment. Skip the mirror outright rather than upserting a
+        # notification for a run nobody here watched happen.
+        _mirrored_terminal.add(job_id)
+        return False
     if not running:
         prev_total = None
     phase = str(run.get("phase") or "")
