@@ -179,3 +179,101 @@ test("a chip with an output block gets a button on THAT pre too — T's 2 per ch
   }
   expect(byClass(json, "copybtn")).toHaveLength(2);
 });
+
+// ── the two Bugbot findings on the first cut of this fix ────────────────────
+
+test("a growing output copies the LATEST text, not the first snapshot", () => {
+  // Bugbot, PR #1074. The DOM-walking first attempt closed over the text once
+  // and skipped any `pre` that already had a button, so opening a RUNNING chip
+  // and copying after more output arrived pasted the old chunk. `copy` is a
+  // prop recomputed on every render, so there is no snapshot to go stale.
+  let wrote = "";
+  type Nav = { clipboard?: { writeText(t: string): Promise<void> } };
+  if (!globalThis.navigator) {
+    Object.defineProperty(globalThis, "navigator", { value: {}, configurable: true, writable: true });
+  }
+  const prev = (globalThis.navigator as Nav).clipboard;
+  (globalThis.navigator as Nav).clipboard = {
+    writeText: (t: string) => {
+      wrote = t;
+      return Promise.resolve();
+    },
+  };
+  try {
+    const key = "k" + Math.random();
+    const policy = createCardPolicy();
+    policy.overrides.set(key, true);
+    const seg = (output: string): ToolSegment =>
+      ({
+        kind: "tool",
+        id: key,
+        name: "Bash",
+        status: "running",
+        input: { command: "tail -f log" },
+        output,
+        images: [],
+      }) as ToolSegment;
+    const r = mount(
+      <CardPolicyProvider value={policy}>
+        <ToolChip seg={seg("line 1\n")} cardKey={key} />
+      </CardPolicyProvider>,
+    );
+    // The output grows under a body that is already open — the exact case.
+    act(() => {
+      r.update(
+        <CardPolicyProvider value={policy}>
+          <ToolChip seg={seg("line 1\nline 2\n")} cardKey={key} />
+        </CardPolicyProvider>,
+      );
+    });
+    const btns = byClass(r.toJSON(), "copybtn");
+    // The OUTPUT pre's button is the last one (command first, output second).
+    act(() => {
+      (btns[btns.length - 1]!.props as { onClick: () => void }).onClick();
+    });
+    expect(wrote).toBe("line 1\nline 2\n");
+  } finally {
+    (globalThis.navigator as Nav).clipboard = prev;
+  }
+});
+
+test("the reset timer is replaced, not stacked, and dies with the chip", () => {
+  // Bugbot, PR #1074. The first version returned a cleanup FROM THE CLICK
+  // HANDLER, and a DOM event handler's return value is thrown away — so a
+  // second press armed a second timer and an unmount left one running to set
+  // state on a component that is gone. A closed chip body IS an unmount here
+  // (A GAP-D10), so this is one click away in the product.
+  const live = new Set<unknown>();
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  (globalThis as { setTimeout: unknown }).setTimeout = ((fn: () => void, ms?: number) => {
+    const id = realSet(fn, ms);
+    live.add(id);
+    return id;
+  }) as typeof globalThis.setTimeout;
+  (globalThis as { clearTimeout: unknown }).clearTimeout = ((id: never) => {
+    live.delete(id);
+    realClear(id);
+  }) as typeof globalThis.clearTimeout;
+  try {
+    const r = open({ input: { command: "ls" } });
+    const press = () => {
+      const btn = byClass(r.toJSON(), "copybtn")[0]!;
+      act(() => {
+        (btn.props as { onClick: () => void }).onClick();
+      });
+    };
+    press();
+    expect(live.size).toBe(1);
+    // A second press REPLACES the first rather than stacking beside it.
+    press();
+    press();
+    expect(live.size).toBe(1);
+    // …and the unmount takes it with it.
+    act(() => r.unmount());
+    expect(live.size).toBe(0);
+  } finally {
+    (globalThis as { setTimeout: unknown }).setTimeout = realSet;
+    (globalThis as { clearTimeout: unknown }).clearTimeout = realClear;
+  }
+});

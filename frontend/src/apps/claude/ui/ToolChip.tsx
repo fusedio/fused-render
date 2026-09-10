@@ -9,7 +9,7 @@
 // EVERY string below goes in as a text node. The one exception is a plan
 // (D248), which is markdown the model wrote for a human and goes through
 // MarkdownView like the reply itself.
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/shadcn/ui/collapsible";
 import { cn } from "@platform/lib/utils";
@@ -82,14 +82,30 @@ function CopyPre({
   children?: React.ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
+  // ONE TIMER, REPLACED RATHER THAN STACKED, AND CANCELLED ON THE WAY OUT
+  // (Bugbot, PR #1074). The first version returned a cleanup from the click
+  // handler — and a DOM event handler's return value is thrown away, so
+  // nothing was ever cancelled: a second press inside the window armed a
+  // second timer, and closing the chip body (which UNMOUNTS the panel,
+  // A GAP-D10) left one armed to set state on a component that is gone. The
+  // walker this replaced held exactly one timer per button and cleared it on
+  // the next press; the ref is that, and the effect is the half a DOM button
+  // did not need.
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    [],
+  );
   const onCopy = useCallback(() => {
     void navigator.clipboard?.writeText(copy);
     setCopied(true);
-    // One timer, and the label goes back only if this chip is still mounted —
-    // a chip whose body was closed inside the window would otherwise set state
-    // on a gone component.
-    const t = setTimeout(() => setCopied(false), COPY_RESET_MS);
-    return () => clearTimeout(t);
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setCopied(false);
+    }, COPY_RESET_MS);
   }, [copy]);
   return (
     <pre {...(className ? { className } : {})}>
