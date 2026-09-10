@@ -556,3 +556,105 @@ directory again. Added a direct test for `site.com`, `app.v2`, and
 Toasts, `fused.trackJob` API/no new `Job` field, native OS notifications,
 whole-row clicks on repo rows, per-producer status-text changes,
 `sys:schedule:*` rows.
+
+## Three-tier model replaces `quiet`/schedule-prefix suppression (committed 2de2214c6, fdaa1cff1, b83e2c0ca, 0b67dc1e9)
+
+Two ad-hoc mechanisms — `Job.quiet: bool` and `_sweep`'s `sys:schedule:*`
+id-prefix carve-out — did the same job (keep a row out of Notifications
+without keeping it out of Jobs) for two different reasons, and neither
+generalized: a third row that wanted the same treatment needed a third
+special case. Both are replaced with one closed-set field, `Job.tier:
+"attention" | "trail" | "transient"`, default `"trail"`, server-only
+settable the same way `quiet` was gated in `upsert()`. `_sweep` and
+`jobs.ts`'s `jobRows` both read `effective_tier`/`effectiveTier` rather than
+the stored field directly — a terminal job in `error` or `cancelled` is
+always `attention` regardless of what its producer declared, because a
+producer that assumed success has nothing left to say once the run actually
+failed.
+
+- **Tier is sticky, producers are not.** `job_id_for(model)` is shared
+  across a resident model's load, its weights-only download and its unload —
+  the same id family that used to make `quiet` leak between them (Fix B/Fix
+  B above). `Job.tier` is exactly as sticky, so every producer restates its
+  own tier on every terminal report rather than relying on what an earlier
+  report on the same id left behind. Three regression tests
+  (`test_ai_runtime.py`) drive load→download→unload on one id and assert
+  each report's tier independently, closing the same leak shape Fix B
+  closed for `quiet`.
+
+- **Unload's classification flipped, not just its name.** The `quiet`-era
+  reasoning for `_remove` (unload) was "not quiet — a real state change
+  worth a row." Re-examined under the new question ("did the user ask for
+  this, and is there anything left to look at?"), freeing memory writes
+  nothing a click could open, so unload is `transient` now — the opposite of
+  what it was. This is a genuine behavior change: an unload's own success no
+  longer draws a Notification.
+
+- **A failed scheduled run becomes visible, which was not obviously the
+  spec's intent.** `sys:schedule:*` was previously "explicitly out of scope,
+  unchanged" (see the out-of-scope list below, now stale on this one point).
+  `schedule.py`'s `_report` now sets `tier=jobs.TRANSIENT` on every call —
+  nobody asked for a scheduled tick's own row, and a send that worked leaves
+  nothing behind to open. But `effective_tier`'s override still applies: a
+  scheduled run that ends in `error` or is `cancelled` reads as `attention`
+  and survives `_sweep`'s transient-ageing clock, the same as any other
+  terminal row. This reopens a case the brief's own out-of-scope list said
+  was closed. Read as a deliberate consequence of the override being
+  unconditional (item 1 states no per-producer exemption from it), not as a
+  fix regression — flagging it here rather than silently deciding it either
+  way.
+
+- **`_apple_wait_row` (`fused_render/server/ai.py`) is untouched, on
+  purpose.** It builds its own id (`supervisor.JOB_PREFIX + model`,
+  unsanitized) rather than going through `job_id_for(model)`, so it was never
+  actually in the shared-id leak Item 2 worries about, and it is not named
+  in Item 2's producer list. Left at the default `"trail"` tier rather than
+  guessed at — it is out of this increment's scope, not overlooked.
+
+- **Building the frontend shell locally.** A large batch of
+  `client`-fixture-dependent pytest tests failed at collection with
+  `RuntimeError: React shell not built (fused_render/static/shell-dist/
+  missing)`, unrelated to any tier change (confirmed by running one such
+  test against an unmodified tree first). Ran `bun install && bun run build`
+  in `frontend/` to produce the missing (gitignored) build artifact, which
+  unblocked the full scoped pytest run rather than leaving those tests
+  permanently erroring in this environment.
+
+### Item 3 — grouping reuses ActivityDock's existing section convention
+
+`RepoUpdatesDock.tsx`'s panel now draws two `.dl-section`s — "Needs you"
+(every waiting-task row, plus every terminal job whose `effectiveTier` is
+`attention`) and "Worth keeping" (pairings, repo rows, every other terminal
+job) — rather than inventing a new heading class. `.dl-section` and
+`.dl-section-head` already existed for ActivityDock's own Running/Background
+tasks split (status-bar merge), including the "heading draws only when 2+
+sections are present at once" rule; RepoUpdatesDock's two sections follow
+the identical rule rather than a bespoke one, so a panel holding only repo
+rows (the common case) still shows no header at all, unchanged from before
+this item.
+
+`TERMINAL_VISIBLE_CAP` now folds `terminalTrail` only — an attention-tier
+terminal job (a failed or cancelled run) never folds behind "N older
+notifications", however many ordinary finished jobs are piled up in the
+other section. The chip's `label` reads `"${attentionCount} needs you"` and
+takes the same `is-failure` tone the failure tint always used the moment
+either attention source (`visibleAttention` or `terminalAttention`) is
+non-empty; the numeral keeps counting every row from every source exactly
+as before, unaffected by which section a row lands in.
+
+One existing test's expectation flipped as a direct, correct consequence:
+a failed job used to draw after an ordinary repo row in the old flat list;
+now, because its `effectiveTier` is `attention`, it draws in the section
+that renders first. Updated in place
+(`RepoUpdatesDock.test.tsx`, "a failure comes before an ordinary repo row —
+Needs you precedes Worth keeping") rather than left broken or worked around.
+
+## Explicitly out of scope (per spec, unchanged) — UPDATE
+
+The line below, from the previous increment's log, is now stale on one
+point: a scheduled run's own tick is still never a row (`tier: transient`
+covers that), but a scheduled run that ends in `error`/`cancelled` now DOES
+draw a row, via `effective_tier`'s unconditional override — see this
+section's own entry above. Toasts, `fused.trackJob` API/no new `Job` field,
+native OS notifications, whole-row clicks on repo rows and per-producer
+status-text changes remain out of scope, unchanged.
