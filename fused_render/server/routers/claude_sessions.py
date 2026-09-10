@@ -478,6 +478,31 @@ def api_claude_session_summaries():
     return {"sessions": sessions}
 
 
+@router.get("/api/claude-sessions/history")
+def api_claude_session_history(file: str, session_id: str):
+    """The chat's transcript restore, IN PROCESS (owner E2E R1, F5).
+
+    The chat used to ask for its history through `/api/run`, which executes
+    `templates/claude/agent.py` in a fresh Python subprocess per call: a cold
+    interpreter plus the module's imports, several hundred milliseconds, before
+    `_history` itself — which reads and parses a 300 KB transcript in about
+    30 ms. On the path between "click a chat" and "see the conversation" the
+    spawn WAS the wait. Here the same function runs on the agent module the
+    tasks listing already keeps loaded (`tasks._agent_module`, cached once), on
+    a worker thread because it reads a file. Same shape, same bytes: the page's
+    `historyToTurns` cannot tell the two roads apart, and `/api/run` stays the
+    fallback when this answers anything but 200."""
+    from fused_render.server.routers import tasks as _tasks
+
+    agent = _tasks._agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503,
+                            detail="the claude agent module did not load")
+    if not file or not session_id:
+        raise HTTPException(status_code=400, detail="file and session_id are required")
+    return agent._history(file, session_id)
+
+
 @router.get("/api/claude-sessions/liveness")
 def api_claude_session_liveness(path: str):
     """`(mtime, size, running)` for ONE transcript file — the cheapest possible

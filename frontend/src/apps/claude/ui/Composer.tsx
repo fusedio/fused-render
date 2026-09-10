@@ -16,6 +16,7 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import "../styles/composer.css";
 import type { PermissionMode } from "../protocol/types";
 import type { RunStatus, SendOptions } from "../protocol/controller-api";
+import type { Attachment } from "../shots/types";
 import {
   applyLead2,
   fitFlags,
@@ -30,7 +31,7 @@ import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
 import { SchedButton } from "./SchedButton";
-import { takeDraft } from "./sched-draft";
+import { takeAttachments, takeDraft } from "./sched-draft";
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
@@ -290,6 +291,21 @@ export interface ComposerCardProps {
   /** Chips above the box: attachments (PR2), annotations (PR3). */
   chips?: ReactNode;
   /**
+   * THE TRAY ITSELF, for the scheduler handoff's other half. `chips` is what it
+   * LOOKS like and `hasAttachments` is whether there is one; Schedule needs the
+   * list, because what travels to the task form is a copy of every file in it
+   * (owner E2E R1, F4 (2026-09-10)). A function, read at Continue time, for the
+   * reason `draft` is one.
+   */
+  attachments?(): readonly Attachment[];
+  /**
+   * …and the way back: the paths the task form was opened on, handed to the tray
+   * on the mount that follows "Back to chat". These are task-shots-resident real
+   * paths, so this is `addPaths`' errand — no upload, thumbnails through
+   * /api/fs/raw.
+   */
+  onRestoreAttachments?(paths: string[]): void;
+  /**
    * ⌘V of a picture or a file (T:11719 `shotPasteHandler`). The handler decides
    * whether the paste was an attachment — a paste of WORDS must reach the box,
    * and stealing an ordinary paste in a composer the user types in all day would
@@ -343,6 +359,8 @@ export function ComposerCard({
   sendBusy,
   columnRef,
   chips,
+  attachments,
+  onRestoreAttachments,
   onPaste,
   camera,
   fitRevision,
@@ -352,6 +370,29 @@ export function ComposerCard({
   // The other half of the scheduler round trip, put back into an EMPTY box
   // only, and the stash is spent either way (T:12105-12118).
   const [text, setText] = useState(() => takeDraft(file));
+  /**
+   * THE TRAY'S HALF OF THE SAME ROUND TRIP (owner E2E R1, F4 (2026-09-10)).
+   *
+   * Not a `useState` initialiser like the draft's, because the answer does not
+   * belong to this component: the tray lives in `ClaudeChat`, and the only thing
+   * to do with these paths is hand them up. In an EFFECT and not the render body
+   * for `attachBack`'s reason — a render React throws away (StrictMode's double
+   * invoke, a concurrent attempt that loses) must not have spent the stash.
+   *
+   * ONCE, latched on a ref: `takeAttachments` spends the row, so the second run
+   * of a StrictMode double-mount reads nothing anyway — but the handler is a
+   * prop whose identity changes, and re-running on it would re-add the tray's
+   * chips on every re-render that reshuffled it.
+   */
+  const tookAttachments = useRef(false);
+  const restoreAttachments = useRef(onRestoreAttachments);
+  restoreAttachments.current = onRestoreAttachments;
+  useEffect(() => {
+    if (tookAttachments.current) return;
+    tookAttachments.current = true;
+    const back = takeAttachments(file);
+    if (back.length) restoreAttachments.current?.(back.map((a) => a.path));
+  }, [file]);
   const { ref: boxRef, grow } = useAutoGrow(text);
   const rowRef = useRef<HTMLDivElement | null>(null);
   // The host's ref MIRRORS ours rather than replacing it: `useAutoGrow` owns the
@@ -582,6 +623,7 @@ export function ComposerCard({
             file={file}
             sessionId={sessionId}
             draft={draft}
+            {...(attachments ? { attachments } : {})}
             back={back}
             // TWO GUARDS WITH DIFFERENT SCOPES, which is what T:12075/12099 read
             // off `schedBlocked() || annNavLocked()` for every `.schedbtn`:

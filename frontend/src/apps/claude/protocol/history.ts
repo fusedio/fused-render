@@ -34,6 +34,8 @@
 //   * `uuid` is the transcript record's own id — the value the Tasks list
 //     carries as a message `anchor`, which is what makes `?msg=` resolvable
 //     (T:18030). Optional: a payload without it simply cannot be anchored to.
+import { getJson } from "@platform/lib/api";
+import { runAgent } from "./agent";
 import type { Turn } from "./controller-api";
 import { troubleFromMessage } from "./trouble";
 import type { HistoryResponse, HistoryTurn, SessionRow } from "./types";
@@ -173,3 +175,31 @@ export function rowPane(s: Pick<SessionRow, "pane"> | null | undefined, file: st
 /** The tag name of the annotations block, re-exported so a caller explaining a
  *  title does not have to import from two files. */
 export { ANN_TAG };
+
+/**
+ * The transcript restore, in process (owner E2E R1, F5). `/api/run` executes
+ * agent.py in a fresh Python subprocess per call — several hundred ms of
+ * interpreter start-up in front of a 30 ms read — and that spawn was most of
+ * the wait between opening a chat and seeing it. `/api/claude-sessions/history`
+ * runs the same `_history` on the server's own loaded agent module. Anything
+ * but a 200 (an older server, a module that did not load) falls back to the
+ * `/api/run` road, byte-for-byte the same answer, so the page never loses the
+ * conversation to the optimisation.
+ */
+export async function fetchHistory(
+  agentDir: string,
+  file: string,
+  sessionId: string,
+): Promise<HistoryResponse & { error?: string }> {
+  try {
+    const q = new URLSearchParams({ file, session_id: sessionId });
+    return await getJson<HistoryResponse>(`/api/claude-sessions/history?${q}`);
+  } catch {
+    return (await runAgent(
+      agentDir,
+      "history",
+      { file, session_id: sessionId },
+      { key: null },
+    )) as HistoryResponse & { error?: string };
+  }
+}

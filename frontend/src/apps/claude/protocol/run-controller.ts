@@ -2170,12 +2170,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       ownRunEndedAt: 0,
     });
     try {
-      const res = (await run(
-        dir,
-        "history",
-        { file: FILE || "", session_id: sessionId },
-        { key: null },
-      )) as HistoryResponse & { error?: string };
+      const res = await fetchHistoryVia(sessionId);
       if (logGen !== gen || disposed) return;
       if (res.error) throw new Error(res.error);
       emit({
@@ -2750,6 +2745,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * Gated on the same two facts every follower read is: a live run owns the
    * transcript, and a send in flight is about to add to it.
    */
+  /** The transcript restore's transport: the host's in-process road when it
+   *  gave one (`deps.history`, owner E2E R1, F5), else agent.py through
+   *  `/api/run` — the tests' fake agent, and the pre-F5 behaviour. */
+  const fetchHistoryVia = (sessionId: string): Promise<HistoryResponse & { error?: string }> =>
+    deps.history
+      ? deps.history(FILE || "", sessionId)
+      : (run(
+          dir,
+          "history",
+          { file: FILE || "", session_id: sessionId },
+          { key: null },
+        ) as Promise<HistoryResponse & { error?: string }>);
+
   async function refreshHistory(sessionId: string): Promise<void> {
     if (disposed || !sessionId) return;
     if (activeRun || sending) return;
@@ -2763,12 +2771,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const endBefore = state.ownRunEndedAt;
     const tGen = state.transcriptGen;
     try {
-      const res = (await run(
-        dir,
-        "history",
-        { file: FILE || "", session_id: sessionId },
-        { key: null },
-      )) as HistoryResponse & { error?: string };
+      const res = await fetchHistoryVia(sessionId);
       if (logGen !== gen || disposed) return;
       // A run that attached across the await owns the log now; its stream is
       // fresher than this answer.

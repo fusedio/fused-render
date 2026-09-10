@@ -466,6 +466,15 @@ export interface ControllerDeps {
   /** ADDED: the transport, injectable so bun tests drive the loop with a fake
    *  agent.py. Defaults to `protocol/agent.ts`'s `runAgent`. */
   run?: typeof import("./agent").runAgent;
+  /** ADDED (owner E2E R1, F5): the transcript restore, as its own road. The
+   *  host passes `protocol/history.ts`'s `fetchHistory` — the in-process
+   *  `/api/claude-sessions/history` route, with `/api/run` behind it — so a
+   *  chat opens without waiting on a Python subprocess. Absent (tests), the
+   *  loop asks `run("history")` as before. */
+  history?: (
+    file: string,
+    sessionId: string,
+  ) => Promise<import("./types").HistoryResponse & { error?: string }>;
   /** ADDED: `sleep` for the 400 ms poll cadence and the follow-up wait —
    *  injectable so a test runs the loop without real time (T:16377). */
   sleep?: (ms: number) => Promise<void>;
