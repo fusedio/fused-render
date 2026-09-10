@@ -5048,6 +5048,25 @@ def test_a_failed_image_render_with_no_caller_page_points_at_its_output_folder(
     assert row["page"] == str(out.parent)
 
 
+def test_a_successful_image_render_with_no_caller_page_and_no_result_path_falls_back_to_the_output_folder(
+        fake_image_runner, monkeypatch, tmp_path):
+    """A finished render's own destination is the file `generate_image`
+    returned, but a runner that reports success without naming a `path` must
+    still land somewhere real — the folder the route already created for it,
+    exactly like the failure path already does."""
+    def no_path(model, request, job):
+        return {"steps": 1}
+
+    monkeypatch.setattr(supervisor, "generate_image", no_path)
+    out = tmp_path / "renders" / "one.png"
+    out.parent.mkdir(parents=True)
+    job = supervisor.image_job_id("f2")
+    supervisor.start_image("org/fake-image", {"prompt": "x", "out": str(out)}, job)
+    row = _row(job)
+    assert row["state"] == "done"
+    assert row["page"] == str(out.parent)
+
+
 def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
     response = client.post("/api/ai/image", json={"prompt": "a red square"},
                            headers={"X-Fused": "1"})

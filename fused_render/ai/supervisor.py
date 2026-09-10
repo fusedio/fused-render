@@ -1572,7 +1572,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
             return
         _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
                 detail=f"Saved {os.path.basename(result.get('path') or noun)}",
-                page=page or result.get("path") or "")
+                page=page or result.get("path") or out_dir or "")
 
     threading.Thread(target=run, name=thread_name, daemon=True).start()
 
