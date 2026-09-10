@@ -348,6 +348,18 @@ class UpdateManager:
         with self._lock:
             if self._state == "installing":
                 return self.status()
+            # A FETCH ALREADY IN FLIGHT OWNS THE ANSWER (bugbot, PR #1097).
+            # "checking" is set only here, right before a fetch, and every exit
+            # from that fetch resolves it, so the state IS the fact that one is
+            # out. A second fetch alongside it — the five-minute tick landing
+            # while a press on the sidebar row is still waiting — asked the same
+            # question of the same manifest, and whichever answer landed second
+            # found the state moved and was dropped: a version found by the
+            # later fetch was lost until the next tick, and a recovered success
+            # behind a failed press was lost the same way. Forced or not, the
+            # caller gets the status the in-flight fetch will finish.
+            if self._state == "checking":
+                return self.status()
             # A NON-FORCED CHECK ONLY EVER LOOKS FROM "IDLE" (bugbot, PR #1078):
             # an update already offered, installed or failed is an answer, and a
             # check-on-return or a press on the sidebar row has nothing to learn

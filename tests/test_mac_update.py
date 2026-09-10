@@ -568,6 +568,41 @@ def test_a_forced_recheck_keeps_the_update_on_the_wire_and_installable(monkeypat
     assert manager._latest["version"] == "9.9.9"
 
 
+def test_a_check_landing_mid_fetch_does_not_start_a_second_fetch(monkeypatch):
+    # bugbot, PR #1097: two fetches of one manifest, and the one that landed
+    # second found the state moved and dropped its answer. Now the fetch in
+    # flight owns the answer; a forced tick arriving meanwhile is a no-op.
+    import threading
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+    gate = threading.Event()
+    calls = []
+
+    def slow(url, **kw):
+        calls.append(url)
+        gate.wait(5)
+        return {"version": "9.9.9", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""}
+
+    monkeypatch.setattr(common, "fetch_manifest", slow)
+    results = {}
+    first = threading.Thread(target=lambda: results.__setitem__("first", manager.check()))
+    first.start()
+    for _ in range(100):
+        if calls:
+            break
+        time.sleep(0.01)
+    assert manager.status()["state"] == "checking"
+    # The tick, forced, while the press's fetch is out: no second fetch.
+    tick = manager.check(force=True)
+    assert tick["state"] == "checking"
+    assert len(calls) == 1
+    gate.set()
+    first.join(5)
+    assert results["first"]["state"] == "available"
+    assert results["first"]["latest_version"] == "9.9.9"
+    assert len(calls) == 1
+
+
 def test_only_an_idle_manager_says_checking(monkeypatch):
     manager = _manager(monkeypatch, available="9.9.9")
     seen = []
