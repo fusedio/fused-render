@@ -59,6 +59,68 @@ afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
 });
 
+/** A `.chat-root` stand-in with a settable width and a working
+ *  `ResizeObserver` registry — the suite has no DOM, and the observer is the
+ *  whole subject. */
+function fakeBox(width: number) {
+  const subs = new Set<() => void>();
+  let w = width;
+  const el = {
+    getBoundingClientRect: () => ({ width: w }),
+  } as unknown as HTMLElement;
+  const G = globalThis as Record<string, unknown>;
+  const real = G.ResizeObserver;
+  G.ResizeObserver = class {
+    constructor(private cb: () => void) {}
+    observe() {
+      subs.add(this.cb);
+    }
+    disconnect() {
+      subs.delete(this.cb);
+    }
+  };
+  installed.push(() => {
+    if (real === undefined) delete G.ResizeObserver;
+    else G.ResizeObserver = real;
+  });
+  return {
+    ref: { current: el },
+    resize(next: number) {
+      w = next;
+      for (const cb of [...subs]) cb();
+    },
+  };
+}
+const installed: Array<() => void> = [];
+afterEach(() => {
+  for (const undo of installed.splice(0)) undo();
+});
+
+function mountWithBox(
+  params: ReturnType<typeof fakeParams>["store"],
+  box: ReturnType<typeof fakeBox>,
+  media?: () => MediaQueryList,
+) {
+  let api!: ReturnType<typeof useNarrowView>;
+  function Probe() {
+    api = useNarrowView({
+      params: params as never,
+      noPane: false,
+      boxRef: box.ref,
+      // Passing `matchMedia` is what makes a test take the MEDIA road; the
+      // box road is the default whenever a ref and an observer are both there.
+      ...(media ? { matchMedia: (() => media()) as never } : {}),
+    });
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(createElement(Probe));
+  });
+  mounted.push(r);
+  return { get: () => api };
+}
+
 function mountHook(params: ReturnType<typeof fakeParams>["store"]) {
   let api!: ReturnType<typeof useNarrowView>;
   function Probe() {
@@ -127,4 +189,72 @@ test("the view toggle carries T's title as well as its destination label", () =>
   );
   // The single-string aria-label is deliberate (T:8884) and unchanged.
   expect(btn.props["aria-label"]).toBe("Comment on preview");
+});
+
+// ---- the breakpoint is about the CHAT'S BOX, not the window (FIX-12) ------
+
+test("a narrow chat box in a wide window IS narrow", () => {
+  // Legacy's `@media (max-width: 800px)` was evaluated inside the chat's own
+  // iframe, so it answered about the PANEL: a 380px side panel always matched.
+  // Native read `window.matchMedia` on the top-level window, so at a 380px
+  // panel in a 1280px window not one narrow rule fired — while
+  // `pane.css:250-252`'s own comment says the class approach was chosen
+  // *because* "the chat can be mounted in a PANE narrower than the window, and
+  // a media query would then answer about the wrong box".
+  const p = fakeParams();
+  const box = fakeBox(380);
+  const hook = mountWithBox(p.store, box);
+  expect(hook.get().narrow).toBe(true);
+  expect(hook.get().classNames).toContain("narrow");
+});
+
+test("a wide chat box is not narrow, and a resize of the BOX crosses", () => {
+  const p = fakeParams();
+  const box = fakeBox(1000);
+  const hook = mountWithBox(p.store, box);
+  expect(hook.get().narrow).toBe(false);
+
+  act(() => box.resize(500));
+  expect(hook.get().narrow).toBe(true);
+
+  // Crossing DOWN with no `paneview` set keeps the preview the reader was just
+  // looking at on screen — the same rule the media road has, and still with no
+  // param write, because a resize is not a navigation (Bugbot PR #447).
+  expect(hook.get().view).toBe("preview");
+  expect(p.calls).toHaveLength(0);
+
+  act(() => box.resize(1200));
+  expect(hook.get().narrow).toBe(false);
+});
+
+test("exactly 800 is narrow; 801 is not", () => {
+  const p = fakeParams();
+  const box = fakeBox(800);
+  expect(mountWithBox(p.store, box).get().narrow).toBe(true);
+  expect(mountWithBox(fakeParams().store, fakeBox(801)).get().narrow).toBe(false);
+});
+
+test("a box not laid out yet is not 'narrow' — zero is not a width", () => {
+  // A zero width during a mount would otherwise collapse the layout for a frame
+  // and then uncollapse it.
+  const box = fakeBox(0);
+  const hook = mountWithBox(fakeParams().store, box);
+  expect(hook.get().narrow).toBe(false);
+  act(() => box.resize(400));
+  expect(hook.get().narrow).toBe(true);
+});
+
+test("no ResizeObserver: it falls back to the window query", () => {
+  const G = globalThis as Record<string, unknown>;
+  const real = G.ResizeObserver;
+  delete G.ResizeObserver;
+  try {
+    // A WIDE box, so a live observer would say "not narrow" — the media stub
+    // says narrow, and that is what must win when there is no observer.
+    const hook = mountWithBox(fakeParams().store, fakeBox(1200), narrowMedia);
+    expect(hook.get().narrow).toBe(true);
+  } finally {
+    if (real === undefined) delete G.ResizeObserver;
+    else G.ResizeObserver = real;
+  }
 });

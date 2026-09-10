@@ -532,6 +532,12 @@ function ChatBody(props: ChatBodyProps) {
   const narrowView = useNarrowView({
     params,
     noPane: pane.noPane,
+    // MEASURE THIS CHAT'S BOX, not the window (FIX-12). Legacy's media query
+    // was evaluated inside the chat's own iframe, so it answered about the
+    // PANEL; a window-scoped query meant that at a 380px panel in a 1280px
+    // window not one narrow rule fired. `.chat-root` is the box the iframe's
+    // viewport used to be.
+    boxRef: rootRef,
     // T:8940 — arriving in the narrow CHAT view disarms: the toggle that would
     // undo the mode is hidden there, and an armed mode behind a hidden toggle
     // keeps the frame's click swallower live over a document nobody can see.
@@ -2175,7 +2181,24 @@ function ChatBody(props: ChatBodyProps) {
       onSend,
       onFollowUp,
       onStop,
-      autoFocus: props.autoFocus,
+      // ONLY INSIDE A CHAT (FIX-9). T focuses the box from `enterChat()`
+      // (T:13087-13094) — which runs on a send from the landing, on opening a
+      // recent row, on "new chat", and on a BOOT that arrives carrying a
+      // `session_id`/`run` (T:19267) — and from nowhere else. The landing page
+      // never takes the keyboard: `focusBox` has exactly three callers and not
+      // one of them is boot.
+      //
+      // Native focused on MOUNT, unconditionally, so the landing came up with
+      // `:focus-within` already true and its composer painted
+      // `--border-strong` where legacy paints `--border` — the whole of the
+      // measured "composer border colour" delta — and opening a file with the
+      // panel on moved the reader's keyboard into the chat.
+      //
+      // `&& inChat` gets both halves from one expression, because the flip to
+      // true is a re-render and the composer's focus effect is keyed on this
+      // prop: no focus on the landing, focus the moment a conversation is
+      // entered, which is `enterChat` exactly.
+      autoFocus: props.autoFocus && inChat,
       columnRef,
       back: currentUrl(),
       onNavigate,
@@ -2260,6 +2283,8 @@ function ChatBody(props: ChatBodyProps) {
       onFollowUp,
       onStop,
       props.autoFocus,
+      // The enter transition IS the focus trigger (see `autoFocus` above).
+      inChat,
       onNavigate,
       boxRef,
       stranded,

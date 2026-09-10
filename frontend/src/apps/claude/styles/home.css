@@ -13,15 +13,18 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* A SIZE CONTAINER so the column below can measure its 14% against THIS BOX
-     and not against the window. T's 14vh was read inside an iframe whose
-     viewport WAS the pane, so `vh` and "pane height" were the same number
-     there; native draws in the top-level document, where 14vh is 14% of the
-     whole window and the landing sat ~10-40px too low or too high depending on
-     the pane (Akshil, 2026-09-08, #4). `cqh` is the same measurement T made,
-     spelled for a pane that is not a viewport — a relative unit, not a
-     breakpoint. */
-  container-type: size;
+  /* THE SIZE CONTAINER USED TO BE HERE, and that was 6px wrong (FIX-2).
+     `.c-home` excludes the 43px `.c-anntools` strip above it, so `14cqh`
+     measured 787px where T's `14vh` measured the whole 830px panel viewport —
+     the landing sat 6px high, which is exactly 14% of the strip. It moved one
+     box up, onto `.chat-root .c-chat` (chat.css), whose height IS what the
+     iframe's `vh` was reading.
+
+     The measurement itself is unchanged and still not a breakpoint: T's 14vh
+     was read inside an iframe whose viewport WAS the pane, so `vh` and "pane
+     height" were one number there; native draws in the top-level document,
+     where `14vh` is 14% of the whole window and the landing sat 10-40px out
+     depending on the pane (Akshil, 2026-09-08, #4). */
 }
 /* The strip, sized to `#anntools` (T:163-172) so the two views' first rows are
    the same height and nothing shifts on entering a chat. */
@@ -100,17 +103,36 @@
 .c-lists {
   margin-top: 28px;
 }
-.c-listtabs {
+/* `.chat-root` IN THE CHAIN so this rule outranks the shadcn base classes
+   (FIX-7). `TabsList` carries `group-data-horizontal/tabs:h-8` — specificity
+   0,2,0, which beats the `h-auto` passed beside it — plus
+   `text-muted-foreground`, so the strip came out 32px tall (T's is 23.5px) in
+   `oklch(.708 0 0)` rather than the chat's own faint ink. Raising the selector
+   is the fix rather than adding more utilities: `home.css` is the ported
+   stylesheet and it should win, and the utilities can then be dropped from the
+   JSX instead of accumulating. */
+.chat-root .c-listtabs {
   display: flex;
   align-items: baseline;
+  justify-content: flex-start;
   gap: 16px;
   margin-bottom: 8px;
   padding: 0 4px;
+  /* Both stated, because the base classes set them: T:3306-3312 gives this row
+     no height of its own — it is as tall as its 11px baseline-aligned tabs —
+     and its ink is the page's `--faint`. */
+  height: auto;
+  color: var(--c-faint);
 }
 /* The same micro-type as every section heading, so switching lists never
    changes the shape of the screen; the only mark on the active one is ink plus
    a hairline (T:3318-3337). No count on any tab (Akshil, 2026-08-24). */
-.c-list-tab {
+/* Same reason as the strip above: four class-level shadcn declarations to
+   outrank, including `transition-all` — T:3320-3334 gives a tab NO transition
+   at all, and an all-property transition on a control whose only marks are ink
+   and a 1.5px hairline animates the hairline's own arrival. A colour-only
+   transition is the nearest honest thing (FIX-7). */
+.chat-root .c-list-tab {
   font: inherit;
   font-size: 11px;
   font-weight: 600;
@@ -124,15 +146,16 @@
   padding: 0 0 4px;
   cursor: pointer;
   white-space: nowrap;
+  transition: color 0.12s;
 }
-.c-list-tab:hover {
+.chat-root .c-list-tab:hover {
   color: var(--c-fg);
 }
-.c-list-tab[aria-selected="true"] {
+.chat-root .c-list-tab[aria-selected="true"] {
   color: var(--c-fg);
   border-bottom-color: var(--c-accent);
 }
-.c-list-tab:focus-visible {
+.chat-root .c-list-tab:focus-visible {
   outline: 2px solid var(--c-accent);
   outline-offset: 2px;
 }

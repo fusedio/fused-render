@@ -1174,14 +1174,23 @@ test("Enter mid-walkthrough sends the typed words and NOT the wordless marks", a
   expect(annotationsForTests()!.mode).toBe("recording");
 
   // The chip is there — it is a spot the reader clicked — but it is not a
-  // message yet, so nothing lights the Send button up on its own.
+  // MESSAGE yet: `isSendableNow` refuses a mark whose words are still coming.
   expect(annChips(r)).toHaveLength(1);
   expect(typeof annotationsForTests()!.annotations[0]!.t).toBe("number");
-  expect(sendBtn(r).props.disabled).toBe(true);
+  // The Send BUTTON is not the assertion any more: T never disables it for
+  // having nothing to send (T:2956-2981, FIX-10) and neither do we, so the
+  // guarantee is proven by what a send CARRIES — which is the rest of this
+  // test — rather than by the button's face. Pressing it with nothing but a
+  // pending mark still sends nothing at all.
+  expect(sendBtn(r).props.disabled).toBe(false);
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(10);
+  expect(started()).toHaveLength(0);
 
   // A line typed meanwhile is a normal thing to send, and it goes.
   await typeInBox(r, "while I am talking");
-  expect(sendBtn(r).props.disabled).toBe(false);
   await act(async () => {
     r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
   });

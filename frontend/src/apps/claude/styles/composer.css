@@ -66,6 +66,17 @@
   gap: 10px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--c-border);
+  /* 45px, STATED (FIX-4). Every declaration here is byte-identical to
+     T:1285-1293 and the row still came out 42px, because the height was never
+     one of them: legacy's tallest flex item is the TEXT `✻` (T:4065) at 15px ×
+     1.65 = 24.75px, and native renders the Claude mark as an SVG at `1em` — a
+     15×15 replaced box with no line box — so the tallest item became
+     `.c-tb-title` at 13px × 1.65 = 21.45. The whole transcript then sat 3px
+     high.
+     The mark swap itself is owner-accepted (P2-7), so the fix states the
+     intended ROW HEIGHT as one number rather than reaching for a fake strut —
+     and it survives the next change to the mark. */
+  min-height: 45px;
 }
 .c-topbar .c-spark {
   color: var(--c-accent);
@@ -92,6 +103,17 @@
   font-size: 11px;
   letter-spacing: 0.3px;
   font-variant-numeric: tabular-nums;
+  /* MONOSPACE (FIX-5). Legacy's `#session` carries `class="mono"` (T:4068) and
+     T:116 gives `code, pre, .mono` the mono stack; native renders `.c-session`
+     with no such class and declared no family, so TASK-nnn inherited the system
+     sans from `.chat-root`. Here rather than as a class in `Topbar.tsx`,
+     because a class in markup is a thing a future caller can forget — this is a
+     property of the seat.
+     The stack leads with `ui-monospace`/`SFMono-Regular` and keeps T's own
+     `Menlo` fallback; `styles/transcript.css`'s `.c-mono` and its siblings
+     currently spell it differently, which is worth reconciling in one pass
+     rather than one more site at a time. */
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, monospace;
 }
 /* "running" at the end of the chat's name — a shimmer through the WORD, not a
    spinner, and the same mark every "running" in this app wears (T:1342-1372).
@@ -256,8 +278,16 @@
 .c-composer:focus-within {
   border-color: var(--c-border-strong);
 }
+/* NO `display` (FIX-3), which is T:2710-2722's own shape: a textarea is
+   `inline-block` by default, so it sits on a LINE BOX whose strut (14px × the
+   root's 1.65 = 23.1px) leaves ~6px of descender space between the box and the
+   pill row under it. `display: block` removed the line box and with it that
+   space, so the whole composer card came out 6px shorter in both Home and the
+   chat — arithmetic: 24 + 29 + 32 = 85 native against legacy's 91.
+
+   `width: 100%` and `resize: none` do the work `block` looked like it was
+   doing; nothing else here depended on it. */
 .c-composer textarea {
-  display: block;
   width: 100%;
   background: transparent;
   border: 0;

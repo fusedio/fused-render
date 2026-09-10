@@ -170,6 +170,32 @@
   min-width: 0;
   min-height: 0;
   position: relative;
+  /* AND THE BACKGROUND, which legacy's `#chat` paints (T:1254-1284) and this
+     did not (FIX-12b). Native sits in the shell rather than in an iframe body,
+     so a transparent panel shows the shell's own ground through: in LIGHT mode
+     legacy reads `#fafafa` and native read white — a flatter, brighter column.
+     In dark mode the two grounds happen to agree, which is why it never showed
+     in the dark screenshots. Decided together with the strip's own band
+     (`.c-anntools`, below) so the two cannot disagree.
+
+     `--c-panel`, which is what T:1263 says (`background: var(--panel)`) and NOT
+     `--bg`: in light theme those are `#fafafa` and `#ffffff`, and `#fafafa` is
+     the number measured on :1777. In dark they are `#1e2025` and `#191a1e`, so
+     the choice shows there too — the column is one step lighter than the ground,
+     which is what makes the pane read as a pane. */
+  background: var(--c-panel);
+  /* T:1254-1284's `#chat` is `overflow: hidden`; this computed `visible`, which
+     lets a tall child paint outside the column instead of being clipped by it.
+     The narrow preview view lifts it back to `visible` on purpose — see that
+     rule's own note. */
+  overflow: hidden;
+  /* THE SIZE CONTAINER FOR THE LANDING'S `14cqh` (FIX-2). This box is what the
+     legacy iframe's viewport was: the panel, strip included. `home.css` had it
+     on `.c-home`, which starts BELOW the 43px strip, so the landing sat 6px
+     high — 14% of the strip. `inline-size` would not do: the query is on
+     HEIGHT. */
+  container-type: size;
+  container-name: chatcol;
 }
 
 /* THE SHARED CONTROL STRIP — T's `#anntools`. A row ABOVE both views, never
@@ -180,16 +206,25 @@
 .chat-root .c-anntools {
   display: flex;
   align-items: center;
-  /* T:3934's own gap between the strip's members. `.c-anncta` keeps its tighter
-     6px between the three seats. */
-  gap: 8px;
+  /* 12px, which is T:169's BASE value for `#anntools` (FIX-6). This said 8px
+     under a comment citing T:3934 — and T:3934 is the NARROW-MEDIA override,
+     not the base rule, so the strip's members sat 4px tight at every width and
+     the CTA group started 8px right of where legacy puts it. `.c-anncta` keeps
+     its own tighter gap between the three seats (T:188, below). */
+  gap: 12px;
   flex-shrink: 0;
   /* T's box for this row: 26px seats in 8px/16px padding (inventory 02 §D). It
      was 6px/10px while this was a strip of its own above the header; it IS the
      header now, so it takes the padding the top bar under it has. */
   padding: 8px 16px;
   border-bottom: 1px solid var(--c-border);
-  background: var(--c-panel);
+  /* `--c-bg`, not `--c-panel` (FIX-11). T:163-172 sets NO background on
+     `#anntools`, so the strip shows `body`'s own `--bg` through — and
+     `--c-panel` is one step lighter (#1e2025 against #191a1e), which drew a
+     faint but real band across the top of the chat that legacy never had. It
+     paints rather than staying transparent because native sits in the shell
+     instead of an iframe body, so there is no `body` of ours behind it. */
+  background: var(--c-bg);
   min-width: 0;
 }
 
@@ -385,7 +420,9 @@
 .chat-root .c-anncta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  /* 8px, T:188's own number for `#anncta` (FIX-6) — the three seats sat 2px
+     tight, which made the group 4px narrower than legacy's. */
+  gap: 8px;
 }
 .chat-root .c-anncta button {
   border: 1px solid var(--c-border);

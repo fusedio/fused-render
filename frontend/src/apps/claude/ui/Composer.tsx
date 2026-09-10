@@ -394,7 +394,6 @@ export function ComposerCard({
 
   // A tray still uploading holds the send back rather than sending half of it.
   const attaching = !!attachPending;
-  const canSend = !attaching && (text.trim().length > 0 || !!hasAttachments);
 
   const submit = useCallback((seed?: string): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
@@ -570,14 +569,29 @@ export function ComposerCard({
           type="submit"
           aria-label={running ? "Stop" : "Send"}
           title={running ? "Stop" : attaching ? "Attaching…" : "Send"}
-          // T NEVER DISABLES SEND (T:17193-17195, T:4187), and `blocked` here
-          // was the one thing that did. The send door already refuses a blocked
-          // composer at `submit`'s first guard, so the dim bought nothing and
-          // cost the load-bearing half: `disabled` also kills the STOP this
-          // button becomes mid-run, and a reader who cannot stop a turn has no
-          // way out of it. `canSend`/`sendBusy` stay — those are "there is
-          // nothing to send yet", which is a different sentence.
-          disabled={!running && (!canSend || !!sendBusy)}
+          // T NEVER DISABLES SEND. There is no `.send:disabled` rule in the
+          // whole of T (T:2956-2981) and nothing ever sets the attribute
+          // (markup T:4187, T:4246): an empty submit is swallowed in the
+          // handler, where `submit`'s own first guard already swallows it here.
+          // So the dim bought nothing, and it was never reviewed — it appears
+          // in none of PR1-R1..R4 or PR2-R1, while the nearest signal points
+          // the other way (P2-2: "never disabled unless a mode is active",
+          // resolved by HIDING rather than disabling).
+          //
+          // `blocked` and the HAS-CONTENT half are both gone. `blocked` also
+          // cost the load-bearing half — `disabled` kills the STOP this button
+          // becomes mid-run, and a reader who cannot stop a turn has no way out
+          // of it.
+          //
+          // The two TRANSIENT refusals stay, and neither is the same sentence
+          // as "there is nothing to send". Both are windows T never had, so
+          // there is no T rule for them to contradict:
+          //   * `attaching` — a chip is still uploading, and `take()` leaves it
+          //     in the tray, so a send now goes out WITHOUT the files that made
+          //     it sendable (Bugbot, PR #1064);
+          //   * `sendBusy` — a capture is in flight, which on a large pane runs
+          //     to seconds.
+          disabled={!running && (attaching || !!sendBusy)}
         >
           {running ? (
             <svg

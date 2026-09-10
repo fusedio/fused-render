@@ -191,13 +191,34 @@ test("the submit button is the ONLY way to stop: it is a stop square while live"
   expect(live.sent).toEqual([]);
 });
 
-test("send is disabled with nothing to send, enabled once there is", () => {
+test("send is NEVER disabled for having nothing to send (T:2956-2981)", () => {
+  // T has no `.send:disabled` rule at all and never sets the attribute: an
+  // empty submit is swallowed in the handler, which is what `submit`'s own
+  // first guard does here. The dim was an unreviewed divergence, and the
+  // nearest owner signal points the other way (PR2-R1's P2-2, "never disabled
+  // unless a mode is active", resolved by hiding rather than disabling).
   const c = mount();
   const send = () =>
     c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
-  expect(send().props.disabled).toBe(true);
+  expect(send().props.disabled).toBe(false);
   c.type("hi");
   expect(send().props.disabled).toBe(false);
+
+  // …and it still REFUSES: pressing it with an empty box sends nothing.
+  const empty = mount();
+  act(() => {
+    empty.root.findByType("form").props.onSubmit({ preventDefault() {} });
+  });
+  expect(empty.sent).toEqual([]);
+});
+
+test("but a capture in flight DOES hold the door (native's own window)", () => {
+  // `sendBusy` is not "nothing to send": it is the shutter window, which can
+  // run to seconds on a large pane, and T had no equivalent of it because it
+  // had no such window. A transient refusal with a cause.
+  const c = mount({ sendBusy: true, hasAttachments: true });
+  const send = c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
+  expect(send.props.disabled).toBe(true);
 });
 
 test("a blocked composer takes no input by any path (T:17871)", () => {
