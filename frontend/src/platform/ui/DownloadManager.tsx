@@ -128,7 +128,11 @@ import type { RunningEngine } from "@platform/lib/api";
 // to POLL_IDLE_MS later. It is only an optimisation: a reporter with no JS (a
 // Python worker) writes no ping, so the idle poll below is the floor that
 // guarantees the row shows up either way.
-function useJobs(): {
+// Exported purely so DownloadManager.test.tsx (the "loaded" suite) can
+// drive it directly, the way ActivityDock.tsx exports `retiredEngines` for
+// its own test — the default-exported `DownloadManager` below is otherwise
+// the only caller.
+export function useJobs(): {
   jobs: Job[];
   /** The SERVER's clock at the last successful read (`JobsSnapshot.now`) —
    *  what `jobDetail` measures a running job's age against (C4 fix), never
@@ -136,16 +140,19 @@ function useJobs(): {
    *  drawn before the first response lands still gets a plausible age
    *  rather than measuring against zero. */
   now: number;
-  /** Whether a real `/api/jobs` response has landed at least once. `jobs`
-   *  starts `[]` at mount, before any network round trip has happened —
-   *  that empty array is a placeholder, not an observation, and a consumer
-   *  that cannot tell the two apart (the pop-up's first-tick seeding, below
-   *  and in `ActivityDock.tsx`) mistakes it for "the poll's first real read
-   *  came back empty" and treats every job the ACTUAL first read finds
-   *  already terminal as brand new. Flips once, on the first response that
-   *  actually lands (success or a superseded-but-real one — see `poll`'s own
-   *  comment), and never flips back: a later fetch failure leaves the last
-   *  real snapshot on screen, which is still a real snapshot. */
+  /** Whether a real `/api/jobs` response has actually been PAINTED at least
+   *  once. `jobs` starts `[]` at mount, before any network round trip has
+   *  happened — that empty array is a placeholder, not an observation, and a
+   *  consumer that cannot tell the two apart (the pop-up's first-tick
+   *  seeding, below and in `ActivityDock.tsx`) mistakes it for "the poll's
+   *  first real read came back empty" and treats every job the ACTUAL first
+   *  read finds already terminal as brand new. Flips once, on the first
+   *  response that lands AND is applied to `jobs` — a stale response (`poll`'s
+   *  `at !== epochRef.current` branch) is real but is deliberately dropped
+   *  without touching `jobs`, so it must not flip this either, or `reported`
+   *  is still the placeholder the moment a consumer is told it is loaded.
+   *  Never flips back once true: a later fetch failure leaves the last real
+   *  snapshot on screen, which is still a real snapshot. */
   loaded: boolean;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
@@ -220,10 +227,13 @@ function useJobs(): {
         } else {
           // Stale. Dropped rather than painted; `queued` is set (the mutation
           // asked for a read while this one was in flight), so the fresh read
-          // is already on its way. Still a genuine response, though — it
-          // proves the placeholder `[]` this hook started with has already
-          // been superseded at least once, which is all `loaded` promises.
-          setLoaded(true);
+          // is already on its way. `loaded` does NOT flip here: this response
+          // never touched `jobs`, which is still whatever it was before (the
+          // `[]` placeholder, on the very first poll) — flipping `loaded` off
+          // a response that changed nothing is what used to let a consumer
+          // gated on it (`DownloadManagerView`'s `onJobsReported` effect)
+          // forward that untouched placeholder as though it were a genuine
+          // first read.
           scheduleFor(jobsRef.current);
         }
       } catch {
