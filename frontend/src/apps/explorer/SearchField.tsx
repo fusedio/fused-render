@@ -50,16 +50,28 @@ import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import { BookmarkStar } from "@apps/explorer/Breadcrumb";
 
 // The search button's own instant tooltip (platform/lib/hints.ts): the
-// grammar this box understands, one rule per line — a bare word searches
-// here and below, a `*` pattern stays confined to this folder, and a
-// leading `~/` or `/` starts the search somewhere else. `hints.ts` renders
-// `data-hint` text through `white-space: pre-wrap` (styles/base.css), so the
-// `\n`s below are what turns this into three lines rather than one run-on
-// sentence.
+// grammar this box understands, one rule per line.
+//
+// Each line leads with something TYPABLE rather than a description of a
+// category — "*.pdf" is a thing to copy, "a pattern" is a thing to decode —
+// and the four lines are the four answers `resolve_query`
+// (fused_render/index/query.py) actually gives, in the order a person meets
+// them.
+//
+// The depth rule is the one worth spelling out, because it reads backwards
+// to anyone who assumes a shell: a glob with no "/" anywhere in it gets an
+// implicit "**/" prefix server-side and matches at ANY depth, and it is the
+// LEADING slash that pins a pattern to this folder alone (`resolve_query`'s
+// own "/*.csv has to mean depth 1 under the box root").
+//
+// `hints.ts` splits a caption whose every line is `token — meaning` into an
+// aligned two-column grid, so the `\n`s and the em dashes below are both
+// load-bearing: they are the row and column separators.
 const SEARCH_GRAMMAR_HINT =
-  "text — names here and below\n" +
-  "*.zip — this folder only\n" +
-  "~/ or / — start somewhere else";
+  "report — names containing it, here and below\n" +
+  "*.pdf — a pattern, at any depth below\n" +
+  "/*.pdf — a pattern, in this folder only\n" +
+  "~/Work/*.md — start from another folder";
 
 export interface SearchFieldProps {
   /** This host currently owns the crumb bar's search row. */
@@ -785,6 +797,11 @@ export function SearchField({
             `requestSearchFocus` is the exact call Breadcrumb.tsx's own
             ⌘L/Ctrl+L listener makes (listing/search-focus.ts) — reused
             rather than a second path to the same open-and-focus behaviour.
+            The SEED differs, and that is the whole difference between the
+            two gestures: ⌘L is the location bar and opens holding the
+            current address, this button says "Search" and opens empty,
+            because a search box that opens holding the folder you are
+            already looking at has to be cleared before it can be used.
 
             `data-hint` carries the box's own grammar (SEARCH_GRAMMAR_HINT,
             above) rather than a native `title` — `hints.ts` is this app's
@@ -802,7 +819,7 @@ export function SearchField({
             // still appears at all, so it is load-bearing there, not just
             // a duplicate of visible text.
             aria-label={`Search this folder (${isMac ? "⌘L" : "Ctrl L"})`}
-            onClick={() => requestSearchFocus(contractHome(crumbsPath, home))}
+            onClick={() => requestSearchFocus("")}
           >
             {boxWide ? (
               <>

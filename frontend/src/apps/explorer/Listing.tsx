@@ -1516,9 +1516,11 @@ export default function Listing({
           // site every real row activates from) with the reserved sentinel
           // path rather than a parallel click handler — see
           // zero-match-offer.ts.
-          <tr>
+          <tr className="zero-match-offer-row">
             <td colSpan={cols} className="status-message">
-              No matches for given search term. Widen instead to:{" "}
+              <span className="zero-match-offer">
+                <span className="zero-match-offer-text">
+                  No matches for given search term. Widen instead to:{" "}
               <button
                 type="button"
                 className="fh-link-button"
@@ -1552,6 +1554,17 @@ export default function Listing({
               >
                 <strong>{broadenOffer.pattern}</strong>
               </button>
+                </span>
+                {/* The dropdown's own `↵` vocabulary
+                    (`.listing-completion-hint`), on the one row in the body
+                    that Enter acts on. Without it the offer states a pattern
+                    and leaves the reader to guess there is a way to run it —
+                    and the row carries no other affordance, since the
+                    highlight it wears is a colour, not a control. */}
+                <span className="listing-completion-hint" aria-hidden="true">
+                  ↵
+                </span>
+              </span>
             </td>
           </tr>
         ) : (

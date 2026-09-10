@@ -583,11 +583,13 @@ describe("the clear button exits the omnibox entirely (ITEM 2, 2026-09-10)", () 
 });
 
 describe("the search button (SPEC scope item 3, words-stay revision)", () => {
-  // Pressing it must do what ⌘L already does — SearchField.tsx's own
-  // subscribeSearchFocusRequest listener seeds the query and pins the field
-  // open. This drives the button's real onClick, through requestSearchFocus,
-  // rather than asserting on source text alone.
-  test("pressing it seeds the query and pins the field open, the same way ⌘L does", async () => {
+  // It pins the field open through the same `requestSearchFocus` path
+  // Breadcrumb.tsx's ⌘L listener uses, but seeds "" where ⌘L seeds the
+  // current address: this button says "Search", and a search box that opens
+  // holding the folder you are already looking at has to be cleared before
+  // it can be used. This drives the button's real onClick rather than
+  // asserting on source text alone.
+  test("pressing it opens the field EMPTY and pins it open", async () => {
     const renderer = mount("/home/iamsdas/notes.txt");
     await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
 
@@ -596,9 +598,8 @@ describe("the search button (SPEC scope item 3, words-stay revision)", () => {
 
     await flush(() => button.props.onClick());
 
-    // Seeded with the crumb bar's own current path (contracted under home),
-    // the same value Breadcrumb.tsx's own ⌘L listener would seed it with.
-    expect(input(renderer).props.value).toBe("~/notes.txt");
+    // Nothing in it — not the crumb bar's own path, which is what ⌘L seeds.
+    expect(input(renderer).props.value).toBe("");
     // The button itself only renders while unpinned — pressing it pins the
     // field open, so it should be gone from the tree now.
     expect(searchButtons(renderer).length).toBe(0);

@@ -2567,6 +2567,34 @@ table.listing-table td.status-message {
   white-space: normal;
 }
 
+/* The zero-match offer is the one status row that DOES something, and Enter
+   in the search box is aimed at it — so it wears the app's own "this row is
+   the active one" pairing (`--row-bg-active` + `--accent-soft`, the same two
+   the completion dropdown's `.highlight` uses) rather than sitting in the
+   plain status treatment beside "Searching…". Without it the offer reads as
+   another sentence about the failure, and the fact that a key is pointed at
+   it is invisible. */
+table.listing-table tr.zero-match-offer-row {
+  background: var(--row-bg-active);
+  color: var(--accent-soft);
+  cursor: pointer;
+}
+
+/* Sentence on the left, `↵` pinned right, the same shape the completion rows
+   use. A flex WRAPPER inside the cell rather than `display: flex` on the
+   `<td>` itself, which would take the cell out of the table's own column
+   sizing. `baseline` so the glyph sits on the text's line however many lines
+   the sentence wraps onto at a narrow pane. */
+.zero-match-offer {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.zero-match-offer-text {
+  flex: 1 1 auto;
+}
+
 table.listing-table tr.row {
   cursor: pointer;
   /* Rows are a selection widget, not prose — don't let a drag paint a text
