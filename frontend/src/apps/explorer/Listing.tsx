@@ -1733,16 +1733,13 @@ export default function Listing({
 
   let searchCount: string | null = null;
   let searchCountFull: string | undefined;
-  // DEFECT FIX (running-screen review, 2026-09-10): the count/caveat/latency
-  // used to be assembled into ONE string (`withCaveat`, then a `· <elapsed>`
-  // suffix) and rendered as one un-splittable text node — so the only way to
-  // give the query room back at a narrow width was to hide the WHOLE pin,
-  // count included, even though the count is the most useful part of it and
-  // the caveat/latency is the least. Split so SearchField.tsx can render the
-  // count and the detail as separate elements and degrade the detail first
-  // (see explorer.css's container-query rules on `.listing-search-count-*`).
-  // `searchCountFull` (the title/aria-label sentence) is unaffected — it is
-  // never truncated, only the VISIBLE chip is.
+  // The count and the caveat/latency are threaded to SearchField.tsx as two
+  // SEPARATE values, not one pre-joined string, so it can render them as two
+  // elements and degrade the detail first at a narrow width (see explorer.css's
+  // container-query rules on `.listing-search-count-*`) instead of hiding the
+  // whole pin — the count is the most useful part of it, so it should be the
+  // last thing to go. `searchCountFull` (the title/aria-label sentence) is
+  // unaffected — it is never truncated, only the VISIBLE chip is.
   let searchCountDetail: string | null = null;
   // The chip's reserved width covers a match count; the scan caveat makes it
   // longer, so the input reserves more while one is running.
@@ -1796,12 +1793,17 @@ export default function Listing({
     widePin = true;
   }
 
-  // Is anything pinned inside the search input right now? Mirrors the two
-  // chip conditions in the render below; drives the input's right padding, so
-  // an idle box gives its whole width to the placeholder.
+  // Is anything pinned inside the search input right now? Mirrors the chip
+  // conditions in the render below; drives the input's right padding, so an
+  // idle box gives its whole width to the placeholder. `searchCountDetail`
+  // is checked on its own, not just alongside `searchCount` (code review,
+  // 2026-09-10): a caveat with no settled count yet — "indexing…", "search
+  // failed" — still pins the chip, so the padding has to reserve room for
+  // it even though `searchCount` itself is still null.
   const hasPin =
     (searching && spinner) ||
-    searchCount !== null;
+    searchCount !== null ||
+    searchCountDetail !== null;
 
   // The status strip's inputs. A search hit carries no size (the comment on
   // its row explains why), so the byte sum is only ever taken over the plain

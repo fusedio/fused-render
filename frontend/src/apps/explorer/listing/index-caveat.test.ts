@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { indexCaveat, searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
+import { indexCaveat, searchCaveat } from "@apps/explorer/listing/index-caveat";
 import type { IndexStatus } from "@platform/lib/api";
 
 function status(over: Partial<IndexStatus> = {}): IndexStatus {
@@ -86,21 +86,6 @@ describe("indexCaveat", () => {
 
   it("a running scan still outranks a failed request", () => {
     expect(indexCaveat(status(), true, false, true)!.note).toBe("indexing…");
-  });
-});
-
-describe("withCaveat", () => {
-  it("keeps both facts in one chip", () => {
-    expect(withCaveat("62 matches", indexCaveat(status()))).toBe("62 matches · indexing…");
-  });
-
-  it("stands alone when there is no count yet", () => {
-    expect(withCaveat(null, indexCaveat(status()))).toBe("indexing…");
-  });
-
-  it("leaves the count untouched when nothing is scanning", () => {
-    expect(withCaveat("62 matches", null)).toBe("62 matches");
-    expect(withCaveat(null, null)).toBeNull();
   });
 });
 

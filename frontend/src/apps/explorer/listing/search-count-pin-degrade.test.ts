@@ -142,3 +142,37 @@ test("SearchField only renders the detail span when there is a detail to show", 
   const before = SEARCH_FIELD.slice(Math.max(0, at - 120), at);
   expect(before).toMatch(/searchCountDetail\s*!==\s*null\s*&&/);
 });
+
+// --- FINDING 1 (code review, 2026-09-10): a caveat with no count must still
+
+test("the chip renders on a caveat alone — searchCount !== null is not the only gate", () => {
+  const at = SEARCH_FIELD.indexOf('className="listing-search-count"');
+  expect(at).toBeGreaterThan(-1);
+  // The condition guarding the whole `<span className="listing-search-
+  // count">` element sits just above it — assert on the text immediately
+  // before the element, not on `searchCount !== null` in isolation, since
+  // that alone is exactly the bug: a search that hasn't settled a count yet
+  // ("indexing…", "building index… N files") or one whose only answer is
+  // an error ("search failed") sets `searchCountDetail` with `searchCount`
+  // still null, and dropping the whole chip in that case hid the one
+  // signal saying the rows on screen don't (yet, or no longer) answer the
+  // query.
+  const before = SEARCH_FIELD.slice(Math.max(0, at - 2000), at);
+  expect(before).toMatch(
+    /searchCount\s*!==\s*null\s*\|\|\s*searchCountDetail\s*!==\s*null/,
+  );
+});
+
+test("Listing.tsx's hasPin also reserves room for a caveat-only chip", () => {
+  const at = LISTING.indexOf("const hasPin");
+  expect(at).toBeGreaterThan(-1);
+  const block = LISTING.slice(at, at + 300);
+  expect(block).toMatch(/searchCountDetail\s*!==\s*null/);
+});
+
+// --- withCaveat is gone, not stranded — its only remaining reference was
+
+test("withCaveat is deleted, not left as dead code behind its own test", () => {
+  expect(LISTING).not.toMatch(/\bwithCaveat\b/);
+  expect(SEARCH_FIELD).not.toMatch(/\bwithCaveat\b/);
+});

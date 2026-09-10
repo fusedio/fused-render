@@ -86,14 +86,6 @@ export function indexCaveat(
   return null;
 }
 
-// The chip carries both facts when both exist — one element, because the chip
-// is absolutely pinned inside the input and a second one would compete with it
-// for the same pixels on a narrow pane.
-export function withCaveat(count: string | null, caveat: IndexCaveat | null): string | null {
-  if (!caveat) return count;
-  return count ? `${count} · ${caveat.note}` : caveat.note;
-}
-
 /**
  * The caveat for a box that asks the server per query.
  *

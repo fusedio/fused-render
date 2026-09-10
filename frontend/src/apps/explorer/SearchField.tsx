@@ -811,7 +811,7 @@ export function SearchField({
         {searching && spinner && (
           <span className="listing-search-spinner" aria-hidden="true" />
         )}
-        {searchCount !== null && (
+        {(searchCount !== null || searchCountDetail !== null) && (
           // The query text has priority over this pin (running-screen
           // defect, 2026-09-10): "31 matches · not refreshed" was clipping
           // a committed query down to a handful of visible characters
@@ -826,14 +826,28 @@ export function SearchField({
           // nothing is left on screen — see explorer.css's 360px rule,
           // which keeps this element a small hoverable target rather than
           // removing it.
+          //
+          // The gate is OR, not `searchCount !== null` alone (code review,
+          // 2026-09-10): a caveat can stand with no count at all — a search
+          // that has not resolved once yet ("indexing…", "building index…
+          // N files") or one whose only settled answer is an error
+          // ("search failed") never sets `searchCount`, and the caveat is
+          // the only thing telling the user their rows do not (yet, or no
+          // longer) answer the query on screen. Dropping the whole pin in
+          // that case hid the one signal that mattered.
           <span
             className="listing-search-count"
             title={searchCountFull}
             aria-label={searchCountFull}
           >
-            <span className="listing-search-count-base">{searchCount}</span>
+            {searchCount !== null && (
+              <span className="listing-search-count-base">{searchCount}</span>
+            )}
             {searchCountDetail !== null && (
-              <span className="listing-search-count-detail"> · {searchCountDetail}</span>
+              <span className="listing-search-count-detail">
+                {searchCount !== null ? " · " : ""}
+                {searchCountDetail}
+              </span>
             )}
           </span>
         )}
