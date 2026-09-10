@@ -131,6 +131,11 @@ import { useListingSelection } from "@apps/explorer/listing/useListingSelection"
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
 import { EmptyResultMessage } from "@apps/explorer/listing/empty-result";
+import { broadenGlobPattern } from "@apps/explorer/listing/glob-broaden";
+import {
+  ZERO_MATCH_OFFER_PATH,
+  isZeroMatchOfferPath,
+} from "@apps/explorer/listing/zero-match-offer";
 
 // (The folder-entry rule is the SERVER's — `app_listing.app_entry`, D301: the
 // first top-level page carrying `<meta name="fused-app">`. A filename tells
@@ -281,6 +286,7 @@ export default function Listing({
     mode,
     gateOpen,
     commitSearch,
+    rerunQuery,
   } = useListingSearch(fsPath, home, refresh);
 
   // Decision 5: is the typed query itself a filesystem address? Resolved
@@ -310,6 +316,34 @@ export default function Listing({
   // is not showing hits either, or arrow-key nav would walk an empty list
   // over a folder plainly still on screen.
   const showsSearchHits = showingSearchHits(searchState, awaitingCommit);
+
+  // A committed PATTERN (glob) search that has settled on genuinely zero
+  // hits (`reason === ""` — anything else is an index-gap message,
+  // EmptyResultMessage's own job, and broadening the pattern wouldn't fix an
+  // uncovered folder) offers to rerun itself with the recursively broadened
+  // form of its own text (glob-broaden.ts). `null` here means either there
+  // is nothing settled-and-empty to offer for, or `broadenGlobPattern`
+  // itself found nothing left to widen (not a glob, or already maximally
+  // broad) — both read identically to callers below: no offer.
+  //
+  // Computed off `q` (the deferred, already-settled value), not the live
+  // `query`: this state is reached only once `!awaitingCommit` and the
+  // request itself is no longer pending, which is exactly what "settled"
+  // means for `mode`/`displayHits` too — matching the same value those were
+  // computed against, not whatever the box has moved on to since.
+  const settledSearchEmpty =
+    showsSearchHits &&
+    searchState.status !== "error" &&
+    !displayHits.length &&
+    !scanPending &&
+    searchState.status !== "pending";
+  const broadenedPattern =
+    settledSearchEmpty && mode === "glob" && reason === ""
+      ? broadenGlobPattern(q)
+      : null;
+  const rerunBroadenedSearch = () => {
+    if (broadenedPattern !== null) rerunQuery(broadenedPattern);
+  };
 
   // **THESE TWO FLAGS ARE NOW THE WHOLE of whether there is a pane** —
   // `pane.on` is exactly `paneEnabled` since D282 deleted the width gate, so
@@ -607,6 +641,10 @@ export default function Listing({
     // `globalKeys` defaults to true (useListingSelection.ts): there is no
     // caller left that ever passed false — the one that used to (`embedded`,
     // the preview pane's own nested `_listing` mode) is gone with D460.
+    zeroMatchOffer:
+      broadenedPattern !== null
+        ? { path: ZERO_MATCH_OFFER_PATH, onActivate: rerunBroadenedSearch }
+        : null,
   });
 
   const {
@@ -1209,6 +1247,17 @@ export default function Listing({
   // (openOnRelease above). Both halves want the same two facts — same row, press
   // stayed still — so they share the one handler and the one slop test.
   const onRowPointerUp = (e: React.PointerEvent, path: string) => {
+    // The zero-match glob-broadening offer row (Listing.tsx's settled-empty
+    // body branch below) is not a real row: it has no `pressRef`/press-slop
+    // tracking, no `rowCtxByPath` entry, and must never call `selectOnly`
+    // (there is nothing to select — see useListingSelection.ts's own
+    // `zeroMatchOffer` prop for the Enter half of this same branch). It only
+    // wires `onPointerUp`, so this check has to come before the `pressRef`
+    // read below, which the offer row never populated in the first place.
+    if (isZeroMatchOfferPath(path)) {
+      rerunBroadenedSearch();
+      return;
+    }
     const press = pressRef.current;
     pressRef.current = null;
     if (!press || press.path !== path) return;
@@ -1447,17 +1496,51 @@ export default function Listing({
       // the render for each of those, sharing `indexGap`'s classification and
       // copy with the home page's own search box rather than inventing new
       // wording for the same states.
-      body = (
-        <tr>
-          <td colSpan={cols} className="status-message">
-            <EmptyResultMessage
-              reason={reason}
-              scanning={indexScan === null ? null : indexScan.scanning}
-              filesScanned={indexScan?.files ?? 0}
-            />
-          </td>
-        </tr>
-      );
+      body =
+        broadenedPattern !== null ? (
+          // The glob-broadening offer: reads as an offer, not a matched
+          // file, by reusing this same `status-message` row shape (already
+          // the treatment for every OTHER non-file row above — "Searching…",
+          // the capped-away count) rather than a `fh-row`. States the
+          // original pattern found nothing, then names the broadened one it
+          // would rerun, so Enter/click's effect is never a surprise. Wired
+          // through `onRowPointerUp` (the same call site every real row
+          // activates from) with the reserved sentinel path rather than a
+          // parallel click handler — see zero-match-offer.ts.
+          <tr>
+            <td colSpan={cols} className="status-message">
+              No matches for <strong>{q}</strong>.{" "}
+              <button
+                type="button"
+                className="fh-link-button"
+                onPointerUp={(e) => onRowPointerUp(e, ZERO_MATCH_OFFER_PATH)}
+                onPointerDown={(e) => {
+                  // Only `onPointerUp` is wired (see onRowPointerUp's own
+                  // sentinel branch, above) — but a bare click still fires
+                  // pointerdown first, and leaving it unhandled would let
+                  // the press fall through to whatever native default a
+                  // `<button>` inside this table carries. Nothing else here
+                  // reads pointerdown for this row (no pressRef entry is
+                  // ever created for the sentinel path), so this only needs
+                  // to stop that default, not track anything.
+                  e.preventDefault();
+                }}
+              >
+                Search <strong>{broadenedPattern}</strong> instead
+              </button>
+            </td>
+          </tr>
+        ) : (
+          <tr>
+            <td colSpan={cols} className="status-message">
+              <EmptyResultMessage
+                reason={reason}
+                scanning={indexScan === null ? null : indexScan.scanning}
+                filesScanned={indexScan?.files ?? 0}
+              />
+            </td>
+          </tr>
+        );
     }
   } else if (state.status === "loading") {
     body = skeletonRows(8);
