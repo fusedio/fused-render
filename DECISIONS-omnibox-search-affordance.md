@@ -1135,3 +1135,23 @@ value and none was added for this change.
 
 **Verification**: `bun test src/apps/explorer` (1145 pass, 0 fail) and
 `bunx tsc --noEmit` (clean).
+
+## The offer row wraps instead of clipping at a narrow pane (2026-09-10)
+
+`table.listing-table td` sets `white-space: nowrap` for every cell, right for
+a single filename but wrong for the offer's longer sentence: at a narrow
+explorer-pane width the row ellipsized instead of wrapping onto a second
+line, clipping the very offer meant to get the user out of a zero-hit dead
+end. Added `table.listing-table td.status-message { white-space: normal; }`
+in `explorer.css`, scoped to the status-message row shape shared by
+"Searching…", the capped-away count, and this offer — not to real listing
+rows, which keep the single-line ellipsis they need.
+
+**TDD**: `zero-match-offer-wrap.test.ts` reads the built CSS and asserts the
+`white-space: normal` rule exists on `table.listing-table td.status-message`
+— same rules-extraction technique as `search-mode-chip.test.ts`.
+
+**Verification**: visually confirmed at 500px and a genuinely narrow 300px
+pane width (`agent-browser`, screenshots in the session scratchpad) — the
+row wraps onto multiple lines rather than clipping. `bun test
+src/apps/explorer` (1146 pass, 0 fail) and `bunx tsc --noEmit` (clean).

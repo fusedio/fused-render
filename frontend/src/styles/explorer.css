@@ -2542,6 +2542,16 @@ table.listing-table td {
   text-overflow: ellipsis;
 }
 
+/* A status row (the zero-match offer's "No matches for X. Search Y instead",
+   "Searching…", the capped-away count) is a sentence, not a single-file
+   name — the nowrap+ellipsis above is right for a real row but wrong here:
+   at a narrow pane width it clips the offer's own text instead of letting
+   it wrap onto a second line, which is exactly the dead end the offer
+   exists to get the user out of. */
+table.listing-table td.status-message {
+  white-space: normal;
+}
+
 table.listing-table tr.row {
   cursor: pointer;
   /* Rows are a selection widget, not prose — don't let a drag paint a text
