@@ -69,7 +69,13 @@ export function AnnChips({ items, onEdit, onRemove }: AnnChipsProps) {
             type="button"
             className="c-chip-door"
             title={c.note.content + " — click to edit"}
-            aria-label={"Note " + c.label + " — click to edit"}
+            // THE NOTE'S WORDS ARE IN THE NAME (Bugbot, PR #1074): an
+            // `aria-label` REPLACES the accessible name, so the letter alone
+            // left a reader hearing "Note A — click to edit" for every chip in
+            // the row with no way to tell them apart. The attachment chip puts
+            // its identifying `alt` in the same string for the same reason; the
+            // badge letter is the label, not the content.
+            aria-label={"Note " + c.label + ": " + c.note.content + " — click to edit"}
             onClick={() => onEdit(c.note)}
           >
             <span className="c-pinlbl">{(c.point ? "⌖" : "") + c.label}</span>

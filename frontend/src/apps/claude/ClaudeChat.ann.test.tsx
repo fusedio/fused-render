@@ -625,6 +625,10 @@ test("a point note rides the attachment tray as a chip, and its ✕ takes it bac
     door[0]!.findAll((n) => typeof n.type === "string" && n.props.className === "c-txt"),
   ).toHaveLength(1);
   expect(door[0]!.props.title).toBe("make this bigger — click to edit");
+  // The note's WORDS are in the accessible name too, not just the letter — an
+  // `aria-label` replaces the name, and "Note A — click to edit" for every chip
+  // in the row tells a reader nothing apart (Bugbot, PR #1074).
+  expect(door[0]!.props["aria-label"]).toBe("Note A: make this bigger — click to edit");
   // Notes alone are sendable, with no words at all (T:17903) — which is what ✓
   // Done's whole gesture is.
   expect(r.root.findByType("form")).toBeTruthy();
