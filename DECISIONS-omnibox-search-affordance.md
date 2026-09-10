@@ -967,3 +967,112 @@ copy) to mirror the existing substring coverage.
 **Verification**: `bun test src/apps/explorer` (1125 pass) and `bunx tsc
 --noEmit` (clean). No Python file touched, so no Python test run — the cap
 never was a server-side concept, confirmed above.
+
+## Zero-hit PATTERN search offers to rerun broadened (2026-09-10)
+
+**The ask**: a committed PATTERN (glob) search that settles on zero matches
+gives up too early — `/home/iamsdas/*.js` finds nothing because the pattern
+only reaches direct children, even when `/home/iamsdas/**/*.js` (searching
+every depth) would find plenty. The results body's first row should become
+an offer to rerun with that broadened form, activated the same two ways
+every real row is — Enter and click.
+
+**Row activation has exactly two call sites** (`Listing.tsx`'s
+`onRowPointerUp`, `useListingSelection.ts`'s Enter-key handler), and both are
+keyed on `navRows`/`rowCtxByPath` — real filesystem paths only. Two ways to
+make an offer land on Enter/click were on the table: teach the router a
+non-filesystem "action" case it can navigate to, or give both call sites a
+small branch that recognizes this one offer and short-circuits before
+`navigate()`. Teaching the router was rejected — `navigate(path, {isDir})`
+is a contract every OTHER consumer (bookmarks, address bar, the crumb strip,
+drag/drop) already relies on meaning "this is a real filesystem entry"; bending
+it to also accept a synthetic action either weakens that contract for
+everyone or requires a parallel special case inside `navigate` itself, which
+is strictly more surface than a branch at the two places that already choose
+between "do something" and "do nothing" today (the empty-`navRows` guard in
+useListingSelection.ts's Enter case; the `rowCtxByPath.get(path)` lookup in
+`onRowPointerUp`). The branch approach also means the offer never has to
+pretend to be `RowCtx`-shaped.
+
+**The sentinel** (`listing/zero-match-offer.ts`): a NUL-byte-prefixed string,
+`ZERO_MATCH_OFFER_PATH`, with a single predicate, `isZeroMatchOfferPath`,
+that both call sites import — never a literal string compared in two
+places. It cannot collide with any real row: a NUL byte is illegal inside a
+path on POSIX (rejected by the kernel) and on Windows (rejected by every
+Win32 file API), so no path this app can ever list, type, or sync from a
+filesystem can equal it.
+
+**Kept out of `navRows`/`rowCtxByPath`**: those two are the one flat list
+every OTHER `navRows` consumer already assumes is nothing but real,
+selectable rows — Select All, the marquee sweep, range-select, `useFlip`,
+the reconcile-on-vanish effect, the footer's selection count. Folding the
+sentinel into that array would have required auditing and adjusting every
+one of those for a single row that isn't selectable, isn't draggable, and
+must never count toward "N selected." Instead `useListingSelection` takes a
+new, optional `zeroMatchOffer: { path, onActivate } | null` prop, read only
+inside the Enter handler's pre-existing `if (!rows.length) return;` guard —
+the one branch that already knows `navRows` is empty. Passing `null` (the
+default) makes every existing caller's behavior byte-for-byte the same as
+before this change. `Listing.tsx`'s `onRowPointerUp` checks the sentinel at
+the very top of the function, before the `pressRef` read — the offer row
+never registers an `onPointerDown`/press-tracking entry in the first place,
+so it can't accidentally call `selectOnly()` and manufacture a phantom
+one-item selection on a plain click.
+
+**Deriving the broadened pattern from the query itself**
+(`listing/glob-broaden.ts`, `broadenGlobPattern`): not a special case for the
+one example in the ask. Mirrors `resolve_query`'s own glob detection
+(`"*" in raw`) and its own free broadening (a slash-free glob already gets an
+implicit `**/` prefix server-side, so there is nothing left to widen for
+`*.js`). For a query that does carry a slash, `**/` is inserted immediately
+before the query's own LAST segment, leaving the base and every earlier
+segment exactly as written. Returns `null` — no offer — when the query isn't
+a glob at all (a substring query is untouched), or is already maximally
+broad (no slash, or the segment before the last is already `**`, meaning
+offering to widen it again would rerun the identical search).
+
+**Rerunning without a stale-closure race** (`useListingSearch.ts`,
+`rerunQuery`): the offer's `onActivate` needs to both rewrite the box AND
+commit the search in the one call — `setQuery` alone would leave the
+broadened text sitting behind whatever commit gate the ORIGINAL query left
+open or closed. `rerunQuery` sets `committedGate.current` directly rather
+than calling `commitSearch()` after `setQuery()`, because `commitSearch`
+reads the `query` state variable, which would still hold the pre-update text
+until React's next render lands — a value committed against stale text
+would never match once the real update arrives.
+
+**The row's own treatment**: reuses the existing `status-message`
+`<tr><td colSpan={cols}>` shape already used for every other non-file row in
+this body (`Searching…`, the capped-away count) rather than a `fh-row`, and
+the `fh-link-button` class already used for the one other piece of
+interactive, non-file-navigating text in a results row
+(`empty-result.tsx`'s "enable it in Preferences" link) for the "Search …
+instead" control — no new visual treatment invented. States the original
+query found nothing AND names the broadened pattern in the same row, so
+Enter/click's effect is never a surprise.
+
+**TDD**: `glob-broaden.test.ts` (7 cases: shallow slash-bearing pattern,
+relative two-segment pattern, depth-1 leading-slash anchor, already-`**/`-
+broadened → null, bare slash-free glob → null for two shapes, non-glob query
+→ null, empty query → null) and `zero-match-offer.test.ts` (3 cases: sentinel
+contains a NUL byte, predicate recognizes only the sentinel, predicate
+rejects real paths — including ones that echo the sentinel's own words, the
+empty string, and `"/"`) were written and watched fail against
+`Cannot find module` before either implementation file existed. Added two
+cases to `useListingSelection.render.test.ts`'s Enter suite: the offer's
+`onActivate` runs (and nothing navigates) when `zeroMatchOffer` is set and
+`navRows` is empty; plain empty rows with no offer still do nothing, exactly
+as before.
+
+**Verification**: `bun test src/apps/explorer` (1137 pass, 0 fail) and
+`bunx tsc --noEmit` (clean). Grepped `tests/` (the Python suite) for
+`Listing.tsx`, `useListingSelection`, `useListingSearch`, `onRowPointerUp`,
+`EmptyResultMessage` — the only hits are `test_claude_ask_lifecycle.py`/
+`test_claude_fix_with_ai_ask.py` asserting on the unrelated
+`window._fusedClaudeAsk` wiring, untouched here. Confirmed live via
+`agent-browser` against the already-running dev server: typing
+`/home/iamsdas/*.js` under `/explorer/view/home/iamsdas` (a folder with no
+direct `.js` children but several levels down) renders "No matches
+for /home/iamsdas/*.js. Search /home/iamsdas/**/*.js instead" as the sole
+body row; both clicking the button and pressing Enter with nothing selected
+rewrite the box to the broadened pattern and populate real hits.
