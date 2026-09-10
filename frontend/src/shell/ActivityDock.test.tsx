@@ -150,11 +150,21 @@ function okResponse(data: unknown): Response {
 /** Captures every `window.setTimeout` call instead of letting it run for
  *  real, so a poll cycle advances on command (`fireAll`) rather than a real
  *  wall-clock wait — the render-level twin of `hook-harness.ts`'s `Clock`,
- *  scoped to just the one member `useJobs`/`useRunningEngines` actually call. */
-function captureTimers(): { fireAll: () => void } {
+ *  scoped to just the one member `useJobs`/`useRunningEngines` actually call.
+ *
+ *  Bun runs every test file in one process, so overwriting `window.setTimeout`
+ *  here without ever putting the real one back left it stubbed for every
+ *  suite that ran after this one in the same invocation — their timers went
+ *  into `pending` too, with nothing left around to drain it, and simply never
+ *  fired. `restore()` puts the pre-capture functions back; every caller below
+ *  calls it in a `finally`, the same way `globalThis.fetch` is restored just
+ *  above. */
+function captureTimers(): { fireAll: () => void; restore: () => void } {
   const pending = new Map<number, () => void>();
   let nextId = 1;
   const win = (globalThis as Record<string, unknown>).window as Record<string, unknown>;
+  const realSetTimeout = win.setTimeout;
+  const realClearTimeout = win.clearTimeout;
   win.setTimeout = ((fn: () => void) => {
     const id = nextId++;
     pending.set(id, fn);
@@ -166,6 +176,10 @@ function captureTimers(): { fireAll: () => void } {
       const due = [...pending.values()];
       pending.clear();
       for (const fn of due) fn();
+    },
+    restore: () => {
+      win.setTimeout = realSetTimeout;
+      win.clearTimeout = realClearTimeout;
     },
   };
 }
@@ -210,6 +224,7 @@ test("a page load's already-terminal jobs seed silently — onJobPopup never fir
     expect(popped).toEqual([]);
   } finally {
     globalThis.fetch = realFetch;
+    timers.restore();
   }
 });
 
@@ -245,5 +260,6 @@ test("a job crossing into terminal AFTER the first real read still pops", async 
     expect(popped.map((j) => j.id)).toEqual(["a"]);
   } finally {
     globalThis.fetch = realFetch;
+    timers.restore();
   }
 });
