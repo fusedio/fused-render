@@ -138,3 +138,139 @@ test("the kebab owns the row's auto margin, and gives it back to the CTA group",
   // FIX-6B measured on the strip it was taken out of.
   expect(one(COMPOSER, ".c-hdr-slack")).not.toContain("margin-left");
 });
+
+// ── visual pass 3, the stylesheet half (FIX-19 … FIX-27) ───────────────────
+
+const TRANSCRIPT = strip(readFileSync(new URL("./transcript.css", import.meta.url), "utf8"));
+
+test("FIX-19 — one global rule gives every code and pre T's SF Mono stack", () => {
+  // T:116, `code, pre, .mono { font-family: "SF Mono", Menlo, Monaco,
+  // "Cascadia Mono", monospace }`, declared once beside the prose stack. This
+  // port never had it and no `pre`/`code` rule in transcript.css sets a family,
+  // so the UA's generic `monospace` won on every inline path, command echo,
+  // card payload and fenced block: three inline `code` and nine `pre` measured.
+  const stack = '"SF Mono", Menlo, Monaco, "Cascadia Mono", monospace';
+  for (const sel of [".chat-root code", ".chat-root pre", ".chat-root .mono"]) {
+    expect(one(CHAT, sel), sel).toContain("font-family: " + stack);
+  }
+  // …and it reaches the PORTALED surfaces too, whose what-was-sent body is
+  // itself one big `pre` (the FIX-17 scope pair).
+  for (const sel of [".c-tokens code", ".c-tokens pre", ".c-tokens .mono"]) {
+    expect(one(CHAT, sel), sel).toContain("font-family: " + stack);
+  }
+});
+
+test("FIX-20 — the scroller's gutter is reserved, so the lock cannot reflow the column", () => {
+  // `.is-locked` swaps `overflow-y: hidden` in while a tall card is pinned,
+  // which DROPS the 8px scrollbar gutter: the log's content box went 372 → 380
+  // and every block widened with it (cards 332 → 340, option rows 302 → 310, a
+  // right-aligned receipt x 205.8 → 213.8). Legacy's `#logwrap` is
+  // `overflow-y: auto` in every state and never moves. `scrollbar-gutter:
+  // stable` reserves the space either way — a hidden scroll container is still
+  // a scroll container — so R3-4's single-scroller lock stays and costs nothing.
+  expect(one(TRANSCRIPT, ".chat-root .chat-logwrap")).toContain("scrollbar-gutter: stable");
+  // The lock itself is deliberately still there (owner R3-4: "remove the 70%
+  // cap — it causes double scroll").
+  expect(one(TRANSCRIPT, ".chat-root .chat-logwrap.is-locked")).toContain("overflow-y: hidden");
+  // And T's tail room is T's: `#log` is `padding: 24px 20px 12px` in every
+  // state, so the pinned variant may not quietly take 4px of it back.
+  expect(one(TRANSCRIPT, ".chat-root .chat-log:has(.chat-tailpin.is-pinned)")).toContain(
+    "padding-bottom: 12px",
+  );
+});
+
+test("FIX-21 — the sticky pin's ground is the column's, and the fade shares its stop", () => {
+  // At `--c-bg` this painted rgb(25,26,30) over a rgb(30,32,37) column in dark
+  // and a pure-white band across an off-white column in light — the most
+  // visible single defect of the pass. The column is `--c-panel` (T:1254-1284's
+  // `#chat`, and `.c-chat` since FIX-12b).
+  // Two rules carry this selector (the layout, and the reduced-motion opt-out).
+  const pin = rules(TRANSCRIPT, ".chat-root .chat-tailpin.is-pinned").join(" ");
+  expect(pin).toContain("background: var(--c-panel)");
+  expect(pin).not.toContain("background: var(--c-bg)");
+  // The `::before` fade's far stop moves with it, or the gradient dissolves
+  // into a colour the column never paints.
+  const fade = one(TRANSCRIPT, ".chat-root .chat-tailpin.is-pinned::before");
+  expect(fade).toContain("var(--c-panel)");
+  expect(fade).not.toContain("var(--c-bg)");
+});
+
+test("FIX-22 — the card wears T's surface and T's shadow, with no extra ring", () => {
+  // T:2033-2046: `background: var(--surface)` — measured rgb(38,40,47) dark and
+  // rgb(244,244,246) light — and `box-shadow: 0 4px 16px var(--shadow)`, one
+  // layer. Native had the card at #2e313a/#f1f2f5 plus a `0 0 0 1px` outer ring
+  // T draws in neither theme. The token is repointed rather than the rule, so
+  // the two `inset 0 0 0 3px var(--c-card-bg)` rings that fake a notch out of
+  // the card follow it.
+  expect(CHAT).toContain("--c-card-bg: #26282f");
+  expect(CHAT).toContain("--c-card-bg: #f4f4f6");
+  const perm = one(TRANSCRIPT, ".chat-root .perm");
+  expect(perm).toContain("background: var(--c-card-bg)");
+  expect(perm).toContain("box-shadow: 0 4px 16px var(--c-shadow)");
+  expect(perm).not.toContain("0 0 0 1px");
+});
+
+test("FIX-23 — the copy pill takes its height from the column, as T's does", () => {
+  // T:3149-3163 sets padding, font and colours and NO `line-height`, so the
+  // pill inherits the reading line-height and measures 25px. The 1.2 that was
+  // here made it 21px — same x, same 46.5 width, and this one line was the
+  // whole difference.
+  const btn = one(TRANSCRIPT, ".chat-root .copybtn");
+  expect(btn).not.toContain("line-height");
+  expect(btn).toContain("padding: 3px 9px");
+  expect(btn).toContain("font-size: 11px");
+});
+
+test("FIX-24 — a plan card's fenced code wraps; only a reply's clips", () => {
+  // `.chat-root .perm .plan-body pre` used to ride `.chat-root .assistant pre`,
+  // and at 0,3,1 it beat `.chat-root .perm pre` (0,2,1): the plan card got
+  // `white-space: pre` at 13px and clipped — scrollWidth 380/990/529 in a 288px
+  // box. T has no such selector at all, so T:2092's `.perm pre` governs there.
+  expect(rules(TRANSCRIPT, ".chat-root .perm .plan-body pre")).toHaveLength(0);
+  const reply = one(TRANSCRIPT, ".chat-root .assistant pre");
+  expect(reply).toContain("white-space: pre");
+  const card = rules(TRANSCRIPT, ".chat-root .perm pre").join(" ");
+  expect(card).toContain("white-space: pre-wrap");
+  expect(card).toContain("font-size: 12px");
+});
+
+test("FIX-25 — the actual-size viewer has a real scroller on both axes", () => {
+  const COMPOSER_CSS = COMPOSER;
+  // Legacy's `#shotview-box.zoom` IS the scroller. Here the box stayed
+  // `overflow: visible` and so did every ancestor, so a natural-size capture's
+  // bottom edge computed 130px past the dialog's and was simply clipped:
+  // `scrollHeight === clientHeight` on the box and no scroll position anywhere.
+  const box = one(COMPOSER_CSS, ".c-shotview-box[data-zoom]");
+  expect(box).toContain("overflow: auto");
+  expect(box).toContain("max-height:");
+  // The box is a column flex container, so a shrinkable image would be squeezed
+  // back to the port and the scroller would have nothing to scroll.
+  const img = one(COMPOSER_CSS, ".c-shotview-box[data-zoom] .c-shotview-img");
+  expect(img).toContain("flex: 0 0 auto");
+  expect(img).toContain("max-height: none");
+  // The box is where `ShotViewer` resets the offset on un-zoom, so the scroller
+  // has to be this element and not the modal body.
+  expect(box).not.toContain("overflow: visible");
+});
+
+test("FIX-27 — the receipt keeps T's 4px under its bubble", () => {
+  // T sets `margin: 4px 0 0` on `.annsum`; this set none, and because the
+  // receipt is the last thing in a user turn that 4px was the whole gap between
+  // it and the reply beneath.
+  expect(one(TRANSCRIPT, ".chat-root .annsum")).toContain("margin: 4px 0 0");
+});
+
+test("FIX-17 — one palette serves the chat AND every portaled surface", () => {
+  // `.c-overlay` used to restate a hand-picked SUBSET of the palette in
+  // composer.css. A subset in a second place is a palette that drifts: it never
+  // got FIX-14's letter-spacing removal and would not have got FIX-22's card
+  // surface, and every token it omitted fell through to nothing on a popup that
+  // grew a use for it. It now rides the one list.
+  expect(CHAT).toContain(".c-overlay {");
+  expect(COMPOSER).not.toContain("--c-surface-2: #2d3038");
+  // …including the FIX-17 shell bridge, which is what stopped the delete dialog
+  // painting the SHELL's danger ink.
+  const bridge = rules(CHAT, ".c-overlay").join(" ");
+  expect(bridge).toContain("--error: var(--c-error)");
+  expect(bridge).toContain("--c-card-bg");
+});

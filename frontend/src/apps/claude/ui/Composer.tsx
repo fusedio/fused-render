@@ -531,6 +531,14 @@ export function ComposerCard({
           onKeyDown={onKeyDown}
           {...(onPaste ? { onPaste } : {})}
         />
+        {/* A DIVERGENCE FROM T, RECORDED (visual pass 3, FIX-27). T has no
+            queued line at all: its own queue handling (T:15905-15917) puts the
+            stranded text back INTO the box, so the reader learns about it by
+            finding their words there. This line is kept — a follow-up that has
+            gone somewhere invisible is worse than 24px of composer card — but
+            it is the one thing in this file that adds a box T does not draw
+            (91 → 115 while a follow-up is pending), so it is written down here
+            rather than left for a fourth visual pass to find again. */}
         {count > 0 ? (
           <div className="c-queued">
             {count === 1
@@ -585,7 +593,11 @@ export function ComposerCard({
       // the one outcome dropping the dim must not buy.
       title={
         running
-          ? "Stop"
+          ? // T:4187's own string, not the shorter one this shipped with
+            // (visual pass 3, FIX-27). `aria-label` is `Stop` on both sides —
+            // that is the control's NAME — and the tooltip is where legacy says
+            // which stop it is: a turn's, not the recorder's or the app's.
+            "Stop this turn"
           : attaching
             ? "Attaching…"
             : sendBusy

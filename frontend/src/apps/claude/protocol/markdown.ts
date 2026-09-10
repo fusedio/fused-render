@@ -112,6 +112,26 @@ export function enhanceCodeBlocks(root: ParentNode): void {
       }
     }
   });
+  attachCopyButtons(root);
+}
+
+/**
+ * T:14998 `attachCodeCopy` — the `pre`-walking half, on its own.
+ *
+ * SPLIT OUT because T runs it over the whole rendered body
+ * (T:15122 `attachCodeCopy(bodyEl.parentElement)`), which includes a TOOL
+ * CHIP's — 2 buttons per chip, 7 in the transcript visual pass 3 measured —
+ * while here it only ever ran from `MarkdownView`, and a chip body is not
+ * markdown (`ui/ToolChip.tsx` builds its `pre` from JSX). So every command echo
+ * and every output block in every chip had no way to be copied
+ * (visual pass 3, FIX-23). The CSS was ported the whole time
+ * (`styles/transcript.css`'s `.copybtn`); only the element was missing.
+ *
+ * Idempotent, so a caller may run it on every paint: a `pre` that already
+ * carries a button is left exactly as it is, which also keeps a mid-copy
+ * "copied" label from being reset by an unrelated re-render.
+ */
+export function attachCopyButtons(root: ParentNode): void {
   root.querySelectorAll<HTMLElement>("pre").forEach((pre) => {
     if (pre.querySelector(".copybtn")) return;
     // Read BEFORE the button joins the tree, or the label rides along.

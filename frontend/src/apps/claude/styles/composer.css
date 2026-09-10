@@ -6,42 +6,16 @@
 /* ---- portaled surfaces --------------------------------------------------
    A Popover / DropdownMenu / Dialog popup lands on <body>, OUTSIDE
    .chat-root's cascade, so the `--c-*` aliases it paints with have to be
-   re-anchored. Only the subset the overlays actually use is mirrored here;
-   chat.css stays the source for the whole palette. */
-.c-overlay {
-  --c-bg: #191a1e;
-  --c-panel: #1e2025;
-  --c-surface: #26282f;
-  --c-surface-2: #2d3038;
-  --c-fg: #ececf1;
-  --c-fg-strong: #ffffff;
-  --c-dim: #9a9fa9;
-  --c-faint: #8a8f99;
-  --c-border: #34363e;
-  --c-border-strong: #4a4d57;
-  --c-accent: #d97757;
-  --c-on-accent: #1a1a1a;
-  --c-error: #f26d6d;
-  --c-shadow: rgba(0, 0, 0, 0.4);
-  --c-scrim: rgba(0, 0, 0, 0.62);
-}
-:root[data-theme="light"] .c-overlay {
-  --c-bg: #ffffff;
-  --c-panel: #fafafa;
-  --c-surface: #f4f4f6;
-  --c-surface-2: #ebebef;
-  --c-fg: #1f2023;
-  --c-fg-strong: #000000;
-  --c-dim: #61656c;
-  --c-faint: #676c74;
-  --c-border: #e3e4e8;
-  --c-border-strong: #c9cbd2;
-  --c-accent: #b8542f;
-  --c-on-accent: #ffffff;
-  --c-error: #c62828;
-  --c-shadow: rgba(0, 0, 0, 0.1);
-  --c-scrim: rgba(0, 0, 0, 0.48);
-}
+   re-anchored — and `.c-overlay` is the class that does it.
+
+   THE PALETTE ITSELF IS NO LONGER RESTATED HERE. This block used to carry a
+   hand-picked SUBSET of it ("only the subset the overlays actually use"), which
+   is a second source for values whose whole point is that they are stated once:
+   it missed FIX-14 and it would have missed FIX-22's card surface, and any
+   token it left out simply fell through to nothing the moment a popup grew a
+   use for it. `.c-overlay` now rides `styles/chat.css`'s own `.chat-root,
+   .c-tokens, .c-overlay` list and gets the complete palette, both themes, plus
+   the FIX-17 shell bridge. */
 
 /* ---- the header (T:163-172 + T:1285-1310) -------------------------------
    ONE control row and one identity row, which is T's own shape: `#anntools` (the
@@ -975,9 +949,38 @@ select.c-pill {
   background: var(--c-surface-2);
   cursor: zoom-in;
 }
+/* ACTUAL SIZE MEANS THE BOX IS THE SCROLLER, which is T's own arrangement
+   (`#shotview-box.zoom { overflow: auto }` over a box already bounded at
+   `calc(100vh - 24px)`) and the one this port did not have (visual pass 3,
+   FIX-25).
+
+   Lifting the image's two maxima below is right and was not enough: the box
+   stayed `overflow: visible` and so did everything above it, so a natural-size
+   capture computed its bottom edge 130px past the dialog's and an ancestor
+   simply clipped it — `scrollHeight === clientHeight` on the box, no scroll
+   position anywhere that could reach the rest of the picture, and a
+   `zoom-out` cursor as the only sign anything had happened. The comment below
+   said "the body above is what scrolls"; live, nothing did.
+
+   The BOX and not the body, for two reasons: it is where T puts it, and
+   `ShotViewer`'s un-zoom already resets `boxRef.scrollTop/scrollLeft` — a
+   scroller anywhere else would have left the reader's offset behind on the way
+   back to the fitted view. Both axes, because a natural-size screenshot is
+   wider than the card as well as taller. `overscroll-behavior: contain` so
+   reaching the edge of the picture does not scroll the modal body behind it. */
+.c-shotview-box[data-zoom] {
+  max-height: calc(85vh - 160px);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .c-shotview-box[data-zoom] .c-shotview-img {
   max-width: none;
   max-height: none;
+  /* `flex: none` against the box's own `min-height: 0`: the box is a column
+     flex container with a definite max-height now, so a shrinkable image would
+     be squeezed back to the port and the scroller would have nothing to scroll
+     — the fitted view again, wearing the zoomed cursor. */
+  flex: 0 0 auto;
   /* `align-self` is the load-bearing one: the box is a COLUMN flex container, so
      its default `stretch` sizes the image to the container's width on the cross
      axis, and lifting max-width alone left the picture pinned at the box's own

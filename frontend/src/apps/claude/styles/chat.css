@@ -12,9 +12,20 @@
    sides (visual pass 2, FIX-17). The class is the hook a portaled caller can
    put on its own dialog; the bridge under it maps the three SHELL tokens a
    shared dialog paints from onto the chat's values, because a component the
-   Tasks page also renders cannot be re-tokenised globally. */
+   Tasks page also renders cannot be re-tokenised globally.
+
+   `.c-overlay` IS THE SAME HOOK UNDER ITS OTHER NAME and is listed here rather
+   than carrying its own copy. `styles/composer.css` used to restate a SUBSET of
+   this palette under it — "only the subset the overlays actually use" — and a
+   subset of a palette in a second place is a palette that drifts: it never
+   received FIX-14's letter-spacing removal, it would not have received FIX-22's
+   card surface, and every token it left out (`--c-card-bg`, `--c-code-*`,
+   `--c-pre-*`, `--c-ok`, `--c-link`, the diff pair, `--c-scrollbar`,
+   `--c-pill-caret`) fell through to nothing on a portaled popup that grew a
+   use for it. One list, three names, no subset. */
 .chat-root,
-.c-tokens {
+.c-tokens,
+.c-overlay {
   color-scheme: dark;
   --c-bg: #191a1e;
   --c-panel: #1e2025;
@@ -33,14 +44,26 @@
   --c-on-accent: #1a1a1a;
   --c-error: #f26d6d;
   --c-ok: #6cc07a;
-  /* CARD SURFACE, its own pair of tokens (#22). A card is the one box in the
-     transcript that has to read as a THING SITTING ON the page — the run is
-     blocked on it — and at `--c-surface` (#26282f against a #191a1e page, ~4%
-     of lightness apart) it read as a slightly different shade of background.
-     Its own tokens rather than a louder `--c-surface`, because that token is
-     also the avatar disc, a chip's open tint, the copy button and the qhead
-     pill, and not one of those wants to get louder (≤5% drift elsewhere). */
-  --c-card-bg: #2e313a;
+  /* CARD SURFACE, its own token, now holding T'S OWN VALUE (visual pass 3,
+     FIX-22 — measured legacy `rgb(38,40,47)` against native's `rgb(46,49,58)`).
+     T:2037 is `.perm { background: var(--surface) }` and nothing else.
+
+     #22's argument for lifting it to `#2e313a` — "at `--c-surface` it read as a
+     slightly different shade of background" — was measured against a #191a1e
+     PAGE, and that was the real defect: a card does not sit on `--c-bg`, it
+     sits on the transcript column, which legacy paints `--panel` (#1e2025) and
+     native painted `--c-bg` behind an open card (FIX-21, the tailpin band).
+     Against #1e2025 T's #26282f is a clear lift and reads exactly as the thing
+     sitting on the page that #22 asked for. Land the ground and the surface has
+     nothing left to compensate for.
+
+     Kept as its OWN token rather than collapsed into `--c-surface`: the same
+     value today, but the card is the one box whose separation is load-bearing
+     (the run is blocked on it), and the avatar disc, a chip's open tint, the
+     copy button and the qhead pill must not have to move with it. Two rules
+     paint a 3px inset ring in this colour to fake a notch out of the card, so
+     they follow the token rather than a literal. */
+  --c-card-bg: #26282f;
   --c-card-bg-2: #383c47;
   --c-card-border: #4e525f;
   --c-code-bg: #2a2c33;
@@ -60,7 +83,8 @@
 }
 
 :root[data-theme="light"] .chat-root,
-:root[data-theme="light"] .c-tokens {
+:root[data-theme="light"] .c-tokens,
+:root[data-theme="light"] .c-overlay {
   color-scheme: light;
   --c-bg: #ffffff;
   --c-panel: #fafafa;
@@ -79,10 +103,11 @@
   --c-on-accent: #ffffff;
   --c-error: #c62828;
   --c-ok: #2e7d32;
-  /* Light theme's page is pure white, so the card goes DOWN rather than up —
-     the same "sitting on the page" separation, read the other way round — and
-     the border does the rest of the work. */
-  --c-card-bg: #f1f2f5;
+  /* Light theme's page is off-white (`--c-panel` #fafafa), so the card still
+     goes DOWN rather than up — the same "sitting on the page" separation read
+     the other way round — and the border does the rest of the work. T:2037's
+     own light value, measured `rgb(244,244,246)` (FIX-22). */
+  --c-card-bg: #f4f4f6;
   --c-card-bg-2: #e4e6ec;
   --c-card-border: #c2c5ce;
   --c-code-bg: #f0f1f3;
@@ -110,13 +135,15 @@
    override. `--error-rgb` goes with `--error` because `.btn-danger`'s tint is
    `rgba(var(--error-rgb), .1)` and half a remap is a colour that disagrees with
    itself. */
-.c-tokens {
+.c-tokens,
+.c-overlay {
   --error: var(--c-error);
   --error-rgb: 242, 109, 109;
   --fg: var(--c-fg);
   --fg-muted: var(--c-dim);
 }
-:root[data-theme="light"] .c-tokens {
+:root[data-theme="light"] .c-tokens,
+:root[data-theme="light"] .c-overlay {
   /* Light theme's own pair, from the light block above (`--c-error: #c62828`). */
   --error-rgb: 198, 40, 40;
 }
@@ -178,6 +205,35 @@
      while these two are the prose itself. The compact cut scales both. */
   --c-fs-read: 14px;
   --c-lh-read: 1.65;
+}
+
+/* ONE RULE FOR EVERY MONOSPACED GLYPH IN THE CHAT — T:116, verbatim
+   (`code, pre, .mono { font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono",
+   monospace }`), and the single highest-reach finding of visual pass 3
+   (FIX-19).
+
+   T declares it once, globally, beside the prose stack above. This port never
+   did, and no `pre`/`code` rule in `transcript.css` sets `font-family` at all
+   (`.perm pre`, `.toolchip .chip-body pre` and `.assistant pre` each omit it),
+   so the UA's generic `monospace` won: every inline path, every command echo,
+   every card payload and every fenced block in a reply was a different typeface
+   from legacy. Measured on three inline `code` and nine `pre`.
+
+   `.c-tokens` as well as `.chat-root`, because the portaled surfaces (the
+   screenshot viewer, the what-was-sent record) render OUTSIDE the chat's own
+   subtree and the what-was-sent record's whole body is a `pre` — the same scope
+   pair FIX-17 exists for.
+
+   The three element-specific restatements of this stack in `transcript.css`
+   (`.c-session`, `.chip-sub` and its sibling) stay: they were the workaround
+   for this rule's absence, and they are the elements T also names explicitly. */
+.chat-root code,
+.chat-root pre,
+.chat-root .mono,
+.c-tokens code,
+.c-tokens pre,
+.c-tokens .mono {
+  font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
 }
 
 /* THE MOUNT BOX (ChatMount's native branch). It stands where the iframe stood

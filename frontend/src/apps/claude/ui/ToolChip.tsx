@@ -9,7 +9,7 @@
 // EVERY string below goes in as a text node. The one exception is a plan
 // (D248), which is markdown the model wrote for a human and goes through
 // MarkdownView like the reply itself.
-import { memo } from "react";
+import { memo, useEffect, useRef } from "react";
 
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/shadcn/ui/collapsible";
 import { cn } from "@platform/lib/utils";
@@ -27,6 +27,7 @@ import {
   toolChipSummaryParts,
   toolStatusGlyph,
 } from "../protocol/summaries";
+import { attachCopyButtons } from "../protocol/markdown";
 import type { ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
@@ -217,6 +218,28 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey }: ToolChipProps) 
   const parts = toolChipSummaryParts(seg);
   const full = toolChipSummary(seg);
   const status = String(seg.status || "running");
+  /* T:15122 — EVERY `pre` IN A CHIP BODY GETS T'S COPY BUTTON (FIX-23).
+     Legacy runs `attachCodeCopy` over the whole rendered body, chip included:
+     the command it ran and the output it got back are the two things a reader
+     most wants out of a transcript, and this port left them with no way out but
+     a manual selection inside a 267px box.
+     A DOM effect rather than JSX: the button is `position: absolute` inside the
+     `pre` and T puts it there as the FIRST child (`styles/transcript.css`'s
+     `.copywrap` is the zero-height anchor), so rendering it from here would
+     mean threading a wrapper through six different body shapes — one of which
+     (`PLAN_TOOL`) is markdown and already gets its buttons from
+     `enhanceCodeBlocks`. `attachCopyButtons` is idempotent and bails on a `pre`
+     that has one, so the plan branch is not double-served and a re-render
+     mid-copy does not reset a "copied" label.
+     Keyed on `open` AND on the segment: a closed `CollapsibleContent` is
+     unmounted (A GAP-D10), so the body is a fresh subtree on every open, and a
+     running tool's output grows under a body that is already open. */
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const el = bodyRef.current;
+    if (el) attachCopyButtons(el);
+  }, [open, seg]);
   return (
     <Collapsible open={open} onOpenChange={toggle} className={cn("toolchip", open && "is-open")}>
       <CollapsibleTrigger
@@ -247,7 +270,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey }: ToolChipProps) 
           </span>
         </span>
       </CollapsibleTrigger>
-      <CollapsibleContent className="chip-body">
+      <CollapsibleContent className="chip-body" ref={bodyRef}>
         <ChipBody seg={seg} />
       </CollapsibleContent>
     </Collapsible>
