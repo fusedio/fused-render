@@ -1114,3 +1114,24 @@ branch; `onClick=` absent from the offer row) before either fix landed.
 
 **Verification**: `bun test src/apps/explorer` (1145 pass, 0 fail) and
 `bunx tsc --noEmit` (clean).
+
+## SEARCH_GLOB_RANK_LIMIT was a 50x over-fetch (2026-09-10)
+
+`SEARCH_GLOB_RANK_LIMIT` (`types.ts`) governed how many glob hits are fetched
+per request; the RENDERED list has been capped at `SEARCH_RESULT_CAP` (100,
+`capHits`) since the change noted above ("Pattern search now caps at 100
+rendered rows"), which left the 5,000-row fetch limit fetching 50x what the
+list ever shows. Reduced to 1,000 — 10x the display cap, still comfortably
+past it so the count chip can report a true, un-truncated total for any glob
+that does not itself run past a thousand hits, without carrying an order of
+magnitude more rows over the wire than anything past row 100 is ever acted
+on.
+
+The chip's "N" vs "N+" distinction (`resultCountLabel`, `result-cap.ts`) is
+driven by the server's own `truncated` flag and the actual `total` returned,
+neither of which reads the limit constant directly — the distinction stays
+honest at any fetch limit by construction, so no test pins the literal
+value and none was added for this change.
+
+**Verification**: `bun test src/apps/explorer` (1145 pass, 0 fail) and
+`bunx tsc --noEmit` (clean).

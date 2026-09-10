@@ -82,11 +82,15 @@ export const SEARCH_RANK_LIMIT = 200;
 
 // Hits asked of the server for a GLOB query. The RENDERED list is capped at
 // SEARCH_RESULT_CAP same as a substring answer (capHits, listing/result-cap)
-// — this is only how many are fetched, which stays far above that cap so the
-// count chip can say "top 100 of 4,880" without a second request, the same
-// role SEARCH_RANK_LIMIT plays for a substring query. 5,000 rows is the most
-// a single fetch should ever try to carry.
-export const SEARCH_GLOB_RANK_LIMIT = 5_000;
+// — this is only how many are fetched, which stays above that cap so the
+// count chip can say "top 100 of 880" without a second request, the same
+// role SEARCH_RANK_LIMIT plays for a substring query. 1,000 is 10x the
+// display cap — room to report a true, un-truncated total for any glob this
+// side of a genuinely enormous match, without fetching an order of magnitude
+// more rows than anything past the first hundred can ever be acted on
+// (resultCountLabel's "+" already covers the rest honestly when a glob
+// blows even past this).
+export const SEARCH_GLOB_RANK_LIMIT = 1_000;
 
 // How often the box re-asks while a scan covering the open folder is running.
 // Results trickle in as the scan lands rows, which is the closest thing to
