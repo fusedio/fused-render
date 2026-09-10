@@ -150,3 +150,211 @@ and that the predicate lives in exactly one place (the hook).
   — matching the repo's own established convention referenced elsewhere in
   comments (`DECISIONS-one-field-search.md`). Fixed via a follow-up commit,
   not an amend, since the bad commit's other changes were already correct.
+
+## Code review round: six findings, fixed in order
+
+### Finding 1 (HIGH) — Enter could open an arbitrary folder row
+
+`rowsAnswerQuery` (`useListingSearch.ts`) was `!runsSearch || (!staleRows &&
+!deferredStale)`. `runsSearch` is false for EVERY path-shaped query (no rank
+request is ever issued for one), so `rowsAnswerQuery` read `true`
+unconditionally whenever the box held a path-shaped query — the same flag
+the document-level Enter handler (`useListingSelection.ts`) reads to decide
+whether opening `rows[0]` with nothing selected is a safe guess. `navRows`
+(`Listing.tsx`) falls back to the FOLDER's own rows for a path-shaped query
+(`showsSearchHits` is false for it), so "safe to open row 0" was true over
+rows that had nothing to do with what was typed — Enter could open an
+arbitrary, unrelated folder entry.
+
+Fixed by keying the trivial-true shortcut on `!searching` instead of
+`!runsSearch`: an empty box has no query to fail to answer (browsing is
+unaffected, matching pre-existing behavior), but a path-shaped query IS a
+query (`searching` true, `runsSearch` false) and its rows never answer it.
+`runsSearch` still governs the staleness check for an actual, running
+search. New tests in `useListingSearch.render.test.ts` cover both the
+`false` case (absolute path-shaped query) and the untouched `true` case
+(empty box).
+
+Side effect: fixing this exposed that bun's `mock.module("@platform/lib/
+router", …)` is process-wide, and `useListingSelection.render.test.ts`'s
+own mock — missing `navHintQCommitted` — could win the module-registration
+race against `useListingSearch.render.test.ts`'s mock (which does provide
+it) when both run in the same `bun test` invocation, throwing a
+`SyntaxError` and failing whichever file loaded second. Fixed by adding the
+same export to both files' mocks rather than relying on load order.
+
+### Finding 2 (MEDIUM, scope overreach) — "Path" narrowed to absolute-ish shape
+
+`isPathShapedQuery` wrapped `listingAddress` directly, which resolves ANY
+glob-free query containing a `/` — relative ones (`src/util`,
+`listing/useListing`) included. That silently killed subtree search for
+those queries: the completion dropdown that's supposed to already answer
+them (`useCompletion.ts`'s `listDir`) is prefix-only and non-recursive
+within one directory, so `src/2024` would find nothing that
+`report-2024.md` anywhere under `src/` would have matched via a live rank
+search.
+
+The user's own rule was scoped to ABSOLUTE paths only ("any search on
+absolute path without pattern is useless") — a relative slash-bearing query
+was never in scope. Narrowed `isPathShapedQuery` to additionally require
+`escapesBase(query)` (`query-base.ts`'s existing leading-`~`/leading-`/`/
+drive-prefix/`..`-segment shape test) on top of `listingAddress`'s
+null/non-null split. Reused `escapesBase` rather than writing a fourth
+shape test deliberately: it is already the exact gate decision 4 uses for
+"requires Enter before searching," and every path-shaped query already had
+to satisfy it anyway (a query that doesn't escape the box root live-filters
+and never needs Enter) — reusing it means "reads as Path" and "requires
+commit" can never independently drift apart the way two hand-written shape
+tests eventually would. `escapesBase`'s one broader case than the three
+findings 2 named (a leading `..` segment with no `~`/`/`) was left in
+rather than carved out: it's the same kind of case (base differs from the
+box root, shape alone can't confirm a real path, the dropdown's reasoning
+for suppressing the search applies identically), and finding 2 didn't ask
+for it to be excluded.
+
+`listingAddress` itself is untouched — it stays the resolver
+`useTypedPathAddress` and `completionTarget` use, both of which need an
+answer for relative queries too (what to stat, what to list).
+
+Tests added: `src/util`/`sub/dir` → Search (relative, no longer path-shaped;
+`useListingSearch.render.test.ts` additionally confirms `src/util` still
+issues a rank request), `/Users/x/y` → Path, `~/Work/a` → Path, `~` → Path,
+`~/Work/*` → Search (glob, unchanged). The `C:\x` → Path case already
+existed from the earlier round and needed no change.
+
+### Finding 3 (MEDIUM) — a committed, non-existent path query was a silent dead end
+
+Type `/nope/here`, press Enter: `commitSearch()` runs, the gate opens
+(`gateOpen`), but `runsSearch` is false so nothing is ever asked, the
+Enter-banner excluded every `isPathQuery` unconditionally (see finding 1's
+era of this file, before this round), and the footer fell back to the
+folder's own item count (finding 4). Nothing on screen said the query had
+been refused.
+
+Added `pathQueryRefused = isPathQuery && gateOpen && typedAddress.status
+=== "missing"` in `Listing.tsx` and widened the banner gate to `searching
+&& !showsSearchHits && (!isPathQuery || pathQueryRefused)`. The message is
+a new `pathNotFoundMessage(query)` (`enter-prompt.ts`), not `enterPrompt`
+reused — `enterPrompt`'s whole vocabulary is "Press Enter to open/search",
+an instruction for something still to happen, and here Enter has ALREADY
+run and been refused; reusing it would print a promise for a second Enter
+that does nothing. Named the same way `enterPrompt`'s own `"exists"` branch
+names a resolved address (trailing-slash-stripped last path segment) for
+the symmetry: one message says what Enter opened, the other says what it
+could not find. This only fires once `gateOpen` (Enter has been pressed
+for this exact text) — a path-shaped query still mid-typing, not yet
+committed, says nothing extra, matching how the dropdown already carries
+the "here's what's real so far" job during typing.
+
+`search-enter-banner.test.ts`'s literal-source-text assertion of the gate
+condition needed updating to the new text — it greps `Listing.tsx`'s
+source rather than rendering, by design (see its own header comment), so
+it's exact-string-coupled to this line.
+
+### Finding 4 (LOW/MEDIUM) — footer read "Empty folder" before the folder loaded
+
+The footer's render gate was `state.status === "ok" || searching`.
+`showsSearchFooter` (`searching && !isPathQuery`, computed a few lines
+above this exact gate, with a comment explaining exactly why raw
+`searching` is wrong here) is false for a path-shaped query, so `statusText`
+falls to the non-searching branch — `total: sortedEntries.length` — which
+is `0` while the folder is still loading (or has errored) rather than
+"nothing has been read yet." Reachable on a reload of a URL whose `?q=`
+holds a path query while the listing loads, and permanently on an errored
+folder with a path query in the box: exactly the failure mode the comment
+directly above this gate already exists to prevent, just for a case that
+predates `isPathQuery`.
+
+Verified the review's suggested fix before applying it: `statusLine`'s own
+`searching` input is ALREADY passed `showsSearchFooter`, not raw
+`searching`, at the call site immediately above this render gate — so
+`state.status === "ok" || showsSearchFooter` makes the render gate agree
+with the exact value `statusLine` itself already keys off, rather than
+introducing a second definition of the same idea. For a real (non-path)
+search this changes nothing: `showsSearchFooter` equals `searching` in
+that case.
+
+No render-level regression test added for findings 3/4 — there is no
+existing full-`Listing.tsx`-render test harness in this codebase
+(`Listing.test.tsx` only tests extracted pure helpers, not the mounted
+component), and building one from scratch is out of proportion to a
+two-line conditional fix. Coverage here is the pure-function test
+(`pathNotFoundMessage`, `enter-prompt.test.ts`) plus the existing
+source-text gate assertion (`search-enter-banner.test.ts`), plus
+`tsc --noEmit` confirming the new `gateOpen` destructure and control flow
+type-check cleanly.
+
+### Finding 5 (LOW cause, but voided this PR's own coverage) — router mock missing an export
+
+`useListingSearch.render.test.ts`'s `mock.module("@platform/lib/router", …)`
+omitted `navHintQCommitted`, which `useListingSearch.ts` imports —
+`SyntaxError: Export named 'navHintQCommitted' not found`, failing the
+WHOLE FILE to load (0 pass / 1 fail), which silently voided the "a
+path-shaped query never asks the index" describe block — this PR's own
+central coverage claim. Fixed by adding the export to the mock (returning
+`false`, since no test in this file exercises the seeded-already-committed
+path). Confirmed by running the file alone before and after: 0/1 → 34/0,
+then re-confirmed after every later change in this round kept it green.
+
+The SAME class of gap exists elsewhere in this directory and predates this
+whole feature: `empty-result.test.tsx` needs `navigateUrl` from the real
+`router.ts`, and when the directory's full `bun test` run loads a file
+whose mock lacks it (either of the two files above, once fixed to include
+`navHintQCommitted` but not `navigateUrl`), the process-wide mock clobbers
+the real module for every file loaded after it in the same process,
+throwing the same kind of `SyntaxError` for `empty-result.test.tsx`.
+Confirmed via a tagged `git stash push -u`/`apply`/`drop` cycle that this
+exact failure (1 fail, 1 unhandled error, same `navigateUrl` message) is
+present at this branch's OWN baseline — i.e. it predates every fix in this
+round and is not something finding 5 asked to be fixed (finding 5 named
+only `useListingSearch.render.test.ts`'s own whole-file failure). Left
+alone, since only two files in the whole app mock `@platform/lib/router`
+at all (grepped) and neither one's job is to be the one true mock of that
+module — a real fix would be a shared router-mock factory both files
+import, which is a bigger refactor than this finding asked for.
+
+### Finding 6 (LOW) — re-evaluated after finding 2, concluded no code change needed
+
+`FileSearchField.tsx`'s forwarding effect (`if (!active || firedRef.current)
+return; if (!searching || !gateOpen) return; … navigate(parentPath, {
+isDir: true, q: query })`) has no `isPathQuery` check, so it always hands
+the query to the parent folder's `Listing` once `gateOpen`. The finding's
+repro was a RELATIVE path-shaped query (`sub/x`) — before finding 2, that
+was `isPathQuery === true`, so the parent Listing would ALSO treat it as
+Path (same predicate everywhere), suppress its own rank request, and the
+user would land on the parent folder with a query that visibly does
+nothing.
+
+Finding 2 removes the premise: `sub/x` is no longer path-shaped anywhere in
+the app (relative slash-bearing queries are plain Search again), so the
+parent Listing the effect navigates to picks it up as an ordinary query and
+live-filters it via a rank request — exactly the behavior "hand the query
+to the parent and let its Listing take it from there" (the effect's own
+comment) was always supposed to produce. For a genuinely absolute
+path-shaped query (`/other/folder`), the forwarding behavior is unchanged
+from before this whole round: `escapes` is true, so the effect still waits
+for `gateOpen` (Enter), and once it fires, the parent Listing gets the same
+`isPathQuery` treatment the file view's own box already gave it — including,
+now, finding 1's fix (Enter on the parent's landing render can't open an
+arbitrary row) and finding 3's fix (a missing address gets an honest
+banner there too, not silence). No gap specific to `FileSearchField.tsx`
+remains once findings 1–3 are in.
+
+No test added here: exercising the forwarding effect end-to-end would need
+driving real keystrokes through the rendered `SearchField` input and
+spying on `history.pushState`/`navigate` inside
+`FileSearchField.render.test.tsx`'s harness (which currently only asserts
+resting-crumb rendering and deliberately avoids mocking `@platform/lib/
+router` at all, per its own header comment on why `mock.module` is
+avoided here) — a bigger harness investment than a "re-evaluate and say
+what you concluded" finding calls for. The reasoning above is traced
+through the actual source, not observed running.
+
+## Full-suite verification
+
+`bun test` (whole frontend suite) and `bunx tsc --noEmit --project
+frontend/tsconfig.json` were run after every finding and once more at the
+end — see the build report for the final counts. The one known-red file
+(`empty-result.test.tsx`, finding 5's sibling gap) is pre-existing at this
+branch's baseline, confirmed via the stash cycle described under finding 5
+above, and unrelated to any of the six findings' fixes.
