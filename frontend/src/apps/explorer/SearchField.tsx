@@ -45,7 +45,11 @@ import { searchAffordance, type SearchActionRow } from "@apps/explorer/listing/s
 import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
 import { contractHome } from "@apps/explorer/listing/home-path";
 import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
-import { SEARCH_EXAMPLES, showSearchExamples } from "@apps/explorer/listing/search-examples";
+import {
+  buildSearchExamples,
+  showSearchExamples,
+  type ExampleEntry,
+} from "@apps/explorer/listing/search-examples";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import { BookmarkStar } from "@apps/explorer/Breadcrumb";
 
@@ -102,6 +106,18 @@ export interface SearchFieldProps {
   hasPin: boolean;
   widePin: boolean;
   /**
+   * SPEC-omnibox-search-affordance.md correction (2026-09-10): the folder
+   * currently being searched's own entries (a folder host's already-loaded
+   * listing, `sortedEntries`) — the ONLY source the focused-and-pristine
+   * teaching panel is allowed to build its examples from, so a pattern it
+   * shows always has real rows behind it in THIS folder rather than an
+   * invented one that returns nothing. A file host has no such listing of
+   * its own and passes `[]`, which yields no examples at all (an honest
+   * "nothing to show" rather than a guess) — see search-examples.ts's
+   * `buildSearchExamples`.
+   */
+  entries: ExampleEntry[];
+  /**
    * Row-level chrome that sits AFTER the box, inside the same `.listing-search`
    * strip that stands the crumbs down and takes the whole width once
    * `searching`/`pinnedOpen` say so (Listing.tsx's pane-reopen button and the
@@ -133,6 +149,7 @@ export function SearchField({
   searchCountFull,
   hasPin,
   widePin,
+  entries,
   children,
 }: SearchFieldProps) {
   const crumbsPath = crumbsFsPath ?? fsPath;
@@ -155,7 +172,14 @@ export function SearchField({
   // rather than a CSS breakpoint because the threshold is about THIS box's
   // width, not the window's.
   const [boxWide, setBoxWide] = useState(false);
-  const HINT_LONG = "Search, or type a path or pattern like ~/work/*/*.csv";
+  // SPEC-omnibox-search-affordance.md correction (2026-09-10): the long
+  // form used to end "...like ~/work/*/*.csv" — the same invented, likely-
+  // wrong example the examples panel below carried, hardcoded a second
+  // time. Dropped rather than derived a second way: the panel below is
+  // where a REAL, folder-specific example belongs now, and repeating one
+  // here would be the same fact typed twice, driftable the moment either
+  // copy changes.
+  const HINT_LONG = "Search, or type a path or pattern to search elsewhere";
   const HINT_SHORT = "Search, or type a path or pattern";
   const HINT_WIDE_PX = 340; // roughly what HINT_LONG needs at 13px not to clip
   const searchBoxRef = useWidthThresholdRef(HINT_WIDE_PX, setBoxWide);
@@ -289,7 +313,14 @@ export function SearchField({
       (completion.target !== null &&
         completion.items.length > 0 &&
         !isExactSingleMatch(completion.items, completion.target)));
-  const showExamples = showSearchExamples(fieldActive, pristine);
+  // SPEC-omnibox-search-affordance.md correction (2026-09-10): built off
+  // THIS folder's own already-loaded entries, never invented — a folder
+  // with nothing extensioned to point at (or whose listing hasn't loaded
+  // yet: `entries` is `[]` in exactly the same shape either way) yields no
+  // examples, and the panel is worth showing only once there is at least
+  // one honest one.
+  const searchExamples = buildSearchExamples(entries, fsPath, home);
+  const showExamples = showSearchExamples(fieldActive, pristine) && searchExamples.length > 0;
   // The action row, when present, is always the FIRST row (index 0) — the
   // folder completions that follow it shift up by exactly this many slots.
   // One number, read everywhere an index has to cross that boundary, so the
@@ -486,7 +517,7 @@ export function SearchField({
               {boxWide ? HINT_LONG : HINT_SHORT}
             </div>
             <div className="listing-completion-rows">
-              {SEARCH_EXAMPLES.map((ex) => (
+              {searchExamples.map((ex) => (
                 <div
                   key={ex.pattern}
                   role="option"

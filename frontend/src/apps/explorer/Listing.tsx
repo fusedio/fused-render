@@ -1755,6 +1755,11 @@ export default function Listing({
               searchCountFull={searchCountFull}
               hasPin={hasPin}
               widePin={widePin}
+              // SPEC-omnibox-search-affordance.md correction (2026-09-10):
+              // the same already-loaded rows this Listing shows below,
+              // handed to the teaching panel's own example builder — never
+              // a second fetch for it.
+              entries={sortedEntries}
             >
               {/* THE PANE'S OPENER, and the second half of one affordance: the
                   closing chevron is a control ON the pane's own header, at the
