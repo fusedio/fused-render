@@ -237,6 +237,27 @@ export interface KebabProps {
    *  owns them), so the caller only has to leave the transcript — "Back to
    *  chats" IS the way out (T:13352-13366). */
   onErased?(sessionId: string): void;
+  /**
+   * A COMMENT ROUND OR A WALKTHROUGH OWNS THE PAGE — `useAnnotations().locked`,
+   * which is T's `annNavLocked()` (T:6888, and its refusals at T:18181/18779).
+   *
+   * The nav lock exists because the notes are about the app beside this chat, so
+   * anything that carries the reader off it has to wait; Archive and Delete are
+   * the two items in this menu that do exactly that, and the same lock that
+   * greys ← Chats and every recent row (`.chat-root.annlock`, `ann.css`) has to
+   * reach them too. Archiving the task a mode is armed against files the
+   * conversation out from under a round with unsent notes in it, and deleting it
+   * takes the round's destination away entirely (owner, 2026-09-10, P3R1-5).
+   *
+   * DISABLED with a reason, not hidden: unlike "there is no task behind this
+   * chat", this is a state the reader put the page into and can take it out of
+   * again in one gesture — so the item stays where it was and the tooltip names
+   * the gesture (`NAV_LOCKED_REASON`, "Finish or discard the notes first").
+   */
+  locked?: boolean;
+  /** Why, for the item's `title` — `NAV_LOCKED_REASON`. A prop rather than an
+   *  import so this menu owns no vocabulary of the annotation subsystem's. */
+  lockedReason?: string;
 }
 
 export function Kebab({
@@ -247,6 +268,8 @@ export function Kebab({
   landing,
   running,
   onErased,
+  locked = false,
+  lockedReason,
 }: KebabProps) {
   const [open, setOpen] = useState(false);
   const [erasing, setErasing] = useState(false);
@@ -505,8 +528,11 @@ export function Kebab({
                  (the state is ours, and a controlled `open` has to be told),
                  but leaving this at `false` meant a click landed on a menu that
                  stayed put for as long as the flip took. */
-              disabled={live}
-              title={live ? "Stop the run first" : undefined}
+              /* THE RUN FIRST, THEN THE MODE: two refusals on one item, and
+                 the run is named first because it is the one the reader cannot
+                 end from here. */
+              disabled={live || locked}
+              title={live ? "Stop the run first" : locked ? lockedReason : undefined}
               onClick={() => void onArchive()}
             >
               {archiveLabel || restingArchive}
@@ -515,8 +541,8 @@ export function Kebab({
           {!landing && hasTask ? (
             <DropdownMenuItem
               className="c-kebab-opt is-danger"
-              disabled={live}
-              title={live ? "Stop the run first" : undefined}
+              disabled={live || locked}
+              title={live ? "Stop the run first" : locked ? lockedReason : undefined}
               onClick={() => setErasing(true)}
             >
               Delete this task
@@ -535,6 +561,16 @@ export function Kebab({
       {erasing ? (
         <EraseTaskModal
           task={{ key: sessionId, task_id: taskIds.get(sessionId) || "this task" }}
+          // THE CHAT'S TOKENS, ON A DIALOG THAT PORTALS OUT OF THE CHAT
+          // (FIX-17). This is the same component the Tasks page renders, so it
+          // paints from the SHELL's `--error`/`--fg`/`--fg-muted` — and outside
+          // `.chat-root` there is nothing to say the chat's values instead: the
+          // danger ink read `rgb(255,107,107)` where the template reads
+          // `rgb(242,109,109)`, from tokens that are byte-identical on both
+          // sides. `.c-tokens` publishes the chat's block plus a three-token
+          // bridge (`styles/chat.css`); the Tasks page's copy passes nothing
+          // and is untouched.
+          dialogClassName="c-tokens"
           onClose={() => {
             setErasing(false);
             // Opened from a menu item rather than a trigger, so nothing gives

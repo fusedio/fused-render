@@ -261,6 +261,7 @@ function dragEv(withData = true) {
 
 const started = () => runs.filter((c) => c.action === "start");
 
+
 // ---- QA anomaly 4: one paste, one chip ------------------------------------
 
 test("ONE paste makes ONE chip, and only a clipboard with files is taken", async () => {
@@ -410,9 +411,11 @@ test("nothing is sent while a chip is still attaching", async () => {
     box.props.onPaste({ clipboardData: {}, preventDefault: () => {} });
   });
   await settle();
-  // A chip the user can see, and a Send they cannot press.
+  // A chip the user can see, and a Send that carries no `disabled` (T:4187) —
+  // the refusal below is the submit handler's, and the `title` says why.
   expect(chips(r)).toHaveLength(1);
-  expect(send().props.disabled).toBe(true);
+  expect(send().props.disabled).toBeUndefined();
+  expect(send().props.title).toBe("Attaching…");
 
   await act(async () => {
     r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
@@ -425,7 +428,7 @@ test("nothing is sent while a chip is still attaching", async () => {
   // The bytes land ⇒ the door opens, and the picture rides the send.
   release();
   await settle(20);
-  expect(send().props.disabled).toBe(false);
+  expect(send().props.title).toBe("Send");
   await act(async () => {
     r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
   });
@@ -493,13 +496,19 @@ test("a send that never launched hands the very pictures it took back", async ()
 /**
  * A HOST'S CONTENT FRAME, which is what gives this chat-only mount a camera at
  * all (`annotateTarget`; ClaudeChat's `appFrame`). Only the two properties
- * `frameIsCrossOrigin` and the capture path read off it.
+ * `frameIsCrossOrigin` and the capture path read off it —
+ * PLUS A LISTENER SURFACE, because PR3's annotation coordinator subscribes to
+ * this frame's `load` to re-attach after a boot navigation (`ann/target.ts`
+ * `watch`). A stub without it does not fail the annotation feature under test
+ * here; it throws out of the mount effect and takes the whole chat with it.
  */
 function hostFrame(): () => HTMLIFrameElement | null {
   const frame = {
     isConnected: true,
     contentDocument: {},
     contentWindow: { document: {}, location: { href: "http://localhost/render" } },
+    addEventListener: () => {},
+    removeEventListener: () => {},
   } as unknown as HTMLIFrameElement;
   return () => frame;
 }
@@ -510,6 +519,9 @@ test("a send fired DURING the camera's window waits for the picture", async () =
   // chips, could not see the camera's window at all. The flash had already
   // fired, so the picture looked taken; an Enter in that window went out
   // WITHOUT it and it then landed in the tray for the NEXT message.
+  //
+  // This is also the flip D7 is about: `attachPending` reads `attach.capturing`,
+  // which moves while the tray does not, so the `card` memo has to list it.
   let release = () => {};
   const landed = new Promise<void>((done) => {
     release = done;
@@ -526,14 +538,16 @@ test("a send fired DURING the camera's window waits for the picture", async () =
   // Words, so the send would otherwise be perfectly sendable on its own.
   await act(async () => box.props.onChange({ currentTarget: { value: "what is this" } }));
   await settle();
-  expect(send().props.disabled).toBe(false);
+  expect(send().props.title).toBe("Send");
 
   // The shutter opens…
   await act(async () => r.root.findByProps({ className: "c-viewshot" }).props.onClick());
   await settle();
   // …and no chip exists yet, which is exactly why the gate could not see it.
   expect(chips(r)).toHaveLength(0);
-  expect(send().props.disabled).toBe(true);
+  // No `disabled` (T:4187): the shutter's latch lives in `submit`, and the
+  // refusal below is what proves it.
+  expect(send().props.disabled).toBeUndefined();
   await act(async () => {
     r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
   });
@@ -545,7 +559,7 @@ test("a send fired DURING the camera's window waits for the picture", async () =
   release();
   await settle(20);
   expect(chips(r)).toHaveLength(1);
-  expect(send().props.disabled).toBe(false);
+  expect(send().props.title).toBe("Send");
   await act(async () => {
     r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
   });

@@ -28,11 +28,69 @@ let stream: MediaStream | null = null;
  */
 let watchers = 0;
 
+/**
+ * CAPTURES STILL IN FLIGHT, and a release that is waiting on them (D6). A
+ * capture is a HOLDER of the stream exactly as a mount is: it hid the flash
+ * overlay, it is about to read pixels, and `getStream` will re-open a share it
+ * finds stopped. So a chat unmounting mid-capture used to stop the stream, the
+ * capture in flight re-prompted, and THAT second share had no watcher left to
+ * release it — the browser's "sharing this tab" indicator outlived the closed
+ * chat. The share now ends only once the last watcher AND the last capture are
+ * gone: a teardown that finds a capture running only ASKS for the release
+ * (`releaseWanted`), and the capture pays it on the way out.
+ *
+ * A capture with no watcher at all still leaves the stream KEPT, because that is
+ * the whole point of the singleton (the prompt is paid once per walkthrough, not
+ * once per note) — nobody asked for the release, so none is owed.
+ */
+let captures = 0;
+let releaseWanted = false;
+
+/**
+ * THE TARGET WENT AWAY, as against a mount leaving — `releaseXOTarget`'s own
+ * flag, and it needs to be its own because the two releases are guarded
+ * differently. A mount leaving owes the share back only once EVERY mount is
+ * gone (`watchers`); a target that stopped being cross-origin owes it back at
+ * once, with the chat still on screen, since that mount has no use for a share
+ * it can no longer photograph through.
+ *
+ * Sharing `releaseWanted` for both looked right and was not: the deferred road
+ * runs through `releaseIfIdle`, which re-applies the `watchers` test — so a
+ * target that went away UNDER AN IN-FLIGHT CAPTURE had its release quietly
+ * dropped on the capture's way out, which is the exact leak this whole item is
+ * about, moved one race later.
+ */
+let targetGone = false;
+
+/** Release if nothing holds the stream any more and somebody asked for it.
+ *
+ *  `captures` gates BOTH roads (D6): a capture in flight is a holder, and
+ *  stopping under it would make it re-prompt for a share with nobody left to
+ *  release it. Past that, the two asks answer to their own guards. */
+function releaseIfIdle(): void {
+  if (captures) return;
+  if (targetGone) {
+    stopStream();
+    return;
+  }
+  if (!releaseWanted || watchers) return;
+  stopStream();
+}
+
 /** Stop the kept stream. Idempotent — both `ended` and an explicit teardown
  *  reach it (T:9731 annXOStreamStop). */
 export function stopStream(): void {
   const s = stream;
   stream = null;
+  // A share the picker is STILL deciding on belongs to a generation that has
+  // just been stopped: bumping the counter is how `openStream` knows the answer
+  // it is about to get is already orphaned (D6).
+  generation += 1;
+  // The single-flight promise is dropped too, or a share asked for BEFORE the
+  // stop would be handed to callers after it as if it were still held (D6).
+  pending = null;
+  releaseWanted = false;
+  targetGone = false;
   if (!s) return;
   for (const t of s.getTracks()) {
     try {
@@ -79,8 +137,45 @@ export function watchStreamTeardown(win: Window | null | undefined): () => void 
     released = true;
     if (host) host.removeEventListener("pagehide", onHide);
     watchers = Math.max(0, watchers - 1);
-    if (!watchers) stopStream();
+    if (watchers) return;
+    // The last mount is out, so the share is owed back — but a capture in flight
+    // still holds it, and stopping under it would re-prompt and leak the new
+    // share (D6). Asked for here, paid by whichever holder leaves last.
+    releaseWanted = true;
+    releaseIfIdle();
   };
+}
+
+/**
+ * THE TARGET STOPPED BEING CROSS-ORIGIN, or went away (T:6171-6175). T hangs
+ * `annXOStreamStop()` off `annXORemove()` and gives the reason at the site: "a
+ * target that stopped being cross-origin (or went away) has shotPane's own path
+ * back, and holding a tab share open past its use is a recording indicator with
+ * no purpose." Without it the browser's "sharing this tab" chip outlived the
+ * only thing it was ever for.
+ *
+ * NOT the same event as a mount leaving, which is why this is its own door and
+ * not a `releaseIfIdle()` call: `watchers` is still ≥ 1 here — the chat is very
+ * much still on screen — so the ordinary idle test refuses, and that refusal IS
+ * the gap. What has ended is this mount's USE for the share, not the mount.
+ *
+ * Two guards, both native's rather than T's, because native reference-counts a
+ * stream T kept per document:
+ *
+ *   * `watchers > 1` — another chat may still be framing a cross-origin target
+ *     of its own over the same module-level stream (a card behind a peek, two
+ *     cards in a stack). Stopping under it would take away a share still in
+ *     use, so the last one out does it instead; whichever mount really needs it
+ *     again re-opens through `getStream`'s single flight.
+ *   * `captures` — a capture in flight is a HOLDER exactly as a mount is (D6):
+ *     stopping under it would make it re-prompt, and that second share would
+ *     have nobody left to release it. So the release is ASKED FOR and the
+ *     capture pays it on the way out, the same contract the teardown uses.
+ */
+export function releaseXOTarget(): void {
+  if (watchers > 1) return;
+  targetGone = true;
+  releaseIfIdle();
 }
 
 /** Registrations still outstanding — for the tests that assert the counting,
@@ -89,17 +184,67 @@ export function streamWatchers(): number {
   return watchers;
 }
 
+/** Captures still holding the stream, and whether a release is owed — for the
+ *  tests that assert the counting, and the only way to observe it from outside
+ *  (D6). */
+export function streamCaptures(): number {
+  return captures;
+}
+
+export function streamReleasePending(): boolean {
+  // EITHER ask counts: the question is "is a release owed", and it is owed
+  // whether the last mount left or the target stopped being cross-origin.
+  return releaseWanted || targetGone;
+}
+
 /** The kept stream, or a fresh share. Chromium's current-tab hints preselect
  *  THIS tab and offer no switching and no monitors: the crop is only ever
  *  computed against this tab's own layout, so any other surface would be cropped
  *  wrong — the hints make the right choice the one-click one (they are ignored,
  *  not fatal, where unsupported) (T:9706). */
 export async function getStream(): Promise<MediaStream> {
+  // THE ASK IS SCOPED TO ONE ACQUISITION, and this is the start of one (PR3
+  // review, finding #3). `targetGone` used to be sticky, cleared only by
+  // `stopStream` — so a target that went away UNDER an in-flight capture left
+  // the flag standing while the reader re-armed over a NEW cross-origin target,
+  // and that arm was handed the still-live share (this function's early return,
+  // or the single-flight promise). The FIRST capture then finished, ran
+  // `releaseIfIdle()`, read the stale flag and stopped the share the new arm was
+  // holding — and the re-prompt that followed had no user activation behind it.
+  //
+  // Somebody asking for the share IS a target being here to photograph, so the
+  // ask dies at the next acquisition rather than outliving the target that made
+  // it. `releaseWanted` is NOT cleared with it: that one says every mount has
+  // left, which asking for a stream does not undo (a capture can outlive its
+  // chat, and it owes the share back on the way out).
+  targetGone = false;
   if (stream && stream.getVideoTracks().some((t) => t.readyState === "live")) {
     return stream;
   }
+  // SINGLE-FLIGHT. `getDisplayMedia` is a whole trip through the browser's
+  // picker, and `stream` is only assigned when it comes back — so two captures
+  // started in the same tick (a walkthrough's pane shot and crop, two chats)
+  // both saw "nothing held", both prompted, and the second share overwrote the
+  // first, which nothing then held or released (D6). The first caller's promise
+  // is shared with everyone who asks while it is out.
+  if (pending) return pending;
   stopStream();
-  stream = await navigator.mediaDevices.getDisplayMedia({
+  pending = openStream();
+  try {
+    return await pending;
+  } finally {
+    pending = null;
+  }
+}
+
+let pending: Promise<MediaStream> | null = null;
+/** Bumped by every `stopStream`, so a prompt that was already out when the
+ *  stream was released does not install its answer afterwards (D6). */
+let generation = 0;
+
+async function openStream(): Promise<MediaStream> {
+  const mine = generation;
+  const opened = await navigator.mediaDevices.getDisplayMedia({
     video: { displaySurface: "browser" },
     audio: false,
     // Not in TS's `DisplayMediaStreamOptions` yet — Chromium-only hints the spec
@@ -109,9 +254,25 @@ export async function getStream(): Promise<MediaStream> {
     surfaceSwitching: "exclude",
     monitorTypeSurfaces: "exclude",
   } as DisplayMediaStreamOptions);
-  const track = stream.getVideoTracks()[0];
+  if (mine !== generation) {
+    // Stopped while the picker was up (a pagehide, the last chat closing): this
+    // share is nobody's, so it is ended right here rather than installed — an
+    // orphaned share is the "sharing this tab" indicator with no chat behind it.
+    // Handed back regardless, dead, so the caller in flight still finishes and
+    // restores its overlay instead of rejecting.
+    for (const t of opened.getTracks()) {
+      try {
+        t.stop();
+      } catch {
+        /* already ended */
+      }
+    }
+    return opened;
+  }
+  stream = opened;
+  const track = opened.getVideoTracks()[0];
   if (track) track.addEventListener("ended", stopStream, { once: true });
-  return stream;
+  return opened;
 }
 
 /** One frame of the SHARE. A video element hands over whatever frame it last
@@ -120,7 +281,16 @@ export async function getStream(): Promise<MediaStream> {
  *  bound rather than a promise the caller can hang on. */
 function nextFrame(video: HTMLVideoElement): Promise<void> {
   if (video.requestVideoFrameCallback) {
-    return new Promise<void>((res) => video.requestVideoFrameCallback(() => res()));
+    // BOUNDED exactly as `painted()` below is, and for the same reason (D5):
+    // `requestVideoFrameCallback` fires off the compositor, so a hidden document
+    // — a cmux pane, a background tab — decodes no frames and the callback never
+    // comes. Unbounded, the capture never settled: the flash overlay stayed
+    // `visibility: hidden` (the `finally` never ran) and the tab share was never
+    // released. A stale frame is a far better answer than a hung capture.
+    return Promise.race([
+      new Promise<void>((res) => video.requestVideoFrameCallback(() => res())),
+      new Promise<void>((res) => setTimeout(res, 150)),
+    ]);
   }
   return new Promise<void>((res) => setTimeout(res, 150));
 }
@@ -159,6 +329,22 @@ export async function captureXO(
     return null;
   }
   if (!host) return null;
+  // COUNTED AS A HOLDER for the whole trip, prompt included (D6): from here on
+  // this capture owns a share, so a chat unmounting under it defers its release
+  // instead of stopping the stream we are about to read. The body is its own
+  // function only so this bracket can be a plain try/finally around it.
+  captures += 1;
+  try {
+    return await captureFromShare(frame, host);
+  } finally {
+    captures = Math.max(0, captures - 1);
+    releaseIfIdle();
+  }
+}
+
+/** The grab itself, once the "cannot" roads are behind us and the capture is
+ *  counted. Throws (never returns null) — every refusal was decided above. */
+async function captureFromShare(frame: HTMLIFrameElement, host: Window): Promise<PaneBitmap> {
   const live = await getStream();
   const video = document.createElement("video");
   video.muted = true;

@@ -175,15 +175,90 @@ export const Transcript = memo(function Transcript({
     // Everything the reader did NOT ask for goes through the flag.
     if (followTail.current && port.current) port.current.scrollTop = port.current.scrollHeight;
   }, [lastTurnKey, state.rev]);
+  const openCards = openCardIds(state.permissions);
+
+  // ── THE ANSWERED CARD'S RECEIPT COMES INTO VIEW (T:14738-14742) ───────────
+  //
+  // Answering a card while scrolled up to re-read the reply moved it out of the
+  // bottom stack and into its turn — and left the "✓ Allowed" receipt off
+  // screen, so the click had no visible consequence at all. T is careful about
+  // the scope: "Following the tail is the log's own rule while a run streams;
+  // otherwise the most this may do is keep the card the user was just looking at
+  // on screen — scrolling a reader who is somewhere else entirely would be the
+  // move yanking the page." Hence both conditions, `!followTail && wasVisible`.
+  //
+  // `wasVisible` has to be read BEFORE the move, and T can: it does the
+  // `appendChild` itself. React re-renders the row in its new place, so by the
+  // time a layout effect runs the old box is gone — which is why visibility is
+  // sampled for the OPEN cards on every commit and read back on the transition.
+  // Cheap: open cards are 0 or 1 in almost every state, and the run is blocked
+  // while there is one.
+  const cardWasVisible = useRef(new Map<string, boolean>());
+  const wereOpen = useRef<string[]>([]);
+  useLayoutEffect(() => {
+    const wrap = port.current;
+    const open = state.permissions
+      .filter((p) => p && p.id && (!p.decision || !p.parkedIn))
+      .map((p) => p.id);
+    // The transition, off the PREVIOUS commit's open set: a row that was open
+    // and is now filed into a turn.
+    //
+    // PER PARKED CARD, with no whole-pass gate on the open set (PR3 review,
+    // finding #4). `!open.length` was the first answer to Bugbot PR #1074 — one
+    // poll can both answer a card and open the next one, and the open card is
+    // the hard block, so the receipt must not be the last thing to move the
+    // viewport. But it also silenced the reveal for the reported case itself:
+    // answering ONE of two open cards left the other open, so the receipt of
+    // the card just clicked never came into view.
+    //
+    // T has no such gate. It gets the priority from ORDER instead:
+    // `syncPermissions` calls `parkResolvedCard` per resolved card and
+    // `pinOpenCards` after the loop, so the open card's scroll always lands
+    // last. This file now reads the same way — the open-card effect below is
+    // declared AFTER this one, which is the order layout effects run in.
+    if (wrap && !followTail.current) {
+      const parked = new Set(
+        state.permissions.filter((p) => p && p.id && p.decision && p.parkedIn).map((p) => p.id),
+      );
+      for (const id of wereOpen.current) {
+        if (!parked.has(id)) continue;
+        if (!cardWasVisible.current.get(id)) continue;
+        const el = findCard(log.current, id);
+        // `block: "nearest"` and nothing else, exactly as T has it: the least
+        // the browser can do to make the receipt reachable, rather than
+        // centring it and moving a reader who did not ask to be moved.
+        if (el) el.scrollIntoView({ block: "nearest" });
+      }
+    }
+    // …and re-sample for the next commit.
+    const seen = new Map<string, boolean>();
+    if (wrap) {
+      const portBox = wrap.getBoundingClientRect();
+      for (const id of open) {
+        const el = findCard(log.current, id);
+        if (!el) continue;
+        const box = el.getBoundingClientRect();
+        seen.set(id, box.bottom > portBox.top && box.top < portBox.bottom);
+      }
+    }
+    cardWasVisible.current = seen;
+    wereOpen.current = open;
+  }, [state.permissions, state.rev]);
+
   // An open card is a HARD BLOCK: the run cannot continue without the user, so a
   // reader who has scrolled away is waiting on something they cannot see. One of
   // the few places that scrolls unconditionally (T:14652-14663).
+  //
+  // DECLARED LAST OF THE THREE, and that placement is load-bearing: it is
+  // `pinOpenCards` running after `parkResolvedCard`'s loop (T:14774), so a poll
+  // that both answers a card and opens the next one ends at the card the run is
+  // blocked on rather than at the receipt — a receipt is a courtesy, an open
+  // card is the block.
   //
   // KEYED ON THE IDS, not the COUNT: T scrolls per card MOUNT, and one card
   // resolving while another opens in the same poll leaves the count unchanged —
   // so the new card, which the run is blocked on, never brought the scrollport
   // to itself.
-  const openCards = openCardIds(state.permissions);
   useLayoutEffect(() => {
     if (openCards && port.current) port.current.scrollTop = port.current.scrollHeight;
   }, [openCards]);
@@ -526,6 +601,17 @@ export function lastErrorKey(turns: ChatState["turns"]): string | null {
 /** T:12885-12891 — compared as a string against what the render wrote rather
  *  than built into a selector: a uuid off a url is untrusted input, and
  *  `[data-msg="…"]` with a quote in it throws. */
+/** The card node for a permission row. A `dataset` walk rather than an
+ *  attribute selector, for the reason `findTurn` below is one: a row id is
+ *  server-shaped and would have to be CSS-escaped to be safe in a selector,
+ *  and there is never more than a handful of cards to walk. */
+function findCard(log: HTMLElement | null, id: string): HTMLElement | null {
+  if (!log) return null;
+  for (const el of log.querySelectorAll<HTMLElement>("[data-perm-id]"))
+    if (el.dataset.permId === id) return el;
+  return null;
+}
+
 function findTurn(log: HTMLElement | null, uuid: string): HTMLElement | null {
   if (!log) return null;
   for (const el of log.querySelectorAll<HTMLElement>(".turn[data-msg]"))

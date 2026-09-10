@@ -12,6 +12,23 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* THE 8px GUTTER IS RESERVED IN EVERY STATE, which is what legacy gets for
+     free and what makes the single-scroller lock below invisible (visual pass
+     3, FIX-20).
+
+     `#logwrap` is `overflow-y: auto` in T and never anything else, so its
+     scrollbar gutter is always there: `clientWidth` reads 372 whatever is on
+     screen. Here `.is-locked` swaps to `overflow-y: hidden` while a tall card
+     is pinned, and THAT DROPS THE GUTTER — the content box went 372 → 380 and
+     every block in the column widened with it, so a card open or close reflowed
+     the whole transcript 8px: the plan and question cards measured 340 against
+     the Bash card's 332, option rows 310 against 302, and a right-aligned
+     receipt jumped from x 205.8 to 213.8. Native disagreed with itself as well
+     as with legacy (FIX-26 is this arithmetic, not a second bug).
+     `scrollbar-gutter: stable` reserves the space whether or not a scrollbar is
+     drawn, and it applies to `overflow: hidden` too — a hidden scroll container
+     is still a scroll container — so the lock costs the column nothing. */
+  scrollbar-gutter: stable;
   /* A SIZE CONTAINER, for one rule: the sticky tail's ceiling (R2-4) is "most
      of the scrollport", and there is no other way to say that in CSS. `vh` is
      the wrong unit here — this box is 380px tall in a cards-wall tile and a
@@ -109,23 +126,11 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* "what was sent": an affordance on the bubble, not a row of its own. */
-.chat-root .turn.user .sentbtn {
-  margin-top: 4px;
-  padding: 0;
-  font: inherit;
-  font-size: 11px;
-  color: var(--c-faint);
-  background: none;
-  border: 0;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease-out;
-}
-.chat-root .turn.user:hover .sentbtn,
-.chat-root .turn.user .sentbtn:focus-visible {
-  opacity: 1;
-}
+/* NO "what was sent" HOVER CONTROL (P3R1-7). There was a `.sentbtn` here — an
+   11px faint line under the bubble that faded in on hover — and it is gone with
+   the button: T has no such control, and the receipt lines under a turn
+   (`button.attach` below, `.annsum-row`, `.annsum-pane`) are the one door into
+   the panel, each carrying T's own title (T:11059, T:11072). */
 .chat-root .turn.assistant {
   display: flex;
   gap: 10px;
@@ -468,7 +473,17 @@
      for the content. */
   margin: 0 -20px;
   padding: 10px 20px 0;
-  background: var(--c-bg);
+  /* `--c-panel` AND NOT `--c-bg` (visual pass 3, FIX-21): the ground has to be
+     the colour of the column it interrupts, and the column is `--c-panel` —
+     legacy's `#chat` (T:1254-1284), and this sheet's `.c-chat` since FIX-12b.
+     At `--c-bg` this painted `rgb(25,26,30)` over a `rgb(30,32,37)` column in
+     dark, and in LIGHT a pure-white ~280px band across an off-white column,
+     which was the most visible single defect in the pass. The rule's own
+     argument above — an opaque ground, or the turns scrolling under it read
+     through the card's translucent tints — is right; only the token was wrong.
+     It is also half of FIX-22: the card's surface was raised to compensate for
+     a ground that was too dark, and with the ground fixed T's own value fits. */
+  background: var(--c-panel);
   /* AT MOST THE WHOLE SCROLLPORT, and the 70% ceiling that used to be here is
      GONE (R3-4, owner: "remove the 70% cap — it causes double scroll").
      R2-4 asked for the reply to stay readable beside the card and got it by
@@ -514,12 +529,19 @@
   bottom: 100%;
   height: 18px;
   pointer-events: none;
-  background: linear-gradient(to top, var(--c-bg), transparent);
+  /* The far stop is the PIN'S ground, not the page's: at `--c-bg` the gradient
+     dissolved into a colour the column never paints and the fade read as a
+     grey smear (FIX-21). The two move together, always. */
+  background: linear-gradient(to top, var(--c-panel), transparent);
 }
 /* The last turn needs somewhere to go: without this the bottom of the reply
-   sits permanently behind the pin and can never be scrolled into view. */
+   sits permanently behind the pin and can never be scrolled into view.
+   T'S OWN 12px and not the 8px this shipped with (FIX-20): `#log` is
+   `padding: 24px 20px 12px` in EVERY state in T, and there was no argument
+   anywhere for the pin needing 4px less tail room than the container gives —
+   the pin already has its own 10px of top padding for the gap it wanted. */
 .chat-root .chat-log:has(.chat-tailpin.is-pinned) {
-  padding-bottom: 8px;
+  padding-bottom: 12px;
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-root .chat-tailpin.is-pinned {
@@ -539,11 +561,15 @@
   border-radius: 14px;
   background: var(--c-card-bg);
   padding: 12px 14px;
-  /* The ring is what carries the separation on a light theme, where the card is
-     DARKER than the page and a drop shadow has almost nothing to fall on. */
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--c-card-border) 60%, transparent),
-    0 6px 20px var(--c-shadow);
+  /* T:2038's SHADOW AND NOTHING ELSE (visual pass 3, FIX-22). The `0 0 0 1px`
+     outer ring that used to lead this list is a ring T draws in NEITHER theme,
+     and the argument for it — "it carries the separation on a light theme,
+     where the card is darker than the page and a drop shadow has almost nothing
+     to fall on" — was written when the card had been pushed to `#2e313a`/`#f1f2f5`
+     to fight the tailpin's `--c-bg` ground. With FIX-21's ground and T's own
+     surface the accent border above is the separation, as it is in T. The drop
+     goes back to T's `0 4px 16px` from the lower, larger `0 6px 20px`. */
+  box-shadow: 0 4px 16px var(--c-shadow);
 }
 /* A resolved card is a RECEIPT, not a question: it keeps its place and gives up
    the fill, the shadow, the accent ring and a chunk of its padding. */
@@ -1134,7 +1160,14 @@
 }
 .chat-root .toolchip .chip-body {
   padding-right: 10px;
-  /* Aligned to the head row's text, not to the rail (R2-7). */
+  /* Aligned to the head row's text, not to the rail (R2-7).
+     A DIVERGENCE FROM T, RECORDED (visual pass 3, FIX-27): legacy's chip body
+     has `padding-left: 0`, so this 15.6px is 15.6px of indent T does not draw
+     and its `pre` measures 267px against legacy's 275px. R2-7 asked for the
+     alignment and it is the better reading; the number is written down here so
+     the narrower `pre` is a known consequence rather than a finding. Paired
+     with FIX-19 and FIX-23, which are what actually made a chip's code look
+     wrong. */
   padding-left: var(--c-chip-gutter);
 }
 /* The row clips itself; `text-overflow` is deliberately NOT set here — the row
@@ -1402,7 +1435,11 @@
   font: inherit;
   font-size: 11px;
   letter-spacing: 0;
-  line-height: 1.2;
+  /* NO `line-height`, as T:3149-3163 has none: the 1.2 that used to be here
+     made the pill 21px tall against legacy's 25px (visual pass 3, FIX-23) —
+     same padding, same font, and the only difference was this line. Inheriting
+     the column's reading line-height is T's own mechanism, so the two cannot
+     drift apart again. */
   color: var(--c-dim);
   background: var(--c-surface);
   border: 1px solid var(--c-border-strong);
@@ -1688,8 +1725,18 @@
   padding: 1px 5px;
   font-size: 13px;
 }
-.chat-root .assistant pre,
-.chat-root .perm .plan-body pre {
+/* `.perm .plan-body pre` USED TO BE ON THIS SELECTOR and is gone (visual pass
+   3, FIX-24). At specificity 0,3,1 it beat `.chat-root .perm pre` (0,2,1) and
+   handed a plan card's fenced code `white-space: pre` at 13px, so it CLIPPED:
+   `scrollWidth` measured 380 / 990 / 529 in a 288px box and the reader saw
+   `<button id="reset" type="button">Re` cut at the panel edge. T has no
+   `.perm .plan-body pre` selector at all — a `pre` in a plan card matches only
+   T:2092's `.perm pre`, which is `pre-wrap` at 12px, and T:3100's
+   `.assistant pre` does NOT reach it because a card is not inside `.assistant`.
+   The comment below is right for a REPLY, which is exactly where T applies it;
+   inside a 288px card the clipped half is unreachable without a horizontal drag
+   inside a vertical scroller. */
+.chat-root .assistant pre {
   position: relative;
   background: var(--c-pre-bg);
   color: var(--c-pre-fg);
@@ -1819,6 +1866,11 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* T's own `margin: 4px 0 0` (visual pass 3, FIX-27). This set none, so the
+     receipt sat 4px tighter under the bubble it belongs to than in T — and
+     because it is the last thing in a user turn, that 4px was the whole gap
+     between a receipt and the reply beneath it. */
+  margin: 4px 0 0;
 }
 .chat-root .annsum .annsum-row {
   display: flex;

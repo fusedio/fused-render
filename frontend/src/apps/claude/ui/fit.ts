@@ -142,12 +142,23 @@ export function readRow(row: HTMLElement): { box: RowBox; seats: Seat[] } {
   const seats: Seat[] = [];
   for (const child of Array.from(row.children)) {
     const s = getComputedStyle(child);
-    if (s.display === "none") {
+    const width = child.getBoundingClientRect().width;
+    // A CHILD THAT HOLDS NO SEAT, on T's own test: `if (!c.offsetWidth)
+    // continue; // a hidden child holds no seat` (T:7570-7576). A zero-width
+    // child pays neither its width nor A GAP — and the gap was the difference,
+    // since `display: none` was the only case skipped here, so a laid-out
+    // zero-width child was still charged one and the fold verdict came out a
+    // sub-pixel different at the boundary.
+    //
+    // `display: none` stays an explicit test rather than being inferred from
+    // the zero: it is the honest read of "not laid out" (T:12246), and the two
+    // together cover both ways a child can be nothing.
+    if (s.display === "none" || width === 0) {
       seats.push({ width: 0, marginLeft: 0, marginRight: 0, hidden: true });
       continue;
     }
     seats.push({
-      width: child.getBoundingClientRect().width,
+      width,
       marginLeft: parseFloat(s.marginLeft) || 0,
       marginRight: parseFloat(s.marginRight) || 0,
       spacer: child.classList.contains("c-spacer"),

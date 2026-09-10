@@ -150,14 +150,18 @@ export const Turn = memo(function Turn({
           ) : (
             <div className="attach">app state attached</div>
           )
-        ) : sent ? (
-          // NO RECEIPT, but the wire still carries blocks the bubble does not
-          // show (a turn from before the pane was open, a pasted attachment):
-          // there is no line to make the door, so the hover affordance stays.
-          <button type="button" className="sentbtn" onClick={() => sent(turn)}>
-            what was sent
-          </button>
         ) : null}
+        {/* AND THERE IS NO "what was sent" HOVER CONTROL, ANYWHERE (P3R1-7,
+            owner 2026-09-10). One survived here, for the turn whose wire differs
+            with no receipt line to press — defensible in itself and confusing in
+            practice: a word-shaped affordance that materialises under the
+            pointer, sits below a receipt that is already the door wherever there
+            is one, and reads as a second, wordier entrance to the same room.
+            T ships no such control at all; the receipt row and the overview
+            thumb carry the title and open the panel (T:11059, T:11072) and that
+            is the whole vocabulary. A turn with a differing wire and nothing
+            drawn under it now has no door, which is the honest answer: there is
+            no line there to make one out of. */}
       </div>
     );
   }

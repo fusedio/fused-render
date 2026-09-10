@@ -180,11 +180,18 @@ async function mutateJson<T>(
   method: "PUT" | "POST",
   url: string,
   body: unknown,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ): Promise<T> {
   const res = await fetch(url, {
     method,
-    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    // Extra headers go AFTER the two fixed ones but cannot replace them: the
+    // caller's are attribution, and `X-Fused` is the CSRF-ish marker every
+    // mutation carries.
+    headers: {
+      ...(opts?.headers ?? {}),
+      "Content-Type": "application/json",
+      "X-Fused": "1",
+    },
     body: JSON.stringify(body),
     signal: opts?.signal,
   });
@@ -194,8 +201,11 @@ async function mutateJson<T>(
 }
 
 const putJson = <T>(url: string, body: unknown) => mutateJson<T>("PUT", url, body);
-export const postJson = <T>(url: string, body: unknown, opts?: { signal?: AbortSignal }) =>
-  mutateJson<T>("POST", url, body, opts);
+export const postJson = <T>(
+  url: string,
+  body: unknown,
+  opts?: { signal?: AbortSignal; headers?: Record<string, string> },
+) => mutateJson<T>("POST", url, body, opts);
 
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
@@ -921,12 +931,49 @@ export interface NeedsInstall {
   nonstandard?: string[];
 }
 
+/**
+ * WHO IS MAKING THIS CALL, for the call log (`fused_render/calls.py`, SPEC
+ * CL-5). `runtime.js`'s `callHeaders` (R:1434-1448) sends the same four off an
+ * embedded page's own URL; a native app has no such URL, so it says so itself.
+ *
+ * `page` is what makes a request an "app call" at all — without it `calls.py`
+ * records nothing — and the two PATH values arrive percent-encoded, which is
+ * `_header_path`'s contract on the other side.
+ */
+export interface RunAttribution {
+  /** `X-Fused-Page`: the page this call belongs to, as a filesystem path. */
+  page: string;
+  /** `X-Fused-Target`: what the page is open ON (`_file`). */
+  target?: string | null;
+  /** `X-Fused-Call`: this call's correlation id. */
+  callId?: string;
+  /** `X-Fused-Supersedes`: comma-separated ids this call abandoned to be made.
+   *  Rides the SUPERSEDING request, because that leaves in the same task as the
+   *  abort — so the mark lands before the abandoned call's record is written. */
+  supersedes?: string;
+}
+
+/** The four headers, built from an attribution. Exported for the test that pins
+ *  the exact set — the names are a contract with `calls.py`, which reads them
+ *  lower-cased. */
+export function runHeaders(attr: RunAttribution | undefined): Record<string, string> {
+  if (!attr || !attr.page) return {};
+  const out: Record<string, string> = { "X-Fused-Page": encodeURIComponent(attr.page) };
+  if (attr.target) out["X-Fused-Target"] = encodeURIComponent(attr.target);
+  if (attr.callId) out["X-Fused-Call"] = attr.callId;
+  if (attr.supersedes) out["X-Fused-Supersedes"] = attr.supersedes;
+  return out;
+}
+
 export function runPy(
   py: string,
   params: Record<string, unknown>,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; attribution?: RunAttribution },
 ): Promise<RunResult> {
-  return postJson<RunResult>("/api/run", { py, params }, opts);
+  return postJson<RunResult>("/api/run", { py, params }, {
+    ...(opts?.signal ? { signal: opts.signal } : {}),
+    ...(opts?.attribution ? { headers: runHeaders(opts.attribution) } : {}),
+  });
 }
 
 // `signal` matters for callers that stat on a user's behalf and then navigate:

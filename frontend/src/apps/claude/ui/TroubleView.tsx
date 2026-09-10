@@ -10,11 +10,17 @@
 // `platform/ui/TroubleCard` — one card, one set of words, one copy block.
 import { useState } from "react";
 
-import { CLAUDE_INSTALL_COMMAND } from "@platform/lib/trouble";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 
 import type { Trouble, TroubleKind } from "../protocol/controller-api";
-import { splitTroubleMessage, troubleExplain } from "../protocol/trouble";
+import { platformKindOf, splitTroubleMessage, troubleExplain } from "../protocol/trouble";
+
+/** The chat had no target at all — a different fact and a different thing to
+ *  do, so it is not folded into `boot`'s sentence (P3R1-8). */
+export const NO_TARGET_SAID = {
+  title: "There's nothing to open a chat on.",
+  explain: "Open a file or a folder first, then start the chat.",
+};
 
 /** The kinds the chat's controller reports that the message classifier cannot
  *  infer on its own — a run id the server has forgotten says nothing about
@@ -58,6 +64,33 @@ const SAID: Partial<Record<TroubleKind, { title: string; explain: string }>> = {
     title: "The connection dropped",
     explain: "The request to Claude did not get through. Sending it again usually works.",
   },
+  /**
+   * THE CHAT DID NOT BOOT (P3R1-8, owner 2026-09-10). Two sentences: what
+   * happened, and the one thing to do about it.
+   *
+   * What was here instead was "Something went wrong" over a monospace box
+   * reading "There is no claude template for this folder." — three faults in one
+   * card. The title said nothing. The sentence named an internal thing (the
+   * folder's *template*) that a reader has no way to have an opinion about, and
+   * it was also a LIE for the commonest case: the 8 s backstop lands on this
+   * same branch when `/api/fs/stat` simply never answers, and then the folder's
+   * template is fine and the request is not. And the words were printed as if a
+   * program had said them, in the box reserved for a program's own output.
+   *
+   * So: our sentence in the title, the action in the explanation, and NO
+   * verbatim block — there are no machine words behind this failure to quote
+   * (`ClaudeChat` passes `message: ""`, and `TroubleCard` draws no box for it).
+   * "Reload" rather than "retry" because a stalled stat is usually a server that
+   * has gone away, and a button that re-runs the same request would answer the
+   * reader with the same wait — and the card DRAWS that button (R1-4):
+   * `ClaudeChat` passes `onRetry` plus the label this sentence names, so the
+   * one action the copy asks for is one press away rather than a thing the
+   * reader is told to go and do.
+   */
+  boot: {
+    title: "This chat couldn't load.",
+    explain: "Reload the page, or check that Fused Render is still running.",
+  },
 };
 
 export interface TroubleViewProps {
@@ -66,10 +99,22 @@ export interface TroubleViewProps {
    *  T:13757 spells it "using the chat on <FILE|this folder>". */
   what?: string;
   onRetry?: () => void;
+  /** Passed through to the card: what the retry button says when "Try again" is
+   *  the wrong promise (the boot failure asks for a reload). */
+  retryLabel?: string;
+  /** Words for a caller that knows more than the kind does — the boot failure's
+   *  two shapes share one kind and differ only in these (P3R1-8). */
+  said?: { title: string; explain: string };
 }
 
-export function TroubleView({ trouble, what, onRetry }: TroubleViewProps) {
-  const said = SAID[trouble.kind];
+export function TroubleView({
+  trouble,
+  what,
+  onRetry,
+  retryLabel,
+  said: saidProp,
+}: TroubleViewProps) {
+  const said = saidProp ?? SAID[trouble.kind];
   const lines = splitTroubleMessage(trouble.message);
   // Our own words when we have them, else the action sentence out of the
   // message — which is a better description than the classifier's generic one
@@ -87,9 +132,17 @@ export function TroubleView({ trouble, what, onRetry }: TroubleViewProps) {
            CLI had said them. `raw` is the part that is genuinely verbatim, and
            the part `troubleKind` classifies on either way. */
         error={lines.raw ?? trouble.message}
+        /* THE CLASSIFICATION WE ALREADY MADE. `protocol/trouble.ts` decided
+           this when the failure arrived and `platformKindOf` translates our
+           vocabulary back to the card's — so the card no longer re-derives it
+           from the sliced `raw` above, which need not still match the regex the
+           whole message did. That is what makes the card the ONE drawer of the
+           install box below. */
+        kind={platformKindOf(trouble.kind)}
         {...(said ? { title: said.title } : {})}
         {...(explain ? { explain } : {})}
         {...(onRetry ? { onRetry } : {})}
+        {...(retryLabel ? { retryLabel } : {})}
       >
         {/* The verbatim traceback is the thing a user pastes somewhere and gets
             an actual answer from, and it is not part of the one-line message
@@ -97,13 +150,21 @@ export function TroubleView({ trouble, what, onRetry }: TroubleViewProps) {
             reworded into the report. */}
         {trouble.detail ? <CopyDetail text={trouble.detail} /> : null}
       </TroubleCard>
-      {trouble.detail ? <pre className="trouble-error">{trouble.detail}</pre> : null}
-      {trouble.kind === "cli-missing" ? (
-        <div className="trouble-cmd">
-          <code>{CLAUDE_INSTALL_COMMAND}</code>
-          <CopyDetail text={CLAUDE_INSTALL_COMMAND} label="Copy" />
-        </div>
+      {/* ONE VERBATIM BLOCK PER CARD, which is all T:13676-13679 draws. The card
+          above already prints a `.trouble-error` (the CLI's own words), so a
+          second one here was a duplicate whenever `detail` and `message` carry
+          the same text — the usual case for a failure whose whole message IS
+          the traceback. Shown only when it genuinely adds something the card is
+          not already showing; the Copy button inside the card carries it
+          either way. */}
+      {trouble.detail && trouble.detail.trim() !== (lines.raw ?? trouble.message).trim() ? (
+        <pre className="trouble-error">{trouble.detail}</pre>
       ) : null}
+      {/* NO INSTALL BOX HERE. T:13681-13691 draws exactly one, inside the card,
+          and `platform/ui/TroubleCard.tsx` is that one — complete with the "Run
+          it in a terminal, then quit Fused Render and open it again" hint this
+          copy never had. Drawing our own as well put the same `curl … | bash`
+          box with its own Copy button on screen TWICE in a single card. */}
     </div>
   );
 }

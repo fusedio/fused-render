@@ -31,6 +31,13 @@ export function ViewToggle({ narrowView }: ViewToggleProps) {
       // second thing to keep in step, and there is nothing the screen reader
       // needs that the visible text does not already say (T:8884).
       aria-label={narrowView.label}
+      // The TITLE is the one exception, and T:4060-4062 ships it verbatim. The
+      // label names the DESTINATION ("Comment on preview"); this sentence is
+      // the only place that says WHY the other view matters — that the
+      // annotation tools live over there. A reader who has never armed a mode
+      // has no other way to learn it, so the hover keeps the sentence that
+      // explains the feature rather than repeating the button.
+      title="Switch between the chat and the preview pane, where the annotation tools are"
       onClick={narrowView.toggle}
     >
       {narrowView.label}

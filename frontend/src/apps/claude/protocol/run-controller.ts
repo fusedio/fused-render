@@ -49,7 +49,7 @@ import type {
   Working,
 } from "./controller-api";
 import { historyToTurns } from "./history";
-import { pollBody } from "./segments";
+import { pollBody, type SegmentView } from "./segments";
 import { isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
@@ -207,11 +207,19 @@ function emptyState(file: string | null): ChatState {
 // ---- the controller --------------------------------------------------------
 
 export function createChatController(deps: ControllerDeps): ChatController {
-  const run = deps.run || runAgent;
   const sleep = deps.sleep || nativeSleep;
   const now = deps.now || Date.now;
   const dir = deps.agentDir;
   const FILE = deps.file;
+  // Every `agent.py` call this controller makes carries the chat's own target
+  // as `X-Fused-Target`, so `fused-render calls` can be filtered by the file a
+  // conversation is about (SPEC CL-5; `protocol/agent.ts` derives the PAGE half
+  // from the script's own dir). A wrapper rather than a change at each of the
+  // ~17 call sites, and it leaves `deps.run` — the tests' seam — untouched.
+  const run =
+    deps.run ||
+    ((d, action, fields, opts = {}) =>
+      runAgent(d, action, fields, { ...opts, ...(FILE ? { target: FILE } : {}) })) as typeof runAgent;
 
   let state = emptyState(FILE);
   const listeners = new Set<() => void>();
@@ -442,10 +450,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     raw?: string,
     attachments?: Receipt[],
     appState = false,
+    /** PR3 `SendOptions.optimisticKey`: fill THAT row instead of adding one. */
+    adopt?: string,
   ): UserTurn => {
+    // ADOPTION IS A REPLACE IN PLACE, and it has to be: the optimistic row is
+    // already the last bubble in the log, and pushing a second one would leave
+    // the reader looking at their message twice while the first send is still
+    // out. A key that is no longer in the log (a Back mid-capture) is not
+    // adopted — the row it named is gone, so this send posts its own.
+    const held = !!adopt && state.turns.some((t) => t.key === adopt && t.role === "user");
     const turn: UserTurn = {
       role: "user",
-      key: nextKey("u"),
+      key: held ? (adopt as string) : nextKey("u"),
       text,
       ...(raw ? { raw } : {}),
       // The receipt rides the bubble the send posted, so the row is under the
@@ -458,8 +474,30 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // block and owes no receipt.
       ...(appState ? { appState: true as const } : {}),
     };
-    pushTurn(turn);
+    if (held) emit({ turns: state.turns.map((t) => (t.key === turn.key ? turn : t)) });
+    else pushTurn(turn);
     return turn;
+  };
+
+  /**
+   * PR3 — THE OPTIMISTIC BUBBLE, and the pair that owns it.
+   *
+   * A caller whose send path is async before it can call `sendMessage` (the
+   * annotation round photographs the pane first) posts the typed words here the
+   * moment the composer clears its box, hands the key down as
+   * `SendOptions.optimisticKey`, and the send's own bubble adopts this very row
+   * — one bubble, however long the capture took. A send that never reached the
+   * controller drops it (`dropOptimisticUser`, and `returnSend` for the roads
+   * that refuse inside).
+   */
+  const postOptimisticUser = (text: string): string => {
+    if (disposed || !text) return "";
+    return addUser(text).key;
+  };
+
+  const dropOptimisticUser = (key: string): void => {
+    if (!key || !state.turns.some((t) => t.key === key)) return;
+    dropTurn(key);
   };
 
   /** T:13722 `addNote` — the ◍ / ◆ / ⏹ rows. */
@@ -769,12 +807,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
        *  apart from the segment tail so a `done` poll with an empty body
        *  cannot wipe the bubble it already filled. */
       flatText: string;
+      /** THE LAST VIEW THIS SLOT PRODUCED, handed back to `pollBody` so a tool
+       *  row whose status/output/images have not moved keeps its `seg` OBJECT
+       *  and `ToolChip`'s `memo` hits (T:15549-15554). Per slot, because the
+       *  carry-over is keyed by `cardKey`, which is per container. */
+      view: SegmentView | null;
     }
     const chunks = new Map<number, Chunk>();
     const chunkAt = (slot: number): Chunk => {
       let c = chunks.get(slot);
       if (!c) {
-        c = { key: null, seq: 0, segMode: false, tailText: null, flatText: "" };
+        c = { key: null, seq: 0, segMode: false, tailText: null, flatText: "", view: null };
         chunks.set(slot, c);
       }
       return c;
@@ -1007,7 +1050,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // The container number is allocated only once there is something to
           // number, as T does inside `renderSegments` (T:15642) — a turn whose
           // first polls are empty used to burn one per tick.
-          const body = pollBody(mySegs, myText, chunk.seq || cardSeq + 1);
+          // `chunk.view` is the same slot's previous view: this is the 2.5×/s
+          // path, and the one a streaming `Write` chip's uncapped `content` was
+          // being re-serialised on every tick of.
+          const body = pollBody(mySegs, myText, chunk.seq || cardSeq + 1, chunk.view);
+          if (body.mode === "segments") chunk.view = body.view;
           // The flat body as of THIS poll, whatever mode it came in — T keeps
           // `fullText.slice(textBase)` per poll (T:16288). Read outside the
           // `mode === "text"` branch so a reply that flipped
@@ -1243,10 +1290,28 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * from those left the tray empty and the map holding the only handle to the
    * user's pictures, which is the picture disappearing (Bugbot, PR #1064).
    */
-  const returnSend = (text: string, opts: SendOptions): void => {
+  const returnSend = (text: string, opts: SendOptions, refused = false): void => {
+    // The optimistic bubble goes with it: this send never happened, so the row
+    // its caller put up ahead of the capture has nothing behind it. Dropped
+    // HERE rather than by the caller, because the caller cannot tell a refusal
+    // from a send that got as far as `addUser` — and adoption has already made
+    // the two the same row (Bugbot, PR #1074).
+    if (opts.optimisticKey) dropOptimisticUser(opts.optimisticKey);
     deps.onSendReturned?.({
       text,
+      // REFUSED means the message was turned away before `addUser` ever ran:
+      // there is no bubble and no queue entry holding the words, so the caller
+      // has to put them back in the box or they are gone (Bugbot, PR #1074). A
+      // send that got as far as a bubble and then failed is NOT this: it left
+      // the failure in the transcript, which is where the reader stays to read
+      // it (`sendMessage`'s catch).
+      ...(refused ? { refused: true as const } : {}),
       ...(opts.attachments ? { attachments: opts.attachments } : {}),
+      // WHICH send came back. A counter could not tell "this send returned"
+      // from "some send returned while this one was out", and a second submit
+      // inside the first one's capture window made the first roll back a turn
+      // the agent had already taken (`SendOptions.sendId`).
+      ...(opts.sendId ? { sendId: opts.sendId } : {}),
     });
   };
 
@@ -1258,13 +1323,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // (ClaudeChat's boot walks it), so refusing here is the one place that can
     // be sure (Bugbot, PR #1061).
     if (disposed) {
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     // ONE TURN AT A TIME, and the refused one is refused OUT LOUD: its pictures
-    // are already out of the tray by now.
+    // are already out of the tray by now, and so are its WORDS.
     if (sending) {
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     sending = true;
@@ -1276,10 +1341,21 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const blocks = opts.blocks || [];
     if (!text && !blocks.length) {
       sending = false;
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     clearTrouble();
+    // NO "starting" STATUS FOR THE ROUND TRIP, deliberately (D2, QA PR #1061,
+    // closed the other way in PR3). `appStateBlock` + `live_host` + `send` /
+    // `start` is a multi-second await with no run id yet, and QA saw the button
+    // still read Send while a second Enter vanished into the `sending` gate. T
+    // behaves the same way on the first half: `setRunningUi(true)` is pollLoop's
+    // (T:16208), so the Stop face arrives only with the run id — a Stop with no
+    // run to stop is a lie. The second half — the eaten Enter — is the
+    // composer's to fix, and PR3's send door did (ClaudeChat `dispatchSend`):
+    // the seat reads Send, disabled, and the words stay in the box until the
+    // run is live. Emitting "starting" here would have flipped that seat to
+    // Stop (Composer treats it as running) and undone the door.
     // The mode this turn is SPAWNED in, before anything is awaited: it is the
     // live mode until a poll reports one, and a card can open on the very first
     // poll (T:16128 `permission_mode`).
@@ -1302,7 +1378,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // `stripBlocks(outgoing)` for a wordless send is unaffected by the block
     // above — `wire.ts` strips every `<live-app-state>` — so a send that is
     // only pictures still reads as pictures.
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing, opts.attachments, !!live);
+    const bubble = addUser(
+      text || stripBlocks(outgoing),
+      outgoing,
+      opts.attachments,
+      !!live,
+      opts.optimisticKey,
+    );
     let started = false;
     try {
       let runId = "";
@@ -1408,13 +1490,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   async function sendFollowUp(text: string, opts: SendOptions = {}): Promise<void> {
     if (disposed) {
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     const gen = logGen;
     const blocks = opts.blocks || [];
     if (!text && !blocks.length) {
-      returnSend(text, opts);
+      returnSend(text, opts, true);
       return;
     }
     // Every send carries the app state, a follow-up included: T calls
@@ -1422,6 +1504,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // three tool calls into a turn is describing a pane that has moved since
     // the opening one.
     const live = await appStateBlock();
+    // THE READER MAY HAVE LEFT DURING THAT AWAIT. `newChat` (Back) cleared the
+    // transcript and the queue while the app-state block was being built, and a
+    // bubble posted now would land in the LANDING — a conversation this text
+    // was never typed into — with nothing downstream willing to take it back
+    // (every failure road below is guarded on `logGen === gen` for exactly
+    // this reason). Nothing to hand back either: Back strands the composer's
+    // own text by its own rule (ClaudeChat `onBack`). Same for a dispose.
+    if (logGen !== gen || disposed) return;
     // THROUGH `composeBlocks`, never appended: the tray's `<pane-shot>` is
     // already in `blocks`, and `[...blocks, live]` put the state AFTER the
     // pictures — §D's reading order is state → pane-shot → annotations → text.
@@ -1433,7 +1523,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // once the INBOX has taken it. Bumping here left a failed send with a
     // counter pollLoop read as a landed follow-up, and the reply split around
     // the gap where the rolled-back row had been (Bugbot, PR #996).
-    const bubble = addUser(text || stripBlocks(outgoing), outgoing, opts.attachments, !!live);
+    const bubble = addUser(
+      text || stripBlocks(outgoing),
+      outgoing,
+      opts.attachments,
+      !!live,
+      opts.optimisticKey,
+    );
     // KEYED BY A SEQ, not by the text: two identical follow-ups ("again") used
     // to collapse into one entry, and the first ack cleared both — so the second
     // one's hint left the composer while the message was still in flight.
@@ -1485,8 +1581,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
       runId = activeRun;
     }
     if (!runId) {
-      giveBack();
-      addError("Could not send: no run to attach this message to.");
+      // GUARDED LIKE THE RESPAWN ROAD BELOW (`logGen === gen`, :1443). This road
+      // has slept up to FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS, which is ample
+      // room for a Back (or an `openOtherSession`) to land — and an unguarded
+      // handback posts the red trouble card and re-injects the text into
+      // whatever transcript is now current: the landing, or a different
+      // conversation entirely. A stale failure stays quiet; `newChat` has
+      // already cleared the queue and the bubble it would give back
+      // (QA, PR #1061).
+      if (logGen === gen) {
+        giveBack();
+        addError("Could not send: no run to attach this message to.");
+      }
       return;
     }
     try {
@@ -1540,8 +1646,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
         return;
       }
       if (!res || !("sent" in res) || !res.sent) {
-        giveBack();
-        addError("Could not send: the session ended before this reached it.");
+        // Same guard, same reason as the `!runId` road above.
+        if (logGen === gen) {
+          giveBack();
+          addError("Could not send: the session ended before this reached it.");
+        }
         return;
       }
       // A follow-up landed as its own bubble above — bump so a pollLoop
@@ -1557,8 +1666,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
       entry.landed = true;
       followupSeq++;
     } catch (err) {
-      giveBack();
-      addError("Could not send: " + (err instanceof Error ? err.message : String(err)));
+      // Same guard, same reason as the two roads above: a `send` that rejects
+      // after the reader has left must not repaint a transcript it no longer
+      // describes.
+      if (logGen === gen) {
+        giveBack();
+        addError("Could not send: " + (err instanceof Error ? err.message : String(err)));
+      }
     }
   }
 
@@ -1735,7 +1849,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // the CLI is in the new mode from this decision on, and the next card must
     // not offer the escalation this one just granted.
     if (res && "mode" in res && res.mode) {
-      setParam({ permission: res.mode });
+      // "replace", for the reason T:14574-14581 gives at its twin below: this
+      // write is a CONSEQUENCE of a decision, not a place anyone navigated to,
+      // and it lands behind an await — so the store's first-change push would
+      // mint a history entry whose whole content is the mode the session has
+      // already switched into, and the Back that undid it would do nothing
+      // visible except put the picker back into a mode the CLI has left. The
+      // picker's own dropdown still pushes: choosing a mode by hand IS a step.
+      setParam({ permission: res.mode }, "replace");
       setPermissionMode(res.mode);
     }
   }
@@ -1774,7 +1895,18 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // (T:14548-14580).
     if (res && "decision" in res && res.decision === "allow") {
       const landed: PermissionMode = ("mode" in res && res.mode) || "prompt";
-      setParam({ permission: landed });
+      // T:14580 writes this one with `{history:"replace"}` and spends six lines
+      // on why: "The write is a CONSEQUENCE of approving a plan, not a place
+      // anyone navigated to, and it lands behind `await runPython` — so the
+      // first-change-push rule (D8/PR-3) would otherwise mint a history entry
+      // whose whole content is the mode the session already switched into, and
+      // the Back that undid it would do nothing visible."
+      //
+      // Worse than cosmetic here: Back landing on that entry put "plan" back in
+      // the picker for a session that had already left plan mode, so the next
+      // per-turn spawn re-entered it — the loop T's approval write exists to
+      // break, re-created by the history entry.
+      setParam({ permission: landed }, "replace");
       // The CLI leaves plan mode the instant it sees the plain allow, so the live
       // mode has to leave it too — otherwise every card for the rest of the run
       // still thinks it is mid-plan and withholds the escalation (T:14548-14580).
@@ -2159,6 +2291,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     },
     sendMessage,
     sendFollowUp,
+    postOptimisticUser,
+    dropOptimisticUser,
     stopRun,
     decidePermission,
     answerQuestion,

@@ -122,7 +122,24 @@ export function LeftModePicker({ modes, params, leftMode }: LeftModePickerProps)
             ▾
           </span>
         </DropdownMenuTrigger>
-        <DropdownMenuContent className="c-leftmodepop" align="end" sideOffset={6}>
+        <DropdownMenuContent
+          className="c-leftmodepop"
+          align="end"
+          sideOffset={6}
+          // REFOCUS ONLY ON A KEYSTROKE CLOSE, which is T:5549-5555's whole
+          // rule, stated there with its reason: "Only when the close was the
+          // user's own keystroke: stealing focus back on an outside click would
+          // yank it off whatever they actually clicked." Base UI returns focus
+          // to the trigger on EVERY close by default, so clicking into the
+          // transcript put the caret back onto this pill.
+          //
+          // `finalFocus` is handed the interaction type, so the condition is
+          // expressible directly instead of through a close reason we would
+          // have to track ourselves: `true` takes Base UI's default (the
+          // trigger, or whatever held focus before), `false` leaves focus where
+          // the pointer just put it.
+          finalFocus={(closeType) => closeType === "keyboard"}
+        >
           <DropdownMenuRadioGroup
             value={current.mode}
             onValueChange={(mode) => {

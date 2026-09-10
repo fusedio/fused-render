@@ -34,6 +34,7 @@ const {
   frameOffset,
   isNativeOff,
   learnTopOrigin,
+  noteSourcesProbe,
   resetNativeOffForTests,
   resetTopOriginForTests,
   screenRect,
@@ -527,5 +528,41 @@ describe("captureNative the success road (T:9878, 9884, 9944)", () => {
     await captureNative(makeFrame(), undefined, { overlays: () => [mine as unknown as Element] });
     expect(duringMine).toBe("hidden");
     expect(duringFlash).toBe("visible");
+  });
+});
+
+describe("the boot probe's own half of nativeOff (T:7840-7847)", () => {
+  test("`screenshot.available === false` closes the native road before any attempt", () => {
+    resetNativeOffForTests();
+    expect(isNativeOff()).toBe(false);
+    noteSourcesProbe({ screenshot: { available: false } });
+    expect(isNativeOff()).toBe(true);
+  });
+
+  test("anything INCONCLUSIVE leaves the road open", () => {
+    // T reads `available === false` and nothing else — `granted` is deliberately
+    // not consulted, since on macOS it is the first shot that raises the Screen
+    // Recording prompt. So a probe that cannot answer must not shut a working
+    // feature.
+    for (const sources of [
+      null,
+      undefined,
+      {},
+      { screenshot: null },
+      { screenshot: {} },
+      { screenshot: { available: true } },
+      { screenshot: { available: null } },
+    ]) {
+      resetNativeOffForTests();
+      noteSourcesProbe(sources as never);
+      expect(isNativeOff()).toBe(false);
+    }
+  });
+
+  test("it does not UNDO a 409 — the probe only ever closes the road", () => {
+    resetNativeOffForTests();
+    noteSourcesProbe({ screenshot: { available: false } });
+    noteSourcesProbe({ screenshot: { available: true } });
+    expect(isNativeOff()).toBe(true);
   });
 });

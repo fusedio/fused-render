@@ -44,6 +44,38 @@ import { finishedTailText, parseTailKey, streamingTailOf } from "./protocol/segm
 import { createTyper, type Typer } from "./protocol/typer";
 import { createFrameClock } from "./ui/frameClock";
 import {
+  AnnBar,
+  AnnChips,
+  barFit,
+  AnnPins,
+  AnnPopover,
+  createRecorder,
+  isSendableNow,
+  NAV_LOCKED_REASON,
+  pathOf,
+  recClockText,
+  RecControls,
+  transcribe,
+  useAnnotations,
+  walkthroughOwns,
+  warmTranscriber,
+  type AnnAnchor,
+  type AnnBarHandlers,
+  type AnnotationsApi,
+  type AnnRecorder,
+  type Annotation,
+  type RecAnchor,
+  type RecAnnotation,
+  type Recorder,
+} from "./ann";
+import { captureAudio, captureSources } from "@platform/lib/capture-audio";
+import { formatAnnotations, type AnnotationWire } from "./protocol/wire";
+import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
+import {
+  CHAT_FRAME_FALLBACK_MS,
+  ChatFramePlaceholder,
+} from "@platform/ui/ChatFrame";
+import {
   AppPane,
   createAppStateWatcher,
   footnoteFor,
@@ -56,6 +88,7 @@ import {
   usePaneState,
   useSplit,
   ViewToggle,
+  type PaneNoun,
   type PaneSrcFlags,
 } from "./pane";
 import {
@@ -68,14 +101,17 @@ import {
   Home,
   openCardIds,
   resetCardPolicy,
+  liveViewable,
   SentPop,
   settleReceipts,
   ShotViewer,
   Topbar,
   Transcript,
+  NO_TARGET_SAID,
   TroubleView,
   ATTACH_API,
   mergeSendOptions,
+  sendBlocks,
   useAttachments,
   useFitStrip,
   useComposerDefaults,
@@ -84,6 +120,7 @@ import {
   type TranscriptTail,
   type Viewable,
 } from "./ui";
+import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
 
@@ -217,6 +254,26 @@ export function inFlightSizeForTests(): number {
 }
 
 /**
+ * TEST-ONLY WINDOW ONTO THE ANNOTATION SUBSYSTEM (`ann`, below), the same idiom
+ * `inFlightForTests` is and for the same kind of reason.
+ *
+ * A note is MADE by a click inside the framed app — six listeners in a document
+ * `react-test-renderer` does not have — so the seams this file owns (the strip's
+ * arm, the chip row, the send's `<annotations>` block and its badged overview,
+ * Escape's discard, `enterNoPane`) had no way to be driven from a test at all.
+ * They are integration wiring: the pieces each have their own suite, and what is
+ * left untested is precisely how this file joins them.
+ *
+ * `ann/*`'s own suites cover the making of a note; this hands the coordinator
+ * over so a test can make one and then assert on what THIS file did with it.
+ */
+let annForTests: AnnotationsApi | null = null;
+
+export function annotationsForTests(): AnnotationsApi | null {
+  return annForTests;
+}
+
+/**
  * Resolve the two things every hook below needs — the claude template's folder
  * and the param store — before the chat itself mounts, so the body's hook list
  * never has to branch. A null `agentDir` is the one hard stop: with no `agent.py`
@@ -234,11 +291,25 @@ export function ClaudeChat(props: ClaudeChatProps) {
     }
     let live = true;
     setAgentDir(undefined);
+    // AND A BACKSTOP, which legacy had as `CHAT_FRAME_FALLBACK_MS` (8 s) on the
+    // frame's own cover: a `statPath` that never settles — a stalled server, a
+    // request the browser never answers — left the box blank FOR EVER, with no
+    // road to the `TroubleView` branch below that exists to explain exactly
+    // this. Losing the race resolves to `null`, which is that branch.
+    //
+    // The same 8 s, and the same constant, so the two waits cannot drift apart.
+    const backstop = setTimeout(() => {
+      if (live) setAgentDir(null);
+    }, CHAT_FRAME_FALLBACK_MS);
     void resolveAgentDir(file).then((dir) => {
-      if (live) setAgentDir(dir);
+      if (live) {
+        clearTimeout(backstop);
+        setAgentDir(dir);
+      }
     });
     return () => {
       live = false;
+      clearTimeout(backstop);
     };
   }, [file]);
 
@@ -267,23 +338,59 @@ export function ClaudeChat(props: ClaudeChatProps) {
   const params: ParamsStore = props.params === "url" ? urlStore! : props.params;
 
   if (agentDir === undefined) {
-    // The template lookup is in flight. The host is still holding its own cover
-    // over this box (ChatFrame's skeleton), so a second skeleton on a second
-    // clock is exactly what 00 §1e's "one wait, one look" forbids.
-    return <div className={rootClass(props)} data-variant={variantOf(props)} />;
+    // THE TEMPLATE LOOKUP IS IN FLIGHT, and this branch used to be an EMPTY BOX
+    // on the argument that "the host is still holding its own cover over this
+    // box (ChatFrame's skeleton)". That is true flag-OFF, where the host really
+    // does frame a booting document — but flag-on there is no frame and no
+    // cover: `ChatMount`'s `Suspense` fallback covers only the CHUNK LOAD, and
+    // it has already resolved by the time this component is running its own
+    // stat. So a first mount for a folder drew a bare `.chat-root` on the host
+    // background for the length of one `/api/fs/stat`, and a cold cards wall of
+    // six drew six empty tiles where legacy drew six skeletons.
+    //
+    // `placeholderFor`'s node — the SAME `ChatFramePlaceholder` that
+    // `Suspense` shows and that `ChatFrame` holds over a booting frame — so the
+    // two waits look like one wait, which is what 00 §1e's "one wait, one look"
+    // actually asks for. The reader sees the chunk's skeleton become the stat's
+    // skeleton with no flash of an empty box between them.
+    return <ChatFramePlaceholder className={rootClass(props)} />;
   }
   if (agentDir === null) {
     return (
       <div className={rootClass(props)} data-variant={variantOf(props)}>
         <div className="chat-logwrap">
           <div className="chat-log">
+            {/* TWO PLAIN SENTENCES AND NOTHING ELSE (P3R1-8, owner
+                2026-09-10). This branch is reached two ways — no target at
+                all, and a folder whose template never resolved, the 8 s
+                backstop above included — and it used to say "Something went
+                wrong" over a monospace box reading "There is no claude
+                template for this folder.": a title that says nothing, a
+                sentence naming an internal thing the reader cannot have an
+                opinion about, and a claim that is simply false when what
+                actually happened is that `/api/fs/stat` never answered. The
+                copy lives in `ui/TroubleView`'s table with every other trouble
+                sentence; `message: ""` is what takes the verbatim box away,
+                because there are no machine words behind this failure to
+                quote — and the Copy buttons no longer invent any either
+                (R1-3): `troubleReport` used to print `Error:` over
+                "(no message)", so this card's clipboard handed on the exact
+                string the screen had just stopped saying. It now carries what
+                it actually knows — what the app was doing, and where to read
+                more.
+
+                AND THE ACTION THE COPY NAMES IS A BUTTON (R1-4). The sentence
+                asks the reader to reload the page; without `onRetry` the card
+                drew no button at all, so it named an action it did not offer
+                (`main.tsx`'s boot card, the other one, has always passed one).
+                Only when there IS a target: "there's nothing to open a chat
+                on" is answered by opening a file, and a Reload button under
+                that sentence would be a door back to the same empty room. */}
             <TroubleView
-              trouble={{
-                kind: "generic",
-                message: file
-                  ? "There is no claude template for this folder."
-                  : "No target was given to open a chat on.",
-              }}
+              trouble={{ kind: "boot", message: "" }}
+              {...(file
+                ? { onRetry: () => location.reload(), retryLabel: "Reload the page" }
+                : { said: NO_TARGET_SAID })}
               what={file ? "opening the chat on " + file : "opening the chat"}
             />
           </div>
@@ -369,7 +476,38 @@ function ChatBody(props: ChatBodyProps) {
     () => paneFrame.current ?? hostFrame(),
     [hostFrame],
   );
-  const [watcher] = useState(() => createAppStateWatcher(appFrame));
+  /** The pane's noun, for the app-state block. A REF because `usePaneState` is
+   *  called below this line and the watcher outlives every render — and because
+   *  the noun RESOLVES late anyway (the `app.py` decision is a round trip), so
+   *  even an ordering that allowed a value would be reading a stale one. The
+   *  watcher asks at block time (`appState.ts:231`, `:533`), which is what makes
+   *  a lazy read the right shape here. */
+  const paneNounRef = useRef<PaneNoun>("preview");
+  const [watcher] = useState(() =>
+    createAppStateWatcher(appFrame, {
+      // THE THREE OPTIONS THIS WAS ALWAYS MEANT TO CARRY. `createAppStateWatcher`
+      // has taken them since it was written; the call site passed none, so all
+      // three defaults were quietly in force.
+      //
+      // "app", not "preview", for an app folder (T:5352-5411, T:5160-5173): the
+      // block was telling the model the user's running app was "the preview".
+      paneNoun: () => paneNounRef.current,
+      // THE OUTLINE'S NODES CARRY A `path` (T:4977-4990, T:5065-5082). The
+      // block's own preamble tells the model `path` is the same anchorPath the
+      // pins use (`appState.ts:549-551`) and no node had one — so a pin could
+      // not be joined to an outline node, and D146's single-identifier promise
+      // was broken from the outline side. `ann/geometry`'s `pathOf` is the
+      // builder the pins themselves use, which is what makes the two the same
+      // identifier rather than two spellings that happen to agree.
+      pathOf,
+      // AND THE OUTLINE GOES TO A FILE (T:5177-5218). Without a shots dir the
+      // watcher keeps it inline and warns `app-state outline kept inline: no
+      // screenshot directory` on EVERY send — so the CLI re-read the whole
+      // outline on every later turn, which is the exact cost T:5177-5218 exists
+      // to avoid.
+      shotsDir: () => shotsDir(agentDir),
+    }),
+  );
   // The framed document's console stays the app's own once we are gone.
   useEffect(() => () => watcher.dispose(), [watcher]);
   // A thumbnail's pane must neither pull the keyboard nor be recorded as the
@@ -384,12 +522,28 @@ function ChatBody(props: ChatBodyProps) {
     [props.preview, props.noOpen],
   );
   const noPaneFlag = useRef(false);
-  // `enterNoPane`'s steps 1, 2 and 5 are the ANNOTATION half of the teardown and
-  // land in PR3 (AppPane's header spells the order out and why it is an order).
-  // Steps 3 and 4 fall out of `noPane` here — `useNarrowView` answers `""` for a
-  // no-pane target and the root's own `nopane` class carries the rest — and step
-  // 6 is `AppPane`'s early return.
-  const noPaneSteps = useMemo(() => ({}), []);
+  /**
+   * `enterNoPane`'s steps 1, 2 and 5 — the ANNOTATION half of the teardown, and
+   * an ORDER rather than a set (AppPane's header spells out why). Steps 3 and 4
+   * fall out of `noPane` here — `useNarrowView` answers `""` for a no-pane
+   * target and the root's own `nopane` class carries the rest — and step 6 is
+   * `AppPane`'s early return.
+   *
+   * Through `annRef`, because this object is built BEFORE the hook it drives:
+   * the pane resolves the target the annotation layer points at, so the pane's
+   * state has to exist first. `[]`-dep, so the teardown the pane closed over is
+   * never a stale render's.
+   */
+  const annRef = useRef<AnnotationsApi | null>(null);
+  const noPaneSteps = useMemo(
+    () => ({
+      clearAnnotations: () => annRef.current?.clearAnnotations(),
+      renderAnn: () => annRef.current?.render(),
+      annSetMode: (on: boolean) => annRef.current?.setMode(on),
+      rescueComposer: () => annRef.current?.rescueComposer(),
+    }),
+    [],
+  );
   const pane = usePaneState({
     file,
     chatOnly,
@@ -400,8 +554,34 @@ function ChatBody(props: ChatBodyProps) {
     watcher,
     noPaneSteps,
   });
-  const narrowView = useNarrowView({ params, noPane: pane.noPane });
-  const split = useSplit({ params, narrow: narrowView.narrow, noPane: pane.noPane });
+  const narrowView = useNarrowView({
+    params,
+    noPane: pane.noPane,
+    // MEASURE THIS CHAT'S BOX, not the window (FIX-12). Legacy's media query
+    // was evaluated inside the chat's own iframe, so it answered about the
+    // PANEL; a window-scoped query meant that at a 380px panel in a 1280px
+    // window not one narrow rule fired. `.chat-root` is the box the iframe's
+    // viewport used to be.
+    boxRef: rootRef,
+    // T:8940 — arriving in the narrow CHAT view disarms: the toggle that would
+    // undo the mode is hidden there, and an armed mode behind a hidden toggle
+    // keeps the frame's click swallower live over a document nobody can see.
+    onArriveChat: () => annRef.current?.arriveNarrowChat(),
+    onRemeasure: () => annRef.current?.remeasure(),
+  });
+  // The noun the app-state block reads (see `paneNounRef`'s own note). Written
+  // on every render rather than in an effect: the watcher pulls it lazily at
+  // BLOCK time, so what matters is that the ref is current whenever a send
+  // happens, not that a commit has been observed.
+  paneNounRef.current = pane.paneNoun;
+  const split = useSplit({
+    params,
+    narrow: narrowView.narrow,
+    noPane: pane.noPane,
+    // Every frame of a divider drag moves the frame's box, and every pin is
+    // placed against it (T:8849's resize, per tick).
+    onDragTick: () => annRef.current?.remeasure(),
+  });
   // `has_pane` is the PAGE's answer and is sent on every turn (T:16609). Read
   // through a ref so a pane resolving does not rebuild the controller.
   //
@@ -563,8 +743,41 @@ function ChatBody(props: ChatBodyProps) {
   // reference to release.
   useEffect(() => dropSpent, [dropSpent]);
   const attachBack = useRef<((items: readonly Attachment[]) => void) | null>(null);
+  /** WHICH sends have come BACK, by `SendOptions.sendId` — see
+   *  `onSendReturned` below, and `sendId`'s own note in controller-api. */
+  const returnedSends = useRef(new Set<string>());
+  const sendSeq = useRef(0);
+  /** THE SEND WINDOW'S LATCH. A ref rather than state, because the composer
+   *  reads it in the very tick it calls `onSend` — before React can re-render
+   *  with a new prop (`dispatchSend`). */
+  const sendBusy = useRef(false);
+  /** WHICH send holds the latch, by `SendOptions.sendId`. A release is decided
+   *  long after it was armed — at the end of a turn, or by a status the store
+   *  reports — and unowned, one send's release would open the door in the
+   *  middle of another send's capture window. */
+  const sendHolder = useRef("");
+  /** The send that has been TAKEN but whose run is not live yet: the window the
+   *  status effect below closes (`dispatchSend`). */
+  const liveWait = useRef("");
+  /** The same fact as state, for the send button's `disabled`. */
+  const [sendLocked, setSendLocked] = useState(false);
+  const releaseSend = useCallback((id: string) => {
+    if (sendHolder.current !== id) return;
+    sendHolder.current = "";
+    liveWait.current = "";
+    sendBusy.current = false;
+    setSendLocked(false);
+  }, []);
   const [stranded, setStranded] = useState<{ text: string; seq: number } | null>(null);
   const strandSeq = useRef(0);
+  /** Words that have nowhere else to be go back in the BOX — the follow-up the
+   *  CLI never delivered (`onStranded`) and a send the controller refused
+   *  before it ever reached `addUser` both land here. */
+  const strand = useCallback((text: string) => {
+    if (!text) return;
+    strandSeq.current += 1;
+    setStranded({ text, seq: strandSeq.current });
+  }, []);
 
   // One collapse policy per MOUNT, not per module: six compact mounts on the
   // cards wall share this module and their chip keys collide by construction
@@ -584,12 +797,7 @@ function ChatBody(props: ChatBodyProps) {
         onActivity: stampChatActivity,
         // Follow-ups the CLI never delivered come BACK to the box they were
         // typed in rather than being dropped (`still_queued`, T:15911).
-        onStranded: (texts) => {
-          const text = texts.filter(Boolean).join("\n");
-          if (!text) return;
-          strandSeq.current += 1;
-          setStranded({ text, seq: strandSeq.current });
-        },
+        onStranded: (texts) => strand(texts.filter(Boolean).join("\n")),
         // THE PUSH CHANNEL. Read at SEND time from the watcher, which is the
         // same object the pull channel answers through — `blockForSend` does
         // push → offload → block, in T's order (T:16483, 5177-5218). Gated on
@@ -607,11 +815,32 @@ function ChatBody(props: ChatBodyProps) {
         // PR4 hangs the artifacts read and the snapshot invalidation here
         // (T:16229, 16321-16330); the ticks already run on T's clock.
         onArtifactsTick: () => {},
-        onRunEnded: () => {},
+        // T:10608/16341 — the run this turn started is over, so the annotations
+        // it carried are HANDLED: drop them. Even on error, deliberately (T's
+        // own note): an errored run may not have acted on them, but they were
+        // already stamped `sent` and folded into the transcript — re-annotating
+        // is one click, silently re-sending is not.
+        onRunEnded: () => annRef.current?.resolveSent(),
         // The agent saw none of it, so the pictures come back to the tray —
         // never revoked on this road, because those very thumbnails are what the
         // returned chips show (T:16693-16720).
-        onSendReturned: ({ attachments }) => {
+        onSendReturned: ({ attachments, sendId, text, refused }) => {
+          // A REFUSED SEND OWES THE WORDS BACK. The composer cleared its box on
+          // the keystroke and the controller turned the message away before it
+          // ever reached `addUser`, so there is no bubble and no queue entry
+          // holding them: unless they come back to the box they are simply
+          // gone (Bugbot, PR #1074). The latch below makes this window hard to
+          // reach from the composer; ✓ Done and the walkthrough share the seat,
+          // and a refusal must never cost the user a sentence.
+          if (refused) strand(text);
+          // T:16068 — THE ROLL-BACK SIGNAL, and it NAMES ITS SEND: the agent saw
+          // none of THAT message, which is what its notes' `sent = 0` and its
+          // overview's revoke hang off. It used to be a counter, and a counter
+          // cannot tell "my send came back" from "a send came back while mine
+          // was still out" — a second submit inside the first send's capture
+          // window bumped it, and the first send rolled back a turn the agent
+          // had already taken (Bugbot, PR #1074).
+          if (sendId) returnedSends.current.add(sendId);
           if (!attachments) return;
           const back = inFlight.current.get(attachments);
           if (!back) return;
@@ -619,7 +848,7 @@ function ChatBody(props: ChatBodyProps) {
           attachBack.current?.(back);
         },
       }),
-    [agentDir, file, params],
+    [agentDir, file, params, strand],
   );
   useEffect(() => () => controller.dispose(), [controller]);
 
@@ -628,6 +857,28 @@ function ChatBody(props: ChatBodyProps) {
     controller.getState,
     controller.getState,
   );
+
+  /**
+   * THE DOOR OPENS WHEN THE RUN IS LIVE, not when the controller took the
+   * message.
+   *
+   * `sendMessage` sets its own `sending` gate before its first await and holds
+   * it for the whole turn, but the STATUS the composer reads stays `idle` until
+   * `pollLoop` reports — one `start` round-trip away. A line typed inside that
+   * window read as "no run yet", so the composer sent it as a fresh message
+   * rather than a follow-up: the controller refused it out loud, and the
+   * refusal took the optimistic bubble down with it. The words were nowhere
+   * (Bugbot, PR #1074).
+   *
+   * So the latch stays shut across the start window and lifts here, on the
+   * first status that is not `idle` — from which point the composer routes the
+   * same keystroke to `sendFollowUp`, which the run can actually take.
+   * `dispatchSend`'s own release is the other end: a send that never went live
+   * (refused, or a `start` that failed) must not latch the box for ever.
+   */
+  useEffect(() => {
+    if (liveWait.current && state.status !== "idle") releaseSend(liveWait.current);
+  }, [state.status, releaseSend]);
 
   // ── the attachments this message will carry (PR2, inventory 03) ────────────
   //
@@ -689,6 +940,306 @@ function ChatBody(props: ChatBodyProps) {
     };
   }, []);
 
+  // ── the annotations this message will carry (PR3, inventory 02) ───────────
+  //
+  // `useAnnotations` is the door: it owns the store, the mode machine, the
+  // target poll, the overlay and the six listeners inside the framed document.
+  // What is left here is the SEAMS — eight of them, listed in `ann/README.md` —
+  // and the two facts only this file knows: which composer is on screen, and
+  // whether a send is allowed right now.
+  const viewingRef = useRef(viewing);
+  viewingRef.current = viewing;
+  const statusRef = useRef(state.status);
+  statusRef.current = state.status;
+  /** T:8505 `annAutoSubmit` — the composer that is actually mounted (home or
+   *  chat, never both) hands its own send in here. */
+  const submitBox = useRef<((seed?: string) => boolean) | null>(null);
+  /** `.c-leftview`, from the pane. The pins, the ring and every popover
+   *  coordinate are measured against this box and not against `.c-left`
+   *  (T:6888). */
+  const [stage, setStage] = useState<HTMLElement | null>(null);
+
+  /**
+   * THE VOICE WALKTHROUGH's state machine, built once. Its ports read `annRef`
+   * rather than closing over the hook, because the two need each other: the
+   * coordinator asks the recorder whether a mic is live (`AnnRecorder`), and the
+   * recorder writes its marks into the coordinator's store.
+   *
+   * `notes` is a PORT and not the store itself — `ann/rec.ts` deliberately knows
+   * nothing about `Annotation` — so `spoken` is translated to `content` here, in
+   * the one place that speaks both. The anchor's own `text` (the element digest)
+   * is NOT that field and rides through in `rest`: two facts, two names.
+   */
+  const [recorder] = useState<Recorder>(() =>
+    createRecorder({
+      capture: (o) => captureAudio(o),
+      // Fire-and-forget by contract: the model load overlaps the recording, so
+      // the stop is not the first thing that ever asks for it (T:7814).
+      warm: () => void warmTranscriber(),
+      transcribe: (path) => transcribe({ path, words: true }),
+      notes: {
+        add: (note) => {
+          const store = annRef.current?.store;
+          if (!store) return;
+          // `RecAnchor`'s own keys ride along untyped by design (the recorder is
+          // handed the anchor the click handler built and never reads into it),
+          // so the cast is the honest spelling of that contract.
+          const { spoken, sent, ...rest } = note as RecAnnotation & Record<string, unknown>;
+          store.add({
+            ...(rest as unknown as Omit<Annotation, "id" | "createdAt">),
+            content: spoken,
+            ...(sent ? { sent: 1 as const } : {}),
+          });
+        },
+        get: (id) => {
+          const c = annRef.current?.store.list().find((n) => n.id === id);
+          if (!c) return undefined;
+          const out: RecAnnotation = { id: c.id, spoken: c.content };
+          if (typeof c.t === "number") out.t = c.t;
+          if (c.kind) out.kind = c.kind;
+          if (c.createdAt) out.createdAt = c.createdAt;
+          if (c.sent) out.sent = true;
+          return out;
+        },
+        // ONE save, one notification, whatever the count: the transcript folds
+        // into a whole walkthrough, not note by note (`store.merge`).
+        assign: (texts) => {
+          const store = annRef.current?.store;
+          if (!store) return;
+          const words = new Map(texts.map((t) => [t.id, t.text]));
+          const next = store
+            .list()
+            // NOT ONTO A NOTE THE AGENT ALREADY HAS (Bugbot, PR #1074). A mark
+            // sent before its words landed cannot be corrected by rewriting the
+            // page's copy: Claude was handed the note as it stood, and a silent
+            // edit afterwards makes this page and that transcript disagree about
+            // what was asked. `isSendableNow` is the half that keeps a WORDLESS
+            // mark from being sent at all; this is the other half, for a mark
+            // whose words the reader typed by hand and sent mid-walkthrough.
+            .filter((n) => words.has(n.id) && !n.sent)
+            .map((n) => ({ ...n, content: words.get(n.id) as string }));
+          if (next.length) store.merge(next);
+        },
+        remove: (ids) => annRef.current?.store.removeMany(ids),
+      },
+      mode: {
+        isArmed: () => annRef.current?.machine.armed() ?? false,
+        capable: () => annRef.current?.target.capable() ?? false,
+        arm: () => annRef.current?.machine.set(true),
+        disarm: () => annRef.current?.machine.set(false),
+        epoch: () => annRef.current?.machine.epoch() ?? 0,
+        syncParam: () => annRef.current?.store.syncModeParam("2"),
+      },
+      /**
+       * T:8289 — everything said BEFORE the first click is the message's own
+       * prompt, so it rides the walkthrough's own send.
+       *
+       * SYNCHRONOUS, AND THE INTRO TRAVELS WITH THE PRESS. It used to be
+       * written into the box through the composer's `restore` seat — a STATE
+       * write — and the send pressed from a `setTimeout(0)`, on the assumption
+       * that one macrotask is enough for React to have applied it. It is not a
+       * guarantee: the timer could run first, `submit` then read an empty box,
+       * and the notes went to the agent without the sentence that introduced
+       * them (Bugbot, PR #1074). The seat takes the words as an argument
+       * instead, so there is no window to lose them in.
+       */
+      deliver: (intro, spoke) => {
+        if (!spoke && !intro) return;
+        // `canSend`'s own gate (T:7720 `activeRun || !sending`): only the width
+        // of a start request is a moment with nowhere to put them.
+        const sent =
+          statusRef.current === "starting"
+            ? false
+            : (submitBox.current?.(intro || undefined) ?? false);
+        // REFUSED — no composer mounted, a scheduled message pending, the send
+        // window latched. The words are not dropped: they go back to the box,
+        // which is the one place the reader can act on them.
+        if (!sent && intro) {
+          strandSeq.current += 1;
+          setStranded({ text: intro, seq: strandSeq.current });
+        }
+      },
+    }),
+  );
+  const recSnap = useSyncExternalStore(recorder.subscribe, recorder.snapshot, recorder.snapshot);
+  /** The mode machine's own view of the mic: four questions, no microphone. */
+  const annRecorder = useMemo<AnnRecorder>(
+    () => ({
+      // "starting" TOO — the width of the getUserMedia prompt. With it excluded
+      // the machine called that window Comment mode: the bar showed ✓ Done, the
+      // Comment seat came alive beside a mic that was about to open, and
+      // `set(false)` skipped `end()`, so a dismissal could not cancel the
+      // in-flight capture and the mic came up after the reader had left
+      // (Bugbot, PR #1074). `commentSeatName` already read it this way; this is
+      // the other half of the same fact — and `rec.ts` arms the MODE at the
+      // press for the same reason, so `armed()` (Esc, the nav lock, the narrow
+      // view's disarm) is true for that window too.
+      //
+      // `cancelling` is NOT here: a dismissed start being put back down has
+      // already handed the mode back, and calling it a recording would send
+      // `set(false)` looking for something to stop.
+      recording: () => {
+        const s = recorder.snapshot().state;
+        return s === "starting" || s === "recording";
+      },
+      settling: () => recorder.snapshot().busy,
+      end: () => void recorder.end(),
+      discard: () => void recorder.discard(),
+      // The teardown's ending, and the one of the three that is NOT a promise:
+      // a `pagehide` handler gets no await, which is why `rec.ts` spells this
+      // one synchronously (T:8796-8812).
+      abandon: () => recorder.abandon(),
+    }),
+    [recorder],
+  );
+
+  const ann = useAnnotations({
+    params,
+    // `chat_only=1`: the pane belongs to the host, so the overlay is INJECTED
+    // into the marked frame's document rather than being a node of this one.
+    hosted: chatOnly,
+    noPane: pane.noPane,
+    ...(props.annotateTarget ? { annotateTarget: props.annotateTarget } : {}),
+    // The ONE thing that genuinely has to live in the parent: the cross-origin
+    // overlay stands over the frame's rect, and that rect is in the host's
+    // layout. Same origin by construction — the host marked the frame for us —
+    // and guarded anyway, because a `parent` we cannot read is the honest
+    // "no XO overlay" answer rather than a throw at poll time.
+    parentDocument: () => {
+      try {
+        const win = typeof window === "undefined" ? null : window;
+        if (!win || win.parent === win) return null;
+        return win.parent.document;
+      } catch {
+        return null;
+      }
+    },
+    // T:7291 — the parked composer's home is the chat column.
+    composerHome: () => columnRef.current,
+    // T:7720 `activeRun || !sending`: a live run takes the notes as a follow-up,
+    // and only the width of a start request is a moment with nowhere to put
+    // them.
+    canSend: () => statusRef.current !== "starting",
+    autoSubmit: () => void submitBox.current?.(),
+    // T:7670 — arming over a cross-origin target is the natural moment for the
+    // ONE tab-share prompt, and only where the native screen shot is off: with
+    // it there is no prompt at all, and raising one here would be the prompt
+    // that change exists to remove. Swallowed whole — a declined share means
+    // notes without pictures, which every capture path already degrades to.
+    onXOArm: () => {
+      if (isNativeOff()) void getStream().catch(() => {});
+    },
+    viewerOpen: () => viewingRef.current !== null,
+    recorder: () => annRecorder,
+    // While a walkthrough owns the click the RECORDER writes the note: it mints
+    // the id and the `t` the transcript is matched against.
+    recMark: (anchor: AnnAnchor) => recorder.mark(anchor as RecAnchor),
+    recMarkPoint: (cx, cy, win, nearPath) => recorder.markPoint(cx, cy, win, nearPath ?? null),
+  });
+  annRef.current = ann;
+  // The seam above, parked from an EFFECT — the most recently mounted chat owns
+  // it, and a render React discarded must not.
+  useEffect(() => {
+    annForTests = ann;
+    return () => {
+      if (annForTests === ann) annForTests = null;
+    };
+  }, [ann]);
+
+  /**
+   * A34 / T:7788 — WHETHER THIS MACHINE HAS A MIC AT ALL. `captureSources` says
+   * so WITHOUT prompting for permission (CP-7), which is what makes it safe to
+   * ask before anyone has pressed anything: a machine that cannot record gets no
+   * mic seat rather than one that could only ever alert — "absent beats dead",
+   * the rule the camera seat already follows.
+   *
+   * Asked at boot AND again on every arm, because `granted` moves with TCC and
+   * does not wait for this process to restart. Anything but an explicit
+   * `available: false` keeps the seat, so a probe that fails degrades to showing
+   * it rather than to hiding the feature.
+   *
+   * ONE PROBE, TWO ANSWERS, which is how T reads it too (T:7841-7852 takes the
+   * still and the mic off the same `src`): the SCREENSHOT half decides whether
+   * the native still road is open at all, and getting that from the probe
+   * rather than from a live 409 is what makes the cross-origin tab-share
+   * prompt fire at arm time, where the user activation is
+   * (`shots/noteSourcesProbe`).
+   */
+  const [micShown, setMicShown] = useState(true);
+  const annArmed = ann.mode !== "off";
+  useEffect(() => {
+    let live = true;
+    void captureSources()
+      .then((sources) => {
+        // BEFORE the `live` gate and outside it: this is module state about the
+        // PLATFORM, not component state about this mount, and it is just as
+        // true for the next mount as for this one. An unmount racing the probe
+        // should not throw the answer away.
+        noteSourcesProbe(sources);
+        if (!live) return;
+        const audio = sources.audio;
+        setMicShown(audio?.available !== false);
+        // AND SAY WHY THE SEAT WENT (T:7801). The reason string is CP-11's, and
+        // it names a browser that CAN record — so a reader with no seat and no
+        // explanation at least has the console to go on. Swallowing it left
+        // "the feature is missing" indistinguishable from "the feature is
+        // broken".
+        if (audio?.available === false) {
+          console.warn("spoken walkthroughs unavailable:", audio.reason || "");
+        }
+      })
+      .catch(() => {
+        /* no answer is not a NO: the seat stays */
+      });
+    return () => {
+      live = false;
+    };
+  }, [annArmed]);
+
+  /**
+   * The recorder's state, told to the mode machine (T:8114's `.busy` seat) and
+   * to the bar's clock.
+   *
+   * `setBusyHold` is `annBusyHold`: the nav lock is the MODE's claim, and
+   * through Stopping…/Transcribing… the mode is still armed (the transcription
+   * belongs to THIS chat) — so the hold outlives the recording flag and is
+   * released by the disarm at the end of the settle.
+   */
+  useEffect(() => {
+    const m = ann.machine;
+    m.setBusyHold(recSnap.busy);
+    m.setPhase(
+      recSnap.state === "transcribing" ? "transcribing" : recSnap.busy ? "settling" : null,
+    );
+    ann.setClock(recSnap.state === "recording" ? recClockText(recSnap.seconds * 1000, recSnap.marks) : "");
+  }, [ann, recSnap]);
+
+  /** The bar's three buttons in the SPLIT layout. (The injected and
+   *  cross-origin bars get the same three from inside the hook, since their node
+   *  is built over there.) */
+  const annBarHandlers = useMemo<AnnBarHandlers>(
+    () => ({
+      onDone: () => void ann.done(),
+      onStop: () => void recorder.end(),
+      // T:8419 — ONE dispatcher: the trash throws the walkthrough while one
+      // records and the round's notes otherwise.
+      onDiscard: () => ann.discard(),
+      onResize: (bar) => barFit(bar),
+    }),
+    [ann, recorder],
+  );
+  /** `picker: null` — the Element/Point pill is ONE node the coordinator owns
+   *  and adopts into the bar's `.slot` on its own paint; a second writer would
+   *  fight it for the node. */
+  const annBarPaint = useMemo(
+    () => ({
+      mode: ann.mode,
+      clock: recSnap.state === "recording" ? recClockText(recSnap.seconds * 1000, recSnap.marks) : "",
+      picker: null,
+    }),
+    [ann.mode, recSnap],
+  );
+
   // ── the three pills ────────────────────────────────────────────────────────
   const defaults = useComposerDefaults(agentDir, file, params);
   liveModel.current = defaults.model;
@@ -712,6 +1263,17 @@ function ChatBody(props: ChatBodyProps) {
     rows: state.appState,
     watcher: hasPane.current ? watcher : null,
     answerAppState: controller.answerAppState,
+    // NO `onNote` HERE, DELIBERATELY (audit A's GAP-B1 adjacency / P3-21 reads
+    // this as a missing wire; it is not one at this tip). T:15806's one-line
+    // "read app state" row is already written by the controller, inside
+    // `answerAppState` itself (`run-controller.ts:1905-1909`), under its own
+    // once-per-REQUEST latch — and `answerAppState` is what the line above
+    // hands this hook. The responder's `onNote` is a second, equivalent seam
+    // for a host that answers app state WITHOUT the controller; passing it here
+    // would put two identical ◍ rows in the transcript for one tool call.
+    //
+    // Both paths are pinned: `run-controller.test.ts` for the live one,
+    // `useAppStateResponder.test.tsx` for the seam.
   });
 
   // ── the ask, LATCHED PER MOUNT ─────────────────────────────────────────────
@@ -741,7 +1303,14 @@ function ChatBody(props: ChatBodyProps) {
   // key arrives with `initialAsk: undefined` (the host's `deliveredAsk` guard
   // is untouched) and a fresh, empty latch.
   const askRef = useRef(props.initialAsk);
-  if (props.initialAsk) askRef.current = props.initialAsk;
+  // SPENT IS SPENT. The re-arm below runs on every render, and the host keeps
+  // `initialAsk` on its props until its own one-shot derivation flips it — so a
+  // boot that cleared the latch inside its async walk found it re-armed by the
+  // very next render, and a controller rebuild (a `file` swap with `agentDir`
+  // already cached) fired the same "Fix with AI" prompt at the new target
+  // (QA, PR #1061). Once the one dispatch has happened, the prop is history.
+  const askSpent = useRef(false);
+  if (props.initialAsk && !askSpent.current) askRef.current = props.initialAsk;
 
   // ── home vs chat (T:1277-1282 `#chat.home`) ────────────────────────────────
   // The host's ids count here as well as the store's: they are seeded into the
@@ -850,6 +1419,20 @@ function ChatBody(props: ChatBodyProps) {
         // `initialAsk` still on the props).
         if (cancelled || bootDispatched.current) return;
         bootDispatched.current = true;
+        // SPENT ON THE LATCH, NOT ON THE BOOT. `bootDispatched` deliberately
+        // re-arms with a new controller (`bootedFor` above), and the controller
+        // memo's deps include `file` — so a host that swaps `file` in place for
+        // an `agentDir` already in the resolver cache rebuilds the controller
+        // WITHOUT remounting this tree, and a sticky `askRef` would take this
+        // `if (ask)` branch a second time: `session_id`/`run` cleared (disowning
+        // the conversation on screen) and the same "Fix with AI" prompt fired at
+        // a DIFFERENT file. Cleared here, the moment the one dispatch is
+        // committed, so a rebuilt controller has nothing to spend and falls
+        // through to the restore branch — which is all a rebuild ever needed
+        // (QA, PR #1061). The `entered` initializer reads `askRef` too, but only
+        // once, before this effect ever runs.
+        askRef.current = undefined;
+        askSpent.current = true;
         // The composer went live the moment we entered chat, so the user can
         // have sent their own message inside that bounded wait. `sendMessage`
         // opens with `if (sending) return`, which here would drop the ask on the
@@ -1038,13 +1621,32 @@ function ChatBody(props: ChatBodyProps) {
   // stopped the event, which is the precedence T has.
   const onEscape = props.onEscape;
   useEffect(() => {
-    if (!onEscape || typeof document === "undefined") return;
+    if (typeof document === "undefined") return;
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape" || ev.defaultPrevented) return;
-      // Only this chat's keystrokes: `document` is shared with the shell.
+      // 1. THE SHOT VIEWER CLAIMS IT FIRST (T:15959), and it is a portalled
+      //    dialog that closes itself — so this listener stands down entirely
+      //    rather than claiming on its behalf: neither the annotation mode nor
+      //    the host may act on a press the viewer is already answering.
+      if (viewingRef.current) return;
       const root = rootRef.current;
       const target = ev.target as Node | null;
-      if (!root || !target || !root.contains(target)) return;
+      // Only this chat's keystrokes: `document` is shared with the shell. A
+      // press with nothing focused (body, the root element) is this chat's too —
+      // it is how Esc reaches an armed mode whose pointer is over the app.
+      const loose =
+        !target || target === document.body || target === document.documentElement;
+      if (!loose && !(root && root.contains(target))) return;
+      // 2/3. the annotation composer, then the mode itself. `onEscape`
+      //      preventDefaults exactly when it claimed, which is what makes the
+      //      host's own hop below the LEFTOVER case rather than a second
+      //      claimant (T:15968-15976, `escapeAction`).
+      annRef.current?.onEscape(ev);
+      if (ev.defaultPrevented) return;
+      // 4. nothing of the chat's own was open, so the press reaches the host —
+      //    which is how TaskPeek closes. Never a stop: Escape has no claim on a
+      //    run (T:15947-15978).
+      if (!onEscape || loose) return;
       onEscape();
       // Claimed, so the host chassis's own Esc does not close the same thing a
       // second time.
@@ -1089,14 +1691,54 @@ function ChatBody(props: ChatBodyProps) {
    * will wear. The tray is emptied by the same call that reads it, so a second
    * Enter cannot send the same pictures twice (T:16532).
    */
-  const takeAttachments = useCallback((): { opts: SendOptions; items: Attachment[] } => {
-    const out = attach.take();
-    if (!out.items.length) return { opts: {}, items: [] };
+  const takeAttachments = useCallback(
+    (lead: readonly Attachment[] = []): { opts: SendOptions; items: Attachment[] } => {
+      const out = attach.take(lead);
+      if (!out.receipts.length) return { opts: {}, items: [] };
+      return {
+        opts: { blocks: out.blocks, readDirs: out.readDirs, attachments: out.receipts },
+        items: out.items,
+      };
+    },
+    [attach],
+  );
+
+  /**
+   * THE ANNOTATION HALF OF A SEND, in T's order (T:16503-16560):
+   *
+   *   1. the badge LETTERS, stamped onto the notes — the letter burned into the
+   *      picture and the `label` on the wire have to be the same string, and an
+   *      index can shift between now and any later read;
+   *   2. ONE picture of the whole pane with every letter burned in at its spot,
+   *      bounded and swallowing, because no screenshot is worth losing the
+   *      user's message over;
+   *   3. the picture folded back into the notes — which of them got a badge, and
+   *      the sentence naming why each of the rest did not.
+   *
+   * Steps 1 and 3 are `overviewForSend`'s; the UPLOAD is this file's, because
+   * the tray, the receipts and the failed-send road all live here.
+   */
+  const takeAnnotations = useCallback(async (): Promise<{
+    block: string | null;
+    notes: Annotation[];
+    overview: Attachment | null;
+  }> => {
+    const a = annRef.current;
+    if (!a) return { block: null, notes: [], overview: null };
+    const { notes, overview } = await a.overviewForSend();
+    if (!notes.length) return { block: null, notes: [], overview: null };
+    let shot: Attachment | null = null;
+    if (overview) {
+      // A failed upload is a chip that says so, not a lost message: the same
+      // degradation the capture itself already has (`attachOverview`).
+      shot = await ATTACH_API.attachOverview(agentDir, overview.capture).catch(() => null);
+    }
     return {
-      opts: { blocks: out.blocks, readDirs: out.readDirs, attachments: out.receipts },
-      items: out.items,
+      block: formatAnnotations(notes as AnnotationWire[], pane.noun),
+      notes,
+      overview: shot,
     };
-  }, [attach]);
+  }, [agentDir, pane.noun]);
 
   /**
    * BOTH SEND ROADS GO THROUGH HERE, and they MERGE rather than spread: T's wire
@@ -1111,11 +1753,27 @@ function ChatBody(props: ChatBodyProps) {
    * built a new array out of two owners' rows.
    */
   const beginSend = useCallback(
-    (opts: SendOptions): { merged: SendOptions; done: () => void } => {
-      const mine = takeAttachments();
-      const merged = mergeSendOptions(opts, mine.opts);
+    async (opts: SendOptions): Promise<{ merged: SendOptions; done: (ok: boolean) => void }> => {
+      // The notes FIRST, and awaited: their picture rides the same `<pane-shot>`
+      // block the tray's own do, first in the list, so it has to be in hand
+      // before the tray is emptied (T:16549).
+      const notes = await takeAnnotations();
+      const mine = takeAttachments(notes.overview ? [notes.overview] : []);
+      // THE CALLER'S BLOCKS ARE NOT OURS TO DROP. `{ ...opts, blocks: [ours] }`
+      // reads as "add the notes" and is a REPLACEMENT: any block the caller
+      // brought — PR4's `<live-app-state>`, a walkthrough's own — vanished
+      // silently, the message still going out and succeeding without it. Which
+      // is the very bug `mergeSendOptions` exists to prevent, re-introduced one
+      // line above the call to it (whole-stack review, PR #1074). ORDERED
+      // union, through the same `composeBlocks`, so the wire reads state,
+      // pane-shot, annotations whoever emitted which.
+      const blocks = sendBlocks(opts.blocks, notes.block);
+      const merged = mergeSendOptions({ ...opts, ...(blocks.length ? { blocks } : {}) }, mine.opts);
       const key = mine.items.length ? merged.attachments : undefined;
       if (key) inFlight.current.set(key, mine.items);
+      // T:16064 — the send has taken them. Stamped BEFORE the request, because
+      // the receipt and a failed send's roll-back both read the stamp.
+      if (notes.notes.length) annRef.current?.markSent(notes.notes);
       // DELETED ON EVERY ROAD, not only the failed one: `onSendReturned` fires
       // inside the send, so by the time this runs the entry is either already
       // gone (the pictures went back to the tray) or is a send that LANDED — and
@@ -1132,7 +1790,20 @@ function ChatBody(props: ChatBodyProps) {
       // document (Bugbot, PR #1064).
       return {
         merged,
-        done: () => {
+        done: (ok) => {
+          // THE NOTES' SIDE OF THE HAND-BACK FIRST. The run never launched, so
+          // the agent saw none of it: the notes go back to pending, so the chips
+          // return and Done can send them again (T:16086). The OVERVIEW is
+          // revoked rather than handed back — it is the page's own picture of a
+          // pane that has since moved on, and a retried send takes a fresh one
+          // (T:16698-16708).
+          if (!ok) {
+            if (notes.notes.length) annRef.current?.unmarkSent(notes.notes);
+            if (notes.overview) ATTACH_API.revoke(notes.overview);
+          }
+          // …then the tray's side, which judges landing by the ledger and not by
+          // `ok`: a send handed back to the tray was already removed by
+          // `onSendReturned`, so the read below is what says this one went out.
           if (!key) return;
           const landed = inFlight.current.get(key);
           if (!landed) return;
@@ -1149,7 +1820,93 @@ function ChatBody(props: ChatBodyProps) {
         },
       };
     },
-    [controller, takeAttachments],
+    [controller, takeAttachments, takeAnnotations],
+  );
+
+  /**
+   * THE SEND WINDOW, SERIALIZED — one road, both kinds of send.
+   *
+   * `beginSend` is AWAITED (a round of notes has its pane photographed before
+   * the wire can be composed) and nothing used to hold the door while it ran: a
+   * second Enter started a second `beginSend`, the controller refused its
+   * `sendMessage` out loud, and the hand-back that refusal emits was read by
+   * the FIRST send — still out, about to land — as its own failure. It unmarked
+   * notes the agent had already been given and revoked their overview (Bugbot,
+   * PR #1074). Three things answer it, and all three are needed:
+   *
+   *   * THE LATCH (`sendBusy`, a ref the composer reads in the same tick it
+   *     calls in here) closes the door from the first keystroke until THE RUN
+   *     IS LIVE — the first status that is not `idle`, not the moment
+   *     `sendMessage` hands back its promise. Taken-but-idle is a real window
+   *     (one `start` round-trip), and a line typed inside it read as "no run
+   *     yet": the composer sent it as a fresh message, the controller refused
+   *     it, and the refusal dropped the bubble. Once the run IS live the door
+   *     is open and the same keystroke goes to `sendFollowUp`, which is why the
+   *     latch cannot simply be held for the whole turn. A send that never goes
+   *     live releases it when its promise settles instead.
+   *   * THE HAND-BACK IS KEYED (`sendId`), so "a send came back" can never be
+   *     mistaken for "my send came back" again.
+   *   * THE BUBBLE GOES UP FIRST (`postOptimisticUser`) and the controller's
+   *     own bubble ADOPTS that row, so the typed words are never briefly
+   *     nowhere — the composer clears its box on the keystroke, and the whole
+   *     capture used to happen with an empty box and an empty transcript.
+   */
+  const dispatchSend = useCallback(
+    (text: string, opts: SendOptions, followUp: boolean): void => {
+      // The composer refuses this too, from the same ref — this is the guard
+      // for every OTHER caller of the seat (✓ Done, the walkthrough).
+      if (sendBusy.current) return;
+      sendBusy.current = true;
+      setSendLocked(true);
+      const sendId = `s${++sendSeq.current}`;
+      sendHolder.current = sendId;
+      // A WORDLESS send (notes or pictures alone) posts no optimistic row: its
+      // bubble is the markers `stripBlocks` builds out of the composed wire,
+      // and only the controller can write those.
+      const optimisticKey = text ? controller.postOptimisticUser(text) : "";
+      void (async () => {
+        let taken = false;
+        try {
+          const { merged, done } = await beginSend(opts);
+          const wire: SendOptions = {
+            ...merged,
+            sendId,
+            ...(optimisticKey ? { optimisticKey } : {}),
+          };
+          let ok = true;
+          try {
+            const sent = followUp
+              ? controller.sendFollowUp(text, wire)
+              : controller.sendMessage(text, wire);
+            // The controller has taken it: its own `sending` gate is set and
+            // its bubble is up, both before its first await. But TAKEN IS NOT
+            // LIVE — the status the composer routes on stays `idle` until
+            // `pollLoop` reports, and a line typed in between would be sent as
+            // a fresh message the controller then refuses. So the door stays
+            // shut until the run is live (the status effect above); a follow-up
+            // dispatched into a run that already is opens it right here.
+            taken = true;
+            if (controller.getState().status === "idle") liveWait.current = sendId;
+            else releaseSend(sendId);
+            await sent;
+          } catch {
+            ok = false;
+          }
+          // MY send, asked of my own id — and spent, whichever way it went.
+          done(ok && !returnedSends.current.delete(sendId));
+        } finally {
+          // THE OTHER END OF THE LATCH. `beginSend` itself threw, so nothing
+          // was ever dispatched (the row has nothing behind it) — or the send
+          // is over: a turn that ran to its end, and equally one the controller
+          // refused or a `start` that failed, neither of which ever reported a
+          // live status for the effect above to read. Owned by `sendId`, so a
+          // turn ending cannot open the door on a LATER send's window.
+          if (!taken && optimisticKey) controller.dropOptimisticUser(optimisticKey);
+          releaseSend(sendId);
+        }
+      })();
+    },
+    [controller, beginSend, releaseSend],
   );
 
   const onSend = useCallback(
@@ -1160,33 +1917,30 @@ function ChatBody(props: ChatBodyProps) {
       // !!state.sessionId` and nothing on this path set `entered`, so the
       // landing stayed up until a POLL reported a session id: one `start`
       // round-trip plus a 400 ms lap, which is the 1-2 s stall the QA measured
-      // against :1777. The controller puts the user bubble up before anything
-      // slow on its own path (`addUser`), so the view this switches to already
-      // has the message and the working line in it.
+      // against :1777.
       //
       // A REFUSED START DOES NOT COME BACK HERE, and T's `enterChat()` is
       // equally one-way: its rollback (T:16693-16720) drops the bubble and posts
       // the failure INTO the chat, where the reader stays to read it. Back is
       // the way out, the same as for a run that started and then failed.
       setEntered(true);
-      const { merged, done } = beginSend(opts);
-      // `then(done, done)` and not `finally`: the promise is deliberately
-      // discarded, and a `finally` chain would turn a rejected send into an
-      // unhandled rejection in the console.
-      void controller.sendMessage(text, merged).then(done, done);
+      dispatchSend(text, opts, false);
     },
-    [controller, beginSend],
+    [dispatchSend],
   );
   const onFollowUp = useCallback(
     (text: string) => {
-      const { merged, done } = beginSend({
-        model: defaults.model,
-        effort: defaults.effort,
-        permission: defaults.permission,
-      });
-      void controller.sendFollowUp(text, merged).then(done, done);
+      dispatchSend(
+        text,
+        {
+          model: defaults.model,
+          effort: defaults.effort,
+          permission: defaults.permission,
+        },
+        true,
+      );
     },
-    [controller, defaults.model, defaults.effort, defaults.permission, beginSend],
+    [dispatchSend, defaults.model, defaults.effort, defaults.permission],
   );
   const onStop = useCallback(() => void controller.stopRun(), [controller]);
   const onBack = useCallback(() => {
@@ -1288,6 +2042,8 @@ function ChatBody(props: ChatBodyProps) {
   // preview seats, so the row stands in every layout and `annTarget` decides
   // only whether `AnnStrip` draws anything inside it. The view toggle and the
   // picker stay narrow-only in there (`pickerHost`).
+  // PR3: the host pane's seats are gated on `ann.capable` at the `AnnStrip`
+  // call site — the strip itself stands, the seats go ("absent beats dead").
   // T:7566 `annFitStrip` — the strip's words collapse to icons only when they
   // MEASURABLY do not fit (QA #2: at 1280px with a pane the chat column is
   // ~308px and the three full labels overflowed it by 8px).
@@ -1298,7 +2054,29 @@ function ChatBody(props: ChatBodyProps) {
   const kebabBtn = useRef<HTMLElement | null>(null);
   // The page must not stay on a transcript that no longer exists
   // (T:13348-13366); the menu has already dropped every cache keyed by it.
-  const onErased = useCallback(() => onBack(), [onBack]);
+  const onErased = useCallback(() => {
+    // THE MODE GOES BEFORE THE NAVIGATION (T:13371-13375), and T's own comment
+    // says why: back-to-chats "REFUSES while a comment mode holds the reader
+    // here (annNavLocked) — and a page must not stay on a transcript that no
+    // longer exists (Bugbot, PR #1049). The notes were about a conversation
+    // that is gone, so the mode is dropped first, the way its own discard path
+    // drops it."
+    //
+    // T spells this as three lines — `if (annOn) annSetMode(false);
+    // annBusyHold = false; annNavLock();` — and `machine.set(false)` is all
+    // three here: it drops the settle's hold on its first line ("a disarm,
+    // whoever asks […] releases the settle's hold") and ends in
+    // `deps.onLock(locked())`, which is `annNavLock`. Unconditional, unlike
+    // T's `if (annOn)`, because the lock can also be held by a settle the
+    // reader has already left, and `set(false)` is the one door that clears
+    // both.
+    //
+    // Without it, deleting the task left the mode running against a session
+    // that no longer existed — pins over a pane whose conversation is gone,
+    // and a nav lock refusing the very navigation that was meant to follow.
+    ann.setMode(false);
+    onBack();
+  }, [ann, onBack]);
 
   // MEMOIZED, like the two callbacks below it: a fresh object per render defeats
   // every `React.memo` in the tree it is handed to, and this one is handed to
@@ -1320,7 +2098,15 @@ function ChatBody(props: ChatBodyProps) {
       ev.preventDefault();
       void attach.addFiles(picks);
     },
-    [attach],
+    // THE ONE MEMBER IT CALLS, not the whole hook object (D7). `useAttachments`
+    // returns a fresh literal every render, so `[attach]` made this callback —
+    // and through it the `card` memo that lists it as a dep — recompute on every
+    // render, which is what MASKED the missing `attach.capturing` dep below. The
+    // dep list has to be the truth about what a memo reads, not a coincidence
+    // that happens to cover it. (`onSend`/`onFollowUp` still move every render,
+    // through `dispatchSend`, so `card` is not yet a memo that holds — which is
+    // why no test can fail on the missing dep alone. One mask at a time.)
+    [attach.addFiles],
   );
 
   /**
@@ -1349,8 +2135,9 @@ function ChatBody(props: ChatBodyProps) {
     // What makes the cursor say "copy" rather than show the forbidden sign.
     ev.dataTransfer.dropEffect = "copy";
   }, []);
-  // NO `dragHasAttachment` GUARD HERE, unlike its three neighbours (T:11770
-  // guards nothing either): several engines expose no `types` at all on
+  // NO `dragHasAttachment` GUARD HERE, unlike its three neighbours — AND
+  // UNLIKE T, which does guard this one (T:11771). A DELIBERATE divergence and
+  // the better answer: several engines expose no `types` at all on
   // `dragleave` — it is the one drag event whose DataTransfer is deliberately
   // protected — so a guarded leave never fired, the depth never came back down,
   // and the accent ring stayed on the column until the next drop. An extra
@@ -1393,6 +2180,22 @@ function ChatBody(props: ChatBodyProps) {
     [attach],
   );
 
+  /**
+   * THE VIEWER READS THE LIVE ROW, not the snapshot it was opened from (D8).
+   *
+   * `attachApi.liveViewable` is the rule and carries the why; what is this
+   * file's own is WHERE the sent rows are: the receipts hang off the user turns
+   * in the store, which is the copy `settleAttachments` rewrites.
+   */
+  const liveViewing = useMemo<Viewable | null>(() => {
+    if (!viewing || !viewing.id) return viewing;
+    const sent: Receipt[] = [];
+    for (const turn of state.turns) {
+      if (turn.role === "user" && turn.attachments) sent.push(...turn.attachments);
+    }
+    return liveViewable(viewing, attach.items, sent);
+  }, [viewing, attach.items, state.turns]);
+
   const card = useMemo(
     () => ({
       file,
@@ -1403,13 +2206,53 @@ function ChatBody(props: ChatBodyProps) {
       onSend,
       onFollowUp,
       onStop,
-      autoFocus: props.autoFocus,
+      // ONLY INSIDE A CHAT (FIX-9). T focuses the box from `enterChat()`
+      // (T:13087-13094) — which runs on a send from the landing, on opening a
+      // recent row, on "new chat", and on a BOOT that arrives carrying a
+      // `session_id`/`run` (T:19267) — and from nowhere else. The landing page
+      // never takes the keyboard: `focusBox` has exactly three callers and not
+      // one of them is boot.
+      //
+      // Native focused on MOUNT, unconditionally, so the landing came up with
+      // `:focus-within` already true and its composer painted
+      // `--border-strong` where legacy paints `--border` — the whole of the
+      // measured "composer border colour" delta — and opening a file with the
+      // panel on moved the reader's keyboard into the chat.
+      //
+      // `&& inChat` gets both halves from one expression, because the flip to
+      // true is a re-render and the composer's focus effect is keyed on this
+      // prop: no focus on the landing, focus the moment a conversation is
+      // entered, which is `enterChat` exactly.
+      autoFocus: props.autoFocus && inChat,
       columnRef,
       back: currentUrl(),
       onNavigate,
       boxRef,
-      // Pictures alone are sendable, with no words at all (T:17903).
-      hasAttachments: attach.items.length > 0,
+      // The nav lock reaches BOTH composers' Schedule seats (T:12075/12099
+      // guard every `.schedbtn`), unlike the schedule block, which is
+      // chat-only. `styles/ann.css` already dims them; this is the guard for
+      // the hand — and the keyboard, which `pointer-events: none` never stopped.
+      navLocked: ann.locked,
+      navLockedReason: NAV_LOCKED_REASON,
+      // Pictures — and NOTES — alone are sendable, with no words at all
+      // (T:17903, and ✓ Done's whole gesture: a round of comments IS the
+      // message).
+      // ...and the ONE predicate the send path and ✓ Done read as well
+      // (`ann/store.isSendableNow`): a chip with neither words nor a recording
+      // stamp is not a sendable note, so Send must not light up for one — a
+      // single click in Comment mode makes exactly that chip, and the three
+      // answers used to disagree about it.
+      //
+      // ASKED AT THIS MOMENT, because a walkthrough's marks are stamped long
+      // before their words land: while it records or settles a wordless mark is
+      // not sendable, so Send does not light up for one and `beginSend` (which
+      // filters by the same predicate) cannot fold it into a line the reader
+      // typed meanwhile. Sending it there uploaded an empty note and the
+      // transcript then wrote words onto it after it was stamped `sent`
+      // (Bugbot, PR #1074).
+      hasAttachments:
+        attach.items.length > 0 ||
+        ann.chips.some((c) => isSendableNow(c.note, walkthroughOwns(ann.mode))),
       // ... but not while one of them is still on its way: `take()` leaves a
       // `pending` chip in the tray, so a send fired now would go out WITHOUT
       // the files whose chips made it sendable (Bugbot, PR #1064).
@@ -1429,14 +2272,27 @@ function ChatBody(props: ChatBodyProps) {
           paneNoun={pane.paneNoun}
           onOpen={setViewing}
           onRemove={attach.remove}
-        />
+        >
+          {/* The SAME pill a screenshot's chip is, in the same row: both are
+              things this message is about to carry and both come off with the
+              same ✕ (T:927). The tray renders them first. */}
+          <AnnChips items={ann.chips} onEdit={ann.editNote} onRemove={ann.removeNote} />
+        </AttachTray>
       ),
+      // T:8505 — whichever composer is mounted hands its send in, for the
+      // walkthrough's auto-submit and for ✓ Done.
+      submitRef: submitBox,
+      // THE SEND WINDOW'S LATCH, in both its forms: the ref is read in the tick
+      // the composer calls `onSend`, the flag dims the button on the next paint
+      // (`dispatchSend`).
+      busyRef: sendBusy,
+      sendBusy: sendLocked,
       onPaste,
       // The chip row is ABOVE the control row and changes the composer's height,
       // never the row's width — but T re-measures on exactly this kind of change
       // (its MutationObserver watches the rows' subtree), and the footnote's
       // two-line budget is measured in the same pass (T:12455-12474).
-      fitRevision: attach.items.length,
+      fitRevision: attach.items.length + ann.chips.length,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
@@ -1452,15 +2308,35 @@ function ChatBody(props: ChatBodyProps) {
       onFollowUp,
       onStop,
       props.autoFocus,
+      // The enter transition IS the focus trigger (see `autoFocus` above).
+      inChat,
       onNavigate,
       boxRef,
       stranded,
       entered,
+      sendLocked,
       urlTick,
       attach.items,
       attach.remove,
+      // THE CAMERA'S OWN WINDOW (D7). `attachPending` reads `attach.capturing`,
+      // which moves without the tray moving (a capture puts nothing in `items`
+      // until the bytes land), so without it here the send gate went stale for
+      // the whole of the in-flight shot. It was masked only by `onPaste`
+      // depending on the whole `attach` object — a coincidence, not a dep.
+      attach.capturing,
       onPaste,
       pane.paneNoun,
+      ann.chips,
+      // THE MOMENT `hasAttachments` IS ASKED AT: while a walkthrough records or
+      // settles its wordless marks are not sendable, so the Send affordance has
+      // to be recomputed when the mode moves and not only when the chips do.
+      ann.mode,
+      // The Schedule seat's guard reads it, so the card has to be rebuilt when
+      // the lock moves — otherwise the seat stays live through the whole of an
+      // armed round.
+      ann.locked,
+      ann.editNote,
+      ann.removeNote,
     ],
   );
   const onAnchorSpent = useCallback(() => params.set({ msg: null }), [params]);
@@ -1476,7 +2352,15 @@ function ChatBody(props: ChatBodyProps) {
       ref={rootRef}
       className={rootClass(
         props,
-        [narrowView.classNames, split.dragging ? "dragging" : "", pane.noPane ? "nopane" : ""]
+        [
+          narrowView.classNames,
+          split.dragging ? "dragging" : "",
+          pane.noPane ? "nopane" : "",
+          // T:1466 — A MODE LOCKS THE CHAT: while Comment or Annotate is on, or
+          // a recording is still settling, the ways OUT are drawn inert. The
+          // notes belong to this chat and this app; leaving would strand them.
+          ann.locked ? "annlock" : "",
+        ]
           .filter(Boolean)
           .join(" "),
       )}
@@ -1494,8 +2378,25 @@ function ChatBody(props: ChatBodyProps) {
             flags={flags}
             watcher={watcher}
             frameRef={setPaneFrame}
+            // The frame's own `load` re-wires the six listeners inside the new
+            // document and repaints every pin against it (T:8544).
+            onFrameLoad={ann.onFrameLoad}
+            stageRef={setStage}
+            onRemeasure={ann.remeasure}
+            annBar={
+              <AnnBar
+                handlers={annBarHandlers}
+                paint={annBarPaint}
+                barRef={ann.bindBar}
+              />
+            }
           />
           <SplitDivider split={split} />
+          {/* The ring and the pin host, created into `.c-leftview` — ordinary
+              nodes of THIS document, because in the split layout the pane is
+              ours (the other two layouts build the same two boxes inside a
+              shadow root over there). */}
+          <AnnPins stage={stage} onBind={ann.bindPins} />
         </>
       ) : null}
       <div
@@ -1534,26 +2435,96 @@ function ChatBody(props: ChatBodyProps) {
               <button
                 type="button"
                 className="c-back"
-                aria-label="Back to chats"
+                // AND WHY, while it is locked (T:6896 writes exactly this
+                // sentence onto `#back.title` and clears it on unlock). It goes
+                // into the accessible NAME as well as the `title`, because
+                // `disabled` takes the button out of tab order: a hover-only
+                // answer is no answer for a control the keyboard cannot land
+                // on, and a dead way-out that will not say why is the one
+                // refusal face worth spelling twice.
+                aria-label={
+                  ann.locked ? "Back to chats — " + NAV_LOCKED_REASON : "Back to chats"
+                }
+                title={ann.locked ? NAV_LOCKED_REASON : undefined}
+                // PR3: locked while a comment round or a walkthrough owns the
+                // page (`useAnnotations().locked`) — leaving mid-round would
+                // orphan the notes. Main moved Back from the top bar into this
+                // strip (P2-1), so the lock moved with it.
+                disabled={ann.locked}
+                aria-disabled={ann.locked ? "true" : "false"}
                 onClick={onBack}
               >
                 ← Chats
               </button>
             ) : null}
-            {/* ONE auto margin in the row: everything before it sits left, the
-                seats and the ⋮ ride the right-hand end together (T:255-262). */}
-            <span className="c-hdr-slack" />
+            {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
+                `margin-left: auto` (T:255-262, chat.css), which is not the same
+                thing: a spacer is a flex ITEM, so it kept its 12px gap even
+                after collapsing to zero width — and on the landing the seats
+                already fill the content box, so the whole group sat +10.34px
+                right of legacy's and `⋮` overflowed its 16px padding down to
+                5.66px (visual pass 2, FIX-6B). An auto margin contributes 0
+                when there is no slack. `.c-hdr-slack` itself stays for the
+                composer row that still uses it. */}
             <AnnStrip
               paneNoun={pane.paneNoun}
-              // The camera photographs whatever the annotate target is, so the
-              // seats go only when there is nothing to photograph. The narrow
-              // CHAT view parks OUR preview off screen (T:3823
-              // `body.view-chat .viewshot`) and is the one layout answer left in
-              // here; a hosted mount's target is the host's own column, which
-              // that view does not move.
-              shown={annTarget && !(paneShown && narrowView.narrow && narrowView.view === "chat")}
+              // The row itself follows the ANNOTATE TARGET — ours or the
+              // host's — because all three seats act on it
+              // (`enterNoPane`'s step 6 note).
+              shown={annTarget}
+              // NO CAMERA GATE — T RENDERS THIS SEAT IN THE NARROW CHAT VIEW,
+              // and the owner's rule is identical UX (visual pass 2, FIX-18).
+              // T:3823's `body.view-chat .viewshot { display: none }` has
+              // specificity 0,2,1 and LOSES to `#anncta button`, so it never
+              // fires: measured live at a 736px pane, `#viewshot` computes
+              // `display: flex` and 106px. T's own comment above that rule
+              // argues the seat should go ("a view that shows no preview offers
+              // no features OF the preview") — but the argument is not what
+              // legacy draws, and the pane is parked rather than unmounted here
+              // (`pane.css`: `visibility: hidden` keeps a real viewport), so
+              // the photograph it takes is a real one. `AnnStrip` keeps
+              // `cameraShown` for the hosts that do have nothing to shoot.
+              // THE COMMENT SEAT, THOUGH, DOES GO in that view (T:3822
+              // `body.view-chat #annbtn { display: none }` — specificity 0,2,1
+              // against `#annbtn`'s own 1,0,0, so unlike its neighbour above
+              // this one WINS and legacy hides it too): the pane the
+              // clicks would land on is parked off screen, so there is nothing
+              // to arm against — and arming anyway put the framed document's
+              // capture-phase click swallower live over an invisible pane.
+              // `useNarrowView`'s `onArriveChat` disarms on ARRIVAL only, and
+              // nothing stopped a fresh arm afterwards. Same expression as the
+              // camera's, deliberately: it is the same fact about the same
+              // pane, and a prop rather than a CSS rule so `useFitStrip` keeps
+              // reading a stable node set.
+              commentShown={!(paneShown && narrowView.narrow && narrowView.view === "chat")}
+              capable={ann.capable}
+              mode={ann.mode}
+              // `annOn` beside the mode, because the seat follows the READER's
+              // mode and the mode value follows the RECORDER's phase — and they
+              // part company for the width of an Esc'd transcription.
+              armed={ann.armed}
               capturing={attach.capturing}
               onScreenshot={() => void attach.capture()}
+              onComment={ann.onCommentSeat}
+              recSeat={
+                <RecControls
+                  rec={recSnap}
+                  shown={micShown}
+                  commentArmed={ann.mode === "comment"}
+                  // NO SECOND TRASH IN THE STRIP. Discard moved off the strip
+                  // and onto the bar over the app on 2026-09-06 (T:6240-6248,
+                  // inventory 02 §I), so the strip carries only Screenshot ·
+                  // Comment · Annotate in every state. `RecControls` still
+                  // knows how to draw its own trash — a host that has no bar to
+                  // put one on can ask for it — but this mount has
+                  // `ann/AnnBar`'s, and two identical destructive controls on
+                  // screen at once is the decision undone.
+                  discardable={false}
+                  onBegin={() => void recorder.begin()}
+                  onEnd={() => void recorder.end()}
+                  onDiscard={() => void recorder.discard()}
+                />
+              }
             />
             {host === "anntools" ? (
               <LeftModePicker
@@ -1575,6 +2546,12 @@ function ChatBody(props: ChatBodyProps) {
               running={running}
               landing={!inChat}
               onErased={onErased}
+              // PR3: Archive and Delete both carry the reader off this chat,
+              // and a comment round or a walkthrough is about the app beside it
+              // — the same nav lock that greys ← Chats and every recent row
+              // (`annNavLocked`, T:6888/18181/18779).
+              locked={ann.locked}
+              lockedReason={NAV_LOCKED_REASON}
             />
           </div>
         ) : null}
@@ -1620,6 +2597,11 @@ function ChatBody(props: ChatBodyProps) {
             onOpenSession={onOpenSession}
           />
         )}
+        {/* THE NOTE COMPOSER'S IDLE HOME (T:7291): ONE node, parked in the chat
+            column while it is not lent to the target's document — and parked
+            OUTSIDE the home/chat branch, because the round of notes survives the
+            first send that leaves the landing. */}
+        <AnnPopover handlers={ann.popHandlers} popRef={ann.bindPop} />
       </div>
       <SentPop
         open={!!sent}
@@ -1631,7 +2613,7 @@ function ChatBody(props: ChatBodyProps) {
       {/* ABOVE the popup (z 90 against 80): a picture opened from inside it must
           land ON TOP or the click looks dead (T:1147-1148). */}
       <ShotViewer
-        shot={viewing}
+        shot={liveViewing}
         paneNoun={pane.paneNoun}
         onClose={() => setViewing(null)}
         onDiscard={onDiscardShot}

@@ -11,8 +11,8 @@
 //     off it, so the wrong turn would show the wrong message);
 //   * a receipt with nothing extra behind it stays inert text — a door into a
 //     room that is just the bubble again would be a lie;
-//   * a turn with a differing wire but NO receipt keeps the hover control,
-//     because there is no receipt line to press;
+//   * a turn with a differing wire but NO receipt has no door at all — the
+//     hover control that used to stand in for one is gone everywhere (P3R1-7);
 //   * and the panel itself wears the shared modal chassis — the Delete task
 //     dialog's chrome — rather than a dialog skin of its own.
 import { installDomShim } from "@platform/lib/testDomShim";
@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { UserTurn } from "../protocol/controller-api";
+import { annStanza } from "../protocol/wire";
 import { Turn } from "./Turn";
 
 const mounted: Array<ReturnType<typeof create>> = [];
@@ -96,17 +97,59 @@ test("a receipt with nothing extra behind it is not a door (R4-1)", () => {
   expect(find(r, "sentbtn")).toHaveLength(0);
 });
 
-test("no receipt, but hidden wire blocks → the hover control stays (R4-1)", () => {
+// P3R1-7: an ANNOTATED send's receipt rows are the door, so the hover control
+// has nothing left to do there.
+const ANN_WIRE =
+  "look at this\n<annotations>\n" +
+  annStanza({ label: "A", content: "make this bigger", tag: "button#go" }) +
+  "\n</annotations>";
+
+test("annotation receipts are the door — no second hover control (P3R1-7)", () => {
   const seen: UserTurn[] = [];
-  const turn = user({ raw: WIRE });
-  const r = mount(<Turn turn={turn} onShowSent={(t) => seen.push(t)} />);
-  expect(find(r, "attach")).toHaveLength(0);
-  const btn = find(r, "sentbtn");
-  expect(btn).toHaveLength(1);
+  const turn = user({ text: "look at this", raw: ANN_WIRE });
+  const r = mount(
+    <Turn turn={turn} onOpenShot={() => {}} onShowSent={(t) => seen.push(t)} />,
+  );
+
+  // The rows exist and each is pressable, carrying T's own sentence
+  // (T:11059/11072) — the affordance the owner expected to be the only one.
+  const rows = find(r, "annsum-note");
+  expect(rows.length).toBeGreaterThan(0);
+  expect((rows[0].props as { title?: string }).title).toBe(
+    "Click to see exactly what was sent to the agent",
+  );
+  // ONE DOOR: the hover "what was sent" button is gone.
+  expect(find(r, "sentbtn")).toHaveLength(0);
+
   act(() => {
-    (btn[0].props as { onClick: () => void }).onClick();
+    (rows[0].props as { onClick: () => void }).onClick();
   });
   expect(seen).toEqual([turn]);
+});
+
+test("no receipt line at all → NO door, and no hover control either (P3R1-7)", () => {
+  // R4-1 kept a `.sentbtn` for exactly this turn: a differing wire with no
+  // receipt line to press. The owner took it out everywhere (2026-09-10) — a
+  // word-shaped affordance that materialises under the pointer, names no turn in
+  // particular, and doubles the receipt's own door wherever there is one. T
+  // ships no such control. So this turn simply has no entrance, which is the
+  // honest answer: there is nothing drawn under it to make one out of.
+  const r = mount(<Turn turn={user({ raw: WIRE })} onShowSent={() => {}} />);
+  expect(find(r, "attach")).toHaveLength(0);
+  expect(find(r, "sentbtn")).toHaveLength(0);
+});
+
+test("the hover control is gone from the SOURCE and the SHEET (P3R1-7)", () => {
+  const src = readFileSync(join(import.meta.dir, "Turn.tsx"), "utf8");
+  expect(src).not.toContain('className="sentbtn"');
+  expect(src).not.toContain("what was sent<");
+  for (const sheet of ["../styles/transcript.css", "../styles/chat.css"]) {
+    const css = readFileSync(join(import.meta.dir, sheet), "utf8");
+    // The name survives only in the note that says why it is gone.
+    expect(css).not.toContain(".sentbtn {");
+    expect(css).not.toContain(".sentbtn,");
+    expect(css).not.toContain(".sentbtn:");
+  }
 });
 
 test("no host to open the panel → the receipt is plain text again (R4-1)", () => {

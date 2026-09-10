@@ -416,6 +416,24 @@ export interface AppPaneProps {
   /** Handed the live element so app-state and the annotation layer can reach the
    *  document without prop-drilling a ref through the tree. */
   frameRef?: (frame: HTMLIFrameElement | null) => void;
+  /**
+   * PR3: `.c-leftview`, the frame's own box — the offset parent every pin, the
+   * ring and the note composer are placed in, and NOT `.c-left`, which also
+   * holds the mode bar and the left-mode row (measuring that would put every pin
+   * their height too high, T:6888).
+   */
+  stageRef?: (view: HTMLElement | null) => void;
+  /**
+   * PR3's bar: a real ROW above the frame, so arming pushes the app DOWN by 43px
+   * instead of hiding its first 43px (T:3894). Handed in as a node because the
+   * bar belongs to the annotation subsystem and the LAYOUT belongs here.
+   */
+  annBar?: React.ReactNode;
+  /** PR3: the pins are placed against the frame's box, so anything that moves
+   *  that box re-measures them. The left bar appearing or going is this
+   *  component's own such change (the split drag and the narrow view are
+   *  `useSplit`'s and `useNarrowView`'s). */
+  onRemeasure?: () => void;
 }
 
 export function AppPane({
@@ -428,6 +446,9 @@ export function AppPane({
   watcher,
   onFrameLoad,
   frameRef,
+  stageRef,
+  annBar,
+  onRemeasure,
 }: AppPaneProps) {
   const [leftMode, setLeftMode] = useState<string | undefined>(() => params.get("leftmode"));
   useEffect(() => params.onChange((all) => setLeftMode(all.leftmode)), [params]);
@@ -454,12 +475,38 @@ export function AppPane({
     onFrameLoad?.(el);
   }, [watcher, onFrameLoad]);
 
-  // Step 6 of enterNoPane: the column and its controls are simply not rendered.
-  if (pane.noPane) return null;
-
   const modes = pane.decision?.leftModes ?? [];
   const showBar = leftBarShown(!!narrowView?.narrow, pane.noPane, modes.length);
   const message = pane.error ?? swapError;
+
+  // BEFORE the early return, because hooks cannot live after one — and the bar
+  // coming or going is exactly the transition this re-measure is for.
+  const remeasure = useRef(onRemeasure);
+  remeasure.current = onRemeasure;
+  useEffect(() => {
+    // TWICE, and T:5661-5667 gives both reasons at this exact transition: "the
+    // bar is a row ABOVE #leftview, so showing or hiding it changes that box —
+    // and the pins are positioned in #leftview coordinates. Re-measure twice
+    // […]: reading a rect flushes THIS document's layout now, and the framed
+    // document only reflows to the iframe's new height on the next frame."
+    //
+    // One pass alone left the pins sitting the bar's 43px off — for a frame if
+    // the framed document reflowed promptly, and until some unrelated repaint
+    // if it did not. Same now+rAF shape as `useNarrowView`'s view-flip effect,
+    // and cancelled on cleanup so a fast toggle cannot land a stale second
+    // measure after the bar has moved again.
+    remeasure.current?.();
+    const raf =
+      typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(() => remeasure.current?.())
+        : null;
+    return () => {
+      if (raf !== null) cancelAnimationFrame(raf);
+    };
+  }, [showBar]);
+
+  // Step 6 of enterNoPane: the column and its controls are simply not rendered.
+  if (pane.noPane) return null;
 
   return (
     <div className="c-left" style={width ? { width } : undefined}>
@@ -471,9 +518,10 @@ export function AppPane({
           <LeftModePicker modes={modes} params={params} leftMode={leftMode} />
         </div>
       ) : null}
+      {annBar}
       {/* The frame's box, and the offset parent for everything that floats over
           the app (PR3's pins, highlight and note composer). */}
-      <div className="c-leftview">
+      <div className="c-leftview" ref={stageRef}>
         {message ? (
           // Only the FRAME is swapped for the message — this box also hosts the
           // annotation layer (T:5865).

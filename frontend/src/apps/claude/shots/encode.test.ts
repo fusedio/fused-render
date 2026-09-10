@@ -192,3 +192,64 @@ describe("encodeBadged", () => {
     expect(badges).toBe(6);
   });
 });
+
+// ── P3R1-6: the burned badge and the on-screen pin are ONE mark ─────────────
+//
+// The reader drops an accent pin on the app; the receipt shows them the picture
+// the agent got. Those two marks describing one note must not be two colours —
+// which is what T's `#ff2d55` disc against an accent pin made them (owner's
+// question, P3R1-6, answered as a CHANGE 2026-09-10). Three files hold the value
+// and none of them can read a token (a canvas, someone else's document, and this
+// page's own sheet), so the guard is that they agree.
+test("the burned disc is the pin's accent, in all three places it is written", async () => {
+  const { ANN_BADGE_FILL } = await import("./encode");
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const here = import.meta.dir;
+  expect(ANN_BADGE_FILL).toBe("#d97757");
+  // The pin drawn INTO the target document, which has never heard of this
+  // page's palette either (ann/layer.ts's literal).
+  const layer = readFileSync(join(here, "../ann/layer.ts"), "utf8");
+  const pin = layer.slice(layer.indexOf(".annpin {"));
+  expect(pin.slice(0, pin.indexOf('", '))).toContain("background: " + ANN_BADGE_FILL);
+  // …and the token the pin uses in OUR document, which is the same colour.
+  const sheet = readFileSync(join(here, "../styles/chat.css"), "utf8");
+  expect(sheet).toContain("--c-accent: " + ANN_BADGE_FILL);
+  // T's red is gone from the drawing.
+  expect(readFileSync(join(here, "encode.ts"), "utf8")).not.toContain('"#ff2d55"');
+});
+
+// …AND SO IS THE LETTER (owner nit on P3R1-6, 2026-09-10). Unifying the disc and
+// leaving the character inside it white left the two marks agreeing on the circle
+// and disagreeing on its content — the same recognition cost one layer down. The
+// RING stays white, which is the part that actually buys findability on any app
+// background.
+test("the burned LETTER is the pin's ink, and the ring is still white", async () => {
+  const { ANN_BADGE_FILL, ANN_BADGE_INK } = await import("./encode");
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const here = import.meta.dir;
+  expect(ANN_BADGE_INK).toBe("#1a1a1a");
+  // The on-screen pin's own `color`, in the sheet injected into someone else's
+  // document — the value the badge is being unified with.
+  const layer = readFileSync(join(here, "../ann/layer.ts"), "utf8");
+  const pin = layer.slice(layer.indexOf(".annpin {"));
+  const rules = pin.slice(0, pin.indexOf('", '));
+  expect(rules).toContain("color: " + ANN_BADGE_INK);
+  // …and the shell token that resolves to it beside this accent, so the pin
+  // drawn over the app and the chip drawn in the pane are one pair of values.
+  // Both live in `chat.css`: `--c-accent: #d97757` is the theme whose
+  // `--c-on-accent` is the ink.
+  const sheet = readFileSync(join(here, "../styles/chat.css"), "utf8");
+  const block = sheet.slice(sheet.indexOf("--c-accent: " + ANN_BADGE_FILL));
+  expect(block.slice(0, block.indexOf("--c-error"))).toContain(
+    "--c-on-accent: " + ANN_BADGE_INK,
+  );
+  // THE RING IS NOT THE LETTER: white, and drawn from a literal, because it is
+  // the device that makes the badge readable on a light and a dark app alike.
+  const src = readFileSync(join(here, "encode.ts"), "utf8");
+  const badge = src.slice(src.indexOf("export function drawBadge("));
+  expect(badge.slice(0, badge.indexOf("\n}"))).toContain('strokeStyle = "#fff"');
+  // The letter no longer is.
+  expect(badge.slice(0, badge.indexOf("\n}"))).not.toContain('fillStyle = "#fff"');
+});

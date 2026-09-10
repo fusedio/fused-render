@@ -15,6 +15,7 @@ const {
   paneOfferable,
   paneSrcFor,
   annotateLabelFor,
+  annIdleTitleFor,
   shotLabelFor,
 } = await import("./paneUrl");
 type StatResult = import("@platform/lib/api").StatResult;
@@ -237,5 +238,44 @@ describe("the picker's labels and icons", () => {
     expect(paneModeIconUrl("/t/code/icon.svg")).toBe('url("/api/fs/raw?path=%2Ft%2Fcode%2Ficon.svg")');
     expect(paneModeIconUrl(null)).toBeNull();
     expect(paneModeLetter("duckdb")).toBe("D");
+  });
+});
+
+describe("the framing flags' EXACT shape", () => {
+  test("`_preview` comes before `_nofocus`, as T spells it", () => {
+    // T:10717 is the one site that emits both: `paneSrcFor(t, path, remote) +
+    // "&_preview=1&_nofocus=1"`. Nothing reads either flag positionally, so
+    // this is literal parity — but the inventory pins these URLs as an EXACT
+    // shape, and a snapshot test or a log grep written to T's spelling misses
+    // on a src that reads `&_nofocus=1&_preview=1`.
+    const src = paneSrcFor(tpl("markdown"), "/w/a.md", false, {
+      preview: true,
+      noFocus: true,
+    });
+    expect(src.endsWith("&_preview=1&_nofocus=1")).toBe(true);
+  });
+
+  test("either flag alone still lands", () => {
+    expect(paneSrcFor(tpl("markdown"), "/w/a.md", false, { preview: true })).toContain(
+      "_preview=1",
+    );
+    const only = paneSrcFor(tpl("markdown"), "/w/a.md", false, { noFocus: true });
+    expect(only).toContain("_nofocus=1");
+    expect(only).not.toContain("_preview");
+  });
+});
+
+describe("the Comment seat's two sentences", () => {
+  test("the idle tooltip is kind-correct and names both halves of the gesture", () => {
+    // T:7505-7508 `annIdleTitle`, extracted there because two writers spelled
+    // it out and the first disarm threw the resolved noun away.
+    expect(annIdleTitleFor("preview")).toBe(
+      "Comment on the preview, then send the notes to Claude",
+    );
+    expect(annIdleTitleFor("app")).toBe("Comment on the app, then send the notes to Claude");
+  });
+
+  test("the spoken name is the short half of the same sentence", () => {
+    expect(annIdleTitleFor("app").startsWith(annotateLabelFor("app"))).toBe(true);
   });
 });

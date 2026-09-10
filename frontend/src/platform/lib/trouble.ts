@@ -110,17 +110,24 @@ export interface TroubleContext extends TroubleFacts {
  *
  * Deliberately plain text with no secrets: paths, a version, an OS string and
  * the error. Nothing here is read from the user's files.
+ *
+ * NO "Error:" HEADING WITH NOTHING UNDER IT (R1-3). The card stopped drawing an
+ * empty verbatim box (P3R1-8) but this went on printing
+ * `Error:\n(no message)` — so the boot failure's "Copy the details" handed on
+ * the very string the owner took off the screen, as the only machine fact in
+ * it. A failure with no words to quote gets no section: what the app was doing,
+ * the installation, and the help URL are what that clipboard is worth, and they
+ * are all still there.
  */
 export function troubleReport(ctx: TroubleContext): string {
   const kind = troubleKind(ctx.error);
+  const said = String(ctx.error || "").trim();
   const lines = [
     "Fused Render — problem report",
     "",
     `What the app was doing: ${ctx.what}`,
     "",
-    "Error:",
-    String(ctx.error || "(no message)").trim(),
-    "",
+    ...(said ? ["Error:", said, ""] : []),
   ];
   const facts: string[] = [];
   if (ctx.version) facts.push(`Fused Render v${ctx.version}`);
@@ -257,9 +264,13 @@ export function troubleInstructions(ctx: TroubleContext): string {
     "",
     `What the app was doing: ${ctx.what}`,
     "",
-    "The exact error it reported:",
-    String(ctx.error || "(no message)").trim(),
-    "",
+    // Same rule as `troubleReport`'s (R1-3): a failure with nothing verbatim
+    // behind it reports no error section rather than a heading over
+    // "(no message)". An agent reading that learns nothing and may well go
+    // looking for the literal string.
+    ...(String(ctx.error || "").trim()
+      ? ["The exact error it reported:", String(ctx.error).trim(), ""]
+      : ["It reported no error message of its own.", ""]),
   ];
   const facts: string[] = [];
   if (ctx.version) facts.push(`Fused Render version: ${ctx.version}`);

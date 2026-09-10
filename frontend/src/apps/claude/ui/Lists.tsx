@@ -246,7 +246,10 @@ export function Lists({
       <TabsList
         variant="line"
         aria-label="Past chats, published pages and snapshots"
-        className="c-listtabs h-auto w-full justify-start rounded-none bg-transparent p-0"
+        // The geometry lives in `home.css`'s `.chat-root .c-listtabs` (FIX-7),
+        // which outranks the shadcn base classes — `h-auto` and `justify-start`
+        // did not, so they are gone rather than left looking load-bearing.
+        className="c-listtabs w-full rounded-none bg-transparent p-0"
       >
         {order
           .filter((name) => view.tabShown[name])

@@ -18,7 +18,7 @@ import {
   PANE_SHOT_TAG,
   stripBlocks,
 } from "../protocol/wire";
-import { mergeSendOptions } from "./sendMerge";
+import { mergeSendOptions, sendBlocks } from "./sendMerge";
 
 const state = "<" + APP_STATE_TAG + ">\nrows\n</" + APP_STATE_TAG + ">";
 const shots = "<" + PANE_SHOT_TAG + ">\n[]\n</" + PANE_SHOT_TAG + ">";
@@ -149,5 +149,43 @@ describe("mergeSendOptions", () => {
     const out = mergeSendOptions({ blocks: [state], readDirs: ["/w"] }, {});
     expect(out.blocks).toEqual([state]);
     expect(out.readDirs).toEqual(["/w"]);
+  });
+});
+
+describe("sendBlocks ADDS the send path's block to the caller's", () => {
+  test("a caller's block and ours both go out, in BLOCK_ORDER", () => {
+    // The send path used to build its base as `{ ...opts, blocks: [ours] }` —
+    // a replacement, one line above the merge that exists to prevent one. The
+    // caller's `<live-app-state>` was dropped with the run succeeding
+    // (whole-stack review, PR #1074).
+    const out = sendBlocks([state], notes);
+    expect(out).toEqual([state, notes]);
+  });
+
+  test("the whole send: a caller's block, ours, and the TRAY's — all three, ordered", () => {
+    // The shape `beginSend` composes: `opts.blocks` from the caller, the
+    // `<annotations>` this send stamped, and the pictures the tray took out of
+    // itself. Every tag on the wire, in the order §D states.
+    const merged = mergeSendOptions(
+      { model: "opus", blocks: sendBlocks([state], notes) },
+      { blocks: [shots] },
+    );
+    expect(merged.blocks).toEqual([state, shots, notes]);
+    expect(merged.blocks!.map(blockRank)).toEqual([0, 1, 2]);
+    expect(merged.blocks).toHaveLength(BLOCK_ORDER.length);
+    // And it reaches the wire that way, the typed words last.
+    const wire = composeOutgoing("have a look", merged.blocks);
+    expect(wire.indexOf(APP_STATE_TAG)).toBeLessThan(wire.indexOf(PANE_SHOT_TAG));
+    expect(wire.indexOf(PANE_SHOT_TAG)).toBeLessThan(wire.indexOf(ANN_TAG));
+    expect(stripBlocks(wire)).toBe("have a look");
+  });
+
+  test("no caller block, no block of ours — nothing invented", () => {
+    expect(sendBlocks(undefined)).toEqual([]);
+    expect(sendBlocks(undefined, null)).toEqual([]);
+    // A wordless send that carries only notes is still just the notes.
+    expect(sendBlocks(undefined, notes)).toEqual([notes]);
+    // ...and a caller with blocks and NO notes keeps every one of them.
+    expect(sendBlocks([state, shots], null)).toEqual([state, shots]);
   });
 });

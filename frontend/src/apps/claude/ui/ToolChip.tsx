@@ -9,7 +9,7 @@
 // EVERY string below goes in as a text node. The one exception is a plan
 // (D248), which is markdown the model wrote for a human and goes through
 // MarkdownView like the reply itself.
-import { memo } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/shadcn/ui/collapsible";
 import { cn } from "@platform/lib/utils";
@@ -27,6 +27,7 @@ import {
   toolChipSummaryParts,
   toolStatusGlyph,
 } from "../protocol/summaries";
+import { COPY_RESET_MS } from "../protocol/markdown";
 import type { ToolSegment } from "../protocol/types";
 import { useCardOpen } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
@@ -41,6 +42,83 @@ function text(v: unknown): string {
   return JSON.stringify(v) ?? "";
 }
 
+/**
+ * A chip body's `pre`, WITH T'S COPY BUTTON (visual pass 3, FIX-23).
+ *
+ * T runs `attachCodeCopy` over the whole rendered body (T:15122
+ * `attachCodeCopy(bodyEl.parentElement)`), TOOL CHIPS INCLUDED — 2 buttons per
+ * chip, 7 in the transcript the pass measured. This port only ever called
+ * `enhanceCodeBlocks` from `MarkdownView`, and a chip body is not markdown, so
+ * the command a tool ran and the output it got back — the two things a reader
+ * most wants out of a transcript — had no way out but a manual selection inside
+ * a 267px box. The CSS was ported the whole time
+ * (`styles/transcript.css`'s `.copybtn`); only the element was missing.
+ *
+ * FROM JSX AND NOT FROM A DOM WALK, which was the first attempt: the walker
+ * needs a handle on the mounted panel, `CollapsibleContent` is a plain function
+ * wrapper over Base UI's forward-ref Panel, and React 18 DROPS a `ref` passed
+ * to a plain function component — silently, so the effect ran against `null`
+ * and the count stayed 0 while every test passed. JSX also means the whole
+ * thing is reachable under `react-test-renderer`, which is where the rest of
+ * this file's tests live.
+ *
+ * `copy` is passed rather than read back off the node, which is T's own
+ * `copyText` reading the three shapes it can meet (a `code` child, one span per
+ * line, or the text) — here the caller always knows the string, and a diff's
+ * line spans carry no "\n" between them by design, so reading the DOM would
+ * have joined the whole diff into one line anyway.
+ *
+ * The wrap goes FIRST: `.copywrap` is a zero-height anchor and the button in it
+ * is `position: absolute` against the `pre`, so at the end it would sit under
+ * the code it is meant to sit over.
+ */
+function CopyPre({
+  className,
+  copy,
+  children,
+}: {
+  className?: string;
+  copy: string;
+  children?: React.ReactNode;
+}) {
+  const [copied, setCopied] = useState(false);
+  // ONE TIMER, REPLACED RATHER THAN STACKED, AND CANCELLED ON THE WAY OUT
+  // (Bugbot, PR #1074). The first version returned a cleanup from the click
+  // handler — and a DOM event handler's return value is thrown away, so
+  // nothing was ever cancelled: a second press inside the window armed a
+  // second timer, and closing the chip body (which UNMOUNTS the panel,
+  // A GAP-D10) left one armed to set state on a component that is gone. The
+  // walker this replaced held exactly one timer per button and cleared it on
+  // the next press; the ref is that, and the effect is the half a DOM button
+  // did not need.
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const onCopy = useCallback(() => {
+    void navigator.clipboard?.writeText(copy);
+    setCopied(true);
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      setCopied(false);
+    }, COPY_RESET_MS);
+  }, [copy]);
+  return (
+    <pre {...(className ? { className } : {})}>
+      <span className="copywrap">
+        <button className="copybtn" type="button" onClick={onCopy}>
+          {copied ? "copied" : "copy"}
+        </button>
+      </span>
+      {children}
+    </pre>
+  );
+}
+
 /** T:15368-15393 — one span per LINE and no "\n" text nodes between them: the
  *  spans are `display: block` (that is what makes the +/- colour a full-width
  *  band), so a newline character between two of them renders as an extra empty
@@ -53,7 +131,7 @@ function EditDiff({ input }: { input: Record<string, unknown> }) {
   // a two-line diff.
   const cls = lines.length > CHIP_DIFF_CLIP_LINES ? "diff clipped" : "diff";
   return (
-    <pre className={cls}>
+    <CopyPre className={cls} copy={lines.join("\n")}>
       {lines.map((line, i) => (
         <span
           key={i}
@@ -62,7 +140,7 @@ function EditDiff({ input }: { input: Record<string, unknown> }) {
           {line}
         </span>
       ))}
-    </pre>
+    </CopyPre>
   );
 }
 
@@ -98,8 +176,12 @@ function ChipBody({ seg }: { seg: ToolSegment }) {
   return (
     <>
       {renderInput(seg, inp)}
-      {extra ? <pre>{JSON.stringify(extra, null, 2)}</pre> : null}
-      {out === null ? null : <pre className="chip-out">{out}</pre>}
+      {extra ? <CopyPre copy={JSON.stringify(extra, null, 2)}>{JSON.stringify(extra, null, 2)}</CopyPre> : null}
+      {out === null ? null : (
+        <CopyPre className="chip-out" copy={out}>
+          {out}
+        </CopyPre>
+      )}
       {(Array.isArray(seg.images) ? seg.images : []).map((img, i) => {
         const url = chipImageUrl(img?.media_type, img?.data);
         // A rejected image is skipped, not coerced: inventing `image/png` for
@@ -130,14 +212,18 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
       return (
         <>
           <PathLabel value={inp.file_path} />
-          <pre>{typeof inp.content === "string" ? inp.content : ""}</pre>
+          <CopyPre copy={typeof inp.content === "string" ? inp.content : ""}>
+            {typeof inp.content === "string" ? inp.content : ""}
+          </CopyPre>
         </>
       );
     case "Bash":
       return (
         <>
           {inp.description ? <div className="chip-label">{String(inp.description)}</div> : null}
-          <pre>{typeof inp.command === "string" ? inp.command : ""}</pre>
+          <CopyPre copy={typeof inp.command === "string" ? inp.command : ""}>
+            {typeof inp.command === "string" ? inp.command : ""}
+          </CopyPre>
         </>
       );
     case "TodoWrite":
@@ -193,7 +279,9 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>) {
     default:
       // No renderer for this tool, so the input IS the body: a chip that showed
       // part of an unknown call would be a chip that misdescribed what ran.
-      return Object.keys(inp).length ? <pre>{JSON.stringify(inp, null, 2)}</pre> : null;
+      return Object.keys(inp).length ? (
+        <CopyPre copy={JSON.stringify(inp, null, 2)}>{JSON.stringify(inp, null, 2)}</CopyPre>
+      ) : null;
   }
 }
 

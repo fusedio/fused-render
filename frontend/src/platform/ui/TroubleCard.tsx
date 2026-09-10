@@ -20,6 +20,7 @@ import {
   troubleHelpUrl,
   troubleInstructions,
   troubleKind,
+  type TroubleKind,
   troubleReport,
   type TroubleFacts,
 } from "@platform/lib/trouble";
@@ -82,9 +83,11 @@ export function TroubleCard({
   error,
   facts,
   onRetry,
+  retryLabel,
   compact,
   title,
   explain,
+  kind: kindProp,
   children,
 }: {
   /** What the app was doing, in the user's terms — goes in the report. */
@@ -95,6 +98,12 @@ export function TroubleCard({
       because the boot failure is exactly the case that knows none of it. */
   facts?: TroubleFacts;
   onRetry?: () => void;
+  /** What the retry button SAYS, when "Try again" is the wrong promise. The
+      chat's boot failure is usually a server that has gone away, so its own
+      sentence asks the reader to reload the page — and a button labelled "Try
+      again" beside it reads as a second, different action. Defaults to "Try
+      again", which is right wherever re-running the same request can work. */
+  retryLabel?: string;
   /** The notification-stack variant: 340px wide, stacked under a failed row.
       Says WHICH failure and where to go, and leaves the explaining to the
       Preferences tab — a full card in a corner popup is a wall, and the
@@ -107,10 +116,24 @@ export function TroubleCard({
       classification, because `raw` is genuinely the right tab for it. */
   title?: string;
   explain?: string;
+  /**
+   * The classification, for a caller that has ALREADY made it. Optional and
+   * defaulting to `troubleKind(error)`, so every existing caller behaves
+   * exactly as before.
+   *
+   * The chat is the case: `protocol/trouble.ts` classifies the failure when it
+   * arrives and keeps its own vocabulary (`cli-missing` for `notfound`), and
+   * `platformKindOf` already exists to translate back — but the string it hands
+   * this component as `error` is the SLICED verbatim part (`lines.raw`), which
+   * need not still match the regex the whole message did. Re-deriving from it
+   * meant the install box could turn up for one rendering of a failure and not
+   * for another, which is the wrong thing to hang a duplicate-detection fix on.
+   */
+  kind?: TroubleKind;
   /** Extra actions belonging to the calling surface (e.g. "Fix this"). */
   children?: React.ReactNode;
 }) {
-  const kind = troubleKind(error);
+  const kind = kindProp ?? troubleKind(error);
   const fallback = SAID[kind] ?? SAID.raw;
   const said = { title: title ?? fallback.title, explain: explain ?? fallback.explain };
   const ctx = { what, error, ...(facts ?? {}) };
@@ -145,8 +168,19 @@ export function TroubleCard({
       {said.explain && <p className="trouble-explain">{said.explain}</p>}
 
       {/* Verbatim, in a box, scrollable. Rewording it would make it
-          unsearchable, and searching it is the first thing anyone does. */}
-      <pre className="trouble-error">{String(error || "(no message)").trim()}</pre>
+          unsearchable, and searching it is the first thing anyone does.
+
+          AN EMPTY `error` DRAWS NO BOX (P3R1-8). It used to print
+          "(no message)" — a monospace box whose whole content was a note that
+          there was nothing to put in it, which reads as a broken card rather
+          than as a card with nothing verbatim to show. A caller whose failure
+          has no machine words to quote (the chat's boot failure: there is no
+          CLI output, only our own two sentences above) now passes `""` and gets
+          the title, the explanation and the actions with no dead box between
+          them. Every caller that has real bytes is unaffected. */}
+      {String(error || "").trim() ? (
+        <pre className="trouble-error">{String(error).trim()}</pre>
+      ) : null}
 
       {kind === "notfound" && (
         <div className="trouble-install">
@@ -181,7 +215,7 @@ export function TroubleCard({
         </a>
         {onRetry && (
           <button type="button" className="version-panel-link" onClick={onRetry}>
-            Try again
+            {retryLabel ?? "Try again"}
           </button>
         )}
         {children}

@@ -140,7 +140,13 @@ function Chip({
           title={
             pic ? "Click to see this screenshot full size" : "Click to see what is attached"
           }
-          aria-label={alt + " — open full size"}
+          // TWO SUFFIXES, and T uses them on purpose: " — open full size" for a
+          // THUMBNAIL (T:7212), " — open details" for the glyph door (T:7158,
+          // T:10842). A `.zip` has no pixels to see full size, so the spoken
+          // name promised something the viewer cannot deliver. The `title`
+          // above already splits on the same `pic`; `ui/Receipts.tsx` was
+          // already correct.
+          aria-label={alt + (pic ? " — open full size" : " — open details")}
           onClick={() => onOpen(shot)}
         >
           {face}

@@ -20,6 +20,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@platform/shadcn/ui/popover";
+import { useDismissOnWindow } from "./useDismissOnWindow";
 
 export interface PillOption {
   value: string;
@@ -77,10 +78,17 @@ export function PillSelect({
     openRef.current = open;
   }, [open]);
 
+  const closeMenu = useCallback(() => setOpen(false), []);
+
   const onPointerDown = useCallback((ev: React.PointerEvent) => {
     ev.preventDefault(); // kills the native popup AND the focus it would take
     wasOpen.current = openRef.current;
   }, []);
+
+  // The two dismissals Base UI's outside-press cannot reach — above all a click
+  // that lands INSIDE THE PREVIEW IFRAME, which never reaches this document at
+  // all (T:12602, T:12605). See `useDismissOnWindow`.
+  useDismissOnWindow(open, closeMenu);
 
   const onClick = useCallback(() => {
     if (wasOpen.current) return;
