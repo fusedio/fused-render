@@ -1253,6 +1253,12 @@ export default function Listing({
     // wires `onPointerUp`, so this check has to come before the `pressRef`
     // read below, which the offer row never populated in the first place.
     if (isZeroMatchOfferPath(path)) {
+      // Same guard every real row's press already gets (onRowPointerDown,
+      // above): a right-click or middle-click landing on this row must not
+      // rerun the broadened search, and a right-click also has its own job
+      // — opening the background context menu — that this would otherwise
+      // step on.
+      if (e.button !== 0) return;
       rerunBroadenedSearch();
       return;
     }
@@ -1523,6 +1529,21 @@ export default function Listing({
                   // ever created for the sentinel path), so this only needs
                   // to stop that default, not track anything.
                   e.preventDefault();
+                }}
+                onClick={(e) => {
+                  // A focused button never satisfies useListingSelection's
+                  // `navActive` (search input or document body/root only),
+                  // so a keyboard Tab+Enter/Space never reaches the
+                  // document-level Enter handler's own offer branch — this
+                  // is the one path that lets keyboard activation work at
+                  // all. A pointer interaction is already handled by
+                  // `onPointerUp` above; this must not run a second time for
+                  // one. `detail` is the click count a pointer device
+                  // reports (always >= 1) — a keyboard-synthesized click
+                  // reports 0, which is the one case `onPointerUp` never
+                  // sees at all (no pointer events fire for it).
+                  if (e.detail !== 0) return;
+                  rerunBroadenedSearch();
                 }}
               >
                 {broadenOffer.label}: search <strong>{broadenOffer.pattern}</strong> instead

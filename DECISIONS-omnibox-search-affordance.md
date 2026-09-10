@@ -1076,3 +1076,41 @@ direct `.js` children but several levels down) renders "No matches
 for /home/iamsdas/*.js. Search /home/iamsdas/**/*.js instead" as the sole
 body row; both clicking the button and pressing Enter with nothing selected
 rewrite the box to the broadened pattern and populate real hits.
+
+## Code review of the zero-hit offer: keyboard, pointer-button, and ladder shape (2026-09-10)
+
+**Keyboard activation** (`Listing.tsx`, the offer row's `<button>`): wired
+only `onPointerUp`/`onPointerDown`, no `onClick`. A focused `<button>` fails
+`useListingSelection.ts`'s `navActive` predicate (search input or document
+body/root only), so Tab-focusing the offer and pressing Enter or Space never
+reached the document-level Enter handler's own zero-match branch at all —
+the offer was mouse-only. Added `onClick`, guarded with `if (e.detail !== 0)
+return;`: `detail` is the click count a pointer device reports (always
+>= 1); a keyboard-synthesized click reports 0, which is exactly the one
+case `onPointerUp` never sees (no pointer events fire for a keyboard
+activation at all), so the guard cannot suppress a real keyboard press while
+still preventing a double run for a mouse click.
+
+**Pointer button** (`Listing.tsx`, `onRowPointerUp`'s sentinel branch): the
+zero-match offer's branch ran on any button release at all, unlike every
+real row (`onRowPointerDown` gates on `e.button === 0`). A right-click,
+middle-click, or a drag that released over the offer row all reran the
+broadened search, and a right-click also had its own job — opening the
+background context menu — that this stepped on. Added the same
+`e.button !== 0` guard real rows already carry.
+
+**The ladder's shape**: covered in the commit above this one
+("Glob broadening: named, ordered rungs instead of one recursive
+mutation") — name-widening before subfolder-widening, because it keeps the
+search in the folder the user was already looking at; a future rung (case-
+insensitivity, say) is one more record in `glob-broaden.ts`'s `RUNGS` list,
+nothing else to edit.
+
+**TDD**: both wiring bugs are pinned at the source in
+`zero-match-offer.test.ts` (`selection.test.ts`'s own precedent for this
+technique — Listing.tsx has no full-mount render harness): watched fail
+against the un-fixed source (`e.button !== 0` absent from the sentinel
+branch; `onClick=` absent from the offer row) before either fix landed.
+
+**Verification**: `bun test src/apps/explorer` (1145 pass, 0 fail) and
+`bunx tsc --noEmit` (clean).
