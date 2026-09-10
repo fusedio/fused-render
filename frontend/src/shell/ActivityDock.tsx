@@ -41,7 +41,7 @@
 // this component is the shell's one place that fetches for it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getRunningEngines, stopEngine, type RunningEngine } from "@platform/lib/api";
-import { isRunning, terminalNotifications, type Job } from "@platform/lib/jobs";
+import { isRunning, popupTick, terminalNotifications, type Job } from "@platform/lib/jobs";
 import { pushToast } from "@platform/lib/toast";
 import DownloadManager, { engineLabel } from "@platform/ui/DownloadManager";
 
@@ -170,7 +170,14 @@ function useRunningEngines(): {
 
 export default function ActivityDock({
   onTerminalJobs,
-}: { onTerminalJobs?: (jobs: Job[]) => void } = {}) {
+  onJobPopup,
+}: {
+  onTerminalJobs?: (jobs: Job[]) => void;
+  /** A job just crossed into terminal and should pop its card (SPEC
+   *  actionable-notifications) — "latest wins" is already enforced by
+   *  `popupTick` below, so this fires at most once per poll. */
+  onJobPopup?: (job: Job) => void;
+} = {}) {
   const { engines, refresh: refreshEngines, markStopping } = useRunningEngines();
 
   // TERMINAL JOBS, ON THEIR WAY FROM Activity TO Notifications (D586,
@@ -196,6 +203,17 @@ export default function ActivityDock({
   const onTerminalRef = useRef(onTerminalJobs);
   onTerminalRef.current = onTerminalJobs;
   const terminalIdsRef = useRef("");
+  // THE POP-UP'S OWN SEEN-SET (SPEC actionable-notifications) — separate
+  // from `terminalIdsRef` above, which tracks the Notifications PANEL's own
+  // id set (already `effectiveTier`-filtered, `jobRows`) and is not the set
+  // this needs: a `transient` job pops here even though `terminalIdsRef`
+  // never counts it. `popupJobsSeenRef`/`popupFirstTickRef` are `popupTick`'s
+  // own state, carried across polls in a ref because this callback is
+  // memoized with `[]` deps and must not re-create on every poll.
+  const popupJobsSeenRef = useRef<Set<string>>(new Set());
+  const popupFirstTickRef = useRef(true);
+  const onJobPopupRef = useRef(onJobPopup);
+  onJobPopupRef.current = onJobPopup;
   // The setup meter (onboarding/progress.ts) reads stage statuses the server
   // observes on each read — and a model download starting or finishing is
   // exactly when the Models stage moves. This poll is the shell's one view of
@@ -217,6 +235,20 @@ export default function ActivityDock({
       onTerminalRef.current?.(terminal);
       moved = true;
     }
+    // THE POP-UP, computed off the FULL `next` snapshot rather than
+    // `terminal` above — `popupTick`/`popupJobs` run their own
+    // `mergedRows`/`sys:schedule:*` handling and must see every job to do
+    // it, not the panel's already-tier-filtered subset (see `popupJobs`'s
+    // own doc for why: a `transient` job here has to pop even though
+    // `terminalNotifications` never counts it terminal-for-the-panel).
+    const { seen, popped } = popupTick(
+      next,
+      popupJobsSeenRef.current,
+      popupFirstTickRef.current,
+    );
+    popupJobsSeenRef.current = seen;
+    popupFirstTickRef.current = false;
+    if (popped) onJobPopupRef.current?.(popped);
     if (moved) noteProgressMayHaveMoved();
   }, []);
 

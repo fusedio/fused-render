@@ -510,6 +510,15 @@ export default function App({ config }: { config: Config }) {
   // changes, so this does not re-render the shell on every poll.
   const [terminalJobs, setTerminalJobs] = useState<Job[]>([]);
 
+  // THE FLOATING JOB POP-UP (SPEC actionable-notifications) — the one
+  // currently-shown card, or `null`. `ActivityDock`'s own `popupTick` already
+  // enforces "latest wins", so a fresh call here always REPLACES rather than
+  // queues; `NotificationHost` clears it back to `null` once the card's own
+  // countdown (or an early open/dismiss) finishes. Lives beside `terminalJobs`
+  // for the identical reason: `ActivityDock` is the one place with the full
+  // poll snapshot, and `NotificationHost` is the one column that draws it.
+  const [popupJob, setPopupJob] = useState<Job | null>(null);
+
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
   useMountHealth();
@@ -1052,14 +1061,16 @@ export default function App({ config }: { config: Config }) {
                scope. Plain prop wiring on purpose — the alternative was a
                shared store, which would be a new subsystem for a list that
                one section already polls and the other only reads. */
-            activity={<ActivityDock onTerminalJobs={setTerminalJobs} />}
+            activity={
+              <ActivityDock onTerminalJobs={setTerminalJobs} onJobPopup={setPopupJob} />
+            }
             repoUpdates={
               <RepoUpdatesDock terminal={terminalJobs} onTerminalPatch={setTerminalJobs} />
             }
           />
         )}
       </div>
-      <NotificationHost />
+      <NotificationHost jobPopup={popupJob} onJobPopupGone={() => setPopupJob(null)} />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}
