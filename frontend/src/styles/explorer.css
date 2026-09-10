@@ -1088,11 +1088,26 @@
 
 /* Accent on hover/drag — the same affordance as the left sidebar's resize
    handle (.sidebar-resize-handle, sidebar.css): every draggable seam in the
-   app lights up the same way. */
-.listing-divider:hover,
-.listing-divider.dragging {
-  background: var(--accent);
-  opacity: 0.35;
+   app lights up the same way.
+
+   A 1px LINE and not the 5px box (Akshil, 2026-09-10). The rule used to paint
+   the divider's whole hit area, so the seam jumped from a hairline to a 5px
+   accent bar the moment the cursor crossed it — six times its resting weight,
+   which is the thickness that was being complained about.
+
+   The accent goes ON THE SEAM ALREADY THERE (.listing-pane-slot::before) rather
+   than on a hairline of the divider's own. The slot's pseudo already IS the
+   seam, and it already carries the `z-index: 2` that lifts it over the pane's
+   sticky table header; a second line drawn from this element would need a
+   positioning context of its own (this box has none — its `z-index` is inert
+   without one) and a z-index above the slot's to show at all, and two rules
+   would then own one pixel. One line, two colours. */
+.listing-split:has(.listing-divider:hover) .listing-pane-slot::before,
+.listing-split:has(.listing-divider.dragging) .listing-pane-slot::before {
+  background: var(--seam-hot);
+  /* A breath of glow, so a 1px line stays findable without becoming a second,
+     wider one — 3px, the same figure as the other seams (sidebar.css says why). */
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
 }
 
 /* While the divider drags, the pane's iframe must not swallow the captured
@@ -1146,6 +1161,11 @@
      --bg), which otherwise paints over this line for exactly the header row's
      height — a seam with a bite taken out of it. */
   z-index: 2;
+  /* Eases into the accent on hover/drag (the `:has()` rule above) at the same
+     rate the other two seams do, so the three light up as one control. */
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
 }
 
 /* The pane itself: header bar + iframe / mini list / placeholder card. */

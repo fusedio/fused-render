@@ -61,10 +61,42 @@
   z-index: 10;
 }
 
-.sidebar-resize-handle:hover,
-.sidebar-resize-handle.resizing {
-  background: var(--accent);
-  opacity: 0.35;
+/* WHAT LIGHTS UP IS THE HAIRLINE, NOT THE HIT BOX (Akshil, 2026-09-10: the
+   seams read "a bit thick"). The 6px above is a target for the pointer, and
+   painting the whole of it turned a 1px seam into a 6px accent wash the moment
+   the cursor crossed it — the divider appeared to grow six-fold on hover, which
+   is the thickness that was being complained about. So the handle draws a 1px
+   line of its own, parked exactly over #sidebar's border-right (the component
+   places the handle at `sidebarWidth - 3`, so that border is 2px in), and only
+   that line takes the accent. The hit area itself never paints.
+
+   Same treatment, same offsets in kind, on every other seam in the app
+   (.listing-divider, .preview-side-divider, .preview-side-reopen). */
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: transparent;
+  /* Inert to the pointer like the other three hairlines — the host is the drag
+     target and a pseudo would only ever dispatch to it anyway. */
+  pointer-events: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle.resizing::after {
+  background: var(--seam-hot);
+  /* A breath of glow, so a 1px line is still findable on a dark panel edge.
+     3px, not more: at 4px the lit band was ~9px wide — wider than the 6px wash
+     this replaces, which would have re-thickened the seam it set out to thin.
+     The glow eases with the colour (both in the transition above) so it does
+     not snap in ahead of the line. */
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
 }
 
 /* While a drag is captured, keep the cursor stable and text unselected
@@ -1066,6 +1098,55 @@ a.bookmark-name::after {
 .update-badge-row-static:hover {
   background: rgba(var(--tint), 0.07);
   cursor: default;
+}
+
+/* THE IDLE FACE — "Check for updates" (2026-09-10). Same frame, same place, but
+   quiet: no tinted fill at rest (the fill says "there is news" on the accordion
+   row, and this row is the absence of news), muted text, and the hover is the
+   one the nav rows above use. It is the same slot the accordion takes over.
+   Same padding and type as the accordion row, so the two are one line tall
+   alike — but the accordion's label ("Update available — v0.5.23") wraps to two
+   lines in a 232px sidebar and that row is 15px taller (cmux-ux-tester,
+   2026-09-10). What holds is what matters: the Settings section is anchored to
+   the sidebar's bottom, so Settings and the version chip do not move when the
+   face flips; the growth is taken from the scrolling tree above. */
+.update-badge-row-check {
+  background: transparent;
+  color: var(--fg-muted);
+}
+
+.update-badge-row-check:hover {
+  background: rgba(var(--tint), 0.07);
+  color: var(--fg);
+}
+
+/* In flight: the button is disabled so a second press cannot queue a second
+   POST, but it must not read as greyed-out chrome — "Checking…" is progress,
+   not unavailability. */
+.update-badge-row-check:disabled {
+  cursor: progress;
+  color: var(--fg-muted);
+}
+
+/* Trailing, where the accordion keeps its chevron, at the chevron's colour. */
+.update-badge-refresh {
+  display: flex;
+  margin-left: auto;
+  flex: none;
+  color: var(--fg-muted);
+}
+
+/* The one motion in the sidebar, and it is this row's own progress: the glyph
+   turns while the manifest fetch is out. styles/reduced-motion.css blankets
+   `animation` along with every transition, so it holds still there. */
+.update-badge-row-check.is-checking .update-badge-refresh {
+  animation: update-badge-refresh-turn 0.9s linear infinite;
+}
+
+@keyframes update-badge-refresh-turn {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .update-badge-dot {

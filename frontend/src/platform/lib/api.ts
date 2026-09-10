@@ -477,6 +477,14 @@ export interface UpdateStatus {
   // path for every install type and no terminal command to hand the user, so
   // no surface reads this field any more.
   manual_command: string | null;
+  // True only for the dev-run manager (mac.DEV_MANAGER_ENV): it looks but never
+  // swaps, so the badge draws "Update available" without its Update button.
+  // Absent on a packaged app's older server; treat missing as false.
+  check_only?: boolean;
+  // Why the LAST CHECK could not answer (offline, a manifest that did not
+  // verify), or null. Distinct from `error`, which belongs to an install. The
+  // manual check reads it to say "Couldn't check" instead of "Up to date".
+  check_error?: string | null;
 }
 
 export function updateCheck(): Promise<UpdateStatus> {

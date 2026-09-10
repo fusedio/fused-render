@@ -109,7 +109,7 @@ def test_check_failure_keeps_available(monkeypatch):
         raise OSError("offline")
 
     monkeypatch.setattr(common, "fetch_manifest", boom)
-    status = manager.check()
+    status = manager.check(force=True)
     assert status["state"] == "available"
     assert status["latest_version"] == "9.9.9"
 
@@ -196,7 +196,7 @@ def test_brew_install_takes_the_dmg_path(monkeypatch, tmp_path):
     path for every install type (D767) — and carries no command with it."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     manager._method = "brew"
-    manager.check()
+    manager.check(force=True)
     assert manager.status()["manual_command"] is None
 
     # Recorded, not real: `_install_dmg` would otherwise download the manifest's
@@ -221,7 +221,7 @@ def test_a_failed_brew_install_has_no_terminal_command(monkeypatch, tmp_path):
     itself (the cask's `uninstall quit:` would quit the app mid-upgrade)."""
     manager = _dmg_manager(monkeypatch, tmp_path)
     manager._method = "brew"
-    manager.check()
+    manager.check(force=True)
     monkeypatch.setattr(manager, "_install_dmg",
                         lambda manifest: (_ for _ in ()).throw(RuntimeError("boom")))
     manager.install()
@@ -246,7 +246,7 @@ def test_a_failed_dmg_install_has_no_terminal_command(monkeypatch, tmp_path):
 
 def test_status_notices_external_upgrade_without_a_check(monkeypatch):
     """The badge polls status() every minute; a terminal `brew upgrade` must
-    flip it to "installed" then, not after the next multi-hour check tick."""
+    flip it to "installed" then, not after the next hourly check tick."""
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     assert manager.check()["state"] == "available"
     monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
@@ -261,7 +261,7 @@ def test_brew_external_upgrade_flips_check_to_installed(monkeypatch):
     manager = _manager(monkeypatch, method="brew", available="9.9.9")
     assert manager.check()["state"] == "available"
     monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
-    status = manager.check()
+    status = manager.check(force=True)
     assert status["state"] == "installed"
     assert status["manual_command"] is None
 
@@ -277,7 +277,7 @@ def test_failed_check_keeps_installed_when_disk_is_current(monkeypatch):
         raise OSError("offline")
 
     monkeypatch.setattr(common, "fetch_manifest", boom)
-    assert manager.check()["state"] == "installed"
+    assert manager.check(force=True)["state"] == "installed"
 
 
 def test_check_reports_installed_once_disk_has_the_update(monkeypatch):
@@ -289,6 +289,118 @@ def test_check_reports_installed_once_disk_has_the_update(monkeypatch):
     status = manager.check()
     assert status["state"] == "installed"
     assert status["latest_version"] == "9.9.9"
+
+
+# ---- the check throttle ------------------------------------------------------
+#
+# The client checks when the app comes back to the front (update-status.ts), so
+# POST /api/update/check is now driven by a window event rather than only by a
+# button. MIN_CHECK_GAP_S is the server-side backstop under that: the client's
+# own 30-minute gap lives in one tab's module state and any reload resets it.
+
+
+def _counting_manager(monkeypatch, *, available="9.9.9", current="0.4.10"):
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", current)
+    manifest = {"schema": 1, "version": available, "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+    calls = []
+
+    def fetch(url, **kwargs):
+        calls.append(url)
+        return dict(manifest)
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    return manager, calls
+
+
+def test_a_second_check_inside_the_gap_does_not_touch_the_network(monkeypatch):
+    manager, calls = _counting_manager(monkeypatch)
+    assert manager.check()["state"] == "available"
+    assert len(calls) == 1
+    # Same state back, but nothing fetched: the answer is the last check's.
+    assert manager.check()["state"] == "available"
+    assert len(calls) == 1
+
+
+def test_force_always_fetches_however_recent_the_last_check(monkeypatch):
+    manager, calls = _counting_manager(monkeypatch)
+    manager.check()
+    manager.check(force=True)
+    manager.check(force=True)
+    assert len(calls) == 3
+
+
+def test_a_check_past_the_gap_fetches_again(monkeypatch):
+    manager, calls = _counting_manager(monkeypatch)
+    manager.check()
+    assert len(calls) == 1
+    # Age the recorded timestamp rather than the clock: MIN_CHECK_GAP_S is
+    # read against real time.monotonic(), which nothing here should redefine.
+    manager._last_check_at -= mac.MIN_CHECK_GAP_S + 1
+    # …and from "idle" — a non-forced check only ever looks from there (the
+    # first check found a version, which by itself is a reason not to re-ask).
+    manager._state = "idle"
+    manager.check()
+    assert len(calls) == 2
+
+
+def test_a_throttled_check_still_notices_an_external_upgrade(monkeypatch):
+    """The throttle returns status(), which re-reads the bundle on disk — so a
+    `brew upgrade` in a terminal is still noticed by a throttled call."""
+    manager, calls = _counting_manager(monkeypatch)
+    assert manager.check()["state"] == "available"
+    monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
+    assert manager.check()["state"] == "installed"
+    assert len(calls) == 1
+
+
+def test_a_non_forced_check_never_re_asks_once_an_update_is_known(monkeypatch):
+    """The check-on-return must not flip an "available" (or installed, or
+    failed) manager back through "checking" — install() refuses in that state
+    and the badge hides (bugbot, PR #1078). Only "idle" is worth a fresh look."""
+    manager = _manager(monkeypatch, available="9.9.9")
+    manager.check(force=True)
+    assert manager.status()["state"] == "available"
+    fetched = []
+    monkeypatch.setattr(common, "fetch_manifest",
+                        lambda url: fetched.append(url) or {"version": "9.9.9"})
+    manager._last_check_at = None  # not the gap throttle — the state one
+    status = manager.check()
+    assert status["state"] == "available"
+    assert fetched == []
+    for state in ("installed", "error"):
+        manager._state = state
+        assert manager.check()["state"] == state
+    assert fetched == []
+    # …and from idle it does look.
+    manager._state = "idle"
+    manager.check()
+    assert len(fetched) == 1
+
+
+def test_the_auto_loop_forces_its_tick(monkeypatch):
+    """The hourly tick is the cadence itself: it must not be swallowed because
+    a focus flip fetched a minute earlier."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.delenv("FUSED_RENDER_NO_AUTO_UPDATE", raising=False)
+    monkeypatch.setattr(mac, "MAC_STARTUP_DELAY_S", 0.0)
+    monkeypatch.setattr(manager, "_sweep_stale_downloads", lambda: None)
+    forced = []
+
+    def check(force=False):
+        forced.append(force)
+        # The loop sleeps out common.CHECK_INTERVAL_S after this; the thread is
+        # a daemon, so one tick is all this test ever sees.
+        return manager.status()
+
+    monkeypatch.setattr(manager, "check", check)
+    manager.start_auto_checks()
+    for _ in range(200):
+        if forced:
+            break
+        time.sleep(0.01)
+    assert forced == [True]
 
 
 # ---- dmg helpers ---------------------------------------------------------------
@@ -351,8 +463,209 @@ def test_config_carries_update_with_manager(client, monkeypatch):
 def test_start_noop_when_unbundled(monkeypatch):
     monkeypatch.setattr(mac, "_manager", None)
     monkeypatch.setattr(mac, "bundle_path", lambda: None)
+    monkeypatch.delenv(mac.DEV_MANAGER_ENV, raising=False)
     assert mac.start() is None
     assert mac.manager() is None
+
+
+# ---- the check-only manager of a dev run (DEV_MANAGER_ENV) ---------------------
+
+
+def test_the_interval_is_five_minutes():
+    # Akshil, 2026-09-10: "check for updates every 5 mins". The Windows tray
+    # updater re-exports the same constant, so this pins both loops.
+    assert common.CHECK_INTERVAL_S == 300
+    from fused_render.supervisor._win32 import update as win_update
+    assert win_update._CHECK_INTERVAL_S == 300
+
+
+def test_a_dev_run_gets_a_check_only_manager_when_asked(monkeypatch):
+    monkeypatch.setattr(mac, "_manager", None)
+    monkeypatch.setattr(mac, "bundle_path", lambda: None)
+    monkeypatch.setenv(mac.DEV_MANAGER_ENV, "1")
+    # No loop thread in a unit test.
+    monkeypatch.setattr(mac.UpdateManager, "start_auto_checks", lambda self: None)
+    manager = mac.start()
+    assert manager is not None and mac.manager() is manager
+    status = manager.status()
+    assert status["state"] == "idle"
+    assert status["check_only"] is True
+    # No bundle → no brew probe: the method is pinned rather than detected.
+    assert status["method"] == "none"
+
+
+def test_the_check_only_manager_never_sweeps_the_shared_updates_dir(monkeypatch):
+    # review, PR #1097: one machine-wide dir, shared with the packaged app.
+    manager = mac.UpdateManager(bundle=None, method="none", check_only=True)
+    swept = []
+    monkeypatch.setattr(manager, "_sweep_stale_downloads", lambda: swept.append(1))
+    monkeypatch.setattr(manager, "check", lambda force=False: None)
+    monkeypatch.setattr(mac, "MAC_STARTUP_DELAY_S", 0.0)
+    ticks = []
+
+    def one_tick(seconds):
+        ticks.append(seconds)
+        if len(ticks) >= 2:
+            raise SystemExit  # ends the daemon loop after one check
+    monkeypatch.setattr(mac.time, "sleep", one_tick)
+    monkeypatch.delenv("FUSED_RENDER_NO_AUTO_UPDATE", raising=False)
+    manager.start_auto_checks()
+    import time as _t
+    for _ in range(50):
+        if len(ticks) >= 2:
+            break
+        _t.sleep(0.02)
+    assert swept == []
+
+
+def test_a_packaged_app_never_reads_the_dev_env(monkeypatch):
+    monkeypatch.setattr(mac, "_manager", None)
+    monkeypatch.setattr(mac, "bundle_path", lambda: "/Applications/FusedRender.app")
+    monkeypatch.setenv(mac.DEV_MANAGER_ENV, "1")
+    monkeypatch.setattr(mac.UpdateManager, "start_auto_checks", lambda self: None)
+    status = mac.start().status()
+    assert status["check_only"] is False
+
+
+def test_a_check_only_manager_finds_updates_but_refuses_to_install(monkeypatch):
+    manager = mac.UpdateManager(bundle=None, method="none", check_only=True)
+    monkeypatch.setattr(common, "fetch_manifest", lambda url, **kw: {
+        "version": "9.9.9", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""})
+    assert manager.check()["state"] == "available"
+    assert manager.check(force=True)["latest_version"] == "9.9.9"
+    # Refused before any thread starts: the state is still the honest one.
+    status = manager.install()
+    assert status["state"] == "available"
+    assert status["check_only"] is True
+    assert manager._install_thread is None
+
+
+def test_a_real_manager_reports_check_only_false(monkeypatch):
+    manager = _manager(monkeypatch)
+    assert manager.status()["check_only"] is False
+
+
+def test_a_forced_recheck_keeps_the_update_on_the_wire_and_installable(monkeypatch):
+    # bugbot, PR #1097: the five-minute tick re-checks from "available"; for the
+    # seconds the fetch is out the badge must still say so, and Update must work.
+    manager = _manager(monkeypatch, available="9.9.9")
+    assert manager.check()["state"] == "available"
+    seen = {}
+
+    def slow_fetch(url, **kw):
+        seen["mid"] = manager.status()["state"]
+        # An install begins while the fetch is out — install() is allowed to,
+        # now that the state is not "checking".
+        with manager._lock:
+            manager._state = "installing"
+        return {"version": "9.9.9", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""}
+
+    monkeypatch.setattr(common, "fetch_manifest", slow_fetch)
+    status = manager.check(force=True)
+    assert seen["mid"] == "available"
+    # The tail left the install alone.
+    assert status["state"] == "installing"
+    assert manager._latest["version"] == "9.9.9"
+
+
+def test_a_check_landing_mid_fetch_does_not_start_a_second_fetch(monkeypatch):
+    # bugbot, PR #1097: two fetches of one manifest, and the one that landed
+    # second found the state moved and dropped its answer. Now the fetch in
+    # flight owns the answer; a forced tick arriving meanwhile is a no-op.
+    import threading
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+    gate = threading.Event()
+    calls = []
+
+    def slow(url, **kw):
+        calls.append(url)
+        gate.wait(5)
+        return {"version": "9.9.9", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""}
+
+    monkeypatch.setattr(common, "fetch_manifest", slow)
+    results = {}
+    first = threading.Thread(target=lambda: results.__setitem__("first", manager.check()))
+    first.start()
+    for _ in range(100):
+        if calls:
+            break
+        time.sleep(0.01)
+    assert manager.status()["state"] == "checking"
+    # The tick, forced, while the press's fetch is out: no second fetch.
+    tick = manager.check(force=True)
+    assert tick["state"] == "checking"
+    assert len(calls) == 1
+    gate.set()
+    first.join(5)
+    assert results["first"]["state"] == "available"
+    assert results["first"]["latest_version"] == "9.9.9"
+    assert len(calls) == 1
+
+
+def test_only_an_idle_manager_says_checking(monkeypatch):
+    manager = _manager(monkeypatch, available="9.9.9")
+    seen = []
+
+    def peek(url, **kw):
+        seen.append(manager.status()["state"])
+        return {"version": "9.9.9", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""}
+
+    monkeypatch.setattr(common, "fetch_manifest", peek)
+    manager.check()               # from idle: "checking" while the fetch is out
+    manager.check(force=True)     # from available: still "available"
+    assert seen == ["checking", "available"]
+
+
+def test_a_failed_check_does_not_start_the_throttle_clock(monkeypatch):
+    # bugbot, PR #1097: the gap guards the CDN against a run of fetches; a fetch
+    # that failed is not that load, and a person who just came back online must
+    # be able to press the row again and get a real retry.
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    calls = []
+
+    def flaky(url, **kw):
+        calls.append(url)
+        if len(calls) == 1:
+            raise OSError("no route to host")
+        return {"version": "0.0.1", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""}
+
+    monkeypatch.setattr(common, "fetch_manifest", flaky)
+    clock = [1000.0]
+    monkeypatch.setattr(mac.time, "monotonic", lambda: clock[0])
+    assert manager.check()["check_error"] == "no route to host"
+    # Inside the short floor: answered from memory (bounds a focus storm while
+    # offline to one fetch at a time).
+    assert manager.check()["check_error"] == "no route to host"
+    assert len(calls) == 1
+    # Past it — well inside the full minute — fetched again.
+    clock[0] += mac.FAILED_CHECK_GAP_S + 0.1
+    status = manager.check()
+    assert len(calls) == 2
+    assert status["check_error"] is None
+    # ...and a SUCCESSFUL check arms the full minute.
+    clock[0] += mac.FAILED_CHECK_GAP_S + 0.1
+    manager.check()
+    assert len(calls) == 2
+
+
+def test_a_failed_check_names_its_failure_and_a_good_one_clears_it(monkeypatch):
+    # Without this, "offline" and "up to date" were the same wire status, and
+    # the sidebar's manual check would have said the wrong one.
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+
+    def boom(url, **kw):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(common, "fetch_manifest", boom)
+    status = manager.check()
+    assert status["state"] == "idle"
+    assert status["check_error"] == "no route to host"
+    monkeypatch.setattr(common, "fetch_manifest", lambda url, **kw: {
+        "version": "0.0.1", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""})
+    status = manager.check(force=True)
+    assert status["state"] == "idle"
+    assert status["check_error"] is None
 
 
 # ---- the Activity row (sys:update:<version>) ----------------------------------

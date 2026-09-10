@@ -95,8 +95,40 @@ INSTALL_HEARTBEAT_S = 10.0
 # updater also drives and wants to keep clear of a whole app launch; here the
 # check loop is a background thread, so it is off the startup path anyway and
 # the delay only keeps the manifest fetch out of a booting process's first
-# tick. Every check after it is CHECK_INTERVAL_S apart as before.
+# tick. Every check after it is common.CHECK_INTERVAL_S (5 min) apart.
 MAC_STARTUP_DELAY_S = 1.0
+# A CHECK-ONLY MANAGER IN A DEV RUN (Akshil, 2026-09-10). `start()` refuses to
+# run outside a bundle — there is nothing to swap — which also means an
+# unpackaged server never shows the badge, so the sidebar's "Check for updates"
+# row (UpdateBadge) cannot be tried against 127.0.0.1 at all. Set this to a
+# non-empty value and `start()` builds a manager with no bundle: it fetches and
+# verifies the real manifest, compares against the running __version__, and
+# reports every state a packaged app would — but `install()` refuses, and
+# `status()` says so (`check_only`) so the badge hides its Update button. Never
+# read by a packaged app: a bundle is a bundle whatever the environment says.
+DEV_MANAGER_ENV = "FUSED_RENDER_UPDATE_DEV_MANAGER"
+# Floor between two checks that actually hit the network. The client checks
+# on its own when the app comes back to the front (update-status.ts), and
+# that trigger is a window event: a user cmd-tabbing in and out, or a
+# second window taking focus, could otherwise turn one return into a
+# string of manifest fetches. The client already keeps a 30-minute gap of
+# its own; this one is the server-side backstop, because the client's gap
+# lives in one tab's module state and any reload resets it. Only the
+# throttled path (POST /api/update/check) is affected — the auto loop
+# passes force=True so its own five-minute tick is never swallowed. The
+# sidebar's "Check for updates" row goes through the throttled path too: a
+# press inside the gap gets the answer the last fetch left, which is at most
+# a minute old and is what "up to date" meant a moment ago anyway.
+MIN_CHECK_GAP_S = 60.0
+# The floor AFTER A FAILED fetch. Not the full minute — a laptop that just came
+# back online must be able to press "Check for updates" and get a real retry,
+# not the same "Couldn't check" answered from memory for the rest of the minute
+# (bugbot, PR #1097) — but not nothing either: several windows on one server
+# each fire their own check-on-return, and with the floor gone an outage would
+# turn every focus flip into a 15-second manifest fetch (review, PR #1097). Five
+# seconds bounds that to one fetch at a time and is shorter than any human
+# retry.
+FAILED_CHECK_GAP_S = 5.0
 DONE_MESSAGE = "Installed — restart to finish"
 CANCELLED_MESSAGE = "Cancelled"
 _DOWNLOAD_PREFIX = "FusedRender-"
@@ -179,13 +211,21 @@ class UpdateManager:
     for any method: status()'s `manual_command` is always None."""
 
     def __init__(self, *, manifest_url: str = MANIFEST_URL, bundle: str | None = None,
-                 method: str | None = None):
+                 method: str | None = None, check_only: bool = False):
         # RLock: the early-return paths in check()/install() read status()
         # while already holding the lock.
         self._lock = threading.RLock()
         self._manifest_url = manifest_url
         self._bundle = bundle if bundle is not None else bundle_path()
         self._method = method  # resolved lazily: brew probing costs a subprocess
+        # See DEV_MANAGER_ENV: a manager that may look but never swap.
+        self._check_only = check_only
+        # Why the LAST CHECK could not answer (network, a manifest that did not
+        # verify), or None when it did. Distinct from `_error`, which is an
+        # install's. Without this a failed fetch and "up to date" were the same
+        # wire status — "idle" — and the sidebar's manual check would have said
+        # "Up to date" to a laptop that was offline.
+        self._check_error: str | None = None
         self._state = "idle"
         self._latest: dict | None = None
         self._error: str | None = None
@@ -193,6 +233,10 @@ class UpdateManager:
         self._progress_total: float | None = None
         self._phase: str | None = None
         self._install_thread: threading.Thread | None = None
+        # time.monotonic() of the last check that actually fetched the
+        # manifest — the MIN_CHECK_GAP_S throttle's only state. monotonic,
+        # not wall time, so a clock change cannot open or close the gap.
+        self._last_check_at: float | None = None
         # The Activity row for the install currently in flight, and whether
         # its ✕ has been pressed. Both are only ever touched under the lock:
         # the download runs on the install thread while the cancel arrives on
@@ -212,7 +256,7 @@ class UpdateManager:
             # `brew upgrade` or a manual DMG drag in the user's own hands — so
             # "available" re-checks the bundle on disk on every read (the UI
             # polls this every minute) rather than waiting out the next
-            # CHECK_INTERVAL_S tick to notice it.
+            # common.CHECK_INTERVAL_S tick to notice it.
             if self._state == "available" and self._latest:
                 disk = self._disk_version()
                 if disk is not None and not common.is_newer(
@@ -234,6 +278,12 @@ class UpdateManager:
                 # badge can say the one word that matters (Akshil, 2026-09-08:
                 # "no longer phrases, just words"). None outside "installing".
                 "phase": self._phase if self._state == "installing" else None,
+                # True only for the dev-run manager (DEV_MANAGER_ENV): the badge
+                # draws the "Update available" row but not its Update button.
+                "check_only": self._check_only,
+                # The last check's failure, if it failed — what lets a manual
+                # check say "Couldn't check" rather than "Up to date".
+                "check_error": self._check_error,
             }
 
     def method(self) -> str:
@@ -244,13 +294,21 @@ class UpdateManager:
     # -- checking -------------------------------------------------------------
 
     def start_auto_checks(self) -> None:
-        """Background check loop (startup delay, then every CHECK_INTERVAL_S).
+        """Background check loop (startup delay, then every five minutes —
+        common.CHECK_INTERVAL_S).
         Silent: a newer version only flips state to "available"; set
         FUSED_RENDER_NO_AUTO_UPDATE to a non-empty value to disable."""
         if os.environ.get("FUSED_RENDER_NO_AUTO_UPDATE"):
             return
 
         def loop():
+            # Resolve the install method HERE, off the request path: the first
+            # `brew list --cask` can take seconds, and `status()` used to pay
+            # it on the first /api/config the shell asked for after boot.
+            try:
+                self.method()
+            except Exception:  # noqa: BLE001 - detection is best-effort
+                logger.exception("update method detection failed")
             time.sleep(MAC_STARTUP_DELAY_S)
             swept = False
             while True:
@@ -260,10 +318,17 @@ class UpdateManager:
                     # not the whole auto-check thread. Still only once per
                     # process — the leftovers it clears are a previous
                     # session's.
-                    if not swept:
+                    # NEVER FROM THE CHECK-ONLY MANAGER (review, PR #1097): the
+                    # updates dir is one machine-wide path, shared with the
+                    # packaged app's manager, and a dev run that swept it would
+                    # delete a DMG the real app had just downloaded.
+                    if not swept and not self._check_only:
                         self._sweep_stale_downloads()
                         swept = True
-                    self.check()
+                    # force: this tick IS the cadence, so it must never be
+                    # swallowed by MIN_CHECK_GAP_S because a focus flip
+                    # happened to fetch a minute ago.
+                    self.check(force=True)
                 except Exception:  # noqa: BLE001 - a tick must never kill the loop
                     logger.exception("auto update tick failed")
                 time.sleep(common.CHECK_INTERVAL_S)
@@ -271,26 +336,78 @@ class UpdateManager:
         threading.Thread(target=loop, daemon=True,
                          name="fused-render-update-auto").start()
 
-    def check(self) -> dict:
+    def check(self, force: bool = False) -> dict:
         """Fetch + verify the manifest and update state. Never touches state
-        while an install is running. Returns status()."""
+        while an install is running. Returns status().
+
+        Throttled by default: a check that would land within MIN_CHECK_GAP_S
+        of the last one that actually fetched returns the current status
+        untouched, so the client's check-on-return cannot turn a run of focus
+        flips into a run of CDN requests. `force=True` (the auto loop) always
+        fetches."""
         with self._lock:
             if self._state == "installing":
                 return self.status()
-            self._state = "checking"
-            self._error = None
+            # A FETCH ALREADY IN FLIGHT OWNS THE ANSWER (bugbot, PR #1097).
+            # "checking" is set only here, right before a fetch, and every exit
+            # from that fetch resolves it, so the state IS the fact that one is
+            # out. A second fetch alongside it — the five-minute tick landing
+            # while a press on the sidebar row is still waiting — asked the same
+            # question of the same manifest, and whichever answer landed second
+            # found the state moved and was dropped: a version found by the
+            # later fetch was lost until the next tick, and a recovered success
+            # behind a failed press was lost the same way. Forced or not, the
+            # caller gets the status the in-flight fetch will finish.
+            if self._state == "checking":
+                return self.status()
+            # A NON-FORCED CHECK ONLY EVER LOOKS FROM "IDLE" (bugbot, PR #1078):
+            # an update already offered, installed or failed is an answer, and a
+            # check-on-return or a press on the sidebar row has nothing to learn
+            # by asking again. The five-minute loop forces, and is the one that
+            # keeps a found version current.
+            if not force and self._state != "idle":
+                return self.status()
+            if not force and self._last_check_at is not None and (
+                    time.monotonic() - self._last_check_at < MIN_CHECK_GAP_S):
+                # Not an error and not "checking": nothing was asked of the
+                # network, so the caller gets the answer the last check left —
+                # which status() still re-derives from the bundle on disk.
+                return self.status()
+            self._last_check_at = time.monotonic()
+            # ONLY AN IDLE MANAGER SAYS "checking" (bugbot, PR #1097). A forced
+            # re-check from "available" used to flip the state to "checking" for
+            # the length of the fetch: the badge lost its accordion for those
+            # seconds every tick, and — once the client learned to hold the
+            # accordion through it — install() silently refused for the same
+            # seconds, because "checking" is not a state it installs from. A
+            # re-check does not un-know the update it is re-checking: the state
+            # it entered from is what the wire says while the fetch is out, and
+            # `during` is what the tail below compares against, so an install
+            # that starts mid-fetch is left alone exactly as before.
+            during = "checking" if self._state == "idle" else self._state
+            self._state = during
         try:
             manifest = common.fetch_manifest(self._manifest_url)
             newer = common.is_newer(manifest["version"], __version__)
         except Exception as error:  # noqa: BLE001 - network/manifest failures are routine
             logger.info("update check failed: %s", error)
+            with self._lock:
+                self._check_error = str(error) or error.__class__.__name__
+                # A failure arms the SHORT floor, not the full minute (see
+                # FAILED_CHECK_GAP_S): a fetch that failed is not the load the
+                # long gap guards against, and the sidebar's row comes back to
+                # "Check for updates" after four seconds looking pressable — it
+                # has to be. Expressed as a back-dated timestamp so the one
+                # comparison above stays the only throttle logic.
+                self._last_check_at = time.monotonic() - (MIN_CHECK_GAP_S - FAILED_CHECK_GAP_S)
             # Keep a previously-found update visible over a transient failure —
             # but re-derive WHICH state from the bundle on disk, exactly like
             # the success path below: a network blip after a completed install
             # must not resurface the install button.
             disk = self._disk_version()
             with self._lock:
-                if self._state == "checking":
+                if self._state == during:
+                    self._error = None
                     if self._latest and disk is not None and not common.is_newer(
                             self._latest["version"], disk):
                         self._state = "installed"
@@ -306,7 +423,12 @@ class UpdateManager:
         # "available" — offering a second swap against an already-new bundle.
         disk = self._disk_version()
         with self._lock:
-            if self._state == "checking":
+            self._check_error = None
+            # Untouched if anything else moved the state while the fetch was
+            # out — an install that began from "available" (the one case that
+            # used to be impossible, since the state was "checking").
+            if self._state == during:
+                self._error = None
                 if newer and disk is not None and not common.is_newer(
                         manifest["version"], disk):
                     self._latest = manifest
@@ -341,6 +463,12 @@ class UpdateManager:
             if self._state == "installing":
                 return self.status()
             if self._latest is None or self._state not in ("available", "error"):
+                return self.status()
+            # The dev-run manager (DEV_MANAGER_ENV) has no bundle to swap.
+            # Refused here rather than left to fail inside the worker thread,
+            # so the state stays "available" and honest instead of "error".
+            if self._check_only:
+                logger.info("update install refused: check-only manager (%s)", DEV_MANAGER_ENV)
                 return self.status()
             # One install path for every method (Akshil, 2026-09-08): the
             # bundle is the bundle whichever tool put it there, and the swap
@@ -716,7 +844,13 @@ def start() -> UpdateManager | None:
     with _manager_lock:
         if _manager is None:
             if bundle_path() is None:
-                return None
-            _manager = UpdateManager()
+                # ...unless a dev run asked for a manager that only looks
+                # (DEV_MANAGER_ENV, above): same loop, same throttle, same
+                # states, no swap.
+                if not os.environ.get(DEV_MANAGER_ENV):
+                    return None
+                _manager = UpdateManager(bundle=None, method="none", check_only=True)
+            else:
+                _manager = UpdateManager()
             _manager.start_auto_checks()
         return _manager
