@@ -25,6 +25,10 @@ interface Rig {
     /** The TEARDOWN's ending (`forceOff`), counted apart from the other two. */
     abandoned: number;
   };
+  /** The stub itself, so a test can assert what the MACHINE is being told —
+   *  `settling()` reads the recorder's phase, and a test that moves only the
+   *  React echo (`setPhase`) leaves it answering false (R1-final-b). */
+  recorder: AnnRecorder;
   /** Whatever the recorder module would do on a stop: flags down BEFORE the
    *  await, the settle's status up, the nav lock claimed (T:8111-8170). */
   beginSettle(): void;
@@ -102,6 +106,7 @@ function rig(opts: { params?: Record<string, string>; capable?: boolean } = {}):
     params,
     log,
     rec,
+    recorder,
     capable,
     canSend,
     composer,
@@ -619,14 +624,36 @@ describe("forceOff — the teardown's disarm (T:8797, PR3 review #1)", () => {
   test("the settle's hold goes with it, and a second call is a no-op", () => {
     const r = rig();
     r.machine.set(true);
-    r.machine.setPhase("transcribing");
-    r.machine.setBusyHold(true);
+    // THE RECORDER IS GENUINELY SETTLING (R1-final-b). This drove
+    // `machine.setPhase("transcribing")` alone, which moves the React ECHO and
+    // nothing else — the rig's `settling()` reads the recorder's own phase, so
+    // it answered false and the door under test was the plain `phase` door
+    // rather than the settle. `beginSettle` + `finishSettle` are the real
+    // recorder's order (flags down before the await, then the status and the
+    // lock claim), and they move both.
+    r.beginSettle();
+    r.finishSettle("transcribing");
+    expect(r.recorder.settling()).toBe(true);
+    expect(r.machine.mode()).toBe("transcribing");
     expect(r.machine.locked()).toBe(true);
 
     r.machine.forceOff();
+    // WHAT THE TEARDOWN OWNS is handed back: the layer, the hold, and the lock.
+    expect(r.machine.armed()).toBe(false);
     expect(r.machine.busyHold()).toBe(false);
-    expect(r.machine.mode()).toBe("off");
     expect(r.machine.locked()).toBe(false);
+    // AND WHAT IT DOES NOT OWN is left alone, which is the answer residual (b)
+    // was hiding. `mode()` still names the settle, because `settlePhase()` falls
+    // through to the RECORDER's own synchronous answer and the recorder is
+    // genuinely still settling: `abandon()` cancels the settle's RESULT (no
+    // assign, no deliver, no auto-send — `ann/rec.test.ts`) and deliberately
+    // paints no status over a document that is going away, so its awaits are
+    // still out. The old assertion read "off" here only because the rig's
+    // `settling()` was answering false to a phase nothing had given it. Nothing
+    // hangs off this: the lock above is what the rest of the app reads, and the
+    // stale ender's own gated writes return the state to `off` when the words
+    // land.
+    expect(r.machine.mode()).toBe("settling");
 
     // A second call reaches the recorder's own guard and the lock, and nothing
     // else: no `end()`, no send, no repaint. (`abandon()` is called

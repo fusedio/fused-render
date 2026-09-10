@@ -33,6 +33,10 @@ interface FakeCapture {
   /** The dismissed start's own `cancel()` held open, so a test can press the
    *  mic INSIDE the teardown (`state === "cancelling"`). */
   holdCancel?: boolean;
+  /** The TRANSCRIPTION held open, so a test can tear the host down inside the
+   *  settle's long window (`state === "transcribing"`) — the one a React
+   *  unmount actually lands in. */
+  holdTranscribe?: boolean;
 }
 
 function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Error) {
@@ -45,6 +49,10 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
   let releaseStop: (() => void) | null = null;
   let releaseStart: (() => void) | null = null;
   let releaseCancel: (() => void) | null = null;
+  /** EVERY held transcription, not the last one: a test can have two settles
+   *  in flight at once (a second walkthrough begun inside the first's settle),
+   *  and a single slot would leave the earlier one pending forever. */
+  const heldTranscribe: Array<() => void> = [];
   const timers = new Set<{ fn: () => void; ms: number }>();
   const delivered: Array<{ intro: string; spoke: boolean }> = [];
 
@@ -110,9 +118,11 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
     transcribe: (path: string) => {
       log.push("transcribe:" + path);
       if (transcript instanceof Error) return Promise.reject(transcript);
-      return Promise.resolve(
-        transcript || { text: "", words: [], segments: [] },
-      );
+      const done = transcript || { text: "", words: [], segments: [] };
+      if (!plan.holdTranscribe) return Promise.resolve(done);
+      return new Promise<Transcript>((res) => {
+        heldTranscribe.push(() => res(done));
+      });
     },
     notes: {
       add: (n) => notes.push(n),
@@ -179,6 +189,9 @@ function makeWorld(over: Partial<FakeCapture> = {}, transcript?: Transcript | Er
     releaseStop: () => releaseStop && releaseStop(),
     releaseStart: () => releaseStart && releaseStart(),
     releaseCancel: () => releaseCancel && releaseCancel(),
+    releaseTranscribe: () => {
+      for (const release of heldTranscribe.splice(0)) release();
+    },
     setEpoch: (n: number) => {
       epoch = n;
     },
@@ -973,6 +986,112 @@ describe("abandon", () => {
     expect(() => w.rec.abandon()).not.toThrow();
     expect(w.log).not.toContain("stop");
     expect(w.rec.snapshot().state).toBe("off");
+  });
+
+  // R1-final-a: THE SETTLE IS THE WINDOW THAT MATTERED.
+  //
+  // Both guards in `abandon()` were `state !== "recording"` tests, so through
+  // Stopping…/Transcribing… it returned having done nothing — while `end()`'s
+  // awaits were still out. The teardown then landed squarely in the case it
+  // exists to prevent: the transcription came back AFTER the unmount and ran on
+  // to `assign` → `deliver` → the automatic send, into a conversation that no
+  // longer existed. (`ann/mode.ts`'s `forceOff` calls `abandon()`
+  // unconditionally for exactly this reason — the recorder is the one place that
+  // knows what is live.)
+  test("a teardown DURING the transcription drops the words: no assign, no deliver", async () => {
+    const w = makeWorld({ holdTranscribe: true }, transcriptOf([[1, "make"], [4, "bigger"]], "make it bigger"));
+    await record(w);
+    w.tick(3000);
+    const id = w.rec.mark({ kind: "element" });
+    expect(id).toBeTruthy();
+
+    // The stop is under way and the transcription is out: "Transcribing…", the
+    // window a React unmount actually lands in.
+    const ending = w.rec.end();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(w.rec.snapshot().state).toBe("transcribing");
+    expect(w.log.some((l) => l.startsWith("transcribe:"))).toBe(true);
+
+    // The host goes away mid-settle.
+    w.rec.abandon();
+    // …and the words land afterwards, as they always do.
+    w.releaseTranscribe();
+    await ending;
+
+    // NOTHING WAS DELIVERED, so nothing was auto-sent into a dead conversation
+    // — the whole point of the teardown's ending.
+    expect(w.delivered).toHaveLength(0);
+    // …and no words were written onto the notes either: a mark filled in behind
+    // an unmounted panel is a note the reader never agreed to.
+    expect(w.notes).toHaveLength(1);
+    expect(w.notes[0]!.spoken).toBeFalsy();
+    // The marks are KEPT, stamped and empty, editable by hand — the teardown
+    // does not throw a walkthrough away (CP-4), and the file was kept too.
+    expect(w.log).toContain("stop");
+    expect(w.log).not.toContain("cancel");
+    // The machine is left somewhere a NEW instance can start from.
+    expect(w.rec.snapshot().state).toBe("off");
+    expect(w.rec.snapshot().busy).toBe(false);
+    expect(w.timers.size).toBe(0);
+  });
+
+  test("a teardown DURING the stop never asks for a transcription at all", async () => {
+    // The shorter window, and the cheaper answer: abandoned before the stop's
+    // reply lands, there is nothing to transcribe and no request is made.
+    const w = makeWorld({ hold: true }, transcriptOf([[1, "hello"]], "hello"));
+    await record(w);
+    w.tick(2000);
+    w.rec.mark({ kind: "element" });
+
+    const ending = w.rec.end();
+    await Promise.resolve();
+    expect(w.rec.snapshot().state).toBe("stopping");
+
+    w.rec.abandon();
+    w.releaseStop();
+    await ending;
+
+    expect(w.log.some((l) => l.startsWith("transcribe:"))).toBe(false);
+    expect(w.delivered).toHaveLength(0);
+    // Ending a walkthrough usually puts the mode away; a teardown does not —
+    // `forceOff` has already put the state where the DOM is.
+    expect(w.log).not.toContain("disarm");
+    expect(w.rec.snapshot().state).toBe("off");
+  });
+
+  test("the abandoned settle still hands the seat back when its awaits land", async () => {
+    // The dismissal drops the RESULT, not the bookkeeping: `begin()` refuses
+    // anything but `off`, so a recorder left standing at "transcribing" would
+    // be a recorder no later walkthrough could start. The stale ender's own
+    // gated writes are what clear it, exactly as they do for a settle nobody
+    // abandoned — which is why this ending does not paint a status of its own
+    // over a document that is going away.
+    const w = makeWorld({ holdTranscribe: true }, transcriptOf([[1, "one"]], "one"));
+    await record(w);
+    w.tick(2000);
+    const ending = w.rec.end();
+    await Promise.resolve();
+    await Promise.resolve();
+    w.rec.abandon();
+    // Mid-settle the state is untouched — the teardown makes no promise about a
+    // seat nobody can see.
+    expect(w.rec.snapshot().state).toBe("transcribing");
+    w.releaseTranscribe();
+    await ending;
+
+    expect(w.delivered).toHaveLength(0);
+    expect(w.rec.snapshot().state).toBe("off");
+    // And a NEW walkthrough starts from there, on a session of its own that did
+    // not inherit the dismissal: the words it earns are delivered.
+    await record(w);
+    w.tick(2000);
+    const again = w.rec.end();
+    await Promise.resolve();
+    await Promise.resolve();
+    w.releaseTranscribe();
+    await again;
+    expect(w.delivered).toHaveLength(1);
   });
 
   test("a failed stop is swallowed — an unloading document has nowhere to say it", async () => {

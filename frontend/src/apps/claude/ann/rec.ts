@@ -324,6 +324,18 @@ export interface Recorder {
    * is itself a keeping ending where the browser encodes, and the cap turns the
    * mic off where the app records). Synchronous, because a `pagehide` handler
    * gets no await.
+   *
+   * AND A SETTLE IN FLIGHT IS ABANDONED, NOT IGNORED (R1-final-a). The two
+   * guards above are `state !== "recording"` tests, so through the
+   * Stopping…/Transcribing… window this used to return having done nothing at
+   * all — and `end()`'s awaits were still out. The teardown then landed
+   * squarely in the case it exists to prevent: the transcription came back
+   * AFTER the unmount and ran on to `assign` → `deliver` → the automatic send,
+   * into the conversation that had just gone. So a settling recorder raises a
+   * dismissal of its own, and the settle drops its result at the next await:
+   * no words assigned, nothing delivered, nothing sent. The microphone needs
+   * nothing here — `end()`/`discard()` asked it to stop before their first
+   * await, which is the whole point of their synchronous snapshot.
    */
   abandon(): void;
   /** Whichever of the two the bar's trash means right now (`annDiscard`,
@@ -365,6 +377,14 @@ export function createRecorder(deps: RecorderDeps): Recorder {
    *  and the reply is cancelled the moment it lands. Without it the mic came up
    *  AFTER the reader had left the mode. */
   let startCancelled = false;
+  /** THE SETTLE'S OWN DISMISSAL (R1-final-a), the twin of `startCancelled` at
+   *  the other end of the session. Holds the `session` number whose in-flight
+   *  settle a teardown has abandoned; `end()` reads it after each await and
+   *  drops its result rather than delivering into a document that is gone.
+   *  A NUMBER and not a flag, for the same reason `session` exists: a new
+   *  recording may already have begun, and its settle must not inherit the
+   *  previous one's dismissal. */
+  let settleCancelled = -1;
   let snap: RecSnapshot = build();
   const watchers = new Set<() => void>();
 
@@ -629,6 +649,22 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     /** A NEW session that began during the settle owns the seat now — its
      *  labels, its clock — and this stale path must not repaint it (T:8244). */
     const stillOurs = () => session === mine;
+    /** A TEARDOWN took this settle's document with it (R1-final-a). Read after
+     *  each await: everything past the read exists to hand words to a
+     *  conversation, and there is no longer one to hand them to. */
+    const dropped = () => settleCancelled === mine;
+
+    // ABANDONED WHILE THE STOP WAS OUT: the file is kept (that is `stop()`'s
+    // contract and the teardown's own promise, CP-4) and nothing else happens —
+    // no transcription is asked for, and the mode is not disarmed, because
+    // `forceOff` has already put the state where the DOM is (R1-final-a).
+    if (dropped()) {
+      if (stillOurs()) {
+        state = "off";
+        paint();
+      }
+      return;
+    }
 
     // Nothing to transcribe: a failed stop, an empty file, or a stop that
     // landed on the start's own beat (T:8199-8203).
@@ -655,6 +691,13 @@ export function createRecorder(deps: RecorderDeps): Recorder {
       // Already on disk, written by the app — no upload leg, and no temp dir of
       // ours to prune (T:8245-8248).
       const transcript = await deps.transcribe(out.path);
+      // ABANDONED WHILE THE TRANSCRIPTION WAS OUT (R1-final-a) — the window the
+      // teardown actually lands in, since it is the long one. The words are
+      // dropped whole: not assigned to notes nobody can see, and above all not
+      // delivered, which is what auto-sent a message into a conversation that
+      // no longer existed. `finally` below still runs, and returns the state to
+      // `off` if this ender is the one that owns the seat.
+      if (dropped()) return;
       // Everything said BEFORE the first click is the main prompt, not a note:
       // it seeds the composer as the message's own words, so the send reads as
       // "here is the task, and here are the spots" rather than a first comment
@@ -723,6 +766,24 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     // mic never comes up behind a document that is already going.
     if (state === "starting") {
       startCancelled = true;
+      return;
+    }
+    // A SETTLE IN FLIGHT IS THE OTHER DISMISSAL (R1-final-a). The guard below is
+    // a `state !== "recording"` test, so this used to return having done nothing
+    // through the Stopping…/Transcribing… window — while `end()`'s awaits were
+    // still out, and the teardown landed in exactly the case it exists to
+    // prevent: the transcription came back after the unmount and ran on to
+    // `deliver` and the automatic send. Raising this makes the settle drop its
+    // own result at the next await.
+    //
+    // The mic needs nothing from here: `end()` and `discard()` ask the recorder
+    // to stop BEFORE their first await, which is what their synchronous
+    // snapshot is for, so by this point it is already off or going off. The
+    // seat is not repainted either — `forceOff` has already put the state where
+    // the DOM is, and the stale ender's own gated `finally` is what clears the
+    // status if it still owns it.
+    if (busy()) {
+      settleCancelled = session;
       return;
     }
     if (state !== "recording" || !handle) return;
