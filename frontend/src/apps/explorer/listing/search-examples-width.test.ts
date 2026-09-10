@@ -73,8 +73,13 @@ test("the examples modifier no longer carries its own, now-redundant max-width",
   expect(decls.length).toBe(0);
 });
 
-test("the row itself carries no max-width — an inert declaration once the shared surface is capped", () => {
-  const decls = rulesFor(".listing-completion-row.listing-completion-example");
-  const joined = decls.join("\n");
-  expect(joined).not.toMatch(/max-width/);
+// ITEM 8 (running-screen review, 2026-09-10) deleted the three derived
+// example ROWS (and their own CSS) — the panel now renders a single
+// paragraph of prose through the plain `.listing-completion-row.listing-
+// completion-notice` class instead. The row class itself still needs no
+// max-width of its own; the shared surface's cap (above) is what bounds it.
+test("the row class carries no max-width — an inert declaration once the shared surface is capped", () => {
+  const decls = rulesForExact(".listing-completion-row");
+  expect(decls.length).toBe(1);
+  expect(decls[0]).not.toMatch(/max-width/);
 });

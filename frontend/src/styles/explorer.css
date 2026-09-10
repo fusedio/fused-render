@@ -2129,11 +2129,14 @@ table.listing-table tr.skel-row:hover {
    completes — reading the property rather than a re-typed number is what
    keeps the two from being able to drift apart. Right padding stays at
    11px. Top/bottom padding reads `--completion-row-pad-y` the same way —
-   this ONE rule is what both the folder-completion rows and the teaching-
-   examples rows below (`.listing-completion-example`) render through, so
-   there was never a second rule set to drift; the token exists so the
-   number itself can't silently diverge from `--chip-inset`'s own pattern
-   the next time either surface changes.
+   this ONE rule is what every row kind in this dropdown (folder
+   completions, the not-found notice, the search-action row, and the
+   teaching panel's own prose paragraph — ITEM 8, running-screen review,
+   2026-09-10, retired the three example ROWS this used to also cover, but
+   the panel's remaining prose line still renders through this same class)
+   renders through, so there was never a second rule set to drift; the
+   token exists so the number itself can't silently diverge from
+   `--chip-inset`'s own pattern the next time any of them changes.
 
    ITEM 5: `calc(var(--chip-inset) - var(--completion-panel-pad))`, not a
    bare `var(--chip-inset)`, now that the panel itself carries
@@ -2198,41 +2201,14 @@ table.listing-table tr.skel-row:hover {
   color: inherit;
 }
 
-/* The focused-and-empty examples panel (Listing.tsx, gated by
-   search-examples.ts), in the same `.listing-completion` surface a real
-   completion dropdown uses — same padding rhythm, same row class, same
-   monospace-name/muted-hint pairing. Stacked rather than the side-by-side
-   name/hint a path row uses: an example pairs a short pattern with a full
-   sentence explaining it, and a sentence needs its own line rather than
-   being squeezed into a fixed-width tail the way "folder" or a file size
-   is. No keyboard highlight state (there are only three rows and nothing to
-   arrow between yet), so this is a plain `:hover`, not the `.highlight`
-   class the keyboard-driven rows above carry. */
-.listing-completion-row.listing-completion-example {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  cursor: pointer;
-}
-
-.listing-completion-example .listing-completion-name {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-}
-
-.listing-completion-example .listing-completion-hint {
-  white-space: normal;
-}
-
-/* Same accent-tinted treatment `.listing-completion-row.highlight` gives a
-   keyboard-highlighted row — see that rule above. */
-.listing-completion-example:hover {
-  background: var(--row-bg-active);
-  color: var(--accent-soft);
-}
-
-.listing-completion-example:hover .listing-completion-hint {
-  color: inherit;
-}
+/* ITEM 8 (running-screen review, 2026-09-10) DELETED the three derived
+   example rows' own CSS (`.listing-completion-row.listing-completion-
+   example` and its `.listing-completion-name`/`.listing-completion-hint`/
+   `:hover` pairings) — the focused-and-pristine panel
+   (`.listing-completion.listing-completion-examples`, SearchField.tsx) now
+   renders a single paragraph of prose in the plain `.listing-completion-
+   row.listing-completion-notice` class instead, which needed no CSS of its
+   own to add. */
 
 /* Matched-substring highlight in search results (explorer). */
 .search-mark {

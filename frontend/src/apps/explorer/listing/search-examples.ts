@@ -10,85 +10,29 @@
 // this panel practically never rendered at all. `pristine` (query-
 // pristine.ts's `isPristineQuery`) is the fix: empty OR still exactly the
 // untouched pre-filled path, which is the box's actual resting state.
-export interface SearchExample {
-  pattern: string;
-  hint: string;
-}
-
-/** The one shape this needs off a folder's own listed entries — a subset of
- * `FsEntry` (platform/lib/api.ts), so this stays a leaf neither
- * Listing.tsx's nor FileSearchField.tsx's own entry type needs importing
- * for. */
-export interface ExampleEntry {
-  name: string;
-  is_dir: boolean;
-}
-
-// SPEC-omnibox-search-affordance.md correction (2026-09-10): a hardcoded
-// "*.csv" / "~/work" example is a lesson that returns zero rows the moment
-// it's pressed anywhere that isn't this machine's own ~/work — which
-// teaches "search is broken", not the pattern syntax. Every example here
-// has to be one the user standing in THIS folder could press and get real
-// rows back for, derived from the SAME entries the listing below is already
-// showing (no extra request this box has any business making).
 //
-// Slots 1 and 2 deliberately share one extension: the entire teaching value
-// of the pair is that they differ by exactly one character
-// ("*.csv" vs ".csv"), and a different extension in each would erase that.
-// Slot 3's job is only to show that a search can start somewhere other than
-// here — "~" is real on every machine and unambiguously elsewhere, so it
-// needs no probing the way a literal folder name would.
+// ITEM 8 (running-screen review, 2026-09-10) DELETED this file's own
+// `buildSearchExamples` (and its `SearchExample`/`ExampleEntry` types): the
+// panel it fed showed three derived, pressable example rows ("*.zip",
+// ".zip", "~/*/*.zip") built from the folder's own most-common extension.
+// Having seen it on a running screen, the user asked for an explanation
+// only, not a set of rows to press — SearchField.tsx's own panel now
+// renders three sentences of prose instead (bare text searches deep, a `*`
+// pattern stays shallow, a leading `~/`/`/` starts elsewhere — the exact
+// inversion the three example rows existed to teach, kept as words rather
+// than as three derived patterns). That prose needs no folder-specific
+// derivation, so the `entries` prop threading this function existed for
+// (SearchFieldProps.entries, Listing.tsx's own `sortedEntries` pass,
+// FileSearchField.tsx's `entries={[]}`) went with it — grep `tests/` before
+// reintroducing any of this: nothing there referenced these symbols at the
+// time of removal (confirmed), but a literal-frontend-source-line Python
+// test elsewhere in this repo would not show up in `bun test` staying
+// green.
 //
-// Every edge case here resolves the same way: show fewer examples, never an
-// invented one — an empty return is a valid, honest answer, not the exception.
-export function buildSearchExamples(
-  entries: ExampleEntry[],
-  fsPath: string,
-  home: string | undefined,
-): SearchExample[] {
-  const counts = new Map<string, number>();
-  for (const e of entries) {
-    if (e.is_dir) continue;
-    if (e.name.startsWith(".")) continue; // hidden entries don't vote
-    const dot = e.name.lastIndexOf(".");
-    if (dot <= 0) continue; // no extension (Makefile) — "." at position 0 is hidden, already excluded
-    const ext = e.name.slice(dot + 1).toLowerCase();
-    if (ext === "") continue;
-    counts.set(ext, (counts.get(ext) ?? 0) + 1);
-  }
-  if (counts.size === 0) return [];
-
-  // The most common extension wins; a tie breaks alphabetically so the
-  // panel never reshuffles between renders of the same, unchanged folder.
-  let winner = "";
-  let winnerCount = -1;
-  for (const [ext, count] of [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    if (count > winnerCount) {
-      winner = ext;
-      winnerCount = count;
-    }
-  }
-
-  const EXT = winner.toUpperCase();
-  const examples: SearchExample[] = [
-    { pattern: `*.${winner}`, hint: `${EXT} files in this folder` },
-    {
-      pattern: `.${winner}`,
-      hint: `${EXT} files in this folder and everything below it`,
-    },
-  ];
-  // Omitted while standing in home itself — "searches from ~ instead of
-  // here" is a false claim when here already IS ~. Trailing slash
-  // tolerated the same way query-pristine.ts's own comparisons are.
-  const stripSlash = (s: string) => s.replace(/\/+$/, "") || s;
-  if (home === undefined || stripSlash(fsPath) !== stripSlash(home)) {
-    examples.push({
-      pattern: `~/*/*.${winner}`,
-      hint: "searches from ~ instead of here",
-    });
-  }
-  return examples;
-}
+// `showSearchExamples` below is UNCHANGED by this — it decides WHEN the
+// panel appears (pristine + focused), not what it contains, and the
+// pristine-wins-over-completions precedence it is part of is not
+// re-litigated here.
 
 /** Whether the examples panel should occupy the dropdown's surface.
  *

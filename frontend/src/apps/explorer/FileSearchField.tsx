@@ -169,11 +169,6 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
       searchCountFull={undefined}
       hasPin={false}
       widePin={false}
-      // SPEC-omnibox-search-affordance.md correction (2026-09-10): a file
-      // view keeps no listing of its parent folder's own entries — nothing
-      // honest to build an example from, so the teaching panel simply shows
-      // none here rather than falling back to an invented one.
-      entries={[]}
     />,
   );
 }

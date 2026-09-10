@@ -46,11 +46,7 @@ import { resolveFolderToOpen } from "@apps/explorer/listing/enter-prompt";
 import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
 import { contractHome } from "@apps/explorer/listing/home-path";
 import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
-import {
-  buildSearchExamples,
-  showSearchExamples,
-  type ExampleEntry,
-} from "@apps/explorer/listing/search-examples";
+import { showSearchExamples } from "@apps/explorer/listing/search-examples";
 import { searchSlot, subscribeSearchSlot } from "@apps/explorer/search-slot";
 import { BookmarkStar } from "@apps/explorer/Breadcrumb";
 
@@ -139,18 +135,6 @@ export interface SearchFieldProps {
   hasPin: boolean;
   widePin: boolean;
   /**
-   * SPEC-omnibox-search-affordance.md correction (2026-09-10): the folder
-   * currently being searched's own entries (a folder host's already-loaded
-   * listing, `sortedEntries`) — the ONLY source the focused-and-pristine
-   * teaching panel is allowed to build its examples from, so a pattern it
-   * shows always has real rows behind it in THIS folder rather than an
-   * invented one that returns nothing. A file host has no such listing of
-   * its own and passes `[]`, which yields no examples at all (an honest
-   * "nothing to show" rather than a guess) — see search-examples.ts's
-   * `buildSearchExamples`.
-   */
-  entries: ExampleEntry[];
-  /**
    * Row-level chrome that sits AFTER the box, inside the same `.listing-search`
    * strip that stands the crumbs down and takes the whole width once
    * `searching`/`pinnedOpen` say so (Listing.tsx's pane-reopen button and the
@@ -183,7 +167,6 @@ export function SearchField({
   searchCountFull,
   hasPin,
   widePin,
-  entries,
   children,
 }: SearchFieldProps) {
   const crumbsPath = crumbsFsPath ?? fsPath;
@@ -292,14 +275,6 @@ export function SearchField({
     setQuery(item.path);
     searchInputRef.current?.focus();
   };
-  // A click on an example inserts it rather than searching it blind — the
-  // point is to teach, so it leaves the user holding an editable query with
-  // focus intact, same as `acceptCompletion`.
-  const acceptExample = (pattern: string) => {
-    setQuery(pattern);
-    searchInputRef.current?.focus();
-  };
-
   // The field's own resting state: empty, or still exactly the folder path
   // the box pre-filled itself with on focus (`onFocus` below,
   // `contractHome(fsPath, home)`) — query-pristine.ts's `isPristineQuery`.
@@ -425,14 +400,11 @@ export function SearchField({
       (completion.target !== null &&
         completion.items.length > 0 &&
         !isExactSingleMatch(completion.items, completion.target)));
-  // SPEC-omnibox-search-affordance.md correction (2026-09-10): built off
-  // THIS folder's own already-loaded entries, never invented — a folder
-  // with nothing extensioned to point at (or whose listing hasn't loaded
-  // yet: `entries` is `[]` in exactly the same shape either way) yields no
-  // examples, and the panel is worth showing only once there is at least
-  // one honest one.
-  const searchExamples = buildSearchExamples(entries, fsPath, home);
-  const showExamples = showSearchExamples(fieldActive, pristine) && searchExamples.length > 0;
+  // ITEM 8 (running-screen review, 2026-09-10): `showSearchExamples`
+  // itself (and the pristine-wins-over-completions precedence above) is
+  // UNCHANGED — this changes what the panel CONTAINS (prose, not derived
+  // example rows), not when it appears.
+  const showExamples = showSearchExamples(fieldActive, pristine);
   // The action row, when present, is always the FIRST row (index 0) — the
   // folder completions that follow it shift up by exactly this many slots.
   // One number, read everywhere an index has to cross that boundary, so the
@@ -661,32 +633,35 @@ export function SearchField({
           }}
         />
         {showExamples && (
-          <div className="listing-completion listing-completion-examples" role="listbox">
-            {/* SPEC-omnibox-search-affordance.md scope item 4: the guidance
-                that used to live ONLY in the placeholder (invisible the
-                instant anything is typed) is readable here instead, right
-                alongside the examples it's introducing. The placeholder
-                keeps carrying the same text too — it costs nothing and
-                still serves the emptied-box case. */}
+          // ITEM 8 (running-screen review, 2026-09-10): the three derived
+          // example rows are gone — the user, having seen them on screen,
+          // asked for an explanation only, not a set of pressable rows.
+          // Reuses `.listing-completion-row.listing-completion-notice`
+          // verbatim (the existing "non-interactive line of text" class,
+          // already proven on wrapped text — this row used to render
+          // `HINT_LONG`/`HINT_SHORT` in exactly this class) rather than a
+          // new prose-specific class, since it already does this job.
+          //
+          // The placeholder's own guidance ("Search, or type a path or
+          // pattern...") used to be repeated verbatim as this panel's own
+          // first line — one surface visible only once the box is emptied,
+          // the other only once it's pristine-and-focused, so a reader
+          // could see either but never both at once, yet the words were
+          // typed twice. This panel now carries the REAL explanation (the
+          // three-point inversion the old example rows were teaching: bare
+          // text searches deep, a `*` pattern stays shallow, a leading
+          // `~/`/`/` starts elsewhere) and the placeholder stays the short
+          // prompt it already was (`HINT_LONG`/`HINT_SHORT`, unchanged,
+          // still read by the input's own `placeholder` above) — one fact,
+          // one place. `buildSearchExamples`, the `SearchExample`/
+          // `ExampleEntry` types, the `entries` prop this panel used to
+          // need, and the example-row CSS are all deleted, not merely
+          // unreferenced — see search-examples.ts's own removal note.
+          <div className="listing-completion listing-completion-examples" role="note">
             <div className="listing-completion-row listing-completion-notice">
-              {boxWide ? HINT_LONG : HINT_SHORT}
-            </div>
-            <div className="listing-completion-rows">
-              {searchExamples.map((ex) => (
-                <div
-                  key={ex.pattern}
-                  role="option"
-                  aria-selected={false}
-                  className="listing-completion-row listing-completion-example"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    acceptExample(ex.pattern);
-                  }}
-                >
-                  <span className="listing-completion-name">{ex.pattern}</span>
-                  <span className="listing-completion-hint">{ex.hint}</span>
-                </div>
-              ))}
+              Type any text to match names in this folder and everything
+              below it. A pattern with * matches this folder only, like
+              *.zip. Start with ~/ or / to search from somewhere else.
             </div>
           </div>
         )}
