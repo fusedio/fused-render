@@ -180,9 +180,11 @@ export default function ActivityDock({
   //
   // `terminalNotifications` (jobs.ts) is `mergedRows` then `jobRows` then
   // `terminalJobs` — see its own doc for why that order matters (a scheduled
-  // run's own job draws no row in Activity in any state, D661/`isScheduleJob`,
-  // and a render merged with a shared model load must not surface the
-  // load's completion as a second Notifications entry, SPEC §36).
+  // run's own job draws no row in Activity in any state, since it declares
+  // `tier: "transient"` on every tick and `jobRows` drops any row whose
+  // `effectiveTier` is transient, D661, SPEC actionable-notifications; and a
+  // render merged with a shared model load must not surface the load's
+  // completion as a second Notifications entry, SPEC §36).
   const onTerminalRef = useRef(onTerminalJobs);
   onTerminalRef.current = onTerminalJobs;
   const terminalIdsRef = useRef("");

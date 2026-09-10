@@ -26,6 +26,20 @@ export type JobKind = "download" | "task";
 // "server" — this app owns the process and really stops it.
 export type JobOwner = "page" | "server";
 
+// Which of the three notification tiers a row belongs to (SPEC
+// actionable-notifications). The discriminator is always the same question:
+// did the user ask for this, and is there anything left to look at?
+//   "attention"  — the user asked, and it now wants something back. Shown
+//                  without the panel having to be opened.
+//   "trail"      — the user asked, and it left something behind. Kept in the
+//                  panel until dismissed.
+//   "transient"  — nobody asked, or nothing survives it. Shown while
+//                  running, never kept once terminal.
+// "trail" is the default on the server (`fused_render/jobs.py`'s `Job.tier`)
+// on purpose: a producer that sets nothing behaves exactly like every row
+// did before this field existed.
+export type JobTier = "attention" | "trail" | "transient";
+
 export interface Job {
   id: string;
   title: string;
@@ -81,12 +95,15 @@ export interface Job {
   // model load (`fused_render/ai/supervisor.py` `_wait_ready`'s merge). See
   // `mergedRows` below for what the manager does with it.
   waiting_for: string;
-  // A terminal row with nothing to act on — set server-side, true only on a
-  // resident model load's own success report (`ai/supervisor.py`
-  // `_bring_up`, via `job_id_for`). See `isQuietModelLoad` below for why a
-  // finished DOWNLOAD or an unload/eviction, though they report through the
-  // same `sys:ai-model:` id family, are never this quiet.
-  quiet: boolean;
+  // Which of the three tiers this row belongs to (see `JobTier` above) —
+  // chosen by the PRODUCER, server-side only. Sticky across ticks on one id
+  // like every other field: `job_id_for(model)` (`ai/supervisor.py`) is
+  // shared by a resident load, a weights-only download and an unload, so
+  // each of those reports restates its own tier explicitly rather than
+  // relying on what an earlier report on that id left behind. Read this
+  // through `effectiveTier` below, not directly — a terminal row's actual
+  // tier can differ from what its producer declared.
+  tier: JobTier;
 }
 
 export interface JobsSnapshot {
@@ -206,44 +223,38 @@ export function jobsAfterClear(jobs: Job[]): Job[] {
 // A scheduled message's job row, by id (fused_render/schedule.py `_JOB_PREFIX`).
 export const SCHEDULE_JOB_PREFIX = "sys:schedule:";
 
-/** A scheduled message's own run, never drawn as an Activity row (user: "a
- *  task is not something I even want in the activity. that was added
- *  unintentionally"). The "Task finished:"/"Task failed:"/"Scheduled message
- *  ran:" toast (platform/lib/schedule-toast.ts) is the one surface for these
- *  now; the job-registry write behind it stays untouched server-side, because
- *  `schedule.py`'s poll loop reads its own report back to notice a live
- *  cancel request. */
-export function isScheduleJob(job: Job): boolean {
-  return job.id.startsWith(SCHEDULE_JOB_PREFIX);
-}
-
 // A model load's own row, by id (fused_render/ai/supervisor.py `job_id_for`).
 export const AI_MODEL_JOB_PREFIX = "sys:ai-model:";
 
-/** A model load's row once it has succeeded — never drawn as a Notification.
- *  `fused.ai.models.load(wait=True)` (`_wait_job` in `fused_ai.py`) and
- *  `_wait_ready`'s row-merge (D628) both poll this row while the load is
- *  RUNNING, and neither reads it again once it goes terminal — so the row is
- *  filtered here, in the UI layer, rather than removed from the store the way
- *  a page destination's job is: the store keeps it (a "Model loaded" state a
- *  live watcher can still observe going `done`), only Notifications drops it.
+/** The tier a reader should actually treat this row as — DERIVED, never
+ *  stored. `job.tier` is what the producer declared; this is what the row
+ *  means right now.
  *
- *  Read straight off `job.quiet` rather than matching the id prefix plus
- *  `state === "done"`: `job_id_for(model)` is shared by a resident load AND a
- *  weights-only DOWNLOAD of the same model, and by that model's own unload —
- *  all three land on `state === "done"`, but only the load is nothing to act
- *  on. `job.quiet` is set server-side, only by the load's own success report,
- *  so a finished download or an unload of the very same model still surfaces
- *  here, and so does a FAILED or CANCELLED load. */
-export function isQuietModelLoad(job: Job): boolean {
-  return job.quiet;
+ *  The one override: a terminal job in `error` or `cancelled` is always
+ *  `attention`, regardless of what its producer declared. A failed run is
+ *  news even for a producer that otherwise declares itself `transient` (a
+ *  scheduled run, an index scan, a text generation, a resident model load)
+ *  — the thing that makes those tiers correct on SUCCESS (nothing survives
+ *  it) is exactly what is no longer true on a failure: the user did not get
+ *  what they asked for, which is always worth a look. A `done` row, or a
+ *  still-running one, is unaffected and reads its stored tier as-is.
+ *
+ *  Mirrors `effective_tier` in `fused_render/jobs.py` — keep the two in
+ *  step. */
+export function effectiveTier(job: Job): JobTier {
+  if (job.state === "error" || job.state === "cancelled") return "attention";
+  return job.tier;
 }
 
 /** Which jobs get a row of their own in Activity: every job the registry
- *  knows about, except a scheduled run's (see `isScheduleJob`) or a model
- *  load that finished quietly (see `isQuietModelLoad`). */
+ *  knows about, except one whose `effectiveTier` is "transient" — a
+ *  scheduled run, a model load's own success, a finished index scan, a
+ *  finished text generation, none of which leave anything to act on. Reading
+ *  `effectiveTier` rather than the stored `tier` matters here: a producer
+ *  that declared itself transient but ended in `error`/`cancelled` still
+ *  gets a row, because the override already turned it into `attention`. */
 export function jobRows(jobs: Job[]): Job[] {
-  return jobs.filter((j) => !isScheduleJob(j) && !isQuietModelLoad(j));
+  return jobs.filter((j) => effectiveTier(j) !== "transient");
 }
 
 export function mergedRows(jobs: Job[]): Job[] {

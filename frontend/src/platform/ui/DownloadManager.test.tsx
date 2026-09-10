@@ -78,7 +78,7 @@ const BASE: Job = {
   finished_at: 0,
   stalled: false,
   waiting_for: "",
-  quiet: false,
+  tier: "trail",
 };
 
 
@@ -203,12 +203,17 @@ test("a done job and a failed job together leave this section with nothing to dr
 
 test("a scheduled run's own job never draws a row here, in any state (D661)", () => {
   // D661 (user: "a task is not something I even want in the activity. that
-  // was added unintentionally"): `jobRows` now excludes every `sys:schedule:*`
-  // job unconditionally, so a scheduled run's own row cannot appear here no
-  // matter what state it is in — there is no more "exempt only while running"
-  // carve-out.
-  const scheduleDone: Job = { ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest" };
-  const scheduleRunning: Job = { ...BASE, id: "sys:schedule:entry-2", state: "running" };
+  // was added unintentionally"): `schedule.py`'s `_report` declares
+  // `tier: "transient"` on every tick, and `jobRows` excludes any row whose
+  // `effectiveTier` is transient, so a scheduled run's own row cannot appear
+  // here no matter what state it is in — there is no more "exempt only
+  // while running" carve-out.
+  const scheduleDone: Job = {
+    ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest", tier: "transient",
+  };
+  const scheduleRunning: Job = {
+    ...BASE, id: "sys:schedule:entry-2", state: "running", tier: "transient",
+  };
   const tree = renderCard([scheduleDone, scheduleRunning]);
   expect(findAll(tree, "dl-row")).toHaveLength(0);
 });
@@ -380,6 +385,7 @@ test("the toggle is a real button even with a lone job to fold, a scheduled run 
     id: "sys:schedule:entry-1",
     state: "running",
     stalled: false,
+    tier: "transient",
   };
   const running: Job = { ...BASE, id: "sys:ai-image:running", state: "running", stalled: false };
   const tree = renderCard([liveSchedule, running]);

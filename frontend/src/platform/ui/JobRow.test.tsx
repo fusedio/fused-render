@@ -47,7 +47,7 @@ const BASE: Job = {
   finished_at: null,
   stalled: false,
   waiting_for: "",
-  quiet: false,
+  tier: "trail",
 };
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {

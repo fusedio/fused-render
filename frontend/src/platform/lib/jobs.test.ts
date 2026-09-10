@@ -8,6 +8,7 @@ import {
   jobTypeLabel,
   SCHEDULE_JOB_PREFIX,
   activeJobByModel,
+  effectiveTier,
   GRACE_MS,
   jobAmount,
   jobDetail,
@@ -47,7 +48,7 @@ function job(over: Partial<Job> = {}): Job {
     finished_at: null,
     stalled: false,
     waiting_for: "",
-    quiet: false,
+    tier: "trail",
     ...over,
   };
 }
@@ -418,7 +419,7 @@ test("terminalNotifications surfaces the load once the waiter itself has gone te
 });
 
 test("terminalNotifications still drops a scheduled run's own job", () => {
-  const jobs = [job({ id: "sys:schedule:e1", state: "done" })];
+  const jobs = [job({ id: "sys:schedule:e1", state: "done", tier: "transient" })];
   expect(terminalNotifications(jobs)).toEqual([]);
 });
 
@@ -428,14 +429,14 @@ test("terminalNotifications leaves an ordinary terminal job alone", () => {
 });
 
 // An index scan's own job (fused_render/server/routers/index.py's
-// mirror_index_jobs_once, "sys:index:<run_id>") is NOT a sys:schedule:* row
-// and must draw a row in Activity like any other server-owned task — unlike
-// a scheduled run's job, which jobRows deliberately drops (see
-// isScheduleJob's own comment).
-test("an index scan's job is not caught by the schedule-job filter", () => {
+// mirror_index_jobs_once, "sys:index:<run_id>") stays a live Activity row
+// while running (default "trail" tier) — unlike a scheduled run's job,
+// which declares `tier: "transient"` on every tick (`schedule.py`'s
+// `_report`) and so `jobRows` drops it, even while running.
+test("an index scan's job is not caught by the transient filter a scheduled run's job is", () => {
   const jobs = [
     job({ id: "sys:index:20260907-1200-ab12", state: "running" }),
-    job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "running" }),
+    job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "running", tier: "transient" }),
   ];
   expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:index:20260907-1200-ab12"]);
 });
@@ -444,13 +445,13 @@ test("an index scan's job is not caught by the schedule-job filter", () => {
 // stays a live Activity row while it runs, but never becomes a stored
 // Notification once it succeeds — a live watcher (`_wait_ready`'s row-merge,
 // `fused.ai.models.load(wait=True)`) only ever reads it while it is RUNNING,
-// so nothing downstream needs the terminal row to survive. `job.quiet` (set
+// so nothing downstream needs the terminal row to survive. `job.tier` (set
 // server-side, only by the load's own success report) is what says so — NOT
 // the id prefix plus `state === "done"` alone, because `job_id_for(model)`
 // is the SAME id a weights-only download or an unload of that model reports
 // through, and both of those are real news (see the two tests below).
 test("a model load's row disappears from Notifications once it succeeds", () => {
-  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", quiet: true })];
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", tier: "transient" })];
   expect(jobRows(jobs)).toEqual([]);
 });
 
@@ -459,10 +460,14 @@ test("a model load's row still shows while it is running", () => {
   expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
 });
 
+// `effectiveTier`'s override: a load that declares itself transient but
+// ends in error/cancelled is treated as attention, not transient, so it
+// still gets a row — a failed load is exactly the kind of news the override
+// exists for.
 test("a failed or cancelled model load's row still shows", () => {
   const jobs = [
-    job({ id: "sys:ai-model:org/fake-model", state: "error" }),
-    job({ id: "sys:ai-model:org/other-model", state: "cancelled" }),
+    job({ id: "sys:ai-model:org/fake-model", state: "error", tier: "transient" }),
+    job({ id: "sys:ai-model:org/other-model", state: "cancelled", tier: "transient" }),
   ];
   expect(jobRows(jobs).map((j) => j.id)).toEqual([
     "sys:ai-model:org/fake-model",
@@ -470,20 +475,44 @@ test("a failed or cancelled model load's row still shows", () => {
   ]);
 });
 
-// The bug `job.quiet` replaces: `isQuietModelLoad` used to match the id
-// prefix plus `state === "done"` alone, which also matched a finished
-// weights-only DOWNLOAD and an unload/eviction — both report through the
-// exact same `sys:ai-model:` id family (`job_id_for(model)`), and neither is
-// a resident load succeeding. `quiet` defaults false, so a row that never
-// had it set by the server always shows, regardless of id or state.
-test("a finished DOWNLOAD sharing the model-load id family still shows — only a resident load is quiet", () => {
+// The bug `job.tier` replaces: matching the id prefix plus `state === "done"`
+// alone would also have matched a finished weights-only DOWNLOAD and an
+// unload/eviction — both report through the exact same `sys:ai-model:` id
+// family (`job_id_for(model)`), and neither is a resident load succeeding.
+// `tier` defaults to "trail", so a row that never had it set to "transient"
+// by the server always shows, regardless of id or state.
+test("a finished DOWNLOAD sharing the model-load id family still shows — only a resident load is transient", () => {
   const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", kind: "download" })];
   expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
 });
 
 test("an unload's finished row still shows, even sharing the model-load id family", () => {
-  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", detail: "Unloaded" })];
-  expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
+  const jobs = [
+    job({ id: "sys:ai-model:org/fake-model", state: "done", detail: "Unloaded", tier: "transient" }),
+  ];
+  // An unload declares `tier: "transient"` too (nothing survives it either),
+  // so it drops out of Notifications just like the load it undoes.
+  expect(jobRows(jobs)).toEqual([]);
+});
+
+// ---- effectiveTier's error/cancelled override --------------------------
+
+test("effectiveTier overrides a declared-transient row that ends in error", () => {
+  const j = job({ state: "error", tier: "transient" });
+  expect(j.tier).toBe("transient");
+  expect(effectiveTier(j)).toBe("attention");
+});
+
+test("effectiveTier overrides a declared-transient row that is cancelled", () => {
+  expect(effectiveTier(job({ state: "cancelled", tier: "transient" }))).toBe("attention");
+});
+
+test("effectiveTier leaves a done transient row alone", () => {
+  expect(effectiveTier(job({ state: "done", tier: "transient" }))).toBe("transient");
+});
+
+test("effectiveTier leaves a running row's declared tier alone", () => {
+  expect(effectiveTier(job({ state: "running", tier: "trail" }))).toBe("trail");
 });
 
 // ---- the chip's one word and one line (D673, statusbar redesign) ------------

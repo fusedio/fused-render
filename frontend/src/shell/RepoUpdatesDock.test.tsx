@@ -126,7 +126,7 @@ const failedJob = (over: Partial<Job> = {}): Job => ({
   finished_at: 0,
   stalled: false,
   waiting_for: "",
-  quiet: false,
+  tier: "trail",
   ...over,
 });
 
