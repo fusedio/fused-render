@@ -23,12 +23,22 @@ export function useRecentSessions(
   agentDir: string | null,
   file: string | null,
   subscribe: SubscribeRecent = subscribeRecent,
+  /**
+   * T's `leftLive` (T:13066-13071, P4-21). The two extra looks after landing
+   * exist to cover the CLI's first transcript write for a chat left MID-TURN;
+   * a cold landing has no such write to race, so it pays for neither. Read at
+   * SUBSCRIBE time — which is the moment the landing is arrived at, and the
+   * only moment the answer is about.
+   */
+  coverWrite = false,
 ): SessionRow[] | null {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
   /** Has this list ever had real rows in it? The skeleton is only honest before
    *  the first answer of the page's life; after that a `null` means "reading
    *  again", which is not the same news. */
   const painted = useRef(false);
+  const coverWriteRef = useRef(coverWrite);
+  coverWriteRef.current = coverWrite;
   useEffect(() => {
     // ENTERING A CHAT DOES NOT EMPTY THE LIST. T clears `#recentlist`'s markup
     // on the way back but deliberately does NOT reset the counts: "both reads
@@ -40,20 +50,29 @@ export function useRecentSessions(
     // So a torn-down subscription leaves the rows exactly where they were, and
     // the tab bar over them does not flash out and back for the round trip.
     if (!agentDir) return;
-    return subscribe(agentDir, file, (next) => {
-      // THE SKELETON STANDS IN FOR ROWS WE DO NOT HAVE — never for rows that
-      // are already up (T:18408-18411). `subscribeRecent` opens every
-      // subscription with `null`, so without this a target change (or the
-      // re-subscribe on the way back to the landing) blinked drawn rows into
-      // placeholder bars, which "would make every retry look like the list lost
-      // the chats it is about to reprint".
-      if (next === null) {
-        if (!painted.current) setRows(null);
-        return;
-      }
-      painted.current = true;
-      setRows(next);
-    });
+    // Read through a ref, so a `coverWrite` that flips while the landing is up
+    // (the chat it described has since ended) cannot re-subscribe: the answer
+    // is about the ARRIVAL, and the arrival has happened.
+    return subscribe(
+      agentDir,
+      file,
+      (next) => {
+        // THE SKELETON STANDS IN FOR ROWS WE DO NOT HAVE — never for rows that
+        // are already up (T:18408-18411). `subscribeRecent` opens every
+        // subscription with `null`, so without this a target change (or the
+        // re-subscribe on the way back to the landing) blinked drawn rows into
+        // placeholder bars, which "would make every retry look like the list lost
+        // the chats it is about to reprint".
+        if (next === null) {
+          if (!painted.current) setRows(null);
+          return;
+        }
+        painted.current = true;
+        setRows(next);
+      },
+      undefined,
+      coverWriteRef.current,
+    );
     // `subscribe` is deliberately NOT a dependency: a caller that passes a fresh
     // closure every render would re-subscribe on every render, and the identity
     // of the transport is not a fact about the target.

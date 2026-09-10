@@ -5,8 +5,7 @@ import "../styles/home.css";
 import type { SessionRow } from "../protocol/types";
 import { HomeCard, type HomeCardProps } from "./HomeCard";
 import { Lists } from "./Lists";
-import { useArtifacts } from "./useArtifacts";
-import { useSnapshots } from "./useSnapshots";
+import { useLandingReads } from "./useLandingReads";
 
 export interface HomeProps extends HomeCardProps {
   recent: SessionRow[] | null;
@@ -36,8 +35,16 @@ export function Home({
   // / `mountSnapshots` are called from boot AND from Back), and a mount of this
   // component is exactly that path. Nothing in the transcript wants either
   // answer, so nothing above needs to hold them.
-  const artifacts = useArtifacts(agentDir ?? null, cardProps.file);
-  const snaps = useSnapshots(agentDir ?? null, cardProps.file, snapInvalidation);
+  //
+  // ONE ORDERING OWNER over the two of them (P4-14): T runs the three landing
+  // reads in a stated sequence and native had fired them as independent effects
+  // on one commit. `useLandingReads` is that sequence — see its module note.
+  const { artifacts, snaps } = useLandingReads(
+    agentDir ?? null,
+    cardProps.file,
+    recent,
+    snapInvalidation,
+  );
 
   return (
     <div className="c-home">

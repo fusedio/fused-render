@@ -1381,6 +1381,13 @@ function ChatBody(props: ChatBodyProps) {
   // branch means restarting the 1.5 s detection wait and never sending at all.
   const onReadyRef = useRef(props.onReady);
   onReadyRef.current = props.onReady;
+  /**
+   * Is the boot's landing branch the one waiting on the ready signal? Written
+   * by the boot effect, read by the effect below it: `markReady` is idempotent,
+   * so this is only ever about which FACT the signal is waiting for, never
+   * about firing it twice.
+   */
+  const landingReady = useRef(false);
   const markReady = useCallback(() => {
     if (readySent.current) return;
     readySent.current = true;
@@ -1511,9 +1518,14 @@ function ChatBody(props: ChatBodyProps) {
           void controller.adoptLiveRun(sessionId);
         }
       } else {
-        // Nothing to restore. The landing paints its card and Recent's skeleton
-        // on this very render, so it is ready now (T:19291-19296).
-        markReady();
+        // NOTHING TO RESTORE, BUT SOMETHING TO WAIT FOR (T:19282-19291, P4-14).
+        //
+        // T fires `markChatReady()` AFTER `await loadRecent()`, and the host
+        // uncovers the pane on that signal — so firing it on this render shows
+        // a landing whose one list is still a skeleton, which is the state the
+        // read is about to replace. The wait is owned by the effect below,
+        // which fires it on the first non-null `recent`; nothing is done here.
+        landingReady.current = true;
       }
     })();
     return () => {
@@ -1725,7 +1737,47 @@ function ChatBody(props: ChatBodyProps) {
   const [sent, setSent] = useState<UserTurn | null>(null);
   // The landing's list only: a chat on screen has no lists, and the long-poll
   // behind it should not run for one that is not showing them (T:18339).
-  const recent = useRecentSessions(inChat ? null : agentDir, file);
+  /**
+   * T's `leftLive` (T:13066-13071, P4-21). Set by the gesture that LEAVES a
+   * chat, read by the landing's list subscription: the two extra `sessions`
+   * looks after landing exist to cover the CLI's first transcript write, and
+   * only a chat abandoned mid-turn has such a write to race. A cold landing
+   * boot was spending them for nothing.
+   *
+   * State and not a ref, because the value has to reach the subscription's
+   * render — and it is written in the same gesture that flips `inChat`, so it
+   * is there on the paint the landing arrives on.
+   *
+   * Declared HERE, ahead of the list it feeds; `onBack` (which writes it) is
+   * declared with the other gestures further down.
+   */
+  const [leftLive, setLeftLive] = useState(false);
+  const recent = useRecentSessions(
+    inChat ? null : agentDir,
+    file,
+    undefined,
+    leftLive,
+  );
+  /**
+   * THE LANDING IS READY WHEN ITS LIST HAS ANSWERED (T:19282-19291, P4-14).
+   *
+   * `markReady` is what the host uncovers the pane on, and T fires it after
+   * `await loadRecent()` for exactly that reason. Idempotent, so a boot that
+   * already fired it on another branch pays nothing here.
+   *
+   * AND NEVER WAITS FOR A LIST THAT WILL NOT COME. Two roads reach that: a
+   * target with no `agentDir` (which never subscribes), and a reader who enters
+   * a chat before the first read lands — a recent row clicked on the skeleton,
+   * or a deep link resolving late. `useRecentSessions` is handed a null
+   * `agentDir` while in a chat, so `recent` would sit at `null` for ever and
+   * the pane would stay covered for the life of the page. Entering a chat is
+   * itself a reason to uncover it, and a target with no list has answered "no
+   * list" — so both count.
+   */
+  useEffect(() => {
+    if (!landingReady.current) return;
+    if (recent !== null || inChat || !agentDir) markReady();
+  }, [recent, inChat, agentDir, markReady]);
 
   /**
    * WHAT THE TRAY PUTS ON THE WIRE, on both send roads: the `<pane-shot>` block,
@@ -1998,6 +2050,11 @@ function ChatBody(props: ChatBodyProps) {
     // conversation that WAS on screen must not leak a card open in one the user
     // has never touched (ui/cardPolicy.ts).
     resetCardPolicy(cardPolicy);
+    // WAS THERE A TURN IN FLIGHT? Asked before `newChat` empties the state that
+    // knows. A queued send counts: its transcript write has not happened yet
+    // either.
+    const s = controller.getState();
+    setLeftLive(s.status === "running" || !!s.runId || s.queued.length > 0);
     // AND A FRESH SCHEDULE. `newChat` puts `transcriptGen` back to 0, and the
     // reset effect below skips gen 0 by construction (a mount must not
     // re-baseline the poller) — so Back alone left the block that belonged to
@@ -2530,7 +2587,23 @@ function ChatBody(props: ChatBodyProps) {
       sched.reason,
     ],
   );
-  const onAnchorSpent = useCallback(() => params.set({ msg: null }), [params]);
+  /**
+   * THE SPENT ANCHOR IS REMOVED WITH `replace` (T:12978-12984, P4-20).
+   *
+   * T argues it: "arriving on the message is not a place anyone navigated to
+   * twice, and a Back that re-fired the flare would be a history entry nobody
+   * made. Left behind it would also re-scroll a reload the reader has since
+   * scrolled away from."
+   *
+   * A bare `set` reaches the replace path only while no gesture has happened on
+   * the document (`params/store.ts:292`), which is not guaranteed here at all:
+   * the anchor is spent when the turn it names is on screen, which is usually
+   * after the reader has clicked something.
+   */
+  const onAnchorSpent = useCallback(
+    () => params.set({ msg: null }, { history: "replace" }),
+    [params],
+  );
 
   // The task number this session is (`#session`, T:12696 showSession). Read here
   // rather than inside the topbar so the landing's kebab and the erase dialog

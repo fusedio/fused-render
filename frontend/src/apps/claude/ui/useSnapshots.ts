@@ -37,6 +37,13 @@ export interface SnapshotsState {
    *  spending a second round trip, for the length of which the list would go on
    *  showing the pre-revert position (T:19012-19017). */
   adopt(next: SnapshotsTimeline): void;
+  /**
+   * Has this read reached an answer of ANY kind — a timeline, a failure, or
+   * "this target has no panel"? Read by `useLandingReads` to decide when the
+   * artifacts index may go (T:19288-19293 awaits `mountSnapshots()` before it),
+   * and false for as long as the read is gated or in flight.
+   */
+  settled: boolean;
 }
 
 export function useSnapshots(
@@ -65,6 +72,14 @@ export function useSnapshots(
     load?: typeof loadSnapshots;
     isFile?: typeof isFileTarget;
   },
+  /**
+   * T's landing order (T:19288-19293): `await loadRecent()` → ready →
+   * `watchRecent()` → `await mountSnapshots()` → `loadArtifacts()`. False holds
+   * this read behind the session list, which is the ONE list the host must not
+   * uncover the pane in front of. `undefined`/true is "go now", for a caller
+   * with no order to keep.
+   */
+  enabled = true,
 ): SnapshotsState {
   const [timeline, setTimeline] = useState<SnapshotsTimeline | null | undefined>(
     undefined,
@@ -72,6 +87,8 @@ export function useSnapshots(
   const [failed, setFailed] = useState(false);
   const [error, setError] = useState("");
   const [nonce, setNonce] = useState(0);
+  /** Terminal for THIS target: an answer, a failure, or "no panel here". */
+  const [settled, setSettled] = useState(false);
   // A repaint from a write must not be undone by a read that was already in
   // flight when it landed.
   const gen = useRef(0);
@@ -98,12 +115,24 @@ export function useSnapshots(
     if (!agentDir || !file) {
       setTimeline(undefined);
       setFailed(false);
+      // A target with no panel is SETTLED, not pending: the read that will
+      // never happen must not hold the artifacts index behind it for ever.
+      setSettled(true);
+      return;
+    }
+    // BEHIND THE SESSION LIST (see `enabled`). Not settled either — the caller
+    // is sequencing, and "not yet asked" is exactly what it is waiting on.
+    if (!enabled) {
+      setSettled(false);
       return;
     }
     let live = true;
     void (async () => {
       if (!(await hooks.current.isFile(file))) {
-        if (live && gen.current === mine) setTimeline(undefined);
+        if (live && gen.current === mine) {
+          setTimeline(undefined);
+          setSettled(true);
+        }
         return;
       }
       if (!live || gen.current !== mine) return;
@@ -122,6 +151,7 @@ export function useSnapshots(
         setTimeline(hit);
         setFailed(false);
         setError("");
+        setSettled(true);
         return;
       }
       // Mounted and reading: the panel shows standalone so the note has
@@ -139,6 +169,7 @@ export function useSnapshots(
         cacheSnapshots(file, invalidation, out);
         setTimeline(out);
         setFailed(false);
+        setSettled(true);
       } catch (err) {
         if (!live || gen.current !== mine) return;
         // An ordinary absence, never the red overlay: a file Claude has never
@@ -150,12 +181,15 @@ export function useSnapshots(
         setTimeline(null);
         setFailed(true);
         setError(err instanceof Error ? err.message : String(err));
+        // A FAILURE IS AN ANSWER for the ordering's purposes: the artifacts
+        // index must not be held behind an unreadable store.
+        setSettled(true);
       }
     })();
     return () => {
       live = false;
     };
-  }, [agentDir, file, nonce, invalidation]);
+  }, [agentDir, file, nonce, invalidation, enabled]);
 
   /** The heading's retry, and the way a revert repaints when it has no timeline
    *  of its own to hand back. Drops the cached entry FIRST: a retry that read
@@ -176,5 +210,5 @@ export function useSnapshots(
     setError("");
   }, []);
 
-  return { timeline, failed, error, reload, adopt };
+  return { timeline, failed, error, reload, adopt, settled };
 }

@@ -271,6 +271,7 @@ test("the snapshots panel draws one box per run, the position marked", () => {
         error: "",
         reload: () => {},
         adopt: () => {},
+        settled: true,
       }}
       onOpen={() => {}}
     />,
@@ -302,6 +303,7 @@ test("a FAILED snapshots read keeps its place in the block, holding the retry", 
           reloaded += 1;
         },
         adopt: () => {},
+        settled: true,
       }}
       onOpen={() => {}}
     />,
@@ -335,6 +337,7 @@ test("two filled lists earn the tab bar; an empty one earns no tab", () => {
         error: "",
         reload: () => {},
         adopt: () => {},
+        settled: true,
       }}
       onOpen={() => {}}
     />,
@@ -363,6 +366,7 @@ const TABBED: Omit<ListsProps, "onOpen"> = {
     error: "",
     reload: () => {},
     adopt: () => {},
+    settled: true,
   },
 };
 
@@ -488,6 +492,7 @@ test("a remembered tab whose list has since emptied falls back, never blank", ()
         error: "",
         reload: () => {},
         adopt: () => {},
+        settled: true,
       }}
       onOpen={() => {}}
     />,

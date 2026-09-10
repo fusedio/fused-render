@@ -25,6 +25,8 @@ interface Sub {
   file: string | null;
   cb(rows: SessionRow[] | null): void;
   stopped: boolean;
+  /** T's `leftLive` — whether this subscription asked for the two extra looks. */
+  coverWrite: boolean;
 }
 const subs: Sub[] = [];
 /** HANDED IN, not module-patched: an ESM namespace object is frozen, and a
@@ -34,8 +36,10 @@ const subscribe = ((
   agentDir: string,
   file: string | null,
   cb: (rows: SessionRow[] | null) => void,
+  _env: unknown,
+  coverWrite = false,
 ) => {
-  const sub: Sub = { agentDir, file, cb, stopped: false };
+  const sub: Sub = { agentDir, file, cb, stopped: false, coverWrite };
   subs.push(sub);
   // Every real subscription opens with the skeleton signal.
   cb(null);
@@ -62,10 +66,14 @@ interface Harness {
   subs: Sub[];
 }
 
-async function mount(agentDir: string | null, file: string | null): Promise<Harness> {
+async function mount(
+  agentDir: string | null,
+  file: string | null,
+  coverWrite = false,
+): Promise<Harness> {
   let out: SessionRow[] | null = null;
   function Probe(p: { agentDir: string | null; file: string | null }) {
-    out = useRecentSessions(p.agentDir, p.file, subscribe);
+    out = useRecentSessions(p.agentDir, p.file, subscribe, coverWrite);
     return null;
   }
   let r!: ReactTestRenderer;
@@ -135,4 +143,14 @@ test("an honestly EMPTY answer is still published", async () => {
   // no section at all, or the block outlives its rows.
   await h.serve([]);
   expect(h.rows()).toEqual([]);
+});
+
+test("A COLD LANDING ASKS FOR NO EXTRA LOOKS (P4-21)", async () => {
+  const cold = await mount("/tpl", "/repo/x.py");
+  expect(cold.subs[0].coverWrite).toBe(false);
+});
+
+test("leaving a LIVE turn asks for them (T's `leftLive`, T:13066-13071)", async () => {
+  const live = await mount("/tpl", "/repo/x.py", true);
+  expect(live.subs[0].coverWrite).toBe(true);
 });

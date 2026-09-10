@@ -31,6 +31,10 @@ let holdPrefs = false;
  *  `usePaneState`'s own. */
 let holdPaneStat = false;
 let stats = 0;
+/** Held back so a test can watch the landing's ready signal wait on the session
+ *  list (T:19282-19291). Resolved by `releaseSessions()`. */
+let holdSessions = false;
+let releaseSessions: () => void = () => {};
 /** Every `/api/schedule` read of this mount — one per watcher tick, which is
  *  what makes an unwanted `scheduleResetForNewTranscript` visible. */
 let scheduleReads = 0;
@@ -86,6 +90,14 @@ function stubFetch(): void {
       runs.push({ py: body.py, action, params: body.params ?? {} });
       if (body.py.endsWith("/app.py")) return jsonRes({ ok: true, result: {} });
       if (action === "defaults") return jsonRes({ ok: true, result: {} });
+      if (action === "sessions") {
+        if (holdSessions) {
+          return new Promise<Response>((res) => {
+            releaseSessions = () => res(jsonRes({ ok: true, result: { sessions: [] } }));
+          });
+        }
+        return jsonRes({ ok: true, result: { sessions: [] } });
+      }
       if (action === "live_host") return jsonRes({ ok: true, result: { run_id: "" } });
       if (action === "start") return jsonRes({ ok: true, result: { run_id: "r1" } });
       if (action === "poll") {
@@ -101,6 +113,8 @@ beforeEach(() => {
   runs.length = 0;
   holdPrefs = false;
   holdPaneStat = false;
+  holdSessions = false;
+  releaseSessions = () => {};
   stats = 0;
   scheduleReads = 0;
   resetAgentDirCacheForTests();
@@ -733,4 +747,19 @@ test("THE SCHEDULE RESET WAITS FOR A TRANSCRIPT REPLACEMENT (T:18000)", async ()
   // and neither is the session id the run's first poll just reported.
   expect(started().length).toBe(1);
   expect(scheduleReads).toBe(1);
+});
+
+// ── the landing's ready signal waits for its list (P4-14) ───────────────────
+
+test("THE LANDING IS READY WHEN ITS LIST HAS ANSWERED (T:19282-19291)", async () => {
+  // T fires `markChatReady()` after `await loadRecent()`, and the host uncovers
+  // the pane on that signal — so firing it first shows a landing whose one list
+  // is still a skeleton, which is the state the read is about to replace.
+  holdSessions = true;
+  let ready = 0;
+  await mountChat({ onReady: () => ready++ });
+  expect(ready).toBe(0);
+  releaseSessions();
+  await settle();
+  expect(ready).toBe(1);
 });

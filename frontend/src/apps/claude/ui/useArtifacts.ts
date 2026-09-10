@@ -39,6 +39,13 @@ export function useArtifacts(
   /** The read, injectable for the reason every other seam in this app is: one
    *  process, every suite. */
   read: typeof loadArtifacts = loadArtifacts,
+  /**
+   * LAST OF THE THREE LANDING READS, and T says why it is last: "it is the only
+   * one that leaves the machine (a localhost call to the artifacts index), so
+   * it must not sit in front of the session list" (T:19290-19293). False holds
+   * it; `undefined`/true is "go now".
+   */
+  enabled = true,
 ): Artifact[] | null {
   const [rows, setRows] = useState<Artifact[] | null>(() =>
     agentDir ? (lastRows.get(key(agentDir, file)) ?? null) : null,
@@ -48,8 +55,14 @@ export function useArtifacts(
       setRows(null);
       return;
     }
-    let live = true;
     const seat = key(agentDir, file);
+    if (!enabled) {
+      // Still seeded from the memory, so the tab bar's count is whatever it
+      // last honestly was while the two reads ahead of this one run.
+      setRows(lastRows.get(seat) ?? null);
+      return;
+    }
+    let live = true;
     // The previous answer for THIS target stands while the fresh one is in
     // flight; a target we have never read is the only `null` (see above).
     setRows(lastRows.get(seat) ?? null);
@@ -60,6 +73,6 @@ export function useArtifacts(
     return () => {
       live = false;
     };
-  }, [agentDir, file]);
+  }, [agentDir, file, enabled]);
   return rows;
 }

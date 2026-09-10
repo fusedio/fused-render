@@ -34,11 +34,13 @@ export const CHANGES_BACKOFF_MS = 3000;
  * looks a few seconds apart cover the write, and after that the list is what it
  * honestly is.
  *
- * Unconditional here where T gates them on having left a live chat (`leftLive`),
- * because a native landing has no such handler to gate in: this module is
- * subscribed by a MOUNT of the landing view, and a mount is precisely T's "path
- * onto this view". The cost is two cheap directory scans per visit, and
- * `load`'s own skeleton rule means neither can blink rows that are already up.
+ * GATED, exactly as T gates them, on having left a LIVE chat (`leftLive`,
+ * T:13066). PR4 shipped them unconditionally on the theory that a native
+ * landing had no handler to gate in — but the window these cover only exists
+ * for a chat left mid-turn, and a cold landing boot therefore spent two extra
+ * `sessions` reads for a transcript write that had already happened. The caller
+ * says so through `coverWrite`, which ClaudeChat's Back path can answer because
+ * it already knows `activeRun`/`sending`/`run` (P4-21).
  */
 export const RECENT_RETRY_MS = [2500, 6000];
 
@@ -165,6 +167,10 @@ export function subscribeRecent(
   file: string | null,
   cb: (rows: SessionRow[] | null) => void,
   env: RecentEnv = browserEnv(),
+  /** T's `leftLive` — see `RECENT_RETRY_MS`. Only a chat left MID-TURN has a
+   *  transcript write to race, so only that landing pays for the two extra
+   *  looks. */
+  coverWrite = false,
 ): () => void {
   const run = env.run || runAgent;
   let stopped = false;
@@ -267,11 +273,13 @@ export function subscribeRecent(
    *  `RECENT_RETRY_MS`. Both measured from the subscription, so a slow first
    *  read cannot push the schedule out behind itself. */
   const after = env.after ?? browserAfter;
-  const retries = RECENT_RETRY_MS.map((wait) =>
-    after(wait, () => {
-      if (!stopped) void load();
-    }),
-  );
+  const retries = coverWrite
+    ? RECENT_RETRY_MS.map((wait) =>
+        after(wait, () => {
+          if (!stopped) void load();
+        }),
+      )
+    : [];
 
   // Every "something moved" signal there is, on one handler — a poke, never a
   // payload, so the answer to all three is the same read. `load`'s seat idiom
