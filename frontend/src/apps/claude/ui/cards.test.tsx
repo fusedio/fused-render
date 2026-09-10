@@ -696,8 +696,11 @@ test("the open Other row keeps its caption and field in a single .qbody column",
   expect(String((open.props as Props).className)).toContain("typing");
   // Exactly ONE flex item in the row, and it owns everything.
   const children = (open.children ?? []).filter((k) => typeof k !== "string") as Json[];
-  expect(children).toHaveLength(1);
-  const body = children[0]!;
+  // The badge (the row's number / pencil, owner E2E R1 2026-09-10) then ONE
+  // body column — never the field as a third sibling.
+  expect(children).toHaveLength(2);
+  expect(String((children[0]!.props as Props).className)).toBe("qnum");
+  const body = children[1]!;
   expect(String((body.props as Props).className)).toBe("qbody");
   // The caption is inside it, beside the label and the field — not a sibling of
   // the textarea in the flex row.
