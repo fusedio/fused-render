@@ -141,6 +141,41 @@ describe("the Search button opens the box empty", () => {
     expect(typeof input(renderer).props.placeholder).toBe("string");
     expect(input(renderer).props.placeholder.length).toBeGreaterThan(0);
   });
+
+  // FINDING 2 (code review, 2026-09-10): the Search button seeds "" via
+  // `requestSearchFocus("")`, and the click handler that fires for every
+  // seed does `setQuery(seed)` then arms `seedSelectRef` for the effect
+  // keyed on `[query]` to consume. The button's OWN seed equals the query
+  // already sitting in a resting box (both ""), so `setQuery("")` is a
+  // same-value bail-out — React skips the render, the `[query]` effect
+  // never runs, and the ref stays armed to fire on the NEXT query change
+  // instead: the first character typed after the click. That stray
+  // `.select()` lands on a single-character box (a no-op there, so this
+  // suite's mock can't see it directly) but leaves the ref un-consumed for
+  // yet another keystroke if the timing is different in a real browser —
+  // the fix threads a request token that changes on every seed regardless
+  // of whether the text did, so the effect always fires exactly once per
+  // request and never bleeds into unrelated typing.
+  test("typing right after a click builds the query normally, with no stray reselect", () => {
+    const renderer = mount("/home/user/Documents");
+    const onFocusAtClickTime = input(renderer).props.onFocus as () => void;
+    const button = searchButton(renderer);
+    act(() => {
+      button.props.onClick();
+      onFocusAtClickTime();
+    });
+    expect(input(renderer).props.value).toBe("");
+    const selectCountAfterClick = selectCount;
+    for (const value of ["r", "re", "rep", "repo", "repor", "report"]) {
+      act(() => {
+        input(renderer).props.onChange({ target: { value } });
+      });
+      expect(input(renderer).props.value).toBe(value);
+    }
+    // Typing never re-arms the seed-select effect: no further `.select()`
+    // calls beyond whatever the click itself produced.
+    expect(selectCount).toBe(selectCountAfterClick);
+  });
 });
 
 describe("Ctrl/Cmd+L and click-to-edit still seed the current path, selected", () => {

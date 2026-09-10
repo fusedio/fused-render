@@ -276,11 +276,25 @@ export function SearchField({
   // (the field was already focused, so no event fires at all) can't leave a
   // stale flag around to swallow the NEXT, unrelated plain focus.
   const focusFromRequestRef = useRef(false);
+  // Bumped on every seed request, never read for its value — only so the
+  // effect below has a dependency that changes EVERY time, unlike `query`.
+  // `query` doesn't change when the seed equals what is already in the box
+  // (the Search button always seeds ""; a search field already showing ""
+  // is the common case), and `setQuery` is then a same-value bail-out: no
+  // re-render, so an effect keyed on `[query]` never runs, and
+  // `seedSelectRef` stays armed to fire on the NEXT, unrelated query edit
+  // instead (FINDING 2, code review, 2026-09-10 — click Search, then type
+  // "report": the "r" lands, this fires and selects it, "e" replaces the
+  // selection instead of extending it, box ends up "eport"). A token that
+  // changes unconditionally on every request sidesteps the bail-out
+  // entirely rather than trying to special-case the seed-equals-query path.
+  const [seedRequestToken, setSeedRequestToken] = useState(0);
   useEffect(() => {
     if (!active) return;
     return subscribeSearchFocusRequest((seed) => {
       setQuery(seed);
       seedSelectRef.current = true;
+      setSeedRequestToken((t) => t + 1);
       setPinnedOpen(true);
       focusFromRequestRef.current = true;
       searchInputRef.current?.focus();
@@ -294,7 +308,7 @@ export function SearchField({
     if (!seedSelectRef.current) return;
     seedSelectRef.current = false;
     searchInputRef.current?.select();
-  }, [query]);
+  }, [seedRequestToken]);
 
   // `pinnedOpen` is the user asking for the full-strip box (clicked the
   // magnifier, or focused it — it stays until it blurs empty, or until an
