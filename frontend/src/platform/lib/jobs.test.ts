@@ -47,6 +47,7 @@ function job(over: Partial<Job> = {}): Job {
     finished_at: null,
     stalled: false,
     waiting_for: "",
+    quiet: false,
     ...over,
   };
 }
@@ -443,10 +444,13 @@ test("an index scan's job is not caught by the schedule-job filter", () => {
 // stays a live Activity row while it runs, but never becomes a stored
 // Notification once it succeeds — a live watcher (`_wait_ready`'s row-merge,
 // `fused.ai.models.load(wait=True)`) only ever reads it while it is RUNNING,
-// so nothing downstream needs the terminal row to survive. A failed or
-// cancelled load is not this quiet: only a successful one is.
+// so nothing downstream needs the terminal row to survive. `job.quiet` (set
+// server-side, only by the load's own success report) is what says so — NOT
+// the id prefix plus `state === "done"` alone, because `job_id_for(model)`
+// is the SAME id a weights-only download or an unload of that model reports
+// through, and both of those are real news (see the two tests below).
 test("a model load's row disappears from Notifications once it succeeds", () => {
-  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done" })];
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", quiet: true })];
   expect(jobRows(jobs)).toEqual([]);
 });
 
@@ -464,6 +468,22 @@ test("a failed or cancelled model load's row still shows", () => {
     "sys:ai-model:org/fake-model",
     "sys:ai-model:org/other-model",
   ]);
+});
+
+// The bug `job.quiet` replaces: `isQuietModelLoad` used to match the id
+// prefix plus `state === "done"` alone, which also matched a finished
+// weights-only DOWNLOAD and an unload/eviction — both report through the
+// exact same `sys:ai-model:` id family (`job_id_for(model)`), and neither is
+// a resident load succeeding. `quiet` defaults false, so a row that never
+// had it set by the server always shows, regardless of id or state.
+test("a finished DOWNLOAD sharing the model-load id family still shows — only a resident load is quiet", () => {
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", kind: "download" })];
+  expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
+});
+
+test("an unload's finished row still shows, even sharing the model-load id family", () => {
+  const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "done", detail: "Unloaded" })];
+  expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
 });
 
 // ---- the chip's one word and one line (D673, statusbar redesign) ------------

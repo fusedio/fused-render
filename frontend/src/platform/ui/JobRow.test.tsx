@@ -47,6 +47,7 @@ const BASE: Job = {
   finished_at: null,
   stalled: false,
   waiting_for: "",
+  quiet: false,
 };
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {

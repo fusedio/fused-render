@@ -78,6 +78,7 @@ const BASE: Job = {
   finished_at: 0,
   stalled: false,
   waiting_for: "",
+  quiet: false,
 };
 
 

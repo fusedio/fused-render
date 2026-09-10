@@ -46,6 +46,7 @@ function job(extra: Partial<Job> = {}): Job {
     finished_at: null,
     stalled: false,
     waiting_for: "",
+    quiet: false,
     ...extra,
   };
 }

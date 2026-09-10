@@ -81,6 +81,12 @@ export interface Job {
   // model load (`fused_render/ai/supervisor.py` `_wait_ready`'s merge). See
   // `mergedRows` below for what the manager does with it.
   waiting_for: string;
+  // A terminal row with nothing to act on — set server-side, true only on a
+  // resident model load's own success report (`ai/supervisor.py`
+  // `_bring_up`, via `job_id_for`). See `isQuietModelLoad` below for why a
+  // finished DOWNLOAD or an unload/eviction, though they report through the
+  // same `sys:ai-model:` id family, are never this quiet.
+  quiet: boolean;
 }
 
 export interface JobsSnapshot {
@@ -211,7 +217,7 @@ export function isScheduleJob(job: Job): boolean {
   return job.id.startsWith(SCHEDULE_JOB_PREFIX);
 }
 
-// A model load's own row, by id (fused_render/ai/supervisor.py `_ai_model_job_id`).
+// A model load's own row, by id (fused_render/ai/supervisor.py `job_id_for`).
 export const AI_MODEL_JOB_PREFIX = "sys:ai-model:";
 
 /** A model load's row once it has succeeded — never drawn as a Notification.
@@ -221,10 +227,16 @@ export const AI_MODEL_JOB_PREFIX = "sys:ai-model:";
  *  filtered here, in the UI layer, rather than removed from the store the way
  *  a page destination's job is: the store keeps it (a "Model loaded" state a
  *  live watcher can still observe going `done`), only Notifications drops it.
- *  A FAILED or CANCELLED load still surfaces — only a successful, silent load
- *  is this quiet. */
+ *
+ *  Read straight off `job.quiet` rather than matching the id prefix plus
+ *  `state === "done"`: `job_id_for(model)` is shared by a resident load AND a
+ *  weights-only DOWNLOAD of the same model, and by that model's own unload —
+ *  all three land on `state === "done"`, but only the load is nothing to act
+ *  on. `job.quiet` is set server-side, only by the load's own success report,
+ *  so a finished download or an unload of the very same model still surfaces
+ *  here, and so does a FAILED or CANCELLED load. */
 export function isQuietModelLoad(job: Job): boolean {
-  return job.id.startsWith(AI_MODEL_JOB_PREFIX) && job.state === "done";
+  return job.quiet;
 }
 
 /** Which jobs get a row of their own in Activity: every job the registry
