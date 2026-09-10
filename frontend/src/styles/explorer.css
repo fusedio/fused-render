@@ -1726,6 +1726,38 @@ table.listing-table tr.skel-row:hover {
   display: none;
 }
 
+/* The crumb-slot host's own star sits at the box's true right edge
+   (`.bookmark-star-btn` below, `right: 8px` in a 24px hit box) — the plain
+   `right: 10px` above only clears the box's own border, not that button, so
+   PathCrumbs.tsx's tail-pinned scrollLeft (the comment above explains why it
+   pins to the END, not this rule packing the content) drove the current
+   folder's own name straight under the star on any path deep enough to fill
+   the strip.
+
+   `--pin-right` (above, `.crumb-search-slot .listing-search-box`) is
+   already exactly this reservation — it exists so the count/spinner pin
+   sits clear of the star, and the star's position does not change between
+   that case and this one, so the same value clears it here too. Not a new
+   custom property: introducing a second number for the same distance is the
+   drift `--chip-inset` and `--completion-row-pad-y` (above) both exist to
+   avoid.
+
+   Scoped to the crumb-slot host on purpose: the inline/pane copies of this
+   box (Breadcrumb.tsx's own star, not this one) have no star inside
+   `.listing-search-box` at all, and `--pin-right` is never set to 40px
+   outside this host — reserving it there would open dead space after a
+   short path for no button that exists to fill it.
+
+   The count/spinner pin itself cannot collide with the crumbs to begin
+   with: both only render while `query !== ""` (Listing.tsx `hasPin`,
+   `useListingSearch.ts`'s `runsSearch`), and the crumbs only render while
+   `query === "" && !pinnedOpen` (SearchField.tsx) — mutually exclusive
+   states, confirmed by reading `searchState`'s `!runsSearch` branch, not
+   assumed. Only the star needed a rule here. */
+#breadcrumb .crumb-search-slot .listing-search-box .listing-search-crumbs {
+  right: var(--pin-right);
+}
+
 /* Scoped to the anchor tag, not `.path-crumb` generally: the LAST segment
    (the current folder, path-crumbs.tsx's `<span class="path-crumb last">`)
    has no navigate handler — it's a no-op to click, you're already there.

@@ -753,3 +753,88 @@ was never a registry entry to restore, since this fix stops writing one.
 - Grepped `tests/` (the Python suite) for the comment text being rewritten
   and for `explorer.css` generally - no literal assertions on this file's
   source lines exist there, so nothing else needed updating.
+
+## The star overlapping the last crumb (2026-09-10, running-screen review, PR #1092)
+
+**The defect**: at rest (field unfocused, crumbs showing), the bookmark star
+overlapped the last crumb's text - screenshot showed `~ / Downloads /
+Archive` with the star's tinted hover pill covering "ve". Diagnosis handed
+in with the task, verified rather than re-derived: `.listing-search-crumbs`
+reserved only `right: 10px` (enough to clear the box's own border), while
+`#breadcrumb .crumb-search-slot .listing-search-box .bookmark-star-btn`
+sits at `right: 8px` in a 24px hit box. A short path never shows this
+because the crumbs are left-aligned; `PathCrumbs.tsx` deliberately pins the
+strip's `scrollLeft` to its own END (unchanged, per the task's own
+instruction - that comment at `explorer.css:1670`-ish is load-bearing), so a
+long path's tail runs straight into the star's zone instead.
+
+**Fix**: `--pin-right` (already 40px on `.crumb-search-slot
+.listing-search-box`, set for exactly this same star clearance so the
+count/spinner pin doesn't collide with the star either) is the existing
+vocabulary for this distance - not a new custom property, per the file's
+own `--chip-inset`/`--completion-row-pad-y` precedent against duplicating a
+number across rules. Added one override, scoped to the host that actually
+has a star:
+
+```css
+#breadcrumb .crumb-search-slot .listing-search-box .listing-search-crumbs {
+  right: var(--pin-right);
+}
+```
+
+Specificity (1 id + 4 classes) beats the base `.listing-search-crumbs {
+right: 10px; }` rule regardless of source order, and `--pin-right` inherits
+from the ancestor `.listing-search-box` element down to the `.listing-
+search-crumbs` child, so no new cascade path was needed. The base rule and
+the inline/pane host (no star, `--pin-right` never set to 40px there) are
+untouched - confirmed the override's ancestry requirement
+(`.crumb-search-slot .listing-search-box`) is exactly the scope the star
+selector itself uses, so the two rules describe the same host by
+construction, not by coincidence.
+
+**The count/spinner pin - checked, not reachable alongside the crumbs**:
+the task asked to verify whether a committed search's count chip
+("31 matches") could also collide with the crumbs. Traced both render
+conditions instead of assuming: the crumbs render only while `query === ""
+&& !pinnedOpen` (`SearchField.tsx`); the count/spinner pin (`hasPin` in
+`Listing.tsx`) requires `searchCount !== null` or `searching && spinner`,
+and `useListingSearch.ts`'s own `searchState` collapses to `IDLE_SEARCH`
+whenever `!runsSearch` (`runsSearch = searching && !isPathQuery`, and
+`searching` itself requires a non-empty query) - so an empty query can never
+produce a non-null count or an active spinner. The two states are disjoint
+by construction. No rule added for the count chip; this is stated rather
+than assumed, per the task's own instruction not to add a speculative rule.
+
+**Tests**: new `frontend/src/apps/explorer/listing/search-crumbs-star-
+clearance.test.ts`, same no-DOM CSS-text-parsing pattern
+`search-mode-chip.test.ts` and `search-count-pin-degrade.test.ts` already
+use (`rulesFor()` matches on the exact trimmed selector string, comments
+stripped first). Asserts: the override rule exists and reads `--pin-right`
+rather than a literal number; the base, unscoped `.listing-search-crumbs`
+rule is untouched (still `right: 10px`); the override's ancestry matches
+the star's own selector; the count/spinner-pin non-collision claim above is
+grounded in the actual `query === "" && !pinnedOpen` condition read from
+`SearchField.tsx`, not asserted as given.
+
+Ran alongside the existing `search-mode-chip`, `search-hint-width`,
+`search-examples-width`, `search-count-pin-degrade`, and
+`explorer-css-comment-syntax` suites (the last one specifically because
+this is another CSS edit, and a `*/` inside a comment already broke the
+build once this session) - 35 pass, 0 fail. `bun run build` and `bun run
+typecheck` both clean. Grepped `tests/` for `listing-search-crumbs`,
+`pin-right`, `chip-inset`, `bookmark-star-btn`, `crumb-search-slot` - no
+hits, nothing else to update.
+
+**Cannot be verified headlessly** - a human needs a running screen for:
+- whether the path's tail now clears the star with air that reads as
+  deliberate (some visible gap) rather than merely "not touching" -
+  `--pin-right`'s 40px was tuned for the count chip's own text, not
+  measured against the star glyph's actual rendered gap from the crumbs'
+  monospace text, though it is by construction at least as much clearance
+  as the star needs (the star's own box ends at `8px + 24px = 32px` from
+  the edge; the crumbs now stop 8px further in than that);
+- whether a long path still visibly ends at the current folder (the
+  tail-pin behavior itself is unchanged, but worth a glance alongside the
+  new stop point);
+- both themes and the hover state of the star sitting that much closer to
+  the crumbs text now that they no longer overlap.
