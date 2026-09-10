@@ -2319,9 +2319,8 @@ table.listing-table tr.skel-row:hover {
 }
 
 /* SPEC-omnibox-search-affordance.md scope item 4: a non-interactive line
-   above the real rows — the not-found warning for a path-shaped query that
-   does not resolve, or the guidance sentence the empty/focused examples
-   panel now carries alongside its three examples. Reuses `.listing-
+   above the real rows: the not-found warning for a path-shaped query that
+   does not resolve. Reuses `.listing-
    completion-row`'s own padding rhythm rather than a second number, but
    never wears `.highlight` (nothing sets it) and binds no mousedown or
    mouseenter of its own — it is text, not a row the arrow keys count. */
@@ -2356,14 +2355,46 @@ table.listing-table tr.skel-row:hover {
   color: inherit;
 }
 
-/* ITEM 8 (running-screen review, 2026-09-10) DELETED the three derived
-   example rows' own CSS (`.listing-completion-row.listing-completion-
-   example` and its `.listing-completion-name`/`.listing-completion-hint`/
-   `:hover` pairings) — the focused-and-pristine panel
-   (`.listing-completion.listing-completion-examples`, SearchField.tsx) now
-   renders a single paragraph of prose in the plain `.listing-completion-
-   row.listing-completion-notice` class instead, which needed no CSS of its
-   own to add. */
+/* The focused-and-pristine teaching panel (`.listing-completion-examples`,
+   SearchField.tsx) is a syntax key: a monospace token and its gloss per
+   row, so the three rules are scanned rather than read. The panel sizes to
+   its own content (`width: max-content`, still under the shared 460px cap)
+   because a three-token key against a field-wide card strands the glosses
+   far from the tokens they belong to. `dt` widths align through the grid's
+   own first column, so no token column width is written down here.
+
+   Left padding repeats `.listing-completion-row`'s
+   `calc(var(--chip-inset) - var(--completion-panel-pad))` for the same
+   reason that rule does: the tokens land under the query text, and the
+   panel's own padding is given back so the offset is measured from the
+   FIELD's edge. */
+.listing-completion-examples {
+  width: max-content;
+}
+
+.listing-completion-legend {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  column-gap: 10px;
+  row-gap: 3px;
+  margin: 0;
+  padding: var(--completion-row-pad-y) 11px var(--completion-row-pad-y)
+    calc(var(--chip-inset) - var(--completion-panel-pad));
+  font-size: 12.5px;
+}
+
+.listing-completion-legend dt {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.listing-completion-legend dd {
+  margin: 0;
+  color: var(--fg-muted);
+}
 
 /* Matched-substring highlight in search results (explorer). */
 .search-mark {

@@ -665,36 +665,21 @@ export function SearchField({
           }}
         />
         {showExamples && (
-          // ITEM 8 (running-screen review, 2026-09-10): the three derived
-          // example rows are gone — the user, having seen them on screen,
-          // asked for an explanation only, not a set of pressable rows.
-          // Reuses `.listing-completion-row.listing-completion-notice`
-          // verbatim (the existing "non-interactive line of text" class,
-          // already proven on wrapped text — this row used to render
-          // `HINT_LONG`/`HINT_SHORT` in exactly this class) rather than a
-          // new prose-specific class, since it already does this job.
-          //
-          // The placeholder's own guidance ("Search, or type a path or
-          // pattern...") used to be repeated verbatim as this panel's own
-          // first line — one surface visible only once the box is emptied,
-          // the other only once it's pristine-and-focused, so a reader
-          // could see either but never both at once, yet the words were
-          // typed twice. This panel now carries the REAL explanation (the
-          // three-point inversion the old example rows were teaching: bare
-          // text searches deep, a `*` pattern stays shallow, a leading
-          // `~/`/`/` starts elsewhere) and the placeholder stays the short
-          // prompt it already was (`HINT_LONG`/`HINT_SHORT`, unchanged,
-          // still read by the input's own `placeholder` above) — one fact,
-          // one place. `buildSearchExamples`, the `SearchExample`/
-          // `ExampleEntry` types, the `entries` prop this panel used to
-          // need, and the example-row CSS are all deleted, not merely
-          // unreferenced — see search-examples.ts's own removal note.
+          // A three-line syntax key, not a paragraph: the panel is read at a
+          // glance while the box is still empty, so each rule is one token
+          // and one short gloss. The placeholder above carries the prompt
+          // ("Search, or type a path or pattern..."); this carries the
+          // grammar — bare text searches deep, a `*` pattern stays shallow,
+          // a leading `~/` or `/` starts elsewhere.
           <div className="listing-completion listing-completion-examples" role="note">
-            <div className="listing-completion-row listing-completion-notice">
-              Type any text to match names in this folder and everything
-              below it. A pattern with * matches this folder only, like
-              *.zip. Start with ~/ or / to search from somewhere else.
-            </div>
+            <dl className="listing-completion-legend">
+              <dt>text</dt>
+              <dd>names here and below</dd>
+              <dt>*.zip</dt>
+              <dd>this folder only</dd>
+              <dt>~/ or /</dt>
+              <dd>start somewhere else</dd>
+            </dl>
           </div>
         )}
         {showCompletion && (
