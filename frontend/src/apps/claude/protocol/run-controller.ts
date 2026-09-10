@@ -903,6 +903,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     let prevSegLen = 0;
     let prevTextLen = 0;
     let prevBreaks = 0;
+    /** The previous non-blank poll's whole window text, for the continuity
+     *  test: a window only ever GROWS, so a payload that does not start with
+     *  the last one is a window that moved. */
+    let prevFullText = "";
     let seenFollowupSeq = followupSeq;
     /**
      * HOW MANY SEAMS ARE STILL OWED — a COUNT, not a flag (Bugbot PR #1061).
@@ -1046,7 +1050,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
           const shrank = prevSegLen
             ? segs.length < prevSegLen
             : !poll.done && fullText.length < prevTextLen;
-          if (lost > 0 || shrank) {
+          // THE CONTINUITY READ (owner E2E R1, F6): two short single-segment
+          // replies leave the seam count AND the segment count unchanged
+          // across a step the loop never saw the seam for — reply 1 `[A]`,
+          // then reply 2 `[B]`, one segment each — so neither test above
+          // fires, slot 0 is re-used, and reply 1 is overwritten with reply 2
+          // (which then sits ABOVE its own user bubble). A window only ever
+          // grows in place, so a payload whose text does not continue the
+          // last one is the window having moved, whatever its size. Same
+          // trick `baseText` already relies on below. A false positive costs
+          // an extra bubble; a miss costs a reply.
+          const moved =
+            prevFullText.length > 0 && fullText.length > 0 && !fullText.startsWith(prevFullText);
+          if (lost > 0 || shrank || moved) {
             // A LOST seam count is how many steps happened, so it settles that
             // many of the outstanding ones; a bare shrink is one step, and the
             // rest stay owed. Never below zero: a shrink for an unrelated
@@ -1063,6 +1079,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           prevSegLen = segs.length;
           prevTextLen = fullText.length;
           prevBreaks = reported.length;
+          prevFullText = fullText;
         }
 
         // THE SPANS THIS LOOP DID NOT SEND, taken as the base — see

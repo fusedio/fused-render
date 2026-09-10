@@ -769,6 +769,47 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(reply.map((t) => !!t.streaming)).toEqual([false, false, false]);
   });
 
+  // Owner E2E R1, F6 (2026-09-10). "I queued a message, it streamed the response
+  // for 1, then the response for 2, and the response for 1 vanished" — with
+  // reply 2 sitting ABOVE its own user bubble. Both replies were ONE short text
+  // segment, the echo and the `result` landed inside one poll gap, and
+  // agent.py reported no seam: seam count 0→0, segment count 1→1, so neither
+  // the lost-seam test nor the shrink test fired and reply 2 was written into
+  // reply 1's slot. The text is the remaining signal: a window only grows, so
+  // a payload that does not start with the last one is a window that moved.
+  test("a same-size unseamed step still opens its own bubble (continuity)", async () => {
+    let controller!: ChatController;
+    const A = text("Markdown was made by John Gruber.");
+    const B = text("Done again.");
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A], text: A.text });
+        if (n === 1) {
+          await controller.sendFollowUp("do it again");
+          return poll({ segments: [], text: "" });
+        }
+        // Echo and A's `result` both landed in the gap: B alone, no seam, same
+        // segment count, not shorter.
+        if (n === 2) return poll({ segments: [B], text: B.text });
+        return poll({ done: true, segments: [B], text: B.text });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("who is markdown made by");
+
+    expect(controller.getState().turns.map((t) => t.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    const reply = assistants(controller);
+    expect(reply.map((t) => (t.segments || []).map(bodyOf))).toEqual([[A.text], [B.text]]);
+    expect(reply.map((t) => !!t.streaming)).toEqual([false, false]);
+  });
+
   // ── owner feedback R4-3 ──────────────────────────────────────────────────
   //
   // "Sometimes when I reply, it re-streams the previous message's response, and
