@@ -2629,6 +2629,113 @@ describe("ChatState.permissionMode: the mode the RUN is in (T:13884-13886)", () 
   });
 });
 
+// ---- which param writes buy a history entry (P3-15, T:14576-14580) --------
+
+describe("the two \"replace\" writes", () => {
+  /** The memory store keeps the VALUES; this keeps the OPTIONS, which is the
+   *  whole subject here — a write's history mode is invisible in the snapshot
+   *  and is exactly what regressed (a default of "replace" for everything, then
+   *  a "push" on the one write that must not have one). */
+  function recording(initial: Record<string, string> = {}) {
+    const base = createMemoryParamsStore(initial);
+    const writes: { patch: Record<string, unknown>; history?: string }[] = [];
+    const store = {
+      ...base,
+      set(patch: Parameters<typeof base.set>[0], opts?: Parameters<typeof base.set>[1]) {
+        writes.push({ patch: patch as Record<string, unknown>, history: opts?.history });
+        base.set(patch, opts);
+      },
+    };
+    const historyOf = (key: string): (string | undefined)[] =>
+      writes.filter((w) => key in w.patch).map((w) => w.history);
+    return { store, writes, historyOf };
+  }
+
+  test("approving a plan writes the landing mode with \"replace\"", async () => {
+    // T:14580's own reason: the write is a CONSEQUENCE of approving a plan, not
+    // a place anyone navigated to, and it lands behind an await — so the
+    // first-change push would mint an entry whose whole content is the mode the
+    // session has already left, and Back would put "plan" back in the picker
+    // for a session that is no longer planning (re-creating the very loop the
+    // approval write exists to break).
+    const rec = recording({ permission: "plan" });
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        decide: () => ({
+          decided: "pl1",
+          decision: "allow" as const,
+          scope: "once" as const,
+          mode: "" as const,
+          answers: {},
+        }),
+        poll: async (_f, n) => {
+          if (n === 0) return poll({ permissions: [permRow({ id: "pl1", tool: "ExitPlanMode" })] });
+          await controller.decidePlan("pl1", "allow");
+          return poll({ done: true, permissions: [permRow({ id: "pl1", decision: "allow" })] });
+        },
+      },
+      rec.store,
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(rec.historyOf("permission")).toEqual(["replace"]);
+    expect(made.params.get("permission")).toBe("prompt");
+  });
+
+  test("a card's \"let Claude decide from here\" is the same write", async () => {
+    // The twin site (T:13988-13992): the session's mode moved because a
+    // decision landed, so the picker follows a consequence too. The picker's own
+    // dropdown still PUSHES — choosing a mode by hand is a step — which is why
+    // this is per-site and not the store's default.
+    const rec = recording({ permission: "prompt" });
+    let controller!: ChatController;
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        decide: () => ({
+          decided: "c1",
+          decision: "allow" as const,
+          scope: "once" as const,
+          mode: "acceptEdits" as const,
+          answers: {},
+        }),
+        poll: async (_f, n) => {
+          if (n === 0) return poll({ permissions: [permRow({ id: "c1" })] });
+          await controller.decidePermission("c1", "allow", "once", "acceptEdits");
+          return poll({ done: true, permissions: [permRow({ id: "c1", decision: "allow" })] });
+        },
+      },
+      rec.store,
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(rec.historyOf("permission")).toEqual(["replace"]);
+    expect(made.params.get("permission")).toBe("acceptEdits");
+  });
+
+  test("and NOTHING else is \"replace\" but `run` (R:1233-1254)", async () => {
+    // The default is runtime.js's own: a bare `set`, so the first change on a
+    // pristine entry pushes. Making "replace" the default here stopped Back
+    // returning to the landing from a chat the reader had just opened.
+    const rec = recording();
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        poll: () => poll({ done: true, session_id: "s99" }),
+      },
+      rec.store,
+    );
+    await made.controller.sendMessage("go");
+    // `run` is in-flight bookkeeping, both ways (T:13036/T:16333).
+    expect(rec.historyOf("run").length).toBeGreaterThan(0);
+    expect(new Set(rec.historyOf("run"))).toEqual(new Set(["replace"]));
+    // The session id is a place: it pushes.
+    expect(rec.historyOf("session_id")).toEqual(["push"]);
+  });
+});
+
 // ---- failures in the log ---------------------------------------------------
 
 describe("addError: the slot AND the row (T:13698)", () => {
