@@ -1966,6 +1966,128 @@ table.listing-table tr.skel-row:hover {
   padding-right: 270px;
 }
 
+/* THE DEFECT (running-screen review, 2026-09-10): the has-pin/wide-pin
+   matrix above reserves a FIXED amount of the input's right edge no matter
+   how wide the box actually is — at a ~600px box with a wide pin ("31
+   matches · not refreshed"), that fixed reservation left a committed query
+   like `~/*/*.zip` clipped to about four visible characters. The rule: the
+   query text — what the user actually typed, and may still want to edit —
+   always outranks the pin, which is only ever supplementary. When there
+   isn't room for both, the pin gives way, one rung at a time, never the
+   query.
+
+   Both breakpoints below key off `.listing-search-box`'s OWN inline-size
+   container (`container-type: inline-size`, declared on it above) — the
+   exact axis the shortcut hint's own `@container (max-width: 360px)` rule
+   already uses a few rules down — rather than a second, independent width
+   signal. `:has(.listing-search-count)` scopes every override to the
+   moment the pin is actually a MATCH-COUNT chip (SearchField.tsx only
+   renders that span when `searchCount !== null`), so the streaming
+   spinner's own, much smaller `.has-pin` reservation (no count yet) is
+   untouched — this defect and its fix are both about the count/caveat/
+   latency chip specifically, not the spinner.
+
+   Rung 1 -> 2, "31 matches · not refreshed" -> "31 matches": the detail —
+   the timing figure or the freshness caveat — is the least actionable part
+   of the chip (a caveat you cannot act on beats one you cannot even read),
+   so it is what goes first. 480px is a judgment call, not a measured
+   number — a human needs to confirm it on a running screen (see
+   DECISIONS-omnibox-search-affordance.md) — chosen as comfortably above
+   the wide pin's own 210/240px (plain) / 126/156px (crumb-slot)
+   reservations, so there is still genuine room left for the query above
+   this width and the wide reservation stops paying for itself below it.
+
+   Rung 2 -> 3, "31 matches" -> nothing: reuses the SAME 360px this file
+   already treats as "narrow" for this exact box (the shortcut hint's own
+   breakpoint below) rather than inventing a second number — below it, the
+   plain match-count reservation is itself what is crowding the query, so
+   it goes too. The chip's own DOM node is not removed — `.listing-search-
+   count` keeps a small, non-zero hoverable footprint — because the
+   freshness caveat must never be lost silently: its full, untruncated
+   sentence still lives in that node's own `title`/`aria-label` (set once,
+   unconditionally, in SearchField.tsx), so it stays reachable as a tooltip
+   even with nothing left to read on screen. */
+@container (max-width: 480px) {
+  .listing-search-count-detail {
+    display: none;
+  }
+  .listing-search
+    .listing-search-box.has-pin.wide-pin:has(.listing-search-count)
+    .listing-search-input {
+    padding-right: 116px;
+  }
+  .listing-search
+    .listing-search-box.has-pin.wide-pin.has-clear:has(.listing-search-count)
+    .listing-search-input {
+    padding-right: 146px;
+  }
+  .crumb-search-slot
+    > .listing-search
+    .listing-search-box.has-pin.wide-pin:has(.listing-search-count)
+    .listing-search-input {
+    padding-right: 126px;
+  }
+  .crumb-search-slot
+    > .listing-search
+    .listing-search-box.has-pin.wide-pin.has-clear:has(.listing-search-count)
+    .listing-search-input {
+    padding-right: 156px;
+  }
+}
+
+@container (max-width: 360px) {
+  .listing-search-count-base,
+  .listing-search-count-detail {
+    display: none;
+  }
+  .listing-search-count {
+    width: 10px;
+    height: 10px;
+  }
+  /* Falls all the way back to the same reservation the box uses when there
+     is no pin at all (`.listing-search .listing-search-input` / `.has-
+     clear:not(.has-pin)` above) — both the plain and wide-pin classes are
+     matched explicitly here (rather than just `.has-pin`) so this rule's
+     specificity ties the 480px block's above and this one wins on source
+     order at any width where both apply. */
+  .listing-search
+    .listing-search-box.has-pin:has(.listing-search-count)
+    .listing-search-input,
+  .listing-search
+    .listing-search-box.has-pin.wide-pin:has(.listing-search-count)
+    .listing-search-input {
+    padding-right: 10px;
+  }
+  .listing-search
+    .listing-search-box.has-pin.has-clear:has(.listing-search-count)
+    .listing-search-input,
+  .listing-search
+    .listing-search-box.has-pin.wide-pin.has-clear:has(.listing-search-count)
+    .listing-search-input {
+    padding-right: 40px;
+  }
+  .crumb-search-slot
+    > .listing-search
+    .listing-search-box.has-pin:has(.listing-search-count)
+    .listing-search-input,
+  .crumb-search-slot
+    > .listing-search
+    .listing-search-box.has-pin.wide-pin:has(.listing-search-count)
+    .listing-search-input {
+    padding-right: 10px;
+  }
+  .crumb-search-slot
+    > .listing-search
+    .listing-search-box.has-pin.has-clear:has(.listing-search-count)
+    .listing-search-input,
+  .crumb-search-slot
+    > .listing-search
+    .listing-search-box.has-pin.wide-pin.has-clear:has(.listing-search-count)
+    .listing-search-input {
+    padding-right: 40px;
+  }
+}
+
 /* Dims the results briefly while a background render (React's deferred
    value) is catching up to the latest keystroke on a large search. */
 .listing-stale {

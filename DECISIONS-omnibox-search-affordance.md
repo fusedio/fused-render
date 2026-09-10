@@ -502,6 +502,101 @@ exist, not two half-reasons." Item 6's own fix (fall back to the folder's
 honest item count while gated) is now just a consequence of `statusLine`
 never being asked to report a search count in that state at all.
 
+## Item 12 — the pin crowds out the query text (running-screen review, 2026-09-10)
+
+**The defect**: a committed search in a ~600px-wide box rendered the pin
+"31 matches · not refreshed" while the query `~/*/*.zip` clipped to about
+four visible characters (`~/*/`) — confirmed present but invisible by
+reading the input's own `value`. Root cause: `.has-pin`/`.wide-pin`
+(explorer.css) reserve a FIXED `padding-right` on the input regardless of
+the box's actual width, and `searchCount` (Listing.tsx) was one
+un-splittable string — count, caveat and latency baked into a single
+value by `withCaveat` plus a `· <elapsed>` suffix — so there was no way to
+give the query room back except hiding the WHOLE pin at once, which
+nothing did.
+
+**The rule, applied**: the query outranks the pin always. The pin degrades
+one rung at a time as the box narrows, dropping the least actionable part
+first (Listing.tsx's own comment already explained WHY the count alone
+gets "matches" appended while the caveat/latency don't — the same
+ordering: a caveat you cannot read is worse than one you cannot act on).
+
+**What changed**:
+- Listing.tsx no longer folds the caveat/latency into `searchCount` via
+  `withCaveat`/string concatenation. A new `searchCountDetail: string |
+  null` carries just that piece (`caveat.note` or the formatted elapsed
+  time); `searchCount` stays the bare count text ("31 matches", "top 100
+  of 4.9K+"). `searchCountFull` (the title/aria-label sentence) is
+  UNCHANGED — it always carries the complete claim, truncated or not.
+- SearchField.tsx renders the pin as `<span class="listing-search-count"
+  title={searchCountFull} aria-label={searchCountFull}>` (title/aria-label
+  set ONCE, unconditionally, on the outer element — this is what keeps the
+  freshness caveat reachable even once nothing is visible) wrapping two
+  children: `.listing-search-count-base` (the count) and
+  `.listing-search-count-detail` (the caveat/latency, only rendered when
+  `searchCountDetail !== null`).
+- explorer.css gained two `@container` blocks on `.listing-search-box`'s
+  own EXISTING `container-type: inline-size` (the same axis the shortcut
+  hint's `@container (max-width: 360px)` rule already uses — not a second,
+  independent width signal):
+  - **480px** (judgment call, NOT measured — needs a human on a running
+    screen): hides `.listing-search-count-detail` and collapses the
+    `.wide-pin` input-padding reservations (210/240/126/156px) down to
+    the plain `.has-pin` values (116/146/126/156px — the crumb-slot pair
+    already coincide). Chosen as comfortably above the wide reservation
+    plus a usable amount of query room; not verified against an actual
+    rendered box.
+  - **360px** (reused verbatim, not invented): hides BOTH
+    `.listing-search-count-base` and `-detail`, and collapses ALL
+    `.has-pin` reservations back to the same padding the box uses with NO
+    pin at all (10px / 40px-with-clear). `.listing-search-count` itself
+    keeps a small (10×10px) footprint rather than `display: none` — an
+    invisible-but-present hoverable target, so the tooltip (the untouched
+    `title`/`aria-label`, still the FULL sentence) stays reachable exactly
+    as the task required ("do not lose the freshness caveat silently").
+  - Every override selector adds `:has(.listing-search-count)` (a
+    selector already used elsewhere in this file, `#breadcrumb:has(...)`)
+    so it only fires when the element it targets is the MATCH-COUNT chip —
+    the streaming spinner's own, separate, much smaller `.has-pin`
+    reservation (`searching && spinner`, no count yet) is untouched by
+    this fix, on purpose: the reported defect and this rule are both about
+    the count/caveat/latency chip specifically.
+  - The 360px block's selectors deliberately match BOTH `.has-pin` and
+    `.has-pin.wide-pin` explicitly (not just the broader `.has-pin`) so
+    its specificity ties the 480px block's `.has-pin.wide-pin` selector at
+    every width where both blocks' media conditions are true — source
+    order (360's block placed after 480's) is what decides the winner at
+    that tie, and relying on the narrower selector's lower specificity
+    alone would have let the 480px rung's wider reservation silently win
+    back below 360px.
+
+**Not touched**: `FilesHome.tsx` (out of scope, per spec); the tracked
+`DECISIONS.md`; the spinner-only pin case; `searchCountFull`'s own
+composition logic (still folds the caveat/elapsed into one sentence for
+the tooltip — only the VISIBLE chip needed splitting).
+
+**Cannot be verified headlessly** — this entire fix is CSS container
+queries and fixed-padding arithmetic reasoned through, not rendered. A
+human needs a running screen to confirm, at minimum:
+- the 480px threshold is the right point to drop the detail — it was
+  chosen from the padding numbers alone, not observed;
+- the pin visually reads as "giving way" smoothly rather than jumping;
+- the 360px rung's 10×10px hoverable remnant is actually discoverable
+  (and not, say, sitting under the clear button or the star) and its
+  tooltip fires on hover in both the crumb-slot and plain hosts;
+- the specific reported scenario (~600px box, "31 matches · not
+  refreshed", `~/*/*.zip`) now shows the query text at whichever rung a
+  600px box lands on.
+
+Scoped tests: `search-count-pin-degrade.test.ts` (new, 8 tests — CSS/JSX
+text assertions in the same no-DOM pattern `search-examples-width.test.ts`
+and `search-mode-chip.test.ts` already use, since bun's jsdom does not
+evaluate `@container`), plus the existing `search-mode-chip`,
+`search-clear-button`, `index-caveat`, `search-examples-width`,
+`search-hint-width`, `search-action-rows`, `search-dropdown-actions.render`
+(isolated) and `FileSearchField.render` suites re-run clean. `bun run
+typecheck`: clean.
+
 ## Cannot be verified headlessly
 
 See SPEC-omnibox-search-affordance.md's own "Cannot be verified headlessly"

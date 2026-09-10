@@ -126,7 +126,7 @@ import { statusLine } from "@apps/explorer/listing/status-line";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useListingSearch } from "@apps/explorer/listing/useListingSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
-import { searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
+import { searchCaveat } from "@apps/explorer/listing/index-caveat";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
@@ -1603,6 +1603,17 @@ export default function Listing({
 
   let searchCount: string | null = null;
   let searchCountFull: string | undefined;
+  // DEFECT FIX (running-screen review, 2026-09-10): the count/caveat/latency
+  // used to be assembled into ONE string (`withCaveat`, then a `· <elapsed>`
+  // suffix) and rendered as one un-splittable text node — so the only way to
+  // give the query room back at a narrow width was to hide the WHOLE pin,
+  // count included, even though the count is the most useful part of it and
+  // the caveat/latency is the least. Split so SearchField.tsx can render the
+  // count and the detail as separate elements and degrade the detail first
+  // (see explorer.css's container-query rules on `.listing-search-count-*`).
+  // `searchCountFull` (the title/aria-label sentence) is unaffected — it is
+  // never truncated, only the VISIBLE chip is.
+  let searchCountDetail: string | null = null;
   // The chip's reserved width covers a match count; the scan caveat makes it
   // longer, so the input reserves more while one is running.
   let widePin = false;
@@ -1637,7 +1648,7 @@ export default function Listing({
     ? searchCaveat(indexScan, { behind, pending: requestComing, rescanPending, failed: requestFailed })
     : null;
   if (caveat) {
-    searchCount = withCaveat(searchCount, caveat);
+    searchCountDetail = caveat.note;
     searchCountFull = caveat.title;
     widePin = true;
   } else if (searchState.status === "ok" && searchCount !== null) {
@@ -1650,7 +1661,7 @@ export default function Listing({
     // present and current — a stale count paired with a fresh latency
     // figure would describe two different requests.
     const elapsed = formatElapsed(searchState.elapsedMs);
-    searchCount = `${searchCount} · ${elapsed}`;
+    searchCountDetail = elapsed;
     searchCountFull = `${searchCountFull} · ${elapsed}`;
     widePin = true;
   }
@@ -1760,6 +1771,7 @@ export default function Listing({
               spinner={spinner}
               searchCount={searchCount}
               searchCountFull={searchCountFull}
+              searchCountDetail={searchCountDetail}
               hasPin={hasPin}
               widePin={widePin}
             >

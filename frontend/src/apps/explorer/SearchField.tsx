@@ -132,6 +132,20 @@ export interface SearchFieldProps {
   spinner: boolean;
   searchCount: string | null;
   searchCountFull: string | undefined;
+  /**
+   * The least-actionable tail of the pin — the scan caveat ("not
+   * refreshed") or the search latency ("119 ms") — split out from
+   * `searchCount` so it can be dropped on its own at a narrow box width
+   * without taking the match count down with it. `searchCountFull` (the
+   * title/aria-label sentence) always carries the whole thing regardless of
+   * what the visible chip can currently fit — see the pin-degradation
+   * container queries in explorer.css (`.listing-search-count-detail`,
+   * `.listing-search-count-base`). The query TEXT has priority over this
+   * pin (running-screen defect, 2026-09-10): the pin gives way, never the
+   * query, and this split is what lets it give way one rung at a time
+   * instead of all at once.
+   */
+  searchCountDetail: string | null;
   hasPin: boolean;
   widePin: boolean;
   /**
@@ -165,6 +179,7 @@ export function SearchField({
   spinner,
   searchCount,
   searchCountFull,
+  searchCountDetail,
   hasPin,
   widePin,
   children,
@@ -742,12 +757,29 @@ export function SearchField({
           <span className="listing-search-spinner" aria-hidden="true" />
         )}
         {searchCount !== null && (
+          // The query text has priority over this pin (running-screen
+          // defect, 2026-09-10): "31 matches · not refreshed" was clipping
+          // a committed query down to a handful of visible characters
+          // because the pin's fixed reservation never gave ground. It is
+          // split into two elements, not one, so explorer.css's container
+          // queries on THIS box's own inline-size can drop the least
+          // actionable part first — the detail (timing/caveat), then the
+          // count itself — while the reserved input padding shrinks to
+          // match at each rung. `title`/`aria-label` stay on the OUTER span
+          // and always carry the full sentence, so the caveat this can
+          // degrade away visually is still reachable as a tooltip even once
+          // nothing is left on screen — see explorer.css's 360px rule,
+          // which keeps this element a small hoverable target rather than
+          // removing it.
           <span
             className="listing-search-count"
             title={searchCountFull}
             aria-label={searchCountFull}
           >
-            {searchCount}
+            <span className="listing-search-count-base">{searchCount}</span>
+            {searchCountDetail !== null && (
+              <span className="listing-search-count-detail"> · {searchCountDetail}</span>
+            )}
           </span>
         )}
         {hasClear && (

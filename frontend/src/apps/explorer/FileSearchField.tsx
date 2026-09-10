@@ -167,6 +167,7 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
       spinner={false}
       searchCount={null}
       searchCountFull={undefined}
+      searchCountDetail={null}
       hasPin={false}
       widePin={false}
     />,
