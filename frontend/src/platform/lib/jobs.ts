@@ -233,13 +233,14 @@ export function effectiveTier(job: Job): JobTier {
  *  - a TERMINAL job whose `effectiveTier` is "transient" — a model load's
  *    own success, a finished index scan, a finished text generation, none of
  *    which leave anything to act on.
- *  A transient row that is still `running` is otherwise unaffected — "shown
- *  while running, never kept once terminal" is the tier's own documented
- *  meaning (`JobTier` above), and a running index scan or text generation is
- *  exactly what Activity's Cancel control needs to reach. Reading
- *  `effectiveTier` rather than the stored `tier` matters here: a producer
- *  that declared itself transient but ended in `error`/`cancelled` still
- *  gets a row, because the override already turned it into `attention`. */
+ *  A transient row that is still `running` is otherwise unaffected — `tier`
+ *  only ever governs RETENTION of a terminal row (`JobTier` above), so a
+ *  running index scan or text generation still gets a row here regardless of
+ *  its declared tier, exactly what Activity's Cancel control needs to reach.
+ *  Reading `effectiveTier` rather than the stored `tier` matters here: a
+ *  producer that declared itself transient but ended in `error`/`cancelled`
+ *  still gets a row, because the override already turned it into
+ *  `attention`. */
 export function jobRows(jobs: Job[]): Job[] {
   return jobs.filter((j) => {
     if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
@@ -294,6 +295,19 @@ export function popupJobs(jobs: Job[]): Job[] {
   return terminalJobs(mergedRows(jobs)).filter((j) => !j.id.startsWith(SCHEDULE_JOB_PREFIX));
 }
 
+/** One popup tick's candidate key — a terminal EVENT, not a job id.
+ *  `job_id_for(model)` (`fused_render/ai/supervisor.py`) mints one id for a
+ *  resident model's load, its weights-only download and its unload, so the
+ *  same id can go terminal more than once across the popup's lifetime; keying
+ *  "have I popped this?" on the bare id would pop the first of those events
+ *  and then silently swallow every later one landing on the same id while it
+ *  is still in `seen`. `finished_at` changes on every genuine terminal event
+ *  on that id, so the pair is what actually identifies "this particular
+ *  finish", not "this job slot". */
+function popupKey(job: Job): string {
+  return `${job.id}:${job.finished_at ?? ""}`;
+}
+
 /** One popup tick's worth of decision: which job (if any) should pop this
  *  time, and the `seen` set to carry into the next call.
  *
@@ -309,15 +323,22 @@ export function popupJobs(jobs: Job[]): Job[] {
  *  this process never watched happen is not news to it.
  *
  *  LATEST WINS; NO STACKING — "the latest notification always pops up", not
- *  a queue of them. When more than one id is new in the same tick, only the
- *  LAST one in `jobs`' own order pops: `list_jobs` returns oldest-first, so
- *  the tail of a batch of simultaneous arrivals is genuinely the newest.
+ *  a queue of them. When more than one id is new in the same tick, the one
+ *  that pops is whichever has the newest `finished_at`, not whichever
+ *  `list_jobs` happened to return last. `list_jobs` sorts by
+ *  `(started_at, id)` (`fused_render/jobs.py`), so its own tail is only the
+ *  job that STARTED last — a short render that finishes behind an
+ *  already-running model load becomes a fresh candidate in the same tick as
+ *  the load's own completion, and the load, having started second, would win
+ *  the old order-based pick even though the render is what actually just
+ *  finished and is what the user is waiting on.
  *
- *  `seen` is REBUILT from this tick's candidate ids every call, exactly like
- *  `trackSeenIds` above, rather than only ever grown — a job id is minted
- *  once (jobs.py: a timestamp plus a random suffix) and never reused, so a
- *  dismissed/cleared/swept id simply falls out and never needs forgetting on
- *  purpose. */
+ *  `seen` is REBUILT from this tick's candidate keys every call, exactly like
+ *  `trackSeenIds` above, rather than only ever grown — a `popupKey` is a
+ *  one-shot fact about a single terminal event, so once that event's key is
+ *  no longer among the current candidates (dismissed, cleared, swept, or
+ *  superseded by the same id's NEXT terminal event) it simply falls out and
+ *  never needs forgetting on purpose. */
 export function popupTick(
   jobs: Job[],
   seen: ReadonlySet<string>,
@@ -326,8 +347,10 @@ export function popupTick(
   const next = new Set<string>();
   let popped: Job | null = null;
   for (const j of popupJobs(jobs)) {
-    next.add(j.id);
-    if (!isFirstTick && !seen.has(j.id)) popped = j;
+    const key = popupKey(j);
+    next.add(key);
+    if (isFirstTick || seen.has(key)) continue;
+    if (popped === null || (j.finished_at ?? 0) > (popped.finished_at ?? 0)) popped = j;
   }
   return { seen: next, popped };
 }

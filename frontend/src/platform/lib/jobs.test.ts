@@ -611,10 +611,12 @@ test("popupJobs hides the underlying job a running waiter merges over it (merged
 // without popping any of it — the frontend twin of `_seen_running`
 // (fused_render/server/routers/index.py).
 test("popupTick seeds the first tick's already-terminal jobs with no popup", () => {
-  const jobs = [job({ id: "a", state: "done" })];
+  const jobs = [job({ id: "a", state: "done", finished_at: 100 })];
   const { seen, popped } = popupTick(jobs, new Set(), true);
   expect(popped).toBe(null);
-  expect(seen.has("a")).toBe(true);
+  // A second call with the exact same snapshot must still not pop — proof
+  // the seeded key really covers this terminal event, not just its bare id.
+  expect(popupTick(jobs, seen, false).popped).toBe(null);
 });
 
 test("popupTick pops a job that crosses into terminal on a later tick", () => {
@@ -638,11 +640,63 @@ test("popupTick pops only the latest of several jobs turning terminal in the sam
     true,
   );
   const { popped } = popupTick(
-    [job({ id: "a", state: "done" }), job({ id: "b", state: "done" })],
+    [
+      job({ id: "a", state: "done", finished_at: 100 }),
+      job({ id: "b", state: "done", finished_at: 200 }),
+    ],
     running.seen,
     false,
   );
   expect(popped?.id).toBe("b");
+});
+
+// `list_jobs` sorts by `(started_at, id)` (fused_render/jobs.py), so array
+// order is STARTED order, not finished order. "load" is listed first here
+// (it started first) but "render" — listed after it, having started
+// second — is the one that finishes LAST, with the newer `finished_at`. The
+// pick must follow `finished_at`, not the array's tail, which in this case
+// is "load".
+test("popupTick picks the job with the newest finished_at, not the array's tail", () => {
+  const running = popupTick(
+    [job({ id: "render", state: "running" }), job({ id: "load", state: "running" })],
+    new Set(),
+    true,
+  );
+  const { popped } = popupTick(
+    [
+      job({ id: "render", state: "done", finished_at: 200 }),
+      job({ id: "load", state: "done", finished_at: 100 }),
+    ],
+    running.seen,
+    false,
+  );
+  expect(popped?.id).toBe("render");
+});
+
+// `job_id_for(model)` (fused_render/ai/supervisor.py) mints one id shared by
+// a resident model's load, its weights-only download and its unload — so
+// the SAME id can go terminal twice in a card's lifetime (a completed load,
+// later followed by an unload finishing on that identical id). Each of
+// those is its own notification and must pop on its own, so "have I popped
+// this?" cannot be keyed on the bare id alone.
+test("popupTick pops a second terminal event that lands on an id already popped once", () => {
+  const loading = popupTick([job({ id: "m", state: "running" })], new Set(), true);
+  const loaded = popupTick(
+    [job({ id: "m", state: "done", finished_at: 100 })],
+    loading.seen,
+    false,
+  );
+  expect(loaded.popped?.id).toBe("m");
+
+  // The model then unloads — same id, a later `finished_at` — without ever
+  // leaving the candidate set null in between (a resident model's row stays
+  // present, just no longer terminal, while it's loaded).
+  const unloaded = popupTick(
+    [job({ id: "m", state: "done", finished_at: 200 })],
+    loaded.seen,
+    false,
+  );
+  expect(unloaded.popped?.id).toBe("m");
 });
 
 test("aggregate progress: nothing running draws no line, no totals sweep, else the mean", () => {
