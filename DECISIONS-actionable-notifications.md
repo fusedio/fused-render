@@ -968,3 +968,81 @@ combined (614 passed, 1 skipped, pre-existing); `tests/test_index_jobs.py`
 `router.test.ts` combined (227 passed). `bunx tsc --noEmit -p .` clean;
 `node scripts/check-boundaries.mjs` clean (705 files). Did not run the
 full pytest suite — left to the orchestrator, per brief.
+
+## Sixth round — `page` canonicalized at every backend producer
+
+`test-python-windows` failed two of this branch's own tests:
+`test_an_image_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done`
+and its video twin, both asserting `finished["page"] == started["path"]`.
+On Windows the two sides disagreed in spelling only — `page` came back
+backslashed, `path` came back forward-slashed for the same file.
+
+**The canonical spelling, and the evidence for it.** `ai_runtime.py`'s own
+`path`/`previewPath`/`image` reply fields all run through
+`_view_url_codec.canonical_fs_path` before they leave the router, with a
+comment naming the reason: "this goes back to a page that will put it in a
+`/api/fs/raw` URL, and a Windows path that reached it backslashed would not
+match what the shell stored for the same file." `canonical_fs_path` is
+also what a `/view` URL decodes to and what `X-Fused-Page` carries — it is
+string-based (checks for a drive-letter root, not the host OS), so it is a
+no-op on a POSIX path and idempotent on an already-canonical one. That
+makes it the one spelling every fs path crossing this API boundary is
+already held to; `page` was the one field on this branch that reached
+`jobs.upsert` without it.
+
+**Where `page` broke that rule, and the fix at each site** (found by
+grepping `page=` into every `jobs.upsert`/`_report` call across
+`fused_render/`, then checking which built the value with `os.path` or
+`pathlib`):
+
+- `ai/supervisor.py`'s `_start_render` (image and video share it): the
+  terminal report's `page=page or result.get("path") or out_dir or ""`
+  took `result["path"]` straight off the worker's own reply (built with
+  `os.path` on the worker's side of the boundary) and `out_dir` from
+  `os.path.dirname`, neither canonicalized. Both now run through
+  `canonical_fs_path` before they reach `page`.
+- `github_setup.py`'s `_report_publish`: `page=snapshot.get("root")` was
+  `_resolve_repo_root`'s `os.path.realpath`'d root, raw. Wrapped in
+  `canonical_fs_path`.
+- `envinstall.py`'s `_mirror_into_jobs`: `page=project_dir` is caller-
+  supplied and reaches here through more than one path (`ai/supervisor.py`
+  passes `runner.folder`; `/api/env/install` passes a client-asserted
+  string) — normalized at this one production point rather than trusting
+  every caller. Wrapped in `canonical_fs_path`.
+- Checked and cleared: `capture/__init__.py`'s `page=session.page` is a
+  pass-through of the caller's own `X-Fused-Page` (never built with
+  `os.path`), as are `server/ai.py`'s `page=page or "/claude-config"` and
+  every `page=` in `claude_install.py`, `index.py`, `update/mac.py` — all
+  static route strings, no fs path involved.
+
+**Kept the assertion strength, updated what it compares against.** The two
+CI-failing tests, and the two hitherto-Windows-only-broken siblings in the
+same modules (`test_the_reported_publish_job_points_at_the_repo_root` in
+`tests/test_github_setup.py`, `test_the_mirrored_row_points_at_the_app_folder`
+in `tests/test_env_install.py` — both compared a mirrored `page` against a
+raw `os.path`/`pathlib` value that only happened to already be canonical on
+POSIX), now compare against `canonical_fs_path(...)` of that same raw
+value rather than the raw value itself — still a real equality on the same
+file, just expressed in the form both sides are actually held to.
+
+**New coverage, pinned on every platform, not just the Windows job:** four
+new tests feed a Windows-shaped string (`C:\Users\...`) directly through
+each fixed producer and assert the row's `page` comes back forward-slashed
+— `test_an_image_result_path_that_comes_back_windows_shaped_still_lands_canonical`
+and its video twin in `tests/test_ai_runtime.py` (mocks `generate_image`/
+`generate_video` to return the Windows-shaped `path` directly, so the
+render worker's own OS is irrelevant to the test), and
+`test_the_mirrored_row_canonicalizes_a_windows_shaped_project_dir` in
+`tests/test_env_install.py` (calls `_mirror_into_jobs` directly with a
+Windows-shaped `project_dir`, `progress` stubbed to finish on the first
+poll). `github_setup.py`'s fix is exercised by the same
+`test_the_reported_publish_job_points_at_the_repo_root` re-expressed
+above — no separate Windows-shaped test was added there, since
+`_resolve_repo_root` always returns a POSIX path on the CI's own host and
+the existing test already runs the real `_report_publish` path end to end
+through `canonical_fs_path`.
+
+Scoped runs, all green: `tests/test_ai_runtime.py` (553 passed, 1 skipped,
+pre-existing), `tests/test_github_setup.py` + `tests/test_env_install.py`
+combined (256 passed). Did not run the full pytest suite — left to the
+orchestrator, per brief.
