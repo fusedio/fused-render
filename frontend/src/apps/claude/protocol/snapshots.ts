@@ -170,7 +170,7 @@ export function resetSnapshotTargetCacheForTests(): void {
 const timelines = new Map<string, { inv: unknown; timeline: SnapshotsTimeline }>();
 
 /** The one spelling of the key, so the four accessors cannot disagree. */
-const cacheKey = (agentDir: string, file: string) => agentDir + " " + file;
+const cacheKey = (agentDir: string, file: string) => agentDir + "\u0000" + file;
 
 /** The cached timeline for this target, but only if it was read under the same
  *  invalidation value the caller is asking under. */
