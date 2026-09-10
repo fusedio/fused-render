@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { ago, historyToTurns, paneSlashes, rowPane, sessionTitle } from "./history";
 import type { HistoryResponse } from "./types";
 import {
+  APP_STATE_TAG,
   composeOutgoing,
   formatAnnotations,
   MARKER_VIEW,
@@ -17,6 +18,29 @@ describe("historyToTurns", () => {
     const raw = composeOutgoing("fix it", [paneShotBlock([{ kind: "pane", view: "/p.png" }], "app")]);
     const turns = historyToTurns({ turns: [{ role: "user", text: raw, uuid: "u-1" }], transcript: stat });
     expect(turns[0]).toEqual({ role: "user", key: "u-1", text: "fix it", raw, uuid: "u-1" });
+  });
+
+  test("an app-state wire comes back with its RECEIPT (R1-1)", () => {
+    // The receipt is the only door under the bubble (`ui/Turn.tsx`, P3R1-7), and
+    // it is drawn off this flag — which only the LIVE path used to write, so a
+    // reload silently dropped both the "app state attached" line and the way in
+    // to the wire the message actually sent. Read off the block in `raw`, the
+    // same rule the live path follows. The mounted half is in
+    // `ui/receipt-door.test.tsx`.
+    const raw = "what is the app title?\n<" + APP_STATE_TAG + '>{"t":1}</' + APP_STATE_TAG + ">";
+    const turns = historyToTurns({ turns: [{ role: "user", text: raw, uuid: "u-2" }], transcript: stat });
+    expect(turns[0]).toEqual({
+      role: "user",
+      key: "u-2",
+      text: "what is the app title?",
+      raw,
+      appState: true,
+      uuid: "u-2",
+    });
+    // …and never assumed: a plain message owes no receipt, so the line cannot
+    // claim an attachment there is none of.
+    const plain = historyToTurns({ turns: [{ role: "user", text: "hi", uuid: "u-3" }], transcript: stat });
+    expect((plain[0] as { appState?: true }).appState).toBeUndefined();
   });
 
   test("a payload with no uuid still renders, it just cannot be anchored to", () => {

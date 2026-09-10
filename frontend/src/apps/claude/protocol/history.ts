@@ -6,7 +6,10 @@
 //
 //   * a USER turn's display text is `stripBlocks(t.text)`, and the RAW text is
 //     kept beside it: the "what was sent" popover rebuilds its receipt out of
-//     that wire alone (T:18029, T:10932).
+//     that wire alone (T:18029, T:10932). The RECEIPTS a restored turn wears
+//     are read back off that wire for the same reason — `appState` here,
+//     `<pane-shot>`/`<annotations>` in `ui/Receipts.tsx` — so a reload draws
+//     the same door the live send did (R1-1).
 //   * an assistant turn carries `segments` only when it had any; a text-only
 //     turn has no such key at all (agent.py:5041, T:18024).
 //   * `stopped` is written by agent.py `_stopped_last` on the LAST turn only,
@@ -42,6 +45,21 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
         key: t.uuid || "h:" + i,
         text: stripBlocks(t.text),
         raw: t.text,
+        // THE RECEIPT IS THE DOOR AFTER A RELOAD TOO (R1-1). `stripBlocks`
+        // takes the `<live-app-state>` block off the display text, so a
+        // restored app-state turn has `raw !== text` — but nothing here used to
+        // write `appState`, whose only writer was the LIVE path
+        // (`run-controller.ts`). So the turn came back from a reload with no
+        // "app state attached" line at all, and since P3R1-7 removed the hover
+        // control that line replaced, with no door either: the wire the message
+        // actually sent was unreachable from the UI, and the receipt silently
+        // differed live vs restored — the exact divergence PR2's one-builder
+        // rule (`ui/Receipts.tsx`) exists to prevent.
+        //
+        // Read off the block that is IN `raw`, which is the live path's own
+        // rule restated ("set from the block actually composed into `raw`,
+        // never from 'is there a pane'").
+        ...(t.text.includes("<" + APP_STATE_TAG + ">") ? { appState: true as const } : {}),
         ...(t.uuid ? { uuid: t.uuid } : {}),
       };
     }
