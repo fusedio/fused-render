@@ -811,3 +811,160 @@ New test: `test_publish_status_does_not_leak_the_repositorys_filesystem_path`
 (`tests/test_server_github.py`) — starts a publish and reads the status
 back through both endpoints, asserting neither the JSON body nor the raw
 response text contains the repo's absolute path.
+
+## Fifth round
+
+Five items, done in order.
+
+### Item 1 — merge `origin/main`
+
+Merged cleanly (native Claude chat, #1074). The one break: its
+`transcribe.test.ts` builds a `Job` object literal through a local `job()`
+helper with no `tier` field, and `Job.tier` is required. Added
+`tier: "trail"` to that helper's defaults, matching every other field it
+already stubs. `bunx tsc --noEmit` is clean across the whole merged tree —
+no other `Job` literal was missing `tier`.
+
+### Item 2 — opening a notification row always dismisses it
+
+`DownloadManager.tsx`'s `JobRow` open handler dismissed a `done` row only
+when its destination was a shell route (`isJobPageRoute`), leaving an
+fs-path destination — and every `error`/`cancelled` row, unconditionally —
+to linger until an explicit ✕. Both gates are gone: `open()` now calls
+`navigateToJobPage(job.page)` then unconditionally `void dismiss()`.
+`canOpen` (`isTerminal(job) && !!job.page`) is untouched — `JobRow` is
+reused verbatim as `DownloadManagerView`'s in-flight row, and a running job
+must still never open. The long comment above the block no longer explains
+two exemptions; it states the one rule that holds now (going to look is the
+acknowledgement) and keeps the still-true reasoning for gating `canOpen` on
+`isTerminal`.
+
+**What was checked for the re-attachment risk:** searched every in-repo
+caller of a job-watching API — `fused.watchJob` (`fused_render/static/
+runtime.js`) and the Playground's own local `watchJob` client
+(`frontend/src/apps/ai_models/playground/client.ts`, used by `ImageStage.tsx`,
+`VideoStage.tsx`, `TranscribeStage.tsx`). Every one of them calls `watch()`
+in the same async flow that started the job, and `watch()`'s own loop
+exits the instant the row goes non-`running`, handing the caller the
+terminal record directly as its resolved value — before a `JobRow` could
+ever become clickable at all (`canOpen` requires `isTerminal`, which by
+construction is already true by the time `watch()` has returned). None of
+them re-reads a terminal row from the server after the fact; nothing in
+this codebase depends on a terminal fs-path row surviving past the click
+that opens it. No caller here breaks. The scenario the fs-path exemption
+was written to protect — an app page that persists a job id across its own
+remount and reattaches to an already-terminal row via `fused.watchJob` —
+is not exercised by any bundled app or template in this repo (grepped
+`fused.watchJob`/`trackJob` across every `.html` in the tree: no hits
+outside `runtime.js`'s own definition and doc comments); it remains a real
+risk for a user's own custom app that adopts that pattern, but there is no
+in-repo caller to point at breaking.
+
+`JobRow.test.tsx`'s three "must not dismiss" tests (fs-path destination,
+error, cancelled) now assert exactly one `dismissFn` call instead of zero;
+the error-row test doubles as the "failed row clears on open" case the
+brief asked for directly.
+
+(`frontend/src/platform/ui/DownloadManager.tsx`, `JobRow.test.tsx`)
+
+### Item 3 (HIGH) — the index-run mirror no longer resurrects derived failures
+
+`_mirror_one_run_job` (`fused_render/server/routers/index.py`) upserted a
+job the moment `list_runs` handed back ANY run, including one already
+terminal on disk before this process started. `list_runs` reads run
+directories off disk (`KEEP_RUNS=20`), so a run that finished — or was
+abandoned by a worker that died — in an earlier process still shows up on
+this process's very first tick; a dead worker's abandoned run reports
+itself via `_with_liveness` as a synthetic "the scan worker died without
+finishing (no activity for 300s)" error on every such read, and
+`_mirrored_terminal` (which would otherwise stop the re-upserting) starts
+empty on every restart. Result: up to 20 stale "Indexing files" failures
+resurrecting in the red needs-you section at every launch, exactly as the
+brief described — confirmed by reproducing it directly in
+`tests/test_index_jobs.py` before the fix (both RED tests below failed
+against the unmodified code).
+
+Implemented the class fix, not a `sys:index:*` carve-out in `_sweep`:
+added `_seen_running`, a module-level set of run ids THIS PROCESS has
+itself observed `running`. A run is now mirrored into a job at all only
+once this process has actually seen it running — checked right where
+`running` is computed, before any `jobs.upsert` call. A run already
+terminal the very first time this process reads it is skipped outright
+(marked straight into `_mirrored_terminal`, no upsert, no row ever
+created, same as the existing "already handled" fast path). A run seen
+running here — including one a previous process started that is still
+genuinely scanning when this process boots (`start()` spawns a detached
+subprocess, so this is a real case, not hypothetical) — is mirrored
+normally and gets its terminal row exactly as before once it finishes.
+
+**The signal chosen is liveness actually observed by this process, not a
+wall clock.** It needed no heuristic: `run.get("running")` is already the
+same fact `_mirror_one_run_job` computes for every other purpose on this
+same tick, so "was this run ever seen running by THIS process" falls out
+of tracking that fact once, cheaply, in a set — durable for the process's
+whole lifetime and exact rather than approximate (no age threshold to
+tune, no window where a fast-finishing legitimate run could be
+misclassified beyond the bridge's own tick cadence, which every
+scan-starting call site already wakes immediately via
+`_wake_index_job_bridge`).
+
+New tests in `tests/test_index_jobs.py`:
+`test_a_run_already_done_before_this_process_started_draws_no_row`,
+`test_a_run_already_errored_before_this_process_started_draws_no_row`
+(both RED against the unmodified code, GREEN after the fix), and
+`test_a_run_seen_running_by_this_process_still_draws_its_terminal_row`
+(already passed before the fix — pinned to prove the carve-out doesn't
+overreach). The existing autouse fixture's reset now also clears
+`_seen_running` between tests.
+
+### Item 4 (LOW) — deleted two unreachable tier restatements in `_fetch_only`
+
+`load(weights_only=True)` already opens `job_id_for(model)`'s row with
+`tier=jobs.TRAIL` before a weights-only download's own thread can reach
+either of its failure-shaped terminal reports (the busy-wait loop's own
+`cancelled` report, and the outer `except` block's `cancelled`/`error`
+report) — `Job.tier` sticks until a later report says otherwise, so
+restating `TRAIL` on those two reports could never actually change what
+the row already said. Deleted both restatements (and their now-false
+justifying comments) from `fused_render/ai/supervisor.py`. Confirmed
+empirically first: all three `restates_trail_tier` tests still passed
+with the restatements removed. The `_bring_up` twins (the resident load's
+own `cancelled`/`error` reports) are untouched — `_start_resident`'s
+opening report sets `TRANSIENT`, not `TRAIL`, so those two restatements
+are genuinely load-bearing and their comments stay accurate.
+
+`test_a_failed_weights_only_download_restates_trail_tier_instead_of_inheriting_transient`
+(`tests/test_ai_runtime.py`) claimed the download's failure path needed
+its own restatement to avoid inheriting a stale `TRANSIENT` from a
+load/unload of the same model — false for this path, since the download's
+own OPENING report already stamps `TRAIL` first. Renamed to
+`test_a_failed_weights_only_download_keeps_trail_tier_instead_of_inheriting_transient`
+and its docstring rewritten to say what actually holds: the tier survives
+from the opening report, not from either terminal one. The two resident-
+load tests keep their original names and docstrings — those restatements
+are real, so the original premise still holds for them.
+
+### Item 5 (LOW) — corrected two comments that overstated the schedule toast
+
+`ActivityDock.tsx`'s header comment claimed the "Task finished:"/"Task
+failed:" toast "is the one surface" for a scheduled run once its own
+Activity row was removed, and `jobs.py`'s `_sweep` docstring gave the same
+toast as part of the reason a scheduled row safely ages out. Neither toast
+text exists anywhere in the codebase (grepped for it) and the claim is
+wrong for a successful run: `toastForEvent` (`platform/lib/
+schedule-toast.ts`) returns `null` for `kind === "done"`, so a successful
+scheduled run produces no toast at all — its only surface is the
+Scheduled/Tasks page. Both comments now say a missed or failed run gets a
+toast and a successful one does not. The age-out conclusion itself
+(`_sweep`'s `sys:schedule:*` carve-out ages every terminal state out
+unconditionally on id alone) was already correct and is unchanged.
+
+### Test/type state at the end of this round
+
+Scoped runs, all green: `tests/test_ai_runtime.py` + `tests/test_jobs_api.py`
+combined (614 passed, 1 skipped, pre-existing); `tests/test_index_jobs.py`
+(29 passed). Frontend: `jobs.test.ts`, `DownloadManager.test.tsx`,
+`JobRow.test.tsx`, `RepoUpdatesDock.test.tsx`, `ActivityDock.test.tsx`,
+`router.test.ts` combined (227 passed). `bunx tsc --noEmit -p .` clean;
+`node scripts/check-boundaries.mjs` clean (705 files). Did not run the
+full pytest suite — left to the orchestrator, per brief.
