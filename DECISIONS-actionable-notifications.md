@@ -1640,3 +1640,52 @@ Scoped runs, all green: `bun test src/platform/ui/JobPopupCard.test.tsx
 src/platform/ui/DownloadManager.test.tsx src/shell/ActivityDock.test.tsx
 src/shell/RepoUpdatesDock.test.tsx` — 122 pass, 0 fail. `bunx tsc --noEmit
 -p .` and `node scripts/check-boundaries.mjs` both clean.
+
+## Fourteenth round — every card in the floating column is the same width
+
+User: "why are some notification cards significantly wider than others? I
+want all of them to have the same width." `.notif-host` only ever declared a
+`max-width` — a ceiling, not a width — paired with `align-items: flex-end`,
+which shrink-wraps each child to its own content underneath that ceiling: a
+short caption sat at `.dl-row`'s own 238px floor while a long title stretched
+toward the 360px ceiling, so the column read as a ragged pile of
+differently-sized cards rather than one system.
+
+`.notif-host` now declares `width: min(360px, calc(100vw - 32px))` (the exact
+same figures, unchanged — this is width instead of cap, not a resize) and
+`align-items: stretch` instead of `flex-end`, so every entry — a job pop-up
+card, a plain toast, the server-status banner — is handed the column's own
+width rather than being left to size itself. `.toast-slot` gets `width: 100%`
+in place of its old `max-width: 100%`, so the slot itself actually fills that
+width instead of only capping under it; its child (`.toast` or `.dl-row`)
+then fills the slot the same way every grid item fills its track by default,
+with no further rule needed for either.
+
+`.dl-row`'s own `min-width: min(238px, calc(100vw - 34px))` is untouched, as
+is everything scoping `.dl-row` inside `.dl-panel` — the Notifications panel
+itself renders a `.dl-panel` full of `.dl-row`s in a completely different
+layout context and was never part of this bug. The `pointer-events: none`/
+`auto` split survives unchanged (still asserted below), and the toast-slot
+collapse (`grid-template-rows: 1fr → 0fr`) still closes a stretched child
+exactly the way it closed a shrink-wrapped one — the grid track's own height
+was never a function of `align-items`.
+
+Test-first, following `apps/claude/styles/parity.test.ts`/`refusal.test.ts`'s
+own precedent for a rule that is a stylesheet fact rather than component
+behaviour: `styles/notifications-width.test.ts` reads `notifications.css`
+directly (this suite has no CSSOM under `react-test-renderer`, so
+`getComputedStyle` would have nothing to answer with, and the regression
+itself lived entirely in the sheet's own numbers) and pins `.notif-host`'s
+`width`/`align-items: stretch` (and the absence of `flex-end`), `.toast-slot`'s
+`width: 100%`, and that the pointer-events split survives. Confirmed failing
+for the right reason against the prior sheet (`align-items: stretch` absent)
+before the fix. The visual claim itself — a very short caption and a very
+long clamped title producing the same card width — is not something this
+`react-test-renderer` suite can render or measure; it is checked by eye
+against the running app, not invented as a brittle assertion here.
+
+Scoped runs, all green: `bun test src/styles/notifications-width.test.ts
+src/platform/ui/JobPopupCard.test.tsx src/platform/ui/DownloadManager.test.tsx
+src/shell/ActivityDock.test.tsx src/shell/RepoUpdatesDock.test.tsx` — 125
+pass, 0 fail. `bunx tsc --noEmit -p .` and `node scripts/check-boundaries.mjs`
+both clean.

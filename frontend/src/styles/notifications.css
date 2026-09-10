@@ -4,7 +4,15 @@
    itself — the column owns placement and stacking, which is the whole point of
    folding the old bottom-centre toast host and the separately-pinned server
    card into it. pointer-events: none on the column so its empty region never
-   swallows clicks on the view beneath; each entry takes them back. */
+   swallows clicks on the view beneath; each entry takes them back.
+
+   The column also owns ONE shared WIDTH, not just a cap: a `max-width` alone
+   is only a ceiling, and `align-items: flex-end` shrink-wraps each entry to
+   its own content underneath it — a short caption sat at `.dl-row`'s 238px
+   floor while a long title stretched toward the 360px ceiling, so the stack
+   read as a ragged pile of different-sized cards rather than one system. A
+   real `width` plus `align-items: stretch` makes every entry the same size
+   regardless of what it says, which is what "one surface" actually requires. */
 .notif-host {
   position: fixed;
   right: 16px;
@@ -12,9 +20,9 @@
   z-index: 2000;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 8px;
-  max-width: min(360px, calc(100vw - 32px));
+  width: min(360px, calc(100vw - 32px));
   pointer-events: none;
 }
 
@@ -34,7 +42,7 @@
 .toast-slot {
   display: grid;
   grid-template-rows: 1fr;
-  max-width: 100%;
+  width: 100%;
   transition:
     grid-template-rows var(--dur-med) var(--ease-out),
     margin-bottom var(--dur-med) var(--ease-out);
