@@ -1830,6 +1830,7 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
     that says so.
     """
     from fused_render import jobs, projectenv
+    from fused_render._view_url_codec import canonical_fs_path
 
     job_id = f"sys:env-install:{key}"
     # Named `app_name`, not `name`: the loop a few lines into `run()` below
@@ -1854,8 +1855,12 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
                 # above as `project_dir` for the title, and the only sensible
                 # destination for a row that says an app's install failed: an
                 # app-doctor error or a stalled venv build points squarely at
-                # that folder.
-                page=project_dir, server=True,
+                # that folder. Canonical (forward-slash) form, like every
+                # other fs path a row's `page` carries — `project_dir` can
+                # reach here OS-native (backslashed on Windows) depending on
+                # the caller, and a page is compared against the canonical
+                # spelling everywhere else it is stored or read.
+                page=canonical_fs_path(project_dir), server=True,
             )
             # A flag a PREVIOUS attempt's dead mirror left set (see the
             # docstring above) belongs to that attempt, not this one — clear
