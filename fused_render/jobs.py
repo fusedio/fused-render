@@ -68,6 +68,22 @@ STATES = (RUNNING, WAITING) + TERMINAL_STATES
 # spinner. Kept a small closed set so the UI never has to guess.
 KINDS = ("download", "task")
 
+# The three notification tiers a producer picks for its own row (SPEC
+# actionable-notifications). The discriminator is always the same question:
+# did the user ask for this, and is there anything left to look at?
+#   "attention"  — the user asked, and it now wants something back. Shown
+#                  without the panel having to be opened.
+#   "trail"      — the user asked, and it left something behind. Kept in the
+#                  panel until dismissed.
+#   "transient"  — nobody asked, or nothing survives it. Shown while running,
+#                  never kept once terminal.
+# "trail" is the default on purpose: a producer that sets nothing behaves
+# exactly like every row did before this field existed.
+ATTENTION = "attention"
+TRAIL = "trail"
+TRANSIENT = "transient"
+TIERS = (ATTENTION, TRAIL, TRANSIENT)
+
 # Whether `total` is the WHOLE download or one phase of it (SPEC AI-5n, D498).
 # "phase" is the default a bare `download_snapshot` reporter has always sent
 # without knowing it — a single repo's own total, which for a single-repo
@@ -163,19 +179,6 @@ MAX_JOBS = 64
 # re-attaches to its row rather than opening a second. Constrained to a plain
 # token so it stays safe as a dict key, a URL path segment, and a React key.
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-
-# `schedule.py`'s own row id prefix (mirrors `SCHEDULE_JOB_PREFIX` in
-# frontend/src/platform/lib/jobs.ts — keep the two spellings in step). A row
-# under this prefix is deliberately excluded from every frontend surface
-# (`isScheduleJob`/`jobRows` drops it from Activity, and `terminalJobs` is
-# applied AFTER `jobRows` in `ActivityDock.tsx`, so it never reaches
-# Notifications either) — a scheduled run already gets its own toast
-# (`schedule-toast.ts`) and its own row on the Scheduled page. `_sweep`'s
-# keep-until-dismissed exemption (below) exists so a row a human still needs
-# to SEE is not swept out from under them; a row no surface shows or lets
-# them dismiss has no claim on that exemption; see `_sweep` for what it gets
-# instead.
-SCHEDULE_JOB_PREFIX = "sys:schedule:"
 
 # Ids under this prefix belong to the SERVER (SPEC §40): a model download, a
 # generation — work this process runs and can therefore really stop. A page may
@@ -309,18 +312,17 @@ class Job:
     # THEN fails is not left invisible — D266's guarantee that both rows can
     # show a real failure only holds if the merge does not outlive the wait.
     waiting_for: str = ""
-    # A terminal row with nothing to act on — the manager draws no
-    # Notification for it and it clears itself (`jobs.ts` `isQuietModelLoad`,
-    # `jobRows`). Set true ONLY by a resident model load's own success report
-    # (`ai/supervisor.py` `_bring_up`, via `job_id_for`): the load already
-    # showed itself as the "resident" row while running, so a second row
-    # announcing "loaded" says nothing a page or the sidebar hasn't already
-    # shown. A weights-only DOWNLOAD finishing, or a model being unloaded or
-    # evicted, both report through the same id family but are real news — a
-    # download just wrote bytes to disk, an unload just freed one — so
-    # neither sets this. SERVER-ONLY (see `upsert`'s `server` gate): a page
-    # could otherwise hide its own failed row by claiming it was quiet.
-    quiet: bool = False
+    # Which of the three tiers this row belongs to — see `TIERS` above.
+    # Chosen by the PRODUCER, because only the producer knows whether the
+    # event it is reporting left anything behind. SERVER-ONLY (see `upsert`'s
+    # `server` gate below), for the same reason `waiting_for` is: a page
+    # could otherwise hide its own failed row by declaring itself transient.
+    # Sticky across ticks on one id like every other field — see
+    # `job_id_for` in `ai/supervisor.py` for the id family this bites: a
+    # resident load, a weights-only download and an unload all report
+    # through the SAME id, so each must restate its own tier explicitly
+    # rather than relying on what an earlier report on that id left behind.
+    tier: str = TRAIL
 
 
 _lock = threading.Lock()
@@ -500,13 +502,16 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
             # would break the manager's lookup silently.
             value = body.get("waiting_for")
             job.waiting_for = clean_id(value) if value else ""
-        if "quiet" in body and server:
-            # Same gate as `waiting_for` above, and for the same reason: this
-            # field also hides a row, so only the server's own report may set
-            # it. A page report carrying it is silently dropped rather than
-            # rejected, matching the rest of this function's treatment of a
-            # server-only field.
-            job.quiet = bool(body.get("quiet"))
+        if "tier" in body and server:
+            # Same gate as `waiting_for` above, and for the same reason: a
+            # page-declared tier could hide its own failed row, so only the
+            # server's own report may set it. A page report carrying it is
+            # silently dropped rather than rejected, matching the rest of
+            # this function's treatment of a server-only field. Unlike the
+            # drop, an OUT-OF-SET value from the server itself is a real
+            # validation error, not a silent fallback — `_one_of` raises for
+            # that case, same as every other closed-set field.
+            job.tier = _one_of(body.get("tier"), TIERS, "tier", job.tier)
         if page:
             job.page = _page_text(page)
 
@@ -731,6 +736,25 @@ def is_stalled(job: Job, now: float) -> bool:
     return job.state == RUNNING and (now - job.updated_at) > STALE_AFTER_S
 
 
+def effective_tier(job: Job) -> str:
+    """The tier a reader should actually treat this row as — DERIVED, never
+    stored. `job.tier` is what the producer declared; this is what the row
+    means right now.
+
+    The one override: a terminal job in `error` or `cancelled` is always
+    `attention`, regardless of what its producer declared. A failed run is
+    news even for a producer that otherwise declares itself `transient` (an
+    index scan, a text generation, a resident model load) — the thing that
+    makes those tiers correct on SUCCESS (nothing survives it) is exactly
+    what is no longer true on a failure: the user did not get what they
+    asked for, which is always worth a look. A `done` row, or a still-running
+    one, is unaffected and reads its stored tier as-is.
+    """
+    if job.state in ("error", "cancelled"):
+        return ATTENTION
+    return job.tier
+
+
 def _public(job: Job, now: float) -> dict:
     """The wire shape: the record plus what only the reader can know.
 
@@ -778,32 +802,39 @@ def _sweep(now: float) -> None:
     `cancelled` get the same unconditional exemption `error`/`WAITING`
     already had. `MAX_JOBS`'s cap (below) is what bounds all of them now.
 
-    **A `sys:schedule:*` row, or one with `job.quiet` set, does NOT get this
-    exemption, even though both are terminal.** The exemption's whole premise
-    is "a human still needs to SEE this row, so do not sweep it out from
-    under them" — but `jobRows` (frontend) drops every `sys:schedule:*` id,
-    and every `quiet` row, from what Activity draws, and `ActivityDock.tsx`
-    applies `jobRows` before `terminalJobs`, so neither ever reaches
-    Notifications. No surface shows either and none can dismiss them, so
-    neither has a claim on a "kept until dismissed" rule — kept that way
-    regardless, a schedule row is one permanent row per turn on a schedule (a
-    5-minute schedule saturates `MAX_JOBS` within hours), and a quiet row is
-    one permanent row per distinct model ever loaded, with only eviction
-    pressure to shed either. A schedule run already gets `schedule-toast.ts`'s
-    own toast and its own row on the Scheduled page, and a quiet model load
-    already showed itself as the "resident" row while it ran, so nothing is
-    lost by letting the registry row age out on the ORIGINAL read-gated
-    `FINISHED_TTL_S` clock every terminal row had before D663 — the readers
-    that clock exists for (`fused.watchJob`, the Scheduled page's own poll,
-    `fused.ai.models.load(wait=True)`'s own poll) are exactly the ones still
-    reading these rows.
+    **A row whose `effective_tier` is `TRANSIENT` does NOT get this
+    exemption, even though it is terminal.** The exemption's whole premise is
+    "a human still needs to SEE this row, so do not sweep it out from under
+    them" — but `jobRows` (frontend) drops every `transient` row from what
+    Activity draws, and `ActivityDock.tsx` applies `jobRows` before
+    `terminalJobs`, so a transient row never reaches Notifications at all. No
+    surface shows it or can dismiss it, so it has no claim on a "kept until
+    dismissed" rule — kept that way regardless, a scheduled run declaring
+    itself transient on every tick is one permanent row per turn on a
+    schedule (a 5-minute schedule saturates `MAX_JOBS` within hours), and a
+    resident model load's own success is one permanent row per distinct model
+    ever loaded, with only eviction pressure to shed either. A scheduled run
+    already gets `schedule-toast.ts`'s own toast and its own row on the
+    Scheduled page, and a load already showed itself as the "resident" row
+    while it ran, so nothing is lost by letting the registry row age out on
+    the ORIGINAL read-gated `FINISHED_TTL_S` clock every terminal row had
+    before D663 — the readers that clock exists for (`fused.watchJob`, the
+    Scheduled page's own poll, `fused.ai.models.load(wait=True)`'s own poll)
+    are exactly the ones still reading these rows.
+
+    `effective_tier`, not the stored `job.tier`, is what decides this: a
+    producer that declares `transient` but ends in `error`/`cancelled` is
+    `attention` instead (SPEC actionable-notifications' one override), and an
+    `attention` row DOES reach a surface and DOES need a dismiss — sweeping
+    it on this clock would drop it out from under the very reader it is
+    supposed to be shown to.
 
     `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S`/`job.first_read_at` are left in
     place rather than deleted for this reason — `list_jobs`'s `mark_read`
     still has other callers (`routers/jobs.py`, `supervisor.py`,
     `capture/__init__.py`) whose own read-vs-poll distinction does not
-    depend on this branch, and the schedule carve-out above is exactly the
-    one reachable state that still exercises this read-gated clock.
+    depend on this branch, and a genuinely transient row is exactly the one
+    reachable state that still exercises this read-gated clock.
 
     **`WAITING` is exempt from the cap below (`evictable`), not only from
     ageing out here.** Its reporter has already exited (the sole producer,
@@ -827,15 +858,18 @@ def _sweep(now: float) -> None:
             # is still exactly as open as when it appeared.
             continue
         elif job.state in TERMINAL_STATES:
-            if job_id.startswith(SCHEDULE_JOB_PREFIX) or job.quiet:
+            if effective_tier(job) == TRANSIENT:
                 # No surface shows this row or lets it be dismissed — see
                 # this function's own docstring — so it ages out on the
                 # ORIGINAL read-gated clock every terminal row had before
-                # D663, instead of the keep-until-dismissed rule below. A
-                # `quiet` row (Job.quiet's own comment) earns the same
-                # carve-out for the same reason: `jobRows` drops it from
-                # every surface that could show or dismiss it, so kept
-                # forever it is just one permanent row per distinct model.
+                # D663, instead of the keep-until-dismissed rule below.
+                # `effective_tier`, not the raw stored `tier`: a producer
+                # that declares itself `transient` (a scheduled run, an
+                # index scan, a resident model load, a finished text
+                # generation) but then ends in `error`/`cancelled` becomes
+                # `attention` instead, and an `attention` row IS shown and
+                # IS dismissable — ageing it out on this clock would drop
+                # the very row the frontend now draws as needing the user.
                 if job.first_read_at is not None:
                     if (now - job.first_read_at) > FINISHED_TTL_S:
                         _forget(job_id, now)

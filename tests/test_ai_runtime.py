@@ -2969,49 +2969,54 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
     assert described["totalResidentBytes"] == 1234
 
 
-def test_a_resident_load_reports_its_row_quiet(fake_runner):
-    """A resident load's own success report (`_bring_up`) sets `Job.quiet` —
-    the row it already showed as "loading" says nothing new by turning
-    "done", so the manager should draw no Notification for it."""
+def test_a_resident_load_reports_its_row_transient(fake_runner):
+    """A resident load's own success report (`_bring_up`) sets
+    `tier=jobs.TRANSIENT` — the row it already showed as "loading" says
+    nothing new by turning "done", so the manager should draw no
+    Notification for it once finished."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
     assert row["state"] == "done"
-    assert row["quiet"] is True
+    assert row["tier"] == jobs.TRANSIENT
 
 
-def test_a_weights_only_download_reports_its_row_NOT_quiet(fake_runner):
+def test_a_weights_only_download_reports_its_row_trail(fake_runner):
     """`_fetch_only` (a download with no load to follow) is real news — the
-    row must still draw a Notification when it finishes."""
+    row must still draw a Notification when it finishes, so it reports
+    `tier=jobs.TRAIL`."""
     job = supervisor.JOB_PREFIX + "org-fetched"
     jobs.upsert({"id": job, "title": "org/fetched", "kind": "download",
                  "state": "running"}, server=True)
     supervisor._fetch_only(fake_runner, "org/fetched", job)
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
     assert row["state"] == "done"
-    assert row["quiet"] is False
+    assert row["tier"] == jobs.TRAIL
 
 
-def test_a_weights_only_download_clears_quiet_EVEN_THOUGH_the_row_was_just_quiet(fake_runner):
+def test_a_weights_only_download_does_not_inherit_a_loads_transient_tier(fake_runner):
     """`_fetch_only`'s `job` is `job_id_for(model)` too — the exact row a
-    resident load of the SAME model already reported `quiet=True` through.
-    A download finishing afterwards must not inherit that stale flag."""
+    resident load of the SAME model already reported `tier=jobs.TRANSIENT`
+    through. A download finishing afterwards must not inherit that stale
+    tier — it restates its own `tier=jobs.TRAIL` explicitly."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")
     before = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert before["quiet"] is True
+    assert before["tier"] == jobs.TRANSIENT
 
     jobs.upsert({"id": job, "kind": "download", "state": "running"}, server=True)
     supervisor._fetch_only(fake_runner, "org/small", job)
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert row["quiet"] is False, "the download's own report must not inherit the load's quiet flag"
+    assert row["tier"] == jobs.TRAIL, \
+        "the download's own report must not inherit the load's transient tier"
 
 
-def test_an_unload_reports_its_row_NOT_quiet(fake_runner):
-    """An unload/eviction (`_remove`) is real news too — freeing a resident
-    model must still draw a Notification, not vanish quietly."""
+def test_an_unload_reports_its_row_transient(fake_runner):
+    """An unload/eviction (`_remove`) frees memory but writes nothing a click
+    could open — nobody asked for this row and nothing survives it, so it
+    reports `tier=jobs.TRANSIENT` like the load it is undoing."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")
@@ -3019,25 +3024,30 @@ def test_an_unload_reports_its_row_NOT_quiet(fake_runner):
     supervisor._remove([worker], "evicted to free memory")
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
     assert row["state"] == "done"
-    assert row["quiet"] is False
+    assert row["tier"] == jobs.TRANSIENT
 
 
-def test_an_unload_clears_quiet_EVEN_THOUGH_the_row_was_just_quiet(fake_runner):
-    """`job_id_for(model)` is the SAME row a resident load's own success
-    report just set `quiet=True` on, and `Job.quiet` sticks in the registry
-    until a later report says otherwise — so `_remove` must restate
-    `quiet=False` rather than leaving the load's flag to leak into the
+def test_an_unload_does_not_inherit_a_downloads_trail_tier(fake_runner):
+    """`job_id_for(model)` is shared by all three of a resident load, a
+    weights-only download and an unload. A load leaves this id `TRANSIENT`;
+    a download on the SAME id then flips it to `TRAIL`; an unload right
+    after must not inherit that `TRAIL` — it restates `tier=jobs.TRANSIENT`
+    explicitly, proving the download's tier does not leak forward into the
     unload's own, unrelated, terminal report."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")
+
+    jobs.upsert({"id": job, "kind": "download", "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/small", job)
     before = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert before["quiet"] is True
+    assert before["tier"] == jobs.TRAIL
 
     worker = next(w for w in supervisor._workers.values() if w.model == "org/small")
     supervisor._remove([worker], "evicted to free memory")
     row = next(j for j in jobs.list_jobs() if j["id"] == job)
-    assert row["quiet"] is False, "the unload's own report must not inherit the load's quiet flag"
+    assert row["tier"] == jobs.TRANSIENT, \
+        "the unload's own report must not inherit the download's trail tier"
 
 
 def test_os_footprint_probe_returns_a_plausible_figure_or_none():

@@ -721,6 +721,12 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
         # bridge does not special-case it into a separate concept.
         "message": str(run.get("phase") or ""),
         "cancellable": True,
+        # A finished scan's success has no destination worth keeping — the
+        # index itself isn't a file a click could open — so nobody asked for
+        # this row to stick around (SPEC actionable-notifications). A failed
+        # or cancelled run still surfaces: `effective_tier`'s override turns
+        # this into `attention` regardless of the tier declared here.
+        "tier": jobs.TRANSIENT,
     }
     if running:
         fields["state"] = jobs.RUNNING

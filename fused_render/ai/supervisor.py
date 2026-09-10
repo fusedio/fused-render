@@ -1231,7 +1231,7 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                     # window between becoming ready and someone asking —
                     # which is exactly the window a slow bring-up ate.
                     worker.last_activity = time.monotonic()
-                    _report(job, state="done", detail="Model loaded", quiet=True)
+                    _report(job, state="done", detail="Model loaded", tier=jobs.TRANSIENT)
                     return
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
@@ -1324,13 +1324,14 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
                 raise SupervisorError("cancelled")
             stderr = _tail(log)
             raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
-        # `quiet=False` restated explicitly: `job` here is `job_id_for(model)`,
-        # the same row a RESIDENT load of this model reports through, and
-        # `Job.quiet` sticks until a report says otherwise (`upsert`'s
-        # `"quiet" in body` gate) — a weights-only download finishing is real
-        # news regardless of whatever this id's row said the last time it was
-        # a load's own success report.
-        _report(job, state="done", detail="Downloaded", quiet=False)
+        # `tier=jobs.TRAIL` restated explicitly: `job` here is
+        # `job_id_for(model)`, the same row a RESIDENT load of this model
+        # reports through, and `Job.tier` sticks until a report says
+        # otherwise (`upsert`'s `"tier" in body` gate) — a weights-only
+        # download wrote gigabytes to disk, which is real news regardless of
+        # whatever this id's row said the last time it was a load's own
+        # success report.
+        _report(job, state="done", detail="Downloaded", tier=jobs.TRAIL)
     except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
         message = _failure_text(e)
         _report(job, state="cancelled" if message == "cancelled" else "error",
@@ -1699,9 +1700,16 @@ def text_row_fields(title: str, model: str = "", page: str = "") -> dict:
     the same reason `transcribe_row_fields` restates it: this dict is the
     row's identity, resent on every tick, and a tick that dropped it would
     leave a rebuilt row with nowhere to send a click.
+
+    `tier=jobs.TRANSIENT`: the Playground's text stage keeps no history and
+    persists nothing (`TextStage.tsx` sends `history: []`), so a finished
+    generation has no destination a click could open and nothing a
+    Notification would be keeping around. A failed one still surfaces —
+    `effective_tier`'s override turns any `error`/`cancelled` row into
+    `attention` regardless of what it declares here.
     """
     return {"title": title, "model": model, "kind": "task", "cancellable": True,
-            "unit": "tokens", "page": page}
+            "unit": "tokens", "page": page, "tier": jobs.TRANSIENT}
 
 
 def start_transcribe(model: str, request: dict, job: str, page: str = "") -> None:
@@ -1784,13 +1792,16 @@ def _remove(targets: list[Worker], reason: str) -> None:
     race: `_terminate`'s I/O and `_report`'s job-row write."""
     for worker in targets:
         _terminate(worker)
-        # `quiet=False` restated explicitly, not left to default: this id is
-        # the same row `_bring_up`'s success report already set `quiet=True`
-        # on, and `Job.quiet` sticks until a later report says otherwise (see
-        # `upsert`'s `"quiet" in body` gate) — an unload freeing a resident
-        # model is real news and must draw a Notification, not inherit the
-        # load's own quiet flag.
-        _report(job_id_for(worker.model), state="done", detail=reason, quiet=False)
+        # `tier=jobs.TRANSIENT` restated explicitly, not left to default:
+        # this id is the same row `_bring_up`'s success report already set
+        # `tier=jobs.TRANSIENT` on, and `Job.tier` sticks until a later
+        # report says otherwise (see `upsert`'s `"tier" in body` gate) — the
+        # explicit restatement is what stops a WEIGHTS DOWNLOAD's `TRAIL` on
+        # this same id from leaking into the next unload's row. Nobody asked
+        # for this row and nothing survives it: unloading frees memory, it
+        # does not write anything a click could open, so this is transient
+        # like the load it is undoing, not real news in its own right.
+        _report(job_id_for(worker.model), state="done", detail=reason, tier=jobs.TRANSIENT)
 
 
 def unload(model: str | None = None, capability: str | None = None,
