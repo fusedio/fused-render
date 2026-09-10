@@ -131,7 +131,7 @@ import { useListingSelection } from "@apps/explorer/listing/useListingSelection"
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
 import { EmptyResultMessage } from "@apps/explorer/listing/empty-result";
-import { broadenGlobPattern } from "@apps/explorer/listing/glob-broaden";
+import { broadenGlobOffer } from "@apps/explorer/listing/glob-broaden";
 import {
   ZERO_MATCH_OFFER_PATH,
   isZeroMatchOfferPath,
@@ -320,11 +320,11 @@ export default function Listing({
   // A committed PATTERN (glob) search that has settled on genuinely zero
   // hits (`reason === ""` — anything else is an index-gap message,
   // EmptyResultMessage's own job, and broadening the pattern wouldn't fix an
-  // uncovered folder) offers to rerun itself with the recursively broadened
-  // form of its own text (glob-broaden.ts). `null` here means either there
-  // is nothing settled-and-empty to offer for, or `broadenGlobPattern`
-  // itself found nothing left to widen (not a glob, or already maximally
-  // broad) — both read identically to callers below: no offer.
+  // uncovered folder) offers to rerun itself with the first rung of
+  // glob-broaden.ts's ladder that actually widens the query. `null` here
+  // means either there is nothing settled-and-empty to offer for, or
+  // `broadenGlobOffer` walked every rung and found nothing left to widen —
+  // both read identically to callers below: no offer.
   //
   // Computed off `q` (the deferred, already-settled value), not the live
   // `query`: this state is reached only once `!awaitingCommit` and the
@@ -337,12 +337,10 @@ export default function Listing({
     !displayHits.length &&
     !scanPending &&
     searchState.status !== "pending";
-  const broadenedPattern =
-    settledSearchEmpty && mode === "glob" && reason === ""
-      ? broadenGlobPattern(q)
-      : null;
+  const broadenOffer =
+    settledSearchEmpty && mode === "glob" && reason === "" ? broadenGlobOffer(q) : null;
   const rerunBroadenedSearch = () => {
-    if (broadenedPattern !== null) rerunQuery(broadenedPattern);
+    if (broadenOffer !== null) rerunQuery(broadenOffer.pattern);
   };
 
   // **THESE TWO FLAGS ARE NOW THE WHOLE of whether there is a pane** —
@@ -642,7 +640,7 @@ export default function Listing({
     // caller left that ever passed false — the one that used to (`embedded`,
     // the preview pane's own nested `_listing` mode) is gone with D460.
     zeroMatchOffer:
-      broadenedPattern !== null
+      broadenOffer !== null
         ? { path: ZERO_MATCH_OFFER_PATH, onActivate: rerunBroadenedSearch }
         : null,
   });
@@ -1497,13 +1495,14 @@ export default function Listing({
       // copy with the home page's own search box rather than inventing new
       // wording for the same states.
       body =
-        broadenedPattern !== null ? (
+        broadenOffer !== null ? (
           // The glob-broadening offer: reads as an offer, not a matched
           // file, by reusing this same `status-message` row shape (already
           // the treatment for every OTHER non-file row above — "Searching…",
           // the capped-away count) rather than a `fh-row`. States the
           // original pattern found nothing, then names the broadened one it
-          // would rerun, so Enter/click's effect is never a surprise. Wired
+          // would rerun AND which dimension it relaxes (glob-broaden.ts's
+          // rung label), so Enter/click's effect is never a surprise. Wired
           // through `onRowPointerUp` (the same call site every real row
           // activates from) with the reserved sentinel path rather than a
           // parallel click handler — see zero-match-offer.ts.
@@ -1526,7 +1525,7 @@ export default function Listing({
                   e.preventDefault();
                 }}
               >
-                Search <strong>{broadenedPattern}</strong> instead
+                {broadenOffer.label}: search <strong>{broadenOffer.pattern}</strong> instead
               </button>
             </td>
           </tr>
