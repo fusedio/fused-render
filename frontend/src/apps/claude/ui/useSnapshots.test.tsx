@@ -72,10 +72,14 @@ interface Harness {
   unmount(): void;
 }
 
-async function mount(invalidation: unknown = 0): Promise<Harness> {
+async function mount(
+  invalidation: unknown = 0,
+  enabled = true,
+  file: string = FILE,
+): Promise<Harness> {
   let out: import("./useSnapshots").SnapshotsState | null = null;
   function Probe() {
-    out = useSnapshots("/tpl", FILE, invalidation, deps as never);
+    out = useSnapshots("/tpl", file, invalidation, deps as never, enabled);
     return null;
   }
   let r!: ReactTestRenderer;
@@ -169,4 +173,28 @@ test("the cache is keyed on the FILE as well: another target reads its own", asy
   await mount(0);
   expect(cachedSnapshots(FILE, 0)?.hash).toBe("h1");
   expect(cachedSnapshots("/repo/other.py", 0)).toBe(null);
+});
+
+// ── the gate `useLandingReads` holds it behind (P4-14) ──────────────────────
+
+test("`enabled: false` reads nothing and is NOT settled", async () => {
+  const h = await mount(0, false);
+  expect(reads).toEqual([]);
+  // "Not asked yet" is exactly what the ordering owner is waiting on: reporting
+  // settled here would release the artifacts index ahead of this read.
+  expect(h.state().settled).toBe(false);
+  expect(h.state().timeline).toBeUndefined();
+});
+
+test("a target with no file is SETTLED, so nothing is stranded behind it", async () => {
+  const h = await mount(0, true, "");
+  expect(h.state().timeline).toBeUndefined();
+  expect(h.state().settled).toBe(true);
+});
+
+test("A FAILURE IS AN ANSWER for the ordering's purposes", async () => {
+  answer = () => Promise.reject(new Error("nope"));
+  const h = await mount(0);
+  expect(h.state().failed).toBe(true);
+  expect(h.state().settled).toBe(true);
 });

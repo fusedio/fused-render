@@ -1383,11 +1383,17 @@ function ChatBody(props: ChatBodyProps) {
   onReadyRef.current = props.onReady;
   /**
    * Is the boot's landing branch the one waiting on the ready signal? Written
-   * by the boot effect, read by the effect below it: `markReady` is idempotent,
-   * so this is only ever about which FACT the signal is waiting for, never
-   * about firing it twice.
+   * by the boot effect, read by the effect further down: `markReady` is
+   * idempotent, so this is only ever about which FACT the signal is waiting
+   * for, never about firing it twice.
+   *
+   * STATE AND NOT A REF, deliberately. A ref would be written in a commit of
+   * its own and the waiting effect would only run again if `recent` happened to
+   * change afterwards — so a landing whose list had ALREADY answered by the
+   * time the boot's async branch got here would never fire at all, and the host
+   * would leave the pane covered. Setting state wakes the effect.
    */
-  const landingReady = useRef(false);
+  const [landingReady, setLandingReady] = useState(false);
   const markReady = useCallback(() => {
     if (readySent.current) return;
     readySent.current = true;
@@ -1525,7 +1531,7 @@ function ChatBody(props: ChatBodyProps) {
         // a landing whose one list is still a skeleton, which is the state the
         // read is about to replace. The wait is owned by the effect below,
         // which fires it on the first non-null `recent`; nothing is done here.
-        landingReady.current = true;
+        setLandingReady(true);
       }
     })();
     return () => {
@@ -1758,6 +1764,14 @@ function ChatBody(props: ChatBodyProps) {
     undefined,
     leftLive,
   );
+  /** ONE TRIP'S WORTH. T's `leftLive` is a local in its Back handler, so it is
+   *  spent by the landing it was set for; here it has to be cleared by hand, or
+   *  every later cold landing of this page's life would go on paying for the
+   *  two write-covering reads. Cleared on the way INTO a chat, which is after
+   *  the landing that used it and before the next Back that may set it again. */
+  useEffect(() => {
+    if (inChat) setLeftLive(false);
+  }, [inChat]);
   /**
    * THE LANDING IS READY WHEN ITS LIST HAS ANSWERED (T:19282-19291, P4-14).
    *
@@ -1775,9 +1789,9 @@ function ChatBody(props: ChatBodyProps) {
    * list" — so both count.
    */
   useEffect(() => {
-    if (!landingReady.current) return;
+    if (!landingReady) return;
     if (recent !== null || inChat || !agentDir) markReady();
-  }, [recent, inChat, agentDir, markReady]);
+  }, [landingReady, recent, inChat, agentDir, markReady]);
 
   /**
    * WHAT THE TRAY PUTS ON THE WIRE, on both send roads: the `<pane-shot>` block,

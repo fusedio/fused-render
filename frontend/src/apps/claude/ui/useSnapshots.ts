@@ -136,6 +136,11 @@ export function useSnapshots(
         return;
       }
       if (!live || gen.current !== mine) return;
+      // A NEW TARGET IS NOT SETTLED. `settled` is what releases the artifacts
+      // index (`useLandingReads`), so carrying the previous file's `true` into
+      // this read would let the last of the three go first for one target — the
+      // very ordering this exists to keep.
+      setSettled(false);
       // ALREADY READ ONCE ON THIS PAGE: repaint what we have rather than spend
       // the round trip again (T:19105-19107). This is the whole of P4-22 — the
       // hook is inside `Home`, which unmounts on the way into a chat, so
