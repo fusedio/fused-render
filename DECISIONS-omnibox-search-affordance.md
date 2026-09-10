@@ -364,3 +364,105 @@ risk it originally flagged is resolved by item 3's revision, but the
 button's own narrow-width collapse point, the teaching panel's real-world
 examples, and its precedence over completions on a pristine path all still
 need a human on a running screen.
+
+## Finding 7's fix was itself the CI failure - corrected (2026-09-10)
+
+Finding 7's "stub every named export" fix (see above) traded the missing-
+export crash for a worse problem: a COMPLETE `mock.module("@platform/lib/
+router", ...)` still replaces the module registry entry for the whole bun
+process, so `withPreviewFlag` - re-typed in that stub as the identity
+function `(src) => src` - silently became what every file loaded AFTER this
+one saw too. `paneUrl.ts` imports `withPreviewFlag` and `paneUrl.test.ts`'s
+own "the shell-mounted flags ride on the end, and are idempotent" test (both
+completely untouched by this branch, confirmed by
+`git diff origin/main..HEAD -- frontend/src/apps/claude/pane/` returning
+nothing) failed on Linux CI for exactly that reason - CI enumerates test
+files in a different order than macOS, and Linux's order let
+`search-dropdown-actions.render.test.tsx`'s stub apply before
+`paneUrl.test.ts` loaded, where macOS's order didn't.
+
+**Approach taken (candidate b): `spyOn` the one function this file needs
+to observe, not `mock.module` at all.** `search-dropdown-actions.render.
+test.tsx` now does `const router = await import("@platform/lib/router")`
+(dynamically, after the file's own `location` stub and after
+`FileSearchField`'s own transitive import already evaluated the module -
+a static `import * as router` at the top would be hoisted ahead of the
+`location` stub and crash router.ts's module-init IIFE) and, in
+`beforeEach`, `spyOn(router, "navigate").mockImplementation(...)` to
+collect `navigateCalls`; `afterEach` calls `navigateSpy.mockRestore()`.
+Every other export (`withPreviewFlag`, `urlForFsPath`, `replaceSearch`,
+`currentUrl`, …) is now the REAL implementation for this file's own tests,
+running against the real `globalThis.history`/`document`/`window` stubs
+already set up in `beforeEach` - which is also strictly more honest than
+the old hand-typed stub, since a future export this file's own import graph
+doesn't reach today can no longer silently diverge from the real thing.
+
+Verified `spyOn` on this module works and genuinely reverses: a throwaway
+test confirmed `spyOn(router, "navigate")` replaces the live ESM binding
+(observed via a tracked call array) and `mockRestore()` puts the real
+function back (observed by letting it run for real afterward and seeing
+its own side effect fire) - bun's ESM interop here behaves like a mutable,
+shared object per module specifier, not a frozen native-ESM namespace.
+
+**Candidate (a) - a component seam - was not available and not added.**
+`SearchField.tsx` calls the imported `navigate` directly
+(`src/apps/explorer/SearchField.tsx:32,236,552`); there is no `onNavigate`
+prop or callback already on the component to assert through, and adding
+one purely to make this test observable would be reshaping production code
+for the test's sake, which the task ruled out unless a seam already exists
+or is genuinely the cleaner design - neither is true here, since the
+component correctly owns navigation as a direct effect and no other caller
+needs to intercept it. **No production code was touched by this fix.**
+
+**Candidate (c) - restoring the module registry - didn't apply**: there
+was never a registry entry to restore, since this fix stops writing one.
+
+**Proof, and a pre-existing complication this surfaced:**
+
+- Full `bun test` from `frontend/`, run twice: **4315 pass, 0 fail** both
+  times (208 files), matching Finding 7's own prior verification exactly.
+- `bun run typecheck`: clean, no errors.
+- `bun test src/apps/claude/pane/paneUrl.test.ts
+  src/apps/explorer/listing/search-dropdown-actions.render.test.tsx` (both
+  orders): **36 pass, 0 fail** each way - `paneSrcFor > the shell-mounted
+  flags ride on the end, and are idempotent` passes in both, and all 8 of
+  this file's own tests (including the hard-constraint Enter test) pass in
+  both.
+- The exact 3-file combo the task specified (adding
+  `useListingSearch.render.test.ts`) crashes in BOTH argument orders with
+  `SyntaxError: Export named 'getConfig' not found in module
+  '.../platform/lib/api.ts'`, aborting `search-dropdown-actions.render.
+  test.tsx`'s entire file (0 of its 8 tests run, including the hard-
+  constraint test) before either can produce a pass/fail verdict for it.
+  **Confirmed pre-existing and unrelated to this fix**: the IDENTICAL crash
+  reproduces byte-for-byte with the file reverted to its PRE-fix state
+  (the complete router mock.module version), in both argument orders.
+  Root cause is `useListingSearch.render.test.ts`'s OWN pre-existing,
+  unchanged `mock.module("@platform/lib/api", ...)` (3 exports:
+  `indexRank`, `requestFolderScan`, `getPrefs` - missing `getConfig`,
+  which `home-path.ts` imports and calls once `FileSearchField` mounts) -
+  the exact same disease as Finding 7's original bug, just on a different
+  module (`api.ts` not `router.ts`) and a different pre-existing culprit
+  file, already named in this document's own "Known infra fragility"
+  section above and explicitly out of scope for this branch to fix.
+  `useListingSelection.render.test.ts` paired with this file (2-file combo,
+  both orders) crashes the same way with a DIFFERENT missing export
+  (`NAV_EVENT` from `router.ts` this time) - also reproduced identically on
+  the pre-fix file, also pre-existing, also unrelated.
+- Both of those subset crashes are provably artifacts of hand-picking a
+  small file subset, not of real CI order: bun sorts the files it loads
+  internally (both argument orders of the same 3 files produced BYTE-
+  IDENTICAL output, proving CLI argument order does not control bun's
+  execution order at all), and the full, unfiltered suite - the actual
+  shape of what CI runs - passed twice with zero failures, meaning neither
+  crash is reachable through any real file ordering the full suite
+  produces.
+- Net effect on the actual guard: `paneSrcFor`'s idempotence test and the
+  hard-constraint Enter test both pass in every configuration where they
+  get to run at all (isolation, the 2-file router-collision combo in both
+  orders, and the full suite twice); the only runs where the hard-
+  constraint test doesn't produce a verdict are the two pre-existing,
+  unrelated subset crashes described above, where it doesn't run at all
+  rather than running and failing - not a regression this fix introduced
+  or could fix without editing the other files, which the task explicitly
+  ruled out.

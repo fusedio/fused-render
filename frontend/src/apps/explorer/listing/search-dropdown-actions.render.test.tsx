@@ -19,7 +19,7 @@
 // walks back into that blast radius, so "a path-shaped query's bare Enter
 // still resolves the path, never the action row" gets its own test below,
 // not just an inference from the source.
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { Clock, Deferred } from "@apps/explorer/listing/hook-harness";
@@ -27,65 +27,33 @@ import { resetFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { resetSearchSlot } from "@apps/explorer/search-slot";
 import { resetHome } from "@apps/explorer/listing/home-path";
 
-// FINDING 7 (code review, 2026-09-10): this file used to rely on the REAL
-// `@platform/lib/router` module — via `navigate()`'s own call to
-// `window.history.pushState`, stubbed below — to prove Enter navigated.
-// `useListingSearch.render.test.ts` (unchanged by this branch) calls
-// `mock.module("@platform/lib/router", ...)` with a stub that omits
-// `navigate` entirely, and bun's `mock.module` replaces the module
-// registry entry for the WHOLE PROCESS, not just that one test file — so in
-// a full `bun test` run, whichever file's imports resolve "@platform/lib/
-// router" AFTER that call sees the incomplete stub, `navigate` included.
-// This file's own `pushStateCalls` count went from 1 to 0 for exactly that
-// reason: `navigate` bound to `undefined` and its call silently did
-// nothing (`SearchField.tsx`'s own `navigate(typedAddress.path, ...)` never
-// ran). CI stayed green only because Linux happens to enumerate files in a
-// different order than macOS (`bun test`, `.github/workflows/test.yml:142`)
-// — an order-dependent pass is not a pass, and the test below guards PR
-// #1091's HIGH-severity fix, so it must not go silently inert under
-// whatever some OTHER file's stub happens to be this run.
+// FINDING 7 (code review, 2026-09-10), REVISED (2026-09-10, CI failure on
+// paneUrl.test.ts): this file used to `mock.module("@platform/lib/router",
+// ...)` with a COMPLETE replacement (every named export re-typed by hand) to
+// dodge the missing-export crash the two pre-existing partial stubs
+// (`useListingSearch.render.test.ts`, `useListingSelection.render.test.ts`)
+// can cause elsewhere in a full run. That traded one process-wide problem
+// for another: bun's `mock.module` replaces the module registry entry for
+// the WHOLE PROCESS, so `paneUrl.ts`'s `withPreviewFlag` import — resolved
+// by whichever test file happens to load it AFTER this one, e.g.
+// `paneUrl.test.ts`, completely unrelated to this branch — silently got this
+// file's `(src) => src` identity stub instead of the real implementation,
+// failing `paneSrcFor`'s idempotence assertion on Linux CI (file enumeration
+// order differs from macOS; `bun test`, `.github/workflows/test.yml:142`).
 //
-// The fix: stub the module ourselves, completely — EVERY named export
-// `@platform/lib/router.ts` actually has, confirmed against the module
-// itself rather than only the handful this file's own import graph happens
-// to reach today (a narrower list would just move the missing-export crash
-// to whichever export some FUTURE change under this tree starts reading) —
-// and track `navigate()`'s OWN calls directly rather than an implementation
-// detail of the real one (`history.pushState`). This makes the test's
-// verdict independent of whatever mock.module call ran earlier in the same
-// process, instead of merely avoiding the missing-export crash that already
-// happened once on this project (see this test file's own module-level
-// comment above and DECISIONS-omnibox-search-affordance.md).
+// The fix: don't touch the module registry at all. `spyOn` the ONE function
+// this file needs to observe (`navigate`) directly on the real, imported
+// module object, and `mockRestore()` it in `afterEach` — scoped to this
+// file's own tests and reversible, so every file that loads
+// `@platform/lib/router` after this one (in either direction) sees the real
+// module again, `withPreviewFlag` included. This also means every OTHER
+// export (`urlForFsPath`, `replaceSearch`, `currentUrl`, …) is the genuine
+// implementation for this file's own tests too — they run against the real
+// globalThis.history/document/window stubs set up in beforeEach below
+// exactly the way production code does, rather than a hand-typed
+// approximation of them.
 let navigateCalls: { fsPath: string; opts: unknown }[];
-mock.module("@platform/lib/router", () => ({
-  VIEW_PREFIX: "/explorer/view/",
-  EMBED_PREFIX: "/explorer/embed/",
-  rewriteLegacyUrl: (url: string) => url,
-  IS_EMBED: false,
-  PREVIEW_PARAM: "_preview",
-  IS_PREVIEW: false,
-  withPreviewFlag: (src: string) => src,
-  IS_SNAPSHOT: false,
-  IS_TOP_EMBED: false,
-  isPanelPath: () => false,
-  IS_PANEL_PANE: false,
-  IS_FOREIGN_EMBED: false,
-  NAV_EVENT: "fused:navigate",
-  rootedFsPath: (joined: string) => joined,
-  fsPathFromLocation: () => null,
-  encodeFsPathSegments: (fsPath: string) => fsPath,
-  urlForFsPath: (fsPath: string) => fsPath,
-  embedUrlForFsPath: (fsPath: string) => fsPath,
-  viewUrlForFsPath: (fsPath: string) => fsPath,
-  navigate: (fsPath: string, opts?: unknown) => {
-    navigateCalls.push({ fsPath, opts });
-  },
-  navHintIsDir: () => null,
-  navHintQCommitted: () => false,
-  replaceSearch: () => {},
-  navigateUrl: () => {},
-  currentUrl: () => "",
-}));
+let navigateSpy: ReturnType<typeof spyOn>;
 
 const realFetch = globalThis.fetch;
 let configReply: Deferred<{ home: string }>;
@@ -135,6 +103,14 @@ function fakeFetch(url: string | URL): Promise<Response> {
 (globalThis as Record<string, unknown>).location = { pathname: "/x", search: "" };
 
 const { FileSearchField } = await import("@apps/explorer/FileSearchField");
+// Imported dynamically, AFTER the `location` stub above and AFTER
+// FileSearchField's own transitive import of this module — a static
+// `import * as router` here would be hoisted ahead of that stub and crash
+// router.ts's module-init IIFE (`location is not defined`). By this point
+// the module is already evaluated and cached (FileSearchField -> SearchField
+// -> router), so this just returns the same namespace object — no second
+// evaluation, no ordering hazard.
+const router = await import("@platform/lib/router");
 
 const clock = new Clock();
 const mounted: ReactTestRenderer[] = [];
@@ -144,6 +120,9 @@ beforeEach(() => {
   listDirEntries = {};
   statOkPaths = new Set();
   navigateCalls = [];
+  navigateSpy = spyOn(router, "navigate").mockImplementation((fsPath: string, opts?: unknown) => {
+    navigateCalls.push({ fsPath, opts });
+  });
   resetHome();
   globalThis.fetch = fakeFetch as typeof fetch;
   clock.install();
@@ -166,6 +145,7 @@ afterEach(() => {
   }
   globalThis.fetch = realFetch;
   clock.restore();
+  navigateSpy.mockRestore();
   delete (globalThis as Record<string, unknown>).history;
   delete (globalThis as Record<string, unknown>).document;
   resetFolderChrome();
