@@ -723,9 +723,14 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
         "cancellable": True,
         # A finished scan's success has no destination worth keeping — the
         # index itself isn't a file a click could open — so nobody asked for
-        # this row to stick around (SPEC actionable-notifications). A failed
-        # or cancelled run still surfaces: `effective_tier`'s override turns
-        # this into `attention` regardless of the tier declared here.
+        # this row to stick around (SPEC actionable-notifications), and
+        # `_sweep` ages a `done` transient row like this one out on the
+        # read-gated clock rather than waiting on a dismiss. A failed or
+        # cancelled run is different on both counts: `effective_tier`'s
+        # override turns it `attention` for VISIBILITY, and `_sweep` only
+        # ages a transient row out once its state is `done` — an
+        # error/cancelled row here is kept until dismissed, same as any
+        # other row a surface can show and let the user clear.
         "tier": jobs.TRANSIENT,
     }
     if running:
