@@ -3050,6 +3050,63 @@ def test_an_unload_does_not_inherit_a_downloads_trail_tier(fake_runner):
         "the unload's own report must not inherit the download's trail tier"
 
 
+def test_a_resident_loads_opening_report_does_not_inherit_a_downloads_trail_tier(
+        fake_runner, monkeypatch):
+    """`_start_resident`'s OPENING `state="running"` report — the one it sends
+    before `_bring_up` even starts its thread — shares `job_id_for(model)`
+    with a weights-only download of the same model. If that download ran
+    last, the row already sits at `tier=jobs.TRAIL`; a fresh resident load
+    must restate its own `tier=jobs.TRANSIENT` on that very first report, not
+    run the whole load under the stale `TRAIL` a previous producer left
+    behind (`Job.tier`'s own comment: every producer restates tier on every
+    report; it never relies on what an earlier one left).
+
+    `FAKE_LOAD_SECONDS` is widened so the assertion below reliably lands
+    before `_bring_up`'s own thread reaches `ready` and overwrites the row
+    with its terminal report — this test is about the OPENING report, which
+    a race against a near-instant fake load would let slip past unobserved.
+    """
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.5")
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    supervisor.unload("org/small")
+
+    jobs.upsert({"id": job, "kind": "download", "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/small", job)
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.TRAIL
+
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "running"
+    assert row["tier"] == jobs.TRANSIENT, \
+        "the new load's opening report must not run under the download's stale trail tier"
+    _wait_ready("org/small")
+
+
+def test_a_weights_only_downloads_opening_report_does_not_inherit_a_loads_transient_tier(fake_runner):
+    """The mirror of the resident-load case: `load(weights_only=True)`'s
+    opening `state="running"` report also shares `job_id_for(model)`, and
+    must restate its own `tier=jobs.TRAIL` right away rather than running
+    under a stale `TRANSIENT` a prior resident load (or unload) left on the
+    row."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.TRANSIENT
+
+    supervisor.unload("org/small")
+
+    supervisor.load("org/small", registry.TEXT_GENERATION, weights_only=True)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "running"
+    assert row["tier"] == jobs.TRAIL, \
+        "the new download's opening report must not run under the load's stale transient tier"
+    _drain_downloads()
+
+
 def test_os_footprint_probe_returns_a_plausible_figure_or_none():
     """D597: the live figure's probe. Deliberately does NOT pin a byte count —
     it varies per machine and per moment — only that it answers with something

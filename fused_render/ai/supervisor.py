@@ -1468,8 +1468,16 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             with _lock:
                 _draining.pop(current.token, None)
 
+    # `tier=jobs.TRANSIENT` restated explicitly: `job` is `job_id_for(model)`,
+    # the same row a weights-only download or an unload of this model reports
+    # through, and `Job.tier` sticks until a report says otherwise (`upsert`'s
+    # `"tier" in body` gate) — without restating it here, a load started right
+    # after a download runs its entire "running" phase under that download's
+    # stale `TRAIL`, not the `TRANSIENT` this row's own success (`_bring_up`)
+    # and failure both already declare.
     _report(job, title=model, model=model, state="running", kind="download",
-            cancellable=True, detail="Preparing…", done=None, total=None)
+            cancellable=True, detail="Preparing…", done=None, total=None,
+            tier=jobs.TRANSIENT)
     threading.Thread(target=_bring_up, args=(runner, worker, job),
                      name=f"ai-load-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": worker.state}, worker
@@ -1500,9 +1508,12 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
             return {"jobId": job, "model": model, "state": "downloading"}
         _downloads[model] = {"model": model, "capability": capability,
                              "jobId": job, "startedAt": time.time()}
+    # `tier=jobs.TRAIL` restated explicitly, for the same reason the resident
+    # load's own opening report above restates `TRANSIENT`: this row may still
+    # carry a stale tier from an earlier load or unload of the same model.
     _report(job, title=model, model=model, state="running", kind="download",
             cancellable=True, unit="bytes", detail="Preparing…", done=None,
-            total=None)
+            total=None, tier=jobs.TRAIL)
     threading.Thread(target=_fetch_only, args=(runner, model, job),
                      name=f"ai-fetch-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": "downloading"}
