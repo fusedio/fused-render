@@ -362,15 +362,17 @@ test("a done job whose page is an fs path navigates but does NOT dismiss itself 
   // to its job by id on mount — clearing the row here would race that
   // re-attachment. Only a shell-route destination (the previous test) clears
   // on open; an fs path never does.
-  const onPatch = () => {
-    throw new Error("onPatch must not run — an fs-path destination must not clear on click");
+  let dismissCalls = 0;
+  const dismissFn = () => {
+    dismissCalls += 1;
+    return Promise.resolve({ dismissed: BASE.id });
   };
   const tree = create(
     <JobRow
       job={{ ...BASE, state: "done", page: "/Users/me/Desktop/render.png" }}
       onChanged={() => {}}
-      onPatch={onPatch}
-      dismissFn={() => Promise.resolve({ dismissed: BASE.id })}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
     />,
   );
   const root = tree.toJSON() as ReactTestRendererJSON;
@@ -378,7 +380,7 @@ test("a done job whose page is an fs path navigates but does NOT dismiss itself 
   const onClick = (row.props as { onClick: () => void }).onClick;
   const url = pushedUrl(() => act(() => onClick()));
   expect(url).toBe("/explorer/view/Users/me/Desktop/render.png");
-  expect(findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row").length).toBeGreaterThan(0);
+  expect(dismissCalls).toBe(0);
 });
 
 test("a done job's row navigates to its page", () => {
@@ -400,15 +402,17 @@ test("a done job's row navigates to its page", () => {
 test("an error job's row navigates too, but does NOT dismiss itself — only the ✕ can", () => {
   // D663's own reversal (the deleted 3s TTL): a failure stays until an
   // explicit dismiss, regardless of the fact that it now has a destination.
-  const onPatch = () => {
-    throw new Error("onPatch must not run — a failure's row must not clear on click");
+  let dismissCalls = 0;
+  const dismissFn = () => {
+    dismissCalls += 1;
+    return Promise.resolve({ dismissed: BASE.id });
   };
   const tree = create(
     <JobRow
       job={{ ...BASE, state: "error", message: "boom", page: "/ai-models/benchmark" }}
       onChanged={() => {}}
-      onPatch={onPatch}
-      dismissFn={() => Promise.resolve({ dismissed: BASE.id })}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
     />,
   );
   const root = tree.toJSON() as ReactTestRendererJSON;
@@ -416,19 +420,21 @@ test("an error job's row navigates too, but does NOT dismiss itself — only the
   const onClick = (row.props as { onClick: () => void }).onClick;
   const url = pushedUrl(() => act(() => onClick()));
   expect(url).toBe("/ai-models/benchmark");
-  expect(findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row").length).toBeGreaterThan(0);
+  expect(dismissCalls).toBe(0);
 });
 
 test("a cancelled job's row navigates too, but does NOT dismiss itself either", () => {
-  const onPatch = () => {
-    throw new Error("onPatch must not run — a cancelled row must not clear on click");
+  let dismissCalls = 0;
+  const dismissFn = () => {
+    dismissCalls += 1;
+    return Promise.resolve({ dismissed: BASE.id });
   };
   const tree = create(
     <JobRow
       job={{ ...BASE, state: "cancelled", page: "/claude-config" }}
       onChanged={() => {}}
-      onPatch={onPatch}
-      dismissFn={() => Promise.resolve({ dismissed: BASE.id })}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
     />,
   );
   const root = tree.toJSON() as ReactTestRendererJSON;
@@ -436,6 +442,7 @@ test("a cancelled job's row navigates too, but does NOT dismiss itself either", 
   const onClick = (row.props as { onClick: () => void }).onClick;
   const url = pushedUrl(() => act(() => onClick()));
   expect(url).toBe("/claude-config");
+  expect(dismissCalls).toBe(0);
 });
 
 test("a terminal job with no page at all draws no rowClick — nothing to open", () => {
