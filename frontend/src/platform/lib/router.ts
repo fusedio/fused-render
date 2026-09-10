@@ -534,13 +534,21 @@ export function navigateToJobPage(page: string): void {
   // a rendered .png/.mp4) or a directory? A rendered output's own path is now
   // a real destination (an image/video job with no X-Fused-Page opens the
   // file itself), so the old `/\.html?$/i` test — which called every non-html
-  // path a directory, .png included — is wrong for it. Any basename ending in
-  // a recognisable extension (a dot with no further "/" or "." after it) is a
-  // file; anything else (a repo root, a folder with no dot in its name) is a
-  // directory. `.html`/`.htm` keep behaving exactly as before, since they are
-  // themselves an extension this test already matches.
+  // path a directory, .png included — is wrong for it.
+  //
+  // A CLOSED LIST, not "any dot with no further '/' or '.' after it" — that
+  // looser test paints a real dotted FOLDER name as a file (`site.com`,
+  // `app.v2`, `.config`; the same shape `github_setup.py`'s repo root,
+  // `envinstall.py`'s `project_dir`, and `_start_render`'s failure `out_dir`
+  // can all legitimately be), which is a new wrong answer where the old
+  // `.html?` test happened to be right. Only the extensions a real producer
+  // is known to write get to say "file": `.html`/`.htm` (a page's own
+  // X-Fused-Page) and `.png`/`.mp4` (an image/video render's output path,
+  // `routers/ai_runtime.py`). Anything else is painted as a directory —
+  // cosmetic either way, so the safe default when in doubt.
   const base = page.slice(page.lastIndexOf("/") + 1);
-  navigate(page, { isDir: !/\.[^./]+$/.test(base) });
+  const KNOWN_FILE_EXTENSIONS = /\.(html?|png|mp4)$/i;
+  navigate(page, { isDir: !KNOWN_FILE_EXTENSIONS.test(base) });
 }
 
 // Whether `page` is one of the shell routes above rather than an fs path —

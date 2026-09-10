@@ -312,6 +312,17 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
     const dotDir = pushedJobPage("/Users/me/Work/widget-v1.2/output");
     expect(dotDir.state).toEqual({ fsDir: true });
   });
+
+  test("a dotted folder NAME itself paints as a directory, not a file — the extension list is closed", () => {
+    // "any dot with no further '/' or '.' after it" would call each of these
+    // a file; none of them is one — a domain-style repo root
+    // (github_setup.py), a dotfile-style project directory (envinstall.py's
+    // project_dir), and a versioned folder are all real, legitimate
+    // directory names a producer can hand back as `page`.
+    expect(pushedJobPage("/Users/me/Work/site.com").state).toEqual({ fsDir: true });
+    expect(pushedJobPage("/Users/me/Work/app.v2").state).toEqual({ fsDir: true });
+    expect(pushedJobPage("/Users/me/.config").state).toEqual({ fsDir: true });
+  });
 });
 
 describe("isJobPageRoute", () => {
