@@ -1155,3 +1155,21 @@ rows, which keep the single-line ellipsis they need.
 pane width (`agent-browser`, screenshots in the session scratchpad) — the
 row wraps onto multiple lines rather than clipping. `bun test
 src/apps/explorer` (1146 pass, 0 fail) and `bunx tsc --noEmit` (clean).
+
+## Offer row copy: state-and-pattern only, no echoed query or rung label (2026-09-10)
+
+The row read the original query back (`No matches for {q}.`) and named which
+rung it would run (`{label}: search {pattern} instead`) — accurate, but long
+enough at a narrow pane to be exactly what the wrap fix above has to catch.
+Shortened to "No matches for given search term. Widen instead to: {pattern}"
+— the query is never echoed (nothing here needs it: the user just typed it),
+and the rung's label is not rendered, only its resulting pattern.
+
+The named, ordered rung list in `glob-broaden.ts` (`RUNGS`, each carrying a
+`label`) is unchanged — labels still exist there and still drive which
+pattern is offered and in what order, so a future rung is still a single
+record appended to that list. They simply are not surfaced in this row
+anymore; `broadenOffer.label` is computed but no longer rendered.
+
+**Verification**: `bun test src/apps/explorer` (1146 pass, 0 fail) and
+`bunx tsc --noEmit` (clean).

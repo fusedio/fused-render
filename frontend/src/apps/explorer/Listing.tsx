@@ -1505,16 +1505,20 @@ export default function Listing({
           // The glob-broadening offer: reads as an offer, not a matched
           // file, by reusing this same `status-message` row shape (already
           // the treatment for every OTHER non-file row above — "Searching…",
-          // the capped-away count) rather than a `fh-row`. States the
-          // original pattern found nothing, then names the broadened one it
-          // would rerun AND which dimension it relaxes (glob-broaden.ts's
-          // rung label), so Enter/click's effect is never a surprise. Wired
-          // through `onRowPointerUp` (the same call site every real row
-          // activates from) with the reserved sentinel path rather than a
-          // parallel click handler — see zero-match-offer.ts.
+          // the capped-away count) rather than a `fh-row`. Deliberately
+          // brief: it does not echo the original query back (that's what
+          // "given search term" stands in for) and does not name which
+          // dimension the offered pattern relaxes — both would make this
+          // row long enough to be the very thing finding 5's wrap fix has
+          // to catch at a narrow pane. glob-broaden.ts's rung label still
+          // exists and is still ordered and named there — it just isn't
+          // rendered here. Wired through `onRowPointerUp` (the same call
+          // site every real row activates from) with the reserved sentinel
+          // path rather than a parallel click handler — see
+          // zero-match-offer.ts.
           <tr>
             <td colSpan={cols} className="status-message">
-              No matches for <strong>{q}</strong>.{" "}
+              No matches for given search term. Widen instead to:{" "}
               <button
                 type="button"
                 className="fh-link-button"
@@ -1546,7 +1550,7 @@ export default function Listing({
                   rerunBroadenedSearch();
                 }}
               >
-                {broadenOffer.label}: search <strong>{broadenOffer.pattern}</strong> instead
+                <strong>{broadenOffer.pattern}</strong>
               </button>
             </td>
           </tr>
