@@ -4197,15 +4197,17 @@ def test_a_cancelled_resident_load_restates_trail_tier_instead_of_inheriting_tra
         "a cancelled load must restate its own tier, not inherit the unload's transient one"
 
 
-def test_a_failed_weights_only_download_restates_trail_tier_instead_of_inheriting_transient(
+def test_a_failed_weights_only_download_keeps_trail_tier_instead_of_inheriting_transient(
         fake_runner, monkeypatch):
     """`_fetch_only`'s two failure-shaped terminal reports — the busy-wait
     loop's own `cancelled` report and the outer `except` block's
-    `cancelled`/`error` report — both now restate `tier=jobs.TRAIL`
-    explicitly too, the same discipline its own success report
-    (`state="done", tier=jobs.TRAIL`) already followed. Without it, a
-    download that fails right after a load/unload of the SAME model would
-    run its failure report under that producer's stale `TRANSIENT`."""
+    `cancelled`/`error` report — restate no tier of their own; unlike
+    `_bring_up`'s resident load, this path never needs to, because
+    `load(weights_only=True)` already opens the row with `tier=jobs.TRAIL`
+    before this run's failure could ever fire (`Job.tier` sticks until a
+    later report says otherwise), so a download that fails right after a
+    load/unload of the SAME model still reports its own tier, restated at
+    open rather than at the terminal report."""
     supervisor.load("org/small", registry.TEXT_GENERATION)
     _wait_ready("org/small")
     job = supervisor.job_id_for("org/small")

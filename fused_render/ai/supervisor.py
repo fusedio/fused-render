@@ -1314,11 +1314,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         while proc.poll() is None:
             if stub.stopping or _cancel_requested(job):
                 _terminate(stub)
-                # `tier=jobs.TRAIL` restated for the same reason the success
-                # report a few lines down restates it: this id is shared
-                # with a resident load and an unload, and `Job.tier` is
-                # sticky across reports on one id.
-                _report(job, state="cancelled", tier=jobs.TRAIL)
+                _report(job, state="cancelled")
                 return
             time.sleep(0.5)
         if proc.returncode != 0:
@@ -1346,10 +1342,8 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         _report(job, state="done", detail="Downloaded", tier=jobs.TRAIL)
     except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
         message = _failure_text(e)
-        # `tier=jobs.TRAIL` restated for the same sticky-id reason as this
-        # function's other two reports.
         _report(job, state="cancelled" if message == "cancelled" else "error",
-                message=None if message == "cancelled" else message, tier=jobs.TRAIL)
+                message=None if message == "cancelled" else message)
     finally:
         with _lock:
             _worker_tokens.discard(stub.token)
