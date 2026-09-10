@@ -241,9 +241,30 @@ export function SearchField({
   };
   // The teardown Escape and the clear button both need — an uncommitted
   // query is discarded and the box stands down from its pinned-open state.
+  //
+  // ITEM 2 fix (2026-09-10): this used to only empty the query. An empty
+  // query is pristine by definition, and the teaching panel's own gate is
+  // `showSearchExamples(fieldActive, pristine)` — so clearing satisfied the
+  // exact condition that OPENS the panel, and since the clear button's own
+  // onMouseDown calls `preventDefault()` (to stop the browser's native
+  // mousedown-blur from firing before the click completes), the field
+  // stayed focused throughout, so `fieldActive` never went false either.
+  // The result: crumbs visible (query is "" and pinnedOpen is now false —
+  // looks unfocused) with the dropdown still open behind them (the field
+  // never actually blurred). Now sets `fieldActive` false directly, the
+  // same way `navigateToCompletion` above already does, rather than relying
+  // on the `onBlur` handler to get there — and blurs the input explicitly,
+  // which is required anyway since a focused element does not un-focus
+  // itself just because its own state says it should. This lands on the
+  // resting, pre-filled state (an EMPTY query with the field unfocused —
+  // `PathCrumbs` renders the folder's own path here, not this field's
+  // value) and does not fight `onFocus`'s own pre-fill: `onFocus` only
+  // seeds the query when it finds one already empty, which this leaves it.
   const clearSearchQuery = () => {
     setQuery("");
     setPinnedOpen(false);
+    setFieldActive(false);
+    searchInputRef.current?.blur();
   };
   // Tab and a row's own mousedown both COMPLETE TEXT: write the row's path
   // into the field so the dropdown re-keys on the new directory, without
@@ -493,8 +514,10 @@ export function SearchField({
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.preventDefault();
+              // `clearSearchQuery` itself blurs now (ITEM 2 fix, above) —
+              // Escape and the clear button share the exact same teardown,
+              // not two copies of "clear, then remember to also blur."
               clearSearchQuery();
-              e.currentTarget.blur();
               return;
             }
             // `completionKeyAction`/`moveHighlight` stay generic over a row

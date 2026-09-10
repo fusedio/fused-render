@@ -58,13 +58,34 @@ test("clicking it clears via mousedown+preventDefault, never a click handler tha
   expect(nearby).toMatch(/clearSearchQuery\(\)/);
 });
 
-test("the shared teardown clears the query and unpins, but never blurs — only Escape's own handler blurs", () => {
+// ITEM 2 fix (2026-09-10): the clear button used to leave the field
+// focused (its own onMouseDown calls preventDefault(), which suppresses
+// the browser's native mousedown-blur), so an empty, cleared query still
+// satisfied the teaching panel's `fieldActive && pristine` gate and the
+// panel stayed on screen over the resting crumb display — the button
+// meant "get me out" but summoned the very thing being left. The shared
+// teardown now blurs unconditionally, so Escape and the clear button
+// really do share ONE full exit rather than Escape alone remembering to
+// blur afterward.
+test("the shared teardown clears the query, unpins, drops fieldActive, and blurs — one full exit for both callers", () => {
   const at = LISTING.indexOf("const clearSearchQuery = () => {");
   expect(at).toBeGreaterThan(-1);
   const body = LISTING.slice(at, LISTING.indexOf("};", at));
   expect(body).toMatch(/setQuery\(""\)/);
   expect(body).toMatch(/setPinnedOpen\(false\)/);
-  expect(body).not.toMatch(/blur\(\)/);
+  expect(body).toMatch(/setFieldActive\(false\)/);
+  expect(body).toMatch(/searchInputRef\.current\?\.blur\(\)/);
+});
+
+// Escape must not carry a SECOND, redundant blur of its own now that the
+// shared teardown does it — two teardown paths for the same gesture is
+// exactly what the task ruled out.
+test("Escape defers entirely to the shared teardown — no separate blur call of its own", () => {
+  const at = LISTING.indexOf('if (e.key === "Escape")');
+  expect(at).toBeGreaterThan(-1);
+  const body = LISTING.slice(at, LISTING.indexOf("return;", at));
+  expect(body).toMatch(/clearSearchQuery\(\)/);
+  expect(body).not.toMatch(/e\.currentTarget\.blur\(\)/);
 });
 
 test("styled as a quiet pill matching the star's own token pair", () => {

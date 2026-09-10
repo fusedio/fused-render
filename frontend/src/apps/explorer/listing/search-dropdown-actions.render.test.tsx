@@ -120,6 +120,7 @@ beforeEach(() => {
   listDirEntries = {};
   statOkPaths = new Set();
   navigateCalls = [];
+  blurCount = 0;
   navigateSpy = spyOn(router, "navigate").mockImplementation((fsPath: string, opts?: unknown) => {
     navigateCalls.push({ fsPath, opts });
   });
@@ -169,10 +170,24 @@ async function tick(ms: number): Promise<void> {
   });
 }
 
+// react-test-renderer gives host nodes a null `instance` unless told
+// otherwise, so `searchInputRef.current` (SearchField.tsx's own ref onto
+// the real <input>) is null by default and every `?.focus()`/`?.blur()`/
+// `?.select()` call on it silently no-ops — fine for tests that don't care,
+// but ITEM 2's fix depends on `clearSearchQuery` actually calling
+// `.blur()`, so `blurCount` gives that call somewhere to land and be
+// observed.
+let blurCount = 0;
+
 function mount(fsPath: string): ReactTestRenderer {
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(createElement(FileSearchField, { active: true, fsPath }));
+    renderer = create(createElement(FileSearchField, { active: true, fsPath }), {
+      createNodeMock: (element) =>
+        element.type === "input"
+          ? { focus: () => {}, select: () => {}, blur: () => { blurCount++; } }
+          : null,
+    });
   });
   mounted.push(renderer);
   return renderer;
@@ -453,6 +468,45 @@ describe("arrow keys stop at the dropdown when it is open (defect: one keypress 
       }),
     );
     expect(stopped).toBe(false);
+  });
+});
+
+describe("the clear button exits the omnibox entirely (ITEM 2, 2026-09-10)", () => {
+  // Before the fix: the clear button's own onMouseDown calls
+  // preventDefault() (so the box's own text isn't lost to the browser's
+  // native mousedown-blur before the click completes), which ALSO meant the
+  // field never actually blurred — `clearSearchQuery` only emptied the
+  // query, leaving `fieldActive` true. An empty query is pristine by
+  // definition, so the teaching panel's gate (`fieldActive && pristine`)
+  // was satisfied by the very click meant to leave it. Driven here through
+  // the real completion dropdown (this harness's FileSearchField passes no
+  // `entries`, so the teaching-examples panel itself never renders through
+  // it — see search-examples*.test.ts for that surface, and DECISIONS'
+  // "Correction 4" for why `entries: []` yields no examples by design) —
+  // the underlying defect is the same one either dropdown surface would
+  // show: the box looks unfocused but the dropdown stays open behind it.
+  test("clicking clear closes the dropdown, empties the box, and returns keyboard focus to the listing", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    listDirEntries["/home/iamsdas"] = [{ name: "Documents", is_dir: true, size: null }];
+    await focusAndType(renderer, "/home/iamsdas/Doc");
+
+    // Dropdown is genuinely open with a real completion.
+    expect(completionRows(renderer).some((r) => rowText(r).includes("Documents"))).toBe(true);
+
+    const clearButton = renderer.root.findByProps({ "aria-label": "Clear search" });
+    await flush(() =>
+      clearButton.props.onMouseDown({ preventDefault: () => {} }),
+    );
+
+    expect(input(renderer).props.value).toBe("");
+    // The dropdown is gone, not just re-keyed to an empty query.
+    expect(completionRows(renderer).length).toBe(0);
+    // Back to the resting, unfocused, pre-filled-on-next-focus state: the
+    // "Search this folder" button reoccupies the trailing slot, which only
+    // renders once BOTH `pinnedOpen` and `hasClear` are false.
+    expect(renderer.root.findAllByProps({ title: "Search this folder" }).length).toBe(1);
+    expect(blurCount).toBe(1);
   });
 });
 
