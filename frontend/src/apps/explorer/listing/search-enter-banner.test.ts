@@ -1,10 +1,10 @@
 // The Enter-to-open-and-search banner (Listing.tsx's `searching &&
-// !showsSearchHits && !isOpenFolderQuery` branch, the row built from
-// `enterPrompt`) is the one `.status-message` site that is an instruction
-// rather than a state report, so it carries a modifier class the other
-// eleven `.status-message` sites do not. Same CSS-parsing pattern as
-// search-bar-expand.test.ts: read explorer.css and Listing.tsx as text, no
-// DOM in this suite.
+// !showsSearchHits && (!isPathQuery || pathQueryRefused)` branch, the row
+// built from `enterPrompt`/`pathNotFoundMessage`) is the one `.status-message`
+// site that is an instruction OR a refusal report rather than a plain state
+// report, so it carries a modifier class the other eleven `.status-message`
+// sites do not. Same CSS-parsing pattern as search-bar-expand.test.ts: read
+// explorer.css and Listing.tsx as text, no DOM in this suite.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,7 +27,7 @@ function rulesFor(selectorExact: string): string[] {
 
 test("the gate that renders the row also carries the modifier class", () => {
   const gate = LISTING.indexOf(
-    "if (searching && !showsSearchHits && !isOpenFolderQuery)",
+    "if (searching && !showsSearchHits && (!isPathQuery || pathQueryRefused))",
   );
   expect(gate).toBeGreaterThan(-1);
   const enterCall = LISTING.indexOf("enterPrompt(", gate);

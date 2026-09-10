@@ -3,7 +3,12 @@
 //
 // A non-empty query (at least MIN_QUERY_CHARS long — the same gate the home
 // page's box uses, lib/home-search) swaps the listing for flat, rank-ordered
-// results over the whole subtree. WHERE those results come from is the
+// results over the whole subtree — UNLESS the query is path-shaped and
+// glob-free (`isPathQuery`, path-shaped-query.ts), in which case no request
+// is ever issued at all: the completion dropdown already answers that query
+// on its own (`useCompletion.ts`), and a rank request behind the same text
+// would only echo it back with a count nobody asked for. WHERE those results
+// come from, when they do run, is the
 // server's call, never this file's: `GET /api/index/rank` filters and ranks
 // in the index and says WHY when it cannot yet (listing/index-source). A
 // folder no scan will ever cover — a remote mount, a package, one the ignore
@@ -38,6 +43,7 @@ import {
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
 import { escapesBase } from "@apps/explorer/listing/query-base";
+import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
 import { navHintQCommitted, replaceSearch } from "@platform/lib/router";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
 import { MIN_QUERY_CHARS } from "@apps/explorer/lib/home-search";
@@ -100,7 +106,18 @@ interface RankAnswer {
 // `urlSync=false` (an embedded Listing, e.g. the preview pane's `_listing`
 // mode) keeps the query fully local: it neither seeds from ?q nor mirrors
 // keystrokes back to the address bar — that URL belongs to the host view.
-export function useListingSearch(fsPath: string, refresh: number, urlSync = true) {
+//
+// `home` is here for exactly one thing: resolving `isPathQuery` below (a
+// leading "~" needs it the same way `listingAddress` always has). Threaded in
+// rather than read some other way so this stays the one place that answer is
+// computed, for the one hook that both drives the rank request AND is the
+// query's source of truth.
+export function useListingSearch(
+  fsPath: string,
+  home: string | undefined,
+  refresh: number,
+  urlSync = true,
+) {
   // The owner's unranked-search preference (D720) — same module-level cache
   // FilesHome.tsx's home search reads; both boxes honour the one setting.
   const rankedPref = useRankedSearchEnabled();
@@ -122,6 +139,22 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // `isStale` is completed below, once the request's own pending state is
   // known: the input can have settled while the answer for it is in flight.
   const deferredStale = query.trim() !== q;
+
+  // Decision 5 revisited: a path-shaped, non-glob query (`path-shaped-
+  // query.ts`) never runs a rank request — the same "any search on an
+  // unpatterned path is useless" call the chip's own word choice makes
+  // (SearchField.tsx's `chipIsSearch`), computed once here so the two can
+  // never disagree. Read off the LIVE `query`, not the deferred `q` below:
+  // the chip flips on every keystroke, not a beat behind it, and this is the
+  // one value both this hook's own gate and every caller (Listing.tsx,
+  // FileSearchField.tsx) read for that same immediate answer.
+  const isPathQuery = isPathShapedQuery(query, fsPath, home);
+  // What `searching` meant before this predicate existed: a real search is
+  // actually going to run. `searching` itself stays pure length — the box
+  // still visually expands for a typed path the same as for a typed filter —
+  // so every place below that means "is a rank request live or landing" reads
+  // this instead, never the raw flag.
+  const runsSearch = searching && !isPathQuery;
 
   // A query whose base can differ from the folder being searched — a leading
   // "~", a leading "/", a drive letter, or a ".." segment — waits for an
@@ -335,8 +368,14 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // ONE REQUEST PER QUERY, abortable, and never queued: the answer to a query
   // the user has already edited is worth nothing, and letting it land would
   // repaint the list backwards.
+  //
+  // `!runsSearch` covers two cases the same way: nothing typed yet
+  // (`!searching`), and a path-shaped query typed instead (`isPathQuery`) —
+  // the completion dropdown (`useCompletion.ts`) already answers that one on
+  // its own, cheaper, listing-based path, so no rank request goes out behind
+  // it at all.
   useEffect(() => {
-    if (!searching) {
+    if (!runsSearch) {
       inflight.current?.abort();
       inflightKey.current = null;
       setPending(false);
@@ -457,7 +496,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- applyStep is
     // recreated each render; everything it reads is a ref or listed here.
-  }, [fsPath, q, searching, pinned, lifecycle, retryNonce, pollTick, polling, rankedPref, gateNonce]);
+  }, [fsPath, q, searching, isPathQuery, pinned, lifecycle, retryNonce, pollTick, polling, rankedPref, gateNonce]);
 
   // The poll itself: while a scan covering this folder is running, ask again
   // on a modest cadence and repaint. The ordering WILL shift as rows land;
@@ -566,8 +605,10 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // newer request is out, which `staleRows` below flags separately — its
   // `base` is real and gets named again; a query that never leaves `fsPath`
   // resolves to `fsPath` itself once it lands, so it is never stuck showing
-  // nothing.
-  const searchBase = !searching
+  // nothing. A path-shaped query (`isPathQuery`, no rank request ever goes
+  // out) never gets an answer either, so it falls in with "not searching"
+  // here too — the resting `fsPath` base, not a permanently-empty one.
+  const searchBase = !runsSearch
     ? fsPath.replace(/\/$/, "")
     : answer !== null
       ? answer.base
@@ -592,7 +633,20 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // `q` trails the input by a commit under load, so there is a render where
   // the rows answer a query the user has already typed past while nothing is
   // in flight at all.
-  const rowsAnswerQuery = !searching || (!staleRows && !deferredStale);
+  //
+  // `!searching`, NOT `!runsSearch`: an empty box is the one case where
+  // "rows" (the folder's own, via `navRows`/`showsSearchHits` in Listing.tsx)
+  // are trivially the answer — there is no query to answer. A path-shaped
+  // query is `searching` (there IS a query) but `runsSearch` is false (no
+  // rank request is ever issued for it), and its rows are the same folder
+  // listing, which does NOT answer an arbitrary typed path. Folding that case
+  // into the `!runsSearch` shortcut (as an earlier version of this did) made
+  // `rowsAnswerQuery` true for every path-shaped query, and the document
+  // Enter handler (useListingSelection.ts) reads exactly this flag to decide
+  // whether opening `rows[0]` with nothing selected is a safe guess — so it
+  // opened an arbitrary, unrelated folder row on Enter (code review finding
+  // 1). `runsSearch` is still what decides staleness for an actual search.
+  const rowsAnswerQuery = !searching || (runsSearch && !staleRows && !deferredStale);
 
   // The mode the LAST settled answer actually ran under — "substring" once
   // nothing has searched yet, since that is the cap capHits already defaults
@@ -613,7 +667,14 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // (listing/types SearchState): idle outside search, pending with nothing to
   // show yet, a failure with nothing to show, or a settled answer carrying
   // the truncation the count chip owns up to.
-  const searchState: SearchState = !searching
+  //
+  // `!runsSearch`, not `!searching`: a path-shaped query is exactly as idle
+  // as an empty box, since no request was ever issued for it and none ever
+  // will be. Without this a committed path-shaped query (`gateOpen` true,
+  // `answer` permanently `null`) would fall through to the `pending` branch
+  // below and sit there forever — a spinner for a request that will never
+  // exist.
+  const searchState: SearchState = !runsSearch
     ? IDLE_SEARCH
     : !gateOpen && answer === null
       // Decision 4: nothing has ever been asked for this query yet, and
@@ -675,7 +736,7 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
   // No spinner flash: a pending indicator appears only once being pending is
   // information rather than a flicker. The common answer lands well inside
   // PENDING_INDICATOR_MS.
-  const unsettled = searching && (scanPending || searchState.status === "pending");
+  const unsettled = runsSearch && (scanPending || searchState.status === "pending");
   const [slow, setSlow] = useState(false);
   useEffect(() => {
     if (!unsettled) {
@@ -691,6 +752,10 @@ export function useListingSearch(fsPath: string, refresh: number, urlSync = true
     setQuery,
     q,
     searching,
+    // Path vs. Search — see path-shaped-query.ts. The one predicate every
+    // caller reads for the chip, the enter banner, the footer, AND (above)
+    // whether this hook ever asks the index anything at all.
+    isPathQuery,
     isStale,
     // Decision 4: a query whose base escapes the box root waits for this
     // before it fetches.

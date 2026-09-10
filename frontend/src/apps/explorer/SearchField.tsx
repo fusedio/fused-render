@@ -73,7 +73,13 @@ export interface SearchFieldProps {
   query: string;
   setQuery: (q: string) => void;
   searching: boolean;
-  isOpenFolderQuery: boolean;
+  /**
+   * Path-shaped and glob-free (path-shaped-query.ts's `isPathShapedQuery`) —
+   * shape only, never existence. The same value gates whether the caller's
+   * own `useListingSearch` ever issues a rank request at all, so the chip
+   * and the actual search behaviour can never disagree.
+   */
+  isPathQuery: boolean;
   /**
    * Whether the CURRENT query has a committed, matching search behind it
    * (Listing.tsx's `showsSearchHits`, `showingSearchHits(searchState,
@@ -113,7 +119,7 @@ export function SearchField({
   query,
   setQuery,
   searching,
-  isOpenFolderQuery,
+  isPathQuery,
   committed,
   escapes,
   commitSearch,
@@ -129,14 +135,16 @@ export function SearchField({
 }: SearchFieldProps) {
   const crumbsPath = crumbsFsPath ?? fsPath;
 
-  // The field's own mode chip: whether the box currently holds the open
-  // folder's own path (nothing typed yet, or the seed left untouched) or a
-  // real pending search. `searching` already answers "is anything typed at
-  // all"; layered onto it, `isOpenFolderQuery` is the one existing predicate
-  // for "typed text that still just names the folder already open"
-  // (query-current-folder.ts) — there is no second, parallel test for "is
-  // this a search" here, only these two already-computed booleans.
-  const chipIsSearch = searching && !isOpenFolderQuery;
+  // The field's own mode chip: whether the box holds a path-shaped, glob-free
+  // query (real folder path, a bare tilde, a partial prefix of one — shape
+  // only, never existence: path-shaped-query.ts) or a real pending search.
+  // `searching` already answers "is anything typed at all"; layered onto it,
+  // `isPathQuery` is the one existing predicate for "this reads as a path" —
+  // there is no second, parallel test for "is this a search" here, only
+  // these two already-computed booleans, and this is the SAME value the
+  // caller's own `useListingSearch` gates its rank request on, so the chip
+  // and whether a search actually ran can never disagree.
+  const chipIsSearch = searching && !isPathQuery;
 
   // Decision 1: the focused-and-empty hint's two variants — the full example
   // teaches the pattern syntax in the space it takes to read it, but a narrow
@@ -272,6 +280,12 @@ export function SearchField({
         ref={searchBoxRef}
         className={
           "listing-search-box" +
+          // `.search` here (not just on the chip below) is what gives
+          // `--chip-inset` (explorer.css) somewhere to be set per mode: the
+          // crumbs and the input both read it from THIS element, an
+          // ancestor of both, rather than each needing their own copy of
+          // the mode class.
+          (chipIsSearch ? " search" : "") +
           (hasPin ? " has-pin" : "") +
           (widePin ? " wide-pin" : "") +
           (hasClear ? " has-clear" : "")

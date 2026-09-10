@@ -38,7 +38,18 @@ mock.module("@platform/lib/api", () => ({
     Promise.resolve({ indexing: { enabled: true, ranked: prefsRanked } } as Prefs),
 }));
 
-mock.module("@platform/lib/router", () => ({ replaceSearch: () => {} }));
+// `navHintQCommitted` is read at mount by `useListingSearch` itself (the
+// already-committed-query seed for a navigation that arrived from the file
+// view's merged field) — omitting it here throws `SyntaxError: Export named
+// 'navHintQCommitted' not found` at import time and fails this WHOLE FILE to
+// load, silently voiding every describe block below (including "a
+// path-shaped query never asks the index"). No test in this file exercises
+// that seeding path, so a plain `false` (every mount behaves like a fresh
+// load) is enough.
+mock.module("@platform/lib/router", () => ({
+  replaceSearch: () => {},
+  navHintQCommitted: () => false,
+}));
 
 const { useListingSearch } = await import("@apps/explorer/listing/useListingSearch");
 const freshness = await import("@platform/lib/index-freshness");
@@ -85,7 +96,7 @@ afterEach(() => clock.restore());
  * A test driving a SECOND query goes through `setQuery` directly and
  * advances the clock on its own, same as before. */
 async function search(q: string, fsPath = "/d") {
-  const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), fsPath, 0);
+  const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), fsPath, 0);
   await flush(() => box.current().setQuery(q));
   await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
   return box;
@@ -96,7 +107,7 @@ const MAX_SCANNING_POLLS = 80;
 
 describe("the MIN_QUERY_CHARS gate", () => {
   test("a single character never fires a request", async () => {
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
     await flush(() => box.current().setQuery("w"));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(0);
@@ -105,7 +116,7 @@ describe("the MIN_QUERY_CHARS gate", () => {
   });
 
   test("the second character crosses the gate and fires one request", async () => {
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
     await flush(() => box.current().setQuery("w"));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     await flush(() => box.current().setQuery("wi"));
@@ -119,7 +130,7 @@ describe("the MIN_QUERY_CHARS gate", () => {
 
 describe("one request per query, abortable", () => {
   test("a second keystroke before the debounce fires only ONE request", async () => {
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
     await flush(() => box.current().setQuery("wi"));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS / 2));
     await flush(() => box.current().setQuery("widget"));
@@ -223,7 +234,7 @@ describe("an uncovered folder: scan, poll, answer", () => {
   });
 
   test("an escaping query asks for a scan of the resolved base, not the open folder", async () => {
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
     await flush(() => box.current().setQuery("~/other/widget"));
     await flush(() => box.current().commitSearch());
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
@@ -391,7 +402,7 @@ describe("a URL-restored search racing the app's own startup scan", () => {
     // `searching` true on the very first render, the way a `?q=` mount seeds
     // it — no explicit `setQuery` after the harness has settled.
     (globalThis as Record<string, unknown>).location = { search: "?q=widget", pathname: "/x" };
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, true), "/d", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, true), "/d", 0);
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(1);
     await flush(() => rankCalls[0].reply.resolve(answer({ hits: [hit("a/widget.md")], total: 1 })));
@@ -440,7 +451,7 @@ describe("the ranked-search preference (D720)", () => {
 
 describe("decision 4: a query that escapes the box root waits for Enter", () => {
   test("typing a query with a leading ~ fires no request until commitSearch is called", async () => {
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
     await flush(() => box.current().setQuery("~/a/*.py"));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(0);
@@ -461,7 +472,7 @@ describe("decision 4: a query that escapes the box root waits for Enter", () => 
   });
 
   test("a glob anchored at the box root never gates either", async () => {
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
     await flush(() => box.current().setQuery("a/*.py"));
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(1);
@@ -470,7 +481,7 @@ describe("decision 4: a query that escapes the box root waits for Enter", () => 
   });
 
   test("editing a committed escaping query further re-gates until the next commit", async () => {
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/d", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
     await flush(() => box.current().setQuery("~/a/*.py"));
     await flush(() => box.current().commitSearch());
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
@@ -493,6 +504,96 @@ describe("decision 4: a query that escapes the box root waits for Enter", () => 
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
     expect(rankCalls).toHaveLength(2);
     expect(rankCalls[1].q).toBe("~/a/*.pyc");
+    box.unmount();
+  });
+});
+
+describe("a path-shaped query never asks the index (path-shaped-query.ts)", () => {
+  test("a real, existing-shaped absolute path fires no rank request even after Enter", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("/other/folder"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(box.current().searching).toBe(true);
+    expect(box.current().isPathQuery).toBe(true);
+    expect(rankCalls).toHaveLength(0);
+
+    // Escaping (a leading "/") normally waits for Enter — committing it must
+    // not somehow unlock a request that isPathQuery has already ruled out.
+    await flush(() => box.current().commitSearch());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+    expect(box.current().searchState.status).toBe("idle");
+    expect(box.current().displayHits).toEqual([]);
+    box.unmount();
+  });
+
+  test("a partial prefix of a real path is path-shaped too — shape only, never existence", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("/other/fol"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(box.current().isPathQuery).toBe(true);
+    expect(rankCalls).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("the same query WITH a glob still searches — a glob is never path-shaped", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("/other/fol*"));
+    await flush(() => box.current().commitSearch());
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(box.current().isPathQuery).toBe(false);
+    expect(rankCalls).toHaveLength(1);
+    box.unmount();
+  });
+
+  test("a bare filter word is not path-shaped and still searches", async () => {
+    const box = await search("widget");
+    expect(box.current().isPathQuery).toBe(false);
+    expect(rankCalls).toHaveLength(1);
+    box.unmount();
+  });
+
+  // Finding 2 (code review): the "Path" rule is scoped to ABSOLUTE-ish
+  // queries only. A relative slash-bearing query like "src/util" must NOT be
+  // treated as path-shaped — it still live-filters the subtree via a rank
+  // request, exactly as it did before this predicate existed.
+  test("a relative slash-bearing query is not path-shaped and still searches", async () => {
+    const box = await search("src/util");
+    expect(box.current().isPathQuery).toBe(false);
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].q).toBe("src/util");
+    box.unmount();
+  });
+
+  // Finding 1 (code review): a path-shaped query never gets a rank answer, so
+  // `navRows` in Listing.tsx falls back to the FOLDER's own rows (per
+  // `showsSearchHits`) rather than search hits. With no lead selected, the
+  // document Enter handler (useListingSelection.ts) opens `rows[0]` unless
+  // `rowsAnswerQuery` says not to — and those folder rows never answer a
+  // path-shaped query typed in the box, existing or not. Before this fix
+  // `rowsAnswerQuery` was `!runsSearch || …`, which read `true` for every
+  // path-shaped query (runsSearch is false for all of them), so Enter with
+  // nothing selected would open an arbitrary unrelated folder row.
+  //
+  // The original repro (code review) used a RELATIVE path-shaped query
+  // ("docs/rea") — relative slash-bearing queries no longer count as
+  // path-shaped after finding 2's narrowing (see the "Path means
+  // absolute-ish shape" describe block below), so this uses an absolute one
+  // instead; the underlying `rowsAnswerQuery` bug is the same either way.
+  test("rowsAnswerQuery is false for a path-shaped query — Enter must not open an arbitrary folder row", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("/other/fol"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(box.current().searching).toBe(true);
+    expect(box.current().isPathQuery).toBe(true);
+    expect(box.current().rowsAnswerQuery).toBe(false);
+    box.unmount();
+  });
+
+  test("rowsAnswerQuery stays true for an empty box — plain folder browsing is unaffected", async () => {
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    expect(box.current().searching).toBe(false);
+    expect(box.current().rowsAnswerQuery).toBe(true);
     box.unmount();
   });
 });
@@ -569,7 +670,7 @@ describe("decision 10: elapsedMs is the true round-trip, and a held answer keeps
 
 describe("searchBase: the directory hits are relative to", () => {
   test("is the box's own root when nothing is searching", async () => {
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/proj", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/proj", 0);
     expect(box.current().searchBase).toBe("/proj");
     box.unmount();
   });
@@ -580,7 +681,7 @@ describe("searchBase: the directory hits are relative to", () => {
     // callers building a row path from `entry.rel` must join onto the
     // server's `base`, not onto `/proj`. Path-shaped, so it waits for an
     // explicit commit (decision 4).
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/proj", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/proj", 0);
     await flush(() => box.current().setQuery("~/other/rep"));
     await flush(() => box.current().commitSearch());
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
@@ -599,7 +700,7 @@ describe("searchBase: the directory hits are relative to", () => {
     // it — so naming `/proj` here would be the header claiming a base this
     // search does not have. Empty is what the header renders as a bare
     // "Path", not a wrong or stale answer.
-    const box = renderHook((p: string, r: number) => useListingSearch(p, r, false), "/proj", 0);
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/proj", 0);
     await flush(() => box.current().setQuery("~/other/rep"));
     await flush(() => box.current().commitSearch());
     await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));

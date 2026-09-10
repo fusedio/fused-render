@@ -23,28 +23,57 @@ function rulesFor(selectorExact: string): string[] {
   return out;
 }
 
-// The chip's mode is driven off the same predicate introduced for "is the
-// field just holding the open folder's (or file's parent's) own path" — not
-// a second, parallel test for "is this a search". `searching` (non-empty
-// query, useListingSearch.ts) is layered on top only because
-// `queryNamesOpenFolder` itself is false for an empty query too, and an
-// empty field is "Path", not "Search". `isOpenFolderQuery` itself is a prop
-// here — computed once per host (Listing.tsx, FileSearchField.tsx) against
-// that host's own base path, so the two never call `queryNamesOpenFolder`
-// with different arguments for what should be the same answer.
-test("the chip's mode is queryNamesOpenFolder layered under the existing searching gate, not a second predicate", () => {
+// The chip's mode is driven off `isPathQuery` (path-shaped-query.ts's
+// `isPathShapedQuery`, shape only, never existence) layered under the
+// existing `searching` gate — not a second, parallel test for "is this a
+// search". `searching` is layered on top only because `isPathQuery` itself
+// is true for an empty query too (`listingAddress("")` is null, but an empty
+// field renders no chip word choice worth making either way), and the field
+// must read "Path" while genuinely idle. `isPathQuery` itself is a prop
+// here, computed exactly ONCE — inside `useListingSearch.ts`, off the SAME
+// query the hook already owns — and handed down by both hosts (Listing.tsx,
+// FileSearchField.tsx) as a plain destructure of their own hook's return, so
+// there is no second call site that could compute a different answer for the
+// same query.
+test("the chip's mode is isPathQuery layered under the existing searching gate, not a second predicate", () => {
   const at = LISTING.indexOf("const chipIsSearch =");
   expect(at).toBeGreaterThan(-1);
   const line = LISTING.slice(at, LISTING.indexOf(";", at) + 1);
-  expect(line).toMatch(/searching\s*&&\s*!isOpenFolderQuery/);
-  const propAt = LISTING.indexOf("isOpenFolderQuery: boolean;");
+  expect(line).toMatch(/searching\s*&&\s*!isPathQuery/);
+  const propAt = LISTING.indexOf("isPathQuery: boolean;");
   expect(propAt).toBeGreaterThan(-1);
   expect(propAt).toBeLessThan(at);
+
+  // Both hosts read `isPathQuery` off their own `useListingSearch` call
+  // rather than computing it a second way.
   const LISTING_HOST = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
-  const hostPredicateDef = LISTING_HOST.indexOf(
-    "const isOpenFolderQuery = queryNamesOpenFolder(query, fsPath, home);",
+  const listingDestructure = LISTING_HOST.slice(
+    LISTING_HOST.indexOf("const {"),
+    LISTING_HOST.indexOf("useListingSearch("),
   );
-  expect(hostPredicateDef).toBeGreaterThan(-1);
+  expect(listingDestructure).toMatch(/isPathQuery,/);
+
+  const FILE_HOST = readFileSync(join(import.meta.dir, "../FileSearchField.tsx"), "utf8");
+  // The file's own header comment mentions `useListingSearch(` too (its own
+  // call signature, documented) — the REAL call is the one after `const {`.
+  const fileDestructureStart = FILE_HOST.indexOf("const {");
+  const fileDestructure = FILE_HOST.slice(
+    fileDestructureStart,
+    FILE_HOST.indexOf("useListingSearch(", fileDestructureStart),
+  );
+  expect(fileDestructure).toMatch(/isPathQuery,/);
+
+  // The predicate itself lives in exactly one place: useListingSearch.ts
+  // computes it via `isPathShapedQuery`, never re-derived at either host.
+  const HOOK = readFileSync(
+    join(import.meta.dir, "useListingSearch.ts"),
+    "utf8",
+  );
+  expect(HOOK).toMatch(
+    /const isPathQuery = isPathShapedQuery\(query, fsPath, home\);/,
+  );
+  expect(LISTING_HOST).not.toMatch(/isPathShapedQuery\(/);
+  expect(FILE_HOST).not.toMatch(/isPathShapedQuery\(/);
 });
 
 test("the chip renders both words, gated on the same variable that colors it", () => {
@@ -88,17 +117,47 @@ test("the label reserves no minimum width of its own", () => {
   expect(decls[0]).not.toMatch(/width:/);
 });
 
-// The crumbs/input start is a single fixed offset sized for the chip at its
-// widest ("Search"), so it never shifts when the mode word changes — one
-// value, shared by the two places typed text and the crumbs it stands in
-// for both begin.
-test("the crumbs and the input start at the same fixed offset, sized for the chip's widest state", () => {
+// The crumbs and the input read the SAME custom property for their start
+// offset, so a mismatch between the two (a visible text jump on focus) is
+// structurally impossible — one value, set in one place per mode, read in
+// two.
+test("the crumbs and the input start at the same custom property, not two separately-typed numbers", () => {
   const crumbs = rulesFor(".listing-search-crumbs");
   expect(crumbs.length).toBe(1);
-  expect(crumbs[0]).toMatch(/left:\s*67px/);
+  expect(crumbs[0]).toMatch(/left:\s*var\(--chip-inset\)/);
   const input = rulesFor(".listing-search-input");
   expect(input.length).toBe(1);
-  expect(input[0]).toMatch(/padding:\s*6px 10px 6px 67px/);
+  expect(input[0]).toMatch(/padding:\s*6px 10px 6px var\(--chip-inset\)/);
+});
+
+// The property itself is set PER MODE on the box (the same element the mode
+// class already lives on, in the JSX): "Path" gets its own, narrower
+// clearance, and only `.search` overrides it wider — so "Path"'s shorter
+// word leaves no dead space, and the two never drift apart from having been
+// typed twice.
+test("--chip-inset is set once per mode, on the box, not duplicated at the crumbs/input", () => {
+  const base = rulesFor(".listing-search-box");
+  expect(base.length).toBe(1);
+  expect(base[0]).toMatch(/--chip-inset:\s*55px/);
+  const search = rulesFor(".listing-search-box.search");
+  expect(search.length).toBe(1);
+  expect(search[0]).toMatch(/--chip-inset:\s*67px/);
+  // Neither the crumbs nor the input rule sets the variable itself — they
+  // only read it.
+  const crumbs = rulesFor(".listing-search-crumbs");
+  expect(crumbs[0]).not.toMatch(/--chip-inset:/);
+  const input = rulesFor(".listing-search-input");
+  expect(input[0]).not.toMatch(/--chip-inset:/);
+});
+
+// The box, not just the chip, carries the mode class — `--chip-inset` above
+// needs somewhere to be set per mode, and the box is the common ancestor of
+// both the crumbs and the input, so its own classList is that place.
+test("the box's own classList carries the same chipIsSearch-gated mode class the chip does", () => {
+  const at = LISTING.indexOf('"listing-search-box" +');
+  expect(at).toBeGreaterThan(-1);
+  const block = LISTING.slice(at, LISTING.indexOf("}", at));
+  expect(block).toMatch(/chipIsSearch\s*\?\s*"\s*search"\s*:\s*""/);
 });
 
 // The hint: visible only at rest. `pinnedOpen` goes true the instant the

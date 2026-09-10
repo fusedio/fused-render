@@ -32,6 +32,27 @@ function folderToOpen(query: string): string | null {
   return folder || null;
 }
 
+// Finding 3 (code review): a COMMITTED path-shaped query (Enter already
+// pressed — `useListingSearch.ts`'s `gateOpen`) that resolves to no real
+// filesystem entry (`typedAddress.status === "missing"`) was a silent dead
+// end — `enterPrompt` above is never called for it at all (Listing.tsx's
+// banner excludes every `isPathQuery` unconditionally), no rank request is
+// coming (`isPathQuery` suppresses it by design), and the footer shows the
+// folder's own item count, so nothing on screen says the query was refused.
+//
+// This is a REPORT, not an instruction — the user already pressed Enter and
+// got their answer — so it does not reuse `enterPrompt`'s "Press Enter to
+// …" phrasing (that would promise a second Enter will do something, and
+// nothing will). Named the same way the "exists" branch above names a
+// resolved address (its trailing-slash-stripped last segment), since the
+// two are symmetric: one says what Enter opened, this says what it could
+// not find.
+export function pathNotFoundMessage(query: string): string {
+  const trimmed = query.trim().replace(/\/+$/, "");
+  const name = trimmed.split("/").pop() || trimmed;
+  return `No such file or folder: ${name}`;
+}
+
 export function enterPrompt(typedAddress: TypedAddress, query: string): string {
   // Resolved to a real path: name it. Whether it's a file or a folder, Enter
   // opens it, not a search.
