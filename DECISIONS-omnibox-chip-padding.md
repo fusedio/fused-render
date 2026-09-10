@@ -358,3 +358,47 @@ end — see the build report for the final counts. The one known-red file
 (`empty-result.test.tsx`, finding 5's sibling gap) is pre-existing at this
 branch's baseline, confirmed via the stash cycle described under finding 5
 above, and unrelated to any of the six findings' fixes.
+
+## Task 3: "All files" — a navigation shortcut in the home search bar
+
+The user asked for a chip/button in the HOME screen's search bar (`FilesHome.
+tsx`'s `FilesSearch()`, not `SearchField.tsx` — that file is mid-review on
+this same branch and untouched here) that "opens file explorer at home
+directory like the browse files button in the recent files screen." Explicit
+in the brief: this is navigation, not a search modifier — it must not read or
+write `query`/`ai`/anything else `FilesSearch` tracks.
+
+**Reused, verbatim.** The recents screen already has exactly this button:
+`.files-hero-cta` ("Browse files"), rendered beside the tab strip at
+`FilesHome.tsx` (`onClick={() => navigate(home, { isDir: true })}`, `navigate`
+imported module-level from `@platform/lib/router`). Its handler is the literal
+one-liner the new control calls — same `home` prop `FilesSearch` already
+receives, same `navigate(..., { isDir: true })` shape — so there is exactly
+one way this app opens "the home directory as a folder," not two that could
+drift apart.
+
+**What was added.** A second button, inside `.files-search` itself (the
+icon/input/Clear row), styled with the SAME `.files-hero-cta` class (reused,
+not reinvented — it's genuinely the same action, offered a second time) plus
+one position-only modifier, `.files-search-allfiles` (`preferences.css`,
+`flex: none; margin: 0` — cancels the pill's own bottom margin, which exists
+only to clear the tab strip it doesn't sit in here), following the same
+"position only, chassis comes from the existing class" pattern the file's own
+`.fh-index-cta-btn` already established. `aria-label="All files"` (the
+button's rendered text is also "All files") plus a `title` describing the
+destination; same directional arrow glyph as the recents-screen button, for
+visual continuity between the two entry points.
+
+**Tests** (`FilesHome.render.test.tsx`, TDD — written failing first, against
+the not-yet-existing `aria-label="All files"` node): (1) clicking it pushes
+exactly one URL, `"/explorer/view" + home`, matching what the mount's fake
+`history.pushState` records for `navigate(home, { isDir: true })`; (2) typing
+a query first, then clicking it, leaves the input's value untouched and
+issues no extra rank request beyond the one the typed query itself caused —
+covering "does not alter the search query/scope state" directly rather than
+by inference.
+
+**Needs human eyes** (headless render tests cannot see layout — see the
+build report): where the button sits inside the bar relative to the
+magnifier/input/Clear, in both light and dark theme, and in a narrow window
+(does it wrap or get truncated against the input).

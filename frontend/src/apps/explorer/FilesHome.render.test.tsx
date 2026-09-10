@@ -1032,3 +1032,29 @@ describe("the AI offer is gated on has_index", () => {
     box.unmount();
   });
 });
+
+// The "All files" control in the search bar: a NAVIGATION shortcut to the
+// home directory, not a search modifier — same handler as the recents
+// screen's "Browse files" CTA (`navigate(home, { isDir: true })`). It must
+// open the home dir without touching the query/search state at all.
+describe("the All files control in the search bar", () => {
+  test("navigates to the home directory as a folder", async () => {
+    const box = mount();
+    const btn = box.renderer.root.findByProps({ "aria-label": "All files" });
+    await flush(() => (btn.props as { onClick: () => void }).onClick());
+    expect(navPushes).toHaveLength(1);
+    expect(navPushes[0]).toBe("/explorer/view" + HOME);
+    box.unmount();
+  });
+
+  test("leaves the search query untouched", async () => {
+    const box = mount();
+    await type(box, "report");
+    const btn = box.renderer.root.findByProps({ "aria-label": "All files" });
+    await flush(() => (btn.props as { onClick: () => void }).onClick());
+    expect(box.input().props.value).toBe("report");
+    // No extra rank request went out as a side effect of the click.
+    expect(rankCalls.filter((c) => c.q === "report")).toHaveLength(1);
+    box.unmount();
+  });
+});

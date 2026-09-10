@@ -995,6 +995,23 @@ export function FilesSearch({
             Clear
           </button>
         )}
+        {/* A navigation shortcut, not a search control — it does not read or
+            write `query`/`ai`/anything else in here, same reasoning as the
+            recents screen's own "Browse files" CTA (.files-hero-cta) whose
+            handler this reuses verbatim, so the two entry points into the
+            home directory cannot drift apart. */}
+        <button
+          type="button"
+          className="files-hero-cta files-search-allfiles"
+          aria-label="All files"
+          title="Open the file explorer at your home directory"
+          onClick={() => navigate(home, { isDir: true })}
+        >
+          All files
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
+        </button>
       </div>
 
       {ai.status === "failed" && <ErrorBanner>{ai.message}</ErrorBanner>}
