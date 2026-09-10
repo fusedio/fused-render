@@ -80,12 +80,23 @@ export default function NotificationHost({
           />
         </div>
       ))}
-      {/* `key={jobPopup.id}` gives every newly popped job — including a
-          repeat of an id that already left once, which cannot happen since
-          jobs.py mints a fresh id per run, but costs nothing to keep general
-          for — a fresh `JobPopupCard` instance with its own countdown. */}
+      {/* Keyed on id + `finished_at` — `jobs.ts`'s own `popupTick` keys ITS
+          "have I popped this?" decision the identical way, on a terminal
+          EVENT rather than a job id, because one id CAN go terminal more
+          than once: `job_id_for(model)` (`fused_render/ai/supervisor.py`)
+          mints one id per resident model, reused across that model's load,
+          weights-only download and unload — not a fresh id per run the way
+          `jobs.py`'s ordinary ids are. Keying on the bare id let a second
+          terminal event on the same id reuse the first card's instance
+          (its mount effect never reruns), so the new event's card never
+          restarted its own countdown and could vanish on the FIRST event's
+          timer instead. */}
       {!IS_EMBED && jobPopup && (
-        <JobPopupCard key={jobPopup.id} job={jobPopup} onGone={onJobPopupGone ?? (() => {})} />
+        <JobPopupCard
+          key={`${jobPopup.id}:${jobPopup.finished_at ?? ""}`}
+          job={jobPopup}
+          onGone={onJobPopupGone ?? (() => {})}
+        />
       )}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
