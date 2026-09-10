@@ -20,6 +20,8 @@ import {
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
+  popupJobs,
+  popupTick,
   terminalNotifications,
   trackSeenIds,
   type Job,
@@ -571,6 +573,76 @@ test("a queued Claude call says Queued", () => {
 
 test("a job parked on a question says Waiting whatever its title", () => {
   expect(jobTypeLabel(job({ title: "Erasing text", state: "waiting" }))).toBe("Waiting");
+});
+
+// ------------------------------------------------------------------ popups
+//
+// The floating pop-up card (SPEC actionable-notifications, "the latest
+// notification always pops up"): `tier` now governs RETENTION only (whether
+// a row survives in the panel), never whether a terminal job is shown at
+// all, so `popupJobs` reads none of it — a `transient` job pops exactly like
+// an `attention`/`trail` one.
+
+test("popupJobs pops every terminal job regardless of tier, transient included", () => {
+  const jobs = [
+    job({ id: "a", state: "done", tier: "transient" }),
+    job({ id: "b", state: "done", tier: "trail" }),
+    job({ id: "c", state: "running", tier: "attention" }),
+  ];
+  expect(popupJobs(jobs).map((j) => j.id)).toEqual(["a", "b"]);
+});
+
+test("popupJobs excludes a scheduled run's own job by id, same as jobRows (D661)", () => {
+  const jobs = [job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "done", tier: "transient" })];
+  expect(popupJobs(jobs)).toEqual([]);
+});
+
+test("popupJobs hides the underlying job a running waiter merges over it (mergedRows)", () => {
+  const jobs = [
+    job({ id: "load", state: "done", tier: "transient" }),
+    job({ id: "render", state: "running", waiting_for: "load" }),
+  ];
+  expect(popupJobs(jobs)).toEqual([]);
+});
+
+// The first-tick backlog problem (SPEC actionable-notifications): a poller's
+// very first read after a page load or refresh sees every already-terminal
+// job at once. `popupTick` must seed its `seen` set from that first read
+// without popping any of it — the frontend twin of `_seen_running`
+// (fused_render/server/routers/index.py).
+test("popupTick seeds the first tick's already-terminal jobs with no popup", () => {
+  const jobs = [job({ id: "a", state: "done" })];
+  const { seen, popped } = popupTick(jobs, new Set(), true);
+  expect(popped).toBe(null);
+  expect(seen.has("a")).toBe(true);
+});
+
+test("popupTick pops a job that crosses into terminal on a later tick", () => {
+  const first = popupTick([job({ id: "a", state: "running" })], new Set(), true);
+  const second = popupTick([job({ id: "a", state: "done" })], first.seen, false);
+  expect(second.popped?.id).toBe("a");
+});
+
+test("popupTick does not re-pop an id it has already popped", () => {
+  const first = popupTick([job({ id: "a", state: "done" })], new Set(), false);
+  expect(first.popped?.id).toBe("a");
+  const second = popupTick([job({ id: "a", state: "done" })], first.seen, false);
+  expect(second.popped).toBe(null);
+});
+
+// "Latest wins; do not stack" — one card at a time, never a queue of them.
+test("popupTick pops only the latest of several jobs turning terminal in the same tick", () => {
+  const running = popupTick(
+    [job({ id: "a", state: "running" }), job({ id: "b", state: "running" })],
+    new Set(),
+    true,
+  );
+  const { popped } = popupTick(
+    [job({ id: "a", state: "done" }), job({ id: "b", state: "done" })],
+    running.seen,
+    false,
+  );
+  expect(popped?.id).toBe("b");
 });
 
 test("aggregate progress: nothing running draws no line, no totals sweep, else the mean", () => {

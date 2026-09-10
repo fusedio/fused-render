@@ -69,14 +69,15 @@ STATES = (RUNNING, WAITING) + TERMINAL_STATES
 KINDS = ("download", "task")
 
 # The three notification tiers a producer picks for its own row (SPEC
-# actionable-notifications). The discriminator is always the same question:
-# did the user ask for this, and is there anything left to look at?
-#   "attention"  — the user asked, and it now wants something back. Shown
+# actionable-notifications). This governs RETENTION ONLY — whether a
+# terminal row is KEPT once it lands, never whether the user is shown
+# anything: every terminal job pops its own card in the frontend's floating
+# column regardless of tier (frontend/src/platform/lib/jobs.ts `popupJobs`),
+# `transient` included. What the tier decides is what happens AFTER the pop:
+#   "attention"  — kept in the panel until dismissed, and drawn there
 #                  without the panel having to be opened.
-#   "trail"      — the user asked, and it left something behind. Kept in the
-#                  panel until dismissed.
-#   "transient"  — nobody asked, or nothing survives it. Shown while running,
-#                  never kept once terminal.
+#   "trail"      — kept in the panel until dismissed.
+#   "transient"  — kept nowhere; its card is the only trace it leaves.
 # "trail" is the default on purpose: a producer that sets nothing behaves
 # exactly like every row did before this field existed.
 ATTENTION = "attention"

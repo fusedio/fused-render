@@ -27,14 +27,16 @@ export type JobKind = "download" | "task";
 export type JobOwner = "page" | "server";
 
 // Which of the three notification tiers a row belongs to (SPEC
-// actionable-notifications). The discriminator is always the same question:
-// did the user ask for this, and is there anything left to look at?
-//   "attention"  — the user asked, and it now wants something back. Shown
+// actionable-notifications). `tier` governs RETENTION ONLY — whether a
+// terminal row is KEPT once it lands, not whether the user is shown
+// anything: every terminal job pops its own card in the floating column
+// (jobs.ts `popupJobs`/`popupTick`, `platform/ui/JobPopupCard.tsx`)
+// regardless of tier, `transient` included. What tier decides is what
+// happens AFTER the pop:
+//   "attention"  — kept in the panel until dismissed, and drawn there
 //                  without the panel having to be opened.
-//   "trail"      — the user asked, and it left something behind. Kept in the
-//                  panel until dismissed.
-//   "transient"  — nobody asked, or nothing survives it. Shown while
-//                  running, never kept once terminal.
+//   "trail"      — kept in the panel until dismissed.
+//   "transient"  — kept nowhere; its card is the only trace it leaves.
 // "trail" is the default on the server (`fused_render/jobs.py`'s `Job.tier`)
 // on purpose: a producer that sets nothing behaves exactly like every row
 // did before this field existed.
@@ -269,6 +271,73 @@ export function mergedRows(jobs: Job[]): Job[] {
 export function terminalNotifications(jobs: Job[]): Job[] {
   return terminalJobs(jobRows(mergedRows(jobs)));
 }
+
+// ------------------------------------------------------------------ popups
+//
+// The floating pop-up card (SPEC actionable-notifications, user: "when
+// getting notifications, ensure the latest notification always pops up and
+// auto disappears under 3 seconds. they still stay in the list"). `tier`
+// narrowed to mean retention only (see `JobTier` above) is what makes this
+// possible: every terminal job is news worth a card, whether or not it earns
+// a lasting row.
+
+/** Every terminal job that should pop a card — deliberately NOT `jobRows`
+ *  filtered by `effectiveTier`, since that filter is exactly what would drop
+ *  a `transient` job's pop. `mergedRows` still runs first, for the same
+ *  reason `terminalNotifications` runs it first: a render waiting on a
+ *  shared model load must not pop the load's own id as a second card the
+ *  instant it goes terminal, one poll ahead of the waiter noticing and
+ *  clearing its own `waiting_for`. The `sys:schedule:*` exclusion (D661) is
+ *  independent of tier and applies here exactly as it does in `jobRows` —
+ *  a scheduled message's run is not a job anyone asked to watch. */
+export function popupJobs(jobs: Job[]): Job[] {
+  return terminalJobs(mergedRows(jobs)).filter((j) => !j.id.startsWith(SCHEDULE_JOB_PREFIX));
+}
+
+/** One popup tick's worth of decision: which job (if any) should pop this
+ *  time, and the `seen` set to carry into the next call.
+ *
+ *  THE FIRST-TICK BACKLOG PROBLEM: a poller's very first read after a page
+ *  load or refresh sees every already-terminal job at once — naively popping
+ *  on "this job is terminal and I haven't popped it yet" would replay the
+ *  whole backlog as a burst of cards the instant the page opens. `isFirstTick`
+ *  is the caller's own flag for "this is the very first call this poller has
+ *  ever made" (a ref initialized to `true` and flipped to `false` right
+ *  after); on that call every current candidate is seeded into the returned
+ *  `seen` set with no popup. This is the frontend twin of `_seen_running` in
+ *  `fused_render/server/routers/index.py` — same shape, same reason: a fact
+ *  this process never watched happen is not news to it.
+ *
+ *  LATEST WINS; NO STACKING — "the latest notification always pops up", not
+ *  a queue of them. When more than one id is new in the same tick, only the
+ *  LAST one in `jobs`' own order pops: `list_jobs` returns oldest-first, so
+ *  the tail of a batch of simultaneous arrivals is genuinely the newest.
+ *
+ *  `seen` is REBUILT from this tick's candidate ids every call, exactly like
+ *  `trackSeenIds` above, rather than only ever grown — a job id is minted
+ *  once (jobs.py: a timestamp plus a random suffix) and never reused, so a
+ *  dismissed/cleared/swept id simply falls out and never needs forgetting on
+ *  purpose. */
+export function popupTick(
+  jobs: Job[],
+  seen: ReadonlySet<string>,
+  isFirstTick: boolean,
+): { seen: Set<string>; popped: Job | null } {
+  const next = new Set<string>();
+  let popped: Job | null = null;
+  for (const j of popupJobs(jobs)) {
+    next.add(j.id);
+    if (!isFirstTick && !seen.has(j.id)) popped = j;
+  }
+  return { seen: next, popped };
+}
+
+// How long the popup card stays fully visible before its exit animation
+// starts. 2500ms, not the user's own literal "3 seconds": the card shares
+// `lib/toast`'s TOAST_EXIT_MS (150ms) exit transition, so total on-screen
+// time is 2500 + 150 = 2650ms — comfortably under the "under 3 seconds" the
+// user asked for rather than landing right on the edge of it.
+export const JOB_POPUP_VISIBLE_MS = 2500;
 
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
 // Terminal jobs (done/error/cancelled) draw no bar at all — `Bar` in
