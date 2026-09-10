@@ -29,6 +29,7 @@ import { useCompletion } from "@apps/explorer/listing/useCompletion";
 import { showingSearchHits } from "@apps/explorer/listing/search-body-mode";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { useHome } from "@apps/explorer/listing/home-path";
+import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
 import { searchSlot, subscribeSearchSlot, inSearchSlot } from "@apps/explorer/search-slot";
 import { SearchField } from "@apps/explorer/SearchField";
 
@@ -55,6 +56,7 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
   const {
     query,
     setQuery,
+    q,
     searching,
     isPathQuery,
     escapes,
@@ -82,9 +84,10 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
   // The gate this box answers is exactly Decision 4's (useListingSearch):
   // `escapes` false means the query never leaves the box root, so `gateOpen`
   // is already true the moment it is long enough to search at all
-  // (`searching`); an escaping query (a leading "~", "/", drive letter, "..")
-  // waits here the same way the folder view's own box would, for an explicit
-  // Enter via `commitSearch`. Either way, once open, this page's own job is
+  // (`searching`); an escaping query (one whose base is genuinely a
+  // different folder — `escapesFsPath`, query-base.ts) waits here the same
+  // way the folder view's own box would, for an explicit Enter via
+  // `commitSearch`. Either way, once open, this page's own job is
   // finished — hand the query to the parent and let its Listing take it from
   // there.
   //
@@ -92,10 +95,29 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
   // actual answer) is what keeps this a layout effect that fires before any
   // request goes out: `gateOpen` flips the instant the query is a plain
   // filter/glob or Enter has run, with no round trip in between.
+  //
+  // `!isPristineQuery(q, ...)` (SPEC-omnibox-search-affordance.md
+  // correction, 2026-09-10) — a hard requirement, not an optimisation: this
+  // box always arrives pre-filled with `parentPath`'s own absolute path
+  // (SearchField.tsx's `onFocus`), and since `escapesFsPath` no longer
+  // treats a same-subtree absolute path as escaping, that untouched
+  // pre-fill alone now satisfies `searching && gateOpen` the MOMENT the
+  // field is focused — before the user has typed a single character.
+  // Without this guard, focusing a file's search box would immediately hand
+  // off to the parent folder with the pre-filled path as its "committed"
+  // query, which is not a search anyone asked for.
+  //
+  // Checked against `q` (the SAME deferred value `escapes`/`gateOpen`
+  // themselves are computed from), not the live `query`: right after a
+  // keystroke, `query` has already moved but `q` can still be sitting on
+  // the pristine seed for one more render — checking the live value here
+  // would let exactly that stale-`q` render slip through as "not pristine"
+  // while `gateOpen` was actually still answering for the seed.
   const firedRef = useRef(false);
   useLayoutEffect(() => {
     if (!active || firedRef.current) return;
     if (!searching || !gateOpen) return;
+    if (isPristineQuery(q, parentPath, home)) return;
     firedRef.current = true;
     navigate(parentPath, { isDir: true, q: query });
   });

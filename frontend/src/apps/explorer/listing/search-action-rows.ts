@@ -53,7 +53,32 @@ export function searchAffordance(
   isPathQuery: boolean,
   typedAddress: TypedAddress,
   searching: boolean,
+  /**
+   * SPEC-omnibox-search-affordance.md correction (2026-09-10, defect 1):
+   * whether THIS query's base genuinely differs from the folder being
+   * searched (`escapesFsPath`, query-base.ts — the SAME predicate
+   * useListingSearch.ts's own commit gate reads, not a second one). A
+   * non-path query that is NOT gated is already answering live — the rows
+   * below are the real search result — so offering to "search this folder"
+   * for it would read as "nothing has happened yet" over a box that has
+   * already acted. Only a genuinely gated query (needs an explicit commit
+   * before anything runs) gets the offer; the path-shaped-but-missing case
+   * below is unaffected — it never asks the index at all, gated or not.
+   */
+  gated: boolean,
+  /**
+   * The query is empty, or still the untouched path the box pre-filled
+   * itself with (`isPristineQuery`, query-pristine.ts) — nothing has been
+   * typed to search FOR yet, so neither the offer nor the not-found notice
+   * has anything to say. Checked first: a pristine query is also, by
+   * construction, one `escapesFsPath` would call gated (it names fsPath
+   * itself) and one `isPathQuery` calls path-shaped, so without this check
+   * first the missing-path branch below could fire for a folder that very
+   * much exists — the one the box is standing in.
+   */
+  pristine: boolean,
 ): SearchAffordance {
+  if (pristine) return NOTHING;
   const trimmed = query.trim();
   if (!searching || trimmed === "") return NOTHING;
   if (isPathQuery) {
@@ -64,5 +89,6 @@ export function searchAffordance(
       action: { query: leaf, commitInPlace: false },
     };
   }
+  if (!gated) return NOTHING;
   return { notice: null, action: { query: trimmed, commitInPlace: true } };
 }

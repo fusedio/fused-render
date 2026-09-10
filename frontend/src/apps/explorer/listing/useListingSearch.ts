@@ -42,7 +42,7 @@ import {
   subscribeFsMutations,
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
-import { escapesBase } from "@apps/explorer/listing/query-base";
+import { escapesFsPath } from "@apps/explorer/listing/query-base";
 import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
 import { navHintQCommitted, replaceSearch } from "@platform/lib/router";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
@@ -156,14 +156,24 @@ export function useListingSearch(
   // this instead, never the raw flag.
   const runsSearch = searching && !isPathQuery;
 
-  // A query whose base can differ from the folder being searched — a leading
-  // "~", a leading "/", a drive letter, or a ".." segment — waits for an
-  // explicit commit (Enter, via `commitSearch`) rather than live-filtering:
-  // that base can walk arbitrarily far from the open folder, which is the
-  // "thousands of folders searched per keystroke" case a half-typed one would
-  // otherwise produce. A glob anchored at the box root, like "*/*.json",
-  // never leaves the folder being searched and live-filters like plain text.
-  const escapes = escapesBase(q);
+  // A query whose base genuinely differs from the folder being searched
+  // waits for an explicit commit (Enter, via `commitSearch`) rather than
+  // live-filtering: that base can walk arbitrarily far from the open
+  // folder, which is the "thousands of folders searched per keystroke" case
+  // a half-typed one would otherwise produce. A glob anchored at the box
+  // root, like "*/*.json", never leaves the folder being searched and
+  // live-filters like plain text — and NEITHER does an absolute/tilde query
+  // that resolves right back inside `fsPath` (SPEC-omnibox-search-
+  // affordance.md correction, 2026-09-10): the box always arrives pre-filled
+  // with `fsPath`'s own absolute path, so appending a pattern to what's
+  // already there is the single most natural gesture here, and it should
+  // live-filter exactly like the equivalent relative query, not wait for
+  // Enter. `escapesFsPath` (query-base.ts) is the fsPath-aware predicate
+  // this needs — `escapesBase` alone can't tell a same-subtree absolute
+  // path from a genuinely different one with no `fsPath` to compare against,
+  // and it stays as it is for `isPathQuery` (path-shaped-query.ts), which
+  // asks a different question and would regress if it changed meaning.
+  const escapes = escapesFsPath(q, fsPath, home);
   // The specific query text Enter was last pressed for. A ref, not state: it
   // must not itself cause a render, only unlock the fetch effect below (which
   // re-runs on `gateNonce`).

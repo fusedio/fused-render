@@ -57,7 +57,9 @@ test("SearchField.tsx drives the dropdown's search offer off searchAffordance, n
   const at = SEARCH_FIELD.indexOf("const affordance = searchAffordance(");
   expect(at).toBeGreaterThan(-1);
   const call = SEARCH_FIELD.slice(at, SEARCH_FIELD.indexOf(";", at));
-  expect(call).toMatch(/searchAffordance\(query, isPathQuery, typedAddress, searching\)/);
+  expect(call).toMatch(
+    /searchAffordance\(query, isPathQuery, typedAddress, searching, escapes, pristine\)/,
+  );
 });
 
 // pathNotFoundMessage's own text is unchanged (enter-prompt.test.ts covers

@@ -195,14 +195,30 @@ async function focusAndType(renderer: ReactTestRenderer, value: string): Promise
 }
 
 describe("the dropdown's action row", () => {
-  test("a bare word offers to search this folder, with nothing path-shaped about it", async () => {
+  // SPEC-omnibox-search-affordance.md correction (2026-09-10, defect 1): an
+  // UNGATED word or glob is already answering live in the rows below — no
+  // offer, or it would read as "nothing has happened yet" over results
+  // already on screen.
+  test("an ungated word offers nothing — it is already searching live", async () => {
     const renderer = mount("/home/iamsdas/notes.txt");
     await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
     await focusAndType(renderer, "report");
 
+    expect(completionRows(renderer).length).toBe(0);
+  });
+
+  test("a GATED non-path query (escapes to a genuinely different folder) offers to search this folder", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    // A glob anchored somewhere other than the folder being searched
+    // (parentPath is /home/iamsdas) — escapesFsPath says this one genuinely
+    // escapes, so it waits for Enter rather than searching live, and the
+    // offer row is what tells the user that.
+    await focusAndType(renderer, "/mnt/other/*.json");
+
     const rows = completionRows(renderer);
     expect(rows.length).toBe(1);
-    expect(rowText(rows[0])).toContain('Search this folder for "report"');
+    expect(rowText(rows[0])).toContain('Search this folder for "/mnt/other/*.json"');
     expect(rows[0].props.className).toContain("listing-completion-action");
   });
 
@@ -252,24 +268,32 @@ describe("the hard behavioural constraint (PR #1091's HIGH-severity fix)", () =>
 });
 
 describe("arrow-key navigation across the action row", () => {
+  // A gated non-path query is always a glob (the only way `escapesBase` can
+  // be true while `isPathQuery` is false), and `completionTarget` refuses
+  // any query containing "*" outright — so a gated query never has folder
+  // completions to sit alongside. The one place an action row and real
+  // folder completions coexist is the MISSING-PATH case: the folder itself
+  // ("/home/iamsdas/sub") can exist and list entries even though the exact
+  // name typed doesn't.
   test("reaches the action row first, then lands correctly on the folder completions after it", async () => {
     const renderer = mount("/home/iamsdas/notes.txt");
     await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
     listDirEntries["/home/iamsdas/sub"] = [
-      { name: "report.csv", is_dir: false, size: 10 },
-      { name: "readme.md", is_dir: false, size: 20 },
+      { name: "nopeish.csv", is_dir: false, size: 10 },
+      { name: "report.csv", is_dir: false, size: 20 },
     ];
-    // Relative, slash-bearing, non-escaping: isPathQuery is false (chip
-    // reads "Search"), so the action row appears ALONGSIDE the folder
-    // completions instead of instead of them.
-    await focusAndType(renderer, "sub/re");
+    // "/home/iamsdas/sub/nope" itself doesn't exist (statOkPaths is empty),
+    // but "nopeish.csv" in that same folder matches the "nope" partial —
+    // one action row (index 0) plus one real folder completion (index 1).
+    await focusAndType(renderer, "/home/iamsdas/sub/nope");
 
     const highlightedIdx = () => {
       const hit = completionRows(renderer).find((r) => r.props.className.includes("highlight"));
       return hit ? hit.props["data-idx"] : undefined;
     };
 
-    expect(completionRows(renderer).length).toBe(3);
+    const indexed = completionRows(renderer).filter((r) => "data-idx" in r.props);
+    expect(indexed.length).toBe(2);
     expect(highlightedIdx()).toBeUndefined();
 
     await flush(() => input(renderer).props.onKeyDown({ key: "ArrowDown", preventDefault: () => {} }));
@@ -280,11 +304,6 @@ describe("arrow-key navigation across the action row", () => {
     await flush(() => input(renderer).props.onKeyDown({ key: "ArrowDown", preventDefault: () => {} }));
     expect(highlightedIdx()).toBe(1);
     const first = completionRows(renderer).find((r) => r.props["data-idx"] === 1)!;
-    expect(rowText(first)).toContain("report.csv");
-
-    await flush(() => input(renderer).props.onKeyDown({ key: "ArrowDown", preventDefault: () => {} }));
-    expect(highlightedIdx()).toBe(2);
-    const second = completionRows(renderer).find((r) => r.props["data-idx"] === 2)!;
-    expect(rowText(second)).toContain("readme.md");
+    expect(rowText(first)).toContain("nopeish.csv");
   });
 });

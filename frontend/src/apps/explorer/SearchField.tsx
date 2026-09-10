@@ -42,6 +42,7 @@ import { type Completion, type CompletionItem } from "@apps/explorer/listing/use
 import { completionKeyAction, moveHighlight } from "@apps/explorer/listing/completion-keys";
 import { isExactSingleMatch } from "@apps/explorer/listing/completion-target";
 import { searchAffordance, type SearchActionRow } from "@apps/explorer/listing/search-action-rows";
+import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
 import { contractHome } from "@apps/explorer/listing/home-path";
 import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
 import { SEARCH_EXAMPLES, showSearchExamples } from "@apps/explorer/listing/search-examples";
@@ -220,13 +221,26 @@ export function SearchField({
     searchInputRef.current?.focus();
   };
 
+  // The field's own resting state: empty, or still exactly the folder path
+  // the box pre-filled itself with on focus (`onFocus` below,
+  // `contractHome(fsPath, home)`) — query-pristine.ts's `isPristineQuery`.
+  // Nothing has been TYPED in either case, even though the box's own value
+  // is non-empty in the second — the distinction both the examples panel
+  // and `searchAffordance` below need (SPEC-omnibox-search-affordance.md
+  // correction, 2026-09-10).
+  const pristine = isPristineQuery(query, fsPath, home);
+
   // SPEC-omnibox-search-affordance.md scope item 4 (variant E): the ONE
   // pressable search offer the dropdown gets, plus the non-interactive
   // not-found notice above it for an unresolvable path-shaped query.
   // `searchAffordance` reads the SAME `isPathQuery`/`typedAddress`/
   // `searching` this field already has — not a second, parallel notion of
-  // "is this a path" (the hard constraint the spec calls out by name).
-  const affordance = searchAffordance(query, isPathQuery, typedAddress, searching);
+  // "is this a path" (the hard constraint the spec calls out by name) —
+  // plus `escapes` (correction, 2026-09-10): the SAME predicate the
+  // caller's own commit gate reads (useListingSearch.ts's `escapesFsPath`),
+  // so an already-live, ungated search is never offered a row that would
+  // read as "nothing has happened yet" over results already on screen.
+  const affordance = searchAffordance(query, isPathQuery, typedAddress, searching, escapes, pristine);
   const hasAction = affordance.action !== null;
   // Pressing the action row: a bare word commits the query exactly as Enter
   // already falls through to (decision 4's gate); a path-shaped query that
@@ -261,13 +275,21 @@ export function SearchField({
   // query. The dropdown needs the opposite: it must close the moment focus
   // leaves.
   const [fieldActive, setFieldActive] = useState(false);
+  // `&& !pristine`: SPEC correction, 2026-09-10. A pristine, pre-filled path
+  // resolves to a real folder, so this would otherwise legitimately be true
+  // for it (the completion machinery happily offers that folder's own
+  // children) — but the teaching panel (`showExamples`, below) is what a
+  // pristine box shows instead, and enforcing the exclusion HERE (rather
+  // than trusting `showSearchExamples` to defer the other way) is what
+  // keeps the two surfaces from ever both rendering by construction.
   const showCompletion =
     fieldActive &&
+    !pristine &&
     (hasAction ||
       (completion.target !== null &&
         completion.items.length > 0 &&
         !isExactSingleMatch(completion.items, completion.target)));
-  const showExamples = showSearchExamples(fieldActive, query, showCompletion);
+  const showExamples = showSearchExamples(fieldActive, pristine);
   // The action row, when present, is always the FIRST row (index 0) — the
   // folder completions that follow it shift up by exactly this many slots.
   // One number, read everywhere an index has to cross that boundary, so the
