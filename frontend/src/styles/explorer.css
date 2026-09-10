@@ -81,7 +81,12 @@
   padding: 5px;
   border: none;
   border-radius: 6px;
-  background: var(--ctl-quiet-bg);
+  /* No resting plate, the same contract `.bar-ctl` and the `⋮` trigger keep:
+     fill on hover, and otherwise nothing. A plate at rest is a filled pill in
+     a row where nothing else is filled, so the star reads as already pressed
+     — and `.active` (below) fills with a neighbouring step of the same ramp,
+     which leaves "bookmarked" and "not bookmarked" separated by a shade. */
+  background: none;
   color: var(--fg-muted);
   cursor: pointer;
   transition:
@@ -1931,27 +1936,28 @@ table.listing-table tr.skel-row:hover {
   right: 38px;
 }
 
-/* A quiet suffix, NOT the app's bordered key-cap (preferences.css's
-   `.fh-ai-hint kbd`). Those caps sit in running prose, where a box is what
-   separates a keystroke from the sentence around it. This one sits inside a
-   `bar-ctl` that already draws its own filled pill on hover, and a ring
-   inside that fill is two concentric rounded rectangles 28px tall — the
-   shortcut ends up louder than the word it qualifies. Ink alone carries it
-   here: the button's own box is the boundary. Only ever rendered in the wide
-   (`bar-ctl`, non-`bar-ctl-icon`) form — the collapsed glyph carries no
-   `<kbd>` at all. */
+/* The shortcut wears the key-cap; the label does not. A chip around BOTH
+   halves makes "Search ⌘L" one undifferentiated object — the reader has to
+   parse the box to find out that half of it is a keystroke and half is a
+   name. The cap around the shortcut alone says which half is which at a
+   glance, and leaves the label as plain text sitting on the bar like every
+   other word in this chrome.
+
+   Same face and same size as the label: the cap is what separates them, so
+   a second scale on top of it is a difference doing no work — and with
+   `align-items: center` two different sizes centre their BOXES, which
+   leaves the baselines a pixel apart and the pair looking misaligned.
+
+   Rounded to 5px, not square: it reads as a physical key, and it is nested
+   inside a 6px box (`.listing-search-box`) — a right angle inside that
+   corner reads as a mistake rather than a choice. */
 .listing-search-shortcut-hint kbd {
   font: inherit;
-  font-size: 11px;
-  letter-spacing: 0.02em;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-alt);
   color: var(--fg-muted);
-}
-
-/* The glyph rides at the muted step even when the label beside it lifts to
-   `--fg` on hover, so the word stays the thing being read and the mark stays
-   an icon. */
-.listing-search-shortcut-hint svg {
-  opacity: 0.8;
 }
 
 /* Absent, not clipped, on a narrow box — a deep path or a narrow window can
