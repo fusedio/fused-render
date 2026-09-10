@@ -189,13 +189,21 @@
      The narrow preview view lifts it back to `visible` on purpose — see that
      rule's own note. */
   overflow: hidden;
-  /* THE SIZE CONTAINER FOR THE LANDING'S `14cqh` (FIX-2). This box is what the
-     legacy iframe's viewport was: the panel, strip included. `home.css` had it
-     on `.c-home`, which starts BELOW the 43px strip, so the landing sat 6px
-     high — 14% of the strip. `inline-size` would not do: the query is on
-     HEIGHT. */
-  container-type: size;
-  container-name: chatcol;
+  /* NO `container-type` HERE, deliberately — see `home.css`'s landing padding
+     for the arithmetic that replaced it (FIX-2).
+     The container was moved onto this box first, because this IS what the
+     legacy iframe's viewport was. But `container-type: size` implies
+     `contain: size layout`, and both halves bite:
+       * SIZE containment resolves content-based sizing to ZERO, and
+         `.chat-root.narrow.view-preview .c-chat` is `flex: 0 0 auto` — its
+         height comes from the 43px strip, which would have collapsed to
+         nothing;
+       * LAYOUT containment makes this box the containing block for
+         `position: fixed` descendants, so `#annpop.sidebar`'s `top: 51px` and
+         any `inset: 0` scrim would anchor to the column instead of the
+         viewport — a difference that only shows in the card and peek mounts,
+         which is exactly where it would not be noticed.
+     A 6px offset is not worth either. */
 }
 
 /* THE SHARED CONTROL STRIP — T's `#anntools`. A row ABOVE both views, never
@@ -247,6 +255,19 @@
    offering one. */
 .chat-root.narrow.view-preview .c-chat {
   flex: 0 0 auto;
+  /* AND THE CLIP IS LIFTED, which is T:3872-3878's own override and its reason:
+     "here #chat IS the strip — a 43px box — and the kebab's popup hangs below
+     it, over the preview. The base clip (sane for a full-height transcript
+     column) cut that popup to a 3px sliver and left the menu painting under the
+     frame. Safe to lift exactly here because every other child of #chat is
+     display:none'd by the rule below — there is nothing else to spill."
+
+     This rule did not need to exist until the base `overflow: hidden` was
+     restored beside T's (FIX-12b): before that the column computed `visible`
+     everywhere, so the lift was accidental rather than absent. Restoring one
+     half of T's pair without the other is what would have made a 43px strip
+     clip its own menu. */
+  overflow: visible;
 }
 .chat-root.narrow.view-preview .c-chat > *:not(.c-anntools) {
   display: none;

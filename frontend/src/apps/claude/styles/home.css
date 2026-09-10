@@ -13,18 +13,20 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* THE SIZE CONTAINER USED TO BE HERE, and that was 6px wrong (FIX-2).
-     `.c-home` excludes the 43px `.c-anntools` strip above it, so `14cqh`
-     measured 787px where T's `14vh` measured the whole 830px panel viewport —
-     the landing sat 6px high, which is exactly 14% of the strip. It moved one
-     box up, onto `.chat-root .c-chat` (chat.css), whose height IS what the
-     iframe's `vh` was reading.
+  /* A SIZE CONTAINER so the column below can measure its 14% against a PANE
+     and not against the window. T's 14vh was read inside an iframe whose
+     viewport WAS the pane, so `vh` and "pane height" were one number there;
+     native draws in the top-level document, where 14vh is 14% of the whole
+     window and the landing sat 10-40px out depending on the pane (Akshil,
+     2026-09-08, #4). `cqh` is the same measurement T made, spelled for a pane
+     that is not a viewport — a relative unit, not a breakpoint.
 
-     The measurement itself is unchanged and still not a breakpoint: T's 14vh
-     was read inside an iframe whose viewport WAS the pane, so `vh` and "pane
-     height" were one number there; native draws in the top-level document,
-     where `14vh` is 14% of the whole window and the landing sat 10-40px out
-     depending on the pane (Akshil, 2026-09-08, #4). */
+     IT STAYS ON THIS BOX (FIX-2), and the 6px it is short by is corrected in
+     the padding rather than by moving the container up to `.c-chat`: that box
+     is content-sized in the narrow preview view and is the containing block
+     several `position: fixed` descendants rely on NOT being — see the note at
+     `.chat-root .c-chat` in chat.css. */
+  container-type: size;
 }
 /* The strip, sized to `#anntools` (T:163-172) so the two views' first rows are
    the same height and nothing shifts on entering a chat. */
@@ -47,7 +49,14 @@
   /* `vh` as the fallback for a browser without container queries: it is what
      this was, and it is right whenever the pane fills the window. */
   padding-top: 14vh;
-  padding-top: 14cqh;
+  /* PLUS 14% OF THE STRIP (FIX-2). The container is `.c-home`, which starts
+     BELOW the 43px `.c-anntools` row, so `14cqh` measures 787px of an 830px
+     panel where T's `14vh` measured all 830 — the landing sat 6px high, and
+     6px is exactly 14% of 43.
+     Spelled as the arithmetic rather than as `+ 6px`, so the number's SOURCE is
+     on the page: 43px is the strip's own height (T:163-172's 26px seats in
+     8px padding, and the same 43px `createBarPush` puts on the app's root). */
+  padding-top: calc(14cqh + 43px * 0.14);
 }
 /* One 32px here, one margin per block below — the landing used to end each
    section in its own padding, which added itself to the next one's margin for
