@@ -889,4 +889,20 @@ def create_app(start_dir: str) -> FastAPI:
         # boots the app never gets a background thread.
         index_routes.start_index_job_bridge()
 
+    # A CHECK-ONLY UPDATE MANAGER FOR A DEV RUN (update/mac.DEV_MANAGER_ENV).
+    # The packaged app starts its manager from the AppKit bootstrap (app.py,
+    # after the server is ready); an unpackaged server has no bootstrap and so
+    # never had a badge — which left the sidebar's "Check for updates" row with
+    # nowhere to be tried. `start()` still returns None without the env var,
+    # so this is a no-op for every run that did not ask. Last, and off the
+    # request path: the manager's first manifest fetch is on its own thread.
+    @on_startup
+    async def _startup_update_dev_manager():
+        import os
+
+        from fused_render.update import mac as mac_update
+
+        if os.environ.get(mac_update.DEV_MANAGER_ENV):
+            mac_update.start()
+
     return app

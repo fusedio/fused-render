@@ -4,6 +4,8 @@
 import { describe, expect, it } from "bun:test";
 import type { UpdateStatus } from "@platform/lib/api";
 import {
+  CHECK_RESULT_HOLD_MS,
+  checkNowLabel,
   pollDelay,
   shouldCheckOnReturn,
   updateLabel,
@@ -122,5 +124,29 @@ describe("shouldCheckOnReturn only re-asks from idle", () => {
       expect(shouldCheckOnReturn(0, 3_600_000, status({ state }), true)).toBe(false);
     }
     expect(shouldCheckOnReturn(0, 3_600_000, status({ state: "idle" }), true)).toBe(true);
+  });
+});
+
+describe("checkNowLabel", () => {
+  // The idle row's four phases, worded once here rather than read off a tree.
+  it("offers the check at rest and says so while it runs", () => {
+    expect(checkNowLabel("rest", "0.5.22")).toBe("Check for updates");
+    expect(checkNowLabel("checking", "0.5.22")).toBe("Checking…");
+  });
+
+  it("names the version it is current at, when it knows it", () => {
+    expect(checkNowLabel("current", "0.5.22")).toBe("Up to date · v0.5.22");
+    // /api/config has not answered yet, or an old server without `version`.
+    expect(checkNowLabel("current", null)).toBe("Up to date");
+    expect(checkNowLabel("current", undefined)).toBe("Up to date");
+  });
+
+  it("owns up to a failed check without blaming anything", () => {
+    expect(checkNowLabel("failed", "0.5.22")).toBe("Couldn't check");
+  });
+
+  it("holds an answer long enough to read, not long enough to look stuck", () => {
+    expect(CHECK_RESULT_HOLD_MS).toBeGreaterThanOrEqual(3_000);
+    expect(CHECK_RESULT_HOLD_MS).toBeLessThanOrEqual(6_000);
   });
 });

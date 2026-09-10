@@ -898,7 +898,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
-          <UpdateBadge />
+          {/* `version` for the idle row's "Up to date · vX": the same number the
+              chip on the Settings row shows, from the config this sidebar holds. */}
+          <UpdateBadge version={config.version ?? null} />
           {/* Setup progress, above Settings: "Setup · 60%", back into the wizard. */}
           {setupMeter && <SetupProgressRow meter={setupMeter} />}
           {/* The version rides the Settings row's trailing edge rather than the

@@ -1100,6 +1100,55 @@ a.bookmark-name::after {
   cursor: default;
 }
 
+/* THE IDLE FACE — "Check for updates" (2026-09-10). Same frame, same place, but
+   quiet: no tinted fill at rest (the fill says "there is news" on the accordion
+   row, and this row is the absence of news), muted text, and the hover is the
+   one the nav rows above use. It is the same slot the accordion takes over.
+   Same padding and type as the accordion row, so the two are one line tall
+   alike — but the accordion's label ("Update available — v0.5.23") wraps to two
+   lines in a 232px sidebar and that row is 15px taller (cmux-ux-tester,
+   2026-09-10). What holds is what matters: the Settings section is anchored to
+   the sidebar's bottom, so Settings and the version chip do not move when the
+   face flips; the growth is taken from the scrolling tree above. */
+.update-badge-row-check {
+  background: transparent;
+  color: var(--fg-muted);
+}
+
+.update-badge-row-check:hover {
+  background: rgba(var(--tint), 0.07);
+  color: var(--fg);
+}
+
+/* In flight: the button is disabled so a second press cannot queue a second
+   POST, but it must not read as greyed-out chrome — "Checking…" is progress,
+   not unavailability. */
+.update-badge-row-check:disabled {
+  cursor: progress;
+  color: var(--fg-muted);
+}
+
+/* Trailing, where the accordion keeps its chevron, at the chevron's colour. */
+.update-badge-refresh {
+  display: flex;
+  margin-left: auto;
+  flex: none;
+  color: var(--fg-muted);
+}
+
+/* The one motion in the sidebar, and it is this row's own progress: the glyph
+   turns while the manifest fetch is out. styles/reduced-motion.css blankets
+   `animation` along with every transition, so it holds still there. */
+.update-badge-row-check.is-checking .update-badge-refresh {
+  animation: update-badge-refresh-turn 0.9s linear infinite;
+}
+
+@keyframes update-badge-refresh-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .update-badge-dot {
   width: 7px;
   height: 7px;

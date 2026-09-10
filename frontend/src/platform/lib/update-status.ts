@@ -21,10 +21,10 @@ const POLL_HOT_MS = 2_000;
 const HOT_WINDOW_MS = 20_000;
 const WARM_WINDOW_MS = 120_000;
 const startedAt = Date.now();
-// Check-on-return (Akshil, 2026-09-09). The server's own loop checks hourly,
-// which is the floor under a session left open — but a user who comes back to
-// the app after lunch should learn about a release in the seconds after they
-// return, not on the next tick. Coming back to the front is the moment to ask,
+// Check-on-return (Akshil, 2026-09-09). The server's own loop checks every five
+// minutes (common.CHECK_INTERVAL_S), which is the floor under a session left
+// open — but a user who comes back to the app should learn about a release in
+// the seconds after they return, not up to five minutes later on the next tick. Coming back to the front is the moment to ask,
 // so focus/visibilitychange trigger one POST /api/update/check, gated by a
 // 30-minute gap so cmd-tabbing between two windows is not a run of requests.
 // The gap starts at store start, not at 0: a launch has just checked (the
@@ -137,6 +137,44 @@ export function shouldCheckOnReturn(
   return now - lastAt >= RETURN_CHECK_GAP_MS;
 }
 
+// ---- the manual check (Akshil, 2026-09-10: "give a check for updates button
+// -> where we have update available button") -------------------------------
+//
+// The same POST the return trigger sends, fired by a press on the badge's idle
+// row. The response IS the answer — check() is synchronous on the server — so
+// the caller can word the row off the result without waiting for the poll. Goes
+// through the server's 60s floor like every other manual-ish check: a press
+// inside the gap gets the answer the last fetch left, at most a minute old,
+// which is exactly what "up to date" meant a moment ago. Bumps the return
+// trigger's clock too: a person who just pressed the button has nothing to
+// learn from cmd-tabbing back in thirty seconds later.
+export async function checkForUpdates(): Promise<UpdateStatus> {
+  lastCheckTriggerAt = Date.now();
+  const result = await updateCheck();
+  setUpdateStatus(result);
+  pokeUpdateStatus();
+  return result;
+}
+
+/** How long the row holds "Up to date" / "Couldn't check" before it reads
+ *  "Check for updates" again — long enough to be read, short enough that the
+ *  slot never looks stuck on an old answer. */
+export const CHECK_RESULT_HOLD_MS = 4_000;
+
+/** The idle row's phases: resting, in flight, and the two answers that are not
+ *  an update (an update found is not a phase — the store flips to "available"
+ *  and the accordion takes the slot). */
+export type ManualCheckPhase = "rest" | "checking" | "current" | "failed";
+
+/** What the idle row says in each phase. Pure so the wording is tested once,
+ *  next to updateLabel's, rather than read off a rendered tree. */
+export function checkNowLabel(phase: ManualCheckPhase, version: string | null | undefined): string {
+  if (phase === "checking") return "Checking…";
+  if (phase === "current") return `Up to date${version ? ` · v${version}` : ""}`;
+  if (phase === "failed") return "Couldn't check";
+  return "Check for updates";
+}
+
 // The app came back to the front. Never throws: this runs off a window event
 // with no caller to catch anything, and a failed check is exactly as
 // uninteresting as a failed poll — the next one will do.
@@ -168,6 +206,20 @@ function ensureStarted(): void {
   window.addEventListener("focus", () => void onReturn());
   document.addEventListener("visibilitychange", () => void onReturn());
   poll();
+}
+
+/** Tests only: put the module back to its never-started state. The store is
+ *  module-global by design (one poll for three surfaces), which is exactly what
+ *  lets one test's "available" leak into the next test's "nothing here". Clears
+ *  the timer too, so a finished test file leaves no poll behind to keep the
+ *  runner's event loop alive. */
+export function resetUpdateStatusForTests(): void {
+  clearTimeout(timer);
+  timer = undefined;
+  generation += 1;
+  current = null;
+  started = false;
+  listeners.clear();
 }
 
 function subscribe(fn: () => void): () => void {

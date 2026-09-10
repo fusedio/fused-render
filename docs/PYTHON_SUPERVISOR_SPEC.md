@@ -124,7 +124,7 @@ worker-thread pattern) plus one daemon timer thread.
    - **Automatic** — `start_auto_checks(paths, notify)`, called once from
      `supervisor.run()` after the tray starts, spawns a daemon thread that
      waits `_STARTUP_DELAY_S` (so it never competes with launch) then loops
-     every `_CHECK_INTERVAL_S` (1 h). Each tick is **silent**: it fetches and
+     every `_CHECK_INTERVAL_S` (5 min). Each tick is **silent**: it fetches and
      verifies the (small, signed) manifest only, and on a newer version calls
      `notify(version)` — which relabels the tray item. It never downloads or
      prompts. "Up to date" and transient network errors are logged, never a

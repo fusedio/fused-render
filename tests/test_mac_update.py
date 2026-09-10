@@ -463,8 +463,81 @@ def test_config_carries_update_with_manager(client, monkeypatch):
 def test_start_noop_when_unbundled(monkeypatch):
     monkeypatch.setattr(mac, "_manager", None)
     monkeypatch.setattr(mac, "bundle_path", lambda: None)
+    monkeypatch.delenv(mac.DEV_MANAGER_ENV, raising=False)
     assert mac.start() is None
     assert mac.manager() is None
+
+
+# ---- the check-only manager of a dev run (DEV_MANAGER_ENV) ---------------------
+
+
+def test_the_interval_is_five_minutes():
+    # Akshil, 2026-09-10: "check for updates every 5 mins". The Windows tray
+    # updater re-exports the same constant, so this pins both loops.
+    assert common.CHECK_INTERVAL_S == 300
+    from fused_render.supervisor._win32 import update as win_update
+    assert win_update._CHECK_INTERVAL_S == 300
+
+
+def test_a_dev_run_gets_a_check_only_manager_when_asked(monkeypatch):
+    monkeypatch.setattr(mac, "_manager", None)
+    monkeypatch.setattr(mac, "bundle_path", lambda: None)
+    monkeypatch.setenv(mac.DEV_MANAGER_ENV, "1")
+    # No loop thread in a unit test.
+    monkeypatch.setattr(mac.UpdateManager, "start_auto_checks", lambda self: None)
+    manager = mac.start()
+    assert manager is not None and mac.manager() is manager
+    status = manager.status()
+    assert status["state"] == "idle"
+    assert status["check_only"] is True
+    # No bundle → no brew probe: the method is pinned rather than detected.
+    assert status["method"] == "none"
+
+
+def test_a_packaged_app_never_reads_the_dev_env(monkeypatch):
+    monkeypatch.setattr(mac, "_manager", None)
+    monkeypatch.setattr(mac, "bundle_path", lambda: "/Applications/FusedRender.app")
+    monkeypatch.setenv(mac.DEV_MANAGER_ENV, "1")
+    monkeypatch.setattr(mac.UpdateManager, "start_auto_checks", lambda self: None)
+    status = mac.start().status()
+    assert status["check_only"] is False
+
+
+def test_a_check_only_manager_finds_updates_but_refuses_to_install(monkeypatch):
+    manager = mac.UpdateManager(bundle=None, method="none", check_only=True)
+    monkeypatch.setattr(common, "fetch_manifest", lambda url, **kw: {
+        "version": "9.9.9", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""})
+    assert manager.check()["state"] == "available"
+    assert manager.check(force=True)["latest_version"] == "9.9.9"
+    # Refused before any thread starts: the state is still the honest one.
+    status = manager.install()
+    assert status["state"] == "available"
+    assert status["check_only"] is True
+    assert manager._install_thread is None
+
+
+def test_a_real_manager_reports_check_only_false(monkeypatch):
+    manager = _manager(monkeypatch)
+    assert manager.status()["check_only"] is False
+
+
+def test_a_failed_check_names_its_failure_and_a_good_one_clears_it(monkeypatch):
+    # Without this, "offline" and "up to date" were the same wire status, and
+    # the sidebar's manual check would have said the wrong one.
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+
+    def boom(url, **kw):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(common, "fetch_manifest", boom)
+    status = manager.check()
+    assert status["state"] == "idle"
+    assert status["check_error"] == "no route to host"
+    monkeypatch.setattr(common, "fetch_manifest", lambda url, **kw: {
+        "version": "0.0.1", "url": "https://x/y.dmg", "sha256": "0" * 64, "signature": ""})
+    status = manager.check(force=True)
+    assert status["state"] == "idle"
+    assert status["check_error"] is None
 
 
 # ---- the Activity row (sys:update:<version>) ----------------------------------
