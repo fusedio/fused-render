@@ -107,6 +107,7 @@ import {
   ShotViewer,
   Topbar,
   Transcript,
+  NO_TARGET_SAID,
   TroubleView,
   ATTACH_API,
   mergeSendOptions,
@@ -359,13 +360,23 @@ export function ClaudeChat(props: ClaudeChatProps) {
       <div className={rootClass(props)} data-variant={variantOf(props)}>
         <div className="chat-logwrap">
           <div className="chat-log">
+            {/* TWO PLAIN SENTENCES AND NOTHING ELSE (P3R1-8, owner
+                2026-09-10). This branch is reached two ways — no target at
+                all, and a folder whose template never resolved, the 8 s
+                backstop above included — and it used to say "Something went
+                wrong" over a monospace box reading "There is no claude
+                template for this folder.": a title that says nothing, a
+                sentence naming an internal thing the reader cannot have an
+                opinion about, and a claim that is simply false when what
+                actually happened is that `/api/fs/stat` never answered. The
+                copy lives in `ui/TroubleView`'s table with every other trouble
+                sentence; `message: ""` is what takes the verbatim box away,
+                because there are no machine words behind this failure to
+                quote. The card's own Copy buttons still carry the details for
+                anyone who needs to hand them on. */}
             <TroubleView
-              trouble={{
-                kind: "generic",
-                message: file
-                  ? "There is no claude template for this folder."
-                  : "No target was given to open a chat on.",
-              }}
+              trouble={{ kind: "boot", message: "" }}
+              {...(file ? {} : { said: NO_TARGET_SAID })}
               what={file ? "opening the chat on " + file : "opening the chat"}
             />
           </div>

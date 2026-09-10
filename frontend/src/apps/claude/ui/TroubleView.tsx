@@ -15,6 +15,13 @@ import { TroubleCard } from "@platform/ui/TroubleCard";
 import type { Trouble, TroubleKind } from "../protocol/controller-api";
 import { platformKindOf, splitTroubleMessage, troubleExplain } from "../protocol/trouble";
 
+/** The chat had no target at all — a different fact and a different thing to
+ *  do, so it is not folded into `boot`'s sentence (P3R1-8). */
+export const NO_TARGET_SAID = {
+  title: "There's nothing to open a chat on.",
+  explain: "Open a file or a folder first, then start the chat.",
+};
+
 /** The kinds the chat's controller reports that the message classifier cannot
  *  infer on its own — a run id the server has forgotten says nothing about
  *  Claude, and an install that has not finished is not a Claude fault at all.
@@ -57,6 +64,30 @@ const SAID: Partial<Record<TroubleKind, { title: string; explain: string }>> = {
     title: "The connection dropped",
     explain: "The request to Claude did not get through. Sending it again usually works.",
   },
+  /**
+   * THE CHAT DID NOT BOOT (P3R1-8, owner 2026-09-10). Two sentences: what
+   * happened, and the one thing to do about it.
+   *
+   * What was here instead was "Something went wrong" over a monospace box
+   * reading "There is no claude template for this folder." — three faults in one
+   * card. The title said nothing. The sentence named an internal thing (the
+   * folder's *template*) that a reader has no way to have an opinion about, and
+   * it was also a LIE for the commonest case: the 8 s backstop lands on this
+   * same branch when `/api/fs/stat` simply never answers, and then the folder's
+   * template is fine and the request is not. And the words were printed as if a
+   * program had said them, in the box reserved for a program's own output.
+   *
+   * So: our sentence in the title, the action in the explanation, and NO
+   * verbatim block — there are no machine words behind this failure to quote
+   * (`ClaudeChat` passes `message: ""`, and `TroubleCard` draws no box for it).
+   * "Reload" rather than "retry" because a stalled stat is usually a server that
+   * has gone away, and a button that re-runs the same request would answer the
+   * reader with the same wait.
+   */
+  boot: {
+    title: "This chat couldn't load.",
+    explain: "Reload the page, or check that Fused Render is still running.",
+  },
 };
 
 export interface TroubleViewProps {
@@ -65,10 +96,13 @@ export interface TroubleViewProps {
    *  T:13757 spells it "using the chat on <FILE|this folder>". */
   what?: string;
   onRetry?: () => void;
+  /** Words for a caller that knows more than the kind does — the boot failure's
+   *  two shapes share one kind and differ only in these (P3R1-8). */
+  said?: { title: string; explain: string };
 }
 
-export function TroubleView({ trouble, what, onRetry }: TroubleViewProps) {
-  const said = SAID[trouble.kind];
+export function TroubleView({ trouble, what, onRetry, said: saidProp }: TroubleViewProps) {
+  const said = saidProp ?? SAID[trouble.kind];
   const lines = splitTroubleMessage(trouble.message);
   // Our own words when we have them, else the action sentence out of the
   // message — which is a better description than the classifier's generic one

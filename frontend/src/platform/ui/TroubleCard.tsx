@@ -161,8 +161,19 @@ export function TroubleCard({
       {said.explain && <p className="trouble-explain">{said.explain}</p>}
 
       {/* Verbatim, in a box, scrollable. Rewording it would make it
-          unsearchable, and searching it is the first thing anyone does. */}
-      <pre className="trouble-error">{String(error || "(no message)").trim()}</pre>
+          unsearchable, and searching it is the first thing anyone does.
+
+          AN EMPTY `error` DRAWS NO BOX (P3R1-8). It used to print
+          "(no message)" — a monospace box whose whole content was a note that
+          there was nothing to put in it, which reads as a broken card rather
+          than as a card with nothing verbatim to show. A caller whose failure
+          has no machine words to quote (the chat's boot failure: there is no
+          CLI output, only our own two sentences above) now passes `""` and gets
+          the title, the explanation and the actions with no dead box between
+          them. Every caller that has real bytes is unaffected. */}
+      {String(error || "").trim() ? (
+        <pre className="trouble-error">{String(error).trim()}</pre>
+      ) : null}
 
       {kind === "notfound" && (
         <div className="trouble-install">

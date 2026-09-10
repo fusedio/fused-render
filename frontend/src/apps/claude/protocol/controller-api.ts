@@ -129,6 +129,12 @@ export type TroubleKind =
   | "engine"
   | "unknown-run"
   | "network"
+  /** ADDED (P3R1-8): the chat could not BOOT — no target, or the folder's
+   *  template never resolved (a stalled `/api/fs/stat`, the 8 s backstop). Its
+   *  own kind because the copy is the only one the reader can act on without
+   *  knowing anything about the app's insides: `ui/TroubleView`'s `SAID` gives
+   *  it two plain sentences and no verbatim block. */
+  | "boot"
   | "generic";
 
 export interface Trouble {

@@ -420,6 +420,32 @@ test("a CONTROLLER REBUILD does not re-send a spent ask (QA #1061)", async () =>
   expect(params.get("session_id")).toBeTruthy();
 });
 
+/** The rendered TEXT of every element with exactly this class — flattened off
+ *  the JSON tree rather than read out of `props.children`, so a sentence React
+ *  splits into several nodes still comes back as one string (P3R1-8). */
+function troubleText(r: ReturnType<typeof create>, klass: string): string[] {
+  const out: string[] = [];
+  const text = (n: unknown): string => {
+    if (n === null || n === undefined || typeof n === "boolean") return "";
+    if (typeof n === "string" || typeof n === "number") return String(n);
+    if (Array.isArray(n)) return n.map(text).join("");
+    const node = n as { children?: unknown };
+    return text(node.children ?? "");
+  };
+  const walk = (n: unknown): void => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) {
+      for (const k of n) walk(k);
+      return;
+    }
+    const node = n as { props?: { className?: string }; children?: unknown };
+    if (String(node.props?.className ?? "") === klass) out.push(text(node.children ?? ""));
+    walk(node.children);
+  };
+  walk(r.toJSON());
+  return out;
+}
+
 // ---- the cover over the agentDir stat, and its 8 s backstop (P3-13) --------
 
 test("the template lookup shows the SKELETON, not an empty box", async () => {
@@ -534,6 +560,60 @@ test("a stat that never settles gets an 8 s backstop to the TroubleView", async 
     armed[0]!.fn();
   });
   expect(trouble().length).toBeGreaterThan(0);
+
+  // ── P3R1-8: AND WHAT IT SAYS IS TWO PLAIN SENTENCES ────────────────────
+  //
+  // The stalled stat is the commonest way into this card, and it used to read
+  // "Something went wrong" over a monospace box saying "There is no claude
+  // template for this folder." — a title that says nothing, a sentence about an
+  // internal thing the reader cannot act on, and a claim that is false here:
+  // the folder's template is fine, the request never answered (owner,
+  // 2026-09-10: short and human-readable, one sentence of what happened and one
+  // of what to do).
+  expect(troubleText(r, "trouble-title")).toEqual(["This chat couldn't load."]);
+  expect(troubleText(r, "trouble-explain")).toEqual([
+    "Reload the page, or check that Fused Render is still running.",
+  ]);
+  // NO VERBATIM BOX: there are no machine words behind this failure, and a
+  // monospace plate reading our own sentence back (or "(no message)") reads as
+  // a program having said it.
+  expect(
+    r.root.findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className ?? "").includes("trouble-error"),
+    ),
+  ).toHaveLength(0);
+  // …and nothing in the card names the app's insides.
+  const words = JSON.stringify(r.toJSON());
+  for (const term of ["agentDir", "template.html", "claude template", "stat", "controller"]) {
+    expect(words).not.toContain(term);
+  }
+});
+
+// ---- P3R1-8: the OTHER way into the boot card -----------------------------
+
+test("no target at all gets its own two sentences, not the stalled-load ones", async () => {
+  // Two different facts with two different things to do about them, so they are
+  // not folded into one sentence: nothing to open a chat ON is the reader's own
+  // next move, where a stalled load is the app's.
+  const params = createMemoryParamsStore();
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<ClaudeChat {...baseProps} file={null} params={params} />);
+  });
+  mounted.push(r);
+  expect(troubleText(r, "trouble-title")).toEqual(["There's nothing to open a chat on."]);
+  expect(troubleText(r, "trouble-explain")).toEqual([
+    "Open a file or a folder first, then start the chat.",
+  ]);
+  expect(
+    r.root.findAll(
+      (n) =>
+        typeof n.type === "string" &&
+        String((n.props as { className?: string }).className ?? "").includes("trouble-error"),
+    ),
+  ).toHaveLength(0);
 });
 
 

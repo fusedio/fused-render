@@ -144,7 +144,7 @@ export {
   activityDetail,
 } from "./WorkingLine";
 export type { WorkingLineProps, VerbStats } from "./WorkingLine";
-export { TroubleView } from "./TroubleView";
+export { NO_TARGET_SAID, TroubleView } from "./TroubleView";
 export type { TroubleViewProps } from "./TroubleView";
 export {
   CardPolicyProvider,
