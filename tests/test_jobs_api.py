@@ -525,16 +525,17 @@ def test_a_transient_row_ages_out_on_the_read_gated_clock_instead_of_staying_for
     assert later == set(), "a transient row ages out, unlike an ordinary terminal row"
 
 
-def test_a_transient_row_that_ends_in_error_still_ages_out_on_the_read_gated_clock():
-    """`_sweep` gates retention on the STORED `tier`, not `effective_tier` — a
-    producer that declared `transient` still ages out on the read-gated clock
-    even when the run ends in `error`. `effective_tier`'s override makes the
-    row `attention` for VISIBILITY (it is shown, and shown as needing the
-    user, while it exists — see `jobRows`/`effectiveTier` in the frontend),
-    but a failed transient run still has no surface able to dismiss it, so a
-    failure nobody opens must not be retained forever any more than a success
-    is: RETENTION reads the producer's own declared disposability, not what
-    the terminal state happened to turn it into for display."""
+def test_a_failed_resident_model_load_survives_well_past_finished_ttl_after_being_read():
+    """A `sys:ai-model:*` row is DRAWN somewhere the moment it goes terminal —
+    Notifications (`terminalNotifications`), with a working ✕ — unlike a
+    scheduled tick, which is drawn nowhere at all. Gating retention on the
+    STORED `tier` alone (ignoring state) would age this failed load out a
+    few seconds after the next poll stamps `first_read_at`, forgetting a
+    row someone can see and has not yet dismissed — the vanishing-row bug
+    D663 already settled against, reintroduced under a new gate. `_sweep`
+    only ages a `TRANSIENT` row out once its state is `done`; an `error`
+    row here takes the keep-until-dismissed path like any other row a
+    surface can show."""
     jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "error",
                  "tier": jobs.TRANSIENT}, now=1000.0, server=True)
 
@@ -542,7 +543,27 @@ def test_a_transient_row_that_ends_in_error_still_ages_out_on_the_read_gated_clo
     assert first_read == {"sys:ai-model:x"}, "still shown while it exists"
 
     later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
-    assert later == set(), "a failed transient row ages out same as a successful one"
+    assert later == {"sys:ai-model:x"}, (
+        "a failed resident load is drawn and dismissable, so it is kept "
+        "until dismissed, not aged out on the read-gated clock"
+    )
+
+
+def test_a_failed_scheduled_run_still_ages_out_on_the_read_gated_clock():
+    """A `sys:schedule:*` row is drawn on NO surface at all, in any state —
+    `jobRows` (frontend/src/platform/lib/jobs.ts) excludes the id prefix
+    unconditionally, independent of tier or outcome. Unlike every other
+    `TRANSIENT` producer (which now only ages out on `done`, see the sibling
+    test above), a scheduled run ages out in ANY terminal state, because
+    nothing could ever dismiss it regardless of how it ended."""
+    jobs.upsert({"id": jobs.SCHEDULE_JOB_PREFIX + "e1", "title": "a scheduled run",
+                 "state": "error", "tier": jobs.TRANSIENT}, now=1000.0, server=True)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {jobs.SCHEDULE_JOB_PREFIX + "e1"}
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == set(), "a failed scheduled run ages out — no surface ever draws it"
 
 
 def test_a_wait_job_poll_still_observes_a_transient_row_go_done_before_it_ages_out():

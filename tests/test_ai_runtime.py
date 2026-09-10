@@ -4144,6 +4144,87 @@ def test_a_download_that_throws_reports_the_failure_too(fake_runner, monkeypatch
     assert supervisor.describe()["downloading"] == []
 
 
+def test_a_failed_resident_load_restates_trail_tier_instead_of_inheriting_transient(
+        fake_runner, monkeypatch):
+    """`_bring_up`'s `cancelled`/`error` terminal reports now restate
+    `tier=jobs.TRAIL` explicitly, the same discipline its own success report
+    already follows (`tier=jobs.TRANSIENT`) and `Job.tier`'s own comment
+    requires of every producer on `job_id_for(model)` — a shared id a
+    resident load, a weights-only download, and an unload all report
+    through. Without the restatement, a load that fails right after an
+    unload of the SAME model would run its failure report under the
+    unload's stale `TRANSIENT`, and `_sweep` would then age the failed row
+    out on the read-gated clock a few seconds after the next poll — exactly
+    the vanishing-row bug a failed load must not have: it left a reason to
+    look, so it declares `TRAIL`, not `TRANSIENT`."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    supervisor.unload("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.TRANSIENT, "the unload's own report, sticky until restated"
+
+    def boom(runner, worker, job):
+        raise RuntimeError("uv is on fire")
+
+    monkeypatch.setattr(supervisor, "_ensure_venv", boom)
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+
+    row = _row(job)
+    assert row["state"] == "error"
+    assert row["tier"] == jobs.TRAIL, \
+        "a failed load must restate its own tier, not inherit the unload's transient one"
+
+
+def test_a_cancelled_resident_load_restates_trail_tier_instead_of_inheriting_transient(
+        fake_runner, monkeypatch):
+    """The cancellation twin of the test above: `_bring_up`'s `cancelled`
+    report restates `tier=jobs.TRAIL` too, not only its `error` report."""
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.5")
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    supervisor.unload("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.TRANSIENT
+
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    jobs.request_cancel(job)
+
+    row = _row(job)
+    assert row["state"] == "cancelled"
+    assert row["tier"] == jobs.TRAIL, \
+        "a cancelled load must restate its own tier, not inherit the unload's transient one"
+
+
+def test_a_failed_weights_only_download_restates_trail_tier_instead_of_inheriting_transient(
+        fake_runner, monkeypatch):
+    """`_fetch_only`'s two failure-shaped terminal reports — the busy-wait
+    loop's own `cancelled` report and the outer `except` block's
+    `cancelled`/`error` report — both now restate `tier=jobs.TRAIL`
+    explicitly too, the same discipline its own success report
+    (`state="done", tier=jobs.TRAIL`) already followed. Without it, a
+    download that fails right after a load/unload of the SAME model would
+    run its failure report under that producer's stale `TRANSIENT`."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    supervisor.unload("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["tier"] == jobs.TRANSIENT
+
+    def boom(runner, worker, job):
+        raise RuntimeError("the installer never started")
+
+    monkeypatch.setattr(supervisor, "_ensure_venv", boom)
+    supervisor.load("org/small", registry.TEXT_GENERATION, weights_only=True)
+
+    row = _row(job)
+    assert row["state"] == "error"
+    assert row["tier"] == jobs.TRAIL, \
+        "a failed download must restate its own tier, not inherit the unload's transient one"
+
+
 def test_a_download_the_WORKER_stopped_reports_cancelled_not_error(
         fake_runner, monkeypatch):
     """Both sides of a download watch for the ✕, and the worker can win.

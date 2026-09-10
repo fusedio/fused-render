@@ -1258,10 +1258,18 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
             if _workers.get(worker.capability) is worker:
                 del _workers[worker.capability]
         _terminate(worker)
+        # `tier=jobs.TRAIL`, restated explicitly the same way the success
+        # report above restates `TRANSIENT`: `job_id_for(model)` is shared
+        # with `_fetch_only`'s download and `_remove`'s unload, so this
+        # report cannot lean on whatever an earlier one left on the id (see
+        # `Job.tier`'s own comment). A failed load left a reason to look —
+        # the resident row now says why the model isn't there — so it
+        # declares `TRAIL`, not `TRANSIENT`: nothing about a failure here
+        # leaves nothing to look at.
         if message == "cancelled":
-            _report(job, state="cancelled")
+            _report(job, state="cancelled", tier=jobs.TRAIL)
         else:
-            _report(job, state="error", message=message)
+            _report(job, state="error", message=message, tier=jobs.TRAIL)
 
 
 # ---------------------------------------------------------------- public façade
@@ -1306,7 +1314,11 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         while proc.poll() is None:
             if stub.stopping or _cancel_requested(job):
                 _terminate(stub)
-                _report(job, state="cancelled")
+                # `tier=jobs.TRAIL` restated for the same reason the success
+                # report a few lines down restates it: this id is shared
+                # with a resident load and an unload, and `Job.tier` is
+                # sticky across reports on one id.
+                _report(job, state="cancelled", tier=jobs.TRAIL)
                 return
             time.sleep(0.5)
         if proc.returncode != 0:
@@ -1334,8 +1346,10 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         _report(job, state="done", detail="Downloaded", tier=jobs.TRAIL)
     except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
         message = _failure_text(e)
+        # `tier=jobs.TRAIL` restated for the same sticky-id reason as this
+        # function's other two reports.
         _report(job, state="cancelled" if message == "cancelled" else "error",
-                message=None if message == "cancelled" else message)
+                message=None if message == "cancelled" else message, tier=jobs.TRAIL)
     finally:
         with _lock:
             _worker_tokens.discard(stub.token)
@@ -1715,9 +1729,13 @@ def text_row_fields(title: str, model: str = "", page: str = "") -> dict:
     `tier=jobs.TRANSIENT`: the Playground's text stage keeps no history and
     persists nothing (`TextStage.tsx` sends `history: []`), so a finished
     generation has no destination a click could open and nothing a
-    Notification would be keeping around. A failed one still surfaces —
-    `effective_tier`'s override turns any `error`/`cancelled` row into
-    `attention` regardless of what it declares here.
+    Notification would be keeping around — `_sweep` ages a `done` transient
+    row like this one out on the read-gated clock rather than waiting on a
+    dismiss. A failed one is different on both counts: `effective_tier`'s
+    override turns it `attention` for VISIBILITY, and `_sweep` only ages a
+    transient row out once its state is `done` — an error/cancelled
+    generation is kept until dismissed, same as any other row a surface can
+    show and let the user clear.
     """
     return {"title": title, "model": model, "kind": "task", "cancellable": True,
             "unit": "tokens", "page": page, "tier": jobs.TRANSIENT}

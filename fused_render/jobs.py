@@ -188,6 +188,16 @@ _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 # believe it.
 SERVER_ID_PREFIX = "sys:"
 
+# A scheduled message's own row, by id (`fused_render/schedule.py`'s
+# `_JOB_PREFIX`, mirrored the same way the frontend already mirrors it in
+# `frontend/src/platform/lib/jobs.ts`'s own `SCHEDULE_JOB_PREFIX` — jobs.py
+# is a leaf module with no imports of its own, so the string is restated
+# here rather than imported, the same cross-boundary duplication the
+# frontend copy already accepts). `_sweep` reads this to single out the one
+# family of rows drawn on NO surface at all, in any terminal state — see
+# `_sweep`'s own comment.
+SCHEDULE_JOB_PREFIX = "sys:schedule:"
+
 # Who is running the work, which decides what the manager's ✕ can do:
 #   "page"   — only the page knows what stopping means, so cancel is a REQUEST
 #              it reads back off its next tick and honours (or does not).
@@ -802,49 +812,63 @@ def _sweep(now: float) -> None:
     `cancelled` get the same unconditional exemption `error`/`WAITING`
     already had. `MAX_JOBS`'s cap (below) is what bounds all of them now.
 
-    **A row whose STORED `job.tier` is `TRANSIENT` does NOT get this
-    exemption, even though it is terminal.** The exemption's whole premise is
-    "a human still needs to SEE this row, so do not sweep it out from under
-    them" — but a producer that declared `transient` is stating it has
-    nothing left to show once its run is over, success or failure alike, and
-    it has no claim on a "kept until dismissed" rule regardless of how the
-    run ended: a scheduled run declaring itself transient on every tick is
-    one permanent row per turn on a schedule (a 5-minute schedule saturates
-    `MAX_JOBS` within hours) if a failed one lingered forever waiting on a
-    dismiss nothing will ever send, and a resident model load's own outcome
-    is one permanent row per distinct model ever loaded, with only eviction
-    pressure to shed either. A scheduled run already gets
-    `schedule-toast.ts`'s own toast and its own row on the Scheduled page,
-    and a load already showed itself as the "resident" row while it ran, so
-    nothing is lost by letting the registry row age out on the ORIGINAL
-    read-gated `FINISHED_TTL_S` clock every terminal row had before D663 —
-    the readers that clock exists for (`fused.watchJob`, the Scheduled
-    page's own poll, `fused.ai.models.load(wait=True)`'s own poll) are
-    exactly the ones still reading these rows.
+    **Two families of terminal row do NOT get this exemption, for two
+    different reasons, and this branch must not conflate them:**
 
-    The STORED `job.tier`, not `effective_tier`, is what decides RETENTION —
-    a separate question from VISIBILITY, which does read `effective_tier`
-    (`jobRows`, `frontend/src/platform/lib/jobs.ts`): a failed transient run
-    is still worth SHOWING while its row exists (`effective_tier`'s
-    error/cancelled override turns it `attention` for exactly that reason),
-    but whether the row EXISTS AT ALL past this clock is the producer's own
-    declared tier, unaffected by how the run ended. Reading `effective_tier`
-    here instead would keep every failed/cancelled transient row forever —
-    the override makes it `attention`, this branch would then treat it as
-    "some surface can dismiss it" and fall to the keep-until-dismissed rule
-    below, and no surface ever does, because nothing here changed what
-    `jobRows` filters on. That was the actual bug this comment used to
-    describe as the intended behavior: a scheduled run's own failed tick
-    (`tier=TRANSIENT` on every report, per `schedule.py`'s `_report`) was
-    kept by this exemption forever instead of ageing out, silently
-    overriding `schedule.py`'s own scoped-out retention.
+    - **A `sys:schedule:*` row (`SCHEDULE_JOB_PREFIX`) ages out in ANY
+      terminal state — `done`, `error`, or `cancelled` alike.** The reason
+      is that nothing ever draws it: `jobRows` in
+      `frontend/src/platform/lib/jobs.ts` excludes this id prefix
+      unconditionally, and `ActivityDock.tsx`'s own header comment records
+      that exclusion as deliberate (D661) — the row is invisible on every
+      surface regardless of what state it ends in or what tier it declares.
+      A scheduled run already gets its own toast
+      (`platform/lib/schedule-toast.ts`) and its own row on the Scheduled
+      page; the registry row here is a third copy nobody can see or
+      dismiss, so it ages out on the ORIGINAL read-gated `FINISHED_TTL_S`
+      clock every terminal row had before D663, unconditionally on id alone
+      — not on tier, not on outcome.
+
+    - **Every other row whose STORED `job.tier` is `TRANSIENT` ages out
+      only once its state is `done`.** Every producer besides the scheduler
+      IS drawn somewhere the moment it lands in a terminal state — a
+      resident model load and an index scan surface in Notifications
+      (`terminalNotifications`), a text/image/video generation surfaces in
+      Activity while running and, on a failure, in Notifications too — so a
+      failed transient row is not an orphan the way a scheduled tick is: it
+      is a row someone can see, with a working ✕, describing exactly why
+      their request did not come back with what they asked for. Ageing that
+      out on the same read-gated clock a `done` row uses would forget a
+      resident model's failed load, a failed index scan, or a failed text
+      generation a few seconds after the next poll stamps `first_read_at` —
+      the vanishing-row bug D663 already settled against, reintroduced under
+      a different gate. A `TRANSIENT` producer only earns age-out on
+      SUCCESS, because success is what leaves nothing behind to look at; a
+      failure is attention, and stays until an explicit dismiss like any
+      other row a surface can show.
+
+    Both halves read the STORED `job.tier`/id, never `effective_tier` —
+    retention and visibility are different questions. Visibility asks "what
+    does this row mean right now" (`effectiveTier`/`effective_tier`'s
+    error/cancelled override, read by `jobRows` and `terminalNotifications`
+    in the frontend). Retention asks "does ANY surface draw this row at
+    all, and if so, did its run actually finish with nothing left to show."
+    Reading `effective_tier` here instead would turn every failed/cancelled
+    transient row into `attention` and fall it through to the
+    keep-until-dismissed branch below regardless of which of the two
+    families it belongs to — right by accident for the schedule family (it
+    is never drawn, so nothing would ever dismiss it, and it would sit
+    forever) and wrong for every other transient producer (whose failure
+    the read-gated clock would then silently forget instead of holding for
+    the ✕ that can actually reach it).
 
     `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S`/`job.first_read_at` are left in
     place rather than deleted for this reason — `list_jobs`'s `mark_read`
     still has other callers (`routers/jobs.py`, `supervisor.py`,
     `capture/__init__.py`) whose own read-vs-poll distinction does not
-    depend on this branch, and a genuinely transient row is exactly the one
-    reachable state that still exercises this read-gated clock.
+    depend on this branch, and a genuinely transient row on either family
+    is exactly the one reachable state that still exercises this read-gated
+    clock.
 
     **`WAITING` is exempt from the cap below (`evictable`), not only from
     ageing out here.** Its reporter has already exited (the sole producer,
@@ -868,26 +892,12 @@ def _sweep(now: float) -> None:
             # is still exactly as open as when it appeared.
             continue
         elif job.state in TERMINAL_STATES:
-            if job.tier == TRANSIENT:
-                # No surface shows this row or lets it be dismissed — see
-                # this function's own docstring — so it ages out on the
-                # ORIGINAL read-gated clock every terminal row had before
-                # D663, instead of the keep-until-dismissed rule below.
-                #
-                # The STORED `job.tier`, not `effective_tier`: retention and
-                # visibility ask two different questions. Visibility asks
-                # "what does this row mean right now" — a failed transient
-                # run is still worth SHOWING while it exists, which is
-                # exactly what `effective_tier`'s error/cancelled override is
-                # for. Retention asks "did the producer declare this
-                # disposable" — a producer that declared `transient` ages
-                # out on this clock regardless of how the run ended, because
-                # a failure nobody opens must not accumulate forever with no
-                # surface able to dismiss it. Reading `effective_tier` here
-                # would keep every failed/cancelled transient row (a
-                # scheduled run, an index scan, a resident model load) until
-                # an explicit dismiss that can never come — the opposite of
-                # what this branch exists to do.
+            # Two independent reasons a row ages out on the read-gated clock
+            # instead of waiting on a dismiss nobody can send — see this
+            # function's own docstring for why each is scoped the way it is:
+            unattended_per_tick = job_id.startswith(SCHEDULE_JOB_PREFIX)
+            spent_transient = job.tier == TRANSIENT and job.state == "done"
+            if unattended_per_tick or spent_transient:
                 if job.first_read_at is not None:
                     if (now - job.first_read_at) > FINISHED_TTL_S:
                         _forget(job_id, now)
@@ -896,7 +906,8 @@ def _sweep(now: float) -> None:
             else:
                 # A row some surface can show and let the user dismiss —
                 # kept until they do (see this function's own docstring for
-                # why that is now every non-schedule terminal state).
+                # why that is every other terminal row, failed transient
+                # producers included).
                 continue
 
     # **The cap counts only what it could actually shed.** Measuring it against
