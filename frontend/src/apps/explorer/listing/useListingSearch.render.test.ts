@@ -514,6 +514,29 @@ describe("decision 4: a query that escapes the box root waits for Enter", () => 
     expect(rankCalls[1].q).toBe("~/a/*.pyc");
     box.unmount();
   });
+
+  test("rerunQuery on a query already sitting in the box (uncommitted) still opens the gate and fires", async () => {
+    // The offer row this rerunQuery serves — "Search this folder for
+    // <query>" (search-action-rows.ts) — reruns the EXACT text already
+    // typed: an escaping query whose gate never opened because nothing was
+    // ever committed for it. `setQuery` here is a no-op (the text is
+    // unchanged, so React never re-renders and `q` never moves), which
+    // means opening `committedGate` is the ONLY dependency-list change this
+    // call could possibly produce. If `rerunQuery` does not also bump
+    // `gateNonce` the way `commitSearch` does, the fetch effect has nothing
+    // in its dependency array telling it to re-run, and the gate opens onto
+    // a request that never gets asked for.
+    const box = renderHook((p: string, r: number) => useListingSearch(p, undefined, r, false), "/d", 0);
+    await flush(() => box.current().setQuery("~/a/*.py"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(0);
+
+    await flush(() => box.current().rerunQuery("~/a/*.py"));
+    await flush(() => clock.advance(INSTANT_DEBOUNCE_MS));
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].q).toBe("~/a/*.py");
+    box.unmount();
+  });
 });
 
 describe("a path-shaped query never asks the index (path-shaped-query.ts)", () => {

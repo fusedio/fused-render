@@ -215,8 +215,15 @@ export function useListingSearch(
   );
   const [gateNonce, setGateNonce] = useState(0);
   const gateOpen = !escapes || committedGate.current === q;
-  const commitSearch = () => {
-    const live = query.trim();
+  // `overrideValue` lets `rerunQuery` (below) share this exact commit path —
+  // gate write and nonce bump together, exactly once — instead of reading
+  // `query` (live state) the way a plain Enter press does. `query` is a
+  // closure over the PRE-update value until React re-renders, so a caller
+  // that just rewrote the box's text on the user's behalf (rather than
+  // echoing a keystroke) would have this function commit against what was
+  // in the box a moment ago, not what it just set it to.
+  const commitSearch = (overrideValue?: string) => {
+    const live = (overrideValue ?? query).trim();
     if (committedGate.current === live) return;
     committedGate.current = live;
     setGateNonce((n) => n + 1);
@@ -623,18 +630,26 @@ export function useListingSearch(
 
   // Sets the query AND commits it in the same call, for a caller that is
   // rewriting the box on the user's behalf rather than echoing a keystroke
-  // (the zero-match glob-broadening offer, Listing.tsx). `setQuery` alone
+  // (the zero-match glob-broadening offer, and the dropdown's "search this
+  // folder for <query>" action row — both Listing.tsx). `setQuery` alone
   // would leave a query whose base escapes `fsPath` sitting behind the
   // commit gate exactly as it was before this call — a second Enter the user
   // never gets a chance to press, since nothing after this typed anything.
-  // Setting `committedGate.current` directly, rather than calling
-  // `commitSearch()` afterward, sidesteps `commitSearch`'s own dependence on
-  // the `query` state variable: that read would still see the PRE-update
-  // value until React re-renders, and a value committed against stale text
-  // never matches once the real update lands.
+  //
+  // Goes through `commitSearch`, passing `value` as its override rather than
+  // letting it read the (still stale) `query` state, so the gate write and
+  // the `gateNonce` bump it also does happen together, exactly once, on the
+  // one path every other commit already uses. Skipping the nonce bump here
+  // was the actual bug this comment used to paper over: when `value` is the
+  // exact text already sitting in the box — the offer row's own case,
+  // rerunning verbatim what the user typed but never committed — `setQuery`
+  // is a no-op (React bails on an unchanged string) and nothing else in the
+  // fetch effect's dependency list moves either, so opening the gate with no
+  // nonce bump left the effect with no signal to re-run and the request
+  // never went out.
   const rerunQuery = (value: string) => {
     setQuery(value);
-    committedGate.current = value.trim();
+    commitSearch(value);
   };
 
   // --- what the box hands over -------------------------------------------------
