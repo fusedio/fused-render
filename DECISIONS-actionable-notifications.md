@@ -1583,3 +1583,60 @@ only unresolvable ambiguity was, and derivation resolves it.
 Scoped runs, all green: `.venv/bin/python -m pytest
 tests/test_ai_text_job_row.py tests/test_ai_runtime.py tests/test_server_ai.py
 tests/test_jobs_api.py` — 746 pass, 1 skipped, 0 fail.
+
+## Thirteenth round — the outside-press dismissal must not steal the click, and must cover iframes
+
+The eleventh round's `pointerdown` listener has two gaps. First: `pointerdown`
+fires before `pointerup`/`click`, so starting the exit animation on it can
+reflow or unmount whatever the user actually pressed before that press's own
+`click` handler ever runs — concretely, a toast's own action button rendered
+ABOVE this card in `.notif-host` had its click stolen by the card's collapse
+mid-press. Second: an app page is hosted in an iframe, and a press inside one
+never dispatches anything this document can see at all — no `pointerdown`,
+no `click` — so a card popped while the user is working in an app page just
+sits there until its own timer runs out.
+
+`JobPopupCard.tsx`'s outside-press effect now listens for `click` instead of
+`pointerdown`, still capture-phase, still calling neither `preventDefault`
+nor `stopPropagation`. `click` only ever fires after the full press-release,
+by which point the target's own handler has already run, so the collapse can
+no longer race it. The "inside" check also widens from `cardRef.contains`
+alone to `cardRef.contains(target) || target.closest(".notif-host")` — the
+card's own row is still excluded through its ref, but so is everything else
+the floating column renders: a sibling toast, the server-status banner, a
+toast's own action button. A press anywhere in `.notif-host` is a press ON
+the notification system, not a press away from it, so it must not close a
+sibling card.
+
+A second, new effect covers the iframe case: `globalThis.addEventListener
+("blur", ...)`, narrowed to `document.activeElement instanceof
+HTMLIFrameElement`. That condition is true only in the instant focus moves
+TO an iframe — never for alt-tabbing away, opening devtools, or a native
+file picker, all of which blur the window without handing focus to anything
+in it. `apps/explorer/BarMenu.tsx`'s `useMenuAnchor` closes on ANY window
+blur unconditionally, which is the right call for a menu (any focus loss
+should close it) but wrong here — an alt-tab must not silently dismiss a
+card the user never acted on, so this narrows the precedent rather than
+copying it outright.
+
+`testDomShim.ts` gains `HTMLIFrameElement` (a class stub, same pattern as its
+existing `HTMLElement`/`Element`) and a writable `document.activeElement`
+(`null` by default) — both needed for a test to fake "focus just moved to an
+iframe" without a real DOM.
+
+Test-first: the existing outside-target and inside-target tests are renamed
+click→click and kept as regression coverage; a new test fires a `click` on a
+target whose only signal is `closest(".notif-host") → {}` (no `cardRef`
+relationship at all) and asserts the card does NOT start leaving — the toast-
+action case, which failed against the `pointerdown` listener for exactly the
+reason described above before the fix. Two more: `document.activeElement`
+set to a fake `HTMLIFrameElement` instance, then a real `blur` dispatch,
+asserts the card starts leaving; a plain `blur` with no `activeElement` set
+asserts it does not. No stray `act()` warning was observed against the
+rewritten suite; the state updates it drives were already inside `act(...)`
+callbacks, so no test wrapper needed correcting for it.
+
+Scoped runs, all green: `bun test src/platform/ui/JobPopupCard.test.tsx
+src/platform/ui/DownloadManager.test.tsx src/shell/ActivityDock.test.tsx
+src/shell/RepoUpdatesDock.test.tsx` — 122 pass, 0 fail. `bunx tsc --noEmit
+-p .` and `node scripts/check-boundaries.mjs` both clean.

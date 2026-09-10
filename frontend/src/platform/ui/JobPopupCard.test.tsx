@@ -154,7 +154,7 @@ function liveGlobalEvents(): {
   };
 }
 
-test("a pointerdown outside the card starts its exit animation", async () => {
+test("a click outside the card starts its exit animation", async () => {
   const bus = liveGlobalEvents();
   let renderer: ReturnType<typeof create>;
   await act(async () => {
@@ -168,7 +168,7 @@ test("a pointerdown outside the card starts its exit animation", async () => {
     throw new Error("must never be called — an outside press must keep bubbling");
   };
   await act(async () => {
-    bus.fire("pointerdown", { target: {}, preventDefault, stopPropagation });
+    bus.fire("click", { target: {}, preventDefault, stopPropagation });
   });
 
   const json = renderer!.toJSON() as ReactTestRendererJSON;
@@ -176,7 +176,7 @@ test("a pointerdown outside the card starts its exit animation", async () => {
   bus.restore();
 });
 
-test("a pointerdown inside the card is ignored", async () => {
+test("a click inside the card is ignored", async () => {
   const bus = liveGlobalEvents();
   const marker = { id: "inside" };
   const cardNode = { contains: (n: unknown) => n === marker };
@@ -188,7 +188,33 @@ test("a pointerdown inside the card is ignored", async () => {
   });
 
   await act(async () => {
-    bus.fire("pointerdown", { target: marker, preventDefault() {}, stopPropagation() {} });
+    bus.fire("click", { target: marker, preventDefault() {}, stopPropagation() {} });
+  });
+
+  const json = renderer!.toJSON() as ReactTestRendererJSON;
+  expect(json.props.className).not.toContain("leaving");
+  bus.restore();
+});
+
+test("a click on a toast action button elsewhere in .notif-host is ignored, not stolen", async () => {
+  // The concrete failure this guards: a toast rendered ABOVE this card in the
+  // same `.notif-host` column has its own action button, and starting the
+  // exit animation on `pointerdown` used to steal that button's click before
+  // its own `pointerup`/`click` ever fired. The target here isn't `cardRef`'s
+  // own node at all — it's a sibling the card has no reference to — so the
+  // only thing that can save it is the `.closest(".notif-host")` check.
+  const bus = liveGlobalEvents();
+  const cardNode = { contains: () => false };
+  let renderer: ReturnType<typeof create>;
+  await act(async () => {
+    renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />, {
+      createNodeMock: () => cardNode,
+    });
+  });
+
+  const actionButton = { closest: (sel: string) => (sel === ".notif-host" ? {} : null) };
+  await act(async () => {
+    bus.fire("click", { target: actionButton, preventDefault() {}, stopPropagation() {} });
   });
 
   const json = renderer!.toJSON() as ReactTestRendererJSON;
@@ -202,14 +228,14 @@ test("the outside-press listener is removed once the card starts leaving, and ag
   await act(async () => {
     renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />);
   });
-  expect(bus.removeCount("pointerdown")).toBe(0);
+  expect(bus.removeCount("click")).toBe(0);
 
   await act(async () => {
-    bus.fire("pointerdown", { target: {}, preventDefault() {}, stopPropagation() {} });
+    bus.fire("click", { target: {}, preventDefault() {}, stopPropagation() {} });
   });
   // Leaving now — the listener that got it there tears itself down rather
   // than sitting around watching a card that can no longer be dismissed.
-  expect(bus.removeCount("pointerdown")).toBe(1);
+  expect(bus.removeCount("click")).toBe(1);
 
   await act(async () => {
     renderer!.unmount();
@@ -218,8 +244,46 @@ test("the outside-press listener is removed once the card starts leaving, and ag
   // started leaving (the visible-window timeout path) must still clean up,
   // so this asserts the count does not grow past what leaving already did,
   // never that unmount fires a second, redundant removal.
-  expect(bus.removeCount("pointerdown")).toBe(1);
+  expect(bus.removeCount("click")).toBe(1);
   bus.restore();
+});
+
+test("an iframe taking focus (a press inside an app page) starts the exit animation", async () => {
+  // A press inside an app page's iframe never dispatches anything this
+  // document can see — no `click` ever reaches the outside-press listener
+  // above. It DOES blur whatever had focus here first, though, and hands
+  // focus to the iframe itself, which is exactly what this test fakes.
+  let renderer: ReturnType<typeof create>;
+  await act(async () => {
+    renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />);
+  });
+
+  (document as unknown as { activeElement: unknown }).activeElement =
+    new (globalThis as unknown as { HTMLIFrameElement: new () => unknown }).HTMLIFrameElement();
+  await act(async () => {
+    globalThis.dispatchEvent(new Event("blur"));
+  });
+
+  const json = renderer!.toJSON() as ReactTestRendererJSON;
+  expect(json.props.className).toContain("leaving");
+  (document as unknown as { activeElement: unknown }).activeElement = null;
+});
+
+test("a plain window blur with no iframe focused does not hide the card", async () => {
+  // Alt-tabbing away, opening devtools, a native file picker: all of these
+  // blur the window too, but none of them hand focus to an iframe — the
+  // narrow condition is what keeps this card up through all of them.
+  let renderer: ReturnType<typeof create>;
+  await act(async () => {
+    renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />);
+  });
+
+  await act(async () => {
+    globalThis.dispatchEvent(new Event("blur"));
+  });
+
+  const json = renderer!.toJSON() as ReactTestRendererJSON;
+  expect(json.props.className).not.toContain("leaving");
 });
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {

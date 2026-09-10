@@ -78,41 +78,68 @@ export default function JobPopupCard({
 
   // A press anywhere else is "I saw this, move on" — the same acknowledgement
   // clicking the row already is, just aimed somewhere other than the row.
-  // CAPTURE phase, and neither `preventDefault` nor `stopPropagation` is ever
-  // called: whatever the user actually pressed (a menu item, a link, another
-  // card) still gets the event exactly as if this card were not here. Only
-  // the card's OWN exit starts; the press itself is never disturbed.
+  // Neither `preventDefault` nor `stopPropagation` is ever called: whatever
+  // the user actually pressed (a menu item, a link, another card) still gets
+  // the event exactly as if this card were not here. Only the card's OWN
+  // exit starts; the press itself is never disturbed.
   //
-  // `cardRef` + `contains(e.target)` is what tells an outside press apart
-  // from one that landed on the row itself — the row's own click handler
-  // (onDismissClick/onPatch above) already starts the same `leaving` state,
-  // so a press inside the card is left alone here rather than raced against.
+  // `click`, not `pointerdown`: a `pointerdown` fires before `pointerup`,
+  // so starting the exit animation on it can unmount or reflow whatever the
+  // user actually pressed before its own `click` ever fires — concretely, a
+  // toast action button rendered ABOVE this card in `.notif-host` had its
+  // click stolen by the card's own collapse. `click` fires only after the
+  // full press-release, by which point the target's own handler has already
+  // run, so the collapse can never race it.
+  //
+  // The "inside" check covers two things, not one: `cardRef.contains` for
+  // this card's own row (its click handler already starts the same
+  // `leaving` state, so it is left alone here rather than raced against),
+  // and `closest(".notif-host")` for EVERYTHING ELSE the floating column
+  // renders — another toast, the server-status banner, a toast's own action
+  // button sitting above this card. A press on any of those is not "outside
+  // the notification system", it is a press ON it, so it must not close a
+  // sibling card.
   //
   // `globalThis.addEventListener`/`removeEventListener`, not `window`'s or
   // `document`'s — the same reason the timers above read `globalThis`:
   // `window`/`document` are no-op stubs in the test shim
   // (testDomShim.ts), while Bun's `globalThis` is a real `EventTarget`, so a
   // listener attached here is the one a test can actually exercise.
-  //
-  // No `blur` listener: a floating pop-up in the SAME window as everything
-  // else only ever loses focus for reasons that have nothing to do with this
-  // card — alt-tabbing away, opening devtools, a native file picker — and
-  // window blur fires for all of them alike. Wiring it here would hide the
-  // card out from under a user who never pressed anything near it, which is
-  // worse than the gap it would close: the one case blur would actually
-  // cover (a job started from a separate-document panel/tab pane) is left
-  // uncovered rather than risk that.
   const cardRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (leaving) return;
+    const isInside = (target: Node | null) => {
+      if (!target) return false;
+      if (cardRef.current?.contains(target)) return true;
+      const el = target as Node & { closest?: (sel: string) => Element | null };
+      return !!el.closest?.(".notif-host");
+    };
     const onOutside = (e: Event) => {
-      const card = cardRef.current;
-      const target = e.target as Node | null;
-      if (card && target && card.contains(target)) return;
+      if (isInside(e.target as Node | null)) return;
       setLeaving(true);
     };
-    globalThis.addEventListener("pointerdown", onOutside, true);
-    return () => globalThis.removeEventListener("pointerdown", onOutside, true);
+    globalThis.addEventListener("click", onOutside, true);
+    return () => globalThis.removeEventListener("click", onOutside, true);
+  }, [leaving]);
+
+  // App pages are hosted in iframes, so a press inside one never reaches
+  // this document at all — no `click` this card can see. It DOES blur
+  // whatever had focus here, though, so a narrow `blur` listener catches
+  // exactly that case: `document.activeElement instanceof HTMLIFrameElement`
+  // is true only when focus just left TO an iframe, never for alt-tabbing
+  // away, opening devtools, or a native file picker, all of which blur the
+  // window without handing focus to any iframe in it. Precedent:
+  // `apps/explorer/BarMenu.tsx`'s `useMenuAnchor` closes on ANY window blur
+  // unconditionally, which is right for a menu (any loss of focus should
+  // close it) but wrong here (an alt-tab must not silently dismiss a card
+  // the user hasn't acted on).
+  useEffect(() => {
+    if (leaving) return;
+    const onBlur = () => {
+      if (document.activeElement instanceof HTMLIFrameElement) setLeaving(true);
+    };
+    globalThis.addEventListener("blur", onBlur);
+    return () => globalThis.removeEventListener("blur", onBlur);
   }, [leaving]);
 
   return (
