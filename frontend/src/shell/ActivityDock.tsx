@@ -18,9 +18,11 @@
 // `shell/queue-dock-lib.ts` (its pure row-shaping half) are DELETED, not
 // merely unused. `jobs.ts`'s `jobRows` now excludes `sys:schedule:*` jobs
 // unconditionally (no more "exempt only while queued" carve-out), so a
-// scheduled run cannot draw a row here no matter what state it is in. The
-// "Task finished:"/"Task failed:" toast (platform/lib/schedule-toast.ts,
-// consuming `useScheduleEvents` in App.tsx) is the one surface for these now;
+// scheduled run cannot draw a row here no matter what state it is in. A run
+// that was missed or failed still gets a toast (`toastForEvent`,
+// platform/lib/schedule-toast.ts, consuming `useScheduleEvents` in App.tsx);
+// a successful run gets none — `toastForEvent` returns null for
+// `kind === "done"` — so its only surface is the Scheduled/Tasks page.
 // `fused_render/schedule.py`'s own `_emit`/`_report` are untouched, since its
 // poll loop still reads its own report back to notice a live cancel request.
 //

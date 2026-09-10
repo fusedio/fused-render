@@ -822,9 +822,10 @@ def _sweep(now: float) -> None:
       unconditionally, and `ActivityDock.tsx`'s own header comment records
       that exclusion as deliberate (D661) — the row is invisible on every
       surface regardless of what state it ends in or what tier it declares.
-      A scheduled run already gets its own toast
-      (`platform/lib/schedule-toast.ts`) and its own row on the Scheduled
-      page; the registry row here is a third copy nobody can see or
+      A scheduled run already has its own row on the Scheduled page, and a
+      missed or failed one also gets a toast
+      (`platform/lib/schedule-toast.ts`'s `toastForEvent`, `null` for a
+      successful run); the registry row here is a copy nobody can see or
       dismiss, so it ages out on the ORIGINAL read-gated `FINISHED_TTL_S`
       clock every terminal row had before D663, unconditionally on id alone
       — not on tier, not on outcome.
