@@ -33,7 +33,7 @@ import { navigate } from "@platform/lib/router";
 import { basename, formatSize } from "@platform/lib/format";
 import { isMac } from "@platform/lib/platform";
 import { PathCrumbs } from "@apps/explorer/listing/path-crumbs";
-import { subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";
+import { requestSearchFocus, subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";
 import { searchBoxRestingForContextMenu } from "@apps/explorer/listing/search-box-context-menu";
 import { searchBoxBlurAction } from "@apps/explorer/listing/search-provisional";
 import { openTopbarMenu } from "@apps/explorer/topbar-menu";
@@ -280,12 +280,12 @@ export function SearchField({
         ref={searchBoxRef}
         className={
           "listing-search-box" +
-          // `.search` here (not just on the chip below) is what gives
-          // `--chip-inset` (explorer.css) somewhere to be set per mode: the
-          // crumbs and the input both read it from THIS element, an
-          // ancestor of both, rather than each needing their own copy of
-          // the mode class.
-          (chipIsSearch ? " search" : "") +
+          // No mode modifier here any more (SPEC-omnibox-search-affordance.md
+          // scope item 2): `--chip-inset` collapsed to one value once both
+          // modes render the same glyph-only chip width, so this element no
+          // longer needs a per-mode class of its own to hang it from — only
+          // `.listing-search-mode` below still carries `chipIsSearch` (its
+          // colour, not layout, keys off it).
           (hasPin ? " has-pin" : "") +
           (widePin ? " wide-pin" : "") +
           (hasClear ? " has-clear" : "")
@@ -318,9 +318,11 @@ export function SearchField({
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
             </svg>
           )}
-          <span className="listing-search-mode-label">
-            {chipIsSearch ? "Search" : "Path"}
-          </span>
+          {/* SPEC-omnibox-search-affordance.md scope item 1: the visible word
+              is gone — the glyph above carries the mode alone — but a
+              screen reader still needs a spoken label, since there is no
+              longer a visible word for it to read. */}
+          <span className="sr-only">{chipIsSearch ? "Search" : "Path"}</span>
         </span>
         {/* Decision 1: one field, carrying either a path or a pattern. The
             resting crumbs are the HOST's own path — a folder's own, or a
@@ -486,10 +488,28 @@ export function SearchField({
             </svg>
           </button>
         )}
+        {/* SPEC-omnibox-search-affordance.md scope item 3 (variant F): the
+            idle hint used to be unclickable grey text. It is a real button
+            now, on the same chassis the neighbouring `⋮` trigger uses
+            (`bar-ctl`/`bar-ctl-icon`, explorer.css), so the two read as
+            siblings rather than a readout beside a control. The shortcut
+            moved into the tooltip, where it costs no space.
+            `requestSearchFocus` is the exact call Breadcrumb.tsx's own
+            ⌘L/Ctrl+L listener makes (listing/search-focus.ts) — reused
+            rather than a second path to the same open-and-focus behaviour. */}
         {!pinnedOpen && !hasClear && (
-          <span className="listing-search-shortcut-hint" aria-hidden="true">
-            Search <kbd>{isMac ? "⌘L" : "Ctrl L"}</kbd>
-          </span>
+          <button
+            type="button"
+            className="listing-search-shortcut-hint bar-ctl bar-ctl-icon"
+            title={`Search this folder (${isMac ? "⌘L" : "Ctrl L"})`}
+            aria-label={`Search this folder (${isMac ? "⌘L" : "Ctrl L"})`}
+            onClick={() => requestSearchFocus(contractHome(crumbsPath, home))}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <line x1="16.5" y1="16.5" x2="21" y2="21" />
+            </svg>
+          </button>
         )}
         {/* The star, trailing the count/spinner pin, as the box's own last
             child — it sits inside the field's own border. Gated on

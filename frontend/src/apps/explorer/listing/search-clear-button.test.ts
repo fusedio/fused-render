@@ -100,21 +100,23 @@ test("the input reserves no left gutter keyed to the magnifier's old name", () =
   expect(decls[0]).not.toMatch(/padding-left/);
 });
 
-// The keyboard hint takes over the vacated trailing slot, but only once the
-// field is both unfocused and empty — `hasClear` alone would leave the hint
-// painting over a blurred-with-a-query field's clear button.
-test("the keyboard hint occupies the trailing slot only when unfocused and empty", () => {
-  const at = LISTING.indexOf('className="listing-search-shortcut-hint"');
+// SPEC-omnibox-search-affordance.md scope item 3: the keyboard hint is a
+// real pressable button now, not decoration — it takes over the vacated
+// trailing slot only once the field is both unfocused and empty
+// (`hasClear` alone would leave it painting over a blurred-with-a-query
+// field's clear button), same gate as before.
+test("the search button occupies the trailing slot only when unfocused and empty, and IS a control", () => {
+  const at = LISTING.indexOf('className="listing-search-shortcut-hint');
   expect(at).toBeGreaterThan(-1);
   const before = LISTING.slice(Math.max(0, at - 200), at);
   expect(before).toMatch(/!pinnedOpen\s*&&\s*!hasClear\s*&&\s*\(/);
-  // Decoration, not a control: no click handler of its own.
-  const nearby = LISTING.slice(at, at + 200);
-  expect(nearby).not.toMatch(/onMouseDown=/);
-  expect(nearby).not.toMatch(/onClick=/);
+  // A real control now: it carries its own click handler, reusing the
+  // existing ⌘L focus path rather than a decoration a press falls through.
+  const nearby = LISTING.slice(at, at + 400);
+  expect(nearby).toMatch(/onClick=/);
 });
 
-test("the keyboard hint sits at the box's trailing edge, sharing the clear button's own position", () => {
+test("the search button sits at the box's trailing edge, sharing the clear button's own position", () => {
   // Two exact matches for this selector: the base rule and the narrow-width
   // `display: none` override nested under the container query — the base
   // rule is the one written first in the file.
@@ -123,7 +125,9 @@ test("the keyboard hint sits at the box's trailing edge, sharing the clear butto
   const base = decls[0];
   expect(base).toMatch(/position:\s*absolute/);
   expect(base).toMatch(/right:\s*8px/);
-  expect(base).toMatch(/pointer-events:\s*none/);
+  // No `pointer-events: none` any more — unlike the decoration it replaces,
+  // this one IS the control and a press must land on it.
+  expect(base).not.toMatch(/pointer-events:\s*none/);
   // No left-gutter rule of its own.
   expect(base).not.toMatch(/left:/);
 });

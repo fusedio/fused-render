@@ -61,11 +61,12 @@
    token pair for a button that rests visible and steps up on hover
    (`--ctl-quiet-bg`/`--ctl-quiet-bg-hover`, tokens.css) — so the resting pill
    is what tells a viewer this is pressable before the pointer ever arrives;
-   it shares the search field with two readouts that carry no such pill —
-   the mode chip at the field's leading edge (`.listing-search-mode`) and
-   the keyboard hint at its own trailing edge
-   (`.listing-search-shortcut-hint`) — and the star needs to read as a
-   different kind of thing from both, not just on hover.
+   it shares the search field with the mode chip at the field's leading edge
+   (`.listing-search-mode`), a readout that carries no such pill — the star
+   needs to read as a different kind of thing from it, not just on hover.
+   (The trailing edge's own button, `.listing-search-shortcut-hint`, is
+   pressable too now — SPEC-omnibox-search-affordance.md scope item 3 — and
+   rides the app's `bar-ctl`/`bar-ctl-icon` chassis instead of this pill.)
    Muted glyph until hovered; a FILLED FOREGROUND star when the view is
    bookmarked or an armed bookmark is live. Deliberately not accent-yellow:
    the accent means exactly one thing in this chrome, the active view mode.
@@ -1606,43 +1607,45 @@ table.listing-table tr.skel-row:hover {
    room for the hint.
 
    `--chip-inset` is where the crumbs (`.listing-search-crumbs`) and the
-   input's own text (`.listing-search-input`) both START — set HERE, per
-   mode, and only READ at the two sites below, so the pair can never drift
-   apart the way two separately-typed numbers eventually would. This rule is
-   the "Path" value; `.search` right below overrides it for the wider word.
-   The mode class lives on this same element (SearchField.tsx's `chipIsSearch`
-   ternary) rather than on the chip alone, specifically so this property has
-   somewhere to be set per mode without a second, parallel class on a second
-   element.
+   input's own text (`.listing-search-input`) both START — set HERE and only
+   READ at the two sites below, so the pair can never drift apart the way
+   two separately-typed numbers eventually would.
 
-   8px (the chip's own left inset) + 12px (its glyph) + 4px (the
-   glyph-to-label gap) + 23px (the "Path" label at this rule's own 11px/500
-   weight) + 8px clearance = 55px. */
+   SPEC-omnibox-search-affordance.md scope item 2: this used to be two
+   values, one per mode (`.listing-search-box.search` overrode it for the
+   wider "Search" word) — the chip carried a WORD then, and "Path"/"Search"
+   are different widths. The chip is glyph-only now (scope item 1), and a
+   glyph is the same width regardless of which one it is, so the split
+   collapsed to this one value. Recomputed for the glyph, not left at the
+   old text-derived number — the whitespace bug #1091 (`worktree-omnibox-
+   chip-padding`) exists to fix, reintroduced.
+
+   8px (the chip's own left inset) + 12px (its glyph) + 8px clearance = 28px. */
 .listing-search-box {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
   container-type: inline-size;
-  --chip-inset: 55px;
-}
-
-/* The wider clearance for the "Search" state: 8px + 12px + 4px + 35px (the
-   "Search" label, the longer of the two words the chip ever shows, measured
-   the same way "Path" above is) + 8px clearance = 67px. Read by the crumbs
-   and the input alike (both below), never re-measured at either site. */
-.listing-search-box.search {
-  --chip-inset: 67px;
+  --chip-inset: 28px;
 }
 
 /* The mode chip: the field's leading readout, always rendered (Listing.tsx
    has no visibility condition of its own, only the search/path choice) —
-   the field must never be caught with neither word showing. Left-aligned at
-   the same 8px inset the trailing controls use on their own edge,
+   the field must never be caught with neither glyph showing. Left-aligned
+   at the same 8px inset the trailing controls use on their own edge,
    `pointer-events: none` so a press here lands on the input beneath it, the
    same fall-through the crumbs use. No background, no hover, no cursor
    change: this is a readout, not a third pressable thing beside the star
    and the clear button — the whole point of a chip that never lies about
-   the mode is that it also never invites a click that would do nothing. */
+   the mode is that it also never invites a click that would do nothing.
+
+   SPEC-omnibox-search-affordance.md scope item 1: the word this chip used
+   to carry ("Path"/"Search") is gone — the 12px folder/magnifier glyph
+   alone carries the mode, kept clearly different in SHAPE (not colour
+   alone) so the two states stay distinguishable for more than a colour
+   check. The word survives only as a screen-reader-only `.sr-only` span
+   (SearchField.tsx), so the mode still has a spoken label even with
+   nothing left on screen to read. */
 .listing-search-mode {
   position: absolute;
   left: 8px;
@@ -1664,16 +1667,6 @@ table.listing-table tr.skel-row:hover {
    it is the resting state, not a claim about anything. */
 .listing-search-mode.search {
   color: var(--accent);
-}
-
-/* No reserved width of its own: the label is exactly as wide as its own
-   text, so "Path" leaves no dead space between the word and the crumbs that
-   follow it. The two states are not meant to line up with each other pixel
-   for pixel — only the crumbs' own start position (below) has to hold
-   still, and that is fixed by the crumbs' own left offset, not by padding
-   inside a state that renders no crumbs at all. */
-.listing-search-mode-label {
-  display: inline-block;
 }
 
 .listing-search .listing-search-input {
@@ -1883,41 +1876,34 @@ table.listing-table tr.skel-row:hover {
   right: 38px;
 }
 
-/* The keyboard hint, sharing the clear button's own trailing slot rather
-   than a fixed left gutter — the two never render at once (Listing.tsx's
+/* SPEC-omnibox-search-affordance.md scope item 3 (variant F): a real button
+   now, on the app's own `bar-ctl`/`bar-ctl-icon` chassis (explorer.css,
+   above) — the same recipe the neighbouring `⋮` trigger rides, so the two
+   read as siblings. `bar-ctl-icon` supplies the 28px square, the ghost
+   hover, the press nudge and the pointer cursor; this rule only positions
+   it, absolute, in the clear button's own trailing slot rather than a fixed
+   left gutter — the two never render at once (SearchField.tsx's
    `!hasClear` guard), so sharing the position costs nothing and needs no
-   extra width reserved anywhere. Decoration, not a control:
-   `pointer-events: none` keeps a press falling through to the input
-   beneath it. */
+   extra width reserved anywhere. No `pointer-events: none` any more: unlike
+   the mode chip and the old text hint it replaces, this one IS the
+   control — a press must land on it, not fall through to the input
+   beneath. The shortcut itself moved into the button's `title`/`aria-label`
+   (SearchField.tsx), where it costs no space at all.
+
+   Vertically centred with `margin-top` on a fixed half-height, not the
+   usual `transform: translateY(-50%)` — `.bar-ctl:active` (base.css) already
+   claims `transform` for its own 1px press nudge, and the two would fight:
+   whichever declaration a browser resolves last wins the WHOLE property,
+   snapping the button to either "pressed" or "centred" but never both. */
 .listing-search-shortcut-hint {
   position: absolute;
   right: 8px;
   top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--fg-muted);
-  font-size: 11px;
-  white-space: nowrap;
-  pointer-events: none;
+  margin-top: -14px;
 }
 
 .crumb-search-slot .listing-search-box .listing-search-shortcut-hint {
   right: 38px;
-}
-
-/* The app's own key-cap vocabulary (preferences.css's `.fh-ai-hint kbd`,
-   also carried by `.fh-result-note kbd`) — this bar gets its own selector
-   rather than sharing theirs across stylesheets because nothing here reaches
-   into preferences.css, but the declarations are the same rule, not a new
-   one. */
-.listing-search-shortcut-hint kbd {
-  font: inherit;
-  padding: 0 4px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg-alt);
 }
 
 /* Absent, not clipped, on a narrow box — a deep path or a narrow window can
