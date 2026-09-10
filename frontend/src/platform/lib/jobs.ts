@@ -584,9 +584,6 @@ export function jobTypeLabel(job: Job): string {
   const verb = leadingVerb(detail) ?? leadingVerb(job.title);
   if (verb) return verb;
   if (job.kind === "download") return "Downloading";
-  // A scheduled Claude run's title is the prompt and its detail the target
-  // path — neither carries a verb — so it names its own kind of work.
-  if (job.id.startsWith(SCHEDULE_JOB_PREFIX)) return "Running";
   return "Working";
 }
 

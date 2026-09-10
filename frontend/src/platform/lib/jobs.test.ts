@@ -564,10 +564,7 @@ test("a title with no leading verb falls back to the kind", () => {
   expect(jobTypeLabel(job({ title: "Ring sizing", kind: "task" }))).toBe("Working");
 });
 
-test("a scheduled Claude run says Running; a queued Claude call says Queued", () => {
-  expect(
-    jobTypeLabel(job({ id: SCHEDULE_JOB_PREFIX + "abc", kind: "task", title: "Summarise the inbox", detail: "/Users/me/mail" })),
-  ).toBe("Running");
+test("a queued Claude call says Queued", () => {
   expect(jobTypeLabel(job({ title: "Claude", detail: "Queued — another Claude call is in flight" }))).toBe("Queued");
   expect(jobTypeLabel(job({ title: "FLUX.2-klein-4B", kind: "download", detail: "Preparing MLX…" }))).toBe("Preparing");
 });
