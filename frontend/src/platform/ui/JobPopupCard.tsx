@@ -23,6 +23,9 @@
 // (a `transient` tier) loses nothing either way; a job that IS kept (an
 // `attention`/`trail` row) stays there for the user to act on later — the
 // one thing "they still stay in the list" requires.
+//
+// A PRESS ANYWHERE ELSE also starts the same exit — see the outside-press
+// effect below for why that never disturbs the press itself.
 import { useEffect, useRef, useState } from "react";
 import { JobRow } from "@platform/ui/DownloadManager";
 import { JOB_POPUP_VISIBLE_MS, type Job } from "@platform/lib/jobs";
@@ -73,8 +76,47 @@ export default function JobPopupCard({
     return () => globalThis.clearTimeout(t);
   }, [leaving]);
 
+  // A press anywhere else is "I saw this, move on" — the same acknowledgement
+  // clicking the row already is, just aimed somewhere other than the row.
+  // CAPTURE phase, and neither `preventDefault` nor `stopPropagation` is ever
+  // called: whatever the user actually pressed (a menu item, a link, another
+  // card) still gets the event exactly as if this card were not here. Only
+  // the card's OWN exit starts; the press itself is never disturbed.
+  //
+  // `cardRef` + `contains(e.target)` is what tells an outside press apart
+  // from one that landed on the row itself — the row's own click handler
+  // (onDismissClick/onPatch above) already starts the same `leaving` state,
+  // so a press inside the card is left alone here rather than raced against.
+  //
+  // `globalThis.addEventListener`/`removeEventListener`, not `window`'s or
+  // `document`'s — the same reason the timers above read `globalThis`:
+  // `window`/`document` are no-op stubs in the test shim
+  // (testDomShim.ts), while Bun's `globalThis` is a real `EventTarget`, so a
+  // listener attached here is the one a test can actually exercise.
+  //
+  // No `blur` listener: a floating pop-up in the SAME window as everything
+  // else only ever loses focus for reasons that have nothing to do with this
+  // card — alt-tabbing away, opening devtools, a native file picker — and
+  // window blur fires for all of them alike. Wiring it here would hide the
+  // card out from under a user who never pressed anything near it, which is
+  // worse than the gap it would close: the one case blur would actually
+  // cover (a job started from a separate-document panel/tab pane) is left
+  // uncovered rather than risk that.
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (leaving) return;
+    const onOutside = (e: Event) => {
+      const card = cardRef.current;
+      const target = e.target as Node | null;
+      if (card && target && card.contains(target)) return;
+      setLeaving(true);
+    };
+    globalThis.addEventListener("pointerdown", onOutside, true);
+    return () => globalThis.removeEventListener("pointerdown", onOutside, true);
+  }, [leaving]);
+
   return (
-    <div className={"toast-slot" + (leaving ? " leaving" : "")}>
+    <div ref={cardRef} className={"toast-slot" + (leaving ? " leaving" : "")}>
       <JobRow
         job={job}
         onChanged={NOOP}

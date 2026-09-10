@@ -1452,3 +1452,55 @@ fail. `bun test src/platform/lib/jobs.test.ts src/platform/ui/JobRow.test.tsx
 src/platform/ui/DownloadManager.test.tsx src/platform/ui/JobPopupCard.test.tsx
 src/platform/ui/NotificationCard.test.tsx` — 178 pass, 0 fail. `bunx tsc
 --noEmit -p .` and `node scripts/check-boundaries.mjs` both clean.
+
+## Eleventh round — a press anywhere else dismisses the floating card too
+
+`JobPopupCard`'s own ✕ and clicking the row both already start `leaving`;
+nothing did the same for a press that lands somewhere else entirely, so a
+card sat there until its own timer ran out even after the user had clearly
+moved on to whatever they actually pressed. A new effect in
+`JobPopupCard.tsx` attaches a CAPTURE-phase `pointerdown` listener on
+`globalThis` for exactly as long as the card is not yet leaving, and starts
+`leaving` the moment one lands outside the card — the same acknowledgement
+clicking the row already is, just aimed elsewhere.
+
+Neither `preventDefault` nor `stopPropagation` is ever called: whatever the
+press actually hit (a menu item, a link, another card) sees the event
+exactly as if this listener were not there, so the card gets out of the
+way instead of eating the click meant for something else. `cardRef` +
+`contains(e.target)` tells an outside press apart from one that landed on
+the row itself, which is left alone here since the row's own handlers
+already cover it. `globalThis.addEventListener`/`removeEventListener`,
+matching this file's existing `globalThis.setTimeout` convention rather
+than `window`'s or `document`'s: both of the latter are no-op stubs in
+`testDomShim.ts`, while Bun's `globalThis` is a genuine `EventTarget`, so a
+listener attached there is the one a test can actually dispatch against.
+
+No `blur` listener, a deliberate deviation from the brief: window blur
+fires for reasons that have nothing to do with this card in the common
+case this app actually runs in — a single window, alt-tabbing away, opening
+devtools, a native file picker — all of which would hide the card out from
+under a user who never pressed anywhere near it. The one case a blur
+listener would genuinely help (a job popped from a separate-document
+panel/tab pane, where an outside press never reaches this window's
+`pointerdown` at all) is left uncovered rather than risk hiding a card the
+user is still reading in the far more common single-window case.
+
+Test-first: `JobPopupCard.test.tsx` gained a small in-memory bus standing
+in for `globalThis`'s listener registry (the same technique
+`useTaskId.test.tsx` already uses for `window`), since a real dispatched
+`Event`'s `target` is always the dispatching object itself and otherwise
+read-only — no way to aim a real one at an arbitrary "inside the card"
+marker. Three new tests: an outside press starts the exit animation
+without ever calling `preventDefault`/`stopPropagation` (asserted by
+throwing if either is called), a press whose target the card's own
+`contains` mock recognises as inside is ignored, and the listener is
+removed exactly once whether that happens because leaving started or
+because the card unmounted — never both. All three failed for the right
+reason (`"leaving"` never appearing on the outside press; the remove-count
+staying `0`) before the effect was added.
+
+Scoped runs, all green: `bun test src/platform/ui/JobPopupCard.test.tsx
+src/platform/ui/DownloadManager.test.tsx src/shell/ActivityDock.test.tsx
+src/shell/RepoUpdatesDock.test.tsx` — 119 pass, 0 fail. `bunx tsc --noEmit
+-p .` and `node scripts/check-boundaries.mjs` both clean.

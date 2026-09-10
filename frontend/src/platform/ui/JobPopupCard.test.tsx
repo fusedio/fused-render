@@ -111,6 +111,117 @@ test("clicking the card (opening it) closes it early, through JobRow's own dismi
   expect(json.props.className).toContain("leaving");
 }, 5000);
 
+// `globalThis`'s real `addEventListener`/`removeEventListener` (Bun's
+// `globalThis` is a genuine `EventTarget`, unlike the shim's `window`/
+// `document`, which are no-ops — see testDomShim.ts) work for real dispatch,
+// but a dispatched `Event`'s `target` is always the dispatching object
+// itself, and `target` is otherwise read-only — no way to aim one at an
+// arbitrary "inside the card" marker. A tiny in-memory bus standing in for
+// `globalThis`'s listener registry for the length of one test, the same
+// technique `useTaskId.test.tsx` uses for `window`, lets a test dispatch a
+// plain object shaped like a `PointerEvent` (any `target`, and spies in place
+// of `preventDefault`/`stopPropagation`) without touching real DOM dispatch.
+function liveGlobalEvents(): {
+  restore: () => void;
+  fire: (type: string, ev: Record<string, unknown>) => void;
+  removeCount: (type: string) => number;
+} {
+  const g = globalThis as unknown as {
+    addEventListener: (type: string, fn: (ev: unknown) => void, opts?: unknown) => void;
+    removeEventListener: (type: string, fn: (ev: unknown) => void, opts?: unknown) => void;
+  };
+  const was = { add: g.addEventListener, remove: g.removeEventListener };
+  const bus = new Map<string, Set<(ev: unknown) => void>>();
+  const removed = new Map<string, number>();
+  g.addEventListener = (type, fn) => {
+    const set = bus.get(type) ?? new Set();
+    set.add(fn);
+    bus.set(type, set);
+  };
+  g.removeEventListener = (type, fn) => {
+    bus.get(type)?.delete(fn);
+    removed.set(type, (removed.get(type) ?? 0) + 1);
+  };
+  return {
+    restore: () => {
+      g.addEventListener = was.add;
+      g.removeEventListener = was.remove;
+    },
+    fire: (type, ev) => {
+      for (const fn of [...(bus.get(type) ?? [])]) fn(ev);
+    },
+    removeCount: (type) => removed.get(type) ?? 0,
+  };
+}
+
+test("a pointerdown outside the card starts its exit animation", async () => {
+  const bus = liveGlobalEvents();
+  let renderer: ReturnType<typeof create>;
+  await act(async () => {
+    renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />);
+  });
+
+  const preventDefault = () => {
+    throw new Error("must never be called — an outside press must reach whatever it hit");
+  };
+  const stopPropagation = () => {
+    throw new Error("must never be called — an outside press must keep bubbling");
+  };
+  await act(async () => {
+    bus.fire("pointerdown", { target: {}, preventDefault, stopPropagation });
+  });
+
+  const json = renderer!.toJSON() as ReactTestRendererJSON;
+  expect(json.props.className).toContain("leaving");
+  bus.restore();
+});
+
+test("a pointerdown inside the card is ignored", async () => {
+  const bus = liveGlobalEvents();
+  const marker = { id: "inside" };
+  const cardNode = { contains: (n: unknown) => n === marker };
+  let renderer: ReturnType<typeof create>;
+  await act(async () => {
+    renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />, {
+      createNodeMock: () => cardNode,
+    });
+  });
+
+  await act(async () => {
+    bus.fire("pointerdown", { target: marker, preventDefault() {}, stopPropagation() {} });
+  });
+
+  const json = renderer!.toJSON() as ReactTestRendererJSON;
+  expect(json.props.className).not.toContain("leaving");
+  bus.restore();
+});
+
+test("the outside-press listener is removed once the card starts leaving, and again on unmount", async () => {
+  const bus = liveGlobalEvents();
+  let renderer: ReturnType<typeof create>;
+  await act(async () => {
+    renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />);
+  });
+  expect(bus.removeCount("pointerdown")).toBe(0);
+
+  await act(async () => {
+    bus.fire("pointerdown", { target: {}, preventDefault() {}, stopPropagation() {} });
+  });
+  // Leaving now — the listener that got it there tears itself down rather
+  // than sitting around watching a card that can no longer be dismissed.
+  expect(bus.removeCount("pointerdown")).toBe(1);
+
+  await act(async () => {
+    renderer!.unmount();
+  });
+  // Already removed once leaving started — unmounting a card that never
+  // started leaving (the visible-window timeout path) must still clean up,
+  // so this asserts the count does not grow past what leaving already did,
+  // never that unmount fires a second, redundant removal.
+  expect(bus.removeCount("pointerdown")).toBe(1);
+  bus.restore();
+});
+
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
   const hits: ReactTestRendererJSON[] = [];
