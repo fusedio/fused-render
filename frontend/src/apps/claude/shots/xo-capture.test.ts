@@ -797,6 +797,37 @@ describe("releaseXOTarget", () => {
     leave();
   });
 
+  test("a target BACK under the capture keeps the new arm's share (finding #3)", async () => {
+    // The sticky-flag race. The share is live and a capture is reading it when
+    // the target stops being cross-origin: the release is deferred (D6). The
+    // reader then re-arms over a NEW cross-origin target, which asks for the
+    // share and is handed the live one — so by the time the first capture
+    // finishes, the ask belongs to a target that is no longer gone. A flag
+    // cleared only by `stopStream` killed that arm's share on the capture's way
+    // out, and the re-prompt had no user activation left behind it.
+    const t = track();
+    nextStream = () => stream(t);
+    const leave = watchStreamTeardown(null);
+    await getStream();
+
+    const shot = captureXO(makeFrame(rect(0, 0, 400, 300)));
+    expect(streamCaptures()).toBe(1);
+    releaseXOTarget();
+    expect(streamReleasePending()).toBe(true);
+
+    // The re-arm — one acquisition later, so the ask is spent.
+    expect(await getStream()).toBe(currentStream() as MediaStream);
+    expect(streamReleasePending()).toBe(false);
+
+    expect(await shot).not.toBeNull();
+    expect(t.stops).toBe(0);
+    expect(currentStream()).not.toBeNull();
+
+    // …and the share is still ordinary: the mount leaving ends it.
+    leave();
+    expect(t.stops).toBe(1);
+  });
+
   test("no share held: a no-op, not a throw", () => {
     expect(() => releaseXOTarget()).not.toThrow();
     expect(currentStream()).toBeNull();

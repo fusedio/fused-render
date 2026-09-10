@@ -453,12 +453,14 @@ test("the camera seat and the chip row both bump the row's fit revision", () => 
   expect(
     renderer!.root.findAll((n) => n.props.className === "c-viewshot-pill").length,
   ).toBe(1);
-  // Attachments alone make the composer sendable, with no words at all (T:17903).
+  // Attachments alone make the composer sendable, with no words at all (T:17903)
+  // — and Send carries no `disabled` for any of it (T:4187).
   act(() => {
     renderer!.update(card({ hasAttachments: true }));
   });
   const send = renderer!.root.findByProps({ className: "c-send" });
-  expect(send.props.disabled).toBe(false);
+  expect(send.props.disabled).toBeUndefined();
+  expect(send.props.title).toBe("Send");
 });
 
 test("the tray's own record is what a send and an unmount read — not the last render", async () => {

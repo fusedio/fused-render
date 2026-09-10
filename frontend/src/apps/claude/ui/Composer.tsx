@@ -569,29 +569,25 @@ export function ComposerCard({
           type="submit"
           aria-label={running ? "Stop" : "Send"}
           title={running ? "Stop" : attaching ? "Attaching…" : "Send"}
-          // T NEVER DISABLES SEND. There is no `.send:disabled` rule in the
-          // whole of T (T:2956-2981) and nothing ever sets the attribute
-          // (markup T:4187, T:4246): an empty submit is swallowed in the
-          // handler, where `submit`'s own first guard already swallows it here.
-          // So the dim bought nothing, and it was never reviewed — it appears
-          // in none of PR1-R1..R4 or PR2-R1, while the nearest signal points
-          // the other way (P2-2: "never disabled unless a mode is active",
-          // resolved by HIDING rather than disabling).
+          // T NEVER DISABLES SEND — not for an empty box, not for a pending
+          // scheduled message, not for anything. There is no `.send:disabled`
+          // rule in the whole of T (T:2956-2981), the markup carries no
+          // attribute (T:4187, T:4246) and no line of T's script ever sets one:
+          // `applyComposerBlockState` disables the BOX (T:17218) and the
+          // Schedule pill (T:17238) and leaves this button alone. T has no
+          // `canSend` at all — the name in this app is T:7720's `activeRun ||
+          // !sending`, which is the ANNOTATION send gate, not this button.
           //
-          // `blocked` and the HAS-CONTENT half are both gone. `blocked` also
-          // cost the load-bearing half — `disabled` kills the STOP this button
-          // becomes mid-run, and a reader who cannot stop a turn has no way out
-          // of it.
+          // So the refusals all live where T puts them: in the submit handler,
+          // which swallows an empty send, a blocked composer, a chip still
+          // attaching and a capture in flight. The dim bought nothing the
+          // handler was not already doing, it was never reviewed (it appears in
+          // none of PR1-R1..R4 or PR2-R1) and it cost the load-bearing half —
+          // `disabled` also kills the STOP this button becomes mid-run, leaving
+          // a reader no way out of a turn.
           //
-          // The two TRANSIENT refusals stay, and neither is the same sentence
-          // as "there is nothing to send". Both are windows T never had, so
-          // there is no T rule for them to contradict:
-          //   * `attaching` — a chip is still uploading, and `take()` leaves it
-          //     in the tray, so a send now goes out WITHOUT the files that made
-          //     it sendable (Bugbot, PR #1064);
-          //   * `sendBusy` — a capture is in flight, which on a large pane runs
-          //     to seconds.
-          disabled={!running && (attaching || !!sendBusy)}
+          // The two transient windows T never had (`attaching`, `sendBusy`) say
+          // so in the `title` instead, which is feedback without a dead door.
         >
           {running ? (
             <svg

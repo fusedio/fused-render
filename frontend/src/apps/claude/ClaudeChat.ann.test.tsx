@@ -522,6 +522,39 @@ test("arming Comment presses the seat and LOCKS the chat", async () => {
   expect(byClass(r, "c-viewshot")[0]!.props["aria-disabled"]).toBe("true");
 });
 
+test("DELETING THE TASK disarms the mode before it navigates (P3-09, T:13371)", async () => {
+  // T:13371-13375's own words: back-to-chats "REFUSES while a comment mode
+  // holds the reader here (annNavLocked) — and a page must not stay on a
+  // transcript that no longer exists". So the erase drops the mode FIRST, the
+  // way its own discard path does. Without it, deleting the task left pins over
+  // a pane whose conversation is gone and a nav lock refusing the very
+  // navigation the delete was supposed to make.
+  const { r, params } = await mountChat();
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  makeNote("this row is wrong");
+  await settle();
+  expect(annotationsForTests()!.armed).toBe(true);
+  expect(rootClass(r)).toContain("annlock");
+  expect(params.get("annmode")).toBe("1");
+
+  // The menu's erase, straight at the seam `Kebab` calls (the confirm and the
+  // delete itself are `Kebab`'s own tests).
+  const erased = r.root.findAll(
+    (n) => typeof (n.props as { onErased?: unknown }).onErased === "function",
+  )[0]!;
+  await act(async () => (erased.props as { onErased(id: string): void }).onErased("s1"));
+  await settle();
+
+  // The mode is off, the lock with it, and the param says so — `set(false)` is
+  // T's three lines (`annSetMode(false); annBusyHold = false; annNavLock()`).
+  expect(annotationsForTests()!.armed).toBe(false);
+  expect(rootClass(r)).not.toContain("annlock");
+  expect(params.get("annmode")).toBe("0");
+  // …and the navigation it was blocking actually happened: the landing is back.
+  expect(byClass(r, "c-home")).toHaveLength(1);
+});
+
 test("the locked ← Chats SAYS WHY, in the title and in its accessible name", async () => {
   // T:6896 writes exactly this sentence onto `#back.title` while the lock holds
   // and clears it on unlock. It goes into the accessible NAME too, because
@@ -1085,13 +1118,14 @@ test("a line typed while the run is only STARTING stays in the box, and sends af
   expect(started()).toHaveLength(1);
   expect(boxValue(r)).toBe("");
 
-  // A follow-up typed inside it. THE DOOR IS SHUT — said out loud, on the very
-  // button: the run is not live, so this is not yet a follow-up the controller
-  // could take, and the seat that would refuse it does not pretend otherwise.
+  // A follow-up typed inside it. THE DOOR IS SHUT — in the submit handler,
+  // which is where T shuts every one of them (T:4187 sets no `disabled` on this
+  // button, ever): the run is not live, so this is not yet a follow-up the
+  // controller could take.
   await typeInBox(r, "second message");
   const sendBtn = () =>
     r.root.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === "Send")[0]!;
-  expect(sendBtn().props.disabled).toBe(true);
+  expect(sendBtn().props.disabled).toBeUndefined();
 
   await pressEnterInBox(r);
 
@@ -1182,7 +1216,7 @@ test("Enter mid-walkthrough sends the typed words and NOT the wordless marks", a
   // guarantee is proven by what a send CARRIES — which is the rest of this
   // test — rather than by the button's face. Pressing it with nothing but a
   // pending mark still sends nothing at all.
-  expect(sendBtn(r).props.disabled).toBe(false);
+  expect(sendBtn(r).props.disabled).toBeUndefined();
   await act(async () => {
     r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
   });
@@ -1221,7 +1255,7 @@ test("the transcript's words make the mark sendable, walkthrough or no", async (
     ann.store.merge([{ ...mark, content: "this header is wrong" }]);
   });
   await settle();
-  expect(sendBtn(r).props.disabled).toBe(false);
+  expect(sendBtn(r).props.disabled).toBeUndefined();
 
   await act(async () => {
     r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });

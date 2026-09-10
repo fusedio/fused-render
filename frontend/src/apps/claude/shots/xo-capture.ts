@@ -203,6 +203,21 @@ export function streamReleasePending(): boolean {
  *  wrong — the hints make the right choice the one-click one (they are ignored,
  *  not fatal, where unsupported) (T:9706). */
 export async function getStream(): Promise<MediaStream> {
+  // THE ASK IS SCOPED TO ONE ACQUISITION, and this is the start of one (PR3
+  // review, finding #3). `targetGone` used to be sticky, cleared only by
+  // `stopStream` — so a target that went away UNDER an in-flight capture left
+  // the flag standing while the reader re-armed over a NEW cross-origin target,
+  // and that arm was handed the still-live share (this function's early return,
+  // or the single-flight promise). The FIRST capture then finished, ran
+  // `releaseIfIdle()`, read the stale flag and stopped the share the new arm was
+  // holding — and the re-prompt that followed had no user activation behind it.
+  //
+  // Somebody asking for the share IS a target being here to photograph, so the
+  // ask dies at the next acquisition rather than outliving the target that made
+  // it. `releaseWanted` is NOT cleared with it: that one says every mount has
+  // left, which asking for a stream does not undo (a capture can outlive its
+  // chat, and it owes the share back on the way out).
+  targetGone = false;
   if (stream && stream.getVideoTracks().some((t) => t.readyState === "live")) {
     return stream;
   }

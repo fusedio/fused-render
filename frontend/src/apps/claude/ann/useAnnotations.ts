@@ -787,17 +787,21 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
       // sufficient TODAY — but it left `machine.armed()` reading true after
       // pagehide, so any future armed-gated handler would have had no belt to
       // that brace. Cheap, and it puts the state where the DOM already is.
-      machineRef.current?.set(false);
-      machineRef.current?.setPhase(null);
-      const r = liveOpts.current.recorder?.();
-      // A KEEP-ONLY STOP, which is T:8796-8812's own ending: `handle.stop()`
-      // and no transcription, because "this document is going away and there is
-      // no panel to show one in". `end()` here went on into `transcribe` →
+      // `forceOff()`, NOT `set(false)` (PR3 review, finding #1). The disarm door
+      // ends a live recording with `end()`, which continues into `transcribe` →
       // `deliver` → the automatic send — and since this teardown ALSO runs on a
       // React unmount, an in-app navigation fired a transcription and a send
-      // into a chat that no longer existed. `stop()` still KEEPS the file: a
-      // teardown nobody asked for must not throw a walkthrough away.
-      if (r && r.recording()) r.abandon();
+      // into a chat that no longer existed. `set(false)` also left the recorder
+      // in `settling`, so the `abandon()` that used to follow it here was dead
+      // code: the seam that was added to stop the send was unreachable from the
+      // one path that needed it.
+      //
+      // `forceOff()` is T:8797's bare `annOn = false` plus the KEEP-ONLY STOP
+      // that is T:8796-8812's own ending — the audio stops, the file is kept,
+      // and nothing is transcribed or sent, because "this document is going away
+      // and there is no panel to show one in". No param write, no composer
+      // close, no repaint on the way down either.
+      machineRef.current?.forceOff();
       targetRef.current?.disconnectObserver();
       targetRef.current?.removeInjectedLayer();
       // AND THE MARGIN BACK. `createBarPush` puts an `!important` 43px

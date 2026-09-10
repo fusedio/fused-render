@@ -132,7 +132,9 @@ test("a chip still ATTACHING holds the send back and keeps the words", () => {
   // EMPTY send, worded it is the message minus its files (Bugbot, PR #1064).
   const c = mount({ hasAttachments: true, attachPending: true });
   const send = () => c.root.findByProps({ className: "c-send" });
-  expect(send().props.disabled).toBe(true);
+  // The refusal is the HANDLER's, not the attribute's (T:4187 — nothing in T
+  // ever disables this button): the `title` is what says why.
+  expect(send().props.disabled).toBeUndefined();
   expect(send().props.title).toBe("Attaching…");
 
   // Wordless: nothing at all leaves.
@@ -159,7 +161,7 @@ test("a chip still ATTACHING holds the send back and keeps the words", () => {
 
 test("the bytes land ⇒ the send opens again", () => {
   const c = mount({ hasAttachments: true, attachPending: false });
-  expect(c.root.findByProps({ className: "c-send" }).props.disabled).toBe(false);
+  expect(c.root.findByProps({ className: "c-send" }).props.title).toBe("Send");
   c.press("Enter");
   expect(c.sent).toEqual([{ text: "", model: DEFAULT_MODEL }]);
 });
@@ -191,6 +193,39 @@ test("the submit button is the ONLY way to stop: it is a stop square while live"
   expect(live.sent).toEqual([]);
 });
 
+test("send is NEVER disabled — nothing to send, blocked, attaching or busy (T:4187)", () => {
+  // The DELETED test's subject, with T's expectation. `.c-send` carries no
+  // `disabled` at all: not for an empty box, not for a pending scheduled
+  // message, not through either transient window. T has no `.send:disabled`
+  // rule (T:2956-2981), no attribute in the markup (T:4187, T:4246) and no
+  // script line that sets one — `applyComposerBlockState` reaches the box
+  // (T:17218) and the Schedule pill (T:17238) and stops there. T has no
+  // `canSend` either: that name is T:7720's annotation send gate.
+  const send = (c: ReturnType<typeof mount>) =>
+    c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
+  for (const props of [
+    {},
+    { blocked: true },
+    { hasAttachments: true, attachPending: true },
+    { sendBusy: true, hasAttachments: true },
+    { status: "running" as const, blocked: true },
+  ]) {
+    expect(send(mount(props)).props.disabled).toBeUndefined();
+  }
+  // …and every one of those refusals is still MADE, in `submit`: an empty box
+  // with nothing typed, and a worded send through either door that is shut.
+  const empty = mount();
+  empty.submitForm();
+  expect(empty.sent).toEqual([]);
+  for (const props of [{ blocked: true }, { sendBusy: true }, { hasAttachments: true, attachPending: true }]) {
+    const c = mount(props);
+    c.type("try it");
+    c.submitForm();
+    expect(c.sent).toEqual([]);
+    expect(c.followups).toEqual([]);
+  }
+});
+
 test("send is NEVER disabled for having nothing to send (T:2956-2981)", () => {
   // T has no `.send:disabled` rule at all and never sets the attribute: an
   // empty submit is swallowed in the handler, which is what `submit`'s own
@@ -200,9 +235,9 @@ test("send is NEVER disabled for having nothing to send (T:2956-2981)", () => {
   const c = mount();
   const send = () =>
     c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
-  expect(send().props.disabled).toBe(false);
+  expect(send().props.disabled).toBeUndefined();
   c.type("hi");
-  expect(send().props.disabled).toBe(false);
+  expect(send().props.disabled).toBeUndefined();
 
   // …and it still REFUSES: pressing it with an empty box sends nothing.
   const empty = mount();
@@ -212,13 +247,21 @@ test("send is NEVER disabled for having nothing to send (T:2956-2981)", () => {
   expect(empty.sent).toEqual([]);
 });
 
-test("but a capture in flight DOES hold the door (native's own window)", () => {
+test("but a capture in flight DOES hold the door — in the handler", () => {
   // `sendBusy` is not "nothing to send": it is the shutter window, which can
   // run to seconds on a large pane, and T had no equivalent of it because it
-  // had no such window. A transient refusal with a cause.
+  // had no such window. A transient refusal with a cause — and, like every
+  // other refusal here, one the SUBMIT makes rather than the attribute.
   const c = mount({ sendBusy: true, hasAttachments: true });
   const send = c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
-  expect(send.props.disabled).toBe(true);
+  expect(send.props.disabled).toBeUndefined();
+  c.type("with this shot");
+  c.press("Enter");
+  expect(c.sent).toEqual([]);
+  c.submitForm();
+  expect(c.sent).toEqual([]);
+  // The words are kept for the send that follows the shutter.
+  expect(c.box().props.value).toBe("with this shot");
 });
 
 test("a blocked composer takes no input by any path (T:17871)", () => {
@@ -340,17 +383,21 @@ test("the send window's latch refuses the second submit and KEEPS its words", ()
   expect(c.box().props.value).toBe("and again");
 });
 
-test("a latched composer dims Send — but never disarms Stop", () => {
+test("a latched composer REFUSES the send — but never disarms Stop", () => {
   const send = (c: ReturnType<typeof mount>) =>
     c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
   const latched = mount({ sendBusy: true });
   latched.type("hi");
-  expect(send(latched).props.disabled).toBe(true);
+  // No attribute (T:4187) — the latch is `submit`'s, and the words are kept.
+  expect(send(latched).props.disabled).toBeUndefined();
+  latched.submitForm();
+  expect(latched.sent).toEqual([]);
+  expect(latched.box().props.value).toBe("hi");
   // A live run's button is the only way to stop it (T:17909-17914): a latch on
   // the way in must not take that away.
   const live = mount({ sendBusy: true, status: "running" });
   expect(send(live).props["aria-label"]).toBe("Stop");
-  expect(send(live).props.disabled).toBe(false);
+  expect(send(live).props.disabled).toBeUndefined();
 });
 
 // ---- the caret goes back in the box (T:16687) ------------------------------
@@ -468,10 +515,10 @@ test("Send is NEVER disabled by the block (T:17193-17195, T:4187)", () => {
   // turn has no way out of it.
   const send = (c: ReturnType<typeof mount>) =>
     c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
-  expect(send(mount({ blocked: true, hasAttachments: true })).props.disabled).toBe(false);
+  expect(send(mount({ blocked: true, hasAttachments: true })).props.disabled).toBeUndefined();
   // And mid-run it is the Stop, live.
   const running = mount({ blocked: true, status: "running" });
-  expect(send(running).props.disabled).toBe(false);
+  expect(send(running).props.disabled).toBeUndefined();
   expect(send(running).props["aria-label"]).toBe("Stop");
 });
 

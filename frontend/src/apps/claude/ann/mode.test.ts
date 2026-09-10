@@ -22,6 +22,8 @@ interface Rig {
     phase: null | "settling" | "transcribing";
     ended: number;
     discarded: number;
+    /** The TEARDOWN's ending (`forceOff`), counted apart from the other two. */
+    abandoned: number;
   };
   /** Whatever the recorder module would do on a stop: flags down BEFORE the
    *  await, the settle's status up, the nav lock claimed (T:8111-8170). */
@@ -497,5 +499,74 @@ describe("walkthroughOwns — one spelling of \"are this mark's words still comi
     expect(walkthroughOwns("recording")).toBe(true);
     expect(walkthroughOwns("settling")).toBe(true);
     expect(walkthroughOwns("transcribing")).toBe(true);
+  });
+});
+
+describe("forceOff — the teardown's disarm (T:8797, PR3 review #1)", () => {
+  test("it ABANDONS a live recording; it never ends one", () => {
+    // `set(false)` ends a recording with `end()`, which continues into
+    // `transcribe` → `deliver` → the automatic send. The hosted teardown also
+    // runs on a React unmount, so that send landed in a chat that no longer
+    // existed — and the `abandon()` seam added to stop it was unreachable,
+    // because by the time the teardown asked, the recorder was already
+    // settling. This door is the one that reaches it.
+    const r = rig({ params: { annmode: "1" } });
+    r.machine.set(true);
+    r.rec.on = true;
+    expect(r.machine.mode()).toBe("recording");
+    r.log.length = 0;
+
+    r.machine.forceOff();
+
+    expect(r.rec.abandoned).toBe(1);
+    expect(r.rec.ended).toBe(0);
+    expect(r.rec.discarded).toBe(0);
+    expect(r.log).not.toContain("submit");
+  });
+
+  test("it is T:8797's bare `annOn = false` — no param, no repaint, no composer", () => {
+    // T's first teardown line and nothing more: a URL write, a `render()` and a
+    // `closeComposer()` on the way down are all things T does not do while the
+    // document is unloading (PR3 review #5).
+    const r = rig({ params: { annmode: "1" } });
+    r.machine.set(true);
+    r.composer.open = true;
+    r.log.length = 0;
+
+    r.machine.forceOff();
+
+    expect(r.params.get("annmode")).toBe("1");
+    expect(r.log).not.toContain("render");
+    expect(r.log).not.toContain("close");
+    expect(r.log).not.toContain("tool:false");
+    // What it DOES do: the state goes where the DOM already is, and the lock
+    // that state was holding is handed back.
+    expect(r.machine.armed()).toBe(false);
+    expect(r.machine.mode()).toBe("off");
+    expect(r.machine.locked()).toBe(false);
+    expect(r.log).toContain("lock:false");
+  });
+
+  test("the settle's hold goes with it, and a second call is a no-op", () => {
+    const r = rig();
+    r.machine.set(true);
+    r.machine.setPhase("transcribing");
+    r.machine.setBusyHold(true);
+    expect(r.machine.locked()).toBe(true);
+
+    r.machine.forceOff();
+    expect(r.machine.busyHold()).toBe(false);
+    expect(r.machine.mode()).toBe("off");
+    expect(r.machine.locked()).toBe(false);
+
+    // A second call reaches the recorder's own guard and the lock, and nothing
+    // else: no `end()`, no send, no repaint. (`abandon()` is called
+    // unconditionally — the recorder is the one place that knows whether there
+    // is anything live to stop, and this rig's stub does not self-guard the way
+    // `ann/rec.ts` does.)
+    r.log.length = 0;
+    r.machine.forceOff();
+    expect(r.log).toEqual(["rec.abandon", "lock:false"]);
+    expect(r.rec.ended).toBe(0);
   });
 });

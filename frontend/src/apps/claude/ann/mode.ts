@@ -77,6 +77,18 @@ export interface AnnModeMachine {
 
   /** T:7599 `annSetMode`. */
   set(on: boolean): void;
+  /** THE TEARDOWN'S DISARM — T:8797's bare `annOn = false`, and nothing else.
+   *
+   *  `set(false)` is the wrong door on the way down: its disarm branch ends a
+   *  live recording with `end()`, which goes on into `transcribe` → `deliver` →
+   *  the automatic send, i.e. a transcription and a message into a chat that is
+   *  already gone (the exact defect the recorder's `abandon()` seam was added to
+   *  stop). It also writes the `annmode` param, closes the composer and repaints
+   *  — all during `pagehide`/unmount, where T does none of it.
+   *
+   *  So: stop the mic by ABANDONING it (the file is still kept), flip `on`, and
+   *  re-derive the lock and the published mode. Nothing else. */
+  forceOff(): void;
   /** T:7743 `annBootMode` — OFF unless the URL says exactly "1". */
   bootFromParam(): void;
   /** T:7710 `annDone`. */
@@ -237,6 +249,23 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
     notesDiscard();
   }
 
+  /** See the interface. The one disarm that never transcribes. */
+  function forceOff(): void {
+    // A KEEP-ONLY STOP, which is T:8796-8812's own ending: the audio stops and
+    // no transcription is asked for, because "this document is going away and
+    // there is no panel to show one in". `abandon()` keeps the file.
+    // UNCONDITIONAL: `abandon()` reads the recorder's own state and returns for
+    // anything that is not live, so a `recording()` test here would only be a
+    // second, staler copy of that question — and the settle is a state this
+    // door must reach too (`phase` goes below).
+    rec()?.abandon();
+    on = false;
+    phase = null;
+    hold = false;
+    deps.onLock(locked());
+    announce();
+  }
+
   return {
     mode,
     armed: () => on,
@@ -255,6 +284,7 @@ export function createAnnMode(deps: AnnModeDeps): AnnModeMachine {
     },
 
     set,
+    forceOff,
     bootFromParam() {
       // "2" — the page was reloaded MID-WALKTHROUGH — ENDS the mode rather than
       // becoming Comment (Akshil, 2026-09-07): a walkthrough cannot survive a

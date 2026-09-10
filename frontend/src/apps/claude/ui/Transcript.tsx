@@ -175,18 +175,7 @@ export const Transcript = memo(function Transcript({
     // Everything the reader did NOT ask for goes through the flag.
     if (followTail.current && port.current) port.current.scrollTop = port.current.scrollHeight;
   }, [lastTurnKey, state.rev]);
-  // An open card is a HARD BLOCK: the run cannot continue without the user, so a
-  // reader who has scrolled away is waiting on something they cannot see. One of
-  // the few places that scrolls unconditionally (T:14652-14663).
-  //
-  // KEYED ON THE IDS, not the COUNT: T scrolls per card MOUNT, and one card
-  // resolving while another opens in the same poll leaves the count unchanged —
-  // so the new card, which the run is blocked on, never brought the scrollport
-  // to itself.
   const openCards = openCardIds(state.permissions);
-  useLayoutEffect(() => {
-    if (openCards && port.current) port.current.scrollTop = port.current.scrollHeight;
-  }, [openCards]);
 
   // ── THE ANSWERED CARD'S RECEIPT COMES INTO VIEW (T:14738-14742) ───────────
   //
@@ -214,15 +203,20 @@ export const Transcript = memo(function Transcript({
     // The transition, off the PREVIOUS commit's open set: a row that was open
     // and is now filed into a turn.
     //
-    // NOT WHILE A CARD IS OPEN (Bugbot, PR #1074). One poll can both answer a
-    // card and open the next one, and the open-card effect above runs FIRST —
-    // so this pass would land last and pull the viewport back to the receipt,
-    // hiding the card the run is blocked on. An open card is the hard block
-    // (T:14652-14663 scrolls to it unconditionally); a receipt is a courtesy.
-    // T reaches the same answer by another road: `parkResolvedCard` runs
-    // `followBottom()` before this scroll, and with a card open the log is
-    // following.
-    if (wrap && !followTail.current && !open.length) {
+    // PER PARKED CARD, with no whole-pass gate on the open set (PR3 review,
+    // finding #4). `!open.length` was the first answer to Bugbot PR #1074 — one
+    // poll can both answer a card and open the next one, and the open card is
+    // the hard block, so the receipt must not be the last thing to move the
+    // viewport. But it also silenced the reveal for the reported case itself:
+    // answering ONE of two open cards left the other open, so the receipt of
+    // the card just clicked never came into view.
+    //
+    // T has no such gate. It gets the priority from ORDER instead:
+    // `syncPermissions` calls `parkResolvedCard` per resolved card and
+    // `pinOpenCards` after the loop, so the open card's scroll always lands
+    // last. This file now reads the same way — the open-card effect below is
+    // declared AFTER this one, which is the order layout effects run in.
+    if (wrap && !followTail.current) {
       const parked = new Set(
         state.permissions.filter((p) => p && p.id && p.decision && p.parkedIn).map((p) => p.id),
       );
@@ -250,6 +244,24 @@ export const Transcript = memo(function Transcript({
     cardWasVisible.current = seen;
     wereOpen.current = open;
   }, [state.permissions, state.rev]);
+
+  // An open card is a HARD BLOCK: the run cannot continue without the user, so a
+  // reader who has scrolled away is waiting on something they cannot see. One of
+  // the few places that scrolls unconditionally (T:14652-14663).
+  //
+  // DECLARED LAST OF THE THREE, and that placement is load-bearing: it is
+  // `pinOpenCards` running after `parkResolvedCard`'s loop (T:14774), so a poll
+  // that both answers a card and opens the next one ends at the card the run is
+  // blocked on rather than at the receipt — a receipt is a courtesy, an open
+  // card is the block.
+  //
+  // KEYED ON THE IDS, not the COUNT: T scrolls per card MOUNT, and one card
+  // resolving while another opens in the same poll leaves the count unchanged —
+  // so the new card, which the run is blocked on, never brought the scrollport
+  // to itself.
+  useLayoutEffect(() => {
+    if (openCards && port.current) port.current.scrollTop = port.current.scrollHeight;
+  }, [openCards]);
 
   // ── ONE SCROLLER, NEVER TWO (R3-4) ───────────────────────────────────────
   //

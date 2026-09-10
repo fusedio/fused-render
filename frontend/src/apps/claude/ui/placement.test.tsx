@@ -556,8 +556,18 @@ function mountWithNodes(el: React.ReactElement) {
   const node = {
     scrollIntoView: () => calls.push("scrollIntoView"),
     getBoundingClientRect: () => ({ top: 10, bottom: 400, width: 300, height: 390 }),
-    // The port reads and writes these on every follow pass.
-    scrollTop: 0,
+    // The port reads and writes these on every follow pass. The WRITE is
+    // recorded, because the receipt reveal and the open card's hard block are
+    // two scrolls in one commit and which of them lands LAST is the behaviour
+    // (T:14774 — `pinOpenCards` after `parkResolvedCard`'s loop).
+    _top: 0,
+    get scrollTop(): number {
+      return this._top as number;
+    },
+    set scrollTop(v: number) {
+      (this as Record<string, unknown>)._top = v;
+      calls.push("bottom");
+    },
     scrollHeight: 1000,
     clientHeight: 400,
     dataset: {},
@@ -621,14 +631,14 @@ afterEach(() => {
   for (const undo of restores.splice(0)) undo();
 });
 
-test("answering a card while ANOTHER opens does not scroll to the receipt", () => {
-  // One poll can both answer a card and open the next one, and the open-card
-  // effect runs FIRST — so the receipt pass would land last and pull the
-  // viewport back to it, hiding the card the run is blocked on. An open card is
-  // the hard block (T:14652-14663 scrolls to it unconditionally); a receipt is
-  // a courtesy. T reaches the same answer by another road: `parkResolvedCard`
-  // runs `followBottom()` first, and with a card open the log is following.
-  // (Bugbot, PR #1074.)
+test("answering ONE of two cards reveals its receipt — and the open card lands last", () => {
+  // Both scrolls happen, in T's order (PR3 review, finding #4). One poll can
+  // both answer a card and open the next one: T calls `parkResolvedCard` per
+  // resolved card and `pinOpenCards` after the loop, so the receipt is revealed
+  // AND the viewport still ends at the card the run is blocked on. The earlier
+  // `!open.length` gate got the priority right by dropping the reveal
+  // altogether, which silenced the reported symptom itself — answering one of
+  // two open cards never showed its verdict. (Bugbot, PR #1074; PR3 review #4.)
   const open = row({ id: "p1", decision: "", placement: "open" });
   const view = (perms: PermissionRow[]) => (
     <Transcript state={state({ turns: [turn("a:1")], permissions: perms })} actions={actions} />
@@ -646,7 +656,11 @@ test("answering a card while ANOTHER opens does not scroll to the receipt", () =
       row({ id: "p2", decision: "", placement: "open" }),
     ]),
   );
-  expect(h.calls).not.toContain("scrollIntoView:p1");
+  // The receipt IS revealed, per card...
+  expect(h.calls).toContain("scrollIntoView:p1");
+  // ...and the hard block is the last word on the viewport.
+  expect(h.calls[h.calls.length - 1]).toBe("bottom");
+  expect(h.calls.indexOf("scrollIntoView:p1")).toBeLessThan(h.calls.lastIndexOf("bottom"));
 });
 
 test("…but with nothing open, the receipt IS brought into view", () => {

@@ -768,3 +768,220 @@ test("a wordless mark waits for the walkthrough's words, whoever presses send", 
   });
   expect(out.notes.map((n) => n.content)).toContain("and this bit here");
 });
+
+// ── the hosted teardown (P3-17, P3-31; PR3 review findings #1 and #5) ───────
+
+/** The hosted mount's own rig: `hosted: true`, a recorder whose two endings are
+ *  counted, and a document whose `defaultView` keeps a real listener registry so
+ *  the `pagehide` road can be driven as well as the unmount one. */
+/** A node the injected layer can be built out of: `elem` plus a shadow root and
+ *  a class-name lookup, which is all `ann/layer.ts` asks of the host document
+ *  (`attachShadow`, then `root.querySelector(".annbar")`). */
+function shadowElem(tag: string, doc?: Document): Record<string, unknown> {
+  const node = elem(tag);
+  if (doc) node.ownerDocument = doc;
+  const classes = new Set<string>();
+  node.classList = {
+    add: (c: string) => classes.add(c),
+    remove: (...cs: string[]) => cs.forEach((c) => classes.delete(c)),
+    contains: (c: string) => classes.has(c),
+    toggle: (c: string, on?: boolean) => (on ?? !classes.has(c)) ? classes.add(c) : classes.delete(c),
+  };
+  node.isConnected = true;
+  node.getBoundingClientRect = () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 });
+  node.remove = () => {
+    node.isConnected = false;
+  };
+  node.attachShadow = () => {
+    const root = shadowElem("shadow", doc);
+    node.shadowRoot = root;
+    return root;
+  };
+  node.querySelector = (sel: string) => findDeep(node, sel);
+  node.contains = () => false;
+  return node;
+}
+
+/** The one selector shape the layer uses: a class, an id, or a tag. */
+function findDeep(node: Record<string, unknown>, sel: string): unknown {
+  const kids = (node.children as Record<string, unknown>[]) || [];
+  for (const kid of kids) {
+    if (!kid || typeof kid !== "object") continue;
+    const cls = String(kid.className ?? "").split(" ");
+    const hit =
+      sel.startsWith(".")
+        ? cls.includes(sel.slice(1))
+        : sel.startsWith("#")
+          ? kid.id === sel.slice(1)
+          : String(kid.tagName ?? "").toLowerCase() === sel.toLowerCase();
+    if (hit) return kid;
+    const deeper = findDeep(kid, sel);
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
+function hostedMount() {
+  const f = framed();
+  // The hosted layer is injected into the APP's document, so that document has
+  // to be able to build nodes — the split layout's own never asks.
+  (f.doc as unknown as Record<string, unknown>).createElement = (tag: string) =>
+    shadowElem(tag, f.doc);
+  // The framed document's own window, for the bar's theme read.
+  (f.doc as unknown as Record<string, unknown>).defaultView = {
+    scrollX: 0,
+    scrollY: 0,
+    getComputedStyle: () => css(),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  } as unknown as Window;
+  // …and hold what is appended to it, so the layer's own re-read (`querySelector`
+  // for a host an earlier mount built) answers the way a document does.
+  const body = shadowElem("body", f.doc);
+  const margins: Array<string | null> = [];
+  (f.doc as unknown as Record<string, unknown>).documentElement = {
+    style: {
+      setProperty: (_n: string, v: string) => margins.push(v),
+      removeProperty: () => margins.push(null),
+    },
+  };
+  (f.doc as unknown as Record<string, unknown>).body = body;
+  (f.doc as unknown as Record<string, unknown>).querySelector = (sel: string) =>
+    findDeep(body, sel);
+  const o = ownDocument();
+  const views = registry();
+  (o.doc as unknown as Record<string, unknown>).defaultView = {
+    addEventListener: views.add,
+    removeEventListener: views.remove,
+    getComputedStyle: () => css(),
+  } as unknown as Window;
+  const doc = o.doc;
+  const p = popNode(doc);
+  // `live` starts FALSE and is flipped by `startMic` below: the boot's own
+  // `bootFromParam` runs `set(false)` on a pristine entry, and a rig that
+  // claimed to be recording before the mic was ever pressed would take the
+  // ordinary disarm's `end()` at mount and prove nothing.
+  const rec = { ends: 0, discards: 0, abandons: 0, live: false };
+  const autoSubmits = { n: 0 };
+  function Hosted() {
+    const ann = useAnnotations({
+      params: PARAMS,
+      hosted: true,
+      noPane: false,
+      annotateTarget: () => f.frame,
+      canSend: () => true,
+      autoSubmit: () => {
+        autoSubmits.n += 1;
+      },
+      recorder: () => ({
+        recording: () => rec.live,
+        settling: () => false,
+        // The transcribe-and-send road. T:8796-8812's teardown must never take
+        // it, so this counter existing is the whole assertion.
+        // All three self-guard, exactly as `ann/rec.ts` does ("return if the
+        // state is not `recording`") — so a counter here means the ENDING
+        // actually happened, not merely that a door was knocked on.
+        end: () => {
+          if (!rec.live) return;
+          rec.ends += 1;
+          rec.live = false;
+        },
+        discard: () => {
+          if (!rec.live) return;
+          rec.discards += 1;
+          rec.live = false;
+        },
+        abandon: () => {
+          if (!rec.live) return;
+          rec.abandons += 1;
+          rec.live = false;
+        },
+      }),
+      document: doc,
+      raf: (cb) => cb(),
+    });
+    api = ann;
+    ann.bindPop(p.pop);
+    return null;
+  }
+  let r!: ReturnType<typeof create>;
+  act(() => {
+    r = create(<Hosted />);
+  });
+  mounted.push(r);
+  /** The mic, pressed: `ann/rec.ts` reports `recording()` from the moment the
+   *  seat is pressed (the start window counts), and the mode follows. */
+  const startMic = () => {
+    rec.live = true;
+    act(() => api!.machine.relock());
+  };
+  return { r, rec, autoSubmits, views, frame: f, margins, startMic };
+}
+
+test("the hosted teardown STOPS the mic and transcribes NOTHING (P3-17)", () => {
+  // The defect this seam exists for: `set(false)` ends a live recording with
+  // `end()`, which goes on into `transcribe` → `deliver` → the automatic send —
+  // and this teardown also runs on a React UNMOUNT, so an in-app navigation
+  // fired a transcription and a send into a chat that no longer existed. T's own
+  // ending is `handle.stop()` and no transcription, "because this document is
+  // going away and there is no panel to show one in" (T:8796-8812).
+  const w = hostedMount();
+  act(() => api!.arm());
+  w.startMic();
+  expect(api!.machine.armed()).toBe(true);
+  expect(api!.machine.mode()).toBe("recording");
+  const machine = api!.machine;
+
+  act(() => w.r.unmount());
+
+  // The mic is stopped, by the one ending that keeps the file and asks for
+  // nothing.
+  expect(w.rec.abandons).toBe(1);
+  expect(w.rec.ends).toBe(0);
+  expect(w.rec.discards).toBe(0);
+  // No transcription, so no delivery, so no send.
+  expect(w.autoSubmits.n).toBe(0);
+  // P3-31: `annOn = false` IS T's first teardown line (T:8797) — the state goes
+  // where the DOM already is, so a future armed-gated handler has a belt to the
+  // brace `release()` provides.
+  expect(machine.armed()).toBe(false);
+  expect(machine.mode()).toBe("off");
+  expect(machine.locked()).toBe(false);
+});
+
+test("…and it writes no param and repaints nothing on the way down (#5)", () => {
+  // T:8797 is a bare `annOn = false`. `set(false)` would also have run
+  // `syncModeParam("0")`, `closeComposer()`, `render()`, `onToolVisible(false)`
+  // and a React `setState` — a URL write and a repaint during `pagehide`.
+  const w = hostedMount();
+  act(() => api!.arm());
+  expect(PARAMS.get("annmode")).toBe("1");
+
+  act(() => w.r.unmount());
+  // The param is left exactly as the arm left it: nothing is rewritten by a
+  // document that is going away (a reload reads "1" and boots armed, which is
+  // `bootFromParam`'s business, not the teardown's).
+  expect(PARAMS.get("annmode")).toBe("1");
+  // Nothing to stop, so not even the keep-only stop was asked for.
+  expect(w.rec.abandons).toBe(0);
+  expect(w.rec.ends).toBe(0);
+});
+
+test("`pagehide` is the same teardown, and it is unbound with the mount", () => {
+  const w = hostedMount();
+  act(() => api!.arm());
+  w.startMic();
+  const machine = api!.machine;
+  act(() => w.views.fire("pagehide", {}));
+  expect(w.rec.abandons).toBe(1);
+  expect(w.rec.ends).toBe(0);
+  expect(machine.armed()).toBe(false);
+
+  // Unmount runs it again (idempotent — nothing is left to stop), and the
+  // listener goes with it: a second `pagehide` reaches nothing.
+  act(() => w.r.unmount());
+  expect(w.rec.abandons).toBe(1);
+  act(() => w.views.fire("pagehide", {}));
+  expect(w.rec.abandons).toBe(1);
+  expect(w.rec.ends).toBe(0);
+});
