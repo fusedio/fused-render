@@ -106,13 +106,13 @@ test("the input reserves no left gutter keyed to the magnifier's old name", () =
 // (`hasClear` alone would leave it painting over a blurred-with-a-query
 // field's clear button), same gate as before.
 test("the search button occupies the trailing slot only when unfocused and empty, and IS a control", () => {
-  const at = LISTING.indexOf('className="listing-search-shortcut-hint');
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
   expect(at).toBeGreaterThan(-1);
   const before = LISTING.slice(Math.max(0, at - 200), at);
   expect(before).toMatch(/!pinnedOpen\s*&&\s*!hasClear\s*&&\s*\(/);
   // A real control now: it carries its own click handler, reusing the
   // existing ⌘L focus path rather than a decoration a press falls through.
-  const nearby = LISTING.slice(at, at + 400);
+  const nearby = LISTING.slice(at, at + 700);
   expect(nearby).toMatch(/onClick=/);
 });
 

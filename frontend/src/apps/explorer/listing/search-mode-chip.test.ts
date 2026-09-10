@@ -164,33 +164,46 @@ test("the box's own classList no longer carries a chipIsSearch-gated mode class"
   expect(block).not.toMatch(/\(chipIsSearch \? " search" : ""\)/);
 });
 
-// Scope item 3: the idle hint text becomes a real pressable button (the
-// magnifier), on the same chassis as the neighbouring `⋮` trigger
-// (`bar-ctl`/`bar-ctl-icon`, explorer.css) — no longer a decoration a press
-// falls through, and no longer visible once a query has committed.
+// Scope item 3, revised (user preference on a running screen): the words
+// stay — "Search ⌘L" was never the defect, an unclickable pill wearing no
+// chassis was. It is a real button now, on the same `bar-ctl` family the
+// neighbouring `⋮` trigger rides, no longer a decoration a press falls
+// through, and no longer visible once a query has committed.
 test("the hint is a real button now, gone the instant the field takes focus, and while a query is still there to clear", () => {
-  const at = LISTING.indexOf('className="listing-search-shortcut-hint');
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
   expect(at).toBeGreaterThan(-1);
   const before = LISTING.slice(Math.max(0, at - 200), at);
   expect(before).toMatch(/!pinnedOpen\s*&&\s*!hasClear\s*&&\s*\(/);
   const openTagAt = LISTING.lastIndexOf("<", at);
   expect(LISTING.slice(openTagAt, openTagAt + 7)).toBe("<button");
-  const block = LISTING.slice(at, at + 400);
-  expect(block).toMatch(/bar-ctl bar-ctl-icon/);
-  expect(block).not.toMatch(/aria-hidden="true"/);
+  const block = LISTING.slice(at, at + 700);
+  expect(block).toMatch(/"listing-search-shortcut-hint bar-ctl"/);
 });
 
-// The shortcut moved into the button's tooltip (title/aria-label) instead of
-// costing visible space — reusing the app's one platform detection
-// (`isMac`, @platform/lib/platform) rather than a fresh `navigator` check.
-test("the shortcut lives in the button's tooltip, using the app's one platform detection", () => {
-  const at = LISTING.indexOf('className="listing-search-shortcut-hint');
+// The words are still on screen — "Search" plus the platform-conditional
+// shortcut — exactly what the old decorative hint rendered, just inside a
+// real button now. `boxWide` (the SAME measurement the placeholder's own
+// long/short switch already uses) collapses this to the bare glyph at
+// narrow widths, where the accessible name (below) becomes the only place
+// the shortcut still appears.
+test("the words render at wide width: Search plus the platform-conditional shortcut", () => {
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
   expect(at).toBeGreaterThan(-1);
-  const block = LISTING.slice(at, at + 400);
-  expect(block).toMatch(/title=\{[^}]*isMac\s*\?\s*"⌘L"\s*:\s*"Ctrl L"/);
+  const block = LISTING.slice(at, at + 700);
+  expect(block).toMatch(/boxWide/);
+  expect(block).toMatch(/Search <kbd>\{isMac \? "⌘L" : "Ctrl L"\}<\/kbd>/);
   const importAt = LISTING.indexOf('import { isMac } from "@platform/lib/platform";');
   expect(importAt).toBeGreaterThan(-1);
   expect(block).not.toMatch(/navigator/);
+});
+
+// The accessible name (aria-label) carries the shortcut in BOTH the wide
+// and the collapsed form — in the collapsed form it is the only place the
+// shortcut still appears at all, so it can't be conditional on `boxWide`.
+test("the accessible name includes Search and the shortcut regardless of width", () => {
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
+  const block = LISTING.slice(at, at + 700);
+  expect(block).toMatch(/aria-label=\{`Search this folder \(\$\{isMac \? "⌘L" : "Ctrl L"\}\)`\}/);
 });
 
 // Pressing it must do what ⌘L already does — reusing `requestSearchFocus`
@@ -201,8 +214,8 @@ test("the button reuses requestSearchFocus, not a second focus/expand path", () 
     'import { requestSearchFocus, subscribeSearchFocusRequest } from "@apps/explorer/listing/search-focus";',
   );
   expect(importAt).toBeGreaterThan(-1);
-  const at = LISTING.indexOf('className="listing-search-shortcut-hint');
-  const block = LISTING.slice(at, at + 400);
+  const at = LISTING.indexOf('className={"listing-search-shortcut-hint');
+  const block = LISTING.slice(at, at + 700);
   expect(block).toMatch(/requestSearchFocus\(/);
 });
 
@@ -219,7 +232,7 @@ test("the button disappears at a narrow box width via a container query, not a m
   expect(block).toMatch(/\.listing-search-shortcut-hint\s*\{[\s\S]*display:\s*none/);
   // The button itself carries no width measurement of its own — no ref, no
   // ResizeObserver — anywhere near its markup.
-  const hintAt = LISTING.indexOf('className="listing-search-shortcut-hint');
+  const hintAt = LISTING.indexOf('className={"listing-search-shortcut-hint');
   const nearby = LISTING.slice(Math.max(0, hintAt - 300), hintAt + 300);
   expect(nearby).not.toMatch(/useLayoutEffect|ResizeObserver|useWidthThresholdRef/);
 });

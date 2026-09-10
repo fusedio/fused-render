@@ -611,27 +611,51 @@ export function SearchField({
             </svg>
           </button>
         )}
-        {/* SPEC-omnibox-search-affordance.md scope item 3 (variant F): the
-            idle hint used to be unclickable grey text. It is a real button
-            now, on the same chassis the neighbouring `⋮` trigger uses
-            (`bar-ctl`/`bar-ctl-icon`, explorer.css), so the two read as
-            siblings rather than a readout beside a control. The shortcut
-            moved into the tooltip, where it costs no space.
+        {/* SPEC-omnibox-search-affordance.md scope item 3 (variant F),
+            revised (user preference, on seeing both on a running screen):
+            the words stay — "Search ⌘L" — the defect was never the WORDS,
+            it was that they wore no chassis and caught no click. It is a
+            real button now, on the same `bar-ctl` family the neighbouring
+            `⋮` and `★` controls ride, with the words as its actual content
+            rather than a bespoke outlined pill (that would just reproduce
+            the original complaint: four things on one line, four
+            disagreeing styles). This also removes the "two magnifiers"
+            risk the spec flagged as its riskiest unverifiable detail —
+            with the left chip icon-only (scope item 1) and this button
+            carrying the word, only one magnifier glyph exists at all once
+            `!boxWide` collapses this button to it.
+
+            `boxWide` is the SAME measurement (`HINT_WIDE_PX`, `searchBoxRef`
+            above) the placeholder's own long/short switch already uses —
+            not a second breakpoint — collapsing this button to the bare
+            glyph exactly where the field is too narrow for the words to
+            fit without wrapping or clipping.
+
             `requestSearchFocus` is the exact call Breadcrumb.tsx's own
             ⌘L/Ctrl+L listener makes (listing/search-focus.ts) — reused
             rather than a second path to the same open-and-focus behaviour. */}
         {!pinnedOpen && !hasClear && (
           <button
             type="button"
-            className="listing-search-shortcut-hint bar-ctl bar-ctl-icon"
-            title={`Search this folder (${isMac ? "⌘L" : "Ctrl L"})`}
+            className={"listing-search-shortcut-hint bar-ctl" + (boxWide ? "" : " bar-ctl-icon")}
+            title="Search this folder"
+            // The accessible name carries the shortcut in BOTH forms — in
+            // the collapsed (icon-only) form this is the ONLY place it
+            // still appears at all, so it is load-bearing there, not just
+            // a duplicate of visible text.
             aria-label={`Search this folder (${isMac ? "⌘L" : "Ctrl L"})`}
             onClick={() => requestSearchFocus(contractHome(crumbsPath, home))}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" />
-              <line x1="16.5" y1="16.5" x2="21" y2="21" />
-            </svg>
+            {boxWide ? (
+              <>
+                Search <kbd>{isMac ? "⌘L" : "Ctrl L"}</kbd>
+              </>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <line x1="16.5" y1="16.5" x2="21" y2="21" />
+              </svg>
+            )}
           </button>
         )}
         {/* The star, trailing the count/spinner pin, as the box's own last

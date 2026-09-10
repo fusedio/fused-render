@@ -1850,19 +1850,22 @@ table.listing-table tr.skel-row:hover {
   right: 38px;
 }
 
-/* SPEC-omnibox-search-affordance.md scope item 3 (variant F): a real button
-   now, on the app's own `bar-ctl`/`bar-ctl-icon` chassis (explorer.css,
-   above) — the same recipe the neighbouring `⋮` trigger rides, so the two
-   read as siblings. `bar-ctl-icon` supplies the 28px square, the ghost
-   hover, the press nudge and the pointer cursor; this rule only positions
-   it, absolute, in the clear button's own trailing slot rather than a fixed
-   left gutter — the two never render at once (SearchField.tsx's
-   `!hasClear` guard), so sharing the position costs nothing and needs no
-   extra width reserved anywhere. No `pointer-events: none` any more: unlike
-   the mode chip and the old text hint it replaces, this one IS the
+/* SPEC-omnibox-search-affordance.md scope item 3 (variant F), revised: a
+   real button on the app's own `bar-ctl` family (explorer.css, above) — the
+   same recipe the neighbouring `⋮` trigger rides — with the WORDS as its
+   content, not a glyph: "Search ⌘L" was never the defect, an unclickable
+   pill wearing no chassis was. `bar-ctl` alone (no `.bar-ctl-icon`) is the
+   wide form, sized to its own text/kbd content; `bar-ctl-icon` narrows it
+   to the same 28px square the `⋮` trigger uses once `SearchField.tsx`'s
+   `boxWide` says there isn't room for the words (reusing the placeholder's
+   own `HINT_WIDE_PX` measurement, not a second breakpoint). Either way this
+   rule only POSITIONS it, absolute, in the clear button's own trailing slot
+   rather than a fixed left gutter — the two never render at once
+   (SearchField.tsx's `!hasClear` guard), so sharing the position costs
+   nothing and needs no extra width reserved anywhere. No
+   `pointer-events: none`: unlike the mode chip beside it, this one IS the
    control — a press must land on it, not fall through to the input
-   beneath. The shortcut itself moved into the button's `title`/`aria-label`
-   (SearchField.tsx), where it costs no space at all.
+   beneath.
 
    Vertically centred with `margin-top` on a fixed half-height, not the
    usual `transform: translateY(-50%)` — `.bar-ctl:active` (base.css) already
@@ -1880,16 +1883,30 @@ table.listing-table tr.skel-row:hover {
   right: 38px;
 }
 
+/* The app's own key-cap vocabulary (preferences.css's `.fh-ai-hint kbd`,
+   also carried by `.fh-result-note kbd`) — this bar gets its own selector
+   rather than sharing theirs across stylesheets because nothing here reaches
+   into preferences.css, but the declarations are the same rule, not a new
+   one. Only ever rendered in the wide (`bar-ctl`, non-`bar-ctl-icon`) form —
+   the collapsed glyph carries no `<kbd>` at all. */
+.listing-search-shortcut-hint kbd {
+  font: inherit;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-alt);
+}
+
 /* Absent, not clipped, on a narrow box — a deep path or a narrow window can
-   squeeze `.listing-search-box` well below the width this hint needs.
-   `container-type: inline-size` on the box itself (above) is what makes this
-   query answer the BOX's own width rather than the row's, which can stay
-   wide (the whole crumb bar) while the box inside it has already given up
-   most of that width to the path. A CSS query rather than a measured ref:
-   `useWidthThresholdRef`'s own comment records a `useLayoutEffect([])`
-   version of a similar measurement freezing on a null ref and never
-   recovering — this has no such failure mode because there is nothing to
-   attach or miss. */
+   squeeze `.listing-search-box` well below the width even the COLLAPSED
+   glyph form needs. `container-type: inline-size` on the box itself (above)
+   is what makes this query answer the BOX's own width rather than the
+   row's, which can stay wide (the whole crumb bar) while the box inside it
+   has already given up most of that width to the path. A CSS query rather
+   than a measured ref: `useWidthThresholdRef`'s own comment records a
+   `useLayoutEffect([])` version of a similar measurement freezing on a null
+   ref and never recovering — this has no such failure mode because there is
+   nothing to attach or miss. */
 @container (max-width: 360px) {
   .listing-search-shortcut-hint {
     display: none;

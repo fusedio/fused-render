@@ -307,3 +307,28 @@ describe("arrow-key navigation across the action row", () => {
     expect(rowText(first)).toContain("nopeish.csv");
   });
 });
+
+describe("the search button (SPEC scope item 3, words-stay revision)", () => {
+  // Pressing it must do what ⌘L already does — SearchField.tsx's own
+  // subscribeSearchFocusRequest listener seeds the query and pins the field
+  // open. This drives the button's real onClick, through requestSearchFocus,
+  // rather than asserting on source text alone.
+  test("pressing it seeds the query and pins the field open, the same way ⌘L does", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+
+    const button = renderer.root.findByProps({ title: "Search this folder" });
+    expect(input(renderer).props.value).toBe("");
+
+    await flush(() => button.props.onClick());
+
+    // Seeded with the crumb bar's own current path (contracted under home),
+    // the same value Breadcrumb.tsx's own ⌘L listener would seed it with.
+    expect(input(renderer).props.value).toBe("~/notes.txt");
+    // The button itself only renders while unpinned — pressing it pins the
+    // field open, so it should be gone from the tree now.
+    expect(
+      renderer.root.findAllByProps({ title: "Search this folder" }).length,
+    ).toBe(0);
+  });
+});
