@@ -608,6 +608,15 @@ def test_the_reported_install_job_points_at_preferences(tmp_path, monkeypatch):
     assert captured.get("page") == "/preferences"
 
 
+def test_the_reported_install_job_carries_an_explicit_origin(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    captured = {}
+    monkeypatch.setattr(github_setup.jobs, "upsert",
+                        lambda body, **kw: captured.update(body))
+    _run_install(monkeypatch)
+    assert captured.get("origin") == "GitHub"
+
+
 def test_a_found_binary_with_no_probed_version_is_still_a_success(tmp_path, monkeypatch):
     """`probe_version` returns None (not "") for a `--version` spawn that
     timed out or exited non-zero — the binary is genuinely installed and
@@ -1009,6 +1018,28 @@ def test_the_reported_publish_job_points_at_the_repo_root(tmp_path, monkeypatch)
     # spelling everywhere else it is stored or read.
     assert captured.get("page") == github_setup.canonical_fs_path(
         github_setup._resolve_repo_root(root))
+
+
+def test_the_reported_publish_job_carries_an_explicit_origin(tmp_path, monkeypatch):
+    root = _repo_with_a_commit(tmp_path, monkeypatch)
+
+    def fake_run(cmd):
+        return type("R", (), {"returncode": 0,
+                              "stdout": "https://github.com/octocat/my-repo\n",
+                              "stderr": ""})()
+
+    monkeypatch.setattr(github_setup, "_spawn_gh_repo_create", fake_run)
+    monkeypatch.setattr(github_setup.threading, "Thread",
+                        lambda **kw: _fake_thread_class(run_worker=True)(**kw))
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    monkeypatch.setattr(github_setup, "executable", lambda p: True)
+
+    captured = {}
+    monkeypatch.setattr(github_setup.jobs, "upsert",
+                        lambda body, **kw: captured.update(body))
+
+    github_setup.publish_start(root, "my-repo", "public")
+    assert captured.get("origin") == "GitHub"
 
 
 def test_a_second_publish_is_refused_rather_than_queued(tmp_path, monkeypatch):

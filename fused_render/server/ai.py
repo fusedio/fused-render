@@ -1732,6 +1732,12 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         # only "Claude — remote", which is the one thing this row exists to
         # say that a local row's detail never does.
         title = str(prompt or model).strip() or model
+        # No `origin` here, deliberately: `_ai_relay` is the generic remote-
+        # Claude path for `/api/ai`, reachable from any page that requests
+        # the Claude tier — the Playground, Claude annotations, and any
+        # future caller alike — so no single label would be honest for all
+        # of them (the same ambiguity `transcribe_row_fields` documents).
+        # `""` renders no caption rather than guess one.
         _report_remote(title=title[:80], model=model, state="running", kind="task",
                        cancellable=False, detail=_REMOTE_ROW_DETAIL)
 

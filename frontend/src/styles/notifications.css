@@ -955,6 +955,22 @@
   color: var(--fg-muted);
 }
 
+/* Who raised this row (`Job.origin`, JobRow's `.dl-origin`) — "Playground",
+   "Local models", "Benchmark". Same treatment as `.dl-model` right above
+   (11px, `--fg-muted`, one line, ellipsised) since both are dimmed
+   attribution captions on their own line, never competing with the head or
+   the status line for width. Absent entirely when `job.origin` is "" —
+   `NotificationCard` renders no element for it at all, so this rule never
+   needs to account for an empty line taking up the margin below. */
+.dl-origin {
+  margin-bottom: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
 /* THE MODEL ROW'S FIGURES, ON THEIR OWN LINE — the same device D596 used for
    `.dl-model` above, applied for the same reason: the head is short of
    LINES, not width. `.dl-panel` caps at `min(340px, ...)` (D608), which

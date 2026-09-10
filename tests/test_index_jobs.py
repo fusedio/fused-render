@@ -70,6 +70,14 @@ def test_the_row_points_at_the_indexing_tab(monkeypatch):
     assert jobs.list_jobs()[0]["page"] == "/preferences?tab=indexing"
 
 
+def test_the_row_names_the_explorer_as_its_own_origin(monkeypatch):
+    """This row is always the Explorer's own indexing scan, never anything
+    a different feature raises against the same id, so its origin is a
+    constant rather than anything derived from the run."""
+    _tick(monkeypatch, [_run("r1")])
+    assert jobs.list_jobs()[0]["origin"] == "Explorer"
+
+
 def test_two_concurrent_runs_produce_two_distinct_jobs(monkeypatch):
     _tick(monkeypatch, [
         _run("r1", root="/Users/tester/a"),

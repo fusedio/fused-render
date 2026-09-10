@@ -1850,7 +1850,12 @@ def _mirror_into_jobs(key: str, project_dir: str, downloading_python: bool = Fal
         try:
             jobs.upsert(
                 {"id": job_id, "title": title, "kind": "task",
-                 "state": jobs.RUNNING, "cancellable": True, "message": ""},
+                 "state": jobs.RUNNING, "cancellable": True, "message": "",
+                 # A venv build is raised by the app whose environment it is
+                 # building, not by whichever page's request happened to
+                 # trigger it first — "App install" names that consistently
+                 # across every caller of `install()`.
+                 "origin": "App install"},
                 # The app folder whose environment this is — already resolved
                 # above as `project_dir` for the title, and the only sensible
                 # destination for a row that says an app's install failed: an

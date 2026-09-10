@@ -525,9 +525,12 @@ class _MeasurementRow:
             self._detail = detail
 
     def start(self) -> None:
+        # `origin="Benchmark"` restated only here, at open — sticky like
+        # every other field `upsert` keeps, so `_poll_once`'s restatements
+        # below need not repeat it.
         supervisor._report(self._job, title=self._title, state="running",
                            kind="task", cancellable=self._cancellable,
-                           detail=self._detail)
+                           detail=self._detail, origin="Benchmark")
         self._sent = self._detail
         self._thread = threading.Thread(
             target=self._watch, daemon=True, name="ai-benchmark-row")

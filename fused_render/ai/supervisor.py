@@ -1485,9 +1485,14 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     # stale `TRAIL`, not the `SILENT` this row's own success (`_bring_up`)
     # declares (its failure restates `TRAIL` instead — a failure is always
     # news, even though loading successfully raises none).
+    #
+    # `origin="Local models"` rides along even though this row raises no
+    # notification: the AI Models > Local page's running Activity list shows
+    # this row live, before it ever reaches a terminal state a tier decides
+    # the fate of, so it still needs a caption naming where it came from.
     _report(job, title=model, model=model, state="running", kind="download",
             cancellable=True, detail="Preparing…", done=None, total=None,
-            tier=jobs.SILENT)
+            tier=jobs.SILENT, origin="Local models")
     threading.Thread(target=_bring_up, args=(runner, worker, job),
                      name=f"ai-load-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": worker.state}, worker
@@ -1521,9 +1526,11 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
     # `tier=jobs.TRAIL` restated explicitly, for the same reason the resident
     # load's own opening report above restates `SILENT`: this row may still
     # carry a stale tier from an earlier load or unload of the same model.
+    # `origin="Local models"` for the same reason it rides along on that
+    # report too — the Activity row is visible while this runs, tier aside.
     _report(job, title=model, model=model, state="running", kind="download",
             cancellable=True, unit="bytes", detail="Preparing…", done=None,
-            total=None, tier=jobs.TRAIL)
+            total=None, tier=jobs.TRAIL, origin="Local models")
     threading.Thread(target=_fetch_only, args=(runner, model, job),
                      name=f"ai-fetch-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": "downloading"}
@@ -1576,9 +1583,13 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     # JobRow draws after the title — never folded into `title` (that's the
     # prompt) or `detail` (that's the worker's progress ticks, which would
     # overwrite a model name concatenated there on the very next tick).
+    # `origin="Playground"`: the AI Models Playground is the one shipped
+    # caller of `start_image`/`start_video` today. Restated only here, at
+    # open — `origin` is sticky like every other field, so the terminal
+    # reports below need not repeat it.
     _report(job, title=title[:80], model=model, state="running", kind="task",
             cancellable=True, unit="", detail="Preparing…", done=None, total=None,
-            page=page)
+            page=page, origin="Playground")
 
     # Where the row opens when NOBODY raised this render from a page — the
     # AI Models Playground runs in the shell, not in a page iframe, and has no
@@ -1674,6 +1685,17 @@ def transcribe_row_fields(title: str, model: str = "", page: str = "") -> dict:
     this row should go to (the page that started the transcription, over
     `X-Fused-Page`) is exactly as much this row's identity as its title is,
     and a rebuilt row that dropped it would send the next click nowhere.
+
+    Deliberately carries no `origin`. Unlike `text_row_fields`, this payload
+    is shared by more than one shipped caller with genuinely different
+    origins — the Playground's transcribe stage AND
+    `apps/claude/ann/transcribe.ts`'s annotation transcription both build a
+    request through this same row shape (`start_transcribe`,
+    `apple/speech.py`'s `start`) — so a single hardcoded label here would be
+    right for one and wrong for the other. `origin` stays `""` (renders no
+    caption) rather than guess; giving each caller its own label would mean
+    threading `origin` through `start_transcribe`'s and `apple.speech.start`'s
+    own signatures, which is future work, not this one.
     """
     return {"title": title, "model": model, "kind": "task", "cancellable": True,
             "unit": "s", "page": page}
@@ -1742,9 +1764,15 @@ def text_row_fields(title: str, model: str = "", page: str = "") -> dict:
     transient row out once its state is `done` — an error/cancelled
     generation is kept until dismissed, same as any other row a surface can
     show and let the user clear.
+
+    `origin="Playground"`: `server/ai.py`'s `_local_relay` is the one shipped
+    caller of `generate_text` today (see above), so this names the row's
+    real source rather than a guess — a second caller of `text_row_fields`
+    would need to pass its own label through here instead of inheriting
+    this one.
     """
     return {"title": title, "model": model, "kind": "task", "cancellable": True,
-            "unit": "tokens", "page": page, "tier": jobs.TRANSIENT}
+            "unit": "tokens", "page": page, "tier": jobs.TRANSIENT, "origin": "Playground"}
 
 
 def start_transcribe(model: str, request: dict, job: str, page: str = "") -> None:
@@ -1836,7 +1864,16 @@ def _remove(targets: list[Worker], reason: str) -> None:
         # for this row and nothing survives it: unloading frees memory, it
         # does not write anything a click could open, so it raises no
         # notification at all, like the load it is undoing.
-        _report(job_id_for(worker.model), state="done", detail=reason, tier=jobs.SILENT)
+        #
+        # `origin="Local models"` restated for the identical reason: this
+        # would otherwise inherit whatever the last report on this id left
+        # (usually already "Local models", from `_start_resident`/`load`'s
+        # own opening reports) — restating rather than relying on that
+        # keeps the unload row correctly captioned even for a worker this
+        # process never itself reported a load for (e.g. one discovered
+        # already running and torn down by the idle reaper).
+        _report(job_id_for(worker.model), state="done", detail=reason,
+                tier=jobs.SILENT, origin="Local models")
 
 
 def unload(model: str | None = None, capability: str | None = None,

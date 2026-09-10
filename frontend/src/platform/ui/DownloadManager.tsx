@@ -684,6 +684,11 @@ export function JobRow({
       }
       secondary={showModel ? repoName(job.model) : undefined}
       secondaryTooltip={showModel ? job.model : undefined}
+      // `job.origin` — a caption naming who raised this row ("Playground",
+      // "Local models", ...). "" draws nothing, same rule `showModel` above
+      // follows for `job.model`: a caption with nothing to say is no
+      // element, never an empty one.
+      caption={job.origin || undefined}
       progress={jobProgress(job)}
       terminal={isTerminal(job) ? (job.state as "done" | "error" | "cancelled") : undefined}
       status={statusLine || undefined}

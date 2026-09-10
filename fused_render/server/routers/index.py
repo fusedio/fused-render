@@ -769,6 +769,9 @@ def _mirror_one_run_job(cfg: IndexConfig, run: dict, prev_total: float | None) -
         # error/cancelled row here is kept until dismissed, same as any
         # other row a surface can show and let the user clear.
         "tier": jobs.TRANSIENT,
+        # This row is the Explorer's own indexing scan, never anything a
+        # different feature raises against the same id.
+        "origin": "Explorer",
     }
     if running:
         fields["state"] = jobs.RUNNING

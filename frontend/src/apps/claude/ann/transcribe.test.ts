@@ -30,6 +30,7 @@ function job(over: Partial<Job> = {}): Job {
     unit: "",
     message: "",
     page: "",
+    origin: "",
     owner: "server",
     cancellable: true,
     cancel_requested: false,

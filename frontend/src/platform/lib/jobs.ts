@@ -90,6 +90,16 @@ export interface Job {
   // one place that tells the two shapes apart and turns either into a real
   // navigation). Empty for a job no destination has been given yet.
   page: string;
+  // A short, human-readable label naming WHAT RAISED this job — "Playground",
+  // "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
+  // "Scheduler", "App install". Deliberately NOT `page` and never derived
+  // from it: `page` answers "where does clicking this row go", `origin`
+  // answers "who asked for this" — a Playground render's `page` is its own
+  // output file, while its `origin` stays "Playground", and the two move
+  // independently (a scheduled run's `page` can point at its own output
+  // while its `origin` stays "Scheduler"). "" when no producer named one —
+  // JobRow renders no caption at all for it, never an empty placeholder.
+  origin: string;
   owner: JobOwner;
   cancellable: boolean;
   cancel_requested: boolean;

@@ -2983,6 +2983,43 @@ def test_a_resident_load_reports_its_row_silent(fake_runner):
     assert row["tier"] == jobs.SILENT
 
 
+def test_a_resident_loads_row_carries_an_explicit_origin(fake_runner):
+    """`_start_resident`'s opening report states `origin="Local models"`
+    explicitly, even though the row is silent on success — the AI Models >
+    Local page's running Activity list shows this row live, well before it
+    ever reaches the terminal state a tier decides the fate of."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["origin"] == "Local models"
+
+
+def test_an_unload_restates_origin_local_models(fake_runner):
+    """`_remove`'s unload report restates `origin="Local models"` explicitly,
+    the same discipline it applies to `tier=jobs.SILENT` — an unload of a
+    worker this process never itself loaded must not depend on stickiness
+    from an opening report that never happened."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    worker = next(w for w in supervisor._workers.values() if w.model == "org/small")
+    supervisor._remove([worker], "evicted to free memory")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["origin"] == "Local models"
+
+
+def test_a_weights_only_downloads_row_carries_an_explicit_origin(fake_runner):
+    """`load(weights_only=True)`'s opening report states
+    `origin="Local models"` for the identical reason the resident load's own
+    opening report does — the row is visible on the Local models page while
+    downloading, regardless of the tier that governs its retention."""
+    job = supervisor.job_id_for("org/small")
+    supervisor.load("org/small", registry.TEXT_GENERATION, weights_only=True)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["origin"] == "Local models"
+
+
 def test_a_weights_only_download_reports_its_row_trail(fake_runner):
     """`_fetch_only` (a download with no load to follow) is real news — the
     row must still draw a Notification when it finishes, so it reports
@@ -5264,6 +5301,18 @@ def test_an_image_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done(
     assert row["page"] == ""
     finished = _wait_job(started["jobId"])
     assert finished["page"] == started["path"]
+
+
+def test_an_image_rows_origin_is_playground(client, fake_image_runner):
+    """`_start_render` (shared by `start_image`/`start_video`) states
+    `origin="Playground"` on its opening report — the AI Models Playground is
+    the one shipped caller of either today."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["origin"] == "Playground"
+    _wait_job(started["jobId"])
 
 
 def test_an_image_result_path_that_comes_back_windows_shaped_still_lands_canonical(
@@ -7901,6 +7950,16 @@ def test_a_transcription_row_is_server_owned_and_reserved(
     refused = client.post("/api/jobs", json={"id": started["jobId"], "state": "done"},
                           headers={"X-Fused": "1"})
     assert refused.status_code == 400
+
+
+def test_a_transcription_row_states_no_origin(
+        client, fake_transcribe_runner, recording):
+    """`transcribe_row_fields` is shared by the Playground, Claude
+    annotations, and Apple-speech callers alike — no single label would be
+    honest for all of them, so this row states none rather than guess one."""
+    started = _post_transcribe(client, path=recording).json()
+    row = _wait_job(started["jobId"])
+    assert row["origin"] == ""
 
 
 def test_a_failure_reaches_the_page_even_with_the_QUEUE_OVER_THE_CAP(

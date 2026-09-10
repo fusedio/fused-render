@@ -592,6 +592,7 @@ def _report_install(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
+            "origin": "GitHub",
         # No repo root applies to an install (there is nothing to publish
         # yet), and there is no dedicated GitHub-settings tab to send this
         # to — /preferences is
@@ -891,6 +892,7 @@ def _report_publish(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
+            "origin": "GitHub",
         # This row's destination is the repository it publishes, not a page
         # — `_resolve_repo_root`'s own containment-checked, realpath'd root,
         # set once at claim time (below), never the raw string a page

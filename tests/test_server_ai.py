@@ -448,6 +448,17 @@ def test_relay_remote_job_row_page_is_the_callers_page_when_given(monkeypatch):
     assert row["page"] == "/tasks"
 
 
+def test_relay_remote_job_row_states_no_origin(monkeypatch):
+    # `_ai_relay` is the generic remote-Claude path for `/api/ai`, reachable
+    # from the Playground, Claude annotations, and any future caller alike —
+    # no single label would be honest for all of them, so this row states
+    # none rather than guess one; "" draws no caption at all.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["origin"] == ""
+
+
 def test_relay_stream_dismisses_its_job_row_immediately_on_success(monkeypatch):
     _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi ", "there"]))
     resp, frames = _stream({"prompt": "hello", "stream": True})

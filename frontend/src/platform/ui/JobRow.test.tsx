@@ -39,6 +39,7 @@ const BASE: Job = {
   unit: "",
   message: "",
   page: "",
+  origin: "",
   owner: "page",
   cancellable: true,
   cancel_requested: false,
@@ -118,6 +119,26 @@ test("a model equal to the title draws no .dl-model suffix — a load row must n
   // suffix would otherwise repeat it verbatim right next to itself.
   const root = renderRow({ ...BASE, title: "org/model", model: "org/model" });
   expect(findAll(root, "dl-model")).toHaveLength(0);
+});
+
+test("a job with an origin draws a dimmed .dl-origin caption", () => {
+  const root = renderRow({ ...BASE, origin: "Playground" });
+  const origin = findAll(root, "dl-origin");
+  expect(origin).toHaveLength(1);
+  expect(origin[0].children).toEqual(["Playground"]);
+});
+
+test("a job with no origin renders no .dl-origin element at all — no empty caption, no stray gap", () => {
+  const root = renderRow({ ...BASE, origin: "" });
+  expect(findAll(root, "dl-origin")).toHaveLength(0);
+});
+
+test("origin and model draw as separate lines, both present at once", () => {
+  const root = renderRow({ ...BASE, model: "FLUX.1-schnell", origin: "Playground" });
+  expect(findAll(root, "dl-model")).toHaveLength(1);
+  const origin = findAll(root, "dl-origin");
+  expect(origin).toHaveLength(1);
+  expect(origin[0].children).toEqual(["Playground"]);
 });
 
 test("a done job draws a row with a working dismiss control (C1)", () => {

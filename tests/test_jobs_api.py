@@ -264,6 +264,84 @@ def test_the_page_header_keeps_internal_whitespace_verbatim(client):
     assert listing(client)[0]["page"] == "/tmp/My  App/index.html"
 
 
+def test_origin_round_trips_on_an_upsert():
+    """`origin` names WHAT RAISED a job — "Playground", "Local models" — a
+    short caption distinct from `page` (where clicking the row goes). A
+    report setting it must reach the listing verbatim, same as `page`."""
+    jobs.upsert({"id": "a", "title": "t", "origin": "Playground"})
+    assert jobs.list_jobs()[0]["origin"] == "Playground"
+
+
+def test_origin_defaults_to_empty_string_when_never_reported():
+    jobs.upsert({"id": "a", "title": "t"})
+    assert jobs.list_jobs()[0]["origin"] == ""
+
+
+def test_origin_is_sticky_across_a_later_report_that_omits_it(client):
+    """A later tick that carries just `done` (a bare progress update) must
+    not blank the `origin` an earlier report already set — same stickiness
+    rule as `tier`/`page`, via the `"origin" in body` gate."""
+    report(client, id="a", title="t", origin="Benchmark")
+    report(client, id="a", done=5)
+    assert listing(client)[0]["origin"] == "Benchmark"
+
+
+def test_origin_is_text_capped():
+    jobs.upsert({"id": "a", "title": "t", "origin": "x" * 500})
+    assert len(jobs.list_jobs()[0]["origin"]) == jobs.ORIGIN_MAX
+
+
+def test_a_page_owned_report_can_set_origin_unlike_tier(client):
+    """Unlike `tier`/`waiting_for`, `origin` carries no server-only gate — it
+    governs no retention or visibility, only a caption, so any reporter may
+    state it."""
+    report(client, id="a", title="t", origin="Playground")
+    assert listing(client)[0]["origin"] == "Playground"
+
+
+def test_the_page_header_defaults_origin_for_a_known_shell_route(client):
+    """A page hosted at one of the closed shell routes (`JOB_PAGE_ROUTES` in
+    `frontend/src/platform/lib/router.ts`, mirrored server-side by
+    `routers/jobs.py`'s `_ORIGIN_BY_ROUTE`) that names no `origin` of its own
+    gets one defaulted from its own X-Fused-Page header."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/ai-models/local"},
+    )
+    assert listing(client)[0]["origin"] == "Local models"
+
+
+def test_the_page_header_leaves_origin_empty_for_an_fs_path(client):
+    """The overwhelming majority of X-Fused-Page values are fs paths, not
+    shell routes — never guessed at, only the closed table's exact members
+    get a default."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my%20app/index.html"},
+    )
+    assert listing(client)[0]["origin"] == ""
+
+
+def test_the_page_header_leaves_origin_empty_for_an_unknown_route(client):
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/some-unlisted-route"},
+    )
+    assert listing(client)[0]["origin"] == ""
+
+
+def test_an_explicit_origin_wins_over_the_page_header_default(client):
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t", "origin": "Custom"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/ai-models/local"},
+    )
+    assert listing(client)[0]["origin"] == "Custom"
+
+
 def test_a_non_finite_number_is_refused_not_painted(client):
     """`n / total` with total 0 gives inf; drawing it would be a confident bar
     built from the reporter's bug."""

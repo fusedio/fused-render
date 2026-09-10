@@ -42,6 +42,7 @@ function job(over: Partial<Job> = {}): Job {
     unit: "bytes",
     message: "",
     page: "/tmp/index.html",
+    origin: "",
     owner: "page",
     cancellable: true,
     cancel_requested: false,

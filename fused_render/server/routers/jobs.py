@@ -30,6 +30,23 @@ from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
 
+# The default `origin` for a page-owned report that named no `origin` of its
+# own, keyed on the shell route its own X-Fused-Page happens to be — one of
+# the SPA routes a page can be hosted at, never an fs path (an ordinary page
+# report's X-Fused-Page is almost always an fs path, which this deliberately
+# leaves unlabeled rather than guessing). This is the SAME closed set of
+# routes as `JOB_PAGE_ROUTES` in `frontend/src/platform/lib/router.ts` — kept
+# here, in one place, rather than as a second competing table; if the two
+# drift, the fix is a one-line addition on whichever side is behind.
+_ORIGIN_BY_ROUTE: dict[str, str] = {
+    "/ai-models/local": "Local models",
+    "/ai-models/benchmark": "Benchmark",
+    "/claude-config": "Claude setup",
+    "/preferences": "Preferences",
+    "/preferences?tab=indexing": "Explorer",
+    "/tasks": "Scheduler",
+}
+
 
 @router.get("/api/jobs")
 def api_jobs_list():
@@ -98,6 +115,10 @@ def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default
     page = unquote(x_fused_page) if x_fused_page else ""
     if not page and is_worker and isinstance(body.get("page"), str):
         page = body["page"]
+    if "origin" not in body:
+        label = _ORIGIN_BY_ROUTE.get(page)
+        if label:
+            body = {**body, "origin": label}
     try:
         return jobs_mod.upsert(body, page=page, server=is_worker)
     except jobs_mod.JobError as e:

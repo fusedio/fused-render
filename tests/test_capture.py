@@ -291,6 +291,11 @@ def test_a_recording_is_a_server_owned_job_row_the_manager_can_stop(backend,
     assert row["unit"] == "s" and row["total"] == started["maxSeconds"]
     assert "discards" in row["detail"]   # the ✕'s meaning, in words
     assert client.get("/api/capture").json()["active"][0]["id"] == started["id"]
+    # `fused.capture.*` is callable from any page's own script, so no single
+    # hosting page names this row's source honestly — "Capture" names the
+    # FEATURE that raised it instead, the same way `benchmark.py`'s own row
+    # names itself "Benchmark".
+    assert row["origin"] == "Capture"
 
 
 def test_the_row_opens_the_page_that_started_the_capture(backend, client, home):

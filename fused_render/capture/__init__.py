@@ -425,10 +425,15 @@ def start(mode: str, body: dict, *, page: str = "") -> dict:
 
     title = body.get("title") or (
         "Screen recording" if mode == "screen" else "Audio recording")
+    # `origin="Capture"`: `fused.capture.*` is callable from any page's own
+    # script, so no single hosting page names this row's source honestly —
+    # "Capture" names the FEATURE that raised it instead, the same way
+    # `benchmark.py`'s own row names itself "Benchmark" rather than whatever
+    # page happened to start the run.
     _report(session, state=jobs.RUNNING, title=str(title)[:120],
             kind="task", unit="s", done=0, total=spec["maxSeconds"],
             cancellable=True,
-            detail="Recording — ✕ discards it")
+            detail="Recording — ✕ discards it", origin="Capture")
     threading.Thread(target=_watch, args=(session,), daemon=True,
                      name=f"capture-{cid}").start()
     # `opening()`, not `public()`: this is the ONE reply allowed to carry the

@@ -33,6 +33,7 @@ const JOB: Job = {
   unit: "",
   message: "",
   page: "",
+  origin: "",
   owner: "page",
   cancellable: true,
   cancel_requested: false,

@@ -222,6 +222,10 @@ TITLE_MAX = 120
 DETAIL_MAX = 200
 MESSAGE_MAX = 4000
 PAGE_MAX = 1024
+# `origin` is a couple of words ("Playground", "Local models"), not a path —
+# same room as `title`/`model` since it renders in the same kind of small
+# caption.
+ORIGIN_MAX = TITLE_MAX
 # The model name is a dimmed SUFFIX on the title row, never the detail line —
 # detail is the one thing a running worker's progress ticks own, and a model
 # name concatenated in there would get overwritten by the next "step 2/4" and
@@ -303,6 +307,17 @@ class Job:
     # own repo root/output folder) or one of a handful of shell routes a few
     # server producers name directly. "" when no destination applies.
     page: str = ""
+    # A short, human-readable label naming WHAT RAISED this job — "Playground",
+    # "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
+    # "Scheduler", "App install". Deliberately NOT derived from `page` and
+    # never derives it: `page` answers "where does clicking this row go",
+    # `origin` answers "who asked for this" — a Playground render's `page` is
+    # its own output .png, while its `origin` is "Playground", and the two
+    # move independently (a scheduled run's `page` can point at its own
+    # output while its `origin` stays "Scheduler"). "" when no producer named
+    # one — a caption with nothing to say renders no element at all, never a
+    # placeholder (DownloadManager.tsx's `JobRow`).
+    origin: str = ""
     # OWNER_PAGE or OWNER_SERVER — see SERVER_ID_PREFIX. Not settable from a
     # report body: it follows from the id, so a page cannot claim to be the
     # server by saying so.
@@ -533,6 +548,15 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
             # validation error, not a silent fallback — `_one_of` raises for
             # that case, same as every other closed-set field.
             job.tier = _one_of(body.get("tier"), TIERS, "tier", job.tier)
+        if "origin" in body:
+            # No server gate, unlike `tier`/`waiting_for` above: a page
+            # cannot use `origin` to hide a row (it governs no retention or
+            # visibility, only a caption), so any reporter may state it. The
+            # `"origin" in body` gate is what makes it STICKY like every
+            # other field here — a later tick that omits `origin` (a bare
+            # progress update, say) must not blank what an opening report
+            # already set.
+            job.origin = _text(body.get("origin"), ORIGIN_MAX)
         if page:
             job.page = _page_text(page)
 

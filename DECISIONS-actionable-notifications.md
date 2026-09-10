@@ -1336,3 +1336,119 @@ Scoped runs, all green: `uv run pytest tests/test_ai_runtime.py
 tests/test_ai_supervisor_job_page.py tests/test_jobs_api.py` — 624 pass, 1
 skipped, 0 fail. `bun test src/platform/lib/jobs.test.ts` — 80 pass, 0
 fail.
+
+## Tenth round — `origin`: a caption naming who raised the row
+
+Every producer already answers "where does clicking this row go" through
+`page`. Nothing answers "who asked for this," and the two questions are not
+the same one: a Playground render's `page` is its own output file, a
+scheduled message's `page` is the project it targets, a benchmark run's
+`page` is `/ai-models/benchmark` — none of those strings tell a user
+glancing at a busy Notifications panel which FEATURE put the row there. A
+new field, `origin`, is added to carry that instead, deliberately never
+derived from `page`: the two move independently, and a producer states
+both on its own terms.
+
+`fused_render/jobs.py` treats `origin` the way it already treats `page` —
+`_text`-capped at `ORIGIN_MAX = TITLE_MAX`, gated on `"origin" in body` the
+same sticky-field pattern `page`/`tier` use, exposed through `_public` and
+`asdict`, defaulting to `""`. Unlike `tier`/`waiting_for`, `origin` needs no
+`server=True` gate: it governs no retention or visibility, only a caption,
+so a page-owned report may state it same as a server one.
+
+Every server-side producer that already passes `page=` now passes an
+explicit, hardcoded `origin=` naming the feature that raised it, not the
+destination the row points at:
+
+- `ai/supervisor.py` — `_start_resident`'s opening report and `_remove`'s
+  unload report both get `origin="Local models"` alongside `tier=SILENT`:
+  the Activity row stays visible even though ninth round's `SILENT` tier
+  means it raises no popup, so it still needs to say who it is. `_remove`
+  restates its own `origin` rather than relying on stickiness, same
+  reasoning as its `tier` restatement — an unload can fire for a worker
+  this process itself never reported a load for. `load(weights_only=True)`
+  gets `origin="Local models"` alongside its existing `tier=TRAIL`.
+  `text_row_fields` gets `origin="Playground"` — its one real caller,
+  traced through `_local_relay`, is the Playground. `transcribe_row_fields`
+  deliberately gets NONE: unlike `text_row_fields`, this one is genuinely
+  shared across the Playground, Claude annotations, and Apple-speech
+  callers, and no single label would be honest for all of them — `""`
+  renders no caption rather than guess one, same ambiguity documented in
+  its docstring.
+- `ai/benchmark.py` — `origin="Benchmark"`, restated only at the row's
+  `start()` (sticky, like every other field `upsert` keeps), naming the
+  feature rather than whichever page started the run.
+- `capture/__init__.py` — `origin="Capture"`. `fused.capture.*` is callable
+  from any page's own script, so a page-derived origin would be dishonest;
+  the row self-names the feature instead, modeled directly on
+  `benchmark.py`'s own precedent of a row naming itself rather than its
+  caller.
+- `claude_install.py` — `origin="Claude setup"`.
+- `envinstall.py` — `origin="App install"`: the venv-install thread's row
+  is the app folder's own install, not anything the launching page did.
+- `github_setup.py` — `origin="GitHub"` on both the install job and the
+  publish job.
+- `schedule.py` — `origin="Scheduler"`, constant across every entry
+  regardless of the project or message it carries — `page` already varies
+  per entry, `origin` deliberately does not.
+- `server/routers/index.py` — `origin="Explorer"`: this row is always the
+  Explorer's own indexing scan, never anything a different feature raises
+  against the same job id.
+- `server/ai.py`'s `_open_remote_job`/`_report_remote` deliberately gets
+  NONE, disclosed as a deviation from "every producer states one": `/api/ai`
+  is the generic remote-Claude relay, reachable from the Playground, Claude
+  annotations, and any future caller alike, the same ambiguity
+  `transcribe_row_fields` already documents. `capture.py`'s router needed no
+  edit — it delegates straight to `capture.start(...)`, already covered.
+
+For a job reported over HTTP through `POST /api/jobs` with no explicit
+`origin` in the body, `fused_render/server/routers/jobs.py`'s
+`_ORIGIN_BY_ROUTE` supplies a default keyed on the `X-Fused-Page` header,
+mirroring the same closed set of shell routes `JOB_PAGE_ROUTES` lists in
+`frontend/src/platform/lib/router.ts` — an fs path or an unrecognised route
+yields no label at all rather than a guess. This table is consulted only
+for page-owned HTTP reports; every in-process `jobs.upsert()` call from a
+producer above bypasses the route entirely, which is why each of them
+needed its own hardcoded value rather than leaning on the table.
+
+Frontend: `Job.origin: string` added to `jobs.ts` next to `page`, with a
+doc distinguishing the two. `NotificationCard` gains an optional `caption`
+prop — a dimmed one-line element rendered only when non-empty, same rule
+`secondary` already follows — and `JobRow` in `DownloadManager.tsx` (reused
+verbatim by `JobPopupCard.tsx`) passes `caption={job.origin || undefined}`.
+`notifications.css` gains `.dl-origin`, styled identically to the
+neighboring `.dl-model` rule (11px, `--fg-muted`, one line, ellipsised) —
+both are dimmed attribution captions competing for the same line width, and
+`.dl-origin` never needs to account for an empty line since an absent
+`origin` draws no element at all.
+
+Test-first throughout: `tests/test_ai_runtime.py` gained four tests for
+`ai/supervisor.py`'s producers plus one pinning `transcribe_row_fields`'s
+deliberate `origin == ""`; `tests/test_ai_benchmark.py`,
+`tests/test_capture.py`, `tests/test_claude_install.py`,
+`tests/test_github_setup.py` (both install and publish), and
+`tests/test_schedule_reporting.py` each gained one assertion or dedicated
+test on their existing row-opening path; `tests/test_index_jobs.py` gained
+one for the Explorer's constant origin; `tests/test_server_ai.py` gained
+one pinning `_ai_relay`'s deliberate `origin == ""`. Two test files
+(`test_claude_install.py`, `test_github_setup.py`) stub `jobs.upsert` at
+module scope for their whole suite, so the naive fix of asserting against
+an existing test's `captured` dict silently returned `None` where the
+existing stub only captured `**kw` (`page=`, `server=`) and not the `body`
+dict `origin` actually lives in — each needed either a dedicated new test
+with its own body-capturing stub, or its existing stub widened to capture
+`body` too. Frontend: `JobRow.test.tsx` gained three tests for the caption
+rendering (present, absent, and its dimmed styling class), and every
+existing fixture across ten frontend test files constructing a full `Job`
+literal got `origin: ""` added next to `page: ""` to satisfy the now-
+required field.
+
+Scoped runs, all green: `uv run pytest tests/test_ai_runtime.py
+tests/test_ai_supervisor_job_page.py tests/test_jobs_api.py
+tests/test_ai_benchmark.py tests/test_capture.py tests/test_claude_install.py
+tests/test_github_setup.py tests/test_schedule_reporting.py
+tests/test_index_jobs.py tests/test_server_ai.py` — 1016 pass, 11 skipped, 0
+fail. `bun test src/platform/lib/jobs.test.ts src/platform/ui/JobRow.test.tsx
+src/platform/ui/DownloadManager.test.tsx src/platform/ui/JobPopupCard.test.tsx
+src/platform/ui/NotificationCard.test.tsx` — 178 pass, 0 fail. `bunx tsc
+--noEmit -p .` and `node scripts/check-boundaries.mjs` both clean.
