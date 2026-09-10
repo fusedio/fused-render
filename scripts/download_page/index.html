@@ -872,6 +872,46 @@
   .st.sch { background: transparent; border: 1.5px dashed var(--ink-3); }
   .st.done { background: var(--ink-4); }
 
+  /* ---------- faq ---------- */
+  .faq-grid {
+    display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr);
+    gap: var(--s5); align-items: start;
+  }
+  .faq-list { border: 1px solid var(--rule); border-radius: var(--r-sm); overflow: hidden; }
+  .faq-item + .faq-item { border-top: 1px solid var(--rule); }
+  .faq-item[open] { background: var(--tile-2); }
+  .faq-item summary {
+    list-style: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between; gap: 20px;
+    padding: 18px 20px;
+    font-size: var(--t-md); font-weight: 600; letter-spacing: -0.01em; color: var(--ink);
+    transition: background 0.18s var(--ease);
+  }
+  .faq-item summary::-webkit-details-marker { display: none; }
+  .faq-item:not([open]) summary:hover { background: rgba(243, 242, 237, 0.03); }
+  .faq-item summary:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+  .faq-plus { position: relative; flex: none; width: 14px; height: 14px; color: var(--accent-text); }
+  .faq-plus::before, .faq-plus::after {
+    content: ""; position: absolute; left: 0; top: 50%; width: 100%; height: 1.5px;
+    background: currentColor; transform: translateY(-50%);
+    transition: transform 0.25s var(--ease);
+  }
+  .faq-plus::after { transform: translateY(-50%) rotate(90deg); }
+  .faq-item[open] .faq-plus::after { transform: translateY(-50%) rotate(0deg); }
+  .faq-item p {
+    margin: 0; padding: 0 20px 20px; max-width: 62ch;
+    font-size: var(--t-base); line-height: 1.6; color: var(--ink-2);
+  }
+  .faq-more { margin: 18px 4px 0; font-size: var(--t-sm); color: var(--ink-3); }
+  .faq-more a {
+    color: var(--ink); text-decoration: underline; text-underline-offset: 3px;
+    text-decoration-color: var(--rule-hi);
+  }
+  .faq-more a:hover { text-decoration-color: var(--ink); }
+  @media (max-width: 860px) {
+    .faq-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+
   /* ---------- troubleshooting ---------- */
   .trouble-sec { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--rule); }
   .trouble-sec h2 { margin: 0 0 6px; }
@@ -1520,6 +1560,32 @@
         <img src="assets/showcase/app-modifier.jpg" width="760" height="470" loading="lazy" decoding="async"
              alt="An image modifier: an original temple photo beside its cosmic-impressionism styled output.">
         <div class="cap"><b>Image Modifier</b><span>Restyle any picture with a local AI model.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FAQ ============ -->
+
+  <section id="faq">
+    <div class="faq-grid rule-top">
+      <h2>Frequently asked questions.</h2>
+      <div>
+        <div class="faq-list">
+          <details class="faq-item" name="faq">
+            <summary>What is Fused Render?<span class="faq-plus" aria-hidden="true"></span></summary>
+            <p>Fused Render is a free, open-source desktop app for your files, your AI
+            and your apps — all on your own machine. Open any file in one window, run
+            AI models locally, and describe an app for Claude Code to build. Nothing
+            leaves your computer: it runs on 127.0.0.1, no account, no cloud.</p>
+          </details>
+          <details class="faq-item" name="faq">
+            <summary>How do I get started with Fused Render?<span class="faq-plus" aria-hidden="true"></span></summary>
+            <p>Download it below and open the app — there's no sign-up. Point it at a
+            folder to start browsing files, or open the Claude tab and describe what
+            you want built. macOS is the native build; Windows and Linux are in beta.</p>
+          </details>
+        </div>
+        <p class="faq-more">Facing some issues? <a href="#troubleshooting">Troubleshoot &rarr;</a></p>
       </div>
     </div>
   </section>
