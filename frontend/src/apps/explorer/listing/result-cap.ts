@@ -17,14 +17,19 @@ import { SEARCH_RESULT_CAP, type SearchHit } from "@apps/explorer/listing/types"
 /**
  * The rows to render.
  *
- * A ranked (substring) answer keeps the top-N display cap above — past the
- * first hundred a fuzzy rank has stopped saying anything actionable. A glob
- * answer has no such tail: every hit is an equal match, so every FETCHED hit
- * renders (decision 9 — on-screen equals fetched equals selectable), and the
- * only ceiling left is the server's own fetch limit (SEARCH_GLOB_RANK_LIMIT).
+ * Both query shapes keep the same top-N display cap: past the first hundred
+ * a substring rank has stopped saying anything actionable, and a glob's
+ * matches — while all equally relevant, with no ranking tail to trim — can
+ * still number in the thousands over a broad enough pattern, which is the
+ * same "too many rows for a screen" problem the cap exists to solve either
+ * way. `mode` stays a parameter (rather than dropped entirely) because the
+ * two shapes are still asked of the server at different fetch limits
+ * (SEARCH_RANK_LIMIT / SEARCH_GLOB_RANK_LIMIT) — this function does not need
+ * to know which, but callers and tests still name the shape they are
+ * capping.
  */
 export function capHits(hits: SearchHit[], mode: "substring" | "glob" = "substring"): SearchHit[] {
-  if (mode === "glob") return hits;
+  void mode;
   return hits.length <= SEARCH_RESULT_CAP ? hits : hits.slice(0, SEARCH_RESULT_CAP);
 }
 
@@ -35,17 +40,19 @@ export function capHits(hits: SearchHit[], mode: "substring" | "glob" = "substri
  * SEARCH_GLOB_RANK_LIMIT) — a separate, pre-existing "there was more than
  * this" that the number carries as a `+`. It has to survive the display cap:
  * the two truncations are independent and both are true at once on a large
- * tree. A glob answer has no display cap of its own (capHits above), so its
- * label never says "Showing top N of" — the count already IS what rendered.
+ * tree. Both query shapes own up to the display cap identically now, so
+ * `mode` no longer changes which branch fires here — it stays on the
+ * signature only because callers still have it in hand.
  */
 export function resultCountLabel(
   total: number,
   truncated: boolean,
   mode: "substring" | "glob" = "substring",
 ): string {
+  void mode;
   const suffix = truncated ? "+" : "";
   const n = total.toLocaleString();
-  if (mode === "glob" || total <= SEARCH_RESULT_CAP) {
+  if (total <= SEARCH_RESULT_CAP) {
     return `${n}${suffix} match${total === 1 ? "" : "es"}`;
   }
   return `Showing top ${SEARCH_RESULT_CAP} of ${n}${suffix}`;

@@ -922,3 +922,48 @@ navigation-hand-off guard is untouched and still reads the broader
 confirm: the panel is up on focus over an untouched, pre-filled folder, and
 disappears the INSTANT a key lands — including when that key is `/`
 appended to the end of the pre-filled path, or a bare space.
+
+## Pattern search now caps at 100 rendered rows, matching substring (2026-09-10)
+
+**The ask**: the substring path already caps its rendered list at the first
+100 matches (`SEARCH_RESULT_CAP`, listing/types.ts); the glob (pattern) path
+had no display cap at all — `capHits` returned every fetched hit
+unmodified for `mode === "glob"`, and `resultCountLabel` never said "Showing
+top N of" for it either. A broad pattern (`*.zip` over a large tree) could
+therefore render thousands of rows at once. Cap the pattern path the same
+way, reusing the existing constant rather than adding a second one.
+
+**Where the cap actually lives**: entirely in the frontend, at the response-
+assembly layer — `listing/result-cap.ts`'s `capHits`/`resultCountLabel`,
+consumed by `useListingSearch.ts` (`visibleHits = capHits(displayHits,
+mode)`). It is not a query parameter and not an index-layer limit: ranking
+still runs over the whole corpus (substring) or the whole match set (glob),
+and the SERVER fetch ceilings — `SEARCH_RANK_LIMIT` (200, substring) /
+`SEARCH_GLOB_RANK_LIMIT` (5,000, glob) — are a separate, pre-existing "how
+many rows are worth asking for" limit that stays exactly as it was; only how
+many of those fetched rows get RENDERED changes here. This is why the fix
+belongs in `result-cap.ts`/`types.ts`/`useListingSearch.ts` and touches
+nothing server-side (`fused_render/index/query.py`, `server/routers/
+search.py`) — confirmed by tracing both query shapes from the omnibox
+request through to rendering before writing a line of the fix.
+
+**What changed**: `capHits` no longer special-cases `mode === "glob"` — both
+shapes slice to `SEARCH_RESULT_CAP` the same way. `resultCountLabel` no
+longer special-cases glob either — past the cap it says "Showing top 100 of
+N[+]" for both shapes; under the cap, the plain "N matches". `mode` stays on
+both signatures (callers still pass it) but no longer changes the behavior
+of either function — a no-op parameter kept only because dropping it would
+be a wider signature change than this task asked for. Updated the comments
+on `SEARCH_GLOB_RANK_LIMIT` (types.ts) and the `visibleHits` computation
+(useListingSearch.ts) that described the old, now-false "a glob answer is
+never cut down to SEARCH_RESULT_CAP" behavior.
+
+**TDD**: rewrote the two `result-cap.test.ts` tests that encoded the old
+uncapped-glob behavior into tests for the new capped behavior (watched them
+fail against the unmodified code, then implemented). Added a companion test
+for the short-list case (glob under the cap is untouched, same array, no
+copy) to mirror the existing substring coverage.
+
+**Verification**: `bun test src/apps/explorer` (1125 pass) and `bunx tsc
+--noEmit` (clean). No Python file touched, so no Python test run — the cap
+never was a server-side concept, confirmed above.

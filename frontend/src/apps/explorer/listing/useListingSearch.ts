@@ -663,10 +663,12 @@ export function useListingSearch(
   // to.
   const mode = answer?.mode ?? "substring";
 
-  // The rendered rows: the top of the ranking only for a substring answer; a
-  // glob answer's cap is the fetch limit alone (listing/result-cap), so every
-  // fetched hit renders. This is also what keyboard nav and auto-select walk,
-  // so they never address a row that is not on screen.
+  // The rendered rows: the top SEARCH_RESULT_CAP, for either query shape
+  // (listing/result-cap) — a glob's matches are all equally relevant, but a
+  // broad enough pattern can still return thousands of them, which is the
+  // same "too many rows for a screen" problem the substring cap already
+  // solves. This is also what keyboard nav and auto-select walk, so they
+  // never address a row that is not on screen.
   const visibleHits = useMemo(() => capHits(displayHits, mode), [displayHits, mode]);
 
   // How many ranked matches the cap is hiding — the counter reports the true

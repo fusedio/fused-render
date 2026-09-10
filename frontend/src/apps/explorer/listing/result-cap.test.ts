@@ -96,15 +96,28 @@ test("exactly at the cap is not reported as capped", () => {
   expect(resultCountLabel(SEARCH_RESULT_CAP, false)).toBe("100 matches");
 });
 
-test("a glob answer renders every fetched hit, past SEARCH_RESULT_CAP", () => {
-  // Every glob match is equally relevant — there is no tail to trim, so the
-  // hundred-row display cap is a substring-only rule.
+test("a glob answer is capped at the top SEARCH_RESULT_CAP, same as a substring answer", () => {
+  // A glob's matches are all equally relevant — there is no ranking tail to
+  // trim — but an unbounded pattern (e.g. a shallow "*.zip" over a huge tree)
+  // can still return thousands of equally-valid hits, and a list that long is
+  // exactly the display problem the substring cap already exists to solve.
+  // Same cap, same layer, for the same reason.
   const all = hits(4880);
   const shown = capHits(all, "glob");
-  expect(shown).toBe(all); // no slice at all, not even a copy
+  expect(shown).toHaveLength(SEARCH_RESULT_CAP);
+  expect(shown.map((h) => h.entry.rel)).toEqual(
+    all.slice(0, SEARCH_RESULT_CAP).map((h) => h.entry.rel),
+  );
 });
 
-test("a glob answer's count never says 'Showing top N of'", () => {
-  expect(resultCountLabel(4880, false, "glob")).toBe("4,880 matches");
-  expect(resultCountLabel(4880, true, "glob")).toBe("4,880+ matches");
+test("a short glob result list is untouched, same as substring", () => {
+  const all = hits(7);
+  expect(capHits(all, "glob")).toBe(all); // same array, no copy
+});
+
+test("a glob answer's count owns up to the cap exactly like a substring answer's", () => {
+  expect(resultCountLabel(4880, false, "glob")).toBe("Showing top 100 of 4,880");
+  expect(resultCountLabel(4880, true, "glob")).toBe("Showing top 100 of 4,880+");
+  // Under the cap, the plain count — nothing to own up to either way.
+  expect(resultCountLabel(42, false, "glob")).toBe("42 matches");
 });
