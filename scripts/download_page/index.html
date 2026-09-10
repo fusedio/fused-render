@@ -1817,19 +1817,20 @@
     // button; the warning box is for the two best-effort platforms.
     var note = document.getElementById("dl-note");
     var spec = document.getElementById("dl-spec");
-    if (visitorOS === "mac") {
-      if (spec) spec.hidden = false;
-      if (note) note.hidden = true;
-    } else if (note) {
+    var bestEffort = visitorOS === "win" || visitorOS === "linux";
+    if (bestEffort && note) {
       document.getElementById("dl-note-text").innerHTML =
         "<b>Built for macOS.</b> " + osLabel + " is best effort: there may be missing " +
         "features and rough edges. <a href=\"#troubleshooting\">Troubleshooting</a>";
       note.hidden = false;
       if (spec) spec.hidden = true;
+    } else {
+      if (spec) spec.hidden = false;
+      if (note) note.hidden = true;
     }
     // Same rule for the static note inside the "Other platforms" list.
     var listNote = document.getElementById("dl-list-note");
-    if (listNote) listNote.hidden = (visitorOS === "mac");
+    if (listNote) listNote.hidden = !bestEffort;
   }
   syncCta();
 
