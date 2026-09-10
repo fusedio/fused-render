@@ -293,7 +293,9 @@ test("A BLOCK NEVER TAKES STOP: the button still ends a live turn (T:17193-17195
     .findAllByType("button")
     .find((b) => b.props.className === "c-send")!;
   expect(stop.props["aria-label"]).toBe("Stop");
-  expect(stop.props.disabled).toBe(false);
+  // No attribute at all, not `false`: PR3 removed `disabled` from this button
+  // outright (T:4187), so there is nothing here to be false.
+  expect(stop.props.disabled).toBeUndefined();
   c.submitForm();
   expect(c.stops()).toBe(1);
   // ...and the send half is still shut: the box is dead and nothing leaves it.
@@ -309,7 +311,7 @@ test("A BLOCK NEVER TAKES STOP: the button still ends a live turn (T:17193-17195
     .findAllByType("button")
     .find((b) => b.props.className === "c-send")!;
   expect(send.props["aria-label"]).toBe("Send");
-  expect(send.props.disabled).toBe(false);
+  expect(send.props.disabled).toBeUndefined();
   idle.type("sneak this in");
   idle.submitForm();
   expect(idle.sent).toEqual([]);
@@ -545,6 +547,37 @@ test("the SCHEDULE block is chat-only, as T:16851 has it", () => {
   expect(seatOf(mount({ variant: "home", blocked: true })).props.disabled).toBe(false);
   // ...while the chat's own seat is.
   expect(seatOf(mount({ variant: "chat", blocked: true })).props.disabled).toBe(true);
+});
+
+test("the seat's reason: the nav lock outranks the block, and the block is the fallback", () => {
+  // ONE sentence with one author (T:17232-17250) — a reader refused by the
+  // button reads the same words as the banner six pixels above it. Two guards
+  // can be up at once, and then the reason has to pick: the nav lock is the
+  // one the reader can act on (finish the notes), while the block lifts on its
+  // own clock, so the lock speaks first.
+  const NAV = "Finish or discard the notes first";
+  const BLOCK = "TASK-3 runs at 09:00";
+  const seatOf = (c: ReturnType<typeof mount>) =>
+    c.root
+      .findAllByType("button")
+      .find((b) => String(b.props.className ?? "").includes("c-schedbtn"))!;
+
+  const both = seatOf(
+    mount({ blocked: true, blockedReason: BLOCK, navLocked: true, navLockedReason: NAV }),
+  );
+  expect(both.props.title).toBe(NAV);
+
+  // The block alone, and the banner's own sentence is what the seat says.
+  const blocked = seatOf(mount({ blocked: true, blockedReason: BLOCK }));
+  expect(blocked.props.disabled).toBe(true);
+  expect(blocked.props.title).toBe(BLOCK);
+  expect(String(blocked.props["aria-label"])).toContain(BLOCK);
+
+  // ...and never on the landing card, whose seat is not blocked at all, so
+  // there is no refusal for a reason to explain.
+  const home = seatOf(mount({ variant: "home", blocked: true, blockedReason: BLOCK }));
+  expect(home.props.disabled).toBe(false);
+  expect(home.props.title).not.toBe(BLOCK);
 });
 
 test("Send is NEVER disabled by the block (T:17193-17195, T:4187)", () => {
