@@ -131,10 +131,10 @@ import { useListingSelection } from "@apps/explorer/listing/useListingSelection"
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
 import { EmptyResultMessage } from "@apps/explorer/listing/empty-result";
-import { broadenGlobOffer } from "@apps/explorer/listing/glob-broaden";
 import {
   ZERO_MATCH_OFFER_PATH,
   isZeroMatchOfferPath,
+  settledZeroMatchOffer,
 } from "@apps/explorer/listing/zero-match-offer";
 
 // (The folder-entry rule is the SERVER's — `app_listing.app_entry`, D301: the
@@ -326,19 +326,26 @@ export default function Listing({
   // `broadenGlobOffer` walked every rung and found nothing left to widen —
   // both read identically to callers below: no offer.
   //
-  // Computed off `q` (the deferred, already-settled value), not the live
-  // `query`: this state is reached only once `!awaitingCommit` and the
-  // request itself is no longer pending, which is exactly what "settled"
-  // means for `mode`/`displayHits` too — matching the same value those were
-  // computed against, not whatever the box has moved on to since.
-  const settledSearchEmpty =
-    showsSearchHits &&
-    searchState.status !== "error" &&
-    !displayHits.length &&
-    !scanPending &&
-    searchState.status !== "pending";
-  const broadenOffer =
-    settledSearchEmpty && mode === "glob" && reason === "" ? broadenGlobOffer(q) : null;
+  // `settledZeroMatchOffer` (zero-match-offer.ts) owns the derivation
+  // itself, not this call site: `mode`, `reason` and `displayHits` are read
+  // off the search's own `answer`, which only changes when a new answer
+  // lands, but the box can move the query past that answer well before a
+  // request for the new text has even gone out (the fetch effect's own
+  // trailing debounce) — a window where `scanPending` stays false and
+  // `searchState` still reads "ok" for the PREVIOUS query. Passing
+  // `rowsAnswerQuery` in is what closes that gap: it is the one flag that
+  // already compares the rows on screen against `q` directly, so this
+  // offer cannot be computed against a query nothing has checked yet.
+  const broadenOffer = settledZeroMatchOffer({
+    showsSearchHits,
+    rowsAnswerQuery,
+    searchState,
+    scanPending,
+    displayHitsLength: displayHits.length,
+    mode,
+    reason,
+    q,
+  });
   const rerunBroadenedSearch = () => {
     if (broadenOffer !== null) rerunQuery(broadenOffer.pattern);
   };
