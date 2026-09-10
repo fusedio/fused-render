@@ -129,6 +129,12 @@ export interface FileSessionRequest {
 export interface RunIdRequest {
   run_id: string;
 }
+/** `cancel` — `queued: "1"` when this page had a follow-up in flight for the
+ *  turn, so agent.py ends the session tree after the interrupt rather than
+ *  letting the CLI answer the queue with nobody watching. */
+export interface CancelRequest extends RunIdRequest {
+  queued?: string;
+}
 export interface SnapshotsRequest {
   file: string;
   /** "" | "0" = don't enrich (agent.py:5239-5250). */
@@ -166,7 +172,7 @@ export interface AgentRequests {
   shots_dir: Record<string, never>;
   image_to_png: ImageToPngRequest;
   terminal_command: FileSessionRequest;
-  cancel: RunIdRequest;
+  cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
 }

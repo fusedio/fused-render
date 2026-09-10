@@ -5425,7 +5425,8 @@ def _history(file: str, session_id: str) -> dict:
     return {"turns": turns, "transcript": stat}
 
 
-def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
+def _cancel(run_id: str, interrupt_first: bool = True,
+            queued: bool = False) -> dict:
     """End a run — the STOP button's own action, and also `_send`'s way of
     ending a session it cannot hand a mid-session change to (a `read_dirs`
     that outgrew what was granted at spawn, or a changed `effort`).
@@ -5572,7 +5573,15 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
             for item in list(response.get("still_queued") or []) + stranded:
                 if item and item not in still:
                     still.append(item)
-            if still:
+            # `queued` is the PAGE's knowledge: it had a follow-up in flight
+            # for this turn. The CLI does not reliably name a drained
+            # follow-up in `still_queued` — it answered `[]` and then went on
+            # to answer the message after the interrupt, with no poll loop
+            # watching (the page's live watch then called that turn "Running
+            # outside this app…"; owner E2E R1, F7/F8). Stop means stop
+            # everything, so a turn that had a queue ends the tree the same
+            # way a named remainder does.
+            if still or queued:
                 _kill_tree(run_dir)
             return {"cancelled": run_id, "still_queued": still}
         # No answer inside the timeout — the host may be stuck, or died
@@ -5641,7 +5650,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "", custom: str = "",
-         read_dirs: str = "", path: str = "") -> dict:
+         read_dirs: str = "", path: str = "", queued: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -5728,7 +5737,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "terminal_command":
         return _terminal_command(file, session_id)
     if action == "cancel":
-        return _cancel(run_id)
+        return _cancel(run_id, queued=queued == "1")
     if action == "live_host":
         # "Is there a session I can hand a follow-up to?" — asked BEFORE
         # every send (see template.html's sendMessage): a host answering

@@ -1543,29 +1543,28 @@ describe("stop (T:15901)", () => {
     expect(agent.calls.length).toBe(0);
   });
 
-  // QA round 3a, defect 2. The CLI answers `{"still_queued": []}` for anything
-  // fed through the held-open stdin — it echoes the follow-up into `out.jsonl`
-  // the moment the inbox drains, so by the time the interrupt lands it no longer
-  // counts the message as queued. T has nothing else to consult and drops the
-  // text; the controller keeps its own record and does not have to.
-  // ── feedback #11: WHEN a stop owes the composer the queued text back ────────
-  test("an empty `still_queued` means Claude read it — the bubble stays put", async () => {
-    // The measured behaviour of the held-open stdin: a follow-up is echoed into
-    // `out.jsonl` the moment the inbox drains, so an interrupt landing after
-    // that finds nothing queued and answers `{"still_queued": []}`. Claude READ
-    // the message (Surya's mid-response drain), so yanking it out of the
-    // transcript and back into the box would deny a turn the reader watched
-    // happen. This used to hand the whole queue back on exactly this response.
+  // Owner E2E R1, F7 (2026-09-10), reversing QA round 3a / feedback #11. The
+  // CLI answers `{"still_queued": []}` for a follow-up it has drained — and was
+  // then seen answering that very message AFTER the interrupt, with no poll
+  // loop watching (the live watch called it "Running outside this app…"). So an
+  // empty list is not "Claude read it": Stop hands EVERY queued entry back to
+  // the box, drops its bubble, and tells agent.py the turn had a queue so the
+  // session tree ends with the interrupt. Claude Code's own Esc does the same:
+  // the queue returns to the input, editable.
+  test("an empty `still_queued` still hands a queued follow-up back (Stop means stop)", async () => {
     let controller!: ChatController;
+    const cancels: Record<string, unknown>[] = [];
     const made = makeController({
       start: () => ({ run_id: "r1" }),
       send: () => ({ sent: true as const }),
-      cancel: () => ({ cancelled: "r1", still_queued: [] }),
+      cancel: (fields) => {
+        cancels.push(fields);
+        return { cancelled: "r1", still_queued: [] };
+      },
       poll: async (_f, n) => {
         if (n === 0) return poll({ segments: [text("working on it")] });
         if (n === 1) {
           await controller.sendFollowUp("Claude already read this");
-          // The bubble is up and the hint is showing, both BEFORE the stop.
           expect(users(controller).map((t) => t.text)).toEqual([
             "go",
             "Claude already read this",
@@ -1583,11 +1582,13 @@ describe("stop (T:15901)", () => {
     });
     controller = made.controller;
     await controller.sendMessage("go");
-    // Nothing owed back…
-    expect(made.stranded).toEqual([]);
-    // …and the bubble is still a turn of the conversation.
-    expect(users(controller).map((t) => t.text)).toEqual(["go", "Claude already read this"]);
-    // Nothing is "queued for this turn" once the turn is over, either way.
+    // The words come back to the box…
+    expect(made.stranded).toEqual([["Claude already read this"]]);
+    // …the bubble goes with them…
+    expect(users(controller).map((t) => t.text)).toEqual(["go"]);
+    // …agent.py was told the turn had a queue…
+    expect(cancels[0]?.queued).toBe("1");
+    // …and nothing is "queued for this turn" once the turn is over.
     expect(controller.getState().queued).toEqual([]);
     expect(notes(controller).map((n) => n.text)).toEqual(["Stopped."]);
   });

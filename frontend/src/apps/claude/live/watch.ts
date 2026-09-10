@@ -203,6 +203,11 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
     // pre-read stat — never from this probe, which is older than the rows the
     // refetch brings.
     if (verdict.refresh) await deps.refreshHistory(sessionId);
+    // Re-read after the await too (Bugbot 3977975835): a run of this frame's
+    // that began and ended during the refresh has stamped `ownRunEndedAt`, and
+    // the verdict above was reached about a transcript that predates its rows —
+    // "running outside this app" over this page's own reply.
+    if (deps.ownRunEndedAt() !== ownEndBefore) return;
     const running = deps.hasActiveRun ? deps.hasActiveRun() : deps.busy();
     if (!stopped && deps.sessionId() === sessionId && !running) {
       deps.setExternalWorking(verdict.running);

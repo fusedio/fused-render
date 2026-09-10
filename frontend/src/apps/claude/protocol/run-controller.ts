@@ -799,6 +799,33 @@ export function createChatController(deps: ControllerDeps): ChatController {
   // ---- working line (T:14774-14926 — the VERBS are the UI's) -------------
 
   let workingStartedAt = 0;
+  /** WHEN THIS TURN STARTED, kept across a reload (owner E2E R1, F10): the
+   *  working line's "(10s)" restarted from 0 on F5 because the start was a
+   *  controller-local `now()`. The frame that starts a turn stamps the run
+   *  in sessionStorage; a frame that re-attaches to the same run reads the
+   *  stamp back. Same tab only, which is the reload case; a new tab starts
+   *  its clock at attach, as before. Cleared when the loop ends so an
+   *  idle-time send into the same host does not inherit the last turn's
+   *  clock. */
+  const turnStartKey = (runId: string) => `fused-render:claude-turn-start:${runId}`;
+  const turnStartedAt = (runId: string): number => {
+    try {
+      const saved = Number(sessionStorage.getItem(turnStartKey(runId)) || 0);
+      if (saved > 0 && saved <= now()) return saved;
+      const at = now();
+      sessionStorage.setItem(turnStartKey(runId), String(at));
+      return at;
+    } catch {
+      return now();
+    }
+  };
+  const forgetTurnStart = (runId: string) => {
+    try {
+      sessionStorage.removeItem(turnStartKey(runId));
+    } catch {
+      /* storage refused; nothing to forget */
+    }
+  };
 
   const setStats = (
     tokens: number,
@@ -838,7 +865,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // the visible conversation WITHOUT bumping the generation (it holds the
     // `sending` gate instead), so this counter is the only thing that moves.
     const tGen = state.transcriptGen;
-    workingStartedAt = now();
+    workingStartedAt = turnStartedAt(runId);
     setRunningUi(true);
     setStats(0, "thinking", null, null);
     noteChatActivity();
@@ -1326,6 +1353,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // `followDecision`'s own-echo rule reads somebody else's rows in the NEW
       // chat as this page's own and suppresses the refresh they should trigger.
       if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
+      forgetTurnStart(runId);
       // Nothing is "queued for this turn" once the turn is over: the CLI drains
       // its queue as part of the run, so whatever is still listed here has
       // either been answered above or died with the process. Guarded on
@@ -1792,7 +1820,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     stoppedSeat = seat;
     emit({ status: "stopping" });
     try {
-      const result = (await run(dir, "cancel", { run_id: runId as string }, { key: null })) as CancelResponse;
+      const result = (await run(
+        dir,
+        "cancel",
+        { run_id: runId as string, ...(queued.length ? { queued: "1" } : {}) },
+        { key: null },
+      )) as CancelResponse;
       // WHAT COMES BACK TO THE COMPOSER, and the rule is deliberately narrow
       // (feedback #11).
       //
@@ -1836,8 +1869,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // the user owns and would edit — handing back the composed wire payload
         // would put the app-state and attachment markers into their box.
         const at = named.indexOf(entry.wire);
-        const back = at >= 0 || !entry.landed;
-        if (!back) continue;
+        // EVERY entry comes back (owner E2E R1, F7). A landed follow-up the
+        // CLI did not name used to keep its bubble and leave the queue hint
+        // — a message the reader apparently sent, with no reply, forever: the
+        // backend ends the session tree the moment anything was queued, so
+        // nothing was ever going to answer it. Claude Code's own Esc does the
+        // same thing — the queued messages return to the input, editable.
+        // Losing a bubble is recoverable; a bubble with no reply is not.
         stranded.push(entry.typed || entry.wire);
         // AND ITS PICTURES, but only for a send the inbox never confirmed. The
         // words go back through `onStranded`; the attachments are parked in
@@ -2716,6 +2754,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (disposed || !sessionId) return;
     if (activeRun || sending) return;
     const gen = logGen;
+    // WHAT THE LOG LOOKED LIKE WHEN THIS WAS ASKED (Bugbot 3977975835). A
+    // scheduled or adopted repair that starts AND finishes inside the round
+    // trip leaves `activeRun`/`sending` clear again — but it has drawn rows
+    // this payload predates, and stamped `ownRunEndedAt` doing so. Either
+    // stamp moving means the answer is about an older conversation than the
+    // one on screen: drop it, the watch will ask again.
+    const endBefore = state.ownRunEndedAt;
+    const tGen = state.transcriptGen;
     try {
       const res = (await run(
         dir,
@@ -2727,6 +2773,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // A run that attached across the await owns the log now; its stream is
       // fresher than this answer.
       if (activeRun || sending) return;
+      if (state.ownRunEndedAt !== endBefore || state.transcriptGen !== tGen) return;
       if (res.error) throw new Error(res.error);
       // NOTHING IS RECORDED IN `shownRuns` HERE: a `history` row is text plus a
       // transcript `uuid` (`HistoryUserTurn`) and carries no run id, so a
