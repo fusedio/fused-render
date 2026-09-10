@@ -38,7 +38,18 @@ mock.module("@platform/lib/api", () => ({
     Promise.resolve({ indexing: { enabled: true, ranked: prefsRanked } } as Prefs),
 }));
 
-mock.module("@platform/lib/router", () => ({ replaceSearch: () => {} }));
+// `navHintQCommitted` is read at mount by `useListingSearch` itself (the
+// already-committed-query seed for a navigation that arrived from the file
+// view's merged field) — omitting it here throws `SyntaxError: Export named
+// 'navHintQCommitted' not found` at import time and fails this WHOLE FILE to
+// load, silently voiding every describe block below (including "a
+// path-shaped query never asks the index"). No test in this file exercises
+// that seeding path, so a plain `false` (every mount behaves like a fresh
+// load) is enough.
+mock.module("@platform/lib/router", () => ({
+  replaceSearch: () => {},
+  navHintQCommitted: () => false,
+}));
 
 const { useListingSearch } = await import("@apps/explorer/listing/useListingSearch");
 const freshness = await import("@platform/lib/index-freshness");
