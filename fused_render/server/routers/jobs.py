@@ -30,23 +30,6 @@ from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
 
-# The default `origin` for a page-owned report that named no `origin` of its
-# own, keyed on the shell route its own X-Fused-Page happens to be — one of
-# the SPA routes a page can be hosted at, never an fs path (an ordinary page
-# report's X-Fused-Page is almost always an fs path, which this deliberately
-# leaves unlabeled rather than guessing). This is the SAME closed set of
-# routes as `JOB_PAGE_ROUTES` in `frontend/src/platform/lib/router.ts` — kept
-# here, in one place, rather than as a second competing table; if the two
-# drift, the fix is a one-line addition on whichever side is behind.
-_ORIGIN_BY_ROUTE: dict[str, str] = {
-    "/ai-models/local": "Local models",
-    "/ai-models/benchmark": "Benchmark",
-    "/claude-config": "Claude setup",
-    "/preferences": "Preferences",
-    "/preferences?tab=indexing": "Explorer",
-    "/tasks": "Scheduler",
-}
-
 
 @router.get("/api/jobs")
 def api_jobs_list():
@@ -79,7 +62,11 @@ def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default
     PAGE'S OWN REPORT: it is the attribution header every runtime call already
     carries (calls.py), so a report is attributed by the same rule as the call
     log and a page cannot accidentally (or deliberately) claim a different
-    destination by typing one into its body.
+    destination by typing one into its body. `origin` follows the identical
+    argument, one level further: it is derived from this same header
+    (`jobs_mod.origin_for_page`) rather than trusted from the body, so a page
+    cannot claim a different RAISER either — see that function and
+    `jobs.upsert`'s own docstring.
 
     **A model worker reports here too** (SPEC §40) — it is the process doing the
     downloading, so it is the only one that knows the byte counts. Its rows live
@@ -115,12 +102,17 @@ def api_jobs_report(body: dict = Body(...), x_fused: str | None = Header(default
     page = unquote(x_fused_page) if x_fused_page else ""
     if not page and is_worker and isinstance(body.get("page"), str):
         page = body["page"]
-    if "origin" not in body:
-        label = _ORIGIN_BY_ROUTE.get(page)
-        if label:
-            body = {**body, "origin": label}
+    # A page-owned report's `origin` is derived HERE, from the very page
+    # header its `page` above just came from, and handed to `upsert` as its
+    # own argument rather than left for the body to state — see `upsert`'s
+    # docstring for why that is the only channel a page cannot forge. A
+    # worker report already restates its own `origin` in the body (a
+    # transcription's row identity, `ai/supervisor.py`'s
+    # `transcribe_row_fields`) and is trusted the same way the rest of its
+    # body is (`server=True` below), so it is not derived a second time here.
+    origin = "" if is_worker else jobs_mod.origin_for_page(page)
     try:
-        return jobs_mod.upsert(body, page=page, server=is_worker)
+        return jobs_mod.upsert(body, page=page, origin=origin, server=is_worker)
     except jobs_mod.JobError as e:
         return _error(str(e))
 

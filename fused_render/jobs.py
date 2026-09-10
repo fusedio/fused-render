@@ -35,6 +35,7 @@ module; keep it acyclic.
 from __future__ import annotations
 
 import math
+import os
 import re
 import threading
 import time
@@ -233,6 +234,73 @@ ORIGIN_MAX = TITLE_MAX
 # is exactly the kind of thing this field carries, so it gets the same room.
 MODEL_MAX = TITLE_MAX
 
+# The default `origin` for a page-owned report hosted at one of the shell's
+# own SPA routes — one of a handful of routes a few server producers name
+# directly, never an fs path (an ordinary page's own X-Fused-Page is almost
+# always an fs path, which `origin_for_page` below names after the PROJECT
+# it belongs to instead of guessing from this table). This is the SAME
+# closed set of routes as `JOB_PAGE_ROUTES` in
+# `frontend/src/platform/lib/router.ts` — kept here, in one place, rather
+# than as a second competing table; if the two drift, the fix is a one-line
+# addition on whichever side is behind.
+_ORIGIN_BY_ROUTE: dict[str, str] = {
+    "/ai-models/local": "Local models",
+    "/ai-models/benchmark": "Benchmark",
+    "/claude-config": "Claude setup",
+    "/preferences": "Preferences",
+    "/preferences?tab=indexing": "Explorer",
+    "/tasks": "Scheduler",
+}
+
+
+def origin_for_page(page: str, *, default: str = "") -> str:
+    """The `origin` caption a report from *page* should carry — the ONE place
+    every producer derives its row's caption from, rather than each stating a
+    literal that is only ever true for whichever caller happened to write it
+    first (SPEC actionable-notifications: a render or a local-text generation
+    raised from a user's own app page used to be captioned "Playground"
+    regardless, because the producer had no way to name the real caller).
+
+    *page* is whatever the caller already has for `X-Fused-Page` — same
+    string `Job.page` is built from, just not persisted as one, since a
+    report can change `origin` on a tick that carries no `page` at all
+    (`upsert`'s `origin=` argument is applied independently of `page=`).
+
+    - A KNOWN SHELL ROUTE (`_ORIGIN_BY_ROUTE`) names its own label — these
+      are the shell's own SPA surfaces, which already have real names a page
+      can't be asked to guess.
+    - Anything else truthy is an fs path — the overwhelming majority of real
+      `X-Fused-Page` values, one of the user's own app pages. Named after the
+      PROJECT the file belongs to, the same pair (`projectenv.project_root_for`
+      + `projectenv.display_name`) a runner's own venv-build row already
+      names its "Preparing <app>…" detail after — reused rather than
+      inventing a second spelling of "what do we call this folder". A path
+      outside any project this process recognizes (nothing under the
+      workspace, no `pyproject.toml` on the way up — the common case in a
+      test, and a real possibility for a one-off script) falls back to the
+      bare filename with its extension dropped, the next best thing to a
+      project name when there is no project.
+    - EMPTY means no page raised this report at all — the one caller-named
+      case this function cannot answer on its own, since it is *default*
+      that carries the honest answer: only a shell surface running with no
+      iframe of its own (the AI Models Playground, Claude Code's own
+      settings page) sends no `X-Fused-Page`, and each such producer already
+      knows which surface it is.
+    """
+    if not page:
+        return default
+    label = _ORIGIN_BY_ROUTE.get(page)
+    if label:
+        return label
+    from fused_render import projectenv
+
+    root = projectenv.project_root_for(page)
+    if root:
+        return projectenv.display_name(root)
+    stem = os.path.splitext(os.path.basename(page.rstrip("/\\")))[0]
+    return stem or default
+
+
 # Dismissed ids, bounded. A reporter that keeps posting after its job finished
 # would otherwise resurrect the row the user just closed, and "it came back"
 # reads as a bug in the app rather than as a late report.
@@ -309,14 +377,16 @@ class Job:
     page: str = ""
     # A short, human-readable label naming WHAT RAISED this job — "Playground",
     # "Local models", "Benchmark", "Explorer", "Claude setup", "GitHub",
-    # "Scheduler", "App install". Deliberately NOT derived from `page` and
-    # never derives it: `page` answers "where does clicking this row go",
-    # `origin` answers "who asked for this" — a Playground render's `page` is
-    # its own output .png, while its `origin` is "Playground", and the two
-    # move independently (a scheduled run's `page` can point at its own
-    # output while its `origin` stays "Scheduler"). "" when no producer named
-    # one — a caption with nothing to say renders no element at all, never a
-    # placeholder (DownloadManager.tsx's `JobRow`).
+    # "Scheduler", "App install", or a user app's own name. Not stored as a
+    # function of `page` — `page` answers "where does clicking this row go",
+    # `origin` answers "who asked for this", and the two move independently
+    # (a scheduled run's `page` can point at its own output while its
+    # `origin` stays "Scheduler") — but a page-owned report's `origin` is
+    # itself DERIVED, at report time, from that same report's calling page
+    # (`origin_for_page`) rather than trusted as a literal the reporter typed
+    # in; see that function and `upsert`'s `origin=` argument for how. ""
+    # when no producer named one — a caption with nothing to say renders no
+    # element at all, never a placeholder (DownloadManager.tsx's `JobRow`).
     origin: str = ""
     # OWNER_PAGE or OWNER_SERVER — see SERVER_ID_PREFIX. Not settable from a
     # report body: it follows from the id, so a page cannot claim to be the
@@ -441,8 +511,8 @@ def clean_id(value: object) -> str:
 # -------------------------------------------------------------------- mutation
 
 
-def upsert(body: dict, *, page: str = "", now: float | None = None,
-           server: bool = False) -> dict:
+def upsert(body: dict, *, page: str = "", origin: str | None = None,
+           now: float | None = None, server: bool = False) -> dict:
     """Create or update one record from a reporter's POST body.
 
     Upsert rather than create+update: a reporter's every progress tick is the
@@ -460,6 +530,16 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
     endpoint never passes it, so a page cannot post progress for a job the
     server owns — those ids are deterministic, and a forged "done" on a download
     still running is exactly the lie the manager would have no way to catch.
+
+    `origin=`, like `page=`, is threaded in as its own argument rather than
+    trusted from the body — a page could otherwise attribute its own row to
+    "Claude setup" or "Scheduler" by typing one of those strings into its
+    report, and the whole point of the field is that the caption can be
+    trusted. The HTTP endpoint computes it server-side, from the report's own
+    `X-Fused-Page` (`origin_for_page`), and passes the verdict in here; a
+    truthy value always wins, on every tick, the same way a truthy `page=`
+    always overwrites. See the `"origin" in body` gate below for the one
+    other channel that can still set it.
     """
     if not isinstance(body, dict):
         raise JobError("request body must be a JSON object")
@@ -548,15 +628,23 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
             # validation error, not a silent fallback — `_one_of` raises for
             # that case, same as every other closed-set field.
             job.tier = _one_of(body.get("tier"), TIERS, "tier", job.tier)
-        if "origin" in body:
-            # No server gate, unlike `tier`/`waiting_for` above: a page
-            # cannot use `origin` to hide a row (it governs no retention or
-            # visibility, only a caption), so any reporter may state it. The
-            # `"origin" in body` gate is what makes it STICKY like every
-            # other field here — a later tick that omits `origin` (a bare
-            # progress update, say) must not blank what an opening report
-            # already set.
+        if "origin" in body and server:
+            # Same gate as `tier`/`waiting_for` above, and for the same
+            # reason: attribution is exactly what a page could otherwise
+            # forge (`{"origin": "Claude setup"}` on a row it started
+            # itself), so a page's own `origin` in the body is silently
+            # dropped, same treatment as the rest of this function's
+            # server-only fields. A server-side producer's own report (a
+            # download, a generation, a worker restating its row's identity)
+            # is exempt, the same as it is for `waiting_for`.
             job.origin = _text(body.get("origin"), ORIGIN_MAX)
+        if origin:
+            # The report's OWN derived attribution — see `upsert`'s
+            # docstring. Applied after the body gate above and regardless of
+            # `server`, so it always wins for a page-owned report (whose body
+            # value was just dropped) without needing a second `server=True`
+            # that would also unlock `tier`/`waiting_for` for that same page.
+            job.origin = _text(origin, ORIGIN_MAX)
         if page:
             job.page = _page_text(page)
 

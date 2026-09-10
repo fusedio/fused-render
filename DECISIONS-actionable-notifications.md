@@ -1504,3 +1504,82 @@ Scoped runs, all green: `bun test src/platform/ui/JobPopupCard.test.tsx
 src/platform/ui/DownloadManager.test.tsx src/shell/ActivityDock.test.tsx
 src/shell/RepoUpdatesDock.test.tsx` — 119 pass, 0 fail. `bunx tsc --noEmit
 -p .` and `node scripts/check-boundaries.mjs` both clean.
+
+## Twelfth round — `origin` derived from the calling page, not hardcoded
+
+The tenth round's `_ORIGIN_BY_ROUTE` keys on the shell's own SPA routes, but
+every real `X-Fused-Page` a normal app page sends is an fs path — the exact
+case the table was supposed to cover, and the exact case it silently drops,
+leaving a page-raised row with no caption at all. `_start_render` and
+`text_row_fields` compound the same mistake from the other side: both
+hardcode `origin="Playground"`, but `fused.ai.image()`/`fused.ai.video()`/
+`fused.ai("…")` are callable from any app page's own script, not only the
+Playground's — a render or a completion started from a user app was getting
+captioned as if the Playground had started it.
+
+One root cause, one fix: `origin_for_page(page, *, default="")` in
+`fused_render/jobs.py` derives a caption from whatever page the request
+actually came from, in three cases — a known shell route (kept in
+`_ORIGIN_BY_ROUTE`, moved here from `routers/jobs.py` since a producer other
+than the router now consults it too), an fs path named after the project it
+belongs to (`projectenv.project_root_for` + `projectenv.display_name`,
+falling back to the file's own stem when no project is recognized above it
+— no display-name helper exists for a bare, unrecognized path), and an
+empty page, which returns `default` unchanged rather than guessing. The
+table stays the single source of truth for shell routes; an fs path is
+never looked up against it.
+
+Every producer that used to state `origin` as a literal now derives it
+instead, each keeping only the default its own empty-page case actually
+needs: `server/routers/jobs.py`'s `api_jobs_report` calls
+`origin_for_page(page)` for a page-owned report (a worker report keeps
+stating its own `origin` in the body, trusted via `server=True`, same as
+before). `ai/supervisor.py`'s `_start_render` and `text_row_fields` both
+call `origin_for_page(page, default="Playground")` — "Playground" is
+right only for the shell's own AI Models Playground, which runs with no
+`X-Fused-Page` of its own; any real page now gets its own name instead.
+`transcribe_row_fields`, previously left deliberately blank as
+irreducibly ambiguous across the Playground/Claude-annotation/Apple-speech
+callers, now calls plain `origin_for_page(page)` with no default — every
+shipped caller already has its own real `page`, so derivation resolves the
+old ambiguity outright rather than working around it. `server/ai.py`'s
+`_open_remote_job`, previously the other deliberately-blank producer for
+the same reason, now calls `origin_for_page(page or "/claude-config")` —
+the empty-page fallback conveniently resolves through the very same route
+table to "Claude setup", so no second default constant was needed.
+`ai/benchmark.py`'s `origin="Benchmark"`, `schedule.py`'s
+`origin="Scheduler"`, and `capture/__init__.py`'s `origin="Capture"` are
+untouched: each of those rows is raised from one fixed shell surface or
+names a feature rather than a caller, so the literal was already honest and
+stating it costs nothing.
+
+`fused_render/jobs.py`'s `upsert` gates `origin` exactly like `page` now,
+closing the second defect in the same pass: a page could otherwise report
+`{"origin": "Claude setup"}` straight in the body and forge an attribution
+no server-side producer actually gave it, the one hole `tier`/
+`waiting_for`'s existing `server=True` gate never covered because `origin`
+had no such gate to begin with. `upsert` gains an explicit `origin: str |
+None = None` keyword, mirroring how `page=` already bypasses the body
+entirely: the body's own `"origin"` key is honored only `and server` (the
+path every in-process producer above still uses via `**fields`), while the
+new keyword — threaded in by the router from `origin_for_page(...)` — wins
+regardless of `server`, since it is the report's own derived attribution
+rather than anything the request body claimed.
+
+Test-first throughout: `tests/test_jobs_api.py`'s whole origin block is
+rewritten around the new trust model — a page-owned report can no longer
+set `origin` (was: could), a known shell route still resolves through the
+table, an fs path resolves to its project's display name (monkeypatched
+`project_root_for`) or falls back to the file's stem when no project is
+recognized, and a server-side upsert still states its own literal.
+`tests/test_ai_runtime.py` and `tests/test_ai_text_job_row.py` each gain a
+page-carrying case beside the existing no-page-header test, pinning the
+"Playground" default is only for the empty-page case now. `tests/
+test_server_ai.py`'s `test_relay_remote_job_row_states_no_origin` is
+replaced by a default-resolves-to-"Claude setup" test plus a
+callers-own-page test, since blank `origin` was never actually intended —
+only unresolvable ambiguity was, and derivation resolves it.
+
+Scoped runs, all green: `.venv/bin/python -m pytest
+tests/test_ai_text_job_row.py tests/test_ai_runtime.py tests/test_server_ai.py
+tests/test_jobs_api.py` — 746 pass, 1 skipped, 0 fail.

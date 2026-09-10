@@ -1732,14 +1732,21 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         # only "Claude — remote", which is the one thing this row exists to
         # say that a local row's detail never does.
         title = str(prompt or model).strip() or model
-        # No `origin` here, deliberately: `_ai_relay` is the generic remote-
-        # Claude path for `/api/ai`, reachable from any page that requests
-        # the Claude tier — the Playground, Claude annotations, and any
-        # future caller alike — so no single label would be honest for all
-        # of them (the same ambiguity `transcribe_row_fields` documents).
-        # `""` renders no caption rather than guess one.
+        # `origin` is derived, not a literal: `_ai_relay` is the generic
+        # remote-Claude path for `/api/ai`, reachable from any page that
+        # requests the Claude tier — the Playground, Claude annotations, and
+        # any future caller alike — so no single hardcoded label would be
+        # honest for all of them. `jobs.origin_for_page` resolves each
+        # caller's own `page` to its own name; `page or "/claude-config"`
+        # matches the same fallback `_report_remote` applies to the row's
+        # `page` field below (Claude Code's settings page is where this
+        # relay runs with no caller of its own), which conveniently also
+        # resolves through the shell-route half of `origin_for_page` to
+        # "Claude setup" — the one shell surface this relay has when no page
+        # raised it.
         _report_remote(title=title[:80], model=model, state="running", kind="task",
-                       cancellable=False, detail=_REMOTE_ROW_DETAIL)
+                       cancellable=False, detail=_REMOTE_ROW_DETAIL,
+                       origin=jobs.origin_for_page(page or "/claude-config"))
 
     def _finish_remote_job() -> None:
         """Success only: drop the row immediately rather than leaving it at

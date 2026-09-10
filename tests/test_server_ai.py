@@ -448,15 +448,30 @@ def test_relay_remote_job_row_page_is_the_callers_page_when_given(monkeypatch):
     assert row["page"] == "/tasks"
 
 
-def test_relay_remote_job_row_states_no_origin(monkeypatch):
+def test_relay_remote_job_row_origin_defaults_to_claude_setup(monkeypatch):
     # `_ai_relay` is the generic remote-Claude path for `/api/ai`, reachable
     # from the Playground, Claude annotations, and any future caller alike —
-    # no single label would be honest for all of them, so this row states
-    # none rather than guess one; "" draws no caption at all.
+    # no single literal would be honest for all of them, so the row's
+    # `origin` is derived from the caller's own page instead of stated. With
+    # no page at all (a direct module-level call, or a test, may never set
+    # X-Fused-Page), it falls back to the same route the row's own `page`
+    # falls back to — "/claude-config" — which the shared table names
+    # "Claude setup".
     _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
     _relay({"prompt": "hello"})
     row = jobs.list_jobs()[0]
-    assert row["origin"] == ""
+    assert row["origin"] == "Claude setup"
+
+
+def test_relay_remote_job_row_origin_names_the_callers_page_when_given(
+        monkeypatch):
+    # A caller with its own real page (here, the Scheduler) gets its own
+    # honest caption rather than "Claude setup" — the same derivation
+    # `_ai_relay`'s `page` argument already drives for the row's `page`.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    asyncio.run(_server_ai._ai_relay({"prompt": "hello"}, page="/tasks"))
+    row = jobs.list_jobs()[0]
+    assert row["origin"] == "Scheduler"
 
 
 def test_relay_stream_dismisses_its_job_row_immediately_on_success(monkeypatch):

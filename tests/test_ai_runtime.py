@@ -5303,15 +5303,31 @@ def test_an_image_row_with_no_X_Fused_Page_opens_its_own_output_file_once_done(
     assert finished["page"] == started["path"]
 
 
-def test_an_image_rows_origin_is_playground(client, fake_image_runner):
-    """`_start_render` (shared by `start_image`/`start_video`) states
-    `origin="Playground"` on its opening report — the AI Models Playground is
-    the one shipped caller of either today."""
+def test_an_image_rows_origin_is_playground_with_no_calling_page(client, fake_image_runner):
+    """`_start_render` derives `origin` from the caller's `page`
+    (`jobs.origin_for_page`) rather than a bare literal — the AI Models
+    Playground runs in the shell, not a page iframe, and sends no
+    `X-Fused-Page`, which is exactly the empty-page case `origin_for_page`
+    answers with the producer's own shell-side default."""
     started = client.post(
         "/api/ai/image", json={"prompt": "a red square"},
         headers={"X-Fused": "1"}).json()
     row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
     assert row["origin"] == "Playground"
+    _wait_job(started["jobId"])
+
+
+def test_an_image_rows_origin_names_the_calling_page_when_there_is_one(
+        client, fake_image_runner):
+    """A render raised from a user app's own page must not be captioned
+    "Playground" — that caption belongs to the shipped Playground alone.
+    With no recognized project above it, the fs path falls back to its own
+    filename stem (`origin_for_page`'s documented fallback)."""
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a red square"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my-app/index.html"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["origin"] == "index"
     _wait_job(started["jobId"])
 
 
@@ -7528,6 +7544,21 @@ def test_a_transcript_rows_page_is_the_caller_supplied_X_Fused_Page(
     _wait_job(started["jobId"])
 
 
+def test_a_transcript_rows_origin_names_the_calling_page(
+        client, fake_transcribe_runner, recording):
+    """`transcribe_row_fields` derives `origin` the same way every other
+    producer does — the Scheduler-triggered transcription above must not
+    read "Playground" or blank just because the row is opened from a worker
+    hop; it carries the caller's own page, table-mapped like any other known
+    shell route."""
+    started = client.post(
+        "/api/ai/transcribe", json={"path": recording},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tasks"}).json()
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["origin"] == "Scheduler"
+    _wait_job(started["jobId"])
+
+
 def test_a_transcript_is_written_to_disk_and_the_job_finishes(
         client, fake_transcribe_runner, recording):
     started = _post_transcribe(client, path=recording).json()
@@ -7918,7 +7949,8 @@ def test_the_worker_is_given_the_row_identity_to_restate(
     _wait_job(started["jobId"])
 
     assert seen["row"] == {"title": os.path.basename(recording), "model": "org/fake-whisper",
-                           "kind": "task", "cancellable": True, "unit": "s", "page": ""}
+                           "kind": "task", "cancellable": True, "unit": "s", "page": "",
+                           "origin": ""}
 
 
 def test_the_terminal_report_can_rebuild_an_evicted_row(

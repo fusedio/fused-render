@@ -264,11 +264,13 @@ def test_the_page_header_keeps_internal_whitespace_verbatim(client):
     assert listing(client)[0]["page"] == "/tmp/My  App/index.html"
 
 
-def test_origin_round_trips_on_an_upsert():
+def test_origin_round_trips_on_a_server_upsert():
     """`origin` names WHAT RAISED a job — "Playground", "Local models" — a
     short caption distinct from `page` (where clicking the row goes). A
-    report setting it must reach the listing verbatim, same as `page`."""
-    jobs.upsert({"id": "a", "title": "t", "origin": "Playground"})
+    SERVER report setting it must reach the listing verbatim, same as
+    `tier`/`waiting_for` — see `test_a_page_owned_report_cannot_set_origin`
+    for why a page's own body value does not."""
+    jobs.upsert({"id": "a", "title": "t", "origin": "Playground"}, server=True)
     assert jobs.list_jobs()[0]["origin"] == "Playground"
 
 
@@ -278,68 +280,95 @@ def test_origin_defaults_to_empty_string_when_never_reported():
 
 
 def test_origin_is_sticky_across_a_later_report_that_omits_it(client):
-    """A later tick that carries just `done` (a bare progress update) must
-    not blank the `origin` an earlier report already set — same stickiness
-    rule as `tier`/`page`, via the `"origin" in body` gate."""
-    report(client, id="a", title="t", origin="Benchmark")
-    report(client, id="a", done=5)
+    """A page-owned report at a known shell route gets `origin` defaulted
+    from that route (`origin_for_page`); a LATER tick with no
+    `X-Fused-Page` at all derives nothing (`origin_for_page`'s `page` is
+    "") and must not blank what the earlier tick already set — same
+    stickiness rule as `tier`/`page`, via `upsert`'s `if origin:` gate."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/ai-models/benchmark"},
+    )
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "done": 5},
+        headers={"X-Fused": "1"},
+    )
     assert listing(client)[0]["origin"] == "Benchmark"
 
 
 def test_origin_is_text_capped():
-    jobs.upsert({"id": "a", "title": "t", "origin": "x" * 500})
+    jobs.upsert({"id": "a", "title": "t"}, origin="x" * 500)
     assert len(jobs.list_jobs()[0]["origin"]) == jobs.ORIGIN_MAX
 
 
-def test_a_page_owned_report_can_set_origin_unlike_tier(client):
-    """Unlike `tier`/`waiting_for`, `origin` carries no server-only gate — it
-    governs no retention or visibility, only a caption, so any reporter may
-    state it."""
+def test_a_page_owned_report_cannot_set_origin(client):
+    """A page could otherwise attribute its own row to a trusted system
+    feature ("Claude setup") by typing it into the body — the same argument
+    `Job.waiting_for`'s and `Job.tier`'s own comments make, with more force
+    here since attribution is the whole job of this field. Silently
+    dropped, same treatment as those two: the report carries no
+    `X-Fused-Page` either, so there is nothing for the router to derive in
+    its place, and the row is left with no caption at all rather than the
+    one the page tried to claim."""
     report(client, id="a", title="t", origin="Playground")
-    assert listing(client)[0]["origin"] == "Playground"
+    assert listing(client)[0]["origin"] == ""
 
 
 def test_the_page_header_defaults_origin_for_a_known_shell_route(client):
     """A page hosted at one of the closed shell routes (`JOB_PAGE_ROUTES` in
     `frontend/src/platform/lib/router.ts`, mirrored server-side by
-    `routers/jobs.py`'s `_ORIGIN_BY_ROUTE`) that names no `origin` of its own
-    gets one defaulted from its own X-Fused-Page header."""
-    client.post(
-        "/api/jobs",
-        json={"id": "a", "title": "t"},
-        headers={"X-Fused": "1", "X-Fused-Page": "/ai-models/local"},
-    )
-    assert listing(client)[0]["origin"] == "Local models"
-
-
-def test_the_page_header_leaves_origin_empty_for_an_fs_path(client):
-    """The overwhelming majority of X-Fused-Page values are fs paths, not
-    shell routes — never guessed at, only the closed table's exact members
-    get a default."""
-    client.post(
-        "/api/jobs",
-        json={"id": "a", "title": "t"},
-        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my%20app/index.html"},
-    )
-    assert listing(client)[0]["origin"] == ""
-
-
-def test_the_page_header_leaves_origin_empty_for_an_unknown_route(client):
-    client.post(
-        "/api/jobs",
-        json={"id": "a", "title": "t"},
-        headers={"X-Fused": "1", "X-Fused-Page": "/some-unlisted-route"},
-    )
-    assert listing(client)[0]["origin"] == ""
-
-
-def test_an_explicit_origin_wins_over_the_page_header_default(client):
+    `jobs.py`'s `_ORIGIN_BY_ROUTE`) gets its `origin` derived from that
+    route by the router, regardless of what the report's own body claims."""
     client.post(
         "/api/jobs",
         json={"id": "a", "title": "t", "origin": "Custom"},
         headers={"X-Fused": "1", "X-Fused-Page": "/ai-models/local"},
     )
-    assert listing(client)[0]["origin"] == "Custom"
+    assert listing(client)[0]["origin"] == "Local models"
+
+
+def test_the_page_header_names_the_project_for_an_fs_path(client, monkeypatch):
+    """The overwhelming majority of X-Fused-Page values are fs paths, not
+    shell routes — `origin_for_page` names the PROJECT the file belongs to
+    (`projectenv.project_root_for` + `projectenv.display_name`), not the
+    generic "unlabeled" `""` this used to leave a page-raised job with."""
+    from fused_render import projectenv
+
+    monkeypatch.setattr(projectenv, "project_root_for",
+                        lambda path: "/workspace/apps/tag/my-cool-app")
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my%20app/index.html"},
+    )
+    assert listing(client)[0]["origin"] == "my-cool-app"
+
+
+def test_the_page_header_falls_back_to_the_file_stem_when_no_project_is_recognized(client):
+    """A path outside any project this process recognizes (the common case
+    for a bare fs path in a test, with no `pyproject.toml` anywhere above
+    it) still gets a caption — the bare filename, extension dropped — the
+    next best thing to a project name when there is no project."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/tmp/my%20app/index.html"},
+    )
+    assert listing(client)[0]["origin"] == "index"
+
+
+def test_an_unlisted_route_is_treated_as_an_fs_path_like_any_other(client):
+    """Nothing distinguishes a shell route from an fs path syntactically —
+    only exact membership in the closed table does — so anything not in it
+    falls through to the same fs-path naming an ordinary page gets."""
+    client.post(
+        "/api/jobs",
+        json={"id": "a", "title": "t"},
+        headers={"X-Fused": "1", "X-Fused-Page": "/some-unlisted-route"},
+    )
+    assert listing(client)[0]["origin"] == "some-unlisted-route"
 
 
 def test_a_non_finite_number_is_refused_not_painted(client):

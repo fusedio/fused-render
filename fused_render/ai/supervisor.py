@@ -1583,13 +1583,22 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     # JobRow draws after the title — never folded into `title` (that's the
     # prompt) or `detail` (that's the worker's progress ticks, which would
     # overwrite a model name concatenated there on the very next tick).
-    # `origin="Playground"`: the AI Models Playground is the one shipped
-    # caller of `start_image`/`start_video` today. Restated only here, at
-    # open — `origin` is sticky like every other field, so the terminal
-    # reports below need not repeat it.
+    # `origin` is DERIVED from `page` (`jobs.origin_for_page`) rather than a
+    # bare literal: `start_image`/`start_video` are reached from
+    # `POST /api/ai/image|video`, the public `fused.ai.image()`/
+    # `fused.ai.video()` runtime API any app page can call, so a hardcoded
+    # "Playground" would caption a user app's own render as though the
+    # shipped Playground had raised it — false the moment a second caller
+    # exists. `default="Playground"` is what makes an EMPTY `page` still
+    # read correctly: the AI Models Playground runs in the shell, not in a
+    # page iframe, and has no `X-Fused-Page` of its own (see the comment on
+    # `out_dir` below), so an empty `page` here really does mean "the
+    # Playground raised this". Restated only here, at open — `origin` is
+    # sticky like every other field, so the terminal reports below need not
+    # repeat it.
     _report(job, title=title[:80], model=model, state="running", kind="task",
             cancellable=True, unit="", detail="Preparing…", done=None, total=None,
-            page=page, origin="Playground")
+            page=page, origin=jobs.origin_for_page(page, default="Playground"))
 
     # Where the row opens when NOBODY raised this render from a page — the
     # AI Models Playground runs in the shell, not in a page iframe, and has no
@@ -1686,19 +1695,19 @@ def transcribe_row_fields(title: str, model: str = "", page: str = "") -> dict:
     `X-Fused-Page`) is exactly as much this row's identity as its title is,
     and a rebuilt row that dropped it would send the next click nowhere.
 
-    Deliberately carries no `origin`. Unlike `text_row_fields`, this payload
-    is shared by more than one shipped caller with genuinely different
-    origins — the Playground's transcribe stage AND
-    `apps/claude/ann/transcribe.ts`'s annotation transcription both build a
-    request through this same row shape (`start_transcribe`,
-    `apple/speech.py`'s `start`) — so a single hardcoded label here would be
-    right for one and wrong for the other. `origin` stays `""` (renders no
-    caption) rather than guess; giving each caller its own label would mean
-    threading `origin` through `start_transcribe`'s and `apple.speech.start`'s
-    own signatures, which is future work, not this one.
+    `origin` is `jobs.origin_for_page(page)` — no literal, and no shared
+    default either. Unlike `text_row_fields`, this payload is shared by more
+    than one caller with genuinely different origins: the Playground's
+    transcribe stage AND `apps/claude/ann/transcribe.ts`'s annotation
+    transcription both build a request through this same row shape
+    (`start_transcribe`, `apple/speech.py`'s `start`), so a single hardcoded
+    label would be right for one and wrong for the other — but both callers
+    DO have their own real `page` (they run inside a page, not the shell),
+    so deriving from it, with no fallback default, gives each caller its own
+    honest caption for free.
     """
     return {"title": title, "model": model, "kind": "task", "cancellable": True,
-            "unit": "s", "page": page}
+            "unit": "s", "page": page, "origin": jobs.origin_for_page(page)}
 
 
 def _transcribe_row(title: str, detail: str, model: str = "", page: str = "") -> dict:
@@ -1765,14 +1774,19 @@ def text_row_fields(title: str, model: str = "", page: str = "") -> dict:
     generation is kept until dismissed, same as any other row a surface can
     show and let the user clear.
 
-    `origin="Playground"`: `server/ai.py`'s `_local_relay` is the one shipped
-    caller of `generate_text` today (see above), so this names the row's
-    real source rather than a guess — a second caller of `text_row_fields`
-    would need to pass its own label through here instead of inheriting
-    this one.
+    `origin` is derived from `page` (`jobs.origin_for_page`), not a bare
+    "Playground" literal: `server/ai.py`'s `_local_relay` is the generic
+    local-model path for `POST /api/ai`, reachable from any page that calls
+    `fused.ai("…")`, so a hardcoded label would caption a user app's own
+    generation as though the shipped Playground had raised it.
+    `default="Playground"` covers the one caller that has no page to name —
+    the AI Models Playground runs in the shell, not a page iframe, and sends
+    no `X-Fused-Page` of its own — so an empty `page` here still reads
+    correctly.
     """
     return {"title": title, "model": model, "kind": "task", "cancellable": True,
-            "unit": "tokens", "page": page, "tier": jobs.TRANSIENT, "origin": "Playground"}
+            "unit": "tokens", "page": page, "tier": jobs.TRANSIENT,
+            "origin": jobs.origin_for_page(page, default="Playground")}
 
 
 def start_transcribe(model: str, request: dict, job: str, page: str = "") -> None:

@@ -549,11 +549,11 @@ export function currentUrl(): string {
 // Everything else is treated as an fs path, opened as a directory unless it
 // names an .html/.htm file — the same test the GitHub-publish repo-root case
 // and an ordinary page both pass.
-// This same closed set keys `_ORIGIN_BY_ROUTE` in
-// `fused_render/server/routers/jobs.py`, which defaults a page-owned job's
-// `origin` caption from its own X-Fused-Page header when the reporting page
-// names no `origin` — kept there rather than duplicated as a second table;
-// a route added here needs a matching entry there to get a default label.
+// This same closed set keys `_ORIGIN_BY_ROUTE` in `fused_render/jobs.py`,
+// which `origin_for_page` reads to name a page-owned job's `origin` caption
+// from its own X-Fused-Page header — kept there rather than duplicated as a
+// second table; a route added here needs a matching entry there to get a
+// label.
 const JOB_PAGE_ROUTES: ReadonlySet<string> = new Set([
   "/ai-models/local",
   "/ai-models/benchmark",
