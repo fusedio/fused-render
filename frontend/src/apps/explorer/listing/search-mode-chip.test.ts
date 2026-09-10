@@ -23,28 +23,57 @@ function rulesFor(selectorExact: string): string[] {
   return out;
 }
 
-// The chip's mode is driven off the same predicate introduced for "is the
-// field just holding the open folder's (or file's parent's) own path" — not
-// a second, parallel test for "is this a search". `searching` (non-empty
-// query, useListingSearch.ts) is layered on top only because
-// `queryNamesOpenFolder` itself is false for an empty query too, and an
-// empty field is "Path", not "Search". `isOpenFolderQuery` itself is a prop
-// here — computed once per host (Listing.tsx, FileSearchField.tsx) against
-// that host's own base path, so the two never call `queryNamesOpenFolder`
-// with different arguments for what should be the same answer.
-test("the chip's mode is queryNamesOpenFolder layered under the existing searching gate, not a second predicate", () => {
+// The chip's mode is driven off `isPathQuery` (path-shaped-query.ts's
+// `isPathShapedQuery`, shape only, never existence) layered under the
+// existing `searching` gate — not a second, parallel test for "is this a
+// search". `searching` is layered on top only because `isPathQuery` itself
+// is true for an empty query too (`listingAddress("")` is null, but an empty
+// field renders no chip word choice worth making either way), and the field
+// must read "Path" while genuinely idle. `isPathQuery` itself is a prop
+// here, computed exactly ONCE — inside `useListingSearch.ts`, off the SAME
+// query the hook already owns — and handed down by both hosts (Listing.tsx,
+// FileSearchField.tsx) as a plain destructure of their own hook's return, so
+// there is no second call site that could compute a different answer for the
+// same query.
+test("the chip's mode is isPathQuery layered under the existing searching gate, not a second predicate", () => {
   const at = LISTING.indexOf("const chipIsSearch =");
   expect(at).toBeGreaterThan(-1);
   const line = LISTING.slice(at, LISTING.indexOf(";", at) + 1);
-  expect(line).toMatch(/searching\s*&&\s*!isOpenFolderQuery/);
-  const propAt = LISTING.indexOf("isOpenFolderQuery: boolean;");
+  expect(line).toMatch(/searching\s*&&\s*!isPathQuery/);
+  const propAt = LISTING.indexOf("isPathQuery: boolean;");
   expect(propAt).toBeGreaterThan(-1);
   expect(propAt).toBeLessThan(at);
+
+  // Both hosts read `isPathQuery` off their own `useListingSearch` call
+  // rather than computing it a second way.
   const LISTING_HOST = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
-  const hostPredicateDef = LISTING_HOST.indexOf(
-    "const isOpenFolderQuery = queryNamesOpenFolder(query, fsPath, home);",
+  const listingDestructure = LISTING_HOST.slice(
+    LISTING_HOST.indexOf("const {"),
+    LISTING_HOST.indexOf("useListingSearch("),
   );
-  expect(hostPredicateDef).toBeGreaterThan(-1);
+  expect(listingDestructure).toMatch(/isPathQuery,/);
+
+  const FILE_HOST = readFileSync(join(import.meta.dir, "../FileSearchField.tsx"), "utf8");
+  // The file's own header comment mentions `useListingSearch(` too (its own
+  // call signature, documented) — the REAL call is the one after `const {`.
+  const fileDestructureStart = FILE_HOST.indexOf("const {");
+  const fileDestructure = FILE_HOST.slice(
+    fileDestructureStart,
+    FILE_HOST.indexOf("useListingSearch(", fileDestructureStart),
+  );
+  expect(fileDestructure).toMatch(/isPathQuery,/);
+
+  // The predicate itself lives in exactly one place: useListingSearch.ts
+  // computes it via `isPathShapedQuery`, never re-derived at either host.
+  const HOOK = readFileSync(
+    join(import.meta.dir, "useListingSearch.ts"),
+    "utf8",
+  );
+  expect(HOOK).toMatch(
+    /const isPathQuery = isPathShapedQuery\(query, fsPath, home\);/,
+  );
+  expect(LISTING_HOST).not.toMatch(/isPathShapedQuery\(/);
+  expect(FILE_HOST).not.toMatch(/isPathShapedQuery\(/);
 });
 
 test("the chip renders both words, gated on the same variable that colors it", () => {

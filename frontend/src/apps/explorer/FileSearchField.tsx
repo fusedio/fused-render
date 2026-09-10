@@ -14,7 +14,7 @@
 // folder's own Listing is what actually searches, seeded already-committed
 // (`navHintQCommitted`, router.ts) so it never asks for a second Enter.
 //
-// `useListingSearch(parentPath, 0, false)` — the trailing `false` is
+// `useListingSearch(parentPath, home, 0, false)` — the trailing `false` is
 // `urlSync`: this box's query is never mirrored onto the file's own URL (that
 // belongs to no view here), and the effect below fires before the hook's own
 // fetch ever would (a `useLayoutEffect`, ahead of the hook's passive-effect
@@ -26,7 +26,6 @@ import { dirname } from "@apps/explorer/lib/fs-actions";
 import { useListingSearch } from "@apps/explorer/listing/useListingSearch";
 import { useTypedPathAddress } from "@apps/explorer/listing/useTypedPathAddress";
 import { useCompletion } from "@apps/explorer/listing/useCompletion";
-import { queryNamesOpenFolder } from "@apps/explorer/listing/query-current-folder";
 import { showingSearchHits } from "@apps/explorer/listing/search-body-mode";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { useHome } from "@apps/explorer/listing/home-path";
@@ -57,16 +56,16 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
     query,
     setQuery,
     searching,
+    isPathQuery,
     escapes,
     gateOpen,
     commitSearch,
     prefetchIndex,
     searchState,
     awaitingCommit,
-  } = useListingSearch(parentPath, 0, false);
+  } = useListingSearch(parentPath, home, 0, false);
   const typedAddress = useTypedPathAddress(query, parentPath, home);
   const completion = useCompletion(query, parentPath, home);
-  const isOpenFolderQuery = queryNamesOpenFolder(query, parentPath, home);
   const committed = showingSearchHits(searchState, awaitingCommit);
 
   // The claim itself: this file's bar behaves like a claimed folder's (the
@@ -127,7 +126,7 @@ export function FileSearchField({ active, fsPath }: FileSearchFieldProps) {
       query={query}
       setQuery={setQuery}
       searching={searching}
-      isOpenFolderQuery={isOpenFolderQuery}
+      isPathQuery={isPathQuery}
       committed={committed}
       escapes={escapes}
       commitSearch={commitSearch}

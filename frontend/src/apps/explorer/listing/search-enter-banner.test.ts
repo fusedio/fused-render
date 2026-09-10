@@ -1,5 +1,5 @@
 // The Enter-to-open-and-search banner (Listing.tsx's `searching &&
-// !showsSearchHits && !isOpenFolderQuery` branch, the row built from
+// !showsSearchHits && !isPathQuery` branch, the row built from
 // `enterPrompt`) is the one `.status-message` site that is an instruction
 // rather than a state report, so it carries a modifier class the other
 // eleven `.status-message` sites do not. Same CSS-parsing pattern as
@@ -27,7 +27,7 @@ function rulesFor(selectorExact: string): string[] {
 
 test("the gate that renders the row also carries the modifier class", () => {
   const gate = LISTING.indexOf(
-    "if (searching && !showsSearchHits && !isOpenFolderQuery)",
+    "if (searching && !showsSearchHits && !isPathQuery)",
   );
   expect(gate).toBeGreaterThan(-1);
   const enterCall = LISTING.indexOf("enterPrompt(", gate);

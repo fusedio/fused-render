@@ -61,7 +61,6 @@ import { AccessDenied, isAccessDenied } from "@apps/explorer/AccessDenied";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { useTypedPathAddress } from "@apps/explorer/listing/useTypedPathAddress";
-import { queryNamesOpenFolder } from "@apps/explorer/listing/query-current-folder";
 import { useCompletion } from "@apps/explorer/listing/useCompletion";
 import { enterPrompt } from "@apps/explorer/listing/enter-prompt";
 import { showingSearchHits } from "@apps/explorer/listing/search-body-mode";
@@ -261,6 +260,7 @@ export default function Listing({
     query,
     setQuery,
     searching,
+    isPathQuery,
     isStale,
     behind,
     requestFailed,
@@ -281,19 +281,11 @@ export default function Listing({
     mode,
     escapes,
     commitSearch,
-  } = useListingSearch(fsPath, refresh);
+  } = useListingSearch(fsPath, home, refresh);
 
   // Decision 5: is the typed query itself a filesystem address? Resolved
   // independently of the ranked search above — Enter checks this first.
   const typedAddress = useTypedPathAddress(query, fsPath, home);
-
-  // A query that names exactly the folder already open, in either spelling —
-  // this is the resting state written out as text, never a pending search
-  // (query-current-folder.ts). Kept out of `escapesBase` itself, which stays
-  // a pure syntactic predicate that answers a query starting with `~` or `/`
-  // the same way regardless of which folder happens to be open; this needs
-  // `fsPath` and `home`, which only this render has in hand.
-  const isOpenFolderQuery = queryNamesOpenFolder(query, fsPath, home);
 
   // Decision 2: the completion dropdown. `completion.target` is null for a
   // query that isn't path-shaped at all (a plain filter word, a glob) —
@@ -307,6 +299,17 @@ export default function Listing({
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
   // so an idle listing never polls.
   const indexScan = useIndexStatus(searching);
+
+  // Search hits vs. the folder's own rows (listing/search-body-mode) — the
+  // one place this choice is made, computed once here (not re-derived per
+  // use) and read by the column count, the <thead>, the body branch and the
+  // match-count chip further down, AND by `navRows`/`rowCtxByPath`/
+  // `listingLoaded`/the auto-select effect below: a path-shaped query
+  // (`isPathQuery`, above) is `searching` but never gets an answer
+  // (useListingSearch.ts never asks), so every one of those has to agree it
+  // is not showing hits either, or arrow-key nav would walk an empty list
+  // over a folder plainly still on screen.
+  const showsSearchHits = showingSearchHits(searchState, awaitingCommit);
 
   // **THESE TWO FLAGS ARE NOW THE WHOLE of whether there is a pane** —
   // `pane.on` is exactly `paneEnabled` since D282 deleted the width gate, so
@@ -553,14 +556,20 @@ export default function Listing({
   // own (Mod+Up / bare Backspace — see listing/useListingShortcuts).
 
   // Flat, ordered list of the paths the arrow keys step through: the rendered
-  // search hits while searching, otherwise the sorted listing. Keyed off the
-  // same memoized arrays the table renders, so selection never drifts from view.
+  // search hits while `showsSearchHits`, otherwise the sorted listing. Keyed
+  // off the same memoized arrays the table renders, so selection never drifts
+  // from view.
+  //
+  // `showsSearchHits`, not raw `searching`: a path-shaped query is
+  // `searching` but never gets an answer (useListingSearch.ts), so keying
+  // this on `searching` alone would walk an empty `visibleHits` forever
+  // instead of the folder rows actually on screen.
   const navRows = useMemo(
     () =>
-      searching
+      showsSearchHits
         ? visibleHits.map(({ entry }) => searchBase + "/" + entry.rel)
         : sortedEntries.map((entry) => base + "/" + entry.name),
-    [searching, visibleHits, sortedEntries, base, searchBase],
+    [showsSearchHits, visibleHits, sortedEntries, base, searchBase],
   );
 
   // Whether navRows reflects a LOADED listing (not a transient empty while the
@@ -573,7 +582,9 @@ export default function Listing({
   // "Settled" = not mid-fetch: an ok listing OR a terminal error (rows are
   // then genuinely empty, so the reconcile should clear/reclamp a stale
   // selection). Only the transient `loading` status suppresses reconcile.
-  const listingLoaded = searching ? true : state.status !== "loading";
+  // Keyed on `showsSearchHits` for the same reason `navRows` is above: a
+  // path-shaped query is folder rows on screen, not a search mid-load.
+  const listingLoaded = showsSearchHits ? true : state.status !== "loading";
 
   const {
     sel,
@@ -700,10 +711,11 @@ export default function Listing({
 
   // Map every rendered row's path to its RowCtx, so a keyboard shortcut can
   // resolve the selected path back to a full row (is_dir etc.) the same way a
-  // right-click does. Keyed off the arrays the table renders.
+  // right-click does. Keyed off the arrays the table renders — `showsSearchHits`,
+  // the same predicate `navRows` above branches on, and for the same reason.
   const rowCtxByPath = useMemo(() => {
     const m = new Map<string, RowCtx>();
-    if (searching) {
+    if (showsSearchHits) {
       for (const { entry } of visibleHits) {
         const path = searchBase + "/" + entry.rel;
         m.set(path, {
@@ -724,7 +736,7 @@ export default function Listing({
       }
     }
     return m;
-  }, [searching, visibleHits, sortedEntries, base, searchBase]);
+  }, [showsSearchHits, visibleHits, sortedEntries, base, searchBase]);
   rowCtxByPathRef.current = rowCtxByPath;
 
   // OPENING A FOLDER SELECTS NOTHING (FS-16, D278). There is no folder
@@ -772,7 +784,10 @@ export default function Listing({
   // belongs somewhere it can be tested.
   const searchSelectRef = useRef(INITIAL_SEARCH_SELECT);
   useEffect(() => {
-    if (provisional || !searching) return;
+    // `showsSearchHits`, not raw `searching`: a path-shaped query never gets
+    // a ranked answer, so there is nothing here for auto-select to rank —
+    // `navRows` is the folder's own rows in that state (see its own comment).
+    if (provisional || !showsSearchHits) return;
     const { state, select, clear } = nextSearchSelection(
       searchSelectRef.current,
       navRows,
@@ -786,7 +801,7 @@ export default function Listing({
     // have stopped answering the query in the box (listing/selection). Left
     // standing it arms Enter and Cmd+Backspace on a file nobody is looking for.
     else if (clear) clearSelection();
-  }, [provisional, searching, navRows, rowCtxByPath, sel, selectOnly,
+  }, [provisional, showsSearchHits, navRows, rowCtxByPath, sel, selectOnly,
       clearSelection, rowsAnswerQuery]);
 
   // The selection as full rows, in rendered order (so a batch op processes rows
@@ -1317,11 +1332,9 @@ export default function Listing({
   // the preview pane, where NAME/SIZE/MODIFIED sat above one line of text).
   // Set by the empty branch below, read by the <thead> render.
   let emptyDir = false;
-  // Search hits vs. the folder's own rows (listing/search-body-mode) — the
-  // one place this choice is made, read by the column count below, the
-  // <thead>, the body branch, and the match-count chip together so the four
-  // can never disagree.
-  const showsSearchHits = showingSearchHits(searchState, awaitingCommit);
+  // `showsSearchHits` (computed above, alongside the search hooks) is read
+  // here by the column count, the <thead>, the body branch, and the
+  // match-count chip together so the four can never disagree.
   // Every row that spans the table, in the mode it is being rendered for
   // (listing/types columnCount): three columns normally, one while showing
   // search hits.
@@ -1568,10 +1581,14 @@ export default function Listing({
   // One banner row above the real rows, not a caveat folded into a count
   // (the user rejected that shape — see DECISIONS-one-field-search.md).
   //
-  // `!isOpenFolderQuery` excludes the one uncommitted query that names
-  // nothing Enter would need to do anything about: the folder already open.
-  // Enter there is a no-op, so there is nothing for this row to promise.
-  if (searching && !showsSearchHits && !isOpenFolderQuery) {
+  // `!isPathQuery` excludes every uncommitted query this row would otherwise
+  // make a false promise about: a path-shaped query either resolves to a
+  // real address (Enter navigates directly, no commit involved) or it does
+  // not — and either way, no rank request is ever coming for it
+  // (useListingSearch.ts), so "Enter to search" would be a promise this box
+  // cannot keep. The open folder's own path is the narrowest case of this
+  // (Enter there is a no-op too), not a special one of its own any more.
+  if (searching && !showsSearchHits && !isPathQuery) {
     body = (
       <>
         <tr>
@@ -1666,12 +1683,12 @@ export default function Listing({
     searchCount !== null;
 
   // Whether the status strip should read as a search's own line ("N
-  // matches") rather than the folder's own item count. An open-folder query
-  // is uncommitted the same way any other escaping query is (decision 4's
-  // gate never opened, so `hits` is empty) — reporting "0 matches" under a
-  // folder that plainly has rows would blame the search for something it was
-  // never asked to answer.
-  const showsSearchFooter = searching && !isOpenFolderQuery;
+  // matches") rather than the folder's own item count. A path-shaped query
+  // never gets an answer (useListingSearch.ts's `isPathQuery` gate — the open
+  // folder's own path is just the narrowest case of this) — reporting "0
+  // matches" under a folder that plainly has rows would blame the search for
+  // something it was never asked to answer.
+  const showsSearchFooter = searching && !isPathQuery;
 
   // The status strip's inputs. A search hit carries no size (the comment on
   // its row explains why), so the byte sum is only ever taken over the plain
@@ -1747,7 +1764,7 @@ export default function Listing({
               query={query}
               setQuery={setQuery}
               searching={searching}
-              isOpenFolderQuery={isOpenFolderQuery}
+              isPathQuery={isPathQuery}
               committed={showsSearchHits}
               escapes={escapes}
               commitSearch={commitSearch}
