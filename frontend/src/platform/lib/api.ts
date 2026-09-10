@@ -491,8 +491,15 @@ export function updateCheck(): Promise<UpdateStatus> {
   return postJson<UpdateStatus>("/api/update/check", {});
 }
 
-export function updateInstall(): Promise<UpdateStatus> {
-  return postJson<UpdateStatus>("/api/update/install", {});
+// `expectedVersion`: the `latest_version` the caller had on screen — the
+// server compares it against what its own pre-install recheck confirms is
+// actually current and defers instead of installing on a mismatch, so a
+// stale button can never land a different version than the one the user
+// saw and clicked (fused_render/update/mac.py's UpdateManager.install).
+export function updateInstall(expectedVersion?: string | null): Promise<UpdateStatus> {
+  return postJson<UpdateStatus>("/api/update/install", {
+    expected_version: expectedVersion ?? null,
+  });
 }
 
 export function listDir(fsPath: string, cursor?: string | null): Promise<ListResult> {
