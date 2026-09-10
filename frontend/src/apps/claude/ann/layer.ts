@@ -28,6 +28,7 @@ import {
   rectOf,
   type StageBox,
 } from "./geometry";
+import { releaseXOTarget } from "../shots";
 import { ANN_LAYER_MARK, ANN_XO_SCROLL, type Annotation } from "./types";
 
 export const ANN_LAYER_CSS: string = [
@@ -310,6 +311,18 @@ export function createXOLayer(opts: XOLayerOptions): {
 } {
   let host: HTMLElement | null = null;
   const remove = () => {
+    // THE TAB SHARE GOES WITH THE OVERLAY, which is T:6172-6175's first line
+    // and carries its reason: "a target that stopped being cross-origin (or
+    // went away) has shotPane's own path back, and holding a tab share open
+    // past its use is a recording indicator with no purpose."
+    //
+    // BEFORE the `host` guard, exactly as T orders it: a target that never got
+    // as far as building an overlay can still have raised the arm-time prompt
+    // (T:7688 fires on the ARM, not on the first note), so `!host` is not the
+    // same fact as "there is no share to give back". `releaseXOTarget` carries
+    // native's own two guards — another mount's XO target, and a capture in
+    // flight (D6) — which T never needed, having no reference count.
+    releaseXOTarget();
     if (!host) return;
     // The bar's ResizeObserver FIRST, exactly as `removeLayer` does it: the
     // observer holds the node, not the other way round, so removing the host

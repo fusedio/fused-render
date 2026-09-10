@@ -69,7 +69,7 @@ import {
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
 import { formatAnnotations, type AnnotationWire } from "./protocol/wire";
-import { getStream, isNativeOff } from "./shots";
+import { getStream, isNativeOff, noteSourcesProbe } from "./shots";
 import {
   AppPane,
   createAppStateWatcher,
@@ -986,6 +986,10 @@ function ChatBody(props: ChatBodyProps) {
       settling: () => recorder.snapshot().busy,
       end: () => void recorder.end(),
       discard: () => void recorder.discard(),
+      // The teardown's ending, and the one of the three that is NOT a promise:
+      // a `pagehide` handler gets no await, which is why `rec.ts` spells this
+      // one synchronously (T:8796-8812).
+      abandon: () => recorder.abandon(),
     }),
     [recorder],
   );
@@ -1054,6 +1058,13 @@ function ChatBody(props: ChatBodyProps) {
    * does not wait for this process to restart. Anything but an explicit
    * `available: false` keeps the seat, so a probe that fails degrades to showing
    * it rather than to hiding the feature.
+   *
+   * ONE PROBE, TWO ANSWERS, which is how T reads it too (T:7841-7852 takes the
+   * still and the mic off the same `src`): the SCREENSHOT half decides whether
+   * the native still road is open at all, and getting that from the probe
+   * rather than from a live 409 is what makes the cross-origin tab-share
+   * prompt fire at arm time, where the user activation is
+   * (`shots/noteSourcesProbe`).
    */
   const [micShown, setMicShown] = useState(true);
   const annArmed = ann.mode !== "off";
@@ -1061,7 +1072,22 @@ function ChatBody(props: ChatBodyProps) {
     let live = true;
     void captureSources()
       .then((sources) => {
-        if (live) setMicShown(sources.audio?.available !== false);
+        // BEFORE the `live` gate and outside it: this is module state about the
+        // PLATFORM, not component state about this mount, and it is just as
+        // true for the next mount as for this one. An unmount racing the probe
+        // should not throw the answer away.
+        noteSourcesProbe(sources);
+        if (!live) return;
+        const audio = sources.audio;
+        setMicShown(audio?.available !== false);
+        // AND SAY WHY THE SEAT WENT (T:7801). The reason string is CP-11's, and
+        // it names a browser that CAN record — so a reader with no seat and no
+        // explanation at least has the console to go on. Swallowing it left
+        // "the feature is missing" indistinguishable from "the feature is
+        // broken".
+        if (audio?.available === false) {
+          console.warn("spoken walkthroughs unavailable:", audio.reason || "");
+        }
       })
       .catch(() => {
         /* no answer is not a NO: the seat stays */

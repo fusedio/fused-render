@@ -92,6 +92,7 @@ export {
   frameOffset,
   isNativeOff,
   learnTopOrigin,
+  noteSourcesProbe,
   screenRect,
   resetNativeOffForTests,
   resetTopOriginForTests,
@@ -104,6 +105,7 @@ export {
   captureXO,
   currentStream,
   getStream,
+  releaseXOTarget,
   stopStream,
   watchStreamTeardown,
 } from "./xo-capture";

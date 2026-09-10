@@ -31,6 +31,7 @@ import { act, create } from "react-test-renderer";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
 const { NAV_LOCKED_REASON } = await import("./ann");
+const { isNativeOff, resetNativeOffForTests } = await import("./shots");
 const { ATTACH_API } = await import("./ui/attachApi");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetAgentDirCacheForTests } = await import("./protocol/agent");
@@ -664,6 +665,62 @@ test("a probe that cannot be answered KEEPS the mic seat", async () => {
   const { r } = await mountChat();
   await settle();
   expect(byClass(r, "c-annrec")).toHaveLength(1);
+});
+
+test("and it SAYS WHY the seat went, in the reason the probe gave", async () => {
+  // T:7801 — `console.warn("spoken walkthroughs unavailable:", src.audio.reason
+  // || "")`. The reason is CP-11's and it names a browser that CAN record, so a
+  // reader with no seat has the console to go on. Swallowing it left "the
+  // feature is missing" indistinguishable from "the feature is broken".
+  const said: unknown[][] = [];
+  const realWarn = console.warn;
+  console.warn = (...a: unknown[]) => said.push(a);
+  try {
+    audioSource = { audio: { available: false, reason: "this browser cannot record" } };
+    await mountChat();
+    await settle();
+    const line = said.find((a) => String(a[0]).includes("spoken walkthroughs unavailable"));
+    expect(line).toBeDefined();
+    expect(line![1]).toBe("this browser cannot record");
+
+    // A refusal with no reason still says the seat went, with an empty tail
+    // rather than "undefined".
+    said.length = 0;
+    audioSource = { audio: { available: false } };
+    await mountChat();
+    await settle();
+    expect(
+      said.find((a) => String(a[0]).includes("spoken walkthroughs unavailable")),
+    ).toEqual(["spoken walkthroughs unavailable:", ""]);
+
+    // And a machine that CAN record says nothing at all.
+    said.length = 0;
+    audioSource = { audio: { available: true, reason: null } };
+    await mountChat();
+    await settle();
+    expect(
+      said.some((a) => String(a[0]).includes("spoken walkthroughs unavailable")),
+    ).toBe(false);
+  } finally {
+    console.warn = realWarn;
+  }
+});
+
+test("the boot probe closes the native-still road, so an XO arm can prompt", async () => {
+  // T:7840-7847 sets `shotNativeOff` from `screenshot.available === false` at
+  // BOOT; native only ever learned it from a live 409. T:7688 then reads it on
+  // the arm — `if (annOn && annXO && shotNativeOff) annXOStreamGet()` — which is
+  // the one moment carrying the user activation `getDisplayMedia` needs. Gated
+  // on a 409 that had not happened, that branch was false on the first arm and
+  // the first cross-origin walkthrough silently produced no pictures.
+  resetNativeOffForTests();
+  audioSource = {
+    audio: { available: true, reason: null },
+    screenshot: { available: false, reason: "no still on this platform" },
+  };
+  await mountChat();
+  await settle();
+  expect(isNativeOff()).toBe(true);
 });
 
 // ---- the send path -------------------------------------------------------

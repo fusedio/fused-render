@@ -27,7 +27,7 @@ import {
   type PlacePopOptions,
 } from "./AnnPopover";
 import { barFit, createBarPush, paintBar } from "./AnnBar";
-import { chipEditXY, clockOf, rectOf } from "./geometry";
+import { chipEditXY, clockOf, pageXY, rectOf } from "./geometry";
 import { createRenderQueue, createXOLayer, hideHl, injectLayer, paintPins, pinSpotOf } from "./layer";
 import { createAnnMode, escapeAction, walkthroughOwns, type AnnModeMachine } from "./mode";
 import { applyOverview, overviewFor, type OverviewResult } from "./overview";
@@ -606,8 +606,11 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     (cx: number, cy: number, win: Window | null, nearPath?: string) => {
       const anchor: AnnAnchor = {
         kind: "point",
-        x: Math.round(cx + (win ? win.scrollX : 0)),
-        y: Math.round(cy + (win ? win.scrollY : 0)),
+        // `pageXY`, not a second spelling of it: `ann/geometry` owns the
+        // client+scroll sum and its rounding (T:8631), and three copies of one
+        // formula is the shape D146 warns about — they agree on the numbers
+        // today and that is exactly what makes a later divergence quiet.
+        ...pageXY(cx, cy, win),
       };
       if (nearPath) anchor.nearPath = nearPath;
       return store.add({ content: "", ...anchor });
@@ -778,11 +781,23 @@ export function useAnnotations(opts: UseAnnotationsOptions): AnnotationsApi {
     const view = ownDoc && ownDoc.defaultView;
     if (!view) return;
     const teardown = () => {
+      // `annOn = false` IS T'S FIRST LINE (T:8797), and its comment says what
+      // for: it "gates any handler of ours the browser does still run". Native
+      // leans on `release()` taking the eight in-frame listeners off, which is
+      // sufficient TODAY — but it left `machine.armed()` reading true after
+      // pagehide, so any future armed-gated handler would have had no belt to
+      // that brace. Cheap, and it puts the state where the DOM already is.
+      machineRef.current?.set(false);
       machineRef.current?.setPhase(null);
       const r = liveOpts.current.recorder?.();
-      // `stop()` KEEPS the file: a teardown nobody asked for must not throw a
-      // walkthrough away.
-      if (r && r.recording()) r.end();
+      // A KEEP-ONLY STOP, which is T:8796-8812's own ending: `handle.stop()`
+      // and no transcription, because "this document is going away and there is
+      // no panel to show one in". `end()` here went on into `transcribe` →
+      // `deliver` → the automatic send — and since this teardown ALSO runs on a
+      // React unmount, an in-app navigation fired a transcription and a send
+      // into a chat that no longer existed. `stop()` still KEEPS the file: a
+      // teardown nobody asked for must not throw a walkthrough away.
+      if (r && r.recording()) r.abandon();
       targetRef.current?.disconnectObserver();
       targetRef.current?.removeInjectedLayer();
       // AND THE MARGIN BACK. `createBarPush` puts an `!important` 43px

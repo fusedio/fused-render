@@ -40,7 +40,7 @@ function rig(opts: { params?: Record<string, string>; capable?: boolean } = {}):
   let t = 1000;
   const store = createAnnStore({ params, now: () => t++, newId: () => "id" + t });
   const log: string[] = [];
-  const rec = { on: false, phase: null as null | "settling" | "transcribing", ended: 0, discarded: 0 };
+  const rec = { on: false, phase: null as null | "settling" | "transcribing", ended: 0, discarded: 0, abandoned: 0 };
   const capable = { value: opts.capable ?? true };
   const canSend = { value: true };
   const composer = { open: false, text: "" };
@@ -55,6 +55,13 @@ function rig(opts: { params?: Record<string, string>; capable?: boolean } = {}):
     discard: () => {
       rec.discarded++;
       log.push("rec.discard");
+    },
+    // The teardown's ending — never the mode machine's to call (a disarm still
+    // means `end()`, which KEEPS and transcribes); logged so a test would see
+    // it if that ever changed.
+    abandon: () => {
+      rec.abandoned++;
+      log.push("rec.abandon");
     },
   };
   const machine = createAnnMode({

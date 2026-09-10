@@ -46,10 +46,34 @@ let watchers = 0;
 let captures = 0;
 let releaseWanted = false;
 
-/** Release if nothing holds the stream any more and somebody asked for it. */
+/**
+ * THE TARGET WENT AWAY, as against a mount leaving — `releaseXOTarget`'s own
+ * flag, and it needs to be its own because the two releases are guarded
+ * differently. A mount leaving owes the share back only once EVERY mount is
+ * gone (`watchers`); a target that stopped being cross-origin owes it back at
+ * once, with the chat still on screen, since that mount has no use for a share
+ * it can no longer photograph through.
+ *
+ * Sharing `releaseWanted` for both looked right and was not: the deferred road
+ * runs through `releaseIfIdle`, which re-applies the `watchers` test — so a
+ * target that went away UNDER AN IN-FLIGHT CAPTURE had its release quietly
+ * dropped on the capture's way out, which is the exact leak this whole item is
+ * about, moved one race later.
+ */
+let targetGone = false;
+
+/** Release if nothing holds the stream any more and somebody asked for it.
+ *
+ *  `captures` gates BOTH roads (D6): a capture in flight is a holder, and
+ *  stopping under it would make it re-prompt for a share with nobody left to
+ *  release it. Past that, the two asks answer to their own guards. */
 function releaseIfIdle(): void {
-  if (!releaseWanted || watchers || captures) return;
-  releaseWanted = false;
+  if (captures) return;
+  if (targetGone) {
+    stopStream();
+    return;
+  }
+  if (!releaseWanted || watchers) return;
   stopStream();
 }
 
@@ -66,6 +90,7 @@ export function stopStream(): void {
   // stop would be handed to callers after it as if it were still held (D6).
   pending = null;
   releaseWanted = false;
+  targetGone = false;
   if (!s) return;
   for (const t of s.getTracks()) {
     try {
@@ -121,6 +146,38 @@ export function watchStreamTeardown(win: Window | null | undefined): () => void 
   };
 }
 
+/**
+ * THE TARGET STOPPED BEING CROSS-ORIGIN, or went away (T:6171-6175). T hangs
+ * `annXOStreamStop()` off `annXORemove()` and gives the reason at the site: "a
+ * target that stopped being cross-origin (or went away) has shotPane's own path
+ * back, and holding a tab share open past its use is a recording indicator with
+ * no purpose." Without it the browser's "sharing this tab" chip outlived the
+ * only thing it was ever for.
+ *
+ * NOT the same event as a mount leaving, which is why this is its own door and
+ * not a `releaseIfIdle()` call: `watchers` is still ≥ 1 here — the chat is very
+ * much still on screen — so the ordinary idle test refuses, and that refusal IS
+ * the gap. What has ended is this mount's USE for the share, not the mount.
+ *
+ * Two guards, both native's rather than T's, because native reference-counts a
+ * stream T kept per document:
+ *
+ *   * `watchers > 1` — another chat may still be framing a cross-origin target
+ *     of its own over the same module-level stream (a card behind a peek, two
+ *     cards in a stack). Stopping under it would take away a share still in
+ *     use, so the last one out does it instead; whichever mount really needs it
+ *     again re-opens through `getStream`'s single flight.
+ *   * `captures` — a capture in flight is a HOLDER exactly as a mount is (D6):
+ *     stopping under it would make it re-prompt, and that second share would
+ *     have nobody left to release it. So the release is ASKED FOR and the
+ *     capture pays it on the way out, the same contract the teardown uses.
+ */
+export function releaseXOTarget(): void {
+  if (watchers > 1) return;
+  targetGone = true;
+  releaseIfIdle();
+}
+
 /** Registrations still outstanding — for the tests that assert the counting,
  *  and the only way to observe it from outside. */
 export function streamWatchers(): number {
@@ -135,7 +192,9 @@ export function streamCaptures(): number {
 }
 
 export function streamReleasePending(): boolean {
-  return releaseWanted;
+  // EITHER ask counts: the question is "is a release owed", and it is owed
+  // whether the last mount left or the target stopped being cross-origin.
+  return releaseWanted || targetGone;
 }
 
 /** The kept stream, or a fresh share. Chromium's current-tab hints preselect

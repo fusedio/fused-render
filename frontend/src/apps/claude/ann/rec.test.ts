@@ -897,3 +897,88 @@ describe("subscribe", () => {
     expect(hits).toBe(before + 1);
   });
 });
+
+// ── the teardown's ending (T:8796-8812) ─────────────────────────────────────
+
+describe("abandon", () => {
+  test("stops the microphone and NEVER transcribes, delivers or disarms", async () => {
+    // T's `pagehide` handler is a bare `handle.stop().catch(() => {})` and says
+    // why it goes no further: "this document is going away and there is no
+    // panel to show one in". Reaching for `end()` here was not just a wasted
+    // request — the same teardown runs on a React unmount, so an in-app
+    // navigation fired a transcription AND `deliver`'s automatic send into a
+    // conversation that no longer existed.
+    const w = makeWorld(undefined, {
+      text: "make this bigger",
+      words: [{ text: "make", start: 1, end: 1.2 }],
+      segments: [{ text: "make this bigger", startSecond: 1, endSecond: 2 }],
+    });
+    await record(w);
+    w.tick(3000);
+    w.rec.mark({ kind: "element" });
+    expect(w.notes).toHaveLength(1);
+
+    w.rec.abandon();
+
+    // The mic is off, and the file was KEPT (CP-4): `stop`, never `cancel`.
+    expect(w.log).toContain("stop");
+    expect(w.log).not.toContain("cancel");
+    // Nothing was transcribed, nothing was sent, and the marks are still there
+    // — stamped and empty, editable by hand like any other pending note.
+    expect(w.log.some((l) => l.startsWith("transcribe:"))).toBe(false);
+    expect(w.delivered).toHaveLength(0);
+    expect(w.notes).toHaveLength(1);
+    // And it did not disarm: `annOn = false` is the teardown's OWN first line
+    // (T:8797), not the recorder's to do on the way past.
+    expect(w.log).not.toContain("disarm");
+  });
+
+  test("straight to `off`, with the clock stopped — there is no settle here", async () => {
+    const w = makeWorld();
+    await record(w);
+    w.tick(2000);
+    expect(w.rec.snapshot().state).toBe("recording");
+
+    w.rec.abandon();
+
+    // No "Stopping…"/"Transcribing…": nothing is being transcribed and nobody
+    // is waiting for words, so a status painted onto a document mid-unload
+    // would be a promise this ending does not make.
+    expect(w.rec.snapshot().state).toBe("off");
+    expect(w.rec.snapshot().status).toBe("");
+    expect(w.rec.snapshot().busy).toBe(false);
+    expect(w.rec.snapshot().marks).toBe(0);
+    // The tick is cancelled, not left running into a dead label.
+    expect(w.timers.size).toBe(0);
+  });
+
+  test("through the START WINDOW it is the dismissal, like every other exit", async () => {
+    const w = makeWorld({ holdStart: true });
+    const begun = w.rec.begin();
+    expect(w.rec.snapshot().state).toBe("starting");
+
+    w.rec.abandon();
+    w.releaseStart();
+    await begun;
+
+    // `begin()` cancels its own reply, so the mic never comes up behind a
+    // document that is already going.
+    expect(w.log).toContain("cancel");
+    expect(w.rec.snapshot().state).toBe("off");
+    expect(w.delivered).toHaveLength(0);
+  });
+
+  test("nothing recording: a no-op, and it does not throw", () => {
+    const w = makeWorld();
+    expect(() => w.rec.abandon()).not.toThrow();
+    expect(w.log).not.toContain("stop");
+    expect(w.rec.snapshot().state).toBe("off");
+  });
+
+  test("a failed stop is swallowed — an unloading document has nowhere to say it", async () => {
+    const w = makeWorld({ fail: new Error("InvalidStateError") });
+    await record(w);
+    expect(() => w.rec.abandon()).not.toThrow();
+    expect(w.rec.snapshot().state).toBe("off");
+  });
+});

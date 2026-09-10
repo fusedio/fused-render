@@ -26,6 +26,7 @@ const {
   captureXO,
   currentStream,
   getStream,
+  releaseXOTarget,
   stopStream,
   streamCaptures,
   streamReleasePending,
@@ -716,5 +717,88 @@ describe("an in-flight capture HOLDS the share (D6)", () => {
     expect(t.stops).toBe(0);
     leave();
     expect(t.stops).toBe(1);
+  });
+});
+
+// ── the target stops being cross-origin (T:6171-6175) ──────────────────────
+
+describe("releaseXOTarget", () => {
+  test("the share goes when the overlay does, even with the chat still mounted", async () => {
+    // T hangs `annXOStreamStop()` off `annXORemove()` and says why at the site:
+    // "a target that stopped being cross-origin (or went away) has shotPane's
+    // own path back, and holding a tab share open past its use is a recording
+    // indicator with no purpose." This is NOT the mount leaving — `watchers` is
+    // still 1 — which is exactly why the ordinary idle test refused and the
+    // "sharing this tab" chip outlived the only thing it was for.
+    const t = track();
+    nextStream = () => stream(t);
+    const leave = watchStreamTeardown(null);
+    await getStream();
+    expect(currentStream()).not.toBeNull();
+    expect(streamWatchers()).toBe(1);
+
+    releaseXOTarget();
+    expect(t.stops).toBe(1);
+    expect(currentStream()).toBeNull();
+    leave();
+  });
+
+  test("another mount's XO target keeps it — the last one out does the stopping", async () => {
+    const t = track();
+    nextStream = () => stream(t);
+    const a = watchStreamTeardown(null);
+    const b = watchStreamTeardown(null);
+    await getStream();
+
+    releaseXOTarget();
+    // Two mounts, so this one cannot know the share is not still in use; a
+    // mount that really needs it again re-opens through `getStream`'s single
+    // flight.
+    expect(t.stops).toBe(0);
+    expect(currentStream()).not.toBeNull();
+
+    a();
+    releaseXOTarget();
+    expect(t.stops).toBe(1);
+    b();
+  });
+
+  test("a capture in flight defers it, and the capture pays it (D6)", async () => {
+    // A prompt held open, so the capture is genuinely mid-flight when the
+    // overlay goes (the sibling describe's `parkedPrompt`, inlined — it is
+    // scoped to that block).
+    let settle: (s: FakeStream) => void = () => {};
+    G.navigator = {
+      mediaDevices: {
+        getDisplayMedia: (c: Rec) => {
+          prompts.push(c);
+          return new Promise<FakeStream>((res) => {
+            settle = res;
+          });
+        },
+      },
+    } as Rec;
+    const release = (s: FakeStream) => settle(s);
+    const leave = watchStreamTeardown(null);
+    const shot = captureXO(makeFrame(rect(0, 0, 400, 300)));
+    expect(streamCaptures()).toBe(1);
+
+    releaseXOTarget();
+    // Asked for, not taken: stopping under the capture would make it re-prompt,
+    // and that second share would have nobody left to release it.
+    expect(streamReleasePending()).toBe(true);
+
+    const t = track();
+    release(stream(t));
+    expect(await shot).not.toBeNull();
+    expect(t.stops).toBe(1);
+    expect(currentStream()).toBeNull();
+    expect(streamReleasePending()).toBe(false);
+    leave();
+  });
+
+  test("no share held: a no-op, not a throw", () => {
+    expect(() => releaseXOTarget()).not.toThrow();
+    expect(currentStream()).toBeNull();
   });
 });

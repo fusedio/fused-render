@@ -136,6 +136,11 @@ export interface AnnRecorder {
   end(): void;
   /** Stop, delete, and drop this session's marks (T:8340 `annRecDiscard`). */
   discard(): void;
+  /** The TEARDOWN's ending: stop the mic, keep the file, and DO NOT transcribe
+   *  or send (T:8796-8812). Synchronous, because the `pagehide` that calls it
+   *  gets no await. See `ann/rec.ts`'s `abandon` for why `end()` was wrong
+   *  here — the same teardown runs on a React unmount. */
+  abandon(): void;
 }
 
 /** T:6724 `ANN_BAR` — the bar's two sentences, verbatim. */

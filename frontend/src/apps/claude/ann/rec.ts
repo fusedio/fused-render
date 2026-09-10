@@ -15,7 +15,7 @@
 // So the machine lives here with its deps injected, `ann/RecControls.tsx` draws
 // it, and the tests drive it with a fake recorder and a fake clock.
 import type { AudioOptions, AudioRecording } from "@platform/lib/capture-audio";
-import { stampOf } from "./geometry";
+import { pageXY, stampOf } from "./geometry";
 
 import type { Transcript, TranscriptWord } from "./transcribe";
 
@@ -306,6 +306,26 @@ export interface Recorder {
   end(): Promise<void>;
   /** The walkthrough thrown away instead of sent (`annRecDiscard`, T:8337). */
   discard(): Promise<void>;
+  /**
+   * THE TEARDOWN'S ENDING (T:8796-8812): turn the microphone off and STOP
+   * THERE. T's `pagehide` handler is a bare `handle.stop().catch(() => {})` and
+   * explicitly does not transcribe — "this document is going away and there is
+   * no panel to show one in".
+   *
+   * Reaching for `end()` here was not merely a wasted request. The same
+   * teardown also runs on a React UNMOUNT (`useAnnotations`'s hosted effect
+   * cleanup — the host tears the sidebar down on every mode switch), so an
+   * in-app navigation ran `transcribe` → `deliver` → the automatic send, into a
+   * conversation that no longer existed.
+   *
+   * `stop()` KEEPS the file (CP-4) — a teardown nobody asked for must not throw
+   * a walkthrough away — and the request is best-effort BY DESIGN, since it may
+   * not survive the unload; both platforms then fail safely (the socket closing
+   * is itself a keeping ending where the browser encodes, and the cap turns the
+   * mic off where the app records). Synchronous, because a `pagehide` handler
+   * gets no await.
+   */
+  abandon(): void;
   /** Whichever of the two the bar's trash means right now (`annDiscard`,
    *  T:8419) is the mode module's dispatch; this is the recording half. */
   stamp(): number;
@@ -552,9 +572,10 @@ export function createRecorder(deps: RecorderDeps): Recorder {
       createdAt: wallNow(),
       t: stamp(),
       // PAGE coordinates (client + scroll), so the note still means something
-      // after the app scrolls (T:7962-7964).
-      x: Math.round(clientX + ((win && win.scrollX) || 0)),
-      y: Math.round(clientY + ((win && win.scrollY) || 0)),
+      // after the app scrolls (T:7962-7964). Through `pageXY`, which is
+      // `ann/geometry`'s canonical spelling of that sum — this was the third
+      // copy of one formula, the shape D146 warns about.
+      ...pageXY(clientX, clientY, win ?? null),
     };
     // The element the click landed OVER when there was one (a forced point —
     // the Point tool or Alt): a HINT and never an anchor (T:7971-7975).
@@ -696,6 +717,36 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     if (deps.mode.isArmed() && deps.mode.epoch() === armed) deps.mode.disarm();
   }
 
+  function abandon(): void {
+    // Same first line as both real endings: through the start window the
+    // dismissal is all any exit can do. `begin()` cancels its own reply, so the
+    // mic never comes up behind a document that is already going.
+    if (state === "starting") {
+      startCancelled = true;
+      return;
+    }
+    if (state !== "recording" || !handle) return;
+    const rec = handle;
+    // The same synchronous snapshot the other two take, for a plainer reason
+    // here: nothing after this line awaits anything that reads module state, but
+    // a teardown must leave the module in a state a NEW instance can start from
+    // — no clock ticking into a dead label, no ids belonging to a recording
+    // nobody will ever transcribe.
+    stopClock();
+    ids = [];
+    handle = null;
+    // Straight to `off`, not through the settle: there is no settle. Nothing is
+    // being transcribed, nobody is waiting for words, and a "Transcribing…"
+    // status painted onto a document mid-unload is a promise this ending does
+    // not make.
+    state = "off";
+    paint();
+    // FIRE AND FORGET, and the errors go with it: an `InvalidStateError` from a
+    // recorder the browser has already torn down is the expected shape of this
+    // road, not news.
+    void rec.stop().catch(() => {});
+  }
+
   async function discard(): Promise<void> {
     // Same as `end()`'s first line: through the start window the dismissal is
     // all either exit can do, and both mean the same thing here.
@@ -750,6 +801,7 @@ export function createRecorder(deps: RecorderDeps): Recorder {
     markPoint,
     end,
     discard,
+    abandon,
     stamp,
     seatName: () => recSeatName(state),
     idleName: recIdleName,
