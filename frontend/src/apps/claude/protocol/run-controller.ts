@@ -2343,6 +2343,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     sending = true;
     const seat = ++sendSeq;
     const gen = logGen;
+    /** WHICH TRANSCRIPT THIS ATTACH IS WRITING INTO, for the `ownRunEndedAt`
+     *  stamp below — the same guard `pollLoop` takes, for the same reason: the
+     *  stamp is a fact about ROWS, so an attach whose conversation is gone has
+     *  nothing to say about the one that replaced it. */
+    const tGen = state.transcriptGen;
     // Past the gate this run is ours to TRY, which is not the same as ours to
     // have shown (batch review F1). The claim keeps every other road off the id
     // for the length of the attempt (Bugbot PR #1075) and is released in the
@@ -2511,6 +2516,22 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // Run finished with no frame attached: repair only what the restored
         // transcript can provably be missing (T:17812-17855).
         clearRunParam();
+        /**
+         * AND THE REPAIR IS A TURN BOUNDARY THIS FRAME OWNS (Bugbot 3975677791).
+         *
+         * `pollLoop`'s `finally` stamps `ownRunEndedAt` and this road never did
+         * — so a run reconciled here left the watermark at whatever it was
+         * before (0 on a fresh mount), and `followDecision`'s own-echo guard
+         * (`probe.mtime > ownEnd`) then read the rows THIS repair had just
+         * accounted for as somebody else's turn and raised the external working
+         * line over them. Same guard as `pollLoop`'s, and stamped on every exit
+         * from this branch: the error roads append rows too, and a repair that
+         * reconciled to "already on screen" has still just established that the
+         * run is over.
+         */
+        const stampOwnEnd = () => {
+          if (logGen === gen && state.transcriptGen === tGen) emit({ ownRunEndedAt: now() });
+        };
         // The run this frame missed still handled its notes, and may have edited
         // the file while we were away (`annResolveSent` / `snapInvalidate`).
         deps.onRunEnded?.();
@@ -2578,6 +2599,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // A FAILED TURN IS NEWS TOO (Bugbot 3974939169): same nonce, same
           // reason — one commit, no `running` edge to hang a settle-scroll off.
           if (appended) emit({ repaired: state.repaired + 1 });
+          stampOwnEnd();
           return;
         }
         if (matches) {
@@ -2614,6 +2636,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // on screen" has nothing to scroll TO, and the scroll would only be a
         // reader losing their place.
         if (appended) emit({ repaired: state.repaired + 1 });
+        stampOwnEnd();
         return;
       }
       if (matches) {

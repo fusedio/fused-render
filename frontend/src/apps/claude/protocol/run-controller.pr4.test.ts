@@ -671,6 +671,49 @@ describe("ownRunEndedAt", () => {
     await controller.openSession("s2");
     expect(controller.getState().ownRunEndedAt).toBe(0);
   });
+
+  test("THE DONE-REPAIR STAMPS IT TOO (Bugbot 3975677791)", async () => {
+    // A run that finished while this frame was away is reconciled from the
+    // probe payload, never through `pollLoop` — so this road stamped nothing,
+    // the watermark stayed at 0, and `followDecision`'s own-echo guard
+    // (`probe.mtime > ownEnd`) then read the rows this repair had just
+    // accounted for as somebody else's turn and raised the external working
+    // line over them.
+    const { controller } = makeController({
+      live_run: () => ({ run_id: "r9" }),
+      poll: () => poll({ done: true, message: "another tab", segments: [text("ok")] }),
+    });
+    await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(controller.getState().ownRunEndedAt).toBe(1_000);
+  });
+
+  test("...and on the repair's ERROR road, which appends rows just the same", async () => {
+    const { controller } = makeController({
+      live_run: () => ({ run_id: "r9" }),
+      poll: () => poll({ done: true, message: "another tab", error: "claude exited" }),
+    });
+    await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(controller.getState().ownRunEndedAt).toBe(1_000);
+  });
+
+  test("but not into a transcript that has since been REPLACED", async () => {
+    // The stamp is a fact about ROWS, so a repair whose conversation is gone has
+    // nothing to say about the one that replaced it. (`newChat` bumps `logGen`,
+    // which this attach already bails on straight after the probe; the
+    // `transcriptGen` half of the guard covers the `openSession` road, which
+    // holds the `sending` gate instead of bumping the generation.)
+    let ctl: ChatController | null = null;
+    const { controller } = makeController({
+      live_run: () => ({ run_id: "r9" }),
+      poll: () => {
+        ctl!.newChat();
+        return poll({ done: true, message: "another tab", segments: [text("ok")] });
+      },
+    });
+    ctl = controller;
+    await controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(controller.getState().ownRunEndedAt).toBe(0);
+  });
 });
 
 describe("setExternalWorking", () => {

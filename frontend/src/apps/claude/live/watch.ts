@@ -178,7 +178,7 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
    * a move re-renders through `history` (the page does not decide what is new,
    * it re-asks what the conversation IS), and granularity is a whole turn.
    */
-  async function followTranscript(sessionId: string): Promise<void> {
+  async function followTranscript(sessionId: string, ownEndBefore: number): Promise<void> {
     const mark = deps.transcriptMark();
     if (!mark || !mark.path) return; // no render to compare against yet
     let probe: LivenessProbe;
@@ -190,6 +190,11 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
     // Everything can have changed across the await, and each of these outranks a
     // stale answer: the reader left, or a real run attached and owns the chrome.
     if (stopped || deps.sessionId() !== sessionId || deps.busy()) return;
+    // ...OR ONE ENDED WHILE WE ASKED. `busy()` is false the instant a turn
+    // finishes, and the rows it wrote are exactly what this probe is about to
+    // read back as somebody else's news (Bugbot 3975677791). The stamp is the
+    // fact this cannot ask any other way — see `tick`.
+    if (deps.ownRunEndedAt() !== ownEndBefore) return;
     if (deps.transcriptMark() !== mark) return; // a render landed while we asked
     const verdict = followDecision(mark, probe, deps.ownRunEndedAt());
     // Refresh FIRST, then the line: the history render replaces the log
@@ -214,13 +219,35 @@ export function createLiveWatch(deps: LiveWatchDeps): LiveWatch {
     if (!sessionId) return;
     busy = true;
     try {
+      /**
+       * WHAT "NOTHING ATTACHED" ACTUALLY MEANS (Bugbot 3975677791).
+       *
+       * `!busy()` was standing in for it and is a narrower fact: it is false
+       * only while a turn is IN FLIGHT. An `adopt` that attached and ran to
+       * completion inside the await below — and `pollLoop` ending under it, and
+       * the done-repair road that reconciles a run that finished while the frame
+       * was away — all leave the controller idle with the transcript's tail
+       * freshly written by THIS page. `followTranscript` then ran against a
+       * watermark predating those rows, refreshed the very log we had just
+       * streamed, and (the visible half) raised the "somebody else is working"
+       * line off our own echo.
+       *
+       * The stamp is the one signal that carries it: `ownRunEndedAt` is written
+       * at every turn boundary this frame owns — `pollLoop`'s finally and, as of
+       * this change, the done-repair — so a lap across which it MOVED is a lap
+       * that took a run, whether or not one is still running now. Both halves
+       * are asked: `busy()` for the turn still going, the stamp for the one that
+       * has just ended.
+       */
+      const ownEndBefore = deps.ownRunEndedAt();
       await deps.adopt(sessionId);
       // RUN DIRS FIRST, ALWAYS. A run this app spawned streams token by token
       // and owns the chrome; the transcript is the coarser, blinder fallback and
       // only speaks for the turns no run dir can account for. So it is asked
       // strictly after, and only if nothing attached.
-      if (!stopped && !deps.busy() && deps.sessionId() === sessionId) {
-        await followTranscript(sessionId);
+      const took = deps.busy() || deps.ownRunEndedAt() !== ownEndBefore;
+      if (!stopped && !took && deps.sessionId() === sessionId) {
+        await followTranscript(sessionId, ownEndBefore);
       }
     } finally {
       busy = false;

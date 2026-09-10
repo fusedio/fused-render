@@ -282,6 +282,97 @@ describe("liveWatchTick", () => {
     await watch.tick();
     expect(order).toEqual(["refresh", "external:true"]);
   });
+
+  test("A RUN THAT ATTACHED AND ENDED IS NOT 'NOTHING ATTACHED' (Bugbot 3975677791)", async () => {
+    // `!busy()` was standing in for "nothing attached" and is a narrower fact:
+    // an adopt that ran to completion inside the await, `pollLoop` ending under
+    // it, and the done-repair road all leave the controller idle with the
+    // transcript's tail freshly written by THIS page. The follower then ran
+    // against a watermark predating those rows.
+    const livenessCalls: string[] = [];
+    const refreshes: string[] = [];
+    const external: boolean[] = [];
+    let ownEnd = 0;
+    /** ONE object, because the follower compares the watermark by IDENTITY. */
+    const watermark = mark();
+    const watch = createLiveWatch({
+      sessionId: () => "s1",
+      busy: () => false,
+      adopt: () => {
+        // Attached, streamed, and DONE — exactly what a short turn does inside
+        // one lap. `busy()` is already false again; the stamp is the only trace.
+        ownEnd = 1_700_000_000;
+        return Promise.resolve();
+      },
+      transcriptMark: () => watermark,
+      ownRunEndedAt: () => ownEnd,
+      liveness: (path) => {
+        livenessCalls.push(path);
+        return Promise.resolve({ exists: true, mtime: 200, size: 5000, running: true });
+      },
+      refreshHistory: (id) => {
+        refreshes.push(id);
+        return Promise.resolve();
+      },
+      setExternalWorking: (on) => external.push(on),
+      activityKey: "k",
+      win: null,
+      doc: null,
+    });
+    await watch.tick();
+    // The file is not asked at all: our own rows are not news about somebody
+    // else, and refreshing over a log we just streamed is the other half.
+    expect(livenessCalls).toEqual([]);
+    expect(refreshes).toEqual([]);
+    expect(external).toEqual([]);
+    // ...and the next lap, with nothing new having ended, follows normally —
+    // the refresh lands, and the working line is DOWN because the probe is no
+    // newer than the turn this page itself just finished (the own-echo rule).
+    await watch.tick();
+    expect(livenessCalls).toEqual(["/p/s1.jsonl"]);
+    expect(refreshes).toEqual(["s1"]);
+    expect(external).toEqual([false]);
+  });
+
+  test("a turn that ends WHILE the stat is in flight discards the answer too", async () => {
+    // `busy()` is false the instant a turn finishes, so the guards after the
+    // await cannot see it — the stamp moving is the fact they read instead.
+    const refreshes: string[] = [];
+    const external: boolean[] = [];
+    let ownEnd = 0;
+    let release: (() => void) | null = null;
+    const watermark = mark();
+    const watch = createLiveWatch({
+      sessionId: () => "s1",
+      busy: () => false,
+      adopt: () => Promise.resolve(),
+      transcriptMark: () => watermark,
+      ownRunEndedAt: () => ownEnd,
+      liveness: () =>
+        new Promise((res) => {
+          release = () =>
+            res({ exists: true, mtime: 200, size: 5000, running: true });
+        }),
+      refreshHistory: (id) => {
+        refreshes.push(id);
+        return Promise.resolve();
+      },
+      setExternalWorking: (on) => external.push(on),
+      activityKey: "k",
+      win: null,
+      doc: null,
+    });
+    const lap = watch.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+    // A turn (the reader's own send, say) starts and finishes under the stat.
+    ownEnd = 1_700_000_001;
+    release!();
+    await lap;
+    expect(refreshes).toEqual([]);
+    expect(external).toEqual([]);
+  });
+
 });
 
 describe("the triggers", () => {
