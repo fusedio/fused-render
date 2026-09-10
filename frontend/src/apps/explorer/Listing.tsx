@@ -1662,34 +1662,25 @@ export default function Listing({
     (searching && spinner) ||
     searchCount !== null;
 
-  // Whether the status strip should read as a search's own line ("N
-  // matches") rather than the folder's own item count. Reuses
-  // `showsSearchHits` (search-body-mode.ts's `showingSearchHits`) — the same
-  // notion the BODY already uses to choose search-hit rows over the
-  // folder's own — rather than a second, parallel predicate the SPEC
-  // explicitly warns against. That covers a path-shaped query (never gets
-  // an answer at all — useListingSearch.ts's `isPathQuery` gate) exactly
-  // the same way it already had to for the body's own row choice (see that
-  // flag's own comment above): reporting "0 matches" under a folder that
-  // plainly has rows would blame the search for something it was never
-  // asked to answer.
-  //
-  // ITEM 6 (running-screen review, 2026-09-10): `searching` alone (the old
-  // condition) is true the instant a query is GATED too — typed but
-  // awaiting Enter because it escapes the folder open on screen
-  // (`escapesFsPath`) — which showed "0 matches" over the very folder the
-  // dropdown's own offer row was naming, for a search that had not run.
-  // `showsSearchHits` is false for exactly that case (`awaitingCommit`),
-  // so the footer now falls back to the folder's own item count while
-  // gated, same as it already did for a path-shaped query.
-  const showsSearchFooter = showsSearchHits;
-
   // The status strip's inputs. A search hit carries no size (the comment on
   // its row explains why), so the byte sum is only ever taken over the plain
   // listing — statusLine's own "searching" branch never reads either number.
+  //
+  // ITEM 11 (running-screen review, 2026-09-10) folded ITEM 6 into this
+  // same predicate, so there is now exactly one reason for `showsSearchHits`
+  // to appear down here rather than the two half-reasons an earlier
+  // `showsSearchFooter` alias used to carry: it decides whether search hits
+  // (sizeless) or the folder's own rows (sized) are what the strip is
+  // summing. `statusLine`'s own "searching" branch handles the rest —
+  // ITEM 6's fix (a gated, uncommitted query is NOT `showsSearchHits`, so it
+  // falls back to the folder's own honest item count) and ITEM 11's fix (a
+  // search with nothing selected returns `null` — no line, not "0 matches"
+  // — since the box's own pinned chip already reports the match count and
+  // this strip's only remaining job is the SELECTION the chip says nothing
+  // about) both live in that one function, not here.
   let selectedBytes = 0;
   let selectedFolders = 0;
-  if (!showsSearchFooter) {
+  if (!showsSearchHits) {
     for (const entry of sortedEntries) {
       if (!selectedSet.has(base + "/" + entry.name)) continue;
       if (entry.is_dir) selectedFolders++;
@@ -1702,7 +1693,7 @@ export default function Listing({
     selectedBytes,
     folderCount: selectedFolders,
     truncated: state.status === "ok" && state.truncated,
-    searching: showsSearchFooter,
+    searching: showsSearchHits,
     hits: hits.length,
   });
 
@@ -1999,24 +1990,27 @@ export default function Listing({
           {/* Spans the list column only, never the preview pane beside it —
               it sits INSIDE .listing-main, after the scroller, the same way
               the crumb slot sits inside it before. statusLine decides the
-              string; this only renders it.
+              string, INCLUDING whether there is one at all (`null` — ITEM
+              11 — while search hits are showing and nothing is selected,
+              since the box's own pinned chip already reports the match
+              count); this only renders it.
 
               Gated on the folder having an actual answer — loaded
-              (`state.status === "ok"`) or a search in flight or done — because
-              `sortedEntries` is `[]` for every other state (still loading,
-              failed, access denied) and an ungated footer would read
-              "Empty folder" for a folder the app has not read yet.
+              (`state.status === "ok"`) or a search in flight or done —
+              because `sortedEntries` is `[]` for every other state (still
+              loading, failed, access denied) and an ungated footer would
+              read "Empty folder" for a folder the app has not read yet.
 
-              `showsSearchFooter`, not raw `searching` (finding 4, code
+              `showsSearchHits`, not raw `searching` (finding 4, code
               review): a path-shaped query is `searching` but never gets an
               answer (`isPathQuery` suppresses the rank request by design),
-              so `showsSearchFooter` is false for it and `statusText` falls
+              so `showsSearchHits` is false for it and `statusText` falls
               through to the non-searching branch, keyed on `sortedEntries`
               — exactly the case this comment already warns about. Gating on
               raw `searching` let a path-shaped query slip past this check
               while the folder was still loading or had errored, showing
               "Empty folder" for a folder that was never actually read. */}
-          {(state.status === "ok" || showsSearchFooter) && (
+          {(state.status === "ok" || showsSearchHits) && statusText !== null && (
             <footer className="listing-status" title={statusText}>
               {statusText}
             </footer>

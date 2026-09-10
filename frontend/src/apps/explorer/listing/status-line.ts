@@ -37,13 +37,22 @@ export function statusLine({
   truncated,
   searching,
   hits,
-}: StatusLineInput): string {
-  // A running or finished search answers a different question than the
-  // listing does — how many rows match, not how many are in the folder — so
-  // it gets its own line shape and never mixes with `total`/`truncated`.
+}: StatusLineInput): string | null {
+  // ITEM 11 (running-screen review, 2026-09-10): the match count used to be
+  // reported HERE too — "24 matches" — while the search box's own pinned
+  // chip already said the same thing (searchCount/searchCountFull,
+  // Listing.tsx), plus a caveat and the elapsed time this line never
+  // carried in the first place. Division of labour, decided on that
+  // review: the BOX owns how many matched and how long it took; the FOOTER
+  // owns only what the user has SELECTED, which the box's pin says nothing
+  // about. A search with nothing selected now has nothing left for this
+  // line to add, so it returns `null` — no line, not an empty one — rather
+  // than restate a number already on screen a few pixels up. Selecting
+  // rows during a search still has something new to say, so that case
+  // survives unchanged.
   if (searching) {
     if (selected > 0) return `${fmt(selected)} of ${fmt(hits)} selected`;
-    return `${fmt(hits)} ${hits === 1 ? "match" : "matches"}`;
+    return null;
   }
 
   if (total === 0 && !truncated) return "Empty folder";

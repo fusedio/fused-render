@@ -61,12 +61,18 @@ describe("statusLine", () => {
     expect(statusLine({ ...base, total: 1000, truncated: true })).toBe("1,000+ items");
   });
 
-  test("a search running or done, nothing selected", () => {
-    expect(statusLine({ ...base, searching: true, hits: 24 })).toBe("24 matches");
+  // ITEM 11 (running-screen review, 2026-09-10): the match count is the
+  // search box's own pinned chip's job now (Listing.tsx's searchCount) —
+  // reporting it again down here duplicated it word for word, with no
+  // caveat/elapsed-time detail this line ever added on its own. `null`
+  // means "no line", not an empty string one — the caller must not render
+  // a footer element at all for this case.
+  test("a search running or done, nothing selected: no line — the box's own pin already says this", () => {
+    expect(statusLine({ ...base, searching: true, hits: 24 })).toBeNull();
   });
 
-  test("a single search hit is singular", () => {
-    expect(statusLine({ ...base, searching: true, hits: 1 })).toBe("1 match");
+  test("a single search hit, nothing selected: still no line", () => {
+    expect(statusLine({ ...base, searching: true, hits: 1 })).toBeNull();
   });
 
   test("a search with a selection", () => {
