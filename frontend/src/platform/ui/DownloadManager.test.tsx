@@ -1172,7 +1172,7 @@ describe("useJobs' loaded gate: a stale response is not a first real read", () =
       calls += 1;
       if (calls === 1) return firstResponse;
       return okResponse({ jobs: [{ ...BASE, id: "old", state: "done" }], now: Date.now() / 1000 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     let latest!: JobsState;
     try {
