@@ -553,6 +553,18 @@ describe("a path-shaped query never asks the index (path-shaped-query.ts)", () =
     box.unmount();
   });
 
+  // Finding 2 (code review): the "Path" rule is scoped to ABSOLUTE-ish
+  // queries only. A relative slash-bearing query like "src/util" must NOT be
+  // treated as path-shaped — it still live-filters the subtree via a rank
+  // request, exactly as it did before this predicate existed.
+  test("a relative slash-bearing query is not path-shaped and still searches", async () => {
+    const box = await search("src/util");
+    expect(box.current().isPathQuery).toBe(false);
+    expect(rankCalls).toHaveLength(1);
+    expect(rankCalls[0].q).toBe("src/util");
+    box.unmount();
+  });
+
   // Finding 1 (code review): a path-shaped query never gets a rank answer, so
   // `navRows` in Listing.tsx falls back to the FOLDER's own rows (per
   // `showsSearchHits`) rather than search hits. With no lead selected, the

@@ -26,8 +26,28 @@ describe("isPathShapedQuery", () => {
     expect(isPathShapedQuery("readme", OPEN, HOME)).toBe(false);
   });
 
-  test("a relative path with a slash is still path-shaped", () => {
-    expect(isPathShapedQuery("sub/dir", OPEN, HOME)).toBe(true);
+  // Finding 2 (code review): the user's rule was scoped to ABSOLUTE paths
+  // only ("any search on absolute path without pattern is useless") —
+  // relative slash-bearing queries were never in scope and must keep
+  // live-filtering the subtree exactly as they did before this predicate
+  // existed. `listingAddress` alone can't tell the two apart (it resolves
+  // both), so `isPathShapedQuery` narrows on top of it with `escapesBase`.
+  test("a relative path with a slash is NOT path-shaped — it must keep live-filtering as a search", () => {
+    expect(isPathShapedQuery("sub/dir", OPEN, HOME)).toBe(false);
+    expect(isPathShapedQuery("src/util", OPEN, HOME)).toBe(false);
+  });
+
+  test("an absolute path is path-shaped", () => {
+    expect(isPathShapedQuery("/Users/x/y", OPEN, HOME)).toBe(true);
+  });
+
+  test("a home-relative path, and bare ~, are path-shaped", () => {
+    expect(isPathShapedQuery("~/Work/a", OPEN, HOME)).toBe(true);
+    expect(isPathShapedQuery("~", OPEN, HOME)).toBe(true);
+  });
+
+  test("a glob under an absolute-ish base is still a search, never path-shaped", () => {
+    expect(isPathShapedQuery("~/Work/*", OPEN, HOME)).toBe(false);
   });
 
   test("home undefined: a \"~\" query cannot resolve, so it is not path-shaped", () => {
