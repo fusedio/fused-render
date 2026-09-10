@@ -248,25 +248,51 @@ test("the outside-press listener is removed once the card starts leaving, and ag
   bus.restore();
 });
 
+async function withActiveElement<T>(value: unknown, fn: () => Promise<T>): Promise<T> {
+  // A single `try/finally` reset point for every test below that fakes
+  // `document.activeElement` — without it, a failed assertion in the body
+  // leaves the fake element in place for every later test in this file
+  // (bun runs one shared module scope), turning one real failure into a
+  // cascade of unrelated ones downstream. `fn` is always async and always
+  // `await`ed here before the reset runs — a bare `try { return fn() }
+  // finally` would run the reset synchronously, before the awaited body
+  // inside `fn` ever executes.
+  (document as unknown as { activeElement: unknown }).activeElement = value;
+  try {
+    return await fn();
+  } finally {
+    (document as unknown as { activeElement: unknown }).activeElement = null;
+  }
+}
+
+function fakeIframe(): unknown {
+  return new (globalThis as unknown as { HTMLIFrameElement: new () => unknown }).HTMLIFrameElement();
+}
+
 test("an iframe taking focus (a press inside an app page) starts the exit animation", async () => {
   // A press inside an app page's iframe never dispatches anything this
   // document can see — no `click` ever reaches the outside-press listener
   // above. It DOES blur whatever had focus here first, though, and hands
-  // focus to the iframe itself, which is exactly what this test fakes.
+  // focus to the iframe itself, which is exactly what this test fakes: no
+  // iframe focused yet when the card mounts, then a blur that hands focus
+  // to one for the first time.
   let renderer: ReturnType<typeof create>;
   await act(async () => {
     renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />);
   });
 
-  (document as unknown as { activeElement: unknown }).activeElement =
-    new (globalThis as unknown as { HTMLIFrameElement: new () => unknown }).HTMLIFrameElement();
-  await act(async () => {
-    globalThis.dispatchEvent(new Event("blur"));
+  await withActiveElement(fakeIframe(), async () => {
+    await act(async () => {
+      globalThis.dispatchEvent(new Event("blur"));
+    });
+
+    const json = renderer!.toJSON() as ReactTestRendererJSON;
+    expect(json.props.className).toContain("leaving");
   });
 
-  const json = renderer!.toJSON() as ReactTestRendererJSON;
-  expect(json.props.className).toContain("leaving");
-  (document as unknown as { activeElement: unknown }).activeElement = null;
+  await act(async () => {
+    renderer!.unmount();
+  });
 });
 
 test("a plain window blur with no iframe focused does not hide the card", async () => {
@@ -284,6 +310,36 @@ test("a plain window blur with no iframe focused does not hide the card", async 
 
   const json = renderer!.toJSON() as ReactTestRendererJSON;
   expect(json.props.className).not.toContain("leaving");
+
+  await act(async () => {
+    renderer!.unmount();
+  });
+});
+
+test("a window blur while an iframe ALREADY held focus does not hide the card", async () => {
+  // The bug this guards: `document.activeElement instanceof
+  // HTMLIFrameElement` is true for as long as an iframe holds focus, not
+  // only in the instant focus moves to it. A user who clicked into an app
+  // page BEFORE this card popped up, then alt-tabs or opens devtools, fires
+  // a plain window blur with `activeElement` still the iframe from
+  // earlier — that must not read as "focus just moved to an iframe".
+  await withActiveElement(fakeIframe(), async () => {
+    let renderer: ReturnType<typeof create>;
+    await act(async () => {
+      renderer = create(<JobPopupCard job={JOB} onGone={() => {}} />);
+    });
+
+    await act(async () => {
+      globalThis.dispatchEvent(new Event("blur"));
+    });
+
+    const json = renderer!.toJSON() as ReactTestRendererJSON;
+    expect(json.props.className).not.toContain("leaving");
+
+    await act(async () => {
+      renderer!.unmount();
+    });
+  });
 });
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {

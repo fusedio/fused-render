@@ -124,19 +124,31 @@ export default function JobPopupCard({
 
   // App pages are hosted in iframes, so a press inside one never reaches
   // this document at all — no `click` this card can see. It DOES blur
-  // whatever had focus here, though, so a narrow `blur` listener catches
-  // exactly that case: `document.activeElement instanceof HTMLIFrameElement`
-  // is true only when focus just left TO an iframe, never for alt-tabbing
-  // away, opening devtools, or a native file picker, all of which blur the
-  // window without handing focus to any iframe in it. Precedent:
-  // `apps/explorer/BarMenu.tsx`'s `useMenuAnchor` closes on ANY window blur
-  // unconditionally, which is right for a menu (any loss of focus should
-  // close it) but wrong here (an alt-tab must not silently dismiss a card
-  // the user hasn't acted on).
+  // whatever had focus here, though, so a `blur` listener catches that case
+  // — but `document.activeElement instanceof HTMLIFrameElement` alone is
+  // TRUE FOR AS LONG AS an iframe holds focus, not only in the instant focus
+  // moves to it: a user who clicked into an app page before this card ever
+  // popped up, then alt-tabs away or opens devtools or a native file picker,
+  // fires a plain window `blur` with `activeElement` still the iframe from
+  // that earlier click — a snapshot of the CURRENT `activeElement` cannot
+  // tell that apart from focus genuinely just arriving. `wasIframeRef` tracks
+  // what `activeElement` already was (seeded from its value at mount, so a
+  // card popped while the user is already mid-iframe starts correctly primed
+  // as "already there") and the effect only dismisses on the EDGE — was not
+  // an iframe, now is — updating the ref after every blur regardless, so a
+  // second, unrelated blur while the iframe still holds focus reads as
+  // "unchanged" and leaves the card alone. Precedent: `apps/explorer/
+  // BarMenu.tsx`'s `useMenuAnchor` closes on ANY window blur unconditionally,
+  // which is right for a menu (any loss of focus should close it) but wrong
+  // here (an alt-tab must not silently dismiss a card the user hasn't acted
+  // on, whether or not an iframe already happened to hold focus).
+  const wasIframeRef = useRef(document.activeElement instanceof HTMLIFrameElement);
   useEffect(() => {
     if (leaving) return;
     const onBlur = () => {
-      if (document.activeElement instanceof HTMLIFrameElement) setLeaving(true);
+      const isIframeNow = document.activeElement instanceof HTMLIFrameElement;
+      if (isIframeNow && !wasIframeRef.current) setLeaving(true);
+      wasIframeRef.current = isIframeNow;
     };
     globalThis.addEventListener("blur", onBlur);
     return () => globalThis.removeEventListener("blur", onBlur);
