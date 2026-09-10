@@ -280,6 +280,15 @@ def origin_for_page(page: str, *, default: str = "") -> str:
       test, and a real possibility for a one-off script) falls back to the
       bare filename with its extension dropped, the next best thing to a
       project name when there is no project.
+    - A non-absolute (or otherwise malformed) *page* is refused BEFORE the
+      project lookup, not treated as an fs path at all:
+      `projectenv.project_root_for` starts with `os.path.abspath(path)`, so
+      a relative or garbled `X-Fused-Page` (a typo, never a real page) would
+      resolve against THIS SERVER's own cwd and caption the row after
+      whatever project happens to contain it — a project the page has
+      nothing to do with. `default` here too, same as the empty-page case:
+      there is nothing honest to derive from a value that was never a real
+      path.
     - EMPTY means no page raised this report at all — the one caller-named
       case this function cannot answer on its own, since it is *default*
       that carries the honest answer: only a shell surface running with no
@@ -292,6 +301,8 @@ def origin_for_page(page: str, *, default: str = "") -> str:
     label = _ORIGIN_BY_ROUTE.get(page)
     if label:
         return label
+    if not os.path.isabs(page):
+        return default
     from fused_render import projectenv
 
     root = projectenv.project_root_for(page)

@@ -359,6 +359,18 @@ def test_the_page_header_falls_back_to_the_file_stem_when_no_project_is_recogniz
     assert listing(client)[0]["origin"] == "index"
 
 
+def test_a_relative_or_malformed_page_gets_no_origin_at_all(client):
+    """`origin_for_page` must never resolve a non-absolute `page` against
+    this SERVER's own cwd — `projectenv.project_root_for` starts with
+    `os.path.abspath(path)`, so a relative or malformed X-Fused-Page (a
+    typo'd header, never a real fs path) would otherwise get captioned with
+    whatever project happens to contain the server's working directory,
+    naming a project the page has nothing to do with instead of drawing no
+    caption at all."""
+    assert jobs.origin_for_page("xxxx") == ""
+    assert jobs.origin_for_page("\x00") == ""
+
+
 def test_an_unlisted_route_is_treated_as_an_fs_path_like_any_other(client):
     """Nothing distinguishes a shell route from an fs path syntactically —
     only exact membership in the closed table does — so anything not in it
