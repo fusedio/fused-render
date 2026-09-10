@@ -30,11 +30,10 @@ const LISTING = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
 /** The full text of every `@container (max-width: <px>px) { ... }` block at
  * that exact threshold, joined — captured with a brace-depth walk since
  * these blocks nest a second level of `{}` inside them, which a flat regex
- * can't span. There is more than one 360px block in this file (the
- * pre-existing shortcut-hint collapse and this fix's own pin-degradation
- * rung both use it, deliberately the same number — see the comment above
- * the pin's own block), so this returns ALL of them concatenated rather
- * than just the first match. */
+ * can't span. There can be more than one block at the same threshold in
+ * this file (deliberate reuse of a number for an unrelated rule, documented
+ * where it happens), so this returns ALL of them concatenated rather than
+ * just the first match. */
 function containerBlock(maxWidthPx: number): string {
   const marker = `@container (max-width: ${maxWidthPx}px)`;
   const blocks: string[] = [];
@@ -83,16 +82,21 @@ test("rung 1->2 (480px): the wide-pin reservation shrinks to the plain has-pin v
 
 // --- Rung 2 (count only) -> Rung 3 (nothing): the COUNT goes next -------
 
-test("rung 2->3 (360px): both the count and the detail are hidden, and this is the SAME breakpoint the shortcut hint already collapses at", () => {
+test("rung 2->3 (360px): both the count and the detail are hidden", () => {
   const block = containerBlock(360);
   expect(block).toMatch(
     /\.listing-search-count-base,?\s*\n?\s*\.listing-search-count-detail\s*\{[^}]*display:\s*none/,
   );
-  // Not a second, independent number — the pin's own rung-3 rules live in
-  // an @container (max-width: 360px) block, the exact threshold already
-  // driving `.listing-search-shortcut-hint`'s own narrow-width collapse,
-  // rather than a new breakpoint invented for this fix.
-  expect(block).toMatch(/\.listing-search-shortcut-hint\s*\{[^}]*display:\s*none/);
+  // FINDING 2 (code review, 2026-09-10): this used to also assert
+  // `.listing-search-shortcut-hint`'s own collapse lived in this SAME
+  // 360px block — true only by coincidence, and a harmful one: the
+  // shortcut button's wide/glyph switch (`boxWide`, SearchField.tsx) is
+  // `HINT_WIDE_PX`, 340px, BELOW 360px, so sharing this number meant the
+  // button's collapsed-glyph state (rendered whenever `boxWide` is false,
+  // i.e. below 340px) was hidden by this very rule at every width it could
+  // ever appear at — see search-shortcut-collapse.test.ts. The shortcut
+  // hint now hides at its own, lower breakpoint instead of this one.
+  expect(block).not.toMatch(/\.listing-search-shortcut-hint\s*\{[^}]*display:\s*none/);
 });
 
 test("rung 2->3 (360px): the pin's own reservation falls all the way back to the no-pin input padding, giving the freed space to the query", () => {

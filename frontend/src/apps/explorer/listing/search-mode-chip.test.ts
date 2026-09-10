@@ -232,8 +232,17 @@ test("the button disappears at a narrow box width via a container query, not a m
   const boxDecls = rulesFor(".listing-search-box");
   expect(boxDecls.length).toBe(1);
   expect(boxDecls[0]).toMatch(/container-type:\s*inline-size/);
-  const containerAt = CSS.indexOf("@container (max-width: 360px)");
-  expect(containerAt).toBeGreaterThan(-1);
+  // FINDING 2 (code review, 2026-09-10): not 360px — that used to sit ABOVE
+  // `boxWide`'s own 340px threshold, hiding the button at every width its
+  // collapsed-glyph branch could ever render at (see
+  // search-shortcut-collapse.test.ts). The hide breakpoint now sits below
+  // 340px instead, so the wide label, the glyph, and hidden each get a real
+  // width span.
+  const containerRe = /@container \(max-width: (\d+)px\) \{\s*\.listing-search-shortcut-hint \{/;
+  const m = CSS.match(containerRe);
+  expect(m, "no @container rule hiding .listing-search-shortcut-hint").not.toBeNull();
+  expect(Number(m![1])).toBeLessThan(340);
+  const containerAt = CSS.indexOf(m![0]);
   const block = CSS.slice(containerAt, containerAt + 200);
   expect(block).toMatch(/\.listing-search-shortcut-hint\s*\{[\s\S]*display:\s*none/);
   // The button itself carries no width measurement of its own — no ref, no

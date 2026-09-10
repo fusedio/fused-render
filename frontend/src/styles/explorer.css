@@ -1969,8 +1969,34 @@ table.listing-table tr.skel-row:hover {
    than a measured ref: `useWidthThresholdRef`'s own comment records a
    `useLayoutEffect([])` version of a similar measurement freezing on a null
    ref and never recovering — this has no such failure mode because there is
-   nothing to attach or miss. */
-@container (max-width: 360px) {
+   nothing to attach or miss.
+
+   THE DEFECT (code review, 2026-09-10, verified against source): this used
+   to share `boxWide`'s own 360px — the SAME number `HINT_WIDE_PX`
+   (SearchField.tsx) measures the placeholder against, at 340px. Both rules
+   read the same box, so 340-360px was self-contradictory: `boxWide` was
+   already true there (the label form, `Search`+`⌘L`, is what renders), and
+   this rule hid the button outright in the same range — the glyph branch
+   `!boxWide` renders below 340px never got a width where it was both
+   CHOSEN and VISIBLE. Below 340px this rule fired too (340 < 360), so the
+   glyph form was unreachable at every width: label above 360, nothing
+   (hidden by this rule) below it.
+
+   The two consumers want different numbers because they're asking
+   different questions. `HINT_WIDE_PX` (340px) asks "does `HINT_LONG` fit
+   without clipping" — a full sentence. This asks "does even the collapsed
+   28px `bar-ctl-icon` glyph still have room" — a single square control,
+   right-anchored (`right: 8px`, or `right: 38px` past the star in
+   `.crumb-search-slot` — see above), against the mode chip and crumbs on
+   the box's other end, above the box's own 124px squeeze floor
+   (`.crumb-search-slot .listing-search-box`'s `min-width`, above). 190px
+   is chosen well clear of that 124px floor — the glyph, its inset, the mode
+   chip and a breathing gap between them all still fit — while sitting
+   comfortably under `HINT_WIDE_PX` so the ordering holds across the whole
+   range: wide label (>= 340px) -> glyph only (190-339px) -> hidden
+   (< 190px), each with a real width span rather than a knife-edge or a
+   crossed pair. */
+@container (max-width: 189px) {
   .listing-search-shortcut-hint {
     display: none;
   }
@@ -2026,9 +2052,10 @@ table.listing-table tr.skel-row:hover {
 
    Both breakpoints below key off `.listing-search-box`'s OWN inline-size
    container (`container-type: inline-size`, declared on it above) — the
-   exact axis the shortcut hint's own `@container (max-width: 360px)` rule
-   already uses a few rules down — rather than a second, independent width
-   signal. `:has(.listing-search-count)` scopes every override to the
+   exact axis the shortcut hint's own container query above uses (though at
+   a different width — the button and this chip give way for different
+   reasons, see the shortcut hint's own comment) — rather than a second,
+   independent width signal. `:has(.listing-search-count)` scopes every override to the
    moment the pin is actually a MATCH-COUNT chip (SearchField.tsx only
    renders that span when `searchCount !== null`), so the streaming
    spinner's own, much smaller `.has-pin` reservation (no count yet) is
@@ -2045,10 +2072,14 @@ table.listing-table tr.skel-row:hover {
    reservations, so there is still genuine room left for the query above
    this width and the wide reservation stops paying for itself below it.
 
-   Rung 2 -> 3, "31 matches" -> nothing: reuses the SAME 360px this file
-   already treats as "narrow" for this exact box (the shortcut hint's own
-   breakpoint below) rather than inventing a second number — below it, the
-   plain match-count reservation is itself what is crowding the query, so
+   Rung 2 -> 3, "31 matches" -> nothing: 360px, its own number — no longer
+   the shortcut hint's own breakpoint (that one now collapses the button to
+   its glyph below 340px and hides it entirely below 190px, a judgment call
+   about a 28px control's own minimum, not about this chip) — but still a
+   deliberate reuse of the SAME width this file already treats as "narrow"
+   for the has-pin/wide-pin matrix's own padding-right rungs a few lines up
+   rather than inventing a second number: below it, the plain match-count
+   reservation is itself what is crowding the query, so
    it goes too. The chip's own DOM node is not removed — `.listing-search-
    count` keeps a small, non-zero hoverable footprint — because the
    freshness caveat must never be lost silently: its full, untruncated
