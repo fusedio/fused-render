@@ -658,3 +658,150 @@ draw a row, via `effective_tier`'s unconditional override — see this
 section's own entry above. Toasts, `fused.trackJob` API/no new `Job` field,
 native OS notifications, whole-row clicks on repo rows and per-producer
 status-text changes remain out of scope, unchanged.
+
+## Fourth fix-review round
+
+Another review found six more gaps. Fixed here, in order.
+
+### Finding 1 — `_sweep` aged out transient rows by the wrong tier (committed 1be00c2d0)
+
+`_sweep`'s terminal branch gated the read-gated-clock ageing on
+`effective_tier(job) == TRANSIENT`, not on the STORED `job.tier`.
+`effective_tier` upgrades any `error`/`cancelled` row to `attention` for
+VISIBILITY — a failed transient run is still worth showing while it exists
+— so the moment a `schedule.py` tick (or any other transient producer)
+ended in `error`, `_sweep` read it as `attention` and fell into the
+keep-until-dismissed `else: continue` branch, with no surface able to ever
+dismiss it. Retention and visibility are two different questions: fixed by
+gating retention on the stored `job.tier` instead, and rewrote both the
+inline comment and `_sweep`'s own docstring to say so explicitly, so the
+next reader does not repeat the inversion.
+
+Swept every other `effective_tier` call site (`ai/supervisor.py`,
+`server/routers/index.py`) — both are comment-only prose describing
+visibility, not a second instance of the bug.
+
+New/rewritten test: `test_a_transient_row_that_ends_in_error_still_ages_out_on_the_read_gated_clock`
+(`tests/test_jobs_api.py`) replaces a same-named-in-spirit test that
+previously passed under both the old and new code, because it never called
+`read_jobs()` before its final assertion and so exercised the larger
+`FINISHED_UNREAD_DROP_S` backstop instead of the `first_read_at`/
+`FINISHED_TTL_S` path the fix actually changes. Confirmed RED against the
+old `effective_tier`-gated code, GREEN against the fix.
+
+### Finding 2 — `jobRows` dropped transient jobs while still running (committed 3fdb99a95)
+
+`jobRows` filtered `effectiveTier(j) !== "transient"` unconditionally, so a
+running index scan or text generation — both declared `transient` — never
+got a row at all, contradicting the tier's own documented meaning ("shown
+while running, never kept once terminal"). Fixed by filtering transient
+rows only once the job is `isTerminal`.
+
+**Design correction made while fixing this, not requested separately:** a
+naive `!isTerminal(j) || effectiveTier(j) !== "transient"` would have broken
+D661 — `ActivityDock.tsx`'s own header comment requires a scheduled
+message's own row to never appear in Activity, in ANY state, including
+running. That guarantee previously held only as an emergent property of the
+OLD (over-broad) filter; the general fix removes the accident that made it
+true. Kept D661 intact by adding an explicit `id.startsWith(SCHEDULE_JOB_PREFIX)`
+exclusion inside `jobRows`, independent of the tier check.
+
+New tests (`frontend/src/platform/lib/jobs.test.ts`): a running index scan
+and a running text generation both declared transient now get a row; a
+scheduled run's job stays excluded in every state (`running`, `done`,
+`error`), not only while transient-and-terminal.
+
+### Finding 5 — `isFailure` was stranded dead code (committed 333085c4c)
+
+No caller under `frontend/src` remained once `RepoUpdatesDock.tsx` moved to
+reading `effectiveTier` (three-tier model migration, above). Deleted the
+function and its doc comment; simplified `isTerminal`'s adjacent comment to
+describe only what it still does.
+
+### Finding 3 — a transcription worker's rebuilt row lost its page (committed 1bce20612)
+
+`transcribe_row_fields` puts `"page"` in the row-identity dict a
+transcription WORKER subprocess spreads into every `worker_base.report`
+tick it posts to `/api/jobs` — but that request only ever carries
+`X-Fused`/`X-Fused-Worker` headers, never `X-Fused-Page` (a worker has no
+page context to attach one from; that header travels only with a page's own
+runtime calls). `api_jobs_report` read `page` exclusively from that header,
+and `jobs.upsert` never reads `body["page"]` at all, so a row evicted
+mid-decode (`jobs._sweep`) and rebuilt from the worker's next tick came back
+with `page == ""` — permanently, since nothing else supplies it once the
+row is a fresh `Job()`.
+
+Confirmed `text_row_fields` (the finding's second thing to check) has no
+matching bug: its only caller path is `server/ai.py`'s `tick()` closure,
+which always goes through `_report()` — an in-process helper that correctly
+pops `page` from its kwargs — never a worker's raw HTTP tick.
+
+Fixed by letting `api_jobs_report` fall back to `body.get("page")`
+specifically when the request is worker-token-authenticated and no
+`X-Fused-Page` header was sent. This does not weaken the header-only rule a
+PAGE's own report still lives under (a page cannot claim a different
+destination by typing one into its body) — a worker-token request is
+already fully trusted to write every other row-identity field (`title`,
+`model`, `kind`, ...), so trusting a body-supplied `page` for a worker
+report specifically is no new exposure.
+
+New test: `test_a_worker_rebuilding_a_forgotten_row_restores_its_page_from_the_body`
+(`tests/test_ai_runtime.py`) — dismisses a row outright (simulating an
+eviction), then has a worker-token tick recreate it with `page` in the
+body; asserts the response's `page` is not empty. Confirmed RED against
+the header-only code, GREEN against the fix.
+
+### Finding 4 — opening reports on a shared model id didn't restate tier (committed 539935f48)
+
+`_start_resident` and `load(weights_only=True)` both open their job with a
+`state="running"` report on `job_id_for(model)` — an id a resident load, a
+weights-only download and an unload all share, and each of those three
+already restates its own tier on its TERMINAL report (`_bring_up`'s success:
+`TRANSIENT`; `_fetch_only`'s success: `TRAIL`; `_remove`: `TRANSIENT`) for
+exactly this reason. Neither OPENING report restated tier, so a load
+started right after a download ran its whole `running` phase under that
+download's stale `TRAIL`, and a download started right after a load (or an
+unload) ran under a stale `TRANSIENT` — `Job.tier`'s own comment already
+requires every producer on a shared id to restate its tier rather than lean
+on whatever an earlier report left. Fixed by restating `tier=jobs.TRANSIENT`
+on the resident load's opening report and `tier=jobs.TRAIL` on the
+download's.
+
+Swept every other `_report` call on this shared id (the progress ticks
+inside `_bring_up`/`_fetch_only`, and their `cancelled`/`error` terminal
+reports): none needed a further fix, because within one continuous run
+nothing else writes to the id between the (now correct) opening report and
+that run's own end, so the sticky field carries the right value through
+without every single tick needing to restate it — the same pattern the
+three existing terminal restatements already establish.
+
+New tests (`tests/test_ai_runtime.py`):
+`test_a_resident_loads_opening_report_does_not_inherit_a_downloads_trail_tier`
+and `test_a_weights_only_downloads_opening_report_does_not_inherit_a_loads_transient_tier`,
+each driving a stale tier onto the shared id first (via `supervisor.unload`
+and the sibling flow) and then asserting the OPENING report of the other
+flow already carries its own tier before its thread has had a chance to
+reach a terminal state. `FAKE_LOAD_SECONDS` is widened in the first so the
+assertion reliably lands before the fake worker reaches `ready`.
+
+### Finding 6 — the GitHub publish endpoints leaked the repo's filesystem root (committed 3a30b8d7b)
+
+`_publish_state["root"]` is the realpath'd, containment-checked repo root
+`_report_publish` uses to give the published job row a click destination —
+real news to that row, not to a page reading the publish endpoints. Both
+`GET /api/github/publish` (`publish_status()`) and the `POST` that starts a
+publish (`publish_start()`'s return value, handed straight back as the
+response) copied `_publish_state` verbatim, including `root`, so either
+endpoint answered with the server's own absolute filesystem path.
+
+Added `public_publish_record()` — `_publish_state` (or `publish_start`'s
+returned snapshot) minus `"root"` — and pointed both routes at it.
+`publish_status()` itself is unchanged and still answers with `root` for
+in-process callers (`test_github_setup.py`'s existing assertions on the
+resolved root) that have a real reason to see it; only the HTTP surface is
+redacted.
+
+New test: `test_publish_status_does_not_leak_the_repositorys_filesystem_path`
+(`tests/test_server_github.py`) — starts a publish and reads the status
+back through both endpoints, asserting neither the JSON body nor the raw
+response text contains the repo's absolute path.
