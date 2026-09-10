@@ -1046,3 +1046,92 @@ Scoped runs, all green: `tests/test_ai_runtime.py` (553 passed, 1 skipped,
 pre-existing), `tests/test_github_setup.py` + `tests/test_env_install.py`
 combined (256 passed). Did not run the full pytest suite — left to the
 orchestrator, per brief.
+
+## Seventh round — every terminal job pops, tier narrows to retention only
+
+User request: "when getting notifications, ensure the latest notification
+always pops up and auto disappears under 3 seconds. (they still stay in the
+list). a notification is something that is shown to the user" — clarified
+as "by toast, the UI should still be the same notification card."
+
+**`tier` no longer decides whether the user is shown anything, only what
+survives.** Before this round, `transient` meant "shown while running,
+never kept once terminal" — the only way a transient job was ever visible
+was the Notifications panel while it ran. That made a fire-and-forget job
+(no panel row wanted, nothing to dismiss) also invisible at the one moment
+it actually finished, which is the opposite of what "a notification is
+something that is shown to the user" asks for. The fix narrows `tier` to
+answer one question only — what happens to the row after it lands — and
+gives every terminal job, `transient` included, the same pop regardless:
+`fused_render/jobs.py`'s `TIERS` docstring and `frontend/src/platform/lib/
+jobs.ts`'s `JobTier` doc comment were rewritten to say so explicitly. The
+panel's own visibility-vs-retention split (`effectiveTier`, `jobRows`) is
+unchanged — this only adds a second, independent thing tier no longer
+gates.
+
+**Reused `JobRow`, not `Toast`.** The clarification was explicit: the same
+card, not a toast made to look like one. `frontend/src/platform/ui/
+JobPopupCard.tsx` mounts the exact `JobRow` the Notifications panel draws
+(the same reuse `shell/RepoUpdatesDock.tsx` already does for its own rows),
+inside a `.toast-slot` for the grid-collapse exit animation `lib/toast.ts`
+already defined. Clicking it is `JobRow`'s own unmodified `open()` (commit
+`ba64d03f9`, "opening a row always dismisses it") — reused as-is, so a
+transient job's click closes the popup exactly the way a kept job's click
+closes its panel row, with no special-casing: `jobs.py`'s `dismiss()` takes
+any terminal record regardless of tier, so a transient job's dismiss
+succeeds server-side even though it never had a panel row to clear.
+
+**`lib/toast.ts` was left untouched.** The store's "no auto-dismiss" design
+holds for its own ~15 `pushToast` callers — those are informational asides
+a user might want to read on their own time, and the standing decision that
+they persist until dismissed is unrelated to this feature. Auto-dismiss
+only needed to exist for the one new caller that wants it, so it lives
+entirely in `JobPopupCard`'s own two timers (`JOB_POPUP_VISIBLE_MS`, a new
+exported constant in `jobs.ts` documented as tying to "under 3 seconds
+total", then the existing `TOAST_EXIT_MS` collapse) rather than becoming a
+new mode every toast has to reason about.
+
+**Latest wins, no stacking**, and **no replaying the backlog on first
+load** are both handled by one new pure function, `popupTick` (`jobs.ts`),
+deliberately independent of `jobRows`/`effectiveTier` so a `transient` job
+is never filtered out before it reaches the popup. It carries an
+`isFirstTick` flag whose whole job is the same thing `fused_render/
+server/routers/index.py`'s `_seen_running` module-level set already does
+server-side: seed everything already terminal on the very first tick
+without popping any of it, and only pop an id that crosses into terminal on
+a tick after that. `ActivityDock.tsx`'s `onJobsReported` carries `popupTick`'s
+`seen` set and first-tick flag across polls in refs (the callback itself is
+memoized with `[]` deps) and runs it against the FULL poll snapshot, not the
+already tier-filtered `terminal` variable `onTerminalJobs` receives —
+running it against that filtered variable would silently drop transient
+jobs again through a different door. `sys:schedule:*` jobs are excluded by
+id inside `popupJobs` the same way `jobRows` already excludes them (D661),
+independent of tier, so a scheduled run's own bookkeeping job still never
+pops.
+
+**Per-pane gate.** `NotificationHost` draws the popup behind the same
+`!IS_EMBED` guard it already puts around `ServerStatusBanner`, so a
+panel/tab-mode pane (its own document) never pops a copy of a job another
+pane is also polling for. `App.tsx`'s `ActivityDock` mount is already
+`!IS_EMBED`-scoped by its surrounding branch, so in practice no pane ever
+produces a `popupJob` to pass down — the guard in `NotificationHost` is
+belt-and-suspenders against that changing later, not the only thing
+preventing it today.
+
+New tests: `jobs.test.ts` gained seven (`popupJobs` popping every tier
+including transient, excluding a `sys:schedule:*` id, hiding a job merged
+under a running waiter; `popupTick` seeding the first tick with no pop,
+popping a later crossing, not re-popping an already-popped id, and popping
+only the latest of several jobs turning terminal in the same tick). A new
+`JobPopupCard.test.tsx` covers the real-timer show → leaving → gone
+lifecycle end to end, and that opening the card closes it early through
+`JobRow`'s own dismiss (using the same `cancelFn`/`dismissFn` test seam
+`JobRow.test.tsx` already exercises directly on `JobRow`, threaded through
+`JobPopupCard` unchanged).
+
+Scoped runs, all green: `bun test` across `jobs.test.ts`,
+`DownloadManager.test.tsx`, `RepoUpdatesDock.test.tsx`, `ActivityDock.test.tsx`,
+`JobRow.test.tsx`, `JobPopupCard.test.tsx` — 213 pass, 0 fail. `bunx tsc
+--noEmit -p .` clean; `node scripts/check-boundaries.mjs` — 707 files OK.
+Did not run the full frontend or Python suite — left to the orchestrator,
+per brief.
