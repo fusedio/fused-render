@@ -143,6 +143,24 @@ def test_waiting_for_rejects_an_illegal_id():
                     server=True)
 
 
+def test_quiet_round_trips_on_a_server_upsert():
+    """`quiet` marks a terminal row with nothing to act on (a resident model
+    load's own success report) — a server report setting it must reach the
+    listing verbatim."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "done",
+                 "quiet": True}, server=True)
+    row = jobs.list_jobs()[0]
+    assert row["quiet"] is True
+
+
+def test_a_page_owned_report_cannot_set_quiet(client):
+    """A page could otherwise hide its own failed row by falsely claiming it
+    was quiet — see `Job.quiet`'s own comment. Silently dropped, same as
+    `waiting_for`."""
+    report(client, id="a", title="a cat", quiet=True)
+    assert listing(client)[0]["quiet"] is False
+
+
 def test_model_is_its_own_field_separate_from_title_and_detail(client):
     """The model must reach the client as its OWN value, not folded into
     `title` or `detail` — the UI dims it as a distinct element on the title
@@ -453,6 +471,39 @@ def test_a_done_row_now_stays_until_dismissed_same_as_an_error(client):
 
     later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
     assert later == {"ok", "bad", "stopped"}, "no terminal state ages out on its own any more"
+
+
+def test_a_quiet_row_ages_out_on_the_read_gated_clock_instead_of_staying_forever():
+    """A quiet row (a resident model load's own success report, `Job.quiet`)
+    draws no Notification and nothing can dismiss it — the same reasoning
+    `_sweep` already applies to a `sys:schedule:*` row. Give it the same
+    carve-out from the "kept until dismissed" rule, so it ages out on the
+    original read-gated `FINISHED_TTL_S` clock instead of surviving for the
+    process's lifetime, one per distinct model, inside the evictable pool."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "done",
+                 "quiet": True}, now=1000.0, server=True)
+
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
+    assert first_read == {"sys:ai-model:x"}
+
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    assert later == set(), "a quiet row ages out, unlike an ordinary terminal row"
+
+
+def test_a_wait_job_poll_still_observes_a_quiet_row_go_done_before_it_ages_out():
+    """`fused.ai.models.load(wait=True)`'s `_wait_job` poll reads the row via
+    `list_jobs(mark_read=True)` — the same call that starts the read-gated
+    clock. `_sweep` always runs BEFORE `mark_read` stamps a newly-terminal
+    row (see `list_jobs`'s own docstring), so the very read that first
+    reveals `state == "done"` cannot be the read that sweeps it away —
+    guaranteeing the poll gets at least one look at the finished row."""
+    jobs.upsert({"id": "sys:ai-model:x", "title": "a model", "state": "running"},
+                now=1000.0, server=True)
+    jobs.upsert({"id": "sys:ai-model:x", "state": "done", "quiet": True},
+                now=1000.0 + jobs.FINISHED_TTL_S + 1, server=True)
+
+    seen = read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)
+    assert [r for r in seen if r["id"] == "sys:ai-model:x"][0]["state"] == "done"
 
 
 def test_an_unread_done_row_outlives_the_unread_backstop_too():

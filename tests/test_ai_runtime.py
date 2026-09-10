@@ -2969,6 +2969,77 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
     assert described["totalResidentBytes"] == 1234
 
 
+def test_a_resident_load_reports_its_row_quiet(fake_runner):
+    """A resident load's own success report (`_bring_up`) sets `Job.quiet` —
+    the row it already showed as "loading" says nothing new by turning
+    "done", so the manager should draw no Notification for it."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "done"
+    assert row["quiet"] is True
+
+
+def test_a_weights_only_download_reports_its_row_NOT_quiet(fake_runner):
+    """`_fetch_only` (a download with no load to follow) is real news — the
+    row must still draw a Notification when it finishes."""
+    job = supervisor.JOB_PREFIX + "org-fetched"
+    jobs.upsert({"id": job, "title": "org/fetched", "kind": "download",
+                 "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/fetched", job)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "done"
+    assert row["quiet"] is False
+
+
+def test_a_weights_only_download_clears_quiet_EVEN_THOUGH_the_row_was_just_quiet(fake_runner):
+    """`_fetch_only`'s `job` is `job_id_for(model)` too — the exact row a
+    resident load of the SAME model already reported `quiet=True` through.
+    A download finishing afterwards must not inherit that stale flag."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["quiet"] is True
+
+    jobs.upsert({"id": job, "kind": "download", "state": "running"}, server=True)
+    supervisor._fetch_only(fake_runner, "org/small", job)
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["quiet"] is False, "the download's own report must not inherit the load's quiet flag"
+
+
+def test_an_unload_reports_its_row_NOT_quiet(fake_runner):
+    """An unload/eviction (`_remove`) is real news too — freeing a resident
+    model must still draw a Notification, not vanish quietly."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    worker = next(w for w in supervisor._workers.values() if w.model == "org/small")
+    supervisor._remove([worker], "evicted to free memory")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "done"
+    assert row["quiet"] is False
+
+
+def test_an_unload_clears_quiet_EVEN_THOUGH_the_row_was_just_quiet(fake_runner):
+    """`job_id_for(model)` is the SAME row a resident load's own success
+    report just set `quiet=True` on, and `Job.quiet` sticks in the registry
+    until a later report says otherwise — so `_remove` must restate
+    `quiet=False` rather than leaving the load's flag to leak into the
+    unload's own, unrelated, terminal report."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    job = supervisor.job_id_for("org/small")
+    before = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert before["quiet"] is True
+
+    worker = next(w for w in supervisor._workers.values() if w.model == "org/small")
+    supervisor._remove([worker], "evicted to free memory")
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["quiet"] is False, "the unload's own report must not inherit the load's quiet flag"
+
+
 def test_os_footprint_probe_returns_a_plausible_figure_or_none():
     """D597: the live figure's probe. Deliberately does NOT pin a byte count —
     it varies per machine and per moment — only that it answers with something

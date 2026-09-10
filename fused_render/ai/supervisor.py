@@ -1231,7 +1231,7 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                     # window between becoming ready and someone asking —
                     # which is exactly the window a slow bring-up ate.
                     worker.last_activity = time.monotonic()
-                    _report(job, state="done", detail="Model loaded")
+                    _report(job, state="done", detail="Model loaded", quiet=True)
                     return
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
@@ -1324,7 +1324,13 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
                 raise SupervisorError("cancelled")
             stderr = _tail(log)
             raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
-        _report(job, state="done", detail="Downloaded")
+        # `quiet=False` restated explicitly: `job` here is `job_id_for(model)`,
+        # the same row a RESIDENT load of this model reports through, and
+        # `Job.quiet` sticks until a report says otherwise (`upsert`'s
+        # `"quiet" in body` gate) — a weights-only download finishing is real
+        # news regardless of whatever this id's row said the last time it was
+        # a load's own success report.
+        _report(job, state="done", detail="Downloaded", quiet=False)
     except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
         message = _failure_text(e)
         _report(job, state="cancelled" if message == "cancelled" else "error",
@@ -1778,7 +1784,13 @@ def _remove(targets: list[Worker], reason: str) -> None:
     race: `_terminate`'s I/O and `_report`'s job-row write."""
     for worker in targets:
         _terminate(worker)
-        _report(job_id_for(worker.model), state="done", detail=reason)
+        # `quiet=False` restated explicitly, not left to default: this id is
+        # the same row `_bring_up`'s success report already set `quiet=True`
+        # on, and `Job.quiet` sticks until a later report says otherwise (see
+        # `upsert`'s `"quiet" in body` gate) — an unload freeing a resident
+        # model is real news and must draw a Notification, not inherit the
+        # load's own quiet flag.
+        _report(job_id_for(worker.model), state="done", detail=reason, quiet=False)
 
 
 def unload(model: str | None = None, capability: str | None = None,

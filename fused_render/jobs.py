@@ -309,6 +309,18 @@ class Job:
     # THEN fails is not left invisible — D266's guarantee that both rows can
     # show a real failure only holds if the merge does not outlive the wait.
     waiting_for: str = ""
+    # A terminal row with nothing to act on — the manager draws no
+    # Notification for it and it clears itself (`jobs.ts` `isQuietModelLoad`,
+    # `jobRows`). Set true ONLY by a resident model load's own success report
+    # (`ai/supervisor.py` `_bring_up`, via `job_id_for`): the load already
+    # showed itself as the "resident" row while running, so a second row
+    # announcing "loaded" says nothing a page or the sidebar hasn't already
+    # shown. A weights-only DOWNLOAD finishing, or a model being unloaded or
+    # evicted, both report through the same id family but are real news — a
+    # download just wrote bytes to disk, an unload just freed one — so
+    # neither sets this. SERVER-ONLY (see `upsert`'s `server` gate): a page
+    # could otherwise hide its own failed row by claiming it was quiet.
+    quiet: bool = False
 
 
 _lock = threading.Lock()
@@ -488,6 +500,13 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
             # would break the manager's lookup silently.
             value = body.get("waiting_for")
             job.waiting_for = clean_id(value) if value else ""
+        if "quiet" in body and server:
+            # Same gate as `waiting_for` above, and for the same reason: this
+            # field also hides a row, so only the server's own report may set
+            # it. A page report carrying it is silently dropped rather than
+            # rejected, matching the rest of this function's treatment of a
+            # server-only field.
+            job.quiet = bool(body.get("quiet"))
         if page:
             job.page = _page_text(page)
 
@@ -759,21 +778,25 @@ def _sweep(now: float) -> None:
     `cancelled` get the same unconditional exemption `error`/`WAITING`
     already had. `MAX_JOBS`'s cap (below) is what bounds all of them now.
 
-    **A `sys:schedule:*` row does NOT get this exemption, even though it is
-    terminal.** The exemption's whole premise is "a human still needs to SEE
-    this row, so do not sweep it out from under them" — but `jobRows`
-    (frontend) drops every `sys:schedule:*` id from what Activity draws, and
-    `ActivityDock.tsx` applies `jobRows` before `terminalJobs`, so a schedule
-    row never reaches Notifications either. No surface shows it and none can
-    dismiss it, so it has no claim on a "kept until dismissed" rule — kept
-    that way regardless, it is one permanent row per turn on a schedule (a
-    5-minute schedule saturates `MAX_JOBS` within hours, with only eviction
-    pressure to shed it). A schedule run already gets `schedule-toast.ts`'s
-    own toast and its own row on the Scheduled page, so nothing is lost by
-    letting the registry row age out on the ORIGINAL read-gated
+    **A `sys:schedule:*` row, or one with `job.quiet` set, does NOT get this
+    exemption, even though both are terminal.** The exemption's whole premise
+    is "a human still needs to SEE this row, so do not sweep it out from
+    under them" — but `jobRows` (frontend) drops every `sys:schedule:*` id,
+    and every `quiet` row, from what Activity draws, and `ActivityDock.tsx`
+    applies `jobRows` before `terminalJobs`, so neither ever reaches
+    Notifications. No surface shows either and none can dismiss them, so
+    neither has a claim on a "kept until dismissed" rule — kept that way
+    regardless, a schedule row is one permanent row per turn on a schedule (a
+    5-minute schedule saturates `MAX_JOBS` within hours), and a quiet row is
+    one permanent row per distinct model ever loaded, with only eviction
+    pressure to shed either. A schedule run already gets `schedule-toast.ts`'s
+    own toast and its own row on the Scheduled page, and a quiet model load
+    already showed itself as the "resident" row while it ran, so nothing is
+    lost by letting the registry row age out on the ORIGINAL read-gated
     `FINISHED_TTL_S` clock every terminal row had before D663 — the readers
-    that clock exists for (`fused.watchJob`, the Scheduled page's own poll)
-    are exactly the ones still reading this row.
+    that clock exists for (`fused.watchJob`, the Scheduled page's own poll,
+    `fused.ai.models.load(wait=True)`'s own poll) are exactly the ones still
+    reading these rows.
 
     `FINISHED_TTL_S`/`FINISHED_UNREAD_DROP_S`/`job.first_read_at` are left in
     place rather than deleted for this reason — `list_jobs`'s `mark_read`
@@ -804,11 +827,15 @@ def _sweep(now: float) -> None:
             # is still exactly as open as when it appeared.
             continue
         elif job.state in TERMINAL_STATES:
-            if job_id.startswith(SCHEDULE_JOB_PREFIX):
+            if job_id.startswith(SCHEDULE_JOB_PREFIX) or job.quiet:
                 # No surface shows this row or lets it be dismissed — see
                 # this function's own docstring — so it ages out on the
                 # ORIGINAL read-gated clock every terminal row had before
-                # D663, instead of the keep-until-dismissed rule below.
+                # D663, instead of the keep-until-dismissed rule below. A
+                # `quiet` row (Job.quiet's own comment) earns the same
+                # carve-out for the same reason: `jobRows` drops it from
+                # every surface that could show or dismiss it, so kept
+                # forever it is just one permanent row per distinct model.
                 if job.first_read_at is not None:
                     if (now - job.first_read_at) > FINISHED_TTL_S:
                         _forget(job_id, now)
