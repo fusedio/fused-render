@@ -40,14 +40,30 @@
     margin-bottom var(--dur-med) var(--ease-out);
 }
 
-.toast-slot > .toast,
+.toast-slot > .toast {
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* The job pop-up card (platform/ui/JobPopupCard.tsx) rides the same
    `.toast-slot` collapse — it renders `.dl-row` (NotificationCard's own root
-   class), not `.toast`, so it needs the identical min-height/overflow rule to
-   actually shrink rather than just clip visually as the grid track closes. */
+   class), not `.toast`, so it needs the same min-height/overflow rule to
+   actually shrink rather than just clip visually as the grid track closes.
+   Everywhere else `.dl-row` lives inside a `.dl-panel`, which is what
+   supplies its background/border/shadow/radius and its `toast-in` entrance —
+   a `.dl-row` floating alone in the notification column has no such
+   ancestor, so it gets its own copy of that same surface here rather than
+   rendering as bare, unboxed text over whatever the page underneath happens
+   to show. */
 .toast-slot > .dl-row {
   min-height: 0;
   overflow: hidden;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: toast-in var(--dur-med) var(--ease-out);
 }
 
 .toast-slot.leaving {
