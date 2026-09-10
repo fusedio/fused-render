@@ -169,6 +169,68 @@ def test_install_retry_allowed_from_error(monkeypatch):
     assert manager.status()["state"] == "installed"
 
 
+def test_install_rechecks_and_installs_a_version_published_since_the_last_check(monkeypatch):
+    """`_latest` is set by whichever periodic check last ran and can be up to
+    CHECK_INTERVAL_S (5 min) stale. If a newer release was published in that
+    window, install() must hand _install_dmg the fresh manifest, not the
+    cached one from the last check()."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+    versions = iter(["9.9.9", "9.9.10"])
+
+    def fetch(url, **kwargs):
+        return {"schema": 1, "version": next(versions), "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    manager.check()
+    assert manager.status()["latest_version"] == "9.9.9"
+
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.10"
+    assert manager.status()["latest_version"] == "9.9.10"
+
+
+def test_install_rechecks_even_when_the_next_auto_tick_is_long_overdue(monkeypatch):
+    """The app can sit open with nothing happening for a while (backgrounded,
+    machine asleep) between one check finding an update and the user actually
+    clicking Install — long enough that the 5-minute auto loop should have
+    ticked again but, for whatever reason, hasn't. install()'s recheck must
+    not depend on that next tick ever landing: it forces its own fetch, which
+    ignores both the "only recheck from idle" rule and the MIN_CHECK_GAP_S
+    throttle that a plain check() would respect."""
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method="dmg")
+    monkeypatch.setattr(mac, "__version__", "0.4.10")
+    versions = iter(["9.9.9", "9.9.10"])
+
+    def fetch(url, **kwargs):
+        return {"schema": 1, "version": next(versions), "url": "https://x/y.dmg",
+                "sha256": "s", "signature": "g"}
+
+    monkeypatch.setattr(common, "fetch_manifest", fetch)
+    manager.check()
+    assert manager.status()["latest_version"] == "9.9.9"
+    # No auto-tick has actually happened since — back-date the throttle clock
+    # well past both gaps so a non-forced check would have refused to fetch.
+    manager._last_check_at = time.monotonic() - 10 * common.CHECK_INTERVAL_S
+
+    done = []
+    monkeypatch.setattr(manager, "_install_dmg", lambda manifest: done.append(manifest))
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    assert done and done[0]["version"] == "9.9.10"
+
+
+def test_install_does_not_hit_the_network_when_there_is_nothing_to_install(monkeypatch):
+    """The re-check in install() is only worth it when an install might
+    actually proceed — an idle manager (no known update) must not fetch."""
+    manager = _manager(monkeypatch)  # no `available`: common.fetch_manifest is left unpatched
+    assert manager.install()["state"] == "idle"
+
+
 # ---- brew path: one install path, and never a brew command anywhere ----------
 
 

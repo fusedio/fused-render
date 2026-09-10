@@ -458,7 +458,22 @@ class UpdateManager:
     def install(self) -> dict:
         """Kick the install on a worker thread. One at a time; re-POSTing
         while installing just reports current state. Allowed from "available"
-        and from "error" (retry)."""
+        and from "error" (retry).
+
+        `_latest` can be up to CHECK_INTERVAL_S (5 min) stale — it was set by
+        whichever periodic check last ran, and a newer version can have been
+        published since. Force a fresh check first so an install always
+        starts from the actual latest manifest, not a cached one: a failed
+        fetch here falls back to the last known-good `_latest` (see check()),
+        so this never makes an install worse, only fresher when it can be.
+        Only worth the round trip when there is something to install at all —
+        skipped from "idle"/"checking"/"installing", which refuse below
+        regardless of what a re-check would say."""
+        with self._lock:
+            worth_rechecking = (self._latest is not None
+                               and self._state in ("available", "error"))
+        if worth_rechecking:
+            self.check(force=True)
         with self._lock:
             if self._state == "installing":
                 return self.status()
