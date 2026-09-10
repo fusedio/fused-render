@@ -465,11 +465,24 @@ export function SearchField({
             // present: this is the ONE place that index maps back to a row
             // to act on, matched by the ONE place the render below builds
             // the same mapping in the opposite direction.
+            //
+            // FINDING 1 (code review, 2026-09-10): Tab with NOTHING
+            // explicitly arrowed to must still complete the first REAL
+            // completion, not run the action row sitting at index 0 — a
+            // shell-completion Tab is a "finish typing this" gesture, and
+            // the action row is not text to finish typing into the field.
+            // Only when there IS no real completion to fall back to (the
+            // action row is the only row on offer) does an un-arrowed Tab
+            // still run it, matching what it already did before actions
+            // existed at all.
+            const tabDefaultIndex =
+              hasAction && completion.items.length > 0 ? actionRowCount : 0;
             const action = completionKeyAction(
               e.key,
               showCompletion,
               highlight,
               totalRows,
+              tabDefaultIndex,
             );
             if (action.type === "move") {
               e.preventDefault();

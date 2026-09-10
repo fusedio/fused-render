@@ -32,6 +32,24 @@ describe("completionKeyAction", () => {
     });
   });
 
+  // FINDING 1 (code review, 2026-09-10): a caller that folds a non-
+  // completion row (an action row) into row 0 of this same index space
+  // passes `tabDefaultIndex` so an un-arrowed Tab skips it and completes
+  // the first REAL row instead.
+  test("Tab with nothing highlighted targets the given default index, not always 0", () => {
+    expect(completionKeyAction("Tab", true, -1, 3, 1)).toEqual({
+      type: "tab-accept",
+      index: 1,
+    });
+  });
+
+  test("Tab still accepts an EXPLICITLY highlighted row 0, even with a non-zero default", () => {
+    expect(completionKeyAction("Tab", true, 0, 3, 1)).toEqual({
+      type: "tab-accept",
+      index: 0,
+    });
+  });
+
   test("Tab accepts the highlighted row when one is arrowed to", () => {
     expect(completionKeyAction("Tab", true, 1, 3)).toEqual({
       type: "tab-accept",

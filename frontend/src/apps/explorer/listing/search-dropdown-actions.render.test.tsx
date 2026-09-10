@@ -306,6 +306,31 @@ describe("arrow-key navigation across the action row", () => {
     const first = completionRows(renderer).find((r) => r.props["data-idx"] === 1)!;
     expect(rowText(first)).toContain("nopeish.csv");
   });
+
+  // FINDING 1 (code review, 2026-09-10): Tab, with NOTHING arrowed to yet,
+  // used to accept whatever sits at index 0 — the action row, once one
+  // exists — destroying the typed path instead of completing it. Tab must
+  // always complete the first REAL completion by default; the action row
+  // stays reachable only by explicitly arrowing to it (covered above).
+  test("an un-arrowed Tab completes the real folder match, never the action row sitting at index 0", async () => {
+    const renderer = mount("/home/iamsdas/notes.txt");
+    await flush(() => configReply.resolve({ home: "/home/iamsdas" }));
+    listDirEntries["/home/iamsdas/sub"] = [
+      { name: "nopeish.csv", is_dir: false, size: 10 },
+    ];
+    await focusAndType(renderer, "/home/iamsdas/sub/nope");
+
+    // Never arrowed — the default, resting highlight.
+    expect(completionRows(renderer).some((r) => r.props["aria-selected"] === true)).toBe(false);
+
+    await flush(() =>
+      input(renderer).props.onKeyDown({ key: "Tab", preventDefault: () => {} }),
+    );
+
+    // Tab wrote the real completion's path into the box, not the action
+    // row's basename rewrite ("nope").
+    expect(input(renderer).props.value).toBe("/home/iamsdas/sub/nopeish.csv");
+  });
 });
 
 describe("the search button (SPEC scope item 3, words-stay revision)", () => {
