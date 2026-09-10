@@ -223,14 +223,26 @@ export function effectiveTier(job: Job): JobTier {
 }
 
 /** Which jobs get a row of their own in Activity: every job the registry
- *  knows about, except one whose `effectiveTier` is "transient" — a
- *  scheduled run, a model load's own success, a finished index scan, a
- *  finished text generation, none of which leave anything to act on. Reading
+ *  knows about, except:
+ *  - a scheduled message's own row, in ANY state (D661: "a task is not
+ *    something I even want in the activity" — an explicit product decision,
+ *    not a consequence of its declared tier, so it is checked by id prefix
+ *    rather than by `effectiveTier` alone).
+ *  - a TERMINAL job whose `effectiveTier` is "transient" — a model load's
+ *    own success, a finished index scan, a finished text generation, none of
+ *    which leave anything to act on.
+ *  A transient row that is still `running` is otherwise unaffected — "shown
+ *  while running, never kept once terminal" is the tier's own documented
+ *  meaning (`JobTier` above), and a running index scan or text generation is
+ *  exactly what Activity's Cancel control needs to reach. Reading
  *  `effectiveTier` rather than the stored `tier` matters here: a producer
  *  that declared itself transient but ended in `error`/`cancelled` still
  *  gets a row, because the override already turned it into `attention`. */
 export function jobRows(jobs: Job[]): Job[] {
-  return jobs.filter((j) => effectiveTier(j) !== "transient");
+  return jobs.filter((j) => {
+    if (j.id.startsWith(SCHEDULE_JOB_PREFIX)) return false;
+    return !isTerminal(j) || effectiveTier(j) !== "transient";
+  });
 }
 
 export function mergedRows(jobs: Job[]): Job[] {

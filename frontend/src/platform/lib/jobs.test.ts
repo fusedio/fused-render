@@ -430,15 +430,25 @@ test("terminalNotifications leaves an ordinary terminal job alone", () => {
 
 // An index scan's own job (fused_render/server/routers/index.py's
 // mirror_index_jobs_once, "sys:index:<run_id>") stays a live Activity row
-// while running (default "trail" tier) — unlike a scheduled run's job,
-// which declares `tier: "transient"` on every tick (`schedule.py`'s
-// `_report`) and so `jobRows` drops it, even while running.
-test("an index scan's job is not caught by the transient filter a scheduled run's job is", () => {
+// while running (default "trail" tier) — unlike a scheduled run's job
+// (`SCHEDULE_JOB_PREFIX`), which `jobRows` excludes in every state (D661: a
+// scheduled message's own row is never Activity's business, regardless of
+// what its declared tier would otherwise say).
+test("an index scan's job is not caught by the exclusion a scheduled run's job is", () => {
   const jobs = [
     job({ id: "sys:index:20260907-1200-ab12", state: "running" }),
     job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "running", tier: "transient" }),
   ];
   expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:index:20260907-1200-ab12"]);
+});
+
+test("a scheduled run's job is excluded from Activity in every state, not only while transient-and-terminal", () => {
+  const jobs = [
+    job({ id: `${SCHEDULE_JOB_PREFIX}e1`, state: "running", tier: "transient" }),
+    job({ id: `${SCHEDULE_JOB_PREFIX}e2`, state: "done", tier: "transient" }),
+    job({ id: `${SCHEDULE_JOB_PREFIX}e3`, state: "error", tier: "transient" }),
+  ];
+  expect(jobRows(jobs)).toEqual([]);
 });
 
 // A model load's own row (fused_render/ai/supervisor.py, "sys:ai-model:<repo>")
@@ -458,6 +468,24 @@ test("a model load's row disappears from Notifications once it succeeds", () => 
 test("a model load's row still shows while it is running", () => {
   const jobs = [job({ id: "sys:ai-model:org/fake-model", state: "running" })];
   expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:ai-model:org/fake-model"]);
+});
+
+// The tier's own documented meaning is "shown while running, never kept
+// once terminal" — a transient row that HAS NOT reached a terminal state
+// yet must still show, Cancel included. Every fixture above that exercises
+// a running transient row leaves `tier` at its "trail" default (`job()`'s
+// own default), which is why a `jobRows` that filtered transient
+// unconditionally still passed them all: an index scan's running row, a
+// scheduled run's running row, and this one all need `tier: "transient"`
+// stated explicitly, in the running state, to close that gap.
+test("a running index scan stays visible even when it declares transient — a running row is never filtered, only a terminal one", () => {
+  const jobs = [job({ id: "sys:index:20260907-1200-ab12", state: "running", tier: "transient" })];
+  expect(jobRows(jobs).map((j) => j.id)).toEqual(["sys:index:20260907-1200-ab12"]);
+});
+
+test("a running text generation stays visible even when it declares transient", () => {
+  const jobs = [job({ id: "ai-text:1", state: "running", tier: "transient" })];
+  expect(jobRows(jobs).map((j) => j.id)).toEqual(["ai-text:1"]);
 });
 
 // `effectiveTier`'s override: a load that declares itself transient but
