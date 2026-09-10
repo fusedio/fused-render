@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
+import { isPristineQuery, isUntouchedCwdQuery } from "@apps/explorer/listing/query-pristine";
 
 const FS_PATH = "/Users/iamsdas";
 const HOME = "/Users/iamsdas/../iamsdas".replace("/../iamsdas", ""); // "/Users/iamsdas" — same as FS_PATH, spelled independently
@@ -40,5 +40,38 @@ describe("isPristineQuery", () => {
   test("a real search query is edited", () => {
     expect(isPristineQuery("report", FS_PATH, HOME)).toBe(false);
     expect(isPristineQuery("/Users/iamsdas/*.csv", FS_PATH, HOME)).toBe(false);
+  });
+});
+
+describe("isUntouchedCwdQuery", () => {
+  test("the exact pre-filled absolute path is untouched", () => {
+    expect(isUntouchedCwdQuery("/Users/iamsdas", FS_PATH, undefined)).toBe(true);
+  });
+
+  test("the ~-contracted form the box would actually pre-fill under home is also untouched", () => {
+    expect(isUntouchedCwdQuery("~/work", "/Users/iamsdas/work", HOME)).toBe(true);
+  });
+
+  test("empty is NOT untouched — unlike isPristineQuery, an emptied box is an edit", () => {
+    expect(isUntouchedCwdQuery("", FS_PATH, HOME)).toBe(false);
+    expect(isUntouchedCwdQuery("   ", FS_PATH, HOME)).toBe(false);
+  });
+
+  test("a trailing slash is NOT tolerated — unlike isPristineQuery, that's the first keystroke this must catch", () => {
+    expect(isUntouchedCwdQuery("/Users/iamsdas/", FS_PATH, undefined)).toBe(false);
+  });
+
+  test("surrounding whitespace is NOT tolerated — a bare space is a keystroke", () => {
+    expect(isUntouchedCwdQuery("/Users/iamsdas ", FS_PATH, undefined)).toBe(false);
+    expect(isUntouchedCwdQuery(" /Users/iamsdas", FS_PATH, undefined)).toBe(false);
+  });
+
+  test("a same-prefix but different folder is not untouched", () => {
+    expect(isUntouchedCwdQuery("/Users/iamsdas2", FS_PATH, undefined)).toBe(false);
+  });
+
+  test("a real search query is not untouched", () => {
+    expect(isUntouchedCwdQuery("report", FS_PATH, HOME)).toBe(false);
+    expect(isUntouchedCwdQuery("/Users/iamsdas/*.csv", FS_PATH, HOME)).toBe(false);
   });
 });

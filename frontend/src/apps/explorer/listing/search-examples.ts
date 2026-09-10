@@ -29,24 +29,35 @@
 // test elsewhere in this repo would not show up in `bun test` staying
 // green.
 //
-// `showSearchExamples` below is UNCHANGED by this — it decides WHEN the
-// panel appears (pristine + focused), not what it contains, and the
-// pristine-wins-over-completions precedence it is part of is not
-// re-litigated here.
+// `showSearchExamples` below is UNCHANGED IN SHAPE by this (still `active &&
+// <gate>`), but the gate it's handed is no longer `pristine`
+// (query-pristine.ts's `isPristineQuery`, which also treats an empty box
+// and a trailing-slash-decorated one as pristine). The user's own follow-up
+// request (2026-09-10) is narrower than that: the panel is teaching about
+// THE CWD specifically, so it must show only while the box still holds that
+// untouched value and vanish on the very first keystroke — a bare space, a
+// trailing "/", anything. SearchField.tsx now passes `isUntouchedCwdQuery`
+// (query-pristine.ts) here instead — see that file's own comment for why
+// there are two predicates rather than one. The parameter below stays
+// generic (`untouchedCwd`, not `pristine`) precisely so this function
+// doesn't silently claim a stake in which one is correct; it only decides
+// WHEN the panel appears given whatever the caller decides "untouched"
+// means, not what it contains.
 
 /** Whether the examples panel should occupy the dropdown's surface.
  *
- * A pristine query resolves to a real, existing folder, so the completion
- * dropdown could legitimately have something to show for it too — but
- * that folder's own children are already listed in the rows directly
+ * An untouched-cwd query resolves to a real, existing folder, so the
+ * completion dropdown could legitimately have something to show for it too
+ * — but that folder's own children are already listed in the rows directly
  * below, so duplicating that listing while teaching nothing is the worse
- * trade: PRISTINE WINS the surface over completions now, the opposite of
- * the old empty-query precedence (decided deliberately — do not
+ * trade: the untouched cwd WINS the surface over completions, the opposite
+ * of the old empty-query precedence (decided deliberately — do not
  * re-litigate). This function only ever answers for ITS OWN side of that
- * trade; the other half — completions never showing while pristine — is
- * SearchField.tsx's own `showCompletion` computation excluding `pristine`
+ * trade; the other half — completions never showing over an untouched cwd —
+ * is SearchField.tsx's own `showCompletion` computation excluding
+ * `pristine` (the broader predicate, on purpose — see query-pristine.ts)
  * before this function is ever asked, which is what keeps the two from
  * ever both being true rather than this function guessing at it. */
-export function showSearchExamples(fieldActive: boolean, pristine: boolean): boolean {
-  return fieldActive && pristine;
+export function showSearchExamples(fieldActive: boolean, untouchedCwd: boolean): boolean {
+  return fieldActive && untouchedCwd;
 }

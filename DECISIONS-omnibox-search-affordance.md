@@ -838,3 +838,87 @@ hits, nothing else to update.
   new stop point);
 - both themes and the hover state of the star sitting that much closer to
   the crumbs text now that they no longer overlap.
+
+## The teaching panel must vanish on the first keystroke (2026-09-10)
+
+**The request**: "the 'type any text' stuff should only be shown for the
+cwd. remove it as soon as the user starts typing" — the three-sentence
+teaching panel (`showSearchExamples`) must gate on "the box still holds the
+untouched, pre-filled cwd," not the broader `isPristineQuery`.
+
+**Why `isPristineQuery` was the wrong gate for the panel specifically**: it
+returns `true` for two shapes the panel must NOT stay up through —
+
+1. An empty query (`trimmed === "" → true`). Deleting the box down to
+   nothing is not "the cwd."
+2. The cwd plus a trailing slash, and anything with leading/trailing
+   whitespace, because it `.trim()`s and strips ONE trailing slash from
+   both sides before comparing. Typing `/` after a pre-filled path (the
+   single most natural first keystroke when extending it) left the panel
+   up through that keystroke.
+
+**Why `isPristineQuery` itself was left untouched**: it has other
+consumers, and each one genuinely wants the broader, tolerant notion:
+
+- `search-action-rows.ts`'s `searchAffordance` — `if (pristine) return
+  NOTHING` (its very first check) must still swallow an empty query (its
+  own second check, `trimmed === ""`, is a redundant safety net for the
+  same case, not the primary guard — narrowing `pristine` here would still
+  be caught by that second line, but there was no reason to touch a
+  consumer that already works and isn't the one with the bug).
+- `SearchField.tsx`'s `showCompletion` exclusion (`!pristine`) — must keep
+  excluding an empty box from ever offering folder completions.
+- `FileSearchField.tsx:119`'s `if (isPristineQuery(q, parentPath, home))
+  return;` — the navigation-hand-off guard. Must still treat an emptied
+  box, and a manually-trailing-slashed re-typing of the parent path, as "no
+  real edit yet," or focusing/clearing the box would trigger a premature
+  hand-off to the parent folder. Confirmed this is unaffected: this call
+  site was never touched.
+
+**What changed instead**: a second, narrower predicate,
+`isUntouchedCwdQuery(query, fsPath, home)` (query-pristine.ts) — exact
+string equality against `fsPath` or `contractHome(fsPath, home)`, no empty
+case, no trailing-slash tolerance, no trim. `SearchField.tsx` now computes
+`untouchedCwd = isUntouchedCwdQuery(query, fsPath, home)` and passes THAT
+(not `pristine`) into `showSearchExamples`. `showSearchExamples`'s
+parameter was renamed `pristine` → `untouchedCwd` so the function's own
+signature doesn't quietly imply it still means the old thing.
+
+**Live `query`, not deferred `q`**: every other `isPristineQuery` call in
+this file reads the deferred `q` (Finding 5's fix, to stay in step with
+`escapes`/`awaitingCommit`, which are also computed off `q`). The panel has
+no such deferred sibling to stay in step with — its whole job now is to
+react on the keystroke ITSELF, so `untouchedCwd` reads the live `query`
+prop (updated synchronously by the input's own `onChange`), not `q`. Using
+`q` here would have reintroduced exactly the kind of one-render lag the
+user's bug report was about.
+
+**query-pristine.ts's file comment** was rewritten to explain both
+predicates and why there are two — see the file itself; not duplicating
+that explanation here.
+
+**Verification**: `bun run build` and `bun run typecheck` both clean (the
+`*/`-in-a-CSS-comment lesson from earlier this session was CSS-only and
+doesn't apply to this change — no CSS touched). Ran in isolation:
+`query-pristine.test.ts` (14 pass, including 7 new tests for
+`isUntouchedCwdQuery` covering the empty/trailing-slash/whitespace cases
+`isPristineQuery` tolerates and this predicate must not),
+`search-examples.test.ts` (3 pass, untouched — its tests pass raw booleans
+and don't encode which predicate produces them), `search-action-rows.test.ts`
+(17 pass, untouched — `searchAffordance`'s own pristine-consumer behavior
+is unaffected), `search-dropdown-actions.render.test.tsx` (14 pass),
+`FileSearchField.render.test.tsx` (4 pass). Grepped `tests/` (the Python
+suite) for `isPristineQuery`, `isUntouchedCwdQuery`, `showSearchExamples`,
+`query-pristine`, `search-examples` — no hits, nothing there asserts on
+these symbols or files.
+
+**Confirmed NOT regressed**: an empty box still does not run a search or
+offer to search (that's `isPristineQuery`'s job, untouched, in
+`searchAffordance` and `showCompletion`); `FileSearchField.tsx`'s
+navigation-hand-off guard is untouched and still reads the broader
+`isPristineQuery` off `q`.
+
+**Cannot be verified headlessly** — a human needs a running screen to
+confirm: the panel is up on focus over an untouched, pre-filled folder, and
+disappears the INSTANT a key lands — including when that key is `/`
+appended to the end of the pre-filled path, or a bare space.

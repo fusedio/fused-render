@@ -43,7 +43,7 @@ import { completionKeyAction, moveHighlight } from "@apps/explorer/listing/compl
 import { isExactSingleMatch } from "@apps/explorer/listing/completion-target";
 import { searchAffordance, type SearchActionRow } from "@apps/explorer/listing/search-action-rows";
 import { resolveFolderToOpen } from "@apps/explorer/listing/enter-prompt";
-import { isPristineQuery } from "@apps/explorer/listing/query-pristine";
+import { isPristineQuery, isUntouchedCwdQuery } from "@apps/explorer/listing/query-pristine";
 import { contractHome } from "@apps/explorer/listing/home-path";
 import { useWidthThresholdRef } from "@apps/explorer/listing/search-hint-width";
 import { showSearchExamples } from "@apps/explorer/listing/search-examples";
@@ -294,9 +294,14 @@ export function SearchField({
   // the box pre-filled itself with on focus (`onFocus` below,
   // `contractHome(fsPath, home)`) — query-pristine.ts's `isPristineQuery`.
   // Nothing has been TYPED in either case, even though the box's own value
-  // is non-empty in the second — the distinction both the examples panel
-  // and `searchAffordance` below need (SPEC-omnibox-search-affordance.md
-  // correction, 2026-09-10).
+  // is non-empty in the second — the distinction `searchAffordance` below
+  // and the completion exclusion need (SPEC-omnibox-search-affordance.md
+  // correction, 2026-09-10). This is the SEARCH-GATING notion of
+  // "untouched" (tolerant of an empty box, a trailing slash, surrounding
+  // whitespace) — the teaching panel below uses a DIFFERENT, narrower one
+  // (`untouchedCwd`, `isUntouchedCwdQuery`) that has to vanish on the very
+  // first keystroke; see query-pristine.ts's own comment for why the two
+  // don't share one predicate.
   //
   // FINDING 5 (code review, 2026-09-10): checked against `q` (the deferred,
   // trimmed value), not the live `query` above — the same reasoning
@@ -419,7 +424,19 @@ export function SearchField({
   // itself (and the pristine-wins-over-completions precedence above) is
   // UNCHANGED — this changes what the panel CONTAINS (prose, not derived
   // example rows), not when it appears.
-  const showExamples = showSearchExamples(fieldActive, pristine);
+  //
+  // The user's own follow-up request (2026-09-10): the panel is only ever
+  // "the cwd's own teaching moment" — it must vanish on the FIRST keystroke
+  // of any kind, including one that only appends a "/" to the pre-filled
+  // path or lands a bare space. `pristine` above is the WRONG gate for
+  // that: it tolerates a trailing slash and treats an emptied box as
+  // pristine too, both of which kept this panel up past the first
+  // keystroke. `isUntouchedCwdQuery` (query-pristine.ts) is the narrower,
+  // byte-exact predicate built for exactly this gate — and it reads the
+  // LIVE `query`, not the deferred `q` above, because the panel has to
+  // react on the keystroke itself, not one render later.
+  const untouchedCwd = isUntouchedCwdQuery(query, fsPath, home);
+  const showExamples = showSearchExamples(fieldActive, untouchedCwd);
   // The action row, when present, is always the FIRST row (index 0) — the
   // folder completions that follow it shift up by exactly this many slots.
   // One number, read everywhere an index has to cross that boundary, so the
