@@ -1,0 +1,587 @@
+/* The landing page: title, big composer card and the three cross-session
+   lists. Values verbatim from T:3239-3360 (home + lists) and T:3577-3700
+   (rows + skeletons), read through chat.css's `--c-*` aliases. */
+
+/* ---- landing (T:3239-3296) --------------------------------------------- */
+/* The landing view is a COLUMN of two rows: the control strip, then the
+   scrolling column. T's `#home` is only the second of those — the first is
+   `#anntools`, a real layout row above both views (T:3926-3931) — and that row
+   is why the template's title sits ~40px lower than ours did with the ⋮
+   floated over the page (Akshil, 2026-09-08, #4). */
+.c-home {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* A SIZE CONTAINER so the column below can measure its 14% against THIS BOX
+     and not against the window. T's 14vh was read inside an iframe whose
+     viewport WAS the pane, so `vh` and "pane height" were the same number
+     there; native draws in the top-level document, where 14vh is 14% of the
+     whole window and the landing sat ~10-40px too low or too high depending on
+     the pane (Akshil, 2026-09-08, #4). `cqh` is the same measurement T made,
+     spelled for a pane that is not a viewport — a relative unit, not a
+     breakpoint. */
+  container-type: size;
+}
+/* The strip, sized to `#anntools` (T:163-172) so the two views' first rows are
+   the same height and nothing shifts on entering a chat. */
+/* The control row's ONE auto margin: everything before it sits left, everything
+   after rides the right-hand end with it (T:255-262). The landing's own copy of
+   that row is gone (P2-1) — it is `.c-anntools`, above both views — and this
+   stays because the strip is what reads it. */
+.c-hdr-slack {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* T's `#home` itself: the scrolling column, centred, dropped 14vh. */
+.c-home-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* `vh` as the fallback for a browser without container queries: it is what
+     this was, and it is right whenever the pane fills the window. */
+  padding-top: 14vh;
+  padding-top: 14cqh;
+}
+/* One 32px here, one margin per block below — the landing used to end each
+   section in its own padding, which added itself to the next one's margin for
+   a 60px gutter that read as three unrelated screens stacked (T:3245-3252). */
+.c-home-inner {
+  width: 100%;
+  max-width: 620px;
+  padding: 0 24px 32px;
+}
+.c-home-title {
+  font-size: 26px;
+  /* These names are paths and slugs with no spaces in them; without this one
+     unbroken name overflows the column instead of wrapping inside it. */
+  overflow-wrap: anywhere;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--c-fg-strong);
+  text-align: center;
+  margin-bottom: 4px;
+}
+/* The steps are the STYLESHEET's; fitHomeTitle only decides WHICH. Two and not
+   a continuum because a headline has a small number of sizes it can be and
+   still look chosen (T:3277-3286). */
+.c-home-title.c-t-mid {
+  font-size: 21px;
+}
+.c-home-title.c-t-min {
+  font-size: 17px;
+}
+.c-home-title .c-spark {
+  color: var(--c-accent);
+  margin-right: 10px;
+  font-weight: 400;
+}
+/* The Claude mark, wherever it stands in for the old `✻`: sized off the type it
+   sits in (that is what made the character a drop-in), and nudged onto the
+   baseline the way a glyph would be rather than sitting on the line box. */
+.c-claudemark {
+  flex-shrink: 0;
+  vertical-align: -0.12em;
+}
+.c-home-sub {
+  color: var(--c-faint);
+  font-size: 12.5px;
+  text-align: center;
+  margin-bottom: 28px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- the three lists and the bar over them (T:3305-3360) --------------- */
+.c-lists {
+  margin-top: 28px;
+}
+.c-listtabs {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+/* The same micro-type as every section heading, so switching lists never
+   changes the shape of the screen; the only mark on the active one is ink plus
+   a hairline (T:3318-3337). No count on any tab (Akshil, 2026-08-24). */
+.c-list-tab {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--c-faint);
+  background: none;
+  border: 0;
+  border-bottom: 1.5px solid transparent;
+  border-radius: 0;
+  padding: 0 0 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.c-list-tab:hover {
+  color: var(--c-fg);
+}
+.c-list-tab[aria-selected="true"] {
+  color: var(--c-fg);
+  border-bottom-color: var(--c-accent);
+}
+.c-list-tab:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+/* In the tabbed dress the bar already says the active list's name, so the
+   section's own heading would say it twice — but the snapshots line is also
+   where the retry sits, so what goes is the LABEL, not the row (T:3348-3350). */
+.c-lists.is-tabbed .c-head-label {
+  display: none;
+}
+.c-lists.is-tabbed .c-head:empty,
+.c-lists.is-tabbed .c-head:not(:has(> *:not(.c-head-label))) {
+  display: none;
+}
+.c-lists.is-tabbed .c-list-panel {
+  margin-top: 0;
+}
+.c-head {
+  color: var(--c-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  padding: 0 4px;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.c-head-count {
+  font-weight: 400;
+  letter-spacing: 0;
+}
+/* A list with nothing in it draws no heading, no empty state and no error —
+   the count is what hides the section (T:18452-18477). This placeholder is
+   PR4's seat for Artifacts / Snapshots, which have real loaders there. */
+.c-list-empty {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--c-faint);
+}
+
+/* ---- one past chat (T:3577-3661) --------------------------------------- */
+.c-chat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  background: transparent;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.c-chat-row:hover {
+  background: var(--c-surface);
+  border-color: var(--c-border-strong);
+}
+.c-chat-row:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+.c-chat-row .c-dot {
+  color: var(--c-accent);
+  flex-shrink: 0;
+  font-size: 10px;
+}
+.c-row-title {
+  color: var(--c-fg);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.c-row-sub {
+  color: var(--c-faint);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+/* The time NEVER LEAVES. At rest a row about another file shows the icon alone
+   beside it; on hover the name opens out BETWEEN them, and the title
+   ellipsises to pay for it. Animated on `max-width` — the same box the text
+   already lives in — so the row opens smoothly and the time is carried, never
+   covered (T:3600-3661). */
+.c-row-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  max-width: 60%;
+}
+.c-row-fileic {
+  display: none;
+  flex: 0 0 auto;
+  color: var(--c-faint);
+  line-height: 0;
+}
+.c-chat-row.has-pane .c-row-fileic {
+  display: block;
+}
+.c-row-file {
+  color: var(--c-faint);
+  font-size: 12px;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c-chat-row.has-pane .c-row-file {
+  transition:
+    max-width 0.2s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.14s ease;
+}
+.c-chat-row.has-pane:hover .c-row-file,
+.c-chat-row.has-pane:focus-visible .c-row-file {
+  max-width: 180px;
+  opacity: 1;
+  transition:
+    max-width 0.24s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.2s ease 0.06s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-chat-row.has-pane .c-row-file,
+  .c-chat-row.has-pane:hover .c-row-file,
+  .c-chat-row.has-pane:focus-visible .c-row-file {
+    transition: none;
+  }
+}
+
+/* ---- skeletons (T:3665-3700) ------------------------------------------- */
+.c-skel-bar {
+  height: 11px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--c-surface) 25%,
+    var(--c-border) 50%,
+    var(--c-surface) 75%
+  );
+  background-size: 200% 100%;
+  animation: c-skel-shimmer 1.2s ease-in-out infinite;
+}
+@keyframes c-skel-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .c-skel-bar {
+    animation: none;
+  }
+}
+.c-skel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  margin-bottom: 8px;
+}
+.c-skel-row .c-skel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c-border);
+  flex-shrink: 0;
+}
+.c-skel-row .c-skel-bar.is-title {
+  flex: 1;
+}
+.c-skel-row .c-skel-bar.is-sub {
+  width: 42px;
+  flex-shrink: 0;
+}
+
+/* ---- artifacts: the pages Claude PUBLISHED from here (T:3541-3576) ------
+   The same quiet uppercase label over the same bordered pressable rows as
+   Recent and Snapshots, because it answers the same shape of question and a
+   fourth visual idiom on one screen would only make the other three look
+   accidental. */
+.c-art-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+  background: transparent;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.c-art-row:hover {
+  background: var(--c-surface);
+  border-color: var(--c-border-strong);
+}
+.c-art-row:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: -2px;
+}
+/* The favicon the author chose, sized to sit on the text baseline without
+   stretching the line. */
+.c-art-ic {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+}
+.c-art-title {
+  color: var(--c-fg);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c-art-when {
+  color: var(--c-faint);
+  flex-shrink: 0;
+}
+/* The hosted-page opener reads as a small BUTTON, not a bare glyph: it is the
+   one control on the row that leaves the app, so it gets a bordered hit
+   target (T:3567-3574). */
+.c-art-go {
+  color: var(--c-faint);
+  flex-shrink: 0;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+}
+.c-art-go svg {
+  display: block;
+}
+.c-art-go:hover {
+  color: var(--c-link);
+  border-color: var(--c-link);
+}
+
+/* ---- Claude snapshots: the file-history chain (T:3363-3540) -------------
+   Same visual family as .c-chat-row — another "list of past things about this
+   target" on the same landing page — and like those rows it is pressable: a
+   row expands to its diff and the one action that goes back to it. */
+
+/* Only ever present after a failed read: it IS the retry, so it reads as a
+   control beside the label rather than as part of its type (T:3396-3405). */
+.c-snapsretry {
+  margin-left: auto;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--c-faint);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.c-snapsretry:hover {
+  color: var(--c-fg);
+}
+/* ONE RUN of checkpoints from one chat. The rule down the left is the whole
+   point of the box: it says "these numbers belong together", which is what
+   makes a v2 under one heading and a v2 under another stop reading as the same
+   row twice (T:3413-3421). */
+.c-snap-runbox {
+  border-left: 1px solid var(--c-border);
+  padding-left: 10px;
+  margin-bottom: 14px;
+}
+.c-snap-runbox:last-child {
+  margin-bottom: 0;
+}
+/* NOT the section's uppercase micro-type: that is reserved for the panel's one
+   heading, and a second tier wearing it would compete with it (T:3423-3428). */
+.c-snap-run {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 4px 5px;
+  font-size: 11.5px;
+}
+.c-snap-run-name {
+  color: var(--c-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c-snap-run-sub {
+  color: var(--c-faint);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.c-snap-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--c-border);
+  border-radius: 12px;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.c-snap-row:hover {
+  background: var(--c-surface);
+}
+.c-snap-row:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: -2px;
+}
+/* The dot answers exactly ONE question — where is disk right now — rather than
+   competing with a second marker for the same column (T:3453-3457). */
+.c-snap-dot {
+  color: var(--c-faint);
+  flex-shrink: 0;
+  font-size: 10px;
+}
+.c-snap-row.is-here {
+  border-color: var(--c-border-strong);
+}
+.c-snap-row.is-here .c-snap-dot {
+  color: var(--c-accent);
+}
+.c-snap-v {
+  color: var(--c-fg);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.c-snap-when {
+  color: var(--c-faint);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c-snap-d {
+  color: var(--c-faint);
+  flex-shrink: 0;
+}
+.c-snap-plus {
+  color: var(--c-accent);
+}
+.c-snap-minus {
+  color: var(--c-faint);
+}
+.c-snap-caret {
+  color: var(--c-faint);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+/* An open row and its body are ONE box: the expansion is part of the row it
+   belongs to, not a panel floating under the list (T:3469-3481). */
+.c-snap-item {
+  margin-bottom: 6px;
+}
+.c-snap-item .c-snap-row {
+  margin-bottom: 0;
+}
+.c-snap-row.is-open {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: transparent;
+}
+.c-snap-body {
+  border: 1px solid var(--c-border);
+  border-top: none;
+  border-radius: 0 0 12px 12px;
+  padding: 10px 14px 12px;
+  font-size: 12px;
+}
+.c-snap-row.is-open + .c-snap-body {
+  border-color: var(--c-border-strong);
+}
+.c-snap-diff {
+  background: var(--c-pre-bg);
+  color: var(--c-pre-fg);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0 0 10px;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre;
+}
+.c-snap-diff .c-dl-add {
+  color: var(--c-ok);
+}
+.c-snap-diff .c-dl-del {
+  color: var(--c-error);
+}
+.c-snap-diff .c-dl-hunk {
+  color: var(--c-link);
+}
+.c-snap-diff .c-dl-head {
+  color: var(--c-faint);
+}
+.c-snap-act {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.c-snap-ask {
+  color: var(--c-fg);
+}
+.c-snap-go,
+.c-snap-no {
+  font: inherit;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--c-border-strong);
+  background: var(--c-surface);
+  color: var(--c-fg);
+  cursor: pointer;
+}
+.c-snap-go {
+  border-color: var(--c-accent);
+  color: var(--c-accent);
+}
+.c-snap-go:hover,
+.c-snap-no:hover {
+  background: var(--c-surface-2);
+}
+.c-snap-note {
+  color: var(--c-faint);
+  flex-basis: 100%;
+}
+.c-snap-err {
+  color: var(--c-error);
+}
+.c-snapsnote {
+  color: var(--c-faint);
+  font-size: 11.5px;
+  padding: 4px;
+}

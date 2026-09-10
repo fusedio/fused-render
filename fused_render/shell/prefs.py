@@ -164,6 +164,46 @@ def canvases_enabled() -> bool:
     return read_prefs().get("canvases_enabled") is True
 
 
+NATIVE_CHAT_ENV = "FUSED_RENDER_NATIVE_CHAT"
+
+
+def native_chat_enabled() -> bool:
+    """Whether chat embeds render the native React chat instead of the legacy
+    `templates/claude` iframe (default off — opt-in while the port is in beta).
+
+    Same idiom as `canvases_enabled`: only a stored `true` is on, any other
+    value (missing/legacy/junk) reads as off. `FUSED_RENDER_NATIVE_CHAT=1|0` is
+    the process-level override that BEATS the pref, so a dev server or a test
+    run can pick a side without touching prefs.json; any other env value is
+    ignored and the pref decides.
+
+    DELIBERATELY STRICTER than `prefetch.py`/`rcd.py`'s any-non-"0" idiom, and
+    pinned by `test_native_chat_env_override_beats_pref`: this switch decides
+    which of two whole implementations a user's chat runs on, so a typo
+    ("FUSED_RENDER_NATIVE_CHAT=ture") has to fall through to the stored pref
+    rather than silently move them onto the beta. An ignored value is ignored
+    all the way through: `_chat_forced_by` reports it as no override at all,
+    because the stored switch really is still what decides.
+    """
+    raw = os.environ.get(NATIVE_CHAT_ENV)
+    if raw == "1":
+        return True
+    if raw == "0":
+        return False
+    return read_prefs().get("native_chat_enabled") is True
+
+
+def _chat_forced_by() -> str | None:
+    """The env string where it DECIDES `native_chat_enabled`, else `None`.
+
+    Only "1"/"0" beat the pref, so only those are an override; a missing var and
+    a malformed one ("ture") are alike here, because in both cases the stored
+    switch is what the value came from and the Preferences control is live.
+    """
+    raw = os.environ.get(NATIVE_CHAT_ENV)
+    return raw if raw in ("0", "1") else None
+
+
 def lan_enabled() -> bool:
     """Whether the user's apps (everything under ~/Fused plus linked folders)
     are shared with the local network (default off — opt-in). The switch
@@ -439,6 +479,25 @@ def _prefs_response() -> dict:
         # its Settings menu entry (opt-in, D427). Not a route guard; see
         # `canvases_enabled`.
         "canvases": {"enabled": canvases_enabled()},
+        # Whether chat embeds render the native React chat (beta) instead of the
+        # legacy template iframe. The EFFECTIVE value, plus `forced_by` — the
+        # same shape `engine_state()` above uses for the same problem: with the
+        # env override in force the stored switch cannot win, and a checkbox
+        # bound to the effective value alone is a control that silently snaps
+        # back.
+        #
+        # `forced_by` IS EXACTLY "WHAT IS DECIDING THIS VALUE", and so it is the
+        # env string only where that string decides: `None` when the var is
+        # unset AND when it holds anything other than "1"/"0", because
+        # `native_chat_enabled` ignores such a value outright and the stored
+        # switch is then still the thing in charge. Reporting a malformed
+        # `FUSED_RENDER_NATIVE_CHAT=ture` here would disable a switch that does
+        # in fact work and blame an override that is not in force — a worse lie
+        # than saying nothing.
+        "chat": {
+            "native": native_chat_enabled(),
+            "forced_by": _chat_forced_by(),
+        },
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -598,6 +657,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'canvases_enabled' must be a boolean"}, status_code=400)
         prefs["canvases_enabled"] = value
         changed = True
+    if "native_chat_enabled" in body:
+        value = body.get("native_chat_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'native_chat_enabled' must be a boolean"}, status_code=400)
+        prefs["native_chat_enabled"] = value
+        changed = True
     if "lan_enabled" in body:
         value = body.get("lan_enabled")
         if not isinstance(value, bool):
@@ -699,7 +764,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'engines', 'reader_enabled', 'canvases_enabled', 'lan_enabled', "
+                      "'engines', 'reader_enabled', 'canvases_enabled', 'native_chat_enabled', "
+                      "'lan_enabled', "
                       "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
                       "'calls_enabled', "
                       "'calls_params', 'calls_retention_days' and/or "

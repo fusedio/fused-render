@@ -19,6 +19,38 @@ export function installDomShim(): void {
     location?: unknown;
     history?: unknown;
     window?: unknown;
+    Element?: unknown;
+    HTMLElement?: unknown;
+    requestAnimationFrame?: unknown;
+    cancelAnimationFrame?: unknown;
+    document?: unknown;
+  };
+  // React 19's `act` reads `HTMLElement` while it flushes, so a component suite
+  // driven by `react-test-renderer` throws before its own assertions run — with
+  // a ReferenceError from inside React, which says nothing about the test. A
+  // constructor nothing is ever instanceof is enough: the renderer builds plain
+  // objects, so the class only has to EXIST.
+  g.Element ??= class Element {};
+  g.HTMLElement ??= class HTMLElement extends (g.Element as new () => object) {};
+  // Base UI schedules its transition bookkeeping on a frame. There are no frames
+  // here, so the next macrotask is the honest stand-in: the callback runs, once,
+  // and `act` can flush it.
+  g.requestAnimationFrame ??= (cb: (t: number) => void) =>
+    globalThis.setTimeout(() => cb(0), 0) as unknown as number;
+  g.cancelAnimationFrame ??= (handle: number) => globalThis.clearTimeout(handle);
+  // A COMPONENT THAT TICKS is a component that reads both of these. The chat's
+  // status line redraws its clock on a 1 s `window.setInterval` and repairs it
+  // on `visibilitychange` — with either member missing that effect THREW during
+  // commit, which unmounts the whole tree to the root and takes the suite's own
+  // assertions with it. `hidden: false` is the honest answer for a renderer that
+  // has no window at all: the frame clock's hidden-tab rescue is the exception
+  // path, not the one a test should silently take.
+  g.document ??= {
+    hidden: false,
+    addEventListener() {},
+    removeEventListener() {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
   };
   g.location ??= {
     pathname: "/",
@@ -37,5 +69,15 @@ export function installDomShim(): void {
     removeEventListener() {},
     setTimeout: globalThis.setTimeout.bind(globalThis),
     clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    setInterval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
+    // The same class as the global, and it has to be the SAME one: Base UI's
+    // `isHTMLElement` tests `value instanceof getWindow(value).HTMLElement`,
+    // which throws outright — "right hand side of instanceof is not an object" —
+    // when the window it reaches for has no such member.
+    Element: g.Element,
+    HTMLElement: g.HTMLElement,
+    requestAnimationFrame: g.requestAnimationFrame,
+    cancelAnimationFrame: g.cancelAnimationFrame,
   };
 }

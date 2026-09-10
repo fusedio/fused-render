@@ -93,6 +93,17 @@ def _assistant(text, ts):
                         "content": [{"type": "text", "text": text}]}}
 
 
+def _api_error(text, ts, status=None):
+    """The row Claude Code writes when the API CALL failed — Wi-Fi off, a usage
+    limit, a 429. The flag is the whole signal: `apiErrorStatus` is often
+    absent, and ordinary assistant rows carry the flag as `false`."""
+    record = _assistant(text, ts)
+    record["isApiErrorMessage"] = True
+    if status is not None:
+        record["apiErrorStatus"] = status
+    return record
+
+
 def _ai_title(title, session_id="s"):
     return {"type": "ai-title", "aiTitle": title, "sessionId": session_id}
 
@@ -362,10 +373,13 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     # anyway; the alternative was a second /api/tasks poll from the status bar.
     # `happened_at` (2026-09-07) is the Projects section's change detector: the
     # desk refetches when a task actually ran, which `last_active` cannot say
-    # (it keeps a scheduled due time for sorting).
+    # (it keeps a scheduled due time for sorting). `next_run` (2026-09-09) is
+    # for the Tasks page's own first paint: it builds rows from these before its
+    # listing answers, and the Board's Upcoming lane sorts by the next run.
     pulse_fields = (
         "key", "status", "unread", "last_active", "project",
-        "task_id", "title", "target", "session_id", "happened_at",
+        "task_id", "title", "target", "session_id", "happened_at", "next_run",
+        "next_run_entry",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
@@ -1921,6 +1935,101 @@ def test_a_dead_turn_is_reported_as_a_failure(client, projects_dir):
     assert task["failed"] is True
     assert task["messages"][0]["state"] == "error"
     assert task["status"] == "blocked"
+
+
+# ------------------------------------------------------- a turn the API killed
+# A chat turn can die without the schedule store ever hearing about it: the
+# failure is written into the TRANSCRIPT as an assistant row flagged
+# `isApiErrorMessage`. Reading only the prompts made every such turn read
+# `done` (R2-3, R2-14) — the message was there, so the task had happened.
+
+
+def test_a_chat_turn_that_died_on_an_api_error_is_blocked(client,
+                                                          projects_dir):
+    """The prompt went out and NOTHING answered it. `done` is the one word this
+    must not say: the user's ask is still un-run, and the only surface that
+    could tell them is the row."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", T9, uuid="a1"),
+        _api_error("You've hit your session limit \u00b7 resets 7:20pm", T10,
+                   status=429)])
+    task = _by_key(client)["sess-a"]
+    assert task["messages"][0]["turn"] == "error"
+    assert task["status"] == "blocked"
+    # The lane holds two different things and the row has to say which; a
+    # broken run is the "failed" one, whatever put it there.
+    assert task["blocked_reason"] == "failed"
+
+
+def test_a_chat_turn_the_api_killed_reports_failed_on_the_row_too(client,
+                                                                  projects_dir):
+    """`failed` and `blocked_reason` are two halves of ONE answer and cannot
+    disagree. `_failed` read only `state == "error"` and `turn == "unknown"`, so
+    this task said `blocked_reason: "failed"` (the status's own fallback) with
+    `failed: False` beside it — the caption said the run broke and the flag that
+    paints the ring red said it did not."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", T9, uuid="a1"),
+        _api_error("API Error: Can't reach the API server (ENOTFOUND)", T10)])
+    task = _by_key(client)["sess-a"]
+    assert task["messages"][0]["turn"] == "error"
+    assert task["status"] == "blocked"
+    assert task["blocked_reason"] == "failed"
+    assert task["failed"] is True
+
+
+def test_an_api_error_the_turn_recovered_from_is_not_blocked(client,
+                                                             projects_dir):
+    """THE LAST reply, not any reply. The Wi-Fi comes back and the retry
+    answers — a turn that finished is finished, and parking it in Blocked
+    forever would be the same defect pointing the other way."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", T9, uuid="a1"),
+        _api_error("API Error: Can't reach the API server (ENOTFOUND)", T10),
+        _assistant("done - the chart is wired up", T11)])
+    task = _by_key(client)["sess-a"]
+    assert task["messages"][0]["turn"] == "idle"
+    assert task["status"] == "done"
+
+
+def test_the_api_error_flag_is_read_by_value_not_by_presence(client,
+                                                             projects_dir):
+    """Every ordinary assistant row carries the flag as `false`, so a reader
+    that asked whether the KEY was there would report the whole machine
+    blocked."""
+    ordinary = _assistant("here you go", T10)
+    ordinary["isApiErrorMessage"] = False
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", T9, uuid="a1"), ordinary])
+    task = _by_key(client)["sess-a"]
+    assert task["messages"][0]["turn"] == "idle"
+    assert task["status"] == "done"
+
+
+def test_both_read_paths_agree_about_a_turn_the_api_killed(client,
+                                                           projects_dir):
+    """The listing parses a transcript incrementally and Show more parses the
+    whole file — two readers of the same fact, and a row that says blocked over
+    a thread that says done is a page arguing with itself.
+
+    Two prompts, because a new prompt starts its own turn: the first died, the
+    second was answered, and neither may borrow the other's fate."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("wire up the chart", T9, uuid="a1"),
+        _api_error("You've reached your Fable 5 limit. /model to switch.", T10,
+                   status=429),
+        _user("try again", T11, uuid="a2"),
+        _assistant("done - the chart is wired up", T12)])
+
+    listed = _by_key(client)["sess-a"]["messages"]
+    assert [(m["body"], m["turn"]) for m in listed] == [
+        ("try again", "idle"), ("wire up the chart", "error")]
+
+    r = client.get("/api/tasks/sess-a/messages")
+    assert r.status_code == 200, r.text
+    threaded = r.json()["messages"]
+    assert [(m["body"], m["turn"]) for m in threaded] == [
+        ("try again", "idle"), ("wire up the chart", "error")]
 
 
 def test_a_skipped_occurrence_does_not_speak_for_the_task(client,

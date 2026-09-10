@@ -18,11 +18,6 @@ function hits(n: number): SearchHit[] {
     out.push({
       entry: { rel: `f${i}.ts`, is_dir: false, size: 1, mtime: 1 } as WalkEntry,
       positions: [],
-      // descending score, so index order IS rank order
-      score: n - i,
-      longestRun: 1,
-      tier: 1,
-      depth: 1,
     });
   }
   return out;
@@ -60,9 +55,23 @@ test("an uncapped result set keeps the plain count", () => {
   expect(resultCountLabel(SEARCH_RESULT_CAP, false)).toBe("100 matches");
 });
 
-test("the walk-truncated marker survives the cap", () => {
-  // A capped walk means the count itself undercounts the tree; that "+" has
-  // to stay visible whether or not the LIST is also capped.
+test("a settled search with no hits still reports a count, pluralised as a plural", () => {
+  // Zero is not one, so it takes the "es" branch same as any other count that
+  // isn't 1 — no zero-specific case needed here or in the chip that reuses
+  // this shape.
+  expect(resultCountLabel(0, false)).toBe("0 matches");
+});
+
+test("an empty hit list is not reported as capped", () => {
+  // cappedAway (useListingSearch.ts) is displayHits.length - visibleHits.length;
+  // an empty list caps away nothing, so the "top N of M" branch never fires
+  // at zero hits.
+  expect(capHits(hits(0))).toHaveLength(0);
+});
+
+test("the rank-limit marker survives the cap", () => {
+  // A server rank truncation means the count itself undercounts the tree;
+  // that "+" has to stay visible whether or not the LIST is also capped.
   expect(resultCountLabel(42, true)).toBe("42+ matches");
   expect(resultCountLabel(4880, true)).toBe("Showing top 100 of 4,880+");
 });
@@ -73,7 +82,7 @@ test("the cap is confined to the SEARCH path", () => {
   // The cap reaches the UI only through `visibleHits`, which Listing.tsx uses
   // exclusively while `searching`; the non-search branch reads sortedEntries.
   const listing = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
-  const hook = readFileSync(join(import.meta.dir, "useWalkSearch.ts"), "utf8");
+  const hook = readFileSync(join(import.meta.dir, "useListingSearch.ts"), "utf8");
   expect(listing).not.toContain("SEARCH_RESULT_CAP");
   expect(listing).not.toContain("capHits");
   const capLines = hook.split("\n").filter((l) => l.includes("capHits("));
@@ -85,4 +94,17 @@ test("exactly at the cap is not reported as capped", () => {
   // Nothing is hidden, so there is nothing to refine.
   expect(capHits(hits(SEARCH_RESULT_CAP))).toHaveLength(SEARCH_RESULT_CAP);
   expect(resultCountLabel(SEARCH_RESULT_CAP, false)).toBe("100 matches");
+});
+
+test("a glob answer renders every fetched hit, past SEARCH_RESULT_CAP", () => {
+  // Every glob match is equally relevant — there is no tail to trim, so the
+  // hundred-row display cap is a substring-only rule.
+  const all = hits(4880);
+  const shown = capHits(all, "glob");
+  expect(shown).toBe(all); // no slice at all, not even a copy
+});
+
+test("a glob answer's count never says 'Showing top N of'", () => {
+  expect(resultCountLabel(4880, false, "glob")).toBe("4,880 matches");
+  expect(resultCountLabel(4880, true, "glob")).toBe("4,880+ matches");
 });

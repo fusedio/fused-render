@@ -1424,6 +1424,15 @@ def _permissions(run_dir: str) -> list:
         out.append({
             "id": req["id"],
             "tool": str(req.get("tool") or ""),
+            # THE CLI'S OWN id for the call that asked — not ours (`id` above
+            # is a path-safe token this server minted; see permission_server's
+            # `_new_id`). `permission_server.py` has always written it into the
+            # request body and this reader dropped it, which left a page trying
+            # to match a resolved card back to the tool chip it answered by
+            # TOOL NAME and arrival order — arbitrary the moment a turn runs
+            # two Bash calls (feedback #18). Empty for a request that predates
+            # it, or a tool the CLI asked about without one.
+            "tool_use_id": str(req.get("tool_use_id") or ""),
             "input": req.get("input") if isinstance(req.get("input"), dict) else {},
             "created_at": req.get("created_at") or 0,
             "decision": str(res.get("decision") or ""),
@@ -2718,6 +2727,25 @@ def _registry_running(workdir: str) -> set:
     return out
 
 
+def _folder_and_member(a: str, b: str) -> bool:
+    """Whether `a` and `b` are the same chat's target spelled two ways: one of
+    them is a DIRECTORY and the other is a file that lives directly in it.
+
+    An app-folder chat's run records the folder (`_workdir` of a directory is
+    the directory), while a Tasks tile mounts on the folder's entry FILE — so
+    `.../sine` and `.../sine/sine.html` name one conversation and compare
+    unequal. Deliberately NOT "same parent directory": two sibling files are
+    two different chats, and adopting one into the other would stream somebody
+    else's reply into this log (`_live_run`'s own matching comment).
+
+    Direction-free, because either side can be the folder depending on which
+    surface is asking."""
+    a = os.path.abspath(a)
+    b = os.path.abspath(b)
+    return ((os.path.isdir(a) and os.path.dirname(b) == a)
+            or (os.path.isdir(b) and os.path.dirname(a) == b))
+
+
 def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
     """The id of a run for `file` that is STILL GOING, or "" if there is none.
 
@@ -2766,7 +2794,31 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
                 meta = json.load(fh)
         except (OSError, ValueError):
             continue
-        if os.path.abspath(meta.get("file", "")) != file:
+        target = os.path.abspath(meta.get("file", ""))
+        # THE TARGET, OR — WHEN A SESSION IS NAMED — ITS FOLDER.
+        #
+        # An exact target match is the right rule for a caller with nothing
+        # else to go on, and it is the wrong one the moment a session id is in
+        # hand: the id already names one conversation, and the two spellings of
+        # "this chat's target" do not have to agree. The Tasks cards wall is
+        # exactly that mismatch — a tile mounts on `task.target || task.project`,
+        # which for a chat opened on an APP FOLDER resolves to the folder's
+        # entry FILE (`.../sine/sine.html`) while the run's own `meta.file` is
+        # the folder (`.../sine`). So every lookup answered "" and no tile ever
+        # adopted its live run: a task parked on an AskUserQuestion showed its
+        # transcript and never its card, in the wall and in Peek both
+        # (feedback R2-11/R2-13).
+        #
+        # Relaxed EXACTLY as far as that mismatch and no further: a FOLDER
+        # target and a file inside it are the same chat when the caller named
+        # the session, and two SIBLING FILES are not. So the widening is not
+        # "same workdir" (which would let a run on `other.html` be adopted into
+        # a chat on `app.html` — the case
+        # `test_another_chat_s_run_is_not_adopted` pins); it is "one of the two
+        # is the directory the other one lives in", which is the folder/entry
+        # pair the wall actually produces and nothing else.
+        if target != file and not (
+                session_id and _folder_and_member(target, file)):
             continue
         if session_id:
             own = ""
@@ -3038,6 +3090,59 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     return {"sent": True}
 
 
+def _discard_inbox(run_dir: str) -> list:
+    """Throw away every USER-TURN entry the session host has not drained yet,
+    and return the messages that were in them.
+
+    This is the half of a stop that `interrupt` cannot reach. `interrupt` is a
+    CLI control request: it aborts the turn in flight and reports the messages
+    the CLI's OWN queue was holding back in `still_queued`. But an entry
+    `_send` wrote is not in the CLI's queue until `session_host._drain_inbox`
+    has shipped its bytes to stdin, and that loop ticks every
+    `_DRAIN_INTERVAL_SECONDS` against a host the interrupt deliberately leaves
+    ALIVE. So a message queued a moment before Stop survived the interrupt in
+    the inbox and was delivered right after it, opening a brand-new turn the
+    user had just asked to stop: "interrupt with msg1 + msg2 queued, Stop
+    should stop everything; Claude still answers msg2" (feedback R2-12).
+
+    Only `type: "user"` rows are removed, and that exclusion is load-bearing:
+    `_write_control_request` writes into this SAME directory, so a blanket
+    unlink would eat the very `interrupt` row the caller is about to queue
+    (and any `set_model`/`set_permission_mode` still waiting). A `.tmp` name is
+    left alone for the same reason `_drain_inbox` ignores it — a write is still
+    in flight and the file is not an entry yet.
+
+    Returned rather than just dropped, so `_cancel` can fold these into
+    `still_queued`: the CLI never saw them, so it cannot name them, and text
+    the user typed must come back to the composer rather than vanish."""
+    inbox = _inbox_dir(run_dir)
+    try:
+        names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
+    except OSError:
+        return []
+    discarded = []
+    for name in names:
+        path = os.path.join(inbox, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                row = json.load(fh)
+        except (OSError, ValueError):
+            continue  # raced with a drain tick, or half a write: not ours
+        if not isinstance(row, dict) or row.get("type") != "user":
+            continue
+        message = row.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        texts = [str(b.get("text") or "") for b in content
+                 if isinstance(b, dict) and b.get("type") == "text"] \
+            if isinstance(content, list) else []
+        try:
+            os.remove(path)
+        except OSError:
+            continue  # the host drained it out from under us; the CLI has it
+        discarded.extend(t for t in texts if t)
+    return discarded
+
+
 def _retry_info(row: dict):
     """One `api_retry` row as the page's view of it, or None if unreadable.
 
@@ -3250,7 +3355,7 @@ def _thinking_delta_text(row) -> str:
     return str(delta.get("thinking") or "")
 
 
-def _segments_from_rows(rows: list) -> list:
+def _segments_from_rows(rows: list, shape: tuple = ()) -> list:
     """The ordered transcript of a reply: text, thinking and tool segments.
 
     ONE reader with TWO callers — `_poll` over the live `out.jsonl` and
@@ -3309,16 +3414,47 @@ def _segments_from_rows(rows: list) -> list:
     by_tool_id = {}     # tool_use id -> its segment, for the result to find
     stripped = set()    # tool_use ids of calls deliberately not shown
     orphans = {}        # results that arrived before their tool_use row
-    streamed = any(_is_text_delta(row) for row in rows)
+    # THE TWO GATES, AND WHY THEY CAN BE PASSED IN.
+    #
+    # Both are "does this row set carry deltas of that kind", decided ONCE over
+    # the whole list and then applied to every row — which is what makes the
+    # segmentation of a PREFIX of `rows` a prefix of the segmentation of
+    # `rows`, and that is the invariant `_absorbed_turn_breaks` measures its
+    # offsets against. Re-deriving them from a prefix breaks it wherever a gate
+    # holds for the window but not for the prefix: reply A carrying finalized
+    # text only, followed by a reply B that streams, made `streamed` False for
+    # the prefix and True for the window, and the offset then pointed at the
+    # wrong segment entirely — reply A claiming all of reply B, and B rendering
+    # empty. So a caller that has already computed them over the full window
+    # hands them down (`shape`) instead of letting a prefix answer for itself.
+    streamed = shape[0] if shape else any(_is_text_delta(row) for row in rows)
     # The same "deltas or finalized blocks, never both" choice as `streamed`,
     # decided separately because it is a different question: a run can stream its
     # prose and still carry no usable thinking delta (redacted, or a transcript
     # with no `stream_event` rows at all — which is EVERY row set `_history`
     # reads, and is why a restored turn never showed a thinking block before).
-    thinking_streamed = any(_thinking_delta_text(row) for row in rows)
+    thinking_streamed = (
+        shape[1] if shape else any(_thinking_delta_text(row) for row in rows))
     any_text = False    # mirrors _poll's `bool(text_parts)`
     pending_sep = False
     plumbing = "mcp__%s__%s" % (PERMISSION_SERVER, APP_STATE_TOOL)
+    # A REPLY ENDED, so the next chunk of the same kind opens a NEW segment
+    # instead of growing the one before it.
+    #
+    # `grow` merges same-kind neighbours because markdown split across arbitrary
+    # delta boundaries is not the same document — but a `result` row is not an
+    # arbitrary boundary, it is the end of a reply, and the text after one
+    # belongs to a different answer to a different message. Merging across it
+    # produced a single text segment spanning two turns, which a caller
+    # splitting the payload at a reported seam (`_absorbed_turn_breaks`) cannot
+    # divide at all: the seam falls INSIDE a segment.
+    #
+    # Only the main turn's `result` counts (a subagent's is not this
+    # conversation's), and the ordinary case is unaffected: a `result` is
+    # normally the last row of the window, and the one shape that legitimately
+    # continues past one — a D415 wake — puts a `notice` segment in between, so
+    # the tail was already a different kind and no merge was happening.
+    hard_break = False
 
     def tail(kind):
         return segments[-1] if segments and segments[-1]["kind"] == kind else None
@@ -3342,7 +3478,9 @@ def _segments_from_rows(rows: list) -> list:
         copies of one rule, so a test asserts they agree rather than a comment
         saying they should (D146).
         """
-        seg = tail(kind)
+        nonlocal hard_break
+        seg = None if hard_break else tail(kind)
+        hard_break = False
         if seg is None:
             seg = {"kind": kind, "text": []}
             segments.append(seg)
@@ -3456,6 +3594,9 @@ def _segments_from_rows(rows: list) -> list:
             if note:
                 segments.append({"kind": "notice", "text": [note["summary"]],
                                  "status": note["status"]})
+        elif t == "result" and not row.get("parent_tool_use_id"):
+            # See `hard_break`. Nothing is emitted for a `result` row itself.
+            hard_break = True
         elif t == "user" and isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
@@ -3600,6 +3741,172 @@ def _starts_new_turn(row: dict) -> bool:
         return False
     return all(isinstance(item, dict) and item.get("type") == "text"
                for item in content)
+
+
+def _is_api_error_row(row: dict) -> bool:
+    """Whether this transcript row is Claude Code's own record of an API
+    FAILURE rather than a reply — no network, a 429, an exhausted usage limit.
+
+    Claude Code writes one as a `type: "assistant"` record whose content is the
+    failure text, marked `isApiErrorMessage: true` and sometimes carrying
+    `apiErrorStatus` (429 for the limit cases). Verified against real
+    transcripts written by CLI 2.1.233 and 2.1.263.
+
+    `is True` rather than a truthiness test, and that is the load-bearing part:
+    ORDINARY assistant rows carry `isApiErrorMessage: false`, so `in row` or a
+    `.get(...)` truth check written carelessly would flag every reply on a
+    modern CLI. `apiErrorStatus` alone is not enough either — the network cases
+    have no status at all."""
+    return isinstance(row, dict) and row.get("isApiErrorMessage") is True
+
+
+def _absorbed_turn_breaks(rows: list) -> list:
+    """Where a reply ENDED inside this row window because a follow-up had been
+    folded into it, as payload offsets a page can slice on.
+
+    `_send` exists so a message typed mid-turn reaches the CLI's own queue
+    instead of spawning a second process. The CLI drains that queue MID-REPLY
+    (it echoes the follow-up back through `--replay-user-messages` the moment
+    it reads it, finishes the answer it was already giving, then answers the
+    new one) and no `result` row separates the echo from the reply it landed
+    in — which is exactly why `_read_current_turn` refuses to advance its
+    cursor past that echo. The consequence for a reader is that ONE poll
+    payload carries two conversational turns with nothing in
+    `segments`/`text` to say where the seam is: a user echo row produces no
+    segment of its own.
+
+    THE SEAM IS THE `result`, NOT THE ECHO, and that distinction is the whole
+    of this function. The echo's file position is where Claude READ the
+    message, which is in the middle of the previous answer; the previous
+    answer's own `result` row is where that answer ENDS. Splitting at the echo
+    puts the first reply's remainder under the follow-up's bubble, which is
+    the defect this is fixing, not a fix for it (feedback #9).
+
+    So: an echo with no `result` before it since the window began (or since the
+    last seam) records that a follow-up is outstanding, and the NEXT main-turn
+    `result` closes the reply it interrupted and becomes a seam. Two follow-ups
+    absorbed into one reply leave two outstanding, so the next two `result`
+    rows are both seams, in order.
+
+    A reply still streaming with a follow-up outstanding reports NOTHING, and
+    that is correct rather than incomplete: nothing has ended yet, so the whole
+    payload is still the one reply and belongs in the one bubble.
+
+    Each entry is the `segments` count and the `text` length of everything up
+    to and including that `result`, both measured through
+    `_segments_from_rows` — the same reader that builds the payload — so they
+    are indices into the exact lists `_poll` returns. `hard_break` in that
+    function is what guarantees a seam never falls inside a segment.
+    """
+    breaks = []
+    # Measured through the WINDOW's own gates, not the prefix's — see
+    # `_segments_from_rows`'s note on `shape`. Computed once here so every seam
+    # in one payload is measured against one segmentation.
+    shape = (any(_is_text_delta(row) for row in rows),
+             any(_thinking_delta_text(row) for row in rows))
+    outstanding = 0
+    # Whether a `result` has closed a reply since the last echo — the exact
+    # test `_read_current_turn`'s cursor makes, and for the same reason: an echo
+    # WITH one before it is a genuinely new turn (the cursor is about to advance
+    # past it), an echo WITHOUT one was folded into the reply still in flight.
+    seen_result = False
+    # A main-turn `result` this scan has not turned into a seam yet, and the
+    # index of the row before the one being looked at (subagent rows skipped) —
+    # see the genuine-boundary branch below for why the ADJACENCY matters.
+    last_result = None
+    last_main = None
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        # A subagent's rows are not this conversation — the same exclusion
+        # `_read_current_turn`'s cursor and `_segments_from_rows` both make.
+        if row.get("parent_tool_use_id"):
+            continue
+        prev_main, last_main = last_main, i
+        if row.get("type") == "result":
+            seen_result = True
+            if outstanding:
+                # This closes a reply a follow-up was folded into, so it is a
+                # seam — and one of the outstanding follow-ups is now the
+                # message the NEXT span answers.
+                outstanding -= 1
+                _seam(breaks, rows, i + 1, shape)
+                last_result = None
+            else:
+                # Not a seam YET. It becomes one if a new user turn shows up
+                # after it inside this window — see the `elif` below.
+                last_result = i
+        elif i and _starts_new_turn(row):
+            # `i and` skips `rows[0]`: the window opens on its own turn's echo.
+            if seen_result:
+                seen_result = False   # a genuine new turn, not a fold-in
+                # A GENUINE BOUNDARY IS A SEAM TOO, and it has to be reported
+                # for the same reason a fold-in does: the page gets ONE payload
+                # carrying two replies with nothing in `segments`/`text` to say
+                # where they divide.
+                #
+                # It used to report nothing here, on the reasoning that a
+                # genuine boundary moves the cursor and the next payload is the
+                # newer reply alone — so the client's shrink test would sort it
+                # out one lap later. That is only true when the shrink is
+                # VISIBLE: two one-segment replies (a counted list, then
+                # "ALLDONE") leave `len(segments)` at 1 across the step, so
+                # nothing shrank, no seam was ever reported, and the newer
+                # reply was never placed at all — it appeared only on reload,
+                # which reads the same file through `_history` and splits on
+                # these very rows. Reported live, the page slices it exactly as
+                # a reload does.
+                #
+                # A D415 WAKE IS NOT THIS. A wake is a `result` followed by
+                # more rows of the SAME displayed turn and no user echo at all
+                # (`_segments_from_rows` joins it with a `notice` divider), so
+                # it never reaches this branch: only an echo can, and an echo
+                # is a new message by definition.
+                # ONLY WHEN THE `result` IS THE ROW RIGHT BEFORE THIS ECHO.
+                #
+                # A D415 wake appends more rows of the SAME displayed turn after
+                # that `result` — a `notice` divider and its continuation — and
+                # a seam is only ever safe at a `hard_break`, which is what
+                # `_segments_from_rows` puts at a `result` and nowhere else. Cut
+                # anywhere else and the seam falls INSIDE a segment: with a wake
+                # in between, its continuation and the next reply are one merged
+                # text segment, so the offset either files the wake's text under
+                # the turn that had not started yet or swallows the new reply
+                # whole (Bugbot, PR #1061).
+                #
+                # So a wake-continued turn reports nothing here, exactly as it
+                # did before genuine boundaries were reported at all — the page
+                # still has its shrink test for that one, and the shape this
+                # branch exists for (a follow-up the CLI drained straight after
+                # the reply's `result`) has no wake in it by construction.
+                if last_result is not None and prev_main == last_result:
+                    _seam(breaks, rows, i, shape)
+                    last_result = None
+            else:
+                outstanding += 1
+    return breaks
+
+
+def _seam(breaks: list, rows: list, end: int, shape: tuple) -> None:
+    """Record a seam at `rows[:end]`, as payload offsets.
+
+    `end` is EXCLUSIVE, and the two callers pass different things for good
+    reason: a fold-in's seam is the `result` that closed the reply the
+    follow-up was absorbed into (`i + 1`, the result included), while a genuine
+    boundary's is everything before the echo that opens the next turn (`i`) —
+    which is the same `result` PLUS anything a D415 wake appended to that turn
+    after it.
+
+    The `segments` count and the `text` length of that prefix, both measured
+    through `_segments_from_rows` with the WINDOW's own gates (`shape`) — so
+    they are indices into the exact lists `_poll` returns. See
+    `_segments_from_rows`'s note on why the gates travel."""
+    prefix = _segments_from_rows(rows[:end], shape)
+    breaks.append({
+        "segments": len(prefix),
+        "text": sum(len(seg.get("text") or "")
+                    for seg in prefix if seg.get("kind") == "text"),
+    })
 
 
 def _read_current_turn(run_dir: str) -> tuple:
@@ -3820,7 +4127,17 @@ def _poll(run_id: str, file: str = "") -> dict:
                 run_file = json.load(fh).get("file", "")
         except (OSError, ValueError):
             run_file = ""
-        if run_file and os.path.abspath(run_file) != os.path.abspath(file):
+        # A FOLDER AND ITS ENTRY FILE ARE NOT A MISMATCH. This is the same
+        # two-spellings problem `_live_run`'s matching comment sets out: an
+        # app-folder chat's run records the folder, a Tasks tile mounts on the
+        # folder's entry FILE, so the tile adopted the run (once `_live_run`
+        # stopped comparing exactly) and then had its first poll refused for
+        # "another target" — two polls and the tile went idle with no card
+        # (feedback R2-11/R2-13). `_folder_and_member` is deliberately narrow:
+        # a SIBLING file is still a provable mismatch and still refused, which
+        # is what this guard exists for.
+        if run_file and os.path.abspath(run_file) != os.path.abspath(file) \
+                and not _folder_and_member(run_file, file):
             return {"text": "", "done": True, "session_id": "",
                     "error": "run is for another target",
                     "permissions": [], "app_state": [], "skills": [], "retry": None,
@@ -4079,16 +4396,28 @@ def _poll(run_id: str, file: str = "") -> dict:
     # than through the cursor machinery — this is a one-time, bounded read
     # (only the bytes written since the send) whether or not the cursor
     # happens to reach that far this poll.
-    # Suppresses `text`/`segments` below, not just `idle`, for exactly as long
-    # as `pending_echo` holds — `rows` (from `_read_current_turn`) is still
-    # windowed off the OLD cursor while the echo is pending (that is the whole
-    # point of `_read_current_turn`'s own `seen_result` rule: it will not
-    # advance past the follow-up's echo either), so `text_parts`/`parsed` built
-    # from those same rows are still the PREVIOUS turn's content. Forcing
-    # `idle` false alone stopped `done` from lying, but a page's `pollLoop`
-    # still paints whatever `segments`/`text` a non-done poll carries into a
-    # fresh bubble — so the stale reply rendered anyway, then sat on screen
-    # until the new turn's own tokens started arriving.
+    # STREAMING THROUGH THE WINDOW. `rows` (from `_read_current_turn`) is
+    # still windowed off the OLD cursor while the echo is pending — that is
+    # `_read_current_turn`'s own `seen_result` rule, which will not advance
+    # past the follow-up's echo either — so `text_parts`/`parsed` built from
+    # those rows are the reply that was ALREADY IN FLIGHT when the follow-up
+    # was typed. That reply is exactly what the page wants: it is still
+    # growing, it is still the newest bubble on screen, and blanking it froze
+    # the transcript for the whole window and then dumped the rest of reply A
+    # plus the whole of reply B in one burst on the poll where the echo landed
+    # (feedback R2-1). So the payload keeps flowing, and the seam between the
+    # two replies is REPORTED when it exists (`turn_breaks`) rather than
+    # implied by a gap in the stream.
+    #
+    # The one case that still has to be suppressed is the reason the blanking
+    # existed at all: a send made while the run was IDLE. There the window's
+    # rows are a turn that already ended — the page has rendered it, settled
+    # it, and moved on — and re-emitting them would paint a duplicate of the
+    # previous answer into a fresh bubble as if it were the answer to the
+    # message just sent. `idle` (computed above off whatever `out.jsonl` ends
+    # with) is precisely that test: True means the window closes on a
+    # `result`, i.e. nothing is in flight for this payload to be the tail of.
+    # Forcing `idle` False below keeps `done` from lying either way.
     echo_pending = False
     pending_echo_path = os.path.join(run_dir, "pending_echo")
     if os.path.exists(pending_echo_path):
@@ -4120,8 +4449,11 @@ def _poll(run_id: str, file: str = "") -> dict:
             except OSError:
                 pass
         else:
+            # `idle` is read BEFORE it is forced: it is the "nothing in
+            # flight" test the comment above turns on, and the force below
+            # would destroy it.
+            echo_pending = idle
             idle = False
-            echo_pending = True
 
     # Finished: a `result` with nothing after it (the turn ended and no wake has
     # started another), or a process that is simply gone (D415).
@@ -4313,7 +4645,14 @@ def _poll(run_id: str, file: str = "") -> dict:
                 "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
                 "agent_rows": agent_rows,
             },
-            "segments": [] if echo_pending else _segments_from_rows(parsed)}
+            "segments": [] if echo_pending else _segments_from_rows(parsed),
+            # The seams inside this payload where a mid-stream follow-up was
+            # absorbed into the reply already streaming — see
+            # `_absorbed_turn_breaks`. Empty on every ordinary poll, and empty
+            # while `echo_pending` blanks the payload the offsets would index
+            # into.
+            "turn_breaks": [] if echo_pending
+            else _absorbed_turn_breaks(parsed)}
 
 
 # ------------------------------------------------------- sessions & history
@@ -5029,9 +5368,37 @@ def _history(file: str, session_id: str) -> dict:
                 # waiting for, and the synthetic rows are not a turn either way.
                 stretch.append(row)
         elif role == "assistant" and isinstance(content, list):
-            stretch.append(row)
             text = "\n".join(b.get("text", "") for b in content
                              if isinstance(b, dict) and b.get("type") == "text")
+            if _is_api_error_row(row):
+                # A FAILED TURN IS NOT PROSE. Claude Code writes an API failure
+                # — no network, a 429, a usage limit — as an ordinary-looking
+                # assistant row carrying the message as text, distinguished
+                # only by `isApiErrorMessage`. Merged into the assistant turn
+                # (which is what happened before this branch), a reload
+                # rendered "API Error: Can't reach the API server" as the
+                # model's own considered answer, in normal type, while the
+                # LIVE run had shown the same failure in red: the same turn
+                # read as success or failure depending on whether you were
+                # watching (feedback R2-3/R2-14).
+                #
+                # Emitted as its own `role: "error"` turn — the third role on
+                # this payload, and the reason `history.ts` has to branch on it
+                # BEFORE its assistant fallback. `close_stretch` first, so the
+                # tool segments of the reply that failed land on the reply and
+                # not on the error line. The row itself is deliberately NOT
+                # added to `stretch`: `_segments_from_rows` would turn its text
+                # into a text segment and print the failure twice.
+                close_stretch()
+                message = text.strip() or "the API call failed"
+                turns.append({"role": "error",
+                              # The same rewrite the live path applies to
+                              # `_poll`'s `error` (see `_account_error`), so a
+                              # usage limit reads with the same help line
+                              # whether it is live or restored.
+                              "text": _account_error(message)})
+                continue
+            stretch.append(row)
             if text.strip():
                 # consecutive assistant rows are one streamed turn; keep merged
                 # (blank line between rows, matching _poll's stream separator)
@@ -5046,7 +5413,11 @@ def _history(file: str, session_id: str) -> dict:
     # which is the one the reader is looking at the bottom of. The page draws it
     # as the same ⏹ note a live stop leaves behind, so a stop looks identical
     # whether you watched it happen or came back to it later.
-    if turns and _stopped_last(file, session_id):
+    # `role == "error"` is excluded: `stopped` is an ASSISTANT turn's flag (the
+    # page draws it as the ⏹ note under a reply), and a failed turn already has
+    # its own red line to say how it ended.
+    if turns and turns[-1]["role"] == "assistant" \
+            and _stopped_last(file, session_id):
         turns[-1]["stopped"] = True
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
@@ -5097,6 +5468,15 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
     # included) on both platforms, but if it fails, a parked approval would
     # otherwise sit there holding the subprocess open for the full timeout.
     _deny_pending(run_dir, "cancelled")
+    # WHAT THE INBOX HELD, ON EVERY ROAD OUT OF HERE. `_discard_inbox` DELETES
+    # the undrained entries — that is its job, so a follow-up cannot be
+    # delivered right after the interrupt and open a fresh turn out of a Stop —
+    # which makes this list the only surviving copy of text the user typed. It
+    # used to be returned on one road only (the interrupt that answered), so a
+    # host that did not answer inside the timeout lost the message outright:
+    # gone from disk, never seen by the CLI, never handed back to the composer.
+    # Strictly worse than not discarding at all.
+    stranded = []
     if interrupt_first and _host_alive(run_dir):
         # Interrupt the TURN, not the whole session. A live host survives an
         # `interrupt` control request (verified live against 2.1.251) exactly
@@ -5113,6 +5493,12 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
             out_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
         except OSError:
             out_offset = 0
+        # THE INBOX FIRST, and before the interrupt row is queued so the scan
+        # cannot see (or race) it. `interrupt` only reaches the CLI's OWN
+        # queue; a follow-up the session host has not drained yet is not in it
+        # and would be delivered right AFTER the interrupt, opening a fresh
+        # turn out of a Stop. See `_discard_inbox`.
+        stranded = _discard_inbox(run_dir)
         request_id = _write_control_request(run_dir, "interrupt")
         response = _await_control_response(
             run_dir, request_id, start_offset=out_offset)
@@ -5142,17 +5528,90 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
                     fh.write(str(out_offset))
             except OSError:
                 pass
-            return {"cancelled": run_id,
-                    "still_queued": list(response.get("still_queued") or [])}
+            # A LANDED INTERRUPT RETIRES `pending_echo`, and this is the only
+            # place that can know to.
+            #
+            # `_send` writes that file to mean "a follow-up is between queued
+            # and echoed, so do not believe a trailing `result`" — and `_poll`
+            # only ever clears it by SEEING the echo (`saw_echo_since_send`).
+            # An interrupt is precisely the event that guarantees the echo will
+            # never come: the CLI drops what it had queued and reports it back
+            # in `still_queued`, and the `interrupt` control request leaves the
+            # HOST UP by design (see the block above), so `_poll`'s
+            # liveness escape (`done = idle or not alive`) never fires either.
+            # The result was a run that had visibly finished streaming and
+            # stayed `done: False` for the life of the session — the chat's
+            # status stuck on "running" with the Stop chrome still up, which is
+            # exactly what QA reported (feedback #12).
+            #
+            # Removed AFTER `interrupted_offset` is written, so a poll racing
+            # this sees the marker pair before it sees the echo gate lift.
+            try:
+                os.remove(os.path.join(run_dir, "pending_echo"))
+            except OSError:
+                pass  # never written, or already retired by a poll that saw it
+            # STOP MEANS STOP, INCLUDING WHAT WAS QUEUED. `still_queued` is
+            # the CLI naming messages it says it dropped — and it was observed
+            # ANSWERING them anyway, one after the other, after a Stop pressed
+            # with two messages queued (feedback R2-12). There is no control
+            # request that clears the CLI's queue (only `interrupt`,
+            # `set_model` and `set_permission_mode` exist), and legacy T does
+            # nothing about this at all: its `stopRun` reads `still_queued`
+            # only to paste the text back into the composer. So the session is
+            # ENDED whenever anything was queued — the one case where keeping
+            # the host alive would let the run keep talking past the stop. A
+            # stop with an empty queue keeps the gentler behaviour the
+            # interrupt exists for (a live host, background tasks intact); the
+            # next message resumes this session either way.
+            # Deduped, in order, CLI first: the two lists are disjoint by
+            # construction (a drained entry is moved into `inbox/done/`, so
+            # `_discard_inbox` cannot see one the CLI already has) — but a
+            # duplicate here would paste the same text into the composer
+            # twice, which is worse than a dropped edge case.
+            still = []
+            for item in list(response.get("still_queued") or []) + stranded:
+                if item and item not in still:
+                    still.append(item)
+            if still:
+                _kill_tree(run_dir)
+            return {"cancelled": run_id, "still_queued": still}
         # No answer inside the timeout — the host may be stuck, or died
         # between the liveness check above and now. Falls through to the
         # tree-kill below exactly as if no host had ever been found: ending
         # the whole session is the right fallback for "asked and got
-        # nothing back", not a hang.
+        # nothing back", not a hang. `stranded` is already populated, and the
+        # return below is what hands it back.
+    elif interrupt_first:
+        # A STOP WITH NO LIVE HOST TO ASK, so nothing was ever going to drain
+        # the inbox: the entries are emptied here too, rather than left on disk
+        # for a future session to deliver as if they had just been typed, and
+        # reported for the same reason the interrupt road reports them.
+        #
+        # `elif`, not `else`: `_send`'s respawn calls in with
+        # `interrupt_first=False` and its caller re-sends the message itself
+        # (`sendFollowUp`'s respawn branch reads `run_id`, never
+        # `still_queued`), so discarding there would delete text nobody is
+        # listening for a hand-back of.
+        stranded = _discard_inbox(run_dir)
+    _kill_tree(run_dir)
+    still = []
+    for item in stranded:
+        if item and item not in still:
+            still.append(item)
+    return {"cancelled": run_id, "still_queued": still}
+
+
+def _kill_tree(run_dir: str) -> None:
+    """End the whole process tree the run's pid file names — the CLI, the
+    session host holding its stdin, and the MCP server they share.
+
+    Factored out of `_cancel`'s tail so the interrupt path can reach it too
+    (see `_cancel`'s `still_queued` handling): "asked and got nothing back"
+    and "asked, got an answer, and it was not enough" both end here."""
     try:
         pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
     except (OSError, ValueError):
-        return {"cancelled": run_id}
+        return
     if os.name == "nt":
         # os.killpg doesn't exist on Windows, and CTRL_BREAK only reaches a
         # shared console — a DETACHED_PROCESS run has none. taskkill /T walks
@@ -5173,7 +5632,6 @@ def _cancel(run_id: str, interrupt_first: bool = True) -> dict:
             os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
         except OSError:
             pass
-    return {"cancelled": run_id}
 
 
 def main(action: str = "start", file: str = "", message: str = "",

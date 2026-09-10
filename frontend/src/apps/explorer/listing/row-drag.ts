@@ -77,6 +77,12 @@ export const DROP_PATH_ATTR = "data-fs-drop-path";
 export const DROP_DIR_ATTR = "data-fs-drop-dir";
 export const DROP_ANNOUNCE_ATTR = "data-fs-drop-announce";
 export const SPRING_ATTR = "data-spring-target";
+// The DRAG SOURCE half of the same protocol: a drop target declares itself
+// with data-fs-drop-*, and the icon+name span a row wraps its handle in
+// declares itself the same way, so where a drag may START is as visible in
+// the DOM as where it may LAND. useMarquee reads it with `closest` to answer
+// `onHandle` for pressStartsDrag (drag-drop.ts).
+export const DRAG_HANDLE_ATTR = "data-fs-drag-handle";
 
 // The classes a hovered target wears. `drop-into` / `drop-reject` are the same
 // two everywhere now — listing row, listing background, sidebar bookmark — so

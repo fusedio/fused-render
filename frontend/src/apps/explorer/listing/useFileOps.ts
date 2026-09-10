@@ -60,7 +60,7 @@ import {
 } from "@apps/explorer/lib/fs-undo";
 import { basename } from "@platform/lib/format";
 import { getClipboard, setClipboard, type Clipboard } from "@apps/explorer/lib/fs-clipboard";
-import { pushToast } from "@platform/lib/toast";
+import { pushToast, dismissToast } from "@platform/lib/toast";
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { nameError } from "@apps/explorer/FsDialogs";
@@ -148,6 +148,10 @@ export function useFileOps({
   // second call would renameEntry an already-moved src and 404 with a jarring
   // toast. Reset in the flight's .finally, so sequential copy-pastes stay fine.
   const pasteInFlight = useRef(false);
+  // Set by the progress toast's Cancel action, read at the top of every loop
+  // iteration below. A copy already issued is not undone — the loop simply
+  // stops asking for the next one, leaving whatever landed in place.
+  const pasteCancelRef = useRef(false);
 
   // Paste into `dir`: a cut moves (rename) and clears the clipboard; a copy
   // duplicates and keeps it. Same basename in the target folder either way.
@@ -172,6 +176,25 @@ export function useFileOps({
     const label = paths.length === 1 ? basename(paths[0]) : `${paths.length} items`;
     if (op === "cut") setClipboard(null); // consume atomically, before any await
     pasteInFlight.current = true;
+    // Progress + cancel is a COPY thing (decision 12): a cut is a rename per
+    // entry, near-instant, and its clipboard is already gone. A single-file
+    // copy is also skipped — there is nothing to report progress ABOUT.
+    const showProgress = op === "copy" && paths.length > 1;
+    pasteCancelRef.current = false;
+    let progressToastId: number | undefined;
+    const progressAction = {
+      label: "Cancel",
+      onClick: () => {
+        pasteCancelRef.current = true;
+      },
+    };
+    if (showProgress) {
+      progressToastId = pushToast({
+        msg: `Copying 1 of ${paths.length}…`,
+        tone: "info",
+        action: progressAction,
+      });
+    }
     run(async () => {
       const pasted: string[] = [];
       // A CUT paste is a relocation, so it goes on the undo stack — with the
@@ -180,8 +203,20 @@ export function useFileOps({
       // an undo may do on the user's behalf.
       const relocated: { from: string; to: string }[] = [];
       let last: string | null = null;
+      let cancelled = false;
       try {
-        for (const src of paths) {
+        for (let i = 0; i < paths.length; i++) {
+          const src = paths[i];
+          if (showProgress && pasteCancelRef.current) {
+            cancelled = true;
+            break;
+          }
+          if (showProgress) {
+            pushToast(
+              { msg: `Copying ${i + 1} of ${paths.length}…`, tone: "info", action: progressAction },
+              progressToastId,
+            );
+          }
           // Same-folder paste (dst would collide with the source), matching Finder:
           //   • CUT into its own folder is a no-op — the backend rename would 409
           //     on dst === src, so skip it (the clipboard is already cleared).
@@ -229,11 +264,20 @@ export function useFileOps({
         // and it is the case a user most wants back — recorded before the
         // rethrow, since run()'s error path never reaches the lines below.
         if (relocated.length) recordFsOp({ kind: "move", pairs: relocated });
+        if (progressToastId !== undefined) dismissToast(progressToastId);
         throw e;
       }
       if (relocated.length) recordFsOp({ kind: "move", pairs: relocated });
       // Re-anchor onto the last thing written, if it lands in this view.
       if (last !== null) pendingSelectRef.current = last;
+      if (progressToastId !== undefined) {
+        dismissToast(progressToastId);
+        // Already-copied files stay exactly where they landed — cancelling
+        // stops the loop from asking for the next one, nothing more.
+        if (cancelled) {
+          pushToast({ msg: `Copy cancelled — ${pasted.length} of ${paths.length} copied`, tone: "info" });
+        }
+      }
     }, { verb: "paste", name: label }).finally(() => {
       pasteInFlight.current = false;
     });

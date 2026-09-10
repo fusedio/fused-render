@@ -1,37 +1,30 @@
-// Which source answers the in-folder search, decided from what the server
-// said — never from a rule kept here.
+// What the in-folder search does with a ranked answer — decided from what the
+// server said, never from a rule kept here.
 //
-// The box used to RACE two sources: it asked the index for the folder's whole
-// corpus and, if that had not produced within 150 ms, started a live streamed
-// walk alongside it; first to produce took the answer (the deleted
-// listing/source-race). That was the right shape when both sources could
-// answer any folder. They cannot: the index either covers a folder or does
-// not, and the reason it does not is a fact only the server holds — the mount
-// policy is `MountGuard`'s, the ignore list is the scan config's, and a
-// package is a shape of the store. A second copy of any of those in TypeScript
-// would drift from the original silently, and the drift would show up as two
-// searches disagreeing about the same folder.
+// The index either covers a folder or it does not, and the reason it does not
+// is a fact only the server holds: the mount policy is `MountGuard`'s, the
+// ignore list is the scan config's, and a package is a shape of the store. A
+// second copy of any of those in TypeScript would drift from the original
+// silently, and the drift would show up as the search disagreeing with itself
+// about the same folder.
 //
-// So `GET /api/index/rank` answers with a `reason`, and this file is the whole
-// of the client's policy: three outcomes, and the only one that carries
-// judgement is what to do when a folder stays uncovered after we asked for it
-// to be scanned.
+// So `GET /api/index/rank` answers with a `reason`, and this file is the
+// whole of the client's policy: three outcomes.
 //
-//   answer  the index answered; render it.
+//   answer  render what came back — a real ranked answer, or a reason the
+//           folder cannot be covered right now, which the search box turns
+//           into the index gap (lib/home-search's `indexGap`).
 //   scan    nothing here yet, but a scan would fix that — ask for one.
 //   poll    an answer is coming (a scan is running); ask again shortly and
 //           keep rendering whatever came back meanwhile.
-//   walk    no scan will ever cover this folder; the live streamed walk is
-//           the only source there is.
 //
 // Note what the client does NOT do: it never decides that a folder is
 // mount-backed, ignored, a package, or that indexing has been turned off in
-// Preferences. It walks when the server has said it cannot answer AND
-// cannot be made to — one rule, in one direction.
+// Preferences — it reports what the server said and stops there.
 
 import type { RankReason } from "@platform/lib/api";
 
-export type SearchStep = "answer" | "scan" | "poll" | "walk";
+export type SearchStep = "answer" | "scan" | "poll";
 
 // Ranked answers that may still read `uncovered` after a scan was asked for,
 // before the folder is written off. `runner.start` returns as soon as the
@@ -56,9 +49,9 @@ export const UNCOVERED_GRACE = 3;
 // rank round trip consistently outlasted the interval — likeliest exactly
 // here, while a compaction is running — no answer ever landed and a ceiling
 // counted in answers was never approached. A tick leaves a live request alone
-// now (the in-flight guard in useWalkSearch), but the ceiling stays counted in
-// ticks: it is the one measure the loop cannot starve, whatever the server
-// does with the requests it is sent.
+// now (the in-flight guard in useListingSearch), but the ceiling stays
+// counted in ticks: it is the one measure the loop cannot starve, whatever the
+// server does with the requests it is sent.
 export const MAX_SCANNING_POLLS = 80;
 
 export interface SourceInput {
@@ -69,13 +62,11 @@ export interface SourceInput {
   sinceAsk: number;
   /** Polls ISSUED for the current scan — ticks, not answers (see below). */
   polls: number;
-  /** Whether the last answer actually covered the folder. */
-  covered: boolean;
 }
 
 /** What the box should do with the answer it just got. */
 export function nextStep(input: SourceInput): SearchStep {
-  const { reason, asked, sinceAsk, polls, covered } = input;
+  const { reason, asked, sinceAsk, polls } = input;
   // Permanently uncoverable, each for its own reason, all one condition here.
   // `disabled` belongs in this set even though it is not permanent the way
   // the other three are — the user can flip the preference back on — because
@@ -89,25 +80,21 @@ export function nextStep(input: SourceInput): SearchStep {
     reason === "disabled" ||
     reason === "fda"
   ) {
-    return "walk";
+    return "answer";
   }
   if (reason === "scanning") {
     if (polls < MAX_SCANNING_POLLS) return "poll";
-    // Out of patience. What that means depends on whether the scan ever
-    // produced anything: a COVERED folder has real rows to settle for, while
-    // an uncovered one would settle for `hits: []` — an empty list for a
-    // folder the walk searches fine, which is the same "blame the user's files
-    // for the app's state" the uncovered branch below refuses. A scan of an
-    // uncovered root reports `scanning` too, so this is not a rare corner.
-    return covered ? "answer" : "walk";
+    // Out of patience. Whatever the scan produced (real rows, or none for a
+    // folder that stays uncovered) is what there is to settle for — the index
+    // gap the caller renders for an empty, still-uncovered answer says so.
+    return "answer";
   }
   if (reason === "uncovered") {
     if (!asked) return "scan";
     // Scanned, and still not covered: another filesystem, or a scan that
-    // failed. Asking again is the retry loop this design refuses, and "no
-    // matches" would blame the user's files for the app's state — so the walk,
-    // which is the same last resort the mount case gets.
-    return sinceAsk < UNCOVERED_GRACE ? "poll" : "walk";
+    // failed. Asking again is the retry loop this design refuses, so this
+    // settles for the index gap rather than looping forever.
+    return sinceAsk < UNCOVERED_GRACE ? "poll" : "answer";
   }
   // "" — and anything a newer server grows that this build has not heard of:
   // it ANSWERED, and its hits are on screen.
@@ -134,14 +121,10 @@ export function remembersAnswer(step: SearchStep, reason: RankReason): boolean {
 
 export interface ProgressInput {
   searching: boolean;
-  /** The live walk is answering this folder. */
-  walkMode: boolean;
   /** A ranked request is out. */
   pending: boolean;
   /** A scan covering this folder is running and being polled. */
   polling: boolean;
-  /** The walk's browser-side scoring pass has not published yet. */
-  scanning: boolean;
 }
 
 export interface Progress {
@@ -167,8 +150,7 @@ export interface Progress {
  * treatment: the "indexing…" caveat.
  */
 export function searchProgress(input: ProgressInput): Progress {
-  const { searching, walkMode, pending, polling, scanning } = input;
+  const { searching, pending, polling } = input;
   if (!searching) return { answerComing: false, inFlight: false };
-  if (walkMode) return { answerComing: scanning, inFlight: scanning };
   return { answerComing: pending || polling, inFlight: pending };
 }

@@ -30,13 +30,14 @@ export function skeletonRows(n: number): React.ReactNode {
 // The pending-clipboard mark on a row: a small "Cut" / "Copied" pill in the name
 // cell, alongside the row-level styling (dim for cut, accent edge + wash for
 // copy). This IS the whole pending-clipboard UI — there is no chrome-level chip
-// (see Breadcrumb.tsx) — so the pill carries the Esc affordance in its tooltip.
-// `cut` and `copied` are never both true: the clipboard holds a single op.
+// (see Breadcrumb.tsx). `cut` and `copied` are never both true: the clipboard
+// holds a single op.
 export function ClipMark({ cut, copied }: { cut: boolean; copied: boolean }) {
   if (!cut && !copied) return null;
+  const label = cut ? "Cut" : "Copied";
   return (
-    <span className={"clip-mark" + (cut ? " cut" : " copied")} title="Press Esc to cancel">
-      {cut ? "Cut" : "Copied"}
+    <span className={"clip-mark" + (cut ? " cut" : " copied")} title={label}>
+      {label}
     </span>
   );
 }
@@ -70,6 +71,44 @@ export function renderHighlight(text: string, positions: number[]) {
       </mark>
     ) : (
       <span key={i}>{seg.text}</span>
+    )
+  );
+}
+
+// Splits a single highlight segment's own text on "/", wrapping each
+// separator in its own element so CSS can give it margin/color — WITHOUT
+// inserting any character into the string itself (the copy-to-clipboard text
+// must stay the exact path). This only rearranges what's already inside one
+// segment; it never creates a new segment, so a fuzzy match that straddles a
+// "/" stays the one continuous <mark> highlightSegments produced for it, not
+// two marks with a plain slash between them.
+function withSpacedSeparators(text: string): React.ReactNode {
+  const parts = text.split("/");
+  if (parts.length === 1) return text;
+  const out: React.ReactNode[] = [];
+  parts.forEach((part, i) => {
+    if (i > 0) out.push(
+      <span key={`sep-${i}`} className="path-sep">
+        /
+      </span>,
+    );
+    if (part) out.push(part);
+  });
+  return out;
+}
+
+// Opt-in sibling of renderHighlight, for multi-segment PATHS only (a
+// filename has no "/" to space out, and renderHighlight's own callers must
+// not change behavior — see FilesHome.tsx, which uses this for its path span
+// but plain renderHighlight for its name span).
+export function renderHighlightPath(text: string, positions: number[]) {
+  return highlightSegments(text, positions).map((seg, i) =>
+    seg.match ? (
+      <mark key={i} className="search-mark">
+        {withSpacedSeparators(seg.text)}
+      </mark>
+    ) : (
+      <span key={i}>{withSpacedSeparators(seg.text)}</span>
     )
   );
 }

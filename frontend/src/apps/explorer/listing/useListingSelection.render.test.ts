@@ -15,9 +15,16 @@ import { Clock, flush, renderHook } from "@apps/explorer/listing/hook-harness";
 import type { RowCtx } from "@apps/explorer/listing/types";
 
 const navigated: string[] = [];
+// `navHintQCommitted` included even though this file never mounts
+// `useListingSearch`: `mock.module` replaces the module process-wide (bun
+// runs every test file in one process), so a mock here missing an export
+// another file's `mock.module("@platform/lib/router", …)` DOES provide can
+// still break that file if this one's mock wins the race — see
+// useListingSearch.render.test.ts's own comment on this same export.
 mock.module("@platform/lib/router", () => ({
   navigate: (p: string) => void navigated.push(p),
   replaceSearch: () => {},
+  navHintQCommitted: () => false,
 }));
 mock.module("@platform/lib/ui-overlay", () => ({ isOverlayOpen: () => false }));
 
@@ -43,8 +50,8 @@ function installDocument() {
 }
 
 /** Press a key at the document, the way the real listener receives it. */
-function press(key: string): void {
-  const e = { key, isComposing: false, defaultPrevented: false, shiftKey: false,
+function press(key: string, defaultPrevented = false): void {
+  const e = { key, isComposing: false, defaultPrevented, shiftKey: false,
               ctrlKey: false, metaKey: false, altKey: false,
               preventDefault() { (this as { defaultPrevented: boolean }).defaultPrevented = true; } };
   for (const fn of [...listeners]) fn(e);
@@ -119,6 +126,42 @@ describe("Enter with nothing selected", () => {
     box.rerender(true);
     await flush(() => press("Enter"));
     expect(navigated).toEqual([box.top]);
+    box.unmount();
+  });
+});
+
+describe("Escape", () => {
+  test("clears the selection even when a clipboard op would have been pending", async () => {
+    // A pending copy/cut no longer has a say here: nothing outside this hook
+    // calls preventDefault() on Escape any more, but a stray `true` reaching
+    // this handler (however it got set) must not stop the selection from
+    // clearing either — there is no longer a second consumer of the key for
+    // this branch to defer to.
+    //
+    // searchInputRef is a distinct sentinel, not null: with it null,
+    // `document.activeElement` (also null, per this harness's installDocument)
+    // would satisfy `el === searchInputRef.current` and read as "focused in
+    // the search box" by coincidence rather than by fact.
+    const dir = "/d" + folder++;
+    const rows = [dir + "/README.md", dir + "/notes.md"];
+    const ctx = new Map<string, RowCtx>(
+      rows.map((p) => [p, { path: p, name: p.split("/").pop()!, isDir: false, parentDir: dir }]),
+    );
+    const box = renderHook(() =>
+      useListingSelection({
+        fsPath: dir,
+        navRows: rows,
+        listingLoaded: true,
+        rowsAnswerQuery: true,
+        searchInputRef: { current: {} as HTMLInputElement },
+        rowCtxByPathRef: { current: ctx },
+        overlayOpenRef: { current: false },
+      }),
+    );
+    await flush(() => press("ArrowDown")); // selects the first row
+    expect(box.current().sel.paths).toEqual([rows[0]]);
+    await flush(() => press("Escape", true));
+    expect(box.current().sel.paths).toEqual([]);
     box.unmount();
   });
 });

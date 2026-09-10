@@ -1636,7 +1636,13 @@ function TaskNode({
   // stops being expandable closes itself instead of being stuck open with no
   // control to close it. That cannot happen today (a thread never shrinks), but
   // "cannot happen" is not a thing to leave a render depending on.
-  const expandable = isExpandable(task);
+  // A PROVISIONAL row is never an accordion: its `message_count` is a default
+  // (tasks-lib.provisionalTasks), not a count, so "does this thread have more
+  // than one message in it" is a question pulse cannot answer yet. The gutter
+  // still draws — only the chevron goes — which is the same placeholder a
+  // one-message row already gets, and the row becomes expandable on its own
+  // when the listing lands and replaces it.
+  const expandable = isExpandable(task) && !task.provisional;
   const open = expandable && requested;
   const view = threadView(task, loaded);
   // Everything this thread holds, one list: the listing window before Show more,
@@ -2527,6 +2533,19 @@ function TaskNode({
             because none of its user entries is typed prose. This default is the
             preventive fix; the counter is a separate job.) */}
         {(() => {
+          // A PROVISIONAL row has no count to show — /api/tasks/pulse does not
+          // carry `message_count`, so the floor of one below would be a number
+          // this client invented. The cell is still DRAWN, with its ink hidden
+          // rather than its box removed: an absent chip would widen the title
+          // beside it and snap it back the moment the listing lands, and the
+          // whole point of painting early is that nothing jumps when it does.
+          if (task.provisional) {
+            return (
+              <span className="tasks-row-msgs tasks-row-msgs--blank" aria-hidden>
+                1<span className="tasks-row-msgs-icon">{ICON_MSG}</span>
+              </span>
+            );
+          }
           const shown = Math.max(1, task.message_count);
           return (
             <span
@@ -2581,9 +2600,22 @@ function TaskNode({
             {soon.text}
           </span>
         )}
-        <span className="tasks-row-time" data-hint={when.title}>
-          {when.text}
-        </span>
+        {/* A PROVISIONAL row's time is not this row's time. taskWhen reads the
+            run off the three-message window, and pulse carries no window, so it
+            falls through to `last_active` — the session's clock, which on a live
+            session says "just now" while the listing a beat later says "56m
+            ago" for the last run (cmux-ux-tester, 2026-09-09). Two different
+            answers to one cell reads as a bug. Same treatment as the count cell
+            above: drawn, ink hidden, width held. */}
+        {task.provisional ? (
+          <span className="tasks-row-time tasks-row-time--blank" aria-hidden>
+            {when.text}
+          </span>
+        ) : (
+          <span className="tasks-row-time" data-hint={when.title}>
+            {when.text}
+          </span>
+        )}
       </div>
 
       {/* Why the refusal is quiet: see runNow. The class is the board's own
@@ -2853,7 +2885,12 @@ export function TaskBoard({
   home = "",
   onReload,
   missing,
+  emptyLabel = "Nothing to show here.",
 }: {
+  /** The page's sentence for an empty set (Scheduled `emptyLabel`). Five bare
+   * rails said nothing about WHY the board was empty; the List's sentence does,
+   * and the four views now share it. */
+  emptyLabel?: string;
   /** Already filtered, in the SERVER's order — the LANES re-order it
    * (tasks-lib.groupByColumn), which is the one thing this view does to the
    * order it is handed and the one place it is decided. */
@@ -3083,6 +3120,22 @@ export function TaskBoard({
       return next.size === cur.size ? cur : next;
     });
   }, [byLane]);
+
+  // After every hook above, so a set that empties and refills does not change
+  // the hook order. The List's element and class, for the List's reason: one
+  // page, one way of saying there is nothing here.
+  if (tasks.length === 0) {
+    return (
+      <>
+        {/* The note rides along: an unarchive or a refused drop that removed
+            the LAST matching card is exactly when "where did it go" needs
+            answering, and the empty sentence alone read as a disappearance
+            (Bugbot, #1079). */}
+        {note && <p className="schedule-tv-note">{note}</p>}
+        <p className="schedule-tv-empty">{emptyLabel}</p>
+      </>
+    );
+  }
 
   return (
     <>

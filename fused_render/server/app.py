@@ -487,6 +487,23 @@ def create_app(start_dir: str) -> FastAPI:
 
         tasks_watch.start()
 
+    # Warm the Tasks listing's transcript caches (routers/tasks.py `warm`) so
+    # the first `/api/tasks` or `/api/tasks/pulse` of the process answers in
+    # milliseconds instead of reading every transcript on the machine inside
+    # that request. A daemon thread: the read is seconds on a big ~/.claude and
+    # must not hold up the rest of startup or the first page paint. A startup
+    # event for the same reason as `_startup_tasks_watch`.
+    @on_startup
+    async def _startup_tasks_warm():
+        from fused_render.server.routers import tasks as tasks_router_mod
+
+        thread = threading.Thread(target=tasks_router_mod.warm, daemon=True,
+                                  name="fused-tasks-warm")
+        thread.start()
+        # For tests, which need to know when the warm's own listing is done
+        # before they count listings of their own.
+        app.state.tasks_warm = thread
+
     @on_shutdown
     async def _startup_shutdown_ai():
         await shutdown_ai_session(app)

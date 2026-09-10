@@ -1441,7 +1441,8 @@ def test_the_freshness_check_defers_before_it_stamps_the_check_clock(
     monkeypatch.setattr(index_router, "_freshness_wait", lambda s: events.append(
         ("waited", s, dict(index_router._freshness_checked))))
     monkeypatch.setattr(index_router.freshness, "note_folder_opened",
-                        lambda cfg, path, roots: events.append(("checked", path)))
+                        lambda cfg, path, roots, now=None: events.append(("checked", path))
+                        or index_router.freshness.FreshnessCheck())
     src = _freshness_root(tmp_path)
     index_router._run_freshness_check(str(src))
     assert events == [("waited", index_router.FRESHNESS_DELAY_S, {}),
@@ -1467,7 +1468,7 @@ def test_a_check_that_will_refuse_anyway_never_waits(home, tmp_path,
     monkeypatch.setattr(index_router, "_freshness_checked", {})
     monkeypatch.setattr(index_router, "_freshness_wait", waits.append)
     monkeypatch.setattr(index_router.freshness, "note_folder_opened",
-                        lambda cfg, path, roots: None)
+                        lambda cfg, path, roots, now=None: index_router.freshness.FreshnessCheck())
     src = _freshness_root(tmp_path)
     # Under no configured root at all.
     index_router._run_freshness_check(str(tmp_path.parent))
@@ -1495,7 +1496,7 @@ def test_the_freshness_slot_is_freed_after_a_deferred_check(
     refresh a minute later would silently never check anything."""
     monkeypatch.setattr(index_router, "_freshness_checked", {})
     monkeypatch.setattr(index_router.freshness, "note_folder_opened",
-                        lambda cfg, path, roots: None)
+                        lambda cfg, path, roots, now=None: index_router.freshness.FreshnessCheck())
     src = _freshness_root(tmp_path)
     # The slot is a module global: a failed assertion below must not leave it
     # held, or every later test that touches the real hook fails for an
@@ -1580,7 +1581,8 @@ def test_a_root_checked_moments_ago_is_not_checked_again(
     checked = []
     monkeypatch.setattr(index_router, "_freshness_checked", {})
     monkeypatch.setattr(index_router.freshness, "note_folder_opened",
-                        lambda cfg, path, roots: checked.append(path) or None)
+                        lambda cfg, path, roots, now=None: checked.append(path)
+                        or index_router.freshness.FreshnessCheck())
     src = _tree(tmp_path)
     cfg = load_config()
     cfg.roots = [str(src)]
@@ -1606,13 +1608,104 @@ def test_a_folder_outside_every_root_never_reaches_the_index(
     checked = []
     monkeypatch.setattr(index_router, "_freshness_checked", {})
     monkeypatch.setattr(index_router.freshness, "note_folder_opened",
-                        lambda cfg, path, roots: checked.append(path) or None)
+                        lambda cfg, path, roots, now=None: checked.append(path)
+                        or index_router.freshness.FreshnessCheck())
     src = _tree(tmp_path)
     cfg = load_config()
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
     index_router._run_freshness_check(str(tmp_path.parent))
     assert checked == []
+
+
+def test_a_folder_that_goes_quiet_after_the_check_refused_it_still_gets_scanned(
+        home, tmp_path, monkeypatch, instant_freshness_delay):
+    """The reported bug. A file lands in a watched folder; the watcher's
+    debounce means the check that change wakes runs a few seconds later,
+    while the folder is still within its quiet window, and is refused. If the
+    user just sits there, nothing else ever asks again — no later listing is
+    coming to happen to land past the window. The check must leave a retry
+    behind that fires once the folder has actually gone quiet, with no
+    further listing in between."""
+    started = []
+    monkeypatch.setattr(index_router.runner, "start",
+                        lambda cfg, root, full=False: started.append(root)
+                        or {"run_id": "r1", "root": root})
+    scheduled = []
+    monkeypatch.setattr(index_router, "_schedule_freshness_retry",
+                        lambda path, root, delay: scheduled.append(
+                            (path, root, delay)))
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+    src = _tree(tmp_path)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    sub = src / "sub"
+    _write_dirs_index(load_config(), {str(src): 1, str(sub): 1})
+    disk_mtime = os.stat(str(sub)).st_mtime
+    # The watcher's own debounce: the check runs ~3s after the change, well
+    # inside the quiet window (freshness.QUIET_S is 30s).
+    check_now = disk_mtime + 3.0
+    index_router._run_freshness_check(str(sub), now=check_now)
+    assert started == []  # refused, exactly as reported
+    assert len(scheduled) == 1
+    retry_path, retry_root, retry_delay = scheduled[0]
+    assert retry_root == runner.canonical_root(str(src))
+    # Nobody lists anything again. The retry alone, firing once the folder has
+    # actually been quiet for freshness.QUIET_S, is what must find the change.
+    quiet_now = check_now + retry_delay + 0.01
+    index_router._run_freshness_retry(retry_path, retry_root, now=quiet_now)
+    assert started == [runner.canonical_root(str(src))]
+
+
+def test_the_freshness_retry_is_coalesced_per_root(monkeypatch):
+    """A folder touched fifty times while a retry is pending must not queue
+    fifty timers — only the latest deadline for the root is kept."""
+    made = []
+
+    class _FakeTimer:
+        def __init__(self, delay, fn, args=()):
+            self.delay, self.fn, self.args = delay, fn, args
+            self.cancelled = False
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            self.cancelled = True
+
+    def fake_timer(delay, fn, args=()):
+        t = _FakeTimer(delay, fn, args)
+        made.append(t)
+        return t
+
+    monkeypatch.setattr(index_router.threading, "Timer", fake_timer)
+    monkeypatch.setattr(index_router, "_freshness_retries", {})
+    for i in range(50):
+        index_router._schedule_freshness_retry("/some/path", "/some/root",
+                                               10.0 + i)
+    assert len(index_router._freshness_retries) == 1
+    assert [t.cancelled for t in made].count(False) == 1
+    live = index_router._freshness_retries["/some/root"]
+    assert live.delay == 10.0 + 49
+
+
+def test_the_freshness_retry_does_not_chain_a_second_one(
+        home, tmp_path, monkeypatch):
+    """One honest retry, not an unbounded chain: if the folder is somehow
+    still churning when the retry fires, nothing schedules another."""
+    scheduled = []
+    monkeypatch.setattr(index_router, "_schedule_freshness_retry",
+                        lambda path, root, delay: scheduled.append(delay))
+    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
+                        lambda cfg, path, roots, now=None:
+                        index_router.freshness.FreshnessCheck(
+                            retry_after=5.0))
+    src = _tree(tmp_path)
+    index_router._freshness_retries.pop(str(src), None)
+    index_router._run_freshness_retry(str(src), str(src))
+    assert scheduled == []
+    assert str(src) not in index_router._freshness_retries
 
 
 # -- guarded SQL ---------------------------------------------------------------

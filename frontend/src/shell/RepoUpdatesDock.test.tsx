@@ -17,7 +17,7 @@ import type { Job } from "@platform/lib/jobs";
 // NEITHER "@platform/lib/router" NOR "@platform/lib/api" is `mock.module`d
 // here — found the hard way, live: an earlier version of this file DID mock
 // router.ts (`{navigate: () => {}}`), which broke TWO unrelated files
-// (useWalkSearch.render.test.ts, FilesHome.render.test.tsx) the moment all
+// (useListingSearch.render.test.ts, FilesHome.render.test.tsx) the moment all
 // three ran in the same `bun test` invocation. `mock.module` replaces a
 // specifier for the WHOLE process, not just this file — first-registration
 // wins, so a stub written for THIS file's needs quietly became the module
