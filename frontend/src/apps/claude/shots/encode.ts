@@ -222,6 +222,17 @@ async function ladder(
  *  (P3R1-6). */
 export const ANN_BADGE_FILL = "#d97757";
 
+/** The badge's LETTER, and the on-screen pin's text — one value, for the same
+ *  reason the disc is (P3R1-6, owner 2026-09-10). The pin has always drawn its
+ *  letter in the accent's own dark ink (`.annpin`'s `color`, which is what the
+ *  shell's `--c-on-accent` resolves to beside `--c-accent: #d97757`), while the
+ *  burned badge drew a WHITE one — so unifying the disc left the two marks
+ *  agreeing on the circle and disagreeing on the character inside it, which is
+ *  the same recognition cost one layer down. The RING stays white: that is what
+ *  makes the badge findable on any app background, and the pin's own
+ *  `rgba(255,255,255,.9)` border is the same device. */
+export const ANN_BADGE_INK = "#1a1a1a";
+
 /**
  * A labeled badge in CANVAS pixel space — legible however small the picture ends
  * up, unlike an overlay the picture cannot carry. White ring around the disc so
@@ -237,7 +248,8 @@ export const ANN_BADGE_FILL = "#d97757";
  * the app"). So the disc takes `.annpin`'s literal `#d97757` — the same value
  * `ANN_LAYER_CSS` hardcodes for the on-screen pin, for the same reason it does:
  * this is a canvas in someone else's document and there is no token here to
- * read. The ring and the white letter are unchanged.
+ * read. The ring is unchanged, and the LETTER follows the disc for the same
+ * reason (`ANN_BADGE_INK`).
  */
 export function drawBadge(
   ctx: CanvasRenderingContext2D,
@@ -253,9 +265,12 @@ export function drawBadge(
   ctx.fillStyle = ANN_BADGE_FILL;
   ctx.fill();
   ctx.lineWidth = 2.5;
+  // WHITE, and not the ink: the ring is what makes the badge findable on a light
+  // or a dark app background alike, which is the job T spent its red on.
   ctx.strokeStyle = "#fff";
   ctx.stroke();
-  ctx.fillStyle = "#fff";
+  // `.annpin`'s `color` (ann/layer.ts), not a token: see the note above.
+  ctx.fillStyle = ANN_BADGE_INK;
   ctx.font = "bold " + (label && label.length > 1 ? 11 : 13) + "px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
