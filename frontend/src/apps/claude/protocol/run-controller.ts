@@ -328,8 +328,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * asks `hasShownRun` and would otherwise append the turn a second time). A
    * claim is held for the length of the attach and RELEASED when it ends
    * without having attached, so the recovery lap finds the id free again.
+   *
+   * THE VALUE IS THE ATTACH'S SEAT, and both halves of that matter (Bugbot
+   * 3975433059). `newChat`/`openSession` clear the claims along with
+   * `shownRuns`: an attach whose transcript has been replaced is abandoned — it
+   * will bail on its own generation check — and leaving its id claimed meant
+   * Back during an adopted, scheduled or `?run=` attach kept that run
+   * unadoptable until the probe returned, or for the rest of the page if the
+   * poll hung. But a cleared claim can be RE-TAKEN by the watch's next lap
+   * before the abandoned attach's `finally` runs, so the release is conditional
+   * on still holding the seat it took — otherwise the old attach's exit would
+   * quietly let go of the new one's claim.
    */
-  const claimingRuns = new Set<string>();
+  const claimingRuns = new Map<string, number>();
   /** Publish the renderer's gate, and only on a real change: it is read in a
    *  layout effect, so a no-op emit is a wasted frame on every poll. */
   const setAdopting = (value: boolean) => {
@@ -2066,6 +2077,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // relying on the `transcriptGen` bump, because the id an entering reader
     // most needs re-adopted is the one this frame streamed a moment ago.
     shownRuns.clear();
+    claimingRuns.clear();
     // Published, not just emptied: the hint under the box belongs to the
     // conversation that is leaving.
     clearQueued();
@@ -2309,12 +2321,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   async function resumeAttach(runId: string, opts: ResumeOptions): Promise<void> {
     if (sending) return;
-    // Past the gate this run is ours to TRY, which is not the same as ours to
-    // have shown (batch review F1). A claim keeps every other road off the id
-    // for the length of the attempt (Bugbot PR #1075) and is released in the
-    // `finally` below, so an attempt that ends without attaching — a thrown
-    // probe, a stale id — leaves the run adoptable on the watch's next lap.
-    if (runId) claimingRuns.add(runId);
     const neverShown = !!opts.neverShown;
     const quiet = !!opts.quiet;
     /**
@@ -2337,6 +2343,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     sending = true;
     const seat = ++sendSeq;
     const gen = logGen;
+    // Past the gate this run is ours to TRY, which is not the same as ours to
+    // have shown (batch review F1). The claim keeps every other road off the id
+    // for the length of the attempt (Bugbot PR #1075) and is released in the
+    // `finally` below, so an attempt that ends without attaching — a thrown
+    // probe, a stale id — leaves the run adoptable on the watch's next lap.
+    // Tagged with this attach's seat so only this attach can let it go.
+    if (runId) claimingRuns.set(runId, seat);
     try {
       let probe = (await run(dir, "poll", { run_id: runId, file: FILE || "" }, { key: null })) as
         | PollResponse
@@ -2640,7 +2653,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // is either in `shownRuns` (attached and reconciled) or genuinely free
       // again — a stale id, a thrown probe, a generation bump — and the watch's
       // next lap is entitled to try it.
-      if (runId) claimingRuns.delete(runId);
+      //
+      // ...but only if it is still OURS (Bugbot 3975433059): a Back in the
+      // middle of this attach cleared the claims, and the lap that followed may
+      // already have taken a fresh claim on the same id.
+      if (runId && claimingRuns.get(runId) === seat) claimingRuns.delete(runId);
     }
   }
 
@@ -2734,6 +2751,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // list is meant to re-attach to it, which `adoptWatch` refused while the id
     // was still recorded here from `pollLoop`.
     shownRuns.clear();
+    // And the CLAIMS with them (Bugbot 3975433059): an attach whose transcript
+    // has been replaced is abandoned, and a claim it never gets to release
+    // would keep its run unadoptable for the rest of the page.
+    claimingRuns.clear();
     clearQueued();
     // Neither of these is a true default worth stamping — a session id is an
     // identifier and `run` is in-flight bookkeeping — so absent stays the

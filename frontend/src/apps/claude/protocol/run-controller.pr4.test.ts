@@ -966,6 +966,69 @@ describe("shownRuns records what was ATTACHED, not what was attempted", () => {
     expect(controller.hasShownRun("r-claimed")).toBe(true);
   });
 
+  test("BACK DURING AN ATTACH LETS THE CLAIM GO (Bugbot 3975433059)", async () => {
+    // `newChat` cleared `shownRuns` but not the claims, and `hasShownRun`
+    // counts a claim as shown — so Back in the middle of an adopted, scheduled
+    // or `?run=` attach kept that id claimed until the abandoned probe
+    // returned, and for the rest of the page if the poll hung. `adoptWatch`
+    // skipped the re-attach for exactly as long.
+    const releases: Array<() => void> = [];
+    const { controller } = makeController({
+      poll: () =>
+        new Promise((res) => {
+          releases.push(() => res(poll({ done: true, message: "m", text: "t" })));
+        }),
+      live_host: () => ({ run_id: "" }),
+      history: () => ({ turns: [] }),
+    });
+    const first = controller.resumeRun("r-claimed", { neverShown: true });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(controller.hasShownRun("r-claimed")).toBe(true);
+
+    // Back. It releases the send gate too, so the watch's next lap can really
+    // reach this id again.
+    controller.newChat();
+    expect(controller.hasShownRun("r-claimed")).toBe(false);
+
+    // AND THE ABANDONED ATTACH'S OWN EXIT MUST NOT LET GO OF THE FRESH CLAIM:
+    // the release is conditional on still holding the seat it took.
+    const second = controller.resumeRun("r-claimed", { neverShown: true });
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+    expect(releases.length).toBe(2);
+    expect(controller.hasShownRun("r-claimed")).toBe(true);
+
+    releases[0]();
+    await first;
+    // The first attach has exited; the second one's claim is still standing.
+    expect(controller.hasShownRun("r-claimed")).toBe(true);
+
+    releases[1]();
+    await second;
+    // And the run it did attach to is a SHOWN run now, not a claim.
+    expect(controller.hasShownRun("r-claimed")).toBe(true);
+  });
+
+  test("`openSession` lets the claims go too", async () => {
+    // The reachable shape: the first probe says the run is LIVE, so
+    // `resumeAttach` frees the `sending` gate and hands off to `pollLoop` while
+    // still holding its claim. A restore from the session list can then land in
+    // the middle of it — and must not leave the id claimed by a loop whose
+    // transcript it has just replaced.
+    const { controller } = makeController({
+      poll: (_f, n) => (n === 0 ? poll() : new Promise(() => {})),
+      history: () => ({
+        turns: [],
+        transcript: { path: "/p/s2.jsonl", mtime: 1, size: 2 },
+      }),
+      live_run: () => ({ run_id: "" }),
+    });
+    void controller.resumeRun("r-live", { neverShown: true });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(controller.hasShownRun("r-live")).toBe(true);
+    await controller.openSession("s2");
+    expect(controller.hasShownRun("r-live")).toBe(false);
+  });
+
   test("a probe that THREW lets the claim go", async () => {
     const { controller } = makeController({
       poll: () => {
