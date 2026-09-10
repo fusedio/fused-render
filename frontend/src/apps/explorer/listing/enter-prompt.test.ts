@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { enterPrompt } from "@apps/explorer/listing/enter-prompt";
+import { enterPrompt, pathNotFoundMessage } from "@apps/explorer/listing/enter-prompt";
 
 describe("enterPrompt", () => {
   test("names a resolved directory instead of promising a search", () => {
@@ -54,5 +54,22 @@ describe("enterPrompt", () => {
     expect(enterPrompt({ status: "idle" }, "/")).toBe(
       "Press Enter to open that folder and search",
     );
+  });
+});
+
+// Finding 3 (code review): the refusal message for a COMMITTED path-shaped
+// query that resolved to nothing — a report, not another invitation to
+// press Enter.
+describe("pathNotFoundMessage", () => {
+  test("names the last segment, the same way enterPrompt's exists branch does", () => {
+    expect(pathNotFoundMessage("/nope/here")).toBe("No such file or folder: here");
+  });
+
+  test("strips a trailing slash before taking the last segment", () => {
+    expect(pathNotFoundMessage("/nope/here/")).toBe("No such file or folder: here");
+  });
+
+  test("a home-relative query names its own last segment", () => {
+    expect(pathNotFoundMessage("~/Work/nope")).toBe("No such file or folder: nope");
   });
 });

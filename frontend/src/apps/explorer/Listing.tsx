@@ -62,7 +62,7 @@ import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { useTypedPathAddress } from "@apps/explorer/listing/useTypedPathAddress";
 import { useCompletion } from "@apps/explorer/listing/useCompletion";
-import { enterPrompt } from "@apps/explorer/listing/enter-prompt";
+import { enterPrompt, pathNotFoundMessage } from "@apps/explorer/listing/enter-prompt";
 import { showingSearchHits } from "@apps/explorer/listing/search-body-mode";
 import { contractHome, useHome } from "@apps/explorer/listing/home-path";
 import { formatElapsed } from "@apps/explorer/lib/home-search";
@@ -280,6 +280,7 @@ export default function Listing({
     reason,
     mode,
     escapes,
+    gateOpen,
     commitSearch,
   } = useListingSearch(fsPath, home, refresh);
 
@@ -1588,7 +1589,20 @@ export default function Listing({
   // (useListingSearch.ts), so "Enter to search" would be a promise this box
   // cannot keep. The open folder's own path is the narrowest case of this
   // (Enter there is a no-op too), not a special one of its own any more.
-  if (searching && !showsSearchHits && !isPathQuery) {
+  //
+  // `pathQueryRefused` (finding 3, code review) is the one case that still
+  // gets a row despite `isPathQuery`: Enter has ALREADY been pressed
+  // (`gateOpen`, decision 4's commit gate — not "not yet committed" any
+  // more) for a path-shaped query that resolved to nothing
+  // (`typedAddress.status === "missing"`). Left out of the exclusion above,
+  // that combination was a silent dead end: no banner (excluded by
+  // `isPathQuery`), no rank request (suppressed by design), and the footer
+  // reporting the folder's own count as if nothing had been asked at all.
+  // `pathNotFoundMessage` is deliberately NOT `enterPrompt` reused: the user
+  // already pressed Enter and got their answer, so this reports the
+  // refusal rather than promising a second Enter will do something.
+  const pathQueryRefused = isPathQuery && gateOpen && typedAddress.status === "missing";
+  if (searching && !showsSearchHits && (!isPathQuery || pathQueryRefused)) {
     body = (
       <>
         <tr>
@@ -1597,7 +1611,7 @@ export default function Listing({
                 verdict, not this gate's own idea of it — a resolved real
                 path names itself instead of promising a search Enter will
                 not run. */}
-            {enterPrompt(typedAddress, query)}
+            {pathQueryRefused ? pathNotFoundMessage(query) : enterPrompt(typedAddress, query)}
           </td>
         </tr>
         {body}
@@ -2005,8 +2019,18 @@ export default function Listing({
               (`state.status === "ok"`) or a search in flight or done — because
               `sortedEntries` is `[]` for every other state (still loading,
               failed, access denied) and an ungated footer would read
-              "Empty folder" for a folder the app has not read yet. */}
-          {(state.status === "ok" || searching) && (
+              "Empty folder" for a folder the app has not read yet.
+
+              `showsSearchFooter`, not raw `searching` (finding 4, code
+              review): a path-shaped query is `searching` but never gets an
+              answer (`isPathQuery` suppresses the rank request by design),
+              so `showsSearchFooter` is false for it and `statusText` falls
+              through to the non-searching branch, keyed on `sortedEntries`
+              — exactly the case this comment already warns about. Gating on
+              raw `searching` let a path-shaped query slip past this check
+              while the folder was still loading or had errored, showing
+              "Empty folder" for a folder that was never actually read. */}
+          {(state.status === "ok" || showsSearchFooter) && (
             <footer className="listing-status" title={statusText}>
               {statusText}
             </footer>
