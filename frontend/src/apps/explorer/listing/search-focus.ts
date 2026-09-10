@@ -3,12 +3,16 @@
 // own click-to-edit and Ctrl/Cmd+L no longer open a second, path-only editor
 // over it. They ask this field to focus instead.
 //
-// The merged field is this app's location bar over a claimed folder, and a
-// location bar opens seeded with the current address, selected — type to
-// replace, or copy immediately. Both callers open the same field over the
-// same folder, so both hand it the same "~"-contracted current path: there
-// is no caller left that wants the field to open empty, so `seed` is
-// required rather than optional.
+// The merged field is BOTH a location bar and a search box, and the two
+// gestures want different openings. Ctrl/Cmd+L and click-to-edit are the
+// location-bar gesture: they seed the "~"-contracted current address,
+// selected, so it can be replaced by typing or copied immediately. The
+// button labelled "Search" is the other one, and a search box that opens
+// holding the folder you are already looking at asks you to clear it before
+// you can use it — that caller passes "".
+//
+// `seed` stays required rather than optional so an empty opening is always a
+// caller SAYING empty, never a caller forgetting the address.
 type Listener = (seed: string) => void;
 let listeners: Listener[] = [];
 

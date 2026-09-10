@@ -36,6 +36,15 @@ export function completionKeyAction(
   showCompletion: boolean,
   highlight: number,
   itemCount: number,
+  // FINDING 1 (code review, 2026-09-10): what Tab targets with NOTHING
+  // explicitly arrowed to yet. Defaults to 0 ("the first row") to keep
+  // every existing caller and test exactly as it was; a caller that folds
+  // a non-completion row (an action row) into row 0 of this same index
+  // space passes the index of the first REAL completion instead, so an
+  // un-arrowed Tab always completes text rather than running that row —
+  // this function still knows nothing about what a row IS, only which
+  // index counts as "nothing arrowed to yet" defaults to.
+  tabDefaultIndex = 0,
 ): CompletionKeyAction {
   if (!showCompletion || itemCount === 0) {
     return key === "Enter" ? { type: "enter-passthrough" } : { type: "none" };
@@ -43,7 +52,7 @@ export function completionKeyAction(
   if (key === "ArrowDown") return { type: "move", delta: 1 };
   if (key === "ArrowUp") return { type: "move", delta: -1 };
   if (key === "Tab") {
-    return { type: "tab-accept", index: highlight >= 0 ? highlight : 0 };
+    return { type: "tab-accept", index: highlight >= 0 ? highlight : tabDefaultIndex };
   }
   if (key === "Enter") {
     return highlight >= 0

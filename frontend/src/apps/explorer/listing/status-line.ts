@@ -19,7 +19,14 @@ export interface StatusLineInput {
   folderCount: number;
   truncated: boolean;
   searching: boolean;
-  hits: number;
+  // How many rows are actually reachable for selection — the CAPPED count
+  // the body renders (Listing.tsx's `visibleHits.length`, result-cap.ts's
+  // `capHits`), never the raw match total (`hits.length`). A search can rank
+  // thousands of hits while only ~100 rows are on screen; the search box's
+  // own pinned chip already owns up to that split ("top 100 of 4.9K" —
+  // Listing.tsx's searchCount), so this line's "N of M selected" must not
+  // silently substitute the bigger, off-screen number for M.
+  visibleHits: number;
 }
 
 // en-US thousands separators — "1,000", not "1000" — for the one number here
@@ -36,14 +43,23 @@ export function statusLine({
   folderCount,
   truncated,
   searching,
-  hits,
-}: StatusLineInput): string {
-  // A running or finished search answers a different question than the
-  // listing does — how many rows match, not how many are in the folder — so
-  // it gets its own line shape and never mixes with `total`/`truncated`.
+  visibleHits,
+}: StatusLineInput): string | null {
+  // ITEM 11 (running-screen review, 2026-09-10): the match count used to be
+  // reported HERE too — "24 matches" — while the search box's own pinned
+  // chip already said the same thing (searchCount/searchCountFull,
+  // Listing.tsx), plus a caveat and the elapsed time this line never
+  // carried in the first place. Division of labour, decided on that
+  // review: the BOX owns how many matched and how long it took; the FOOTER
+  // owns only what the user has SELECTED, which the box's pin says nothing
+  // about. A search with nothing selected now has nothing left for this
+  // line to add, so it returns `null` — no line, not an empty one — rather
+  // than restate a number already on screen a few pixels up. Selecting
+  // rows during a search still has something new to say, so that case
+  // survives unchanged.
   if (searching) {
-    if (selected > 0) return `${fmt(selected)} of ${fmt(hits)} selected`;
-    return `${fmt(hits)} ${hits === 1 ? "match" : "matches"}`;
+    if (selected > 0) return `${fmt(selected)} of ${fmt(visibleHits)} selected`;
+    return null;
   }
 
   if (total === 0 && !truncated) return "Empty folder";

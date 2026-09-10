@@ -130,6 +130,56 @@ describe("Enter with nothing selected", () => {
   });
 });
 
+describe("Enter on the zero-match glob-broadening offer", () => {
+  // No navRows at all: the settled-zero-hits state this offer renders in
+  // (Listing.tsx) never has real rows on screen. The offer is passed in
+  // through `zeroMatchOffer`, not folded into `navRows` — this exercises the
+  // one added branch inside the pre-existing `!rows.length` guard.
+  function mountOffer() {
+    const dir = "/d" + folder++;
+    const activated: string[] = [];
+    const box = renderHook(() =>
+      useListingSelection({
+        fsPath: dir,
+        navRows: [],
+        listingLoaded: true,
+        rowsAnswerQuery: true,
+        searchInputRef: { current: null },
+        rowCtxByPathRef: { current: new Map() },
+        overlayOpenRef: { current: false },
+        zeroMatchOffer: { path: "\0zero-match-broaden-offer", onActivate: () => activated.push("rerun") },
+      }),
+    );
+    return { box, activated };
+  }
+
+  test("runs the offer's callback instead of navigating anywhere", async () => {
+    const { box, activated } = mountOffer();
+    await flush(() => press("Enter"));
+    expect(activated).toEqual(["rerun"]);
+    expect(navigated).toEqual([]);
+    box.unmount();
+  });
+
+  test("does nothing when there is no offer (plain empty rows)", async () => {
+    const dir = "/d" + folder++;
+    const box = renderHook(() =>
+      useListingSelection({
+        fsPath: dir,
+        navRows: [],
+        listingLoaded: true,
+        rowsAnswerQuery: true,
+        searchInputRef: { current: null },
+        rowCtxByPathRef: { current: new Map() },
+        overlayOpenRef: { current: false },
+      }),
+    );
+    await flush(() => press("Enter"));
+    expect(navigated).toEqual([]);
+    box.unmount();
+  });
+});
+
 describe("Escape", () => {
   test("clears the selection even when a clipboard op would have been pending", async () => {
     // A pending copy/cut no longer has a say here: nothing outside this hook

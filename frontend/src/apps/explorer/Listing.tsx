@@ -62,7 +62,6 @@ import { resultCountLabel } from "@apps/explorer/listing/result-cap";
 import { claimFolderChrome } from "@apps/explorer/listing/folder-chrome";
 import { useTypedPathAddress } from "@apps/explorer/listing/useTypedPathAddress";
 import { useCompletion } from "@apps/explorer/listing/useCompletion";
-import { enterPrompt, pathNotFoundMessage } from "@apps/explorer/listing/enter-prompt";
 import { showingSearchHits } from "@apps/explorer/listing/search-body-mode";
 import { contractHome, useHome } from "@apps/explorer/listing/home-path";
 import { formatElapsed } from "@apps/explorer/lib/home-search";
@@ -127,11 +126,16 @@ import { statusLine } from "@apps/explorer/listing/status-line";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useListingSearch } from "@apps/explorer/listing/useListingSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
-import { searchCaveat, withCaveat } from "@apps/explorer/listing/index-caveat";
+import { searchCaveat } from "@apps/explorer/listing/index-caveat";
 import { useListingSelection } from "@apps/explorer/listing/useListingSelection";
 import { useFileOps } from "@apps/explorer/listing/useFileOps";
 import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts";
 import { EmptyResultMessage } from "@apps/explorer/listing/empty-result";
+import {
+  ZERO_MATCH_OFFER_PATH,
+  isZeroMatchOfferPath,
+  settledZeroMatchOffer,
+} from "@apps/explorer/listing/zero-match-offer";
 
 // (The folder-entry rule is the SERVER's — `app_listing.app_entry`, D301: the
 // first top-level page carrying `<meta name="fused-app">`. A filename tells
@@ -258,6 +262,7 @@ export default function Listing({
 
   const {
     query,
+    q,
     setQuery,
     searching,
     isPathQuery,
@@ -279,9 +284,9 @@ export default function Listing({
     cappedAway,
     reason,
     mode,
-    escapes,
     gateOpen,
     commitSearch,
+    rerunQuery,
   } = useListingSearch(fsPath, home, refresh);
 
   // Decision 5: is the typed query itself a filesystem address? Resolved
@@ -311,6 +316,39 @@ export default function Listing({
   // is not showing hits either, or arrow-key nav would walk an empty list
   // over a folder plainly still on screen.
   const showsSearchHits = showingSearchHits(searchState, awaitingCommit);
+
+  // A committed PATTERN (glob) search that has settled on genuinely zero
+  // hits (`reason === ""` — anything else is an index-gap message,
+  // EmptyResultMessage's own job, and broadening the pattern wouldn't fix an
+  // uncovered folder) offers to rerun itself with the first rung of
+  // glob-broaden.ts's ladder that actually widens the query. `null` here
+  // means either there is nothing settled-and-empty to offer for, or
+  // `broadenGlobOffer` walked every rung and found nothing left to widen —
+  // both read identically to callers below: no offer.
+  //
+  // `settledZeroMatchOffer` (zero-match-offer.ts) owns the derivation
+  // itself, not this call site: `mode`, `reason` and `displayHits` are read
+  // off the search's own `answer`, which only changes when a new answer
+  // lands, but the box can move the query past that answer well before a
+  // request for the new text has even gone out (the fetch effect's own
+  // trailing debounce) — a window where `scanPending` stays false and
+  // `searchState` still reads "ok" for the PREVIOUS query. Passing
+  // `rowsAnswerQuery` in is what closes that gap: it is the one flag that
+  // already compares the rows on screen against `q` directly, so this
+  // offer cannot be computed against a query nothing has checked yet.
+  const broadenOffer = settledZeroMatchOffer({
+    showsSearchHits,
+    rowsAnswerQuery,
+    searchState,
+    scanPending,
+    displayHitsLength: displayHits.length,
+    mode,
+    reason,
+    q,
+  });
+  const rerunBroadenedSearch = () => {
+    if (broadenOffer !== null) rerunQuery(broadenOffer.pattern);
+  };
 
   // **THESE TWO FLAGS ARE NOW THE WHOLE of whether there is a pane** —
   // `pane.on` is exactly `paneEnabled` since D282 deleted the width gate, so
@@ -608,6 +646,10 @@ export default function Listing({
     // `globalKeys` defaults to true (useListingSelection.ts): there is no
     // caller left that ever passed false — the one that used to (`embedded`,
     // the preview pane's own nested `_listing` mode) is gone with D460.
+    zeroMatchOffer:
+      broadenOffer !== null
+        ? { path: ZERO_MATCH_OFFER_PATH, onActivate: rerunBroadenedSearch }
+        : null,
   });
 
   const {
@@ -1210,6 +1252,23 @@ export default function Listing({
   // (openOnRelease above). Both halves want the same two facts — same row, press
   // stayed still — so they share the one handler and the one slop test.
   const onRowPointerUp = (e: React.PointerEvent, path: string) => {
+    // The zero-match glob-broadening offer row (Listing.tsx's settled-empty
+    // body branch below) is not a real row: it has no `pressRef`/press-slop
+    // tracking, no `rowCtxByPath` entry, and must never call `selectOnly`
+    // (there is nothing to select — see useListingSelection.ts's own
+    // `zeroMatchOffer` prop for the Enter half of this same branch). It only
+    // wires `onPointerUp`, so this check has to come before the `pressRef`
+    // read below, which the offer row never populated in the first place.
+    if (isZeroMatchOfferPath(path)) {
+      // Same guard every real row's press already gets (onRowPointerDown,
+      // above): a right-click or middle-click landing on this row must not
+      // rerun the broadened search, and a right-click also has its own job
+      // — opening the background context menu — that this would otherwise
+      // step on.
+      if (e.button !== 0) return;
+      rerunBroadenedSearch();
+      return;
+    }
     const press = pressRef.current;
     pressRef.current = null;
     if (!press || press.path !== path) return;
@@ -1448,17 +1507,84 @@ export default function Listing({
       // the render for each of those, sharing `indexGap`'s classification and
       // copy with the home page's own search box rather than inventing new
       // wording for the same states.
-      body = (
-        <tr>
-          <td colSpan={cols} className="status-message">
-            <EmptyResultMessage
-              reason={reason}
-              scanning={indexScan === null ? null : indexScan.scanning}
-              filesScanned={indexScan?.files ?? 0}
-            />
-          </td>
-        </tr>
-      );
+      body =
+        broadenOffer !== null ? (
+          // The glob-broadening offer: reads as an offer, not a matched
+          // file, by reusing this same `status-message` row shape (already
+          // the treatment for every OTHER non-file row above — "Searching…",
+          // the capped-away count) rather than a `fh-row`. Deliberately
+          // brief: it does not echo the original query back (that's what
+          // "given search term" stands in for) and does not name which
+          // dimension the offered pattern relaxes — both would make this
+          // row long enough to be the very thing finding 5's wrap fix has
+          // to catch at a narrow pane. glob-broaden.ts's rung label still
+          // exists and is still ordered and named there — it just isn't
+          // rendered here. Wired through `onRowPointerUp` (the same call
+          // site every real row activates from) with the reserved sentinel
+          // path rather than a parallel click handler — see
+          // zero-match-offer.ts.
+          <tr className="zero-match-offer-row">
+            <td colSpan={cols} className="status-message">
+              <span className="zero-match-offer">
+                <span className="zero-match-offer-text">
+                  No matches for given search term. Widen instead to:{" "}
+              <button
+                type="button"
+                className="fh-link-button"
+                onPointerUp={(e) => onRowPointerUp(e, ZERO_MATCH_OFFER_PATH)}
+                onPointerDown={(e) => {
+                  // Only `onPointerUp` is wired (see onRowPointerUp's own
+                  // sentinel branch, above) — but a bare click still fires
+                  // pointerdown first, and leaving it unhandled would let
+                  // the press fall through to whatever native default a
+                  // `<button>` inside this table carries. Nothing else here
+                  // reads pointerdown for this row (no pressRef entry is
+                  // ever created for the sentinel path), so this only needs
+                  // to stop that default, not track anything.
+                  e.preventDefault();
+                }}
+                onClick={(e) => {
+                  // A focused button never satisfies useListingSelection's
+                  // `navActive` (search input or document body/root only),
+                  // so a keyboard Tab+Enter/Space never reaches the
+                  // document-level Enter handler's own offer branch — this
+                  // is the one path that lets keyboard activation work at
+                  // all. A pointer interaction is already handled by
+                  // `onPointerUp` above; this must not run a second time for
+                  // one. `detail` is the click count a pointer device
+                  // reports (always >= 1) — a keyboard-synthesized click
+                  // reports 0, which is the one case `onPointerUp` never
+                  // sees at all (no pointer events fire for it).
+                  if (e.detail !== 0) return;
+                  rerunBroadenedSearch();
+                }}
+              >
+                <strong>{broadenOffer.pattern}</strong>
+              </button>
+                </span>
+                {/* The dropdown's own `↵` vocabulary
+                    (`.listing-completion-hint`), on the one row in the body
+                    that Enter acts on. Without it the offer states a pattern
+                    and leaves the reader to guess there is a way to run it —
+                    and the row carries no other affordance, since the
+                    highlight it wears is a colour, not a control. */}
+                <span className="listing-completion-hint" aria-hidden="true">
+                  ↵
+                </span>
+              </span>
+            </td>
+          </tr>
+        ) : (
+          <tr>
+            <td colSpan={cols} className="status-message">
+              <EmptyResultMessage
+                reason={reason}
+                scanning={indexScan === null ? null : indexScan.scanning}
+                filesScanned={indexScan?.files ?? 0}
+              />
+            </td>
+          </tr>
+        );
     }
   } else if (state.status === "loading") {
     body = skeletonRows(8);
@@ -1524,7 +1650,10 @@ export default function Listing({
               <span className="icon">
                 {iconForEntry(entry.name, entry.is_dir)}
               </span>
-              {entry.name}
+              {/* Its own span so a row hover can underline the name alone
+                  (explorer.css, tr.row:hover .name-text) — the one thing in
+                  an otherwise-plain row a hover singles out as "go here". */}
+              <span className="name-text">{entry.name}</span>
             </span>
             <GitMark status={entry.git} />
             <ClipMark
@@ -1576,48 +1705,15 @@ export default function Listing({
     );
   }
 
-  // A query is typed but not yet committed (decision 4's gate) while the
-  // FOLDER's own rows render above: not a stale search answer to caption —
-  // see `showsSearchHits` — but Enter still needs saying what it will do.
-  // One banner row above the real rows, not a caveat folded into a count
-  // (the user rejected that shape — see DECISIONS-one-field-search.md).
-  //
-  // `!isPathQuery` excludes every uncommitted query this row would otherwise
-  // make a false promise about: a path-shaped query either resolves to a
-  // real address (Enter navigates directly, no commit involved) or it does
-  // not — and either way, no rank request is ever coming for it
-  // (useListingSearch.ts), so "Enter to search" would be a promise this box
-  // cannot keep. The open folder's own path is the narrowest case of this
-  // (Enter there is a no-op too), not a special one of its own any more.
-  //
-  // `pathQueryRefused` (finding 3, code review) is the one case that still
-  // gets a row despite `isPathQuery`: Enter has ALREADY been pressed
-  // (`gateOpen`, decision 4's commit gate — not "not yet committed" any
-  // more) for a path-shaped query that resolved to nothing
-  // (`typedAddress.status === "missing"`). Left out of the exclusion above,
-  // that combination was a silent dead end: no banner (excluded by
-  // `isPathQuery`), no rank request (suppressed by design), and the footer
-  // reporting the folder's own count as if nothing had been asked at all.
-  // `pathNotFoundMessage` is deliberately NOT `enterPrompt` reused: the user
-  // already pressed Enter and got their answer, so this reports the
-  // refusal rather than promising a second Enter will do something.
-  const pathQueryRefused = isPathQuery && gateOpen && typedAddress.status === "missing";
-  if (searching && !showsSearchHits && (!isPathQuery || pathQueryRefused)) {
-    body = (
-      <>
-        <tr>
-          <td colSpan={cols} className="status-message listing-enter-row">
-            {/* Decision 9: what Enter actually does is `typedAddress`'s
-                verdict, not this gate's own idea of it — a resolved real
-                path names itself instead of promising a search Enter will
-                not run. */}
-            {pathQueryRefused ? pathNotFoundMessage(query) : enterPrompt(typedAddress, query)}
-          </td>
-        </tr>
-        {body}
-      </>
-    );
-  }
+  // SPEC-omnibox-search-affordance.md scope item 5: the banner that used to
+  // sit here — "press Enter to open that folder and search" for an
+  // uncommitted path-shaped/escaping query, or the "No such file or
+  // folder" refusal for one already committed and missing — is gone. Both
+  // moved into SearchField.tsx's own completion dropdown as rows
+  // (search-action-rows.ts's `searchAffordance`), which is exactly where
+  // the rest of this spec's guidance is moving TO, not a special case of
+  // its own any more. Removing it also gets the file list its full height
+  // back — the banner pushed every row down by one.
 
   // --- search match count (inline in the search row) ------------------------
   //
@@ -1637,6 +1733,14 @@ export default function Listing({
 
   let searchCount: string | null = null;
   let searchCountFull: string | undefined;
+  // The count and the caveat/latency are threaded to SearchField.tsx as two
+  // SEPARATE values, not one pre-joined string, so it can render them as two
+  // elements and degrade the detail first at a narrow width (see explorer.css's
+  // container-query rules on `.listing-search-count-*`) instead of hiding the
+  // whole pin — the count is the most useful part of it, so it should be the
+  // last thing to go. `searchCountFull` (the title/aria-label sentence) is
+  // unaffected — it is never truncated, only the VISIBLE chip is.
+  let searchCountDetail: string | null = null;
   // The chip's reserved width covers a match count; the scan caveat makes it
   // longer, so the input reserves more while one is running.
   let widePin = false;
@@ -1671,7 +1775,7 @@ export default function Listing({
     ? searchCaveat(indexScan, { behind, pending: requestComing, rescanPending, failed: requestFailed })
     : null;
   if (caveat) {
-    searchCount = withCaveat(searchCount, caveat);
+    searchCountDetail = caveat.note;
     searchCountFull = caveat.title;
     widePin = true;
   } else if (searchState.status === "ok" && searchCount !== null) {
@@ -1684,32 +1788,42 @@ export default function Listing({
     // present and current — a stale count paired with a fresh latency
     // figure would describe two different requests.
     const elapsed = formatElapsed(searchState.elapsedMs);
-    searchCount = `${searchCount} · ${elapsed}`;
+    searchCountDetail = elapsed;
     searchCountFull = `${searchCountFull} · ${elapsed}`;
     widePin = true;
   }
 
-  // Is anything pinned inside the search input right now? Mirrors the two
-  // chip conditions in the render below; drives the input's right padding, so
-  // an idle box gives its whole width to the placeholder.
+  // Is anything pinned inside the search input right now? Mirrors the chip
+  // conditions in the render below; drives the input's right padding, so an
+  // idle box gives its whole width to the placeholder. `searchCountDetail`
+  // is checked on its own, not just alongside `searchCount` (code review,
+  // 2026-09-10): a caveat with no settled count yet — "indexing…", "search
+  // failed" — still pins the chip, so the padding has to reserve room for
+  // it even though `searchCount` itself is still null.
   const hasPin =
     (searching && spinner) ||
-    searchCount !== null;
-
-  // Whether the status strip should read as a search's own line ("N
-  // matches") rather than the folder's own item count. A path-shaped query
-  // never gets an answer (useListingSearch.ts's `isPathQuery` gate — the open
-  // folder's own path is just the narrowest case of this) — reporting "0
-  // matches" under a folder that plainly has rows would blame the search for
-  // something it was never asked to answer.
-  const showsSearchFooter = searching && !isPathQuery;
+    searchCount !== null ||
+    searchCountDetail !== null;
 
   // The status strip's inputs. A search hit carries no size (the comment on
   // its row explains why), so the byte sum is only ever taken over the plain
   // listing — statusLine's own "searching" branch never reads either number.
+  //
+  // ITEM 11 (running-screen review, 2026-09-10) folded ITEM 6 into this
+  // same predicate, so there is now exactly one reason for `showsSearchHits`
+  // to appear down here rather than the two half-reasons an earlier
+  // `showsSearchFooter` alias used to carry: it decides whether search hits
+  // (sizeless) or the folder's own rows (sized) are what the strip is
+  // summing. `statusLine`'s own "searching" branch handles the rest —
+  // ITEM 6's fix (a gated, uncommitted query is NOT `showsSearchHits`, so it
+  // falls back to the folder's own honest item count) and ITEM 11's fix (a
+  // search with nothing selected returns `null` — no line, not "0 matches"
+  // — since the box's own pinned chip already reports the match count and
+  // this strip's only remaining job is the SELECTION the chip says nothing
+  // about) both live in that one function, not here.
   let selectedBytes = 0;
   let selectedFolders = 0;
-  if (!showsSearchFooter) {
+  if (!showsSearchHits) {
     for (const entry of sortedEntries) {
       if (!selectedSet.has(base + "/" + entry.name)) continue;
       if (entry.is_dir) selectedFolders++;
@@ -1722,8 +1836,14 @@ export default function Listing({
     selectedBytes,
     folderCount: selectedFolders,
     truncated: state.status === "ok" && state.truncated,
-    searching: showsSearchFooter,
-    hits: hits.length,
+    searching: showsSearchHits,
+    // The CAPPED, on-screen count (`visibleHits`, result-cap.ts's capHits),
+    // not the raw match total (`hits.length`): a selection can only ever
+    // include rows the body actually rendered, and the search box's own
+    // pinned chip already owns up to the "top 100 of 4.9K" split when the
+    // cap bites (searchCount above) — this line must not restate the bigger,
+    // unreachable number as the selection's denominator.
+    visibleHits: visibleHits.length,
   });
 
   return (
@@ -1776,11 +1896,12 @@ export default function Listing({
               fsPath={fsPath}
               home={home}
               query={query}
+              q={q}
               setQuery={setQuery}
               searching={searching}
               isPathQuery={isPathQuery}
               committed={showsSearchHits}
-              escapes={escapes}
+              awaitingCommit={!gateOpen}
               commitSearch={commitSearch}
               prefetchIndex={prefetchIndex}
               typedAddress={typedAddress}
@@ -1788,6 +1909,7 @@ export default function Listing({
               spinner={spinner}
               searchCount={searchCount}
               searchCountFull={searchCountFull}
+              searchCountDetail={searchCountDetail}
               hasPin={hasPin}
               widePin={widePin}
             >
@@ -2013,24 +2135,27 @@ export default function Listing({
           {/* Spans the list column only, never the preview pane beside it —
               it sits INSIDE .listing-main, after the scroller, the same way
               the crumb slot sits inside it before. statusLine decides the
-              string; this only renders it.
+              string, INCLUDING whether there is one at all (`null` — ITEM
+              11 — while search hits are showing and nothing is selected,
+              since the box's own pinned chip already reports the match
+              count); this only renders it.
 
               Gated on the folder having an actual answer — loaded
-              (`state.status === "ok"`) or a search in flight or done — because
-              `sortedEntries` is `[]` for every other state (still loading,
-              failed, access denied) and an ungated footer would read
-              "Empty folder" for a folder the app has not read yet.
+              (`state.status === "ok"`) or a search in flight or done —
+              because `sortedEntries` is `[]` for every other state (still
+              loading, failed, access denied) and an ungated footer would
+              read "Empty folder" for a folder the app has not read yet.
 
-              `showsSearchFooter`, not raw `searching` (finding 4, code
+              `showsSearchHits`, not raw `searching` (finding 4, code
               review): a path-shaped query is `searching` but never gets an
               answer (`isPathQuery` suppresses the rank request by design),
-              so `showsSearchFooter` is false for it and `statusText` falls
+              so `showsSearchHits` is false for it and `statusText` falls
               through to the non-searching branch, keyed on `sortedEntries`
               — exactly the case this comment already warns about. Gating on
               raw `searching` let a path-shaped query slip past this check
               while the folder was still loading or had errored, showing
               "Empty folder" for a folder that was never actually read. */}
-          {(state.status === "ok" || showsSearchFooter) && (
+          {(state.status === "ok" || showsSearchHits) && statusText !== null && (
             <footer className="listing-status" title={statusText}>
               {statusText}
             </footer>

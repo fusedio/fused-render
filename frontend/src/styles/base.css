@@ -154,3 +154,31 @@ iframe {
 .hint-panel.is-on {
   display: block;
 }
+
+/* The columnised form (hints.ts `renderHint`). `auto 1fr` puts every token in
+   one measured column and every meaning in the next, so the reader scans a
+   list of tokens down the left instead of hunting three dashes across three
+   different x positions. */
+.hint-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  /* The lines are already split into cells; keeping `pre-wrap` here would let
+     the source newlines print a blank row between every pair. */
+  white-space: normal;
+}
+
+/* Tokens are literal syntax the reader retypes, so they wear the code face and
+   the full-strength ink; the meaning beside them is the annotation and steps
+   back. That contrast is the other half of the alignment — a column of
+   same-weight text is still a wall. */
+.hint-key {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.hint-def {
+  color: var(--fg-muted);
+}
